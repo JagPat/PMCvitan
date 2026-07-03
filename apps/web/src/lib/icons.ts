@@ -1,0 +1,40 @@
+/**
+ * Centralised icon imports (lucide-react). The handoff calls for functional
+ * glyphs (lock, camera, voice, QR, …) to use the codebase's icon set rather than
+ * decorative emoji — this is that set. Importing from one module means a renamed
+ * icon is fixed in a single place.
+ */
+export {
+  Bell,
+  Lock,
+  Camera,
+  Image as ImageIcon,
+  Plus,
+  Minus,
+  Check,
+  ArrowRight,
+  ArrowUpRight,
+  ChevronRight,
+  Play,
+  Hand,
+  QrCode,
+  ScanLine,
+  Power,
+  Crosshair,
+  MapPin,
+  Wifi,
+  WifiOff,
+  TriangleAlert,
+  X,
+  Volume2,
+  CircleCheck,
+  Languages,
+  Users,
+  Wrench,
+  HardHat,
+  Zap,
+  Hammer,
+  LayoutGrid,
+  Blocks,
+  type LucideIcon,
+} from 'lucide-react';

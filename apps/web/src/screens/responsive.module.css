@@ -1,0 +1,152 @@
+/* Shared responsive scaffolding for the screens.
+   Fine visual detail stays inline (faithful to the design); breakpoint layout
+   lives here. Breakpoints: mobile <640, tablet 640–1024, desktop >1024. */
+
+.screen {
+  position: relative;
+  margin: 0 auto;
+  padding: 22px 18px 40px;
+}
+@media (min-width: 640px) {
+  .screen {
+    padding: 30px 40px 72px;
+  }
+}
+.wide {
+  max-width: var(--content-max);
+}
+.mid {
+  max-width: 1000px;
+}
+.narrow {
+  max-width: 960px;
+}
+
+/* header rule row (eyebrow + title + trailing control) */
+.headRule {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  border-bottom: 1.5px solid var(--ink);
+  padding-bottom: 16px;
+}
+
+/* dashboard KPI tiles: 1 col -> 2x2 */
+.tiles {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+@media (min-width: 720px) {
+  .tiles {
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+  }
+}
+
+/* photo strip: 2 -> 4 across */
+.photos {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (min-width: 720px) {
+  .photos {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+}
+
+/* decision-log register row: stacks photo on top for narrow widths */
+.logRow {
+  display: flex;
+  flex-direction: column;
+}
+@media (min-width: 560px) {
+  .logRow {
+    flex-direction: row;
+  }
+}
+.logPhoto {
+  width: 100%;
+  min-height: 120px;
+}
+@media (min-width: 560px) {
+  .logPhoto {
+    width: 150px;
+    min-height: 0;
+  }
+}
+
+/* inspection review row: stacks on mobile */
+.reviewRow {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+@media (min-width: 560px) {
+  .reviewRow {
+    flex-direction: row;
+    gap: 18px;
+  }
+}
+
+/* schedule row: wraps the timeline under the label on mobile; full row on desktop */
+.schedRow {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+}
+@media (min-width: 900px) {
+  .schedRow {
+    flex-direction: row;
+    align-items: center;
+    gap: 18px;
+  }
+}
+.schedTimelineWrap {
+  overflow-x: auto;
+}
+
+/* single-column mobile-first screen (engineer / worker): stays narrow even on large screens */
+.mobileScreen {
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 14px 16px 40px;
+}
+
+/* client screen: mobile-first but grows up on large screens (bigger type, capped measure) */
+.clientScreen {
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 14px 18px 48px;
+}
+@media (min-width: 900px) {
+  .clientScreen {
+    max-width: 680px;
+  }
+}
+
+/* horizontal snap carousel */
+.carousel {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding-bottom: 8px;
+}
+.carousel > * {
+  scroll-snap-align: center;
+  flex: none;
+}
+
+/* generic sticky footer inside a scrollable screen */
+.stickyFoot {
+  position: sticky;
+  bottom: 0;
+  background: var(--canvas);
+  padding-top: 14px;
+}

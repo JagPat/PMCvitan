@@ -1,0 +1,12 @@
+{
+  "name": "@vitan/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared domain layer for Vitan PMC: design tokens, i18n dictionaries, formatting helpers, domain types, seed data. Consumed by apps/web via path alias; promoted to a built package when apps/api lands.",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  }
+}

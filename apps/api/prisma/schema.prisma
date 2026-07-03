@@ -1,0 +1,302 @@
+// Vitan PMC — database schema (PostgreSQL via Prisma).
+// This is the concrete data model for the Phase 7 backend. Enums mirror the
+// frontend string unions in packages/shared/src/domain/types.ts so the API
+// contract and UI stay aligned. See docs/DATA_MODEL.md.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  pmc
+  client
+  engineer
+  contractor
+}
+
+enum DecisionStatus {
+  pending
+  approved
+  change
+}
+
+enum ActivityStatus {
+  not_started
+  in_progress
+  done
+  blocked
+}
+
+enum GateKind {
+  decision
+  material
+  team
+  inspection
+}
+
+enum GateState {
+  ok
+  wait
+  fail
+  na
+}
+
+enum InspectionResult {
+  PASS
+  FAIL
+}
+
+model Project {
+  id            String   @id @default(cuid())
+  name          String
+  descriptor    String
+  stage         String
+  siteCode      String
+  plannedStart  DateTime
+  plannedEnd    DateTime
+  createdAt     DateTime @default(now())
+
+  memberships   Membership[]
+  workers       Worker[]
+  decisions     Decision[]
+  activities    Activity[]
+  inspections   Inspection[]
+  dailyLogs     DailyLog[]
+  notifications Notification[]
+}
+
+model User {
+  id          String       @id @default(cuid())
+  name        String
+  email       String?      @unique
+  phone       String?      @unique
+  createdAt   DateTime     @default(now())
+  memberships Membership[]
+}
+
+model Membership {
+  id        String  @id @default(cuid())
+  user      User    @relation(fields: [userId], references: [id])
+  userId    String
+  project   Project @relation(fields: [projectId], references: [id])
+  projectId String
+  role      Role
+
+  @@unique([userId, projectId])
+}
+
+// On-site identity WITHOUT an account (recognised by QR badge / face).
+model Worker {
+  id        String  @id @default(cuid())
+  name      String
+  tradeKey  String
+  project   Project @relation(fields: [projectId], references: [id])
+  projectId String
+}
+
+model Decision {
+  id             String           @id @default(cuid())
+  code           String // e.g. DL-014
+  title          String
+  room           String
+  status         DecisionStatus   @default(pending)
+  ageDays        Int?
+  photoSwatch    String
+  costPaise      BigInt?
+  approvedOption String?
+  material       String?
+  approver       String?
+  approvedAt     DateTime?
+  project        Project          @relation(fields: [projectId], references: [id])
+  projectId      String
+
+  options        DecisionOption[]
+  events         DecisionEvent[]
+  changeRequests ChangeRequest[]
+  activities     Activity[]
+  materials      SiteMaterial[]
+
+  @@unique([projectId, code])
+}
+
+model DecisionOption {
+  id          String   @id @default(cuid())
+  decision    Decision @relation(fields: [decisionId], references: [id])
+  decisionId  String
+  label       String
+  optionKey   String
+  material    String
+  deltaPaise  BigInt
+  swatch      String
+  recommended Boolean  @default(false)
+}
+
+// Append-only audit + lifecycle log for a decision.
+model DecisionEvent {
+  id         String   @id @default(cuid())
+  decision   Decision @relation(fields: [decisionId], references: [id])
+  decisionId String
+  type       String // issued | approved | locked | change_requested
+  actor      String
+  at         DateTime @default(now())
+  payload    Json?
+}
+
+model ChangeRequest {
+  id              String   @id @default(cuid())
+  decision        Decision @relation(fields: [decisionId], references: [id])
+  decisionId      String
+  reason          String
+  costImpactPaise BigInt
+  timeImpactDays  Int
+  status          String   @default("pending")
+  createdAt       DateTime @default(now())
+}
+
+model Activity {
+  id           String         @id @default(cuid())
+  code         String // ACT-31
+  name         String
+  zone         String
+  status       ActivityStatus @default(not_started)
+  plannedStart DateTime
+  plannedEnd   DateTime
+  actualStart  DateTime?
+  actualEnd    DateTime?
+  block        String?
+  decision     Decision?      @relation(fields: [decisionId], references: [id])
+  decisionId   String?
+  project      Project        @relation(fields: [projectId], references: [id])
+  projectId    String
+  gates        ActivityGate[]
+
+  @@unique([projectId, code])
+}
+
+model ActivityGate {
+  id         String    @id @default(cuid())
+  activity   Activity  @relation(fields: [activityId], references: [id])
+  activityId String
+  kind       GateKind
+  state      GateState @default(na)
+
+  @@unique([activityId, kind])
+}
+
+model Inspection {
+  id          String           @id @default(cuid())
+  code        String // INSP-22
+  title       String
+  zone        String
+  submittedBy String?
+  submittedAt DateTime?
+  decidedAt   DateTime?
+  project     Project          @relation(fields: [projectId], references: [id])
+  projectId   String
+  items       InspectionItem[]
+
+  @@unique([projectId, code])
+}
+
+model InspectionItem {
+  id             String            @id @default(cuid())
+  inspection     Inspection        @relation(fields: [inspectionId], references: [id])
+  inspectionId   String
+  name           String
+  result         InspectionResult?
+  note           String?
+  photos         Int               @default(0)
+  rejected       Boolean           @default(false)
+  reinspectionOf String?
+}
+
+model DailyLog {
+  id          String            @id @default(cuid())
+  project     Project           @relation(fields: [projectId], references: [id])
+  projectId   String
+  date        DateTime
+  checkedInAt DateTime?
+  submittedAt DateTime?
+  crew        CrewCount[]
+  attendance  AttendanceEvent[]
+  materials   SiteMaterial[]
+
+  @@unique([projectId, date])
+}
+
+model CrewCount {
+  id         String   @id @default(cuid())
+  dailyLog   DailyLog @relation(fields: [dailyLogId], references: [id])
+  dailyLogId String
+  trade      String
+  count      Int      @default(0)
+}
+
+model AttendanceEvent {
+  id         String   @id @default(cuid())
+  dailyLog   DailyLog @relation(fields: [dailyLogId], references: [id])
+  dailyLogId String
+  workerId   String?
+  kind       String // checkin | qr | face
+  at         DateTime @default(now())
+  geo        String?
+  selfieUrl  String?
+}
+
+model SiteMaterial {
+  id         String    @id @default(cuid())
+  dailyLog   DailyLog  @relation(fields: [dailyLogId], references: [id])
+  dailyLogId String
+  decision   Decision? @relation(fields: [decisionId], references: [id])
+  decisionId String?
+  name       String
+  qty        String
+  zone       String
+  matched    Boolean   @default(true)
+  swatch     String
+  photoUrl   String?
+}
+
+model Media {
+  id         String   @id @default(cuid())
+  url        String
+  geo        String?
+  takenAt    DateTime?
+  activityId String?
+  decisionId String?
+  createdAt  DateTime @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  project   Project  @relation(fields: [projectId], references: [id])
+  projectId String
+  text      String
+  color     String
+  at        DateTime @default(now())
+}
+
+// Offline mutation outbox — replayed with idempotency keys on reconnect.
+model SyncOutboxEntry {
+  id        String    @id @default(cuid())
+  clientId  String    @unique
+  opType    String
+  payload   Json
+  createdAt DateTime  @default(now())
+  appliedAt DateTime?
+}
+
+model AuditLog {
+  id       String   @id @default(cuid())
+  actor    String
+  action   String
+  entity   String
+  entityId String
+  at       DateTime @default(now())
+  payload  Json?
+}

@@ -1,0 +1,158 @@
+.rail {
+  width: var(--rail-w);
+  flex: none;
+  height: 100%;
+  background: var(--ink);
+  color: var(--sidebar-text);
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #000;
+}
+@media (max-width: 639.98px) {
+  .rail {
+    display: none;
+  }
+}
+
+.header {
+  padding: 22px 20px 18px;
+  border-bottom: 1px solid rgba(237, 231, 218, 0.12);
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.logoTile {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: #fff;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+.logoTile img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  font-size: 14px;
+}
+.brandSub {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.28em;
+  color: var(--accent);
+  margin-top: 1px;
+}
+
+.persona {
+  padding: 16px 16px 6px;
+}
+
+.nav {
+  padding: 14px 12px;
+  flex: 1;
+  overflow-y: auto;
+}
+.navLabel {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.22em;
+  color: rgba(237, 231, 218, 0.4);
+  margin: 6px 6px 9px;
+}
+.navItem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+  padding: 11px 12px;
+  margin-bottom: 3px;
+  border-radius: 9px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 13px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: rgba(237, 231, 218, 0.62);
+}
+.navItem:hover {
+  background: rgba(237, 231, 218, 0.06);
+}
+.navItemActive {
+  font-weight: 600;
+  background: rgba(180, 70, 46, 0.18);
+  color: #f3d9cf;
+}
+.badge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  background: rgba(237, 231, 218, 0.15);
+  color: #fff;
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.badgeActive {
+  background: var(--accent);
+}
+
+.footer {
+  padding: 14px 16px;
+  border-top: 1px solid rgba(237, 231, 218, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.projName {
+  font-size: 11px;
+  font-weight: 600;
+}
+.projMeta {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  color: rgba(237, 231, 218, 0.45);
+  margin-top: 2px;
+}
+.bell {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(237, 231, 218, 0.2);
+  background: transparent;
+  border-radius: 7px;
+  color: var(--sidebar-text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.bellDot {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

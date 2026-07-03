@@ -1,0 +1,101 @@
+.bar {
+  flex: none;
+  background: var(--ink);
+  color: var(--sidebar-text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  padding-top: env(safe-area-inset-top);
+  height: calc(54px + env(safe-area-inset-top));
+}
+@media (min-width: 640px) {
+  .bar {
+    display: none;
+  }
+}
+.brandWrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.logoTile {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.logoTile img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+}
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  font-size: 14px;
+}
+.right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.selectWrap {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(237, 231, 218, 0.1);
+  border: 1px solid rgba(237, 231, 218, 0.2);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+.viewingAs {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: rgba(237, 231, 218, 0.5);
+}
+.select {
+  background: transparent;
+  border: none;
+  color: var(--sidebar-text);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 12.5px;
+  outline: none;
+}
+.select option {
+  color: #23211c;
+}
+.bell {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(237, 231, 218, 0.2);
+  background: transparent;
+  border-radius: 8px;
+  color: var(--sidebar-text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.bellDot {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
