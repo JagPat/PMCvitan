@@ -74,3 +74,17 @@ export type SubmitDailyLogInput = z.infer<typeof submitDailyLogSchema>;
 
 export const flagMismatchSchema = z.object({ decisionId: z.string().min(1) });
 export type FlagMismatchInput = z.infer<typeof flagMismatchSchema>;
+
+// ── Phase 7c-media ─────────────────────────────────────────────────────────
+// A site photo upload. `data` is base64 (no data: URL prefix). Images only.
+export const createMediaSchema = z.object({
+  kind: z.enum(['progress', 'inspection', 'decision', 'attendance', 'material']),
+  mime: z.string().regex(/^image\//, 'images only'),
+  data: z.string().min(1),
+  decisionId: z.string().optional(),
+  dailyLogId: z.string().optional(),
+  geoLat: z.number().optional(),
+  geoLng: z.number().optional(),
+  takenAt: z.string().optional(),
+});
+export type CreateMediaInput = z.infer<typeof createMediaSchema>;

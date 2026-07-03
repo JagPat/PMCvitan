@@ -16,6 +16,9 @@ import { InspectionsController } from './inspections/inspections.controller';
 import { DailyLogService } from './daily-log/daily-log.service';
 import { DailyLogController } from './daily-log/daily-log.controller';
 import { RealtimeGateway } from './realtime/realtime.gateway';
+import { StorageService } from './media/storage.service';
+import { MediaService } from './media/media.service';
+import { MediaController } from './media/media.controller';
 
 @Module({
   imports: [
@@ -33,6 +36,7 @@ import { RealtimeGateway } from './realtime/realtime.gateway';
     ActivitiesController,
     InspectionsController,
     DailyLogController,
+    MediaController,
   ],
   providers: [
     JwtGuard,
@@ -44,6 +48,8 @@ import { RealtimeGateway } from './realtime/realtime.gateway';
     InspectionsService,
     DailyLogService,
     RealtimeGateway,
+    StorageService,
+    MediaService,
   ],
 })
 export class AppModule {}

@@ -78,3 +78,20 @@ POST /auth/session       { role, projectId }            -> { token, role, projec
 ```
 
 **OTP delivery** (`SmsService`) uses MSG91's v5 OTP API when `MSG91_AUTH_KEY` + `MSG91_TEMPLATE_ID` are set (MSG91 owns generation, storage and verification against the DLT-approved `##OTP##` template). With no provider configured it falls back to an in-memory dev stub that logs the 4-digit code and returns it, so the flow is demoable without SMS. **RBAC**: only `pmc`/`client` see pending decisions in the snapshot; every other role (contractor, engineer, worker) is restricted to decided ones.
+
+## Media (Phase 7c-media — implemented, backend)
+
+Site photos are provider-agnostic and dev-stub-first (same shape as OTP). One additive `Media` table:
+
+```
+Media  id, projectId, kind (progress|inspection|decision|attendance|material),
+       mime, data (Bytes, dev stub), url (S3/R2), storageKey, sizeBytes,
+       geoLat?, geoLng?, takenAt?, uploadedBy, decisionId?, dailyLogId?, createdAt
+```
+
+```
+POST /projects/:id/media   { kind, mime, data (base64), decisionId?, geoLat?, geoLng?, takenAt? }  -> { id, url }   # auth
+GET  /media/:id                                                                                     -> image bytes or 302 to bucket
+```
+
+`StorageService` writes bytes to an S3/R2 bucket when `S3_ENDPOINT` + `S3_BUCKET` + key/secret are set (then `Media.url` is the public URL and `data` is null); with no provider it keeps the bytes in `Media.data` and `GET /media/:id` streams them (the dev stub). The API's JSON body limit is raised to 12 MB for base64 uploads. Every upload emits a realtime `changed` signal. Frontend upload/gallery wiring (replacing the placeholder swatches with real geo/time-stamped photos, tap-to-zoom) is the next slice.
