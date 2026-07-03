@@ -1,7 +1,9 @@
 // Vitan PMC — database schema (PostgreSQL via Prisma).
-// This is the concrete data model for the Phase 7 backend. Enums mirror the
-// frontend string unions in packages/shared/src/domain/types.ts so the API
-// contract and UI stay aligned. See docs/DATA_MODEL.md.
+// Phase-7 Slice 1: the entities behind the project snapshot and the core
+// mutations. Fields are aligned with the frontend domain model
+// (apps/web / packages/shared) so the API returns shapes the client uses
+// directly. Auth (users/OTP/workers), media and offline-outbox tables arrive
+// in the next Phase-7 slice. See docs/DATA_MODEL.md.
 
 generator client {
   provider = "prisma-client-js"
@@ -10,13 +12,6 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-}
-
-enum Role {
-  pmc
-  client
-  engineer
-  contractor
 }
 
 enum DecisionStatus {
@@ -32,13 +27,6 @@ enum ActivityStatus {
   blocked
 }
 
-enum GateKind {
-  decision
-  material
-  team
-  inspection
-}
-
 enum GateState {
   ok
   wait
@@ -52,17 +40,19 @@ enum InspectionResult {
 }
 
 model Project {
-  id            String   @id @default(cuid())
-  name          String
-  descriptor    String
-  stage         String
-  siteCode      String
-  plannedStart  DateTime
-  plannedEnd    DateTime
-  createdAt     DateTime @default(now())
+  id           String   @id
+  name         String
+  short        String
+  descriptor   String
+  stage        String
+  siteCode     String
+  projStart    String
+  projEnd      String
+  elapsedPct   Int
+  todayDay     Int
+  milestonePct Int
+  createdAt    DateTime @default(now())
 
-  memberships   Membership[]
-  workers       Worker[]
   decisions     Decision[]
   activities    Activity[]
   inspections   Inspection[]
@@ -70,58 +60,27 @@ model Project {
   notifications Notification[]
 }
 
-model User {
-  id          String       @id @default(cuid())
-  name        String
-  email       String?      @unique
-  phone       String?      @unique
-  createdAt   DateTime     @default(now())
-  memberships Membership[]
-}
-
-model Membership {
-  id        String  @id @default(cuid())
-  user      User    @relation(fields: [userId], references: [id])
-  userId    String
-  project   Project @relation(fields: [projectId], references: [id])
-  projectId String
-  role      Role
-
-  @@unique([userId, projectId])
-}
-
-// On-site identity WITHOUT an account (recognised by QR badge / face).
-model Worker {
-  id        String  @id @default(cuid())
-  name      String
-  tradeKey  String
-  project   Project @relation(fields: [projectId], references: [id])
-  projectId String
-}
-
 model Decision {
-  id             String           @id @default(cuid())
-  code           String // e.g. DL-014
+  id             String           @id // e.g. "DL-014"
+  project        Project          @relation(fields: [projectId], references: [id])
+  projectId      String
   title          String
   room           String
   status         DecisionStatus   @default(pending)
   ageDays        Int?
   photoSwatch    String
-  costPaise      BigInt?
   approvedOption String?
   material       String?
   approver       String?
-  approvedAt     DateTime?
-  project        Project          @relation(fields: [projectId], references: [id])
-  projectId      String
+  date           String? // display date, e.g. "12 Jun 2026"
+  cost           Int? // rupees
+  createdAt      DateTime         @default(now())
 
   options        DecisionOption[]
   events         DecisionEvent[]
   changeRequests ChangeRequest[]
   activities     Activity[]
   materials      SiteMaterial[]
-
-  @@unique([projectId, code])
 }
 
 model DecisionOption {
@@ -131,12 +90,13 @@ model DecisionOption {
   label       String
   optionKey   String
   material    String
-  deltaPaise  BigInt
+  delta       Int // rupees
   swatch      String
   recommended Boolean  @default(false)
+  order       Int      @default(0)
 }
 
-// Append-only audit + lifecycle log for a decision.
+// Append-only lifecycle + audit log for a decision.
 model DecisionEvent {
   id         String   @id @default(cuid())
   decision   Decision @relation(fields: [decisionId], references: [id])
@@ -148,104 +108,90 @@ model DecisionEvent {
 }
 
 model ChangeRequest {
-  id              String   @id @default(cuid())
-  decision        Decision @relation(fields: [decisionId], references: [id])
-  decisionId      String
-  reason          String
-  costImpactPaise BigInt
-  timeImpactDays  Int
-  status          String   @default("pending")
-  createdAt       DateTime @default(now())
+  id             String   @id @default(cuid())
+  decision       Decision @relation(fields: [decisionId], references: [id])
+  decisionId     String
+  reason         String
+  costImpact     Int // rupees
+  timeImpactDays Int
+  status         String   @default("pending")
+  createdAt      DateTime @default(now())
 }
 
 model Activity {
-  id           String         @id @default(cuid())
-  code         String // ACT-31
-  name         String
-  zone         String
-  status       ActivityStatus @default(not_started)
-  plannedStart DateTime
-  plannedEnd   DateTime
-  actualStart  DateTime?
-  actualEnd    DateTime?
-  block        String?
-  decision     Decision?      @relation(fields: [decisionId], references: [id])
-  decisionId   String?
-  project      Project        @relation(fields: [projectId], references: [id])
-  projectId    String
-  gates        ActivityGate[]
+  id             String         @id // e.g. "ACT-31"
+  project        Project        @relation(fields: [projectId], references: [id])
+  projectId      String
+  name           String
+  zone           String
+  status         ActivityStatus @default(not_started)
+  // planned/actual as day-offsets from 1 Jun 2026 (frontend timeline model)
+  plannedStart   Int
+  plannedEnd     Int
+  actualStart    Int?
+  actualEnd      Int?
+  block          String?
+  // stored readiness gates; the Decision gate is derived live from the decision
+  gateMaterial   GateState @default(na)
+  gateTeam       GateState @default(na)
+  gateInspection GateState @default(na)
+  decision       Decision?      @relation(fields: [decisionId], references: [id])
+  decisionId     String?
+  order          Int            @default(0)
 
-  @@unique([projectId, code])
-}
-
-model ActivityGate {
-  id         String    @id @default(cuid())
-  activity   Activity  @relation(fields: [activityId], references: [id])
-  activityId String
-  kind       GateKind
-  state      GateState @default(na)
-
-  @@unique([activityId, kind])
+  @@unique([projectId, id])
 }
 
 model Inspection {
-  id          String           @id @default(cuid())
-  code        String // INSP-22
-  title       String
-  zone        String
-  submittedBy String?
-  submittedAt DateTime?
-  decidedAt   DateTime?
-  project     Project          @relation(fields: [projectId], references: [id])
-  projectId   String
-  items       InspectionItem[]
-
-  @@unique([projectId, code])
+  id        String           @id // e.g. "INSP-22"
+  project   Project          @relation(fields: [projectId], references: [id])
+  projectId String
+  kind      String // "checklist" (engineer draft) | "review" (submitted to PMC)
+  title     String
+  zone      String
+  by        String?
+  date      String
+  submitted Boolean          @default(false)
+  decided   Boolean          @default(false)
+  items     InspectionItem[]
 }
 
 model InspectionItem {
-  id             String            @id @default(cuid())
-  inspection     Inspection        @relation(fields: [inspectionId], references: [id])
-  inspectionId   String
-  name           String
-  result         InspectionResult?
-  note           String?
-  photos         Int               @default(0)
-  rejected       Boolean           @default(false)
-  reinspectionOf String?
+  id           String            @id @default(cuid())
+  inspection   Inspection        @relation(fields: [inspectionId], references: [id])
+  inspectionId String
+  name         String
+  order        Int               @default(0)
+  // checklist fields
+  state        String? // pass | fail | na
+  photos       Int               @default(0)
+  note         String            @default("")
+  // review fields
+  result       InspectionResult?
+  swatch       String?
+  rejected     Boolean           @default(false)
 }
 
 model DailyLog {
-  id          String            @id @default(cuid())
-  project     Project           @relation(fields: [projectId], references: [id])
+  id          String         @id @default(cuid())
+  project     Project        @relation(fields: [projectId], references: [id])
   projectId   String
-  date        DateTime
-  checkedInAt DateTime?
-  submittedAt DateTime?
-  crew        CrewCount[]
-  attendance  AttendanceEvent[]
+  date        String
+  checkedIn   Boolean        @default(false)
+  checkinTime String?
+  submitted   Boolean        @default(false)
+  progress    Int            @default(0)
+  crew        CrewRow[]
   materials   SiteMaterial[]
-
-  @@unique([projectId, date])
 }
 
-model CrewCount {
+model CrewRow {
   id         String   @id @default(cuid())
   dailyLog   DailyLog @relation(fields: [dailyLogId], references: [id])
   dailyLogId String
   trade      String
   count      Int      @default(0)
-}
-
-model AttendanceEvent {
-  id         String   @id @default(cuid())
-  dailyLog   DailyLog @relation(fields: [dailyLogId], references: [id])
-  dailyLogId String
-  workerId   String?
-  kind       String // checkin | qr | face
-  at         DateTime @default(now())
-  geo        String?
-  selfieUrl  String?
+  order      Int      @default(0)
 }
 
 model SiteMaterial {
@@ -259,17 +205,8 @@ model SiteMaterial {
   zone       String
   matched    Boolean   @default(true)
   swatch     String
-  photoUrl   String?
-}
-
-model Media {
-  id         String   @id @default(cuid())
-  url        String
-  geo        String?
-  takenAt    DateTime?
-  activityId String?
-  decisionId String?
-  createdAt  DateTime @default(now())
+  photo      Boolean   @default(false)
+  order      Int       @default(0)
 }
 
 model Notification {
@@ -278,25 +215,17 @@ model Notification {
   projectId String
   text      String
   color     String
+  time      String // relative label, e.g. "2h ago" / "just now"
   at        DateTime @default(now())
 }
 
-// Offline mutation outbox — replayed with idempotency keys on reconnect.
-model SyncOutboxEntry {
-  id        String    @id @default(cuid())
-  clientId  String    @unique
-  opType    String
-  payload   Json
-  createdAt DateTime  @default(now())
-  appliedAt DateTime?
-}
-
 model AuditLog {
-  id       String   @id @default(cuid())
-  actor    String
-  action   String
-  entity   String
-  entityId String
-  at       DateTime @default(now())
-  payload  Json?
+  id        String   @id @default(cuid())
+  projectId String?
+  actor     String
+  action    String
+  entity    String
+  entityId  String
+  at        DateTime @default(now())
+  payload   Json?
 }

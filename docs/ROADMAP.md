@@ -11,8 +11,15 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 | **4 — Site schedule + gates** | Activities, planned/actual timeline, 4 gate dots, Start (gate-guarded)/Mark-complete → auto closing inspection | ✅ Done |
 | **5 — Daily site log + attendance + offline outbox** | Check-in (GPS/selfie), crew steppers, QR worker check-in, materials + mismatch → block, progress photos, connectivity/queue/flush | ✅ Done (UI + in-store outbox; Dexie/PWA outbox is Phase 8) |
 | **6 — Team access + i18n + worker job card** | Who-are-you → phone+OTP / trade picker → mistri home; worker no-login "tap photo" → job card; en/hi/gu live toggle | ✅ Done |
-| **7 — Backend build-out** | NestJS + Postgres/Prisma + auth (accounts + OTP + worker tokens) + storage + realtime; swap `DataGateway` → `apiGateway`; server-side RBAC + audit + locked-decision authority | ⏳ Next (schema + contract sketch in place) |
-| **8 — Media pipeline + notifications/push + deployment + hardening** | Real photo upload (geo/time), zoomable viewers, web push, PWA service worker + Dexie outbox, CI/CD deploy | ⏳ Planned |
+| **7 — Backend build-out** | NestJS + Postgres/Prisma API implementing the snapshot + core mutations (approve→lock, change, start/complete, flag-mismatch, inspection submit/decide, daily-log submit) with server-side locked-decision authority, gate recomputation, audit events + notifications; dev auth + RBAC read-filtering; `apiGateway` bridge (hydrate from snapshot, `VITE_API_URL`-gated); Dockerfiles + seed | 🟡 Slice 1 done — see below |
+| **7b — Auth, media, realtime** | Real auth (accounts + phone OTP + worker device tokens) replacing dev auth; S3/R2 media upload (geo/time, zoomable); WebSocket notifications / "live from site"; full frontend write-cutover through `apiGateway` | ⏳ Next |
+| **8 — Media pipeline + notifications/push + deployment + hardening** | web push, PWA service worker + Dexie outbox, migrations (replace `db push`), CI/CD deploy | ⏳ Planned |
+
+### Phase 7 Slice 1 — what's built vs. deferred
+
+**Built** (`apps/api`, NestJS + Prisma): full Prisma schema + seed for "Residence at Ambli"; `GET /projects/:id/snapshot` (RBAC-filtered); mutations for decisions (approve/change), activities (start/complete → closing inspection), inspections (submit/decide → re-inspection), daily-log (submit, flag-mismatch → block). Locked-decision authority, gate-readiness enforcement, audit events and notifications are server-side. Dev auth (`POST /auth/session` → scoped JWT). Frontend `apiGateway` + snapshot hydration, gated by `VITE_API_URL` (default build unchanged). Domain logic unit-tested; typecheck + build green in CI.
+
+**Deferred to 7b**: real authentication (the current auth is passwordless dev auth); routing the frontend's *write* actions through the gateway (reads hydrate today); media upload; realtime. Also: the sandbox has no Postgres, so the DB-backed paths (snapshot query, mutations, seed) compile and are typed but were not run end-to-end here — validate on first deploy (`docs/DEPLOY.md`).
 
 ## Known product gaps (carried forward, not bugs)
 
