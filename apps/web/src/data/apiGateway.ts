@@ -45,13 +45,14 @@ export interface ApiSnapshot {
 }
 
 export const API_BASE: string | undefined = import.meta.env.VITE_API_URL;
+export const PROJECT_ID = 'ambli';
 
 export class ApiGateway {
   private token: string | null = null;
   private readonly base: string;
   private readonly projectId: string;
 
-  constructor(base: string, projectId = 'ambli') {
+  constructor(base: string, projectId = PROJECT_ID) {
     this.base = base;
     this.projectId = projectId;
   }

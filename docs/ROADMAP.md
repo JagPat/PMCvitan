@@ -13,8 +13,10 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 | **6 — Team access + i18n + worker job card** | Who-are-you → phone+OTP / trade picker → mistri home; worker no-login "tap photo" → job card; en/hi/gu live toggle | ✅ Done |
 | **7 — Backend build-out** | NestJS + Postgres/Prisma API implementing the snapshot + core mutations (approve→lock, change, start/complete, flag-mismatch, inspection submit/decide, daily-log submit) with server-side locked-decision authority, gate recomputation, audit events + notifications; dev auth + RBAC read-filtering; `apiGateway` bridge (hydrate from snapshot, `VITE_API_URL`-gated); Dockerfiles + seed | 🟡 Slice 1 done — see below |
 | **7b — Write-cutover** | Frontend mutations (approve/change, start/complete, flag-mismatch, inspection submit/decide, daily-log submit) routed through `apiGateway` and reconciled from the returned snapshot when `VITE_API_URL` is set; gateway injected into the store by `useApiSync`; local seeded store unchanged as the default/fallback | ✅ Done |
-| **7c — Auth, media, realtime** | Real auth (accounts + phone OTP + worker device tokens) replacing dev auth; S3/R2 media upload (geo/time, zoomable); WebSocket notifications / "live from site" | ⏳ Next |
-| **8 — Media pipeline + notifications/push + deployment + hardening** | web push, PWA service worker + Dexie outbox, migrations (replace `db push`), CI/CD deploy | ⏳ Planned |
+| **7c-realtime** | WebSocket gateway (socket.io): every mutation emits a `changed` signal to the project room; each client refetches its own RBAC-filtered snapshot — approvals/notifications/"live from site" update across users with no refresh. `useApiSync` opens the socket when `VITE_API_URL` is set | ✅ Done |
+| **7c-auth** | Real auth (accounts + password, phone OTP, worker device tokens) replacing dev auth; needs an SMS provider (MSG91/Twilio) for OTP | ⏳ Next |
+| **7c-media** | S3/R2 media upload (geo/time, zoomable), replacing placeholder swatches; needs an S3-compatible bucket + credentials | ⏳ Next |
+| **8 — Hardening** | web push (VAPID), PWA service worker + Dexie offline outbox, Prisma migrations (replace `db push`), CI/CD deploy | ⏳ Planned |
 
 ### Phase 7 Slice 1 — what's built vs. deferred
 
