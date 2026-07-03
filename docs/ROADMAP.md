@@ -16,7 +16,8 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 | **7c-realtime** | WebSocket gateway (socket.io): every mutation emits a `changed` signal to the project room; each client refetches its own RBAC-filtered snapshot — approvals/notifications/"live from site" update across users with no refresh. `useApiSync` opens the socket when `VITE_API_URL` is set | ✅ Done |
 | **7c-auth** | Real auth (accounts + password, phone OTP, worker device tokens) replacing dev auth; needs an SMS provider (MSG91/Twilio) for OTP | ⏳ Next |
 | **7c-media** | S3/R2 media upload (geo/time, zoomable), replacing placeholder swatches; needs an S3-compatible bucket + credentials | ⏳ Next |
-| **8 — Hardening** | web push (VAPID), PWA service worker + Dexie offline outbox, Prisma migrations (replace `db push`), CI/CD deploy | ⏳ Planned |
+| **8-pwa** | Installable PWA: web manifest + a conservative service worker (network-first HTML, cache-first immutable assets, API never intercepted) + offline app shell. Registered in `main.tsx`; nginx serves `/sw.js` no-cache | ✅ Done |
+| **8 — Hardening (rest)** | Offline *write* outbox (queue API mutations offline, replay on reconnect), web push (VAPID), Prisma migrations (replace `db push`, with baseline for the live DB), CI/CD deploy | ⏳ Planned |
 
 ### Phase 7 Slice 1 — what's built vs. deferred
 
