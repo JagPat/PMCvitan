@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { deriveDecisionGate, isActivityReady } from '../domain/transitions';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
@@ -11,6 +12,7 @@ export class ActivitiesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
+    private readonly realtime: RealtimeGateway,
   ) {}
 
   /** Start an activity — server enforces that all four readiness gates align. */
@@ -29,6 +31,7 @@ export class ActivitiesService {
       this.prisma.activity.update({ where: { id: activityId }, data: { status: 'in_progress', actualStart: project.todayDay } }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.start', entity: 'Activity', entityId: activityId } }),
     ]);
+    this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role);
   }
 
@@ -47,6 +50,7 @@ export class ActivitiesService {
       this.prisma.notification.create({ data: { projectId, text: `Closing inspection auto-created: ${a.name}`, color: '#C08A2D', time: 'just now' } }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.complete', entity: 'Activity', entityId: activityId } }),
     ]);
+    this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role);
   }
 }

@@ -14,6 +14,7 @@ import { InspectionsService } from './inspections/inspections.service';
 import { InspectionsController } from './inspections/inspections.controller';
 import { DailyLogService } from './daily-log/daily-log.service';
 import { DailyLogController } from './daily-log/daily-log.controller';
+import { RealtimeGateway } from './realtime/realtime.gateway';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { DailyLogController } from './daily-log/daily-log.controller';
     ActivitiesService,
     InspectionsService,
     DailyLogService,
+    RealtimeGateway,
   ],
 })
 export class AppModule {}

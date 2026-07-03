@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { checklistSubmitError, reinspectionCount } from '../domain/transitions';
 import type { AuthUser } from '../common/auth';
 import type { DecideReviewInput, SubmitInspectionInput } from '../contracts';
@@ -11,6 +12,7 @@ export class InspectionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
+    private readonly realtime: RealtimeGateway,
   ) {}
 
   /** Engineer submits the checklist (guarded: all marked, failed items need a photo). */
@@ -28,6 +30,7 @@ export class InspectionsService {
       this.prisma.inspection.update({ where: { id: inspectionId }, data: { submitted: true } }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'inspection.submit', entity: 'Inspection', entityId: inspectionId } }),
     ]);
+    this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role);
   }
 
@@ -53,6 +56,7 @@ export class InspectionsService {
         this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'inspection.reinspect', entity: 'Inspection', entityId: inspectionId } }),
       ]);
     }
+    this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role);
   }
 }

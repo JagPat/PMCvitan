@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 import type { AuthUser } from '../common/auth';
 import type { FlagMismatchInput, SubmitDailyLogInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
@@ -10,6 +11,7 @@ export class DailyLogService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
+    private readonly realtime: RealtimeGateway,
   ) {}
 
   /** Flag a material as not matching its locked decision → block the linked activity. */
@@ -28,6 +30,7 @@ export class DailyLogService {
       this.prisma.notification.create({ data: { projectId, text: `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, color: '#B23A34', time: 'just now' } }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'material.mismatch', entity: 'SiteMaterial', entityId: mat.id } }),
     ]);
+    this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role);
   }
 
@@ -42,6 +45,7 @@ export class DailyLogService {
       ...input.crew.map((c) => this.prisma.crewRow.updateMany({ where: { dailyLogId: log.id, trade: c.trade }, data: { count: c.count } })),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'dailylog.submit', entity: 'DailyLog', entityId: log.id } }),
     ]);
+    this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role);
   }
 }

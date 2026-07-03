@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
+import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
 import type { ApproveInput, ChangeInput } from '../contracts';
@@ -11,6 +12,7 @@ export class DecisionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
+    private readonly realtime: RealtimeGateway,
   ) {}
 
   /** Client approves an option → the decision is locked (server-authoritative),
@@ -39,6 +41,7 @@ export class DecisionsService {
       this.prisma.auditLog.create({ data: { projectId, actor: approver, action: 'decision.approve', entity: 'Decision', entityId: decisionId } }),
     ]);
 
+    this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role);
   }
 
@@ -55,6 +58,7 @@ export class DecisionsService {
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'decision.change', entity: 'Decision', entityId: decisionId } }),
     ]);
 
+    this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role);
   }
 }
