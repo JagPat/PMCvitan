@@ -2,8 +2,9 @@
 // Phase-7 Slice 1: the entities behind the project snapshot and the core
 // mutations. Fields are aligned with the frontend domain model
 // (apps/web / packages/shared) so the API returns shapes the client uses
-// directly. Auth (users/OTP/workers), media and offline-outbox tables arrive
-// in the next Phase-7 slice. See docs/DATA_MODEL.md.
+// directly. Phase 7c-auth adds User (accounts + phone identity) and
+// WorkerDevice (no-account device tokens). Media and offline-outbox tables
+// arrive in later slices. See docs/DATA_MODEL.md.
 
 generator client {
   provider = "prisma-client-js"
@@ -58,6 +59,38 @@ model Project {
   inspections   Inspection[]
   dailyLogs     DailyLog[]
   notifications Notification[]
+  users         User[]
+  workerDevices WorkerDevice[]
+}
+
+// A real account: PMC / client / contractor sign in with email + password;
+// site engineers are provisioned on first successful phone OTP. Passwordless
+// dev auth (the "Viewing as" persona switch) is separate and gated by
+// ALLOW_DEV_AUTH. Phase 7c-auth.
+model User {
+  id           String   @id @default(cuid())
+  project      Project  @relation(fields: [projectId], references: [id])
+  projectId    String
+  role         String // pmc | client | engineer | contractor
+  name         String
+  email        String?  @unique
+  phone        String?  @unique
+  passwordHash String?
+  createdAt    DateTime @default(now())
+}
+
+// A worker's device identity (QR / tap-photo job card) — no account, no
+// password. Each tap mints a short-lived scoped token recorded here for
+// attribution. Phase 7c-auth.
+model WorkerDevice {
+  id        String   @id @default(cuid())
+  project   Project  @relation(fields: [projectId], references: [id])
+  projectId String
+  name      String?
+  trade     String?
+  token     String   @unique
+  createdAt DateTime @default(now())
+  lastSeen  DateTime @default(now())
 }
 
 model Decision {

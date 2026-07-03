@@ -15,7 +15,8 @@ export class SnapshotService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** Build the full project snapshot the frontend hydrates its store from.
-   *  Permission-filtered: contractor & engineer never see pending decisions. */
+   *  Permission-filtered: only PMC & client see pending decisions; every other
+   *  role (contractor, engineer, worker) is restricted to decided ones. */
   async build(projectId: string, role: Role): Promise<SnapshotDto> {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
@@ -36,7 +37,7 @@ export class SnapshotService {
       this.prisma.notification.findMany({ where: { projectId }, orderBy: { at: 'desc' } }),
     ]);
 
-    const hidePending = role === 'contractor' || role === 'engineer';
+    const hidePending = role !== 'pmc' && role !== 'client';
     const decisionDtos: DecisionDto[] = decisions
       .filter((d) => !(hidePending && d.status === 'pending'))
       .map((d) => ({
