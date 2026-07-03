@@ -6,6 +6,36 @@ export const sessionSchema = z.object({
 });
 export type SessionInput = z.infer<typeof sessionSchema>;
 
+// ── Phase 7c-auth ──────────────────────────────────────────────────────────
+// Email + password sign-in for PMC / client / contractor accounts.
+export const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+export type LoginInput = z.infer<typeof loginSchema>;
+
+// Phone-OTP sign-in for site engineers (MSG91, dev-stubbed with no provider).
+export const otpRequestSchema = z.object({
+  phone: z.string().min(8),
+  projectId: z.string().min(1).default('ambli'),
+});
+export type OtpRequestInput = z.infer<typeof otpRequestSchema>;
+
+export const otpVerifySchema = z.object({
+  phone: z.string().min(8),
+  code: z.string().min(4).max(8),
+  projectId: z.string().min(1).default('ambli'),
+});
+export type OtpVerifyInput = z.infer<typeof otpVerifySchema>;
+
+// A worker's no-account device token (QR / tap-photo job card).
+export const workerTokenSchema = z.object({
+  projectId: z.string().min(1).default('ambli'),
+  name: z.string().optional(),
+  trade: z.string().optional(),
+});
+export type WorkerTokenInput = z.infer<typeof workerTokenSchema>;
+
 export const approveSchema = z.object({ optionIndex: z.number().int().min(0) });
 export type ApproveInput = z.infer<typeof approveSchema>;
 

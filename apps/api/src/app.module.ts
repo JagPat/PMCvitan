@@ -4,6 +4,7 @@ import { PrismaModule } from './prisma.module';
 import { JwtGuard } from './common/auth';
 import { AuthService } from './auth/auth.service';
 import { AuthController } from './auth/auth.controller';
+import { SmsService } from './auth/sms.service';
 import { SnapshotService } from './snapshot/snapshot.service';
 import { ProjectController } from './snapshot/project.controller';
 import { DecisionsService } from './decisions/decisions.service';
@@ -36,6 +37,7 @@ import { RealtimeGateway } from './realtime/realtime.gateway';
   providers: [
     JwtGuard,
     AuthService,
+    SmsService,
     SnapshotService,
     DecisionsService,
     ActivitiesService,

@@ -57,3 +57,24 @@ GET    /projects/:id/snapshot                                                -> 
 WS     /projects/:id/stream   (notifications, live-from-site)
 ```
 Contracts are authored with Zod in `packages/shared` and shared by both the NestJS handlers and the typed client.
+
+## Auth (Phase 7c-auth — implemented)
+
+The single-project MVP collapses `User`/`Membership` above into one `User` table (role held directly on the row) and models on-site identity as `WorkerDevice` (a no-account, token-only record). Both are additive; the rest of the schema is unchanged.
+
+```
+User          id, projectId, role (pmc|client|engineer|contractor), name, email?, phone?, passwordHash?
+WorkerDevice  id, projectId, name?, trade?, token, createdAt, lastSeen
+```
+
+Three ways in (all issue a role-scoped JWT):
+
+```
+POST /auth/login         { email, password }            -> { token, role, projectId, name }   # bcrypt, PMC/client/contractor
+POST /auth/otp/request   { phone, projectId }           -> { sent, live, devCode? }            # MSG91 v5; devCode only in stub mode
+POST /auth/otp/verify    { phone, code, projectId }     -> { token, role, projectId, name }    # provisions a site engineer on first use
+POST /auth/worker/token  { projectId, name?, trade? }   -> { token, role: 'worker', ... }      # no-account QR / tap-photo job card
+POST /auth/session       { role, projectId }            -> { token, role, projectId }          # passwordless dev auth; gated by ALLOW_DEV_AUTH
+```
+
+**OTP delivery** (`SmsService`) uses MSG91's v5 OTP API when `MSG91_AUTH_KEY` + `MSG91_TEMPLATE_ID` are set (MSG91 owns generation, storage and verification against the DLT-approved `##OTP##` template). With no provider configured it falls back to an in-memory dev stub that logs the 4-digit code and returns it, so the flow is demoable without SMS. **RBAC**: only `pmc`/`client` see pending decisions in the snapshot; every other role (contractor, engineer, worker) is restricted to decided ones.

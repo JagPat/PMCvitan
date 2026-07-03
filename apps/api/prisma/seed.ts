@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import * as bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
@@ -6,6 +7,8 @@ const PROJECT_ID = 'ambli';
 
 async function main(): Promise<void> {
   // wipe (children first) for an idempotent seed
+  await prisma.workerDevice.deleteMany();
+  await prisma.user.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.notification.deleteMany();
   await prisma.decisionEvent.deleteMany();
@@ -153,8 +156,22 @@ async function main(): Promise<void> {
     await prisma.notification.create({ data: { ...notifs[i], projectId: PROJECT_ID, at: new Date(base - i * 3_600_000) } });
   }
 
+  // Demo accounts (Phase 7c-auth). PMC / client / contractor sign in with
+  // email + password; the site engineer signs in with phone + OTP (dev-stubbed
+  // to any code the server logs when no MSG91 provider is configured).
+  const demoPassword = process.env.SEED_DEMO_PASSWORD || 'vitan123';
+  const hash = bcrypt.hashSync(demoPassword, 10);
+  await prisma.user.createMany({
+    data: [
+      { projectId: PROJECT_ID, role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in', passwordHash: hash },
+      { projectId: PROJECT_ID, role: 'client', name: 'Mr. Shah', email: 'client@vitan.in', passwordHash: hash },
+      { projectId: PROJECT_ID, role: 'contractor', name: 'Rajesh (Contractor)', email: 'contractor@vitan.in', passwordHash: hash },
+      { projectId: PROJECT_ID, role: 'engineer', name: 'Site Engineer', phone: '9876543210' },
+    ],
+  });
+
   // eslint-disable-next-line no-console
-  console.log('Seeded project', PROJECT_ID);
+  console.log('Seeded project', PROJECT_ID, '+ demo accounts (pmc/client/contractor @vitan.in)');
 }
 
 main()
