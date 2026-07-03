@@ -38,6 +38,7 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
+import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
 
 export interface AppState {
   role: Role;
@@ -112,6 +113,9 @@ export interface AppActions {
   accReset: () => void;
   speakJob: () => void;
   workerDone: () => void;
+  // API bridge (Phase 7b) — injected by useApiSync when VITE_API_URL is set
+  _setGateway: (g: ApiGateway | null) => void;
+  applySnapshot: (snap: ApiSnapshot) => void;
 }
 
 export type Store = AppState & AppActions;
@@ -146,8 +150,44 @@ export function getInitialState(): AppState {
 }
 
 export const useStore = create<Store>()(
-  immer((set, get) => ({
+  immer((set, get) => {
+    // API bridge (Phase 7b): injected by useApiSync when VITE_API_URL is set.
+    // When present, mutating actions persist through the API and reconcile from
+    // the returned snapshot; when null, they mutate the seeded local store.
+    let gateway: ApiGateway | null = null;
+
+    const applySnapshot = (snap: ApiSnapshot): void => {
+      set((s) => {
+        s.decisions = snap.decisions;
+        s.activities = snap.activities;
+        if (snap.checklist) s.checklist = snap.checklist;
+        if (snap.review) s.review = snap.review;
+        s.reinspectionCreated = snap.reinspectionCreated;
+        if (snap.dailyLog) s.dailyLog = snap.dailyLog;
+        s.notifications = snap.notifications;
+        s.projStart = snap.project.projStart;
+        s.projEnd = snap.project.projEnd;
+        s.elapsedPct = snap.project.elapsedPct;
+        s.todayDay = snap.project.todayDay;
+        s.milestonePct = snap.project.milestonePct;
+      });
+    };
+
+    const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: string): void => {
+      call()
+        .then((snap) => {
+          applySnapshot(snap);
+          get().flash(okMsg);
+        })
+        .catch(() => get().flash('Could not reach the server — please try again.'));
+    };
+
+    return {
     ...getInitialState(),
+    _setGateway: (g) => {
+      gateway = g;
+    },
+    applySnapshot,
 
     // ---- shell ----
     setRole: (role) => {
@@ -195,6 +235,11 @@ export const useStore = create<Store>()(
     confirmApprove: () => {
       const { decId, optIdx } = get().modal;
       if (decId == null || optIdx == null) return;
+      if (gateway) {
+        set((s) => { s.modal = { type: null }; });
+        runRemote(() => gateway!.approveDecision(decId, optIdx), 'Approved & locked — saved to the server.');
+        return;
+      }
       const src = get().decisions.find((x) => x.id === decId);
       const material = src ? src.options[optIdx].material : '';
       const title = src ? src.title : '';
@@ -223,7 +268,16 @@ export const useStore = create<Store>()(
       });
     },
     submitChange: () => {
-      const { decId } = get().modal;
+      const { decId, changeText, changeCost, changeTime } = get().modal;
+      if (decId == null) return;
+      if (gateway) {
+        const reason = changeText?.trim() || 'Change requested';
+        const costImpact = parseInt(String(changeCost ?? '').replace(/[^\d-]/g, ''), 10) || 0;
+        const timeImpactDays = parseInt(String(changeTime ?? '').replace(/[^\d-]/g, ''), 10) || 0;
+        set((s) => { s.modal = { type: null }; });
+        runRemote(() => gateway!.requestChange(decId, reason, costImpact, timeImpactDays), 'Change Request submitted for client re-approval.');
+        return;
+      }
       set((s) => {
         const d = s.decisions.find((x) => x.id === decId);
         if (d) d.status = 'change';
@@ -255,6 +309,10 @@ export const useStore = create<Store>()(
         get().flash('A failed item needs a photo before you can submit.');
         return;
       }
+      if (gateway) {
+        runRemote(() => gateway!.submitInspection(c.id, c.items), 'Inspection submitted to the architect for review.');
+        return;
+      }
       set((s) => { s.checklist.submitted = true; });
       get().flash('Inspection submitted to the architect for review.');
     },
@@ -262,6 +320,10 @@ export const useStore = create<Store>()(
     // ---- pmc review ----
     toggleReject: (idx) => set((s) => { s.review.items[idx].rejected = !s.review.items[idx].rejected; }),
     approveInspection: () => {
+      if (gateway) {
+        runRemote(() => gateway!.decideReview(get().review.id, true, []), 'Inspection approved. Contractor and client notified.');
+        return;
+      }
       set((s) => { s.review.decided = true; });
       get().flash('Inspection approved. Contractor and client notified.');
     },
@@ -269,6 +331,11 @@ export const useStore = create<Store>()(
       const n = get().review.items.filter((it) => it.rejected || it.result === 'FAIL').length;
       if (n === 0) {
         get().flash('No items rejected. Use Approve Inspection instead.');
+        return;
+      }
+      if (gateway) {
+        const rejectedNames = get().review.items.filter((it) => it.rejected).map((it) => it.name);
+        runRemote(() => gateway!.decideReview(get().review.id, false, rejectedNames), n + ' re-inspection task(s) created with due dates.');
         return;
       }
       set((s) => {
@@ -280,6 +347,10 @@ export const useStore = create<Store>()(
 
     // ---- schedule ----
     startActivity: (id) => {
+      if (gateway) {
+        runRemote(() => gateway!.startActivity(id), 'Activity started — planned dates now tracking against actual.');
+        return;
+      }
       set((s) => {
         const a = s.activities.find((x) => x.id === id);
         if (a) {
@@ -290,6 +361,10 @@ export const useStore = create<Store>()(
       get().flash('Activity started — planned dates now tracking against actual.');
     },
     completeActivity: (id) => {
+      if (gateway) {
+        runRemote(() => gateway!.completeActivity(id), 'Marked complete — a closing inspection was auto-created for sign-off.');
+        return;
+      }
       const act = get().activities.find((a) => a.id === id);
       set((s) => {
         const a = s.activities.find((x) => x.id === id);
@@ -337,12 +412,21 @@ export const useStore = create<Store>()(
         get().flash('Please check in at site before submitting the daily log.');
         return;
       }
+      if (gateway) {
+        const dl = get().dailyLog;
+        runRemote(() => gateway!.submitDailyLog({ checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew }), 'Daily site log sent to PMC — attendance, materials & photos attached.');
+        return;
+      }
       set((s) => { s.dailyLog.submitted = true; });
       get().record('Daily log submit');
       get().flash(get().online ? 'Daily site log sent to PMC — attendance, materials & photos attached.' : 'Saved offline — log will upload to PMC when signal returns.');
     },
     flagMismatch: (idx) => {
       const mat = get().dailyLog.materials[idx];
+      if (gateway) {
+        runRemote(() => gateway!.flagMismatch(mat.decisionId), 'Mismatch flagged — PMC alerted and the linked activity is now blocked.');
+        return;
+      }
       set((s) => {
         s.dailyLog.materials[idx].matched = false;
         s.activities.forEach((a) => {
@@ -432,5 +516,6 @@ export const useStore = create<Store>()(
       get().flash('✓ ' + (w ? w.name : 'Worker') + ' marked today’s work done — sent to engineer.');
       get().accReset();
     },
-  })),
+    };
+  }),
 );
