@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/build
+**/.turbo
+**/.vite
+**/coverage
+**/playwright-report
+**/test-results
+.git
+.github
+*.log
+**/*.tsbuildinfo
