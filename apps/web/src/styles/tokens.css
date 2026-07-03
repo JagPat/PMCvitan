@@ -1,0 +1,56 @@
+/**
+ * Design tokens as CSS custom properties. Mirrors packages/shared/tokens/colors.ts
+ * (the TS constants are authoritative for JS-computed styles; these drive static CSS).
+ */
+:root {
+  /* surfaces + text */
+  --canvas: #e9e4d8;
+  --panel: #f4f1ea;
+  --paper: #ffffff;
+  --ink: #23211c;
+  --sidebar-text: #ede7da;
+  --muted: #6b665c;
+  --faint: #8a857a;
+  --hairline: rgba(35, 33, 28, 0.12);
+  --hairline-strong: rgba(35, 33, 28, 0.16);
+  --grid: rgba(35, 33, 28, 0.035);
+  --accent: #b4462e;
+
+  /* status — amber / green / red / ink-blue */
+  --amber-solid: #c08a2d;
+  --amber-text: #8a6216;
+  --amber-chip: #f6ecd6;
+  --amber-border: #e4ce9c;
+  --green-solid: #3f7a54;
+  --green-text: #2f6b44;
+  --green-chip: #e1eee4;
+  --green-border: #c3ddcb;
+  --red-solid: #b23a34;
+  --red-chip: #f7e1df;
+  --red-border: #e7c4c0;
+  --blue-solid: #31567f;
+  --blue-chip: #e6ecf3;
+  --blue-border: #c4d3e4;
+
+  /* typography */
+  --font-sans: 'Archivo Variable', 'Archivo', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+  --font-serif: 'Newsreader Variable', 'Newsreader', Georgia, serif;
+
+  /* radius */
+  --r-btn: 8px;
+  --r-input: 10px;
+  --r-chip: 20px;
+  --r-card: 14px;
+  --r-card-lg: 16px;
+
+  /* shadow */
+  --sh-subtle: 0 1px 3px rgba(35, 33, 28, 0.06);
+  --sh-card: 0 2px 10px -6px rgba(35, 33, 28, 0.3);
+  --sh-modal: 0 30px 70px -15px rgba(0, 0, 0, 0.5);
+
+  /* layout */
+  --rail-w: 250px;
+  --tabbar-h: 62px;
+  --content-max: 1120px;
+}

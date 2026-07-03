@@ -1,0 +1,7 @@
+/* Self-hosted fonts (no network dependency; works offline and in CI). */
+@import '@fontsource-variable/archivo/index.css';
+@import '@fontsource-variable/newsreader/index.css';
+@import '@fontsource-variable/newsreader/standard-italic.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';

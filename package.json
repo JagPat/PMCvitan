@@ -1,0 +1,16 @@
+{
+  "name": "vitan-pmc",
+  "private": true,
+  "type": "module",
+  "description": "Vitan PMC — project-management console for an architect-led PMC. Monorepo root.",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "preview": "pnpm --filter web preview",
+    "typecheck": "pnpm --filter web typecheck",
+    "lint": "pnpm --filter web lint",
+    "test": "pnpm --filter web test",
+    "test:e2e": "pnpm --filter web test:e2e"
+  },
+  "engines": { "node": ">=20" }
+}
