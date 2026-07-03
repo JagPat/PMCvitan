@@ -38,8 +38,13 @@ docker run --rm -p 8080:80 vitan-pmc-web
 # open http://localhost:8080
 ```
 
-## When the Phase 7 API lands
+## Backend API + PostgreSQL (Phase 7)
 
-- Add a **PostgreSQL** resource in Coolify (or use the managed DB of your choice).
-- Add a second **Application** for `apps/api` (its own Dockerfile), set `DATABASE_URL` and the secrets from `apps/api/.env.example`, expose its port.
-- Give the web app a build-time `VITE_API_URL` env pointing at the API, and switch the `DataGateway` from the local store to the `apiGateway`. No screen changes are required — that seam is already in place (`apps/web/src/data/gateway.ts`).
+The API (`apps/api`, NestJS + Prisma) ships its own `apps/api/Dockerfile`. Deploy it as a second resource:
+
+1. **PostgreSQL** — add a Postgres resource in Coolify (or use a managed DB). Note its connection string.
+2. **API Application** — new Application → this repo, branch `main` → **Build Pack: Dockerfile**, Dockerfile location `/apps/api/Dockerfile`, base dir `/`, **Ports Exposes: `3000`**. Set env from `apps/api/.env.example` — at minimum `DATABASE_URL` (the Postgres string) and a strong `JWT_SECRET`. The container runs `prisma db push` on start to create the tables, then boots.
+3. **Seed once** — from the API container's terminal (Coolify → Terminal): `pnpm --filter api seed` to load the "Residence at Ambli" sample project. (Re-running the seed wipes and reloads — don't run it on every start.)
+4. **Point the web app at the API** — set a build-time env on the *web* application: `VITE_API_URL=https://<your-api-domain>` and redeploy it. On load, the frontend authenticates for the active role and hydrates from `/projects/ambli/snapshot`; with the var unset it stays on the seeded local store (current behaviour). The bridge lives in `apps/web/src/data/apiGateway.ts` — no screen changes.
+
+> The API image and the frontend↔API bridge compile and are unit-tested, but the end-to-end wiring hasn't been exercised in CI (no Postgres in the build sandbox). Validate the first API deploy: check the container Logs for `Vitan PMC API listening on :3000`, then hit `GET /projects/ambli/snapshot` with a token from `POST /auth/session`.

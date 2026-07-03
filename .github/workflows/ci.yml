@@ -26,3 +26,27 @@ jobs:
         run: pnpm --filter web test
       - name: Build
         run: pnpm --filter web build
+
+  api:
+    runs-on: ubuntu-latest
+    env:
+      # dummy URL: prisma generate / typecheck / unit tests need no live DB
+      DATABASE_URL: postgresql://user:pass@localhost:5432/vitan_pmc?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prisma generate
+        run: pnpm --filter api prisma:generate
+      - name: Typecheck
+        run: pnpm --filter api typecheck
+      - name: Unit tests
+        run: pnpm --filter api test
+      - name: Build
+        run: pnpm --filter api build
