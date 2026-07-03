@@ -41,6 +41,10 @@ All 9 screens, 4 roles (PMC / Client / Engineer / Contractor via the "Viewing as
 | `pnpm test:e2e` | Playwright — approve→lock→dashboard + offline flow |
 | `pnpm typecheck` / `pnpm lint` | Types / lint |
 
+## Deploy
+
+The web app ships a root `Dockerfile` (pnpm build → nginx static serve with SPA fallback) and deploys as a single container — it's a complete live demo against seeded data, no backend needed. One-click on Coolify (Build Pack = Dockerfile, port 80); see [docs/DEPLOY.md](./docs/DEPLOY.md).
+
 ## Tech
 
 React 18 · TypeScript · Vite · Zustand (+ immer) · React Router · i18next · lucide-react · CSS-variable design tokens + CSS Modules · Vitest + Playwright. Backend (Phase 7): NestJS · Prisma · PostgreSQL · ts-rest. See [docs/ROADMAP.md](./docs/ROADMAP.md) for phase status.
