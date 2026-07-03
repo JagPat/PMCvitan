@@ -6,6 +6,10 @@
 FROM node:22-alpine AS build
 RUN npm install -g pnpm@10.33.0
 WORKDIR /app
+# VITE_API_URL is baked into the static bundle at build time. Coolify passes it
+# as a build arg (mark it a "Build Variable"); unset = the seeded local store.
+ARG VITE_API_URL=""
+ENV VITE_API_URL=$VITE_API_URL
 COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter web build
