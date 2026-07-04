@@ -113,6 +113,8 @@ export interface AppActions {
   accWho: (who: Exclude<AccessWho, null>) => void;
   accTrade: (t: string) => void;
   accSetPhone: (v: string) => void;
+  accGoLogin: () => void;
+  login: (email: string, password: string) => void;
   requestOtp: () => void;
   otpPress: (d: string) => void;
   otpVerify: () => void;
@@ -527,6 +529,48 @@ export const useStore = create<Store>()(
         s.access.phone = v.replace(/\D/g, '').slice(0, 10);
         s.access.error = null;
       }),
+    accGoLogin: () =>
+      set((s) => {
+        s.access.step = 'login';
+        s.access.error = null;
+        s.access.sending = false;
+      }),
+    login: (email, password) => {
+      const em = email.trim().toLowerCase();
+      if (!em || !password) {
+        set((s) => { s.access.error = 'Enter your email and password.'; });
+        return;
+      }
+      if (gateway) {
+        set((s) => { s.access.sending = true; s.access.error = null; });
+        gateway
+          .login(em, password)
+          .then((res) => {
+            set((s) => {
+              s.role = res.role;
+              s.screen = screensFor(res.role)[0].key;
+              s.sessionToken = res.token;
+              s.userName = res.name ?? null;
+              s.access = freshAccess();
+            });
+            get().flash('Signed in as ' + (res.name ?? res.role) + '.');
+          })
+          .catch(() => set((s) => { s.access.sending = false; s.access.error = 'Wrong email or password.'; }));
+        return;
+      }
+      // local demo: map the seeded demo emails to their role (any password)
+      const role = em.startsWith('pmc@') ? 'pmc' : em.startsWith('client@') ? 'client' : em.startsWith('contractor@') ? 'contractor' : null;
+      if (!role) {
+        set((s) => { s.access.error = 'Demo: use pmc@ / client@ / contractor@vitan.in.'; });
+        return;
+      }
+      set((s) => {
+        s.role = role;
+        s.screen = screensFor(role)[0].key;
+        s.access = freshAccess();
+      });
+      get().flash('Signed in as ' + role + ' (demo).');
+    },
     requestOtp: () => {
       const { phone, sending } = get().access;
       if (sending) return;

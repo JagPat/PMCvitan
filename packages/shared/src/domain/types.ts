@@ -29,7 +29,7 @@ export type Gate = 'ok' | 'wait' | 'fail' | 'na';
 export type ItemState = 'pass' | 'fail' | 'na' | null;
 export type InspectionResult = 'PASS' | 'FAIL';
 export type ModalType = 'approve' | 'change' | 'qr' | null;
-export type AccessStep = 'who' | 'trade' | 'phone' | 'otp' | 'badge' | 'jobcard' | 'tradehome';
+export type AccessStep = 'who' | 'trade' | 'phone' | 'otp' | 'login' | 'badge' | 'jobcard' | 'tradehome';
 export type AccessWho = 'team' | 'trade' | 'worker' | null;
 
 export interface DecisionOption {

@@ -102,6 +102,10 @@ export class ApiGateway {
     return this.req<T>(path, { method: 'POST', body: JSON.stringify(body) });
   }
 
+  /** Email + password sign-in (PMC / client / contractor). */
+  login(email: string, password: string): Promise<AuthResult> {
+    return this.pub('/auth/login', { email, password });
+  }
   /** Ask the server to send a phone OTP. `devCode` is present only in dev-stub mode. */
   requestOtp(phone: string): Promise<{ sent: boolean; live: boolean; devCode?: string }> {
     return this.pub('/auth/otp/request', { phone, projectId: this.projectId });

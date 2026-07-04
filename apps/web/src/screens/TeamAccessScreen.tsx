@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { useT } from '@/i18n/useT';
@@ -63,6 +63,8 @@ export function TeamAccessScreen() {
   const accWho = useStore((s) => s.accWho);
   const accTrade = useStore((s) => s.accTrade);
   const accSetPhone = useStore((s) => s.accSetPhone);
+  const accGoLogin = useStore((s) => s.accGoLogin);
+  const login = useStore((s) => s.login);
   const requestOtp = useStore((s) => s.requestOtp);
   const otpPress = useStore((s) => s.otpPress);
   const accReset = useStore((s) => s.accReset);
@@ -71,6 +73,8 @@ export function TeamAccessScreen() {
   const workerDone = useStore((s) => s.workerDone);
   const approvedDecisions = useStore(useShallow((s) => s.decisions.filter((d) => d.status === 'approved').slice(0, 2)));
   const { t, trade: tradeLabel, workerTrade } = useT();
+  const [email, setEmail] = useState('');
+  const [pw, setPw] = useState('');
 
   const container = styles.mobileScreen;
 
@@ -172,6 +176,55 @@ export function TeamAccessScreen() {
           style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
         >
           {sending ? t.sending : t.sendCode}
+        </button>
+        <button
+          onClick={accGoLogin}
+          data-testid="go-login"
+          style={{ background: 'transparent', border: 'none', color: 'var(--muted)', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', marginTop: 14, alignSelf: 'center' }}
+        >
+          Architect / Client / Contractor? Sign in with email
+        </button>
+      </div>
+    );
+  }
+
+  // ---- LOGIN (email + password for PMC / client / contractor) ----
+  if (step === 'login') {
+    const ready = email.trim().length > 0 && pw.length > 0 && !sending;
+    const submit = () => ready && login(email, pw);
+    return (
+      <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+        <BackBtn onClick={accReset} label={t.back} />
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>Sign in</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>Architect, client & contractor accounts</div>
+        </div>
+        <input
+          type="email"
+          autoFocus
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@vitan.in"
+          data-testid="login-email"
+          style={loginField}
+        />
+        <input
+          type="password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
+          placeholder="Password"
+          data-testid="login-password"
+          style={{ ...loginField, marginTop: 12 }}
+        />
+        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        <button
+          onClick={submit}
+          disabled={!ready}
+          data-testid="login-submit"
+          style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
+        >
+          {sending ? t.verifying : 'Sign in'}
         </button>
       </div>
     );
@@ -368,6 +421,19 @@ function langStyle(active: boolean): CSSProperties {
     color: active ? '#fff' : 'var(--ink)',
   };
 }
+
+const loginField: CSSProperties = {
+  height: 54,
+  marginTop: 20,
+  padding: '0 16px',
+  borderRadius: 13,
+  border: '1px solid rgba(35,33,28,.18)',
+  background: '#fff',
+  fontFamily: 'var(--font-sans)',
+  fontSize: 16,
+  color: 'var(--ink)',
+  outline: 'none',
+};
 
 const cardBtn: CSSProperties = {
   display: 'flex',
