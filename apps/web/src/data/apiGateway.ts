@@ -55,6 +55,22 @@ export interface AuthResult {
   name?: string;
 }
 
+export interface UploadMediaInput {
+  kind: 'progress' | 'inspection' | 'decision' | 'attendance' | 'material';
+  mime: string;
+  data: string; // base64, no data: prefix
+  decisionId?: string;
+  geoLat?: number;
+  geoLng?: number;
+  takenAt?: string;
+}
+
+/** Resolve a snapshot media URL: dev-stub rows are relative (/media/:id) → prefix the API base. */
+export function resolveMediaUrl(url: string): string {
+  if (url && url.startsWith('/') && API_BASE) return `${API_BASE}${url}`;
+  return url;
+}
+
 export class ApiGateway {
   private token: string | null = null;
   private readonly base: string;
@@ -86,6 +102,10 @@ export class ApiGateway {
     return this.req<T>(path, { method: 'POST', body: JSON.stringify(body) });
   }
 
+  /** Email + password sign-in (PMC / client / contractor). */
+  login(email: string, password: string): Promise<AuthResult> {
+    return this.pub('/auth/login', { email, password });
+  }
   /** Ask the server to send a phone OTP. `devCode` is present only in dev-stub mode. */
   requestOtp(phone: string): Promise<{ sent: boolean; live: boolean; devCode?: string }> {
     return this.pub('/auth/otp/request', { phone, projectId: this.projectId });
@@ -146,5 +166,61 @@ export class ApiGateway {
   }
   submitDailyLog(log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'>): Promise<ApiSnapshot> {
     return this.p(`/daily-log/submit`, log);
+  }
+
+  /** Upload a site photo; returns its id + resolvable URL. */
+  uploadMedia(input: UploadMediaInput): Promise<{ id: string; url: string }> {
+    return this.req<{ id: string; url: string }>(`/projects/${this.projectId}/media`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** The server's VAPID public key (empty string ⇒ web push disabled server-side). */
+  pushPublicKey(): Promise<{ key: string }> {
+    return this.req<{ key: string }>(`/push/public-key`);
+  }
+  /** Register a browser push subscription for this project. */
+  pushSubscribe(subscription: unknown): Promise<{ ok: boolean }> {
+    return this.req<{ ok: boolean }>(`/projects/${this.projectId}/push/subscribe`, {
+      method: 'POST',
+      body: JSON.stringify({ subscription }),
+    });
+  }
+}
+
+/**
+ * A mutation captured while offline, replayed through the gateway on reconnect
+ * (Phase 8 offline write outbox). Each variant maps 1:1 to a gateway method.
+ */
+export type OutboxOp =
+  | { t: 'approve'; decisionId: string; optionIndex: number }
+  | { t: 'change'; decisionId: string; reason: string; costImpact: number; timeImpactDays: number }
+  | { t: 'submitInspection'; inspectionId: string; items: Checklist['items'] }
+  | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemNames: string[] }
+  | { t: 'startActivity'; activityId: string }
+  | { t: 'completeActivity'; activityId: string }
+  | { t: 'flagMismatch'; decisionId: string }
+  | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'> };
+
+/** Replay one queued mutation; resolves to the fresh snapshot. */
+export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapshot> {
+  switch (op.t) {
+    case 'approve':
+      return gw.approveDecision(op.decisionId, op.optionIndex);
+    case 'change':
+      return gw.requestChange(op.decisionId, op.reason, op.costImpact, op.timeImpactDays);
+    case 'submitInspection':
+      return gw.submitInspection(op.inspectionId, op.items);
+    case 'decideReview':
+      return gw.decideReview(op.inspectionId, op.approve, op.rejectedItemNames);
+    case 'startActivity':
+      return gw.startActivity(op.activityId);
+    case 'completeActivity':
+      return gw.completeActivity(op.activityId);
+    case 'flagMismatch':
+      return gw.flagMismatch(op.decisionId);
+    case 'submitDailyLog':
+      return gw.submitDailyLog(op.log);
   }
 }

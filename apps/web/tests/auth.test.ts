@@ -113,6 +113,50 @@ describe('team access — API mode', () => {
   });
 });
 
+describe('email/password login', () => {
+  it('local demo: maps a seeded demo email to its role (any password), no token', () => {
+    s().accGoLogin();
+    expect(s().access.step).toBe('login');
+    s().login('PMC@vitan.in', 'whatever');
+    expect(s().role).toBe('pmc');
+    expect(s().sessionToken).toBeNull();
+    expect(s().access.step).toBe('who'); // reset after sign-in
+  });
+
+  it('local demo: rejects an unknown email', () => {
+    s().login('stranger@example.com', 'x');
+    expect(s().role).toBe('client'); // unchanged
+    expect(s().access.error).toBeTruthy();
+  });
+
+  it('requires both fields', () => {
+    s().login('', '');
+    expect(s().access.error).toBeTruthy();
+  });
+
+  it('API mode: adopts the returned session token + role', async () => {
+    const gw = { login: vi.fn().mockResolvedValue({ token: 'JWT-pmc', role: 'pmc', projectId: 'ambli', name: 'Ar. Vitan' }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().login('pmc@vitan.in', 'secret');
+    expect(gw.login).toHaveBeenCalledWith('pmc@vitan.in', 'secret');
+    await flush();
+    expect(s().role).toBe('pmc');
+    expect(s().sessionToken).toBe('JWT-pmc');
+    expect(s().userName).toBe('Ar. Vitan');
+  });
+
+  it('API mode: surfaces a bad-credentials error', async () => {
+    const gw = { login: vi.fn().mockRejectedValue(new Error('/auth/login 401')) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().accGoLogin();
+    s().login('pmc@vitan.in', 'wrong');
+    await flush();
+    expect(s().sessionToken).toBeNull();
+    expect(s().access.error).toBeTruthy();
+    expect(s().access.step).toBe('login');
+  });
+});
+
 describe('setRole drops any real OTP session', () => {
   it('clears sessionToken + userName on an explicit persona switch (dev auth)', () => {
     useStore.setState((st) => { st.sessionToken = 'JWT-eng'; st.userName = 'Site Engineer'; });

@@ -22,6 +22,8 @@ COPY --from=build /app ./
 WORKDIR /app/apps/api
 ENV PORT=3000
 EXPOSE 3000
-# On start: sync the schema to the database, then boot. (Seed once, separately:
-# `pnpm --filter api seed`.)
-CMD ["sh", "-c", "pnpm prisma:push --accept-data-loss --skip-generate && node dist/main.js"]
+# On start: apply Prisma migrations, then boot. Falls back to `db push` when
+# migrate deploy can't run (e.g. the pre-migrations live DB before it is
+# baselined once — see docs/DEPLOY.md), so a deploy never bricks. Seed once,
+# separately: `pnpm --filter api seed`.
+CMD ["sh", "-c", "(pnpm prisma:migrate || pnpm prisma:push --accept-data-loss --skip-generate) && node dist/main.js"]

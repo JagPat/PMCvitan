@@ -19,6 +19,8 @@ import { RealtimeGateway } from './realtime/realtime.gateway';
 import { StorageService } from './media/storage.service';
 import { MediaService } from './media/media.service';
 import { MediaController } from './media/media.controller';
+import { PushService } from './push/push.service';
+import { PushController } from './push/push.controller';
 
 @Module({
   imports: [
@@ -37,6 +39,7 @@ import { MediaController } from './media/media.controller';
     InspectionsController,
     DailyLogController,
     MediaController,
+    PushController,
   ],
   providers: [
     JwtGuard,
@@ -50,6 +53,7 @@ import { MediaController } from './media/media.controller';
     RealtimeGateway,
     StorageService,
     MediaService,
+    PushService,
   ],
 })
 export class AppModule {}

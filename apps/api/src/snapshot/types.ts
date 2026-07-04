@@ -68,6 +68,7 @@ export interface DailyLogDto {
   crew: { trade: string; count: number }[];
   materials: { name: string; decisionId: string; qty: string; zone: string; matched: boolean; swatch: string; photo: boolean }[];
   progress: number;
+  photos: { id: string; url: string; takenAt?: string }[];
 }
 
 export interface ProjectMetaDto {

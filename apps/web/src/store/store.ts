@@ -38,7 +38,8 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
-import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp } from '@/data/apiGateway';
 
 export interface AppState {
   role: Role;
@@ -53,6 +54,7 @@ export interface AppState {
   reinspectionCreated: boolean;
   online: boolean;
   syncQueue: string[];
+  outbox: OutboxOp[];
   access: AccessState;
   activities: Activity[];
   dailyLog: DailyLog;
@@ -103,14 +105,19 @@ export interface AppActions {
   scanWorker: () => void;
   crewStep: (idx: number, delta: number) => void;
   addProgress: () => void;
+  addProgressPhoto: (dataUrl: string) => void;
   submitDailyLog: () => void;
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
   toggleOnline: () => void;
+  flushOutbox: () => void;
+  hydrateOutbox: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
   accTrade: (t: string) => void;
   accSetPhone: (v: string) => void;
+  accGoLogin: () => void;
+  login: (email: string, password: string) => void;
   requestOtp: () => void;
   otpPress: (d: string) => void;
   otpVerify: () => void;
@@ -147,6 +154,7 @@ export function getInitialState(): AppState {
     reinspectionCreated: false,
     online: true,
     syncQueue: [],
+    outbox: [],
     access: freshAccess(),
     activities: structuredClone(SEED_ACTIVITIES),
     dailyLog: structuredClone(SEED_DAILY_LOG),
@@ -192,6 +200,40 @@ export const useStore = create<Store>()(
           get().flash(okMsg);
         })
         .catch(() => get().flash('Could not reach the server — please try again.'));
+    };
+
+    const OUTBOX_KEY = 'vitan.outbox';
+    const persistOutbox = (): void => {
+      try {
+        globalThis.localStorage?.setItem(OUTBOX_KEY, JSON.stringify(get().outbox));
+      } catch {
+        /* storage unavailable — the in-session outbox still works */
+      }
+    };
+
+    /**
+     * Route a mutation through the gateway when online, or queue it (Phase 8
+     * offline outbox) when offline. Returns true when the action was handled
+     * here (remote or queued); false means "no gateway — do the local mutation".
+     */
+    const runRemoteOrQueue = (
+      op: OutboxOp,
+      label: string,
+      call: () => Promise<ApiSnapshot>,
+      okMsg: string,
+    ): boolean => {
+      if (!gateway) return false;
+      if (get().online) {
+        runRemote(call, okMsg);
+        return true;
+      }
+      set((s) => {
+        s.outbox.push(op);
+        s.syncQueue.push(label);
+      });
+      persistOutbox();
+      get().flash(label + ' — saved offline, will sync when you reconnect.');
+      return true;
     };
 
     return {
@@ -250,11 +292,8 @@ export const useStore = create<Store>()(
     confirmApprove: () => {
       const { decId, optIdx } = get().modal;
       if (decId == null || optIdx == null) return;
-      if (gateway) {
-        set((s) => { s.modal = { type: null }; });
-        runRemote(() => gateway!.approveDecision(decId, optIdx), 'Approved & locked — saved to the server.');
-        return;
-      }
+      set((s) => { s.modal = { type: null }; });
+      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx), 'Approved & locked — saved to the server.')) return;
       const src = get().decisions.find((x) => x.id === decId);
       const material = src ? src.options[optIdx].material : '';
       const title = src ? src.title : '';
@@ -285,14 +324,11 @@ export const useStore = create<Store>()(
     submitChange: () => {
       const { decId, changeText, changeCost, changeTime } = get().modal;
       if (decId == null) return;
-      if (gateway) {
-        const reason = changeText?.trim() || 'Change requested';
-        const costImpact = parseInt(String(changeCost ?? '').replace(/[^\d-]/g, ''), 10) || 0;
-        const timeImpactDays = parseInt(String(changeTime ?? '').replace(/[^\d-]/g, ''), 10) || 0;
-        set((s) => { s.modal = { type: null }; });
-        runRemote(() => gateway!.requestChange(decId, reason, costImpact, timeImpactDays), 'Change Request submitted for client re-approval.');
-        return;
-      }
+      const reason = changeText?.trim() || 'Change requested';
+      const costImpact = parseInt(String(changeCost ?? '').replace(/[^\d-]/g, ''), 10) || 0;
+      const timeImpactDays = parseInt(String(changeTime ?? '').replace(/[^\d-]/g, ''), 10) || 0;
+      set((s) => { s.modal = { type: null }; });
+      if (runRemoteOrQueue({ t: 'change', decisionId: decId, reason, costImpact, timeImpactDays }, 'Change ' + decId, () => gateway!.requestChange(decId, reason, costImpact, timeImpactDays), 'Change Request submitted for client re-approval.')) return;
       set((s) => {
         const d = s.decisions.find((x) => x.id === decId);
         if (d) d.status = 'change';
@@ -324,10 +360,7 @@ export const useStore = create<Store>()(
         get().flash('A failed item needs a photo before you can submit.');
         return;
       }
-      if (gateway) {
-        runRemote(() => gateway!.submitInspection(c.id, c.items), 'Inspection submitted to the architect for review.');
-        return;
-      }
+      if (runRemoteOrQueue({ t: 'submitInspection', inspectionId: c.id, items: c.items }, 'Submit inspection', () => gateway!.submitInspection(c.id, c.items), 'Inspection submitted to the architect for review.')) return;
       set((s) => { s.checklist.submitted = true; });
       get().flash('Inspection submitted to the architect for review.');
     },
@@ -335,10 +368,7 @@ export const useStore = create<Store>()(
     // ---- pmc review ----
     toggleReject: (idx) => set((s) => { s.review.items[idx].rejected = !s.review.items[idx].rejected; }),
     approveInspection: () => {
-      if (gateway) {
-        runRemote(() => gateway!.decideReview(get().review.id, true, []), 'Inspection approved. Contractor and client notified.');
-        return;
-      }
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: get().review.id, approve: true, rejectedItemNames: [] }, 'Approve inspection', () => gateway!.decideReview(get().review.id, true, []), 'Inspection approved. Contractor and client notified.')) return;
       set((s) => { s.review.decided = true; });
       get().flash('Inspection approved. Contractor and client notified.');
     },
@@ -348,11 +378,8 @@ export const useStore = create<Store>()(
         get().flash('No items rejected. Use Approve Inspection instead.');
         return;
       }
-      if (gateway) {
-        const rejectedNames = get().review.items.filter((it) => it.rejected).map((it) => it.name);
-        runRemote(() => gateway!.decideReview(get().review.id, false, rejectedNames), n + ' re-inspection task(s) created with due dates.');
-        return;
-      }
+      const rejectedNames = get().review.items.filter((it) => it.rejected).map((it) => it.name);
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: get().review.id, approve: false, rejectedItemNames: rejectedNames }, 'Send re-inspection', () => gateway!.decideReview(get().review.id, false, rejectedNames), n + ' re-inspection task(s) created with due dates.')) return;
       set((s) => {
         s.reinspectionCreated = true;
         s.review.decided = true;
@@ -362,10 +389,7 @@ export const useStore = create<Store>()(
 
     // ---- schedule ----
     startActivity: (id) => {
-      if (gateway) {
-        runRemote(() => gateway!.startActivity(id), 'Activity started — planned dates now tracking against actual.');
-        return;
-      }
+      if (runRemoteOrQueue({ t: 'startActivity', activityId: id }, 'Start ' + id, () => gateway!.startActivity(id), 'Activity started — planned dates now tracking against actual.')) return;
       set((s) => {
         const a = s.activities.find((x) => x.id === id);
         if (a) {
@@ -376,10 +400,7 @@ export const useStore = create<Store>()(
       get().flash('Activity started — planned dates now tracking against actual.');
     },
     completeActivity: (id) => {
-      if (gateway) {
-        runRemote(() => gateway!.completeActivity(id), 'Marked complete — a closing inspection was auto-created for sign-off.');
-        return;
-      }
+      if (runRemoteOrQueue({ t: 'completeActivity', activityId: id }, 'Complete ' + id, () => gateway!.completeActivity(id), 'Marked complete — a closing inspection was auto-created for sign-off.')) return;
       const act = get().activities.find((a) => a.id === id);
       set((s) => {
         const a = s.activities.find((x) => x.id === id);
@@ -422,26 +443,49 @@ export const useStore = create<Store>()(
       set((s) => { s.dailyLog.progress += 1; });
       get().record('Progress photo');
     },
+    addProgressPhoto: (dataUrl) => {
+      const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
+      if (!m) {
+        get().flash('Could not read that photo — please try again.');
+        return;
+      }
+      const [, mime, base64] = m;
+      if (gateway) {
+        gateway
+          .uploadMedia({ kind: 'progress', mime, data: base64 })
+          .then((res) => {
+            set((s) => {
+              s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
+              s.dailyLog.progress += 1;
+            });
+            get().flash('Progress photo uploaded — geo + time stamped, visible to PMC.');
+          })
+          .catch(() => get().flash('Could not upload the photo — please try again.'));
+        return;
+      }
+      // local demo: keep the data URL as the image source
+      set((s) => {
+        s.dailyLog.photos.unshift({ url: dataUrl });
+        s.dailyLog.progress += 1;
+      });
+      get().record('Progress photo');
+      get().flash(get().online ? 'Progress photo added — geo + time stamped.' : 'Photo saved offline — will upload when signal returns.');
+    },
     submitDailyLog: () => {
       if (!get().dailyLog.checkedIn) {
         get().flash('Please check in at site before submitting the daily log.');
         return;
       }
-      if (gateway) {
-        const dl = get().dailyLog;
-        runRemote(() => gateway!.submitDailyLog({ checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew }), 'Daily site log sent to PMC — attendance, materials & photos attached.');
-        return;
-      }
+      const dl = get().dailyLog;
+      const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew };
+      if (runRemoteOrQueue({ t: 'submitDailyLog', log: logPayload }, 'Submit daily log', () => gateway!.submitDailyLog(logPayload), 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
       set((s) => { s.dailyLog.submitted = true; });
       get().record('Daily log submit');
       get().flash(get().online ? 'Daily site log sent to PMC — attendance, materials & photos attached.' : 'Saved offline — log will upload to PMC when signal returns.');
     },
     flagMismatch: (idx) => {
       const mat = get().dailyLog.materials[idx];
-      if (gateway) {
-        runRemote(() => gateway!.flagMismatch(mat.decisionId), 'Mismatch flagged — PMC alerted and the linked activity is now blocked.');
-        return;
-      }
+      if (runRemoteOrQueue({ t: 'flagMismatch', decisionId: mat.decisionId }, 'Flag ' + mat.decisionId, () => gateway!.flagMismatch(mat.decisionId), 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
       set((s) => {
         s.dailyLog.materials[idx].matched = false;
         s.activities.forEach((a) => {
@@ -461,16 +505,50 @@ export const useStore = create<Store>()(
     },
     toggleOnline: () => {
       const goingOnline = !get().online;
-      if (goingOnline && get().syncQueue.length) {
+      set((s) => { s.online = goingOnline; });
+      if (!goingOnline) {
+        get().flash('Signal lost — the app keeps working, updates will queue.');
+        return;
+      }
+      // back online: replay queued API mutations (Phase 8 outbox); else clear demo labels
+      if (get().outbox.length) {
+        get().flushOutbox();
+        return;
+      }
+      if (get().syncQueue.length) {
         const n = get().syncQueue.length;
-        set((s) => {
-          s.online = true;
-          s.syncQueue = [];
-        });
+        set((s) => { s.syncQueue = []; });
         get().flash(n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.');
-      } else {
-        set((s) => { s.online = goingOnline; });
-        if (!goingOnline) get().flash('Signal lost — the app keeps working, updates will queue.');
+      }
+    },
+    flushOutbox: () => {
+      const ops = get().outbox.slice();
+      if (!gateway || ops.length === 0) return;
+      const n = ops.length;
+      ops
+        .reduce<Promise<ApiSnapshot | null>>(
+          (chain, op) => chain.then(() => replayOutboxOp(gateway!, op)),
+          Promise.resolve<ApiSnapshot | null>(null),
+        )
+        .then((snap) => {
+          set((s) => {
+            s.outbox = [];
+            s.syncQueue = [];
+          });
+          persistOutbox();
+          if (snap) applySnapshot(snap);
+          get().flash(n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.');
+        })
+        .catch(() => get().flash('Some offline updates could not sync yet — will retry when you reconnect.'));
+    },
+    hydrateOutbox: () => {
+      try {
+        const raw = globalThis.localStorage?.getItem(OUTBOX_KEY);
+        if (!raw) return;
+        const ops = JSON.parse(raw) as OutboxOp[];
+        if (Array.isArray(ops) && ops.length) set((s) => { s.outbox = ops; });
+      } catch {
+        /* ignore malformed storage */
       }
     },
 
@@ -497,6 +575,48 @@ export const useStore = create<Store>()(
         s.access.phone = v.replace(/\D/g, '').slice(0, 10);
         s.access.error = null;
       }),
+    accGoLogin: () =>
+      set((s) => {
+        s.access.step = 'login';
+        s.access.error = null;
+        s.access.sending = false;
+      }),
+    login: (email, password) => {
+      const em = email.trim().toLowerCase();
+      if (!em || !password) {
+        set((s) => { s.access.error = 'Enter your email and password.'; });
+        return;
+      }
+      if (gateway) {
+        set((s) => { s.access.sending = true; s.access.error = null; });
+        gateway
+          .login(em, password)
+          .then((res) => {
+            set((s) => {
+              s.role = res.role;
+              s.screen = screensFor(res.role)[0].key;
+              s.sessionToken = res.token;
+              s.userName = res.name ?? null;
+              s.access = freshAccess();
+            });
+            get().flash('Signed in as ' + (res.name ?? res.role) + '.');
+          })
+          .catch(() => set((s) => { s.access.sending = false; s.access.error = 'Wrong email or password.'; }));
+        return;
+      }
+      // local demo: map the seeded demo emails to their role (any password)
+      const role = em.startsWith('pmc@') ? 'pmc' : em.startsWith('client@') ? 'client' : em.startsWith('contractor@') ? 'contractor' : null;
+      if (!role) {
+        set((s) => { s.access.error = 'Demo: use pmc@ / client@ / contractor@vitan.in.'; });
+        return;
+      }
+      set((s) => {
+        s.role = role;
+        s.screen = screensFor(role)[0].key;
+        s.access = freshAccess();
+      });
+      get().flash('Signed in as ' + role + ' (demo).');
+    },
     requestOtp: () => {
       const { phone, sending } = get().access;
       if (sending) return;

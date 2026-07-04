@@ -41,7 +41,7 @@ export class DecisionsService {
       this.prisma.auditLog.create({ data: { projectId, actor: approver, action: 'decision.approve', entity: 'Decision', entityId: decisionId } }),
     ]);
 
-    this.realtime.notifyChanged(projectId);
+    this.realtime.notifyChanged(projectId, `Client approved ${d.title} — ${o.material}`);
     return this.snapshot.build(projectId, user.role);
   }
 

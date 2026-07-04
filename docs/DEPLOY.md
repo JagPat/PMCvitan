@@ -43,8 +43,20 @@ docker run --rm -p 8080:80 vitan-pmc-web
 The API (`apps/api`, NestJS + Prisma) ships its own `apps/api/Dockerfile`. Deploy it as a second resource:
 
 1. **PostgreSQL** — add a Postgres resource in Coolify (or use a managed DB). Note its connection string.
-2. **API Application** — new Application → this repo, branch `main` → **Build Pack: Dockerfile**, Dockerfile location `/apps/api/Dockerfile`, base dir `/`, **Ports Exposes: `3000`**. Set env from `apps/api/.env.example` — at minimum `DATABASE_URL` (the Postgres string) and a strong `JWT_SECRET`. The container runs `prisma db push` on start to create the tables, then boots.
+2. **API Application** — new Application → this repo, branch `main` → **Build Pack: Dockerfile**, Dockerfile location `/apps/api/Dockerfile`, base dir `/`, **Ports Exposes: `3000`**. Set env from `apps/api/.env.example` — at minimum `DATABASE_URL` (the Postgres string) and a strong `JWT_SECRET`. On start the container runs `prisma migrate deploy` to apply migrations, then boots. On a **fresh** database this creates every table from the baseline migration. If migrate deploy can't run it falls back to `prisma db push`, so a deploy never bricks.
 3. **Seed once** — from the API container's terminal (Coolify → Terminal): `pnpm --filter api seed` to load the "Residence at Ambli" sample project. (Re-running the seed wipes and reloads — don't run it on every start.)
 4. **Point the web app at the API** — set a build-time env on the *web* application: `VITE_API_URL=https://<your-api-domain>` and redeploy it. On load, the frontend authenticates for the active role and hydrates from `/projects/ambli/snapshot`; with the var unset it stays on the seeded local store (current behaviour). The bridge lives in `apps/web/src/data/apiGateway.ts` — no screen changes.
 
 > The API image and the frontend↔API bridge compile and are unit-tested, but the end-to-end wiring hasn't been exercised in CI (no Postgres in the build sandbox). Validate the first API deploy: check the container Logs for `Vitan PMC API listening on :3000`, then hit `GET /projects/ambli/snapshot` with a token from `POST /auth/session`.
+
+### Migrations & the existing (db-push) database
+
+The schema is now tracked by a baseline Prisma migration at `apps/api/prisma/migrations/0_init`. Going forward, schema changes are new migrations applied by `prisma migrate deploy` on deploy.
+
+**One-time baseline for the current live DB** (which was created with `db push`, so its tables already exist but Prisma has no migration history for it): before the first deploy that runs `migrate deploy`, mark the baseline as already-applied so Prisma doesn't try to re-create the tables. From the API container terminal:
+
+```bash
+pnpm --filter api exec prisma migrate resolve --applied 0_init
+```
+
+After that, `migrate deploy` is a no-op on the live DB and applies only *new* migrations on future deploys. (If you skip this step the container's fallback runs `db push` instead — still functional, just without recorded history.) Fresh databases need no baselining — `migrate deploy` creates everything.

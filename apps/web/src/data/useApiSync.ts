@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { useStore } from '@/store/store';
 import { API_BASE, PROJECT_ID, ApiGateway } from './apiGateway';
+import { subscribeToPush } from './push';
 
 /**
  * When `VITE_API_URL` is configured: authenticate for the active session, inject
@@ -39,6 +40,9 @@ export function useApiSync(): void {
       if (cancelled) return;
       useStore.getState()._setGateway(gw);
       refresh();
+
+      // web push: register this browser if permission is already granted (best-effort)
+      void subscribeToPush(gw);
 
       // realtime: refetch whenever the project changes on the server
       socket = io(API_BASE, { transports: ['websocket', 'polling'] });

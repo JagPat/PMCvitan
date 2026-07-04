@@ -94,4 +94,12 @@ POST /projects/:id/media   { kind, mime, data (base64), decisionId?, geoLat?, ge
 GET  /media/:id                                                                                     -> image bytes or 302 to bucket
 ```
 
-`StorageService` writes bytes to an S3/R2 bucket when `S3_ENDPOINT` + `S3_BUCKET` + key/secret are set (then `Media.url` is the public URL and `data` is null); with no provider it keeps the bytes in `Media.data` and `GET /media/:id` streams them (the dev stub). The API's JSON body limit is raised to 12 MB for base64 uploads. Every upload emits a realtime `changed` signal. Frontend upload/gallery wiring (replacing the placeholder swatches with real geo/time-stamped photos, tap-to-zoom) is the next slice.
+`StorageService` writes bytes to an S3/R2 bucket when `S3_ENDPOINT` + `S3_BUCKET` + key/secret are set (then `Media.url` is the public URL and `data` is null); with no provider it keeps the bytes in `Media.data` and `GET /media/:id` streams them (the dev stub). The API's JSON body limit is raised to 12 MB for base64 uploads. Every upload emits a realtime `changed` signal. The frontend uploads progress photos from the daily log and renders a zoomable gallery (`dailyLog.photos` in the snapshot).
+
+## Web Push (Phase 8 — implemented)
+
+One additive `PushSubscription` table (`endpoint` unique, `p256dh`/`auth` keys, optional `role`). `PushService` fans project notifications out to every subscription via VAPID (`web-push`) when `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` are set; with no keys the send path is a no-op (subscriptions are still stored). Notification-bearing mutations pass their text to `realtime.notifyChanged(projectId, body)`, which both signals the room and sends the push. Endpoints: `GET /push/public-key`, `POST /projects/:id/push/subscribe`. The service worker handles `push`/`notificationclick`; the client subscribes when notification permission is already granted.
+
+```
+PushSubscription  id, projectId, endpoint (unique), p256dh, auth, role?, createdAt
+```

@@ -39,24 +39,27 @@ export class InspectionsService {
     const insp = await this.prisma.inspection.findUnique({ where: { id: inspectionId }, include: { items: true } });
     if (!insp || insp.projectId !== projectId) throw new NotFoundException(`Inspection ${inspectionId} not found`);
 
+    let pushBody: string;
     if (input.approve) {
+      pushBody = 'Inspection approved. Contractor and client notified.';
       await this.prisma.$transaction([
         this.prisma.inspection.update({ where: { id: inspectionId }, data: { decided: true } }),
-        this.prisma.notification.create({ data: { projectId, text: 'Inspection approved. Contractor and client notified.', color: '#3F7A54', time: 'just now' } }),
+        this.prisma.notification.create({ data: { projectId, text: pushBody, color: '#3F7A54', time: 'just now' } }),
         this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'inspection.approve', entity: 'Inspection', entityId: inspectionId } }),
       ]);
     } else {
       const projected = insp.items.map((it) => ({ rejected: input.rejectedItemNames.includes(it.name) || it.rejected, result: it.result }));
       const n = reinspectionCount(projected);
       if (n === 0) throw new BadRequestException('No items rejected. Use approve instead.');
+      pushBody = `${n} re-inspection task(s) created with due dates.`;
       await this.prisma.$transaction([
         ...input.rejectedItemNames.map((name) => this.prisma.inspectionItem.updateMany({ where: { inspectionId, name }, data: { rejected: true } })),
         this.prisma.inspection.update({ where: { id: inspectionId }, data: { decided: true } }),
-        this.prisma.notification.create({ data: { projectId, text: `${n} re-inspection task(s) created with due dates.`, color: '#B23A34', time: 'just now' } }),
+        this.prisma.notification.create({ data: { projectId, text: pushBody, color: '#B23A34', time: 'just now' } }),
         this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'inspection.reinspect', entity: 'Inspection', entityId: inspectionId } }),
       ]);
     }
-    this.realtime.notifyChanged(projectId);
+    this.realtime.notifyChanged(projectId, pushBody);
     return this.snapshot.build(projectId, user.role);
   }
 }

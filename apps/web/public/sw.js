@@ -60,3 +60,34 @@ self.addEventListener('fetch', (event) => {
   // other same-origin statics (favicon, manifest, icon) → cache-first
   event.respondWith(caches.match(request).then((hit) => hit || fetch(request)));
 });
+
+/* Web Push (Phase 8): show the notification, and focus/open the app on click. */
+self.addEventListener('push', (event) => {
+  let data = { title: 'Vitan PMC', body: 'You have a new update.', url: '/' };
+  try {
+    if (event.data) data = { ...data, ...event.data.json() };
+  } catch {
+    /* non-JSON payload — keep the defaults */
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: '/icon.jpg',
+      badge: '/favicon.svg',
+      data: { url: data.url || '/' },
+    }),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ('focus' in client) return client.focus();
+      }
+      return self.clients.openWindow(target);
+    }),
+  );
+});

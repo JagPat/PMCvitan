@@ -1,13 +1,16 @@
+import { useRef, useState, type ChangeEvent } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectTotalWorkers } from '@/store/selectors';
-import { Eyebrow, Swatch } from '@/components';
+import { Eyebrow, Swatch, PhotoViewer } from '@/components';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check } from '@/lib/icons';
 import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
   const dailyLog = useStore((s) => s.dailyLog);
+  const photos = useStore(useShallow((s) => s.dailyLog.photos));
   const online = useStore((s) => s.online);
-  const queueCount = useStore((s) => s.syncQueue.length);
+  const queueCount = useStore((s) => s.syncQueue.length + s.outbox.length);
   const total = useStore(selectTotalWorkers);
   const toggleOnline = useStore((s) => s.toggleOnline);
   const checkIn = useStore((s) => s.checkIn);
@@ -15,8 +18,23 @@ export function DailyLogScreen() {
   const crewStep = useStore((s) => s.crewStep);
   const openQr = useStore((s) => s.openQr);
   const flagMismatch = useStore((s) => s.flagMismatch);
-  const addProgress = useStore((s) => s.addProgress);
+  const addProgressPhoto = useStore((s) => s.addProgressPhoto);
   const submitDailyLog = useStore((s) => s.submitDailyLog);
+
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [zoom, setZoom] = useState<string | null>(null);
+
+  const onPickPhoto = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') addProgressPhoto(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
+    e.target.value = ''; // allow re-picking the same file
+  };
 
   const conn = online
     ? { bg: 'var(--green-chip)', border: 'var(--green-border)', dot: 'var(--green-solid)', color: 'var(--green-text)', text: 'Online · all synced', toggle: 'Simulate offline' }
@@ -122,11 +140,28 @@ export function DailyLogScreen() {
             <div style={{ fontWeight: 600, fontSize: 13.5 }}>{dailyLog.progress} progress photos</div>
             <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 2 }}>Geo + time stamped, tied to activity</div>
           </div>
-          <button onClick={addProgress} style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickPhoto} data-testid="progress-file" style={{ display: 'none' }} />
+          <button onClick={() => fileRef.current?.click()} data-testid="add-progress-photo" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', border: 'none', padding: '10px 14px', borderRadius: 9, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
             <Camera size={14} /> Add
           </button>
         </div>
+        {photos.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, overflowX: 'auto', paddingBottom: 4 }}>
+            {photos.map((p, i) => (
+              <button
+                key={p.id ?? i}
+                onClick={() => setZoom(p.url)}
+                data-testid="progress-thumb"
+                style={{ flex: 'none', width: 66, height: 66, borderRadius: 10, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}
+              >
+                <img src={p.url} alt={`Progress photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              </button>
+            ))}
+          </div>
+        )}
       </div>
+
+      {zoom && <PhotoViewer url={zoom} onClose={() => setZoom(null)} />}
 
       <div className={styles.stickyFoot} style={{ padding: '12px 16px 20px', borderTop: '1px solid rgba(35,33,28,.1)', background: 'var(--panel)' }}>
         <button

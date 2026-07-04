@@ -29,7 +29,7 @@ export type Gate = 'ok' | 'wait' | 'fail' | 'na';
 export type ItemState = 'pass' | 'fail' | 'na' | null;
 export type InspectionResult = 'PASS' | 'FAIL';
 export type ModalType = 'approve' | 'change' | 'qr' | null;
-export type AccessStep = 'who' | 'trade' | 'phone' | 'otp' | 'badge' | 'jobcard' | 'tradehome';
+export type AccessStep = 'who' | 'trade' | 'phone' | 'otp' | 'login' | 'badge' | 'jobcard' | 'tradehome';
 export type AccessWho = 'team' | 'trade' | 'worker' | null;
 
 export interface DecisionOption {
@@ -124,6 +124,13 @@ export interface SiteMaterial {
   photo: boolean;
 }
 
+/** A reference to an uploaded photo. `url` is absolute (S3/R2) or a data URL (local demo). */
+export interface MediaRef {
+  id?: string;
+  url: string;
+  takenAt?: string;
+}
+
 export interface DailyLog {
   date: string;
   checkedIn: boolean;
@@ -132,6 +139,7 @@ export interface DailyLog {
   crew: CrewRow[];
   materials: SiteMaterial[];
   progress: number;
+  photos: MediaRef[];
 }
 
 export interface Worker {
