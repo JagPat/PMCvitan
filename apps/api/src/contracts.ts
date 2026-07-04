@@ -88,3 +88,12 @@ export const createMediaSchema = z.object({
   takenAt: z.string().optional(),
 });
 export type CreateMediaInput = z.infer<typeof createMediaSchema>;
+
+// ── Phase 8: web push ────────────────────────────────────────────────────────
+export const pushSubscribeSchema = z.object({
+  subscription: z.object({
+    endpoint: z.string().url(),
+    keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }),
+  }),
+});
+export type PushSubscribeInput = z.infer<typeof pushSubscribeSchema>;

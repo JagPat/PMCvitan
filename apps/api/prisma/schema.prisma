@@ -62,6 +62,21 @@ model Project {
   users         User[]
   workerDevices WorkerDevice[]
   media         Media[]
+  pushSubs      PushSubscription[]
+}
+
+// A browser Web Push subscription (Phase 8). Endpoint is unique per device;
+// notifications for a project fan out to all its subscriptions. When no VAPID
+// keys are configured the send path is a no-op (dev stub).
+model PushSubscription {
+  id        String   @id @default(cuid())
+  project   Project  @relation(fields: [projectId], references: [id])
+  projectId String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  role      String?
+  createdAt DateTime @default(now())
 }
 
 // An uploaded site photo (geo + timestamp, zoomable on the client). Phase

@@ -19,7 +19,9 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 | **7c-media** | Media upload backend: additive `Media` model + `StorageService` (S3/R2 when `S3_*` set, else a dev stub that keeps bytes in Postgres and serves them from `GET /media/:id`). `POST /projects/:id/media` (base64) + `GET /media/:id`; 12 MB body limit; realtime `changed` on upload. Provider-swap is env-only (mirrors OTP). Frontend upload/gallery + snapshot wiring (real geo/time-stamped photos replacing placeholder swatches, tap-to-zoom) is the next slice | ✅ Backend done |
 | **8-pwa** | Installable PWA: web manifest + a conservative service worker (network-first HTML, cache-first immutable assets, API never intercepted) + offline app shell. Registered in `main.tsx`; nginx serves `/sw.js` no-cache | ✅ Done |
 | **8 — Prisma migrations** | Baseline migration (`prisma/migrations/0_init`) captured from the schema; boot runs `prisma migrate deploy` (falls back to `db push` so a deploy never bricks); one-time `migrate resolve --applied 0_init` baselines the existing live DB — see `docs/DEPLOY.md` | ✅ Done |
-| **8 — Hardening (rest)** | Offline *write* outbox (queue API mutations offline, replay on reconnect), web push (VAPID), CI/CD deploy | 🟡 In progress |
+| **8 — Offline write outbox** | Gateway mutations captured to a persisted outbox when offline and replayed in order on reconnect (reconciled from the snapshot); connectivity banner counts queued ops; demo (no API) keeps optimistic local writes | ✅ Done |
+| **8 — Web push (VAPID)** | `PushSubscription` model + `PushService` (dev-stub when no VAPID keys) + subscribe endpoint + public-key endpoint; notification-bearing mutations fan out a push via the realtime gateway; service worker `push`/`notificationclick` handlers; frontend subscribes when permission is granted | ✅ Done |
+| **8 — Hardening (rest)** | CI/CD auto-deploy; media offline queueing; richer push targeting (per-role) | ⏳ Planned |
 
 ### Phase 7 Slice 1 — what's built vs. deferred
 

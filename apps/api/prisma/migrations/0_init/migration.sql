@@ -32,6 +32,19 @@ CREATE TABLE "Project" (
 );
 
 -- CreateTable
+CREATE TABLE "PushSubscription" (
+    "id" TEXT NOT NULL,
+    "projectId" TEXT NOT NULL,
+    "endpoint" TEXT NOT NULL,
+    "p256dh" TEXT NOT NULL,
+    "auth" TEXT NOT NULL,
+    "role" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "PushSubscription_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "Media" (
     "id" TEXT NOT NULL,
     "projectId" TEXT NOT NULL,
@@ -257,6 +270,9 @@ CREATE TABLE "AuditLog" (
 );
 
 -- CreateIndex
+CREATE UNIQUE INDEX "PushSubscription_endpoint_key" ON "PushSubscription"("endpoint");
+
+-- CreateIndex
 CREATE INDEX "Media_projectId_kind_idx" ON "Media"("projectId", "kind");
 
 -- CreateIndex
@@ -270,6 +286,9 @@ CREATE UNIQUE INDEX "WorkerDevice_token_key" ON "WorkerDevice"("token");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Activity_projectId_id_key" ON "Activity"("projectId", "id");
+
+-- AddForeignKey
+ALTER TABLE "PushSubscription" ADD CONSTRAINT "PushSubscription_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Media" ADD CONSTRAINT "Media_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

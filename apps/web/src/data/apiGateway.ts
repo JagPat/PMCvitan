@@ -175,6 +175,18 @@ export class ApiGateway {
       body: JSON.stringify(input),
     });
   }
+
+  /** The server's VAPID public key (empty string ⇒ web push disabled server-side). */
+  pushPublicKey(): Promise<{ key: string }> {
+    return this.req<{ key: string }>(`/push/public-key`);
+  }
+  /** Register a browser push subscription for this project. */
+  pushSubscribe(subscription: unknown): Promise<{ ok: boolean }> {
+    return this.req<{ ok: boolean }>(`/projects/${this.projectId}/push/subscribe`, {
+      method: 'POST',
+      body: JSON.stringify({ subscription }),
+    });
+  }
 }
 
 /**
