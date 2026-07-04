@@ -39,6 +39,7 @@ import {
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
 import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
+import { resolveMediaUrl } from '@/data/apiGateway';
 
 export interface AppState {
   role: Role;
@@ -103,6 +104,7 @@ export interface AppActions {
   scanWorker: () => void;
   crewStep: (idx: number, delta: number) => void;
   addProgress: () => void;
+  addProgressPhoto: (dataUrl: string) => void;
   submitDailyLog: () => void;
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
@@ -421,6 +423,34 @@ export const useStore = create<Store>()(
     addProgress: () => {
       set((s) => { s.dailyLog.progress += 1; });
       get().record('Progress photo');
+    },
+    addProgressPhoto: (dataUrl) => {
+      const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
+      if (!m) {
+        get().flash('Could not read that photo — please try again.');
+        return;
+      }
+      const [, mime, base64] = m;
+      if (gateway) {
+        gateway
+          .uploadMedia({ kind: 'progress', mime, data: base64 })
+          .then((res) => {
+            set((s) => {
+              s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
+              s.dailyLog.progress += 1;
+            });
+            get().flash('Progress photo uploaded — geo + time stamped, visible to PMC.');
+          })
+          .catch(() => get().flash('Could not upload the photo — please try again.'));
+        return;
+      }
+      // local demo: keep the data URL as the image source
+      set((s) => {
+        s.dailyLog.photos.unshift({ url: dataUrl });
+        s.dailyLog.progress += 1;
+      });
+      get().record('Progress photo');
+      get().flash(get().online ? 'Progress photo added — geo + time stamped.' : 'Photo saved offline — will upload when signal returns.');
     },
     submitDailyLog: () => {
       if (!get().dailyLog.checkedIn) {

@@ -156,6 +156,7 @@ export const SEED_DAILY_LOG: DailyLog = {
     { name: 'CP Fittings — Kohler', decisionId: 'DL-009', qty: 'Set of 6', zone: 'Store room · locked', matched: true, swatch: 'chrome', photo: true },
   ],
   progress: 2,
+  photos: [],
 };
 
 export const SEED_NOTIFICATIONS: AppNotification[] = [

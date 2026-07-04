@@ -124,6 +124,13 @@ export interface SiteMaterial {
   photo: boolean;
 }
 
+/** A reference to an uploaded photo. `url` is absolute (S3/R2) or a data URL (local demo). */
+export interface MediaRef {
+  id?: string;
+  url: string;
+  takenAt?: string;
+}
+
 export interface DailyLog {
   date: string;
   checkedIn: boolean;
@@ -132,6 +139,7 @@ export interface DailyLog {
   crew: CrewRow[];
   materials: SiteMaterial[];
   progress: number;
+  photos: MediaRef[];
 }
 
 export interface Worker {

@@ -8,3 +8,4 @@ export { GateDot } from './GateDot';
 export { Modal } from './Modal';
 export { Toast } from './Toast';
 export { StatTile } from './StatTile';
+export { PhotoViewer } from './PhotoViewer';

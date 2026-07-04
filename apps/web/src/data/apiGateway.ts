@@ -55,6 +55,22 @@ export interface AuthResult {
   name?: string;
 }
 
+export interface UploadMediaInput {
+  kind: 'progress' | 'inspection' | 'decision' | 'attendance' | 'material';
+  mime: string;
+  data: string; // base64, no data: prefix
+  decisionId?: string;
+  geoLat?: number;
+  geoLng?: number;
+  takenAt?: string;
+}
+
+/** Resolve a snapshot media URL: dev-stub rows are relative (/media/:id) → prefix the API base. */
+export function resolveMediaUrl(url: string): string {
+  if (url && url.startsWith('/') && API_BASE) return `${API_BASE}${url}`;
+  return url;
+}
+
 export class ApiGateway {
   private token: string | null = null;
   private readonly base: string;
@@ -146,5 +162,13 @@ export class ApiGateway {
   }
   submitDailyLog(log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'>): Promise<ApiSnapshot> {
     return this.p(`/daily-log/submit`, log);
+  }
+
+  /** Upload a site photo; returns its id + resolvable URL. */
+  uploadMedia(input: UploadMediaInput): Promise<{ id: string; url: string }> {
+    return this.req<{ id: string; url: string }>(`/projects/${this.projectId}/media`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 }

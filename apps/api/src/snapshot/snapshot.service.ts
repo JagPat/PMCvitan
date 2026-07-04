@@ -21,7 +21,7 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisions, activities, inspections, dailyLog, notifications] = await Promise.all([
+    const [decisions, activities, inspections, dailyLog, notifications, progressMedia] = await Promise.all([
       this.prisma.decision.findMany({
         where: { projectId },
         include: { options: { orderBy: { order: 'asc' } } },
@@ -35,7 +35,20 @@ export class SnapshotService {
         orderBy: { date: 'desc' },
       }),
       this.prisma.notification.findMany({ where: { projectId }, orderBy: { at: 'desc' } }),
+      this.prisma.media.findMany({
+        where: { projectId, kind: 'progress' },
+        orderBy: { createdAt: 'desc' },
+        take: 12,
+        select: { id: true, url: true, takenAt: true },
+      }),
     ]);
+
+    const progressPhotos = progressMedia.map((m) => ({
+      id: m.id,
+      // S3/R2 rows carry an absolute url; dev-stub rows are served from /media/:id
+      url: m.url ?? `/media/${m.id}`,
+      takenAt: m.takenAt ?? undefined,
+    }));
 
     const hidePending = role !== 'pmc' && role !== 'client';
     const decisionDtos: DecisionDto[] = decisions
@@ -145,6 +158,7 @@ export class SnapshotService {
               swatch: m.swatch,
               photo: m.photo,
             })),
+            photos: progressPhotos,
           }
         : null,
       notifications: notifications.map((n) => ({ text: n.text, time: n.time, color: n.color })),
