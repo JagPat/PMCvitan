@@ -47,6 +47,14 @@ export interface ApiSnapshot {
 export const API_BASE: string | undefined = import.meta.env.VITE_API_URL;
 export const PROJECT_ID = 'ambli';
 
+/** Result of a real sign-in (phone OTP / worker token / password). */
+export interface AuthResult {
+  token: string;
+  role: Role;
+  projectId: string;
+  name?: string;
+}
+
 export class ApiGateway {
   private token: string | null = null;
   private readonly base: string;
@@ -57,7 +65,7 @@ export class ApiGateway {
     this.projectId = projectId;
   }
 
-  /** Obtain a scoped session token for the given role (dev auth for Slice 1). */
+  /** Obtain a scoped session token for the given role (passwordless dev auth). */
   async connect(role: Role): Promise<void> {
     const res = await fetch(`${this.base}/auth/session`, {
       method: 'POST',
@@ -66,6 +74,29 @@ export class ApiGateway {
     });
     if (!res.ok) throw new Error(`auth/session ${res.status}`);
     this.token = (await res.json()).token;
+  }
+
+  /** Adopt an already-issued token (from a real sign-in) for subsequent calls. */
+  setToken(token: string): void {
+    this.token = token;
+  }
+
+  /** POST to a public (no-auth) auth endpoint. */
+  private pub<T>(path: string, body: unknown): Promise<T> {
+    return this.req<T>(path, { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  /** Ask the server to send a phone OTP. `devCode` is present only in dev-stub mode. */
+  requestOtp(phone: string): Promise<{ sent: boolean; live: boolean; devCode?: string }> {
+    return this.pub('/auth/otp/request', { phone, projectId: this.projectId });
+  }
+  /** Verify a phone OTP; on success the server returns a role-scoped session token. */
+  verifyOtp(phone: string, code: string): Promise<AuthResult> {
+    return this.pub('/auth/otp/verify', { phone, code, projectId: this.projectId });
+  }
+  /** Mint a no-account worker device token (QR / tap-photo job card). */
+  workerToken(name?: string, trade?: string): Promise<AuthResult> {
+    return this.pub('/auth/worker/token', { projectId: this.projectId, name, trade });
   }
 
   private async req<T>(path: string, init?: RequestInit): Promise<T> {

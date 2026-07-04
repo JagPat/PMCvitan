@@ -61,6 +61,33 @@ model Project {
   notifications Notification[]
   users         User[]
   workerDevices WorkerDevice[]
+  media         Media[]
+}
+
+// An uploaded site photo (geo + timestamp, zoomable on the client). Phase
+// 7c-media. Storage is provider-agnostic: with S3/R2 configured the bytes live
+// in the bucket and `url` points at them; with no provider the bytes are kept
+// in `data` (dev stub) and served from GET /media/:id. `decisionId`/`dailyLogId`
+// are loose links to what the photo documents.
+model Media {
+  id         String   @id @default(cuid())
+  project    Project  @relation(fields: [projectId], references: [id])
+  projectId  String
+  kind       String // progress | inspection | decision | attendance | material
+  mime       String
+  data       Bytes? // dev stub: bytes in the DB; null once stored in S3/R2
+  url        String? // set in S3/R2 mode; null for the dev stub
+  storageKey String?
+  sizeBytes  Int      @default(0)
+  geoLat     Float?
+  geoLng     Float?
+  takenAt    String? // display timestamp, e.g. "03 Jul 2026 · 9:12 AM"
+  uploadedBy String
+  decisionId String?
+  dailyLogId String?
+  createdAt  DateTime @default(now())
+
+  @@index([projectId, kind])
 }
 
 // A real account: PMC / client / contractor sign in with email + password;

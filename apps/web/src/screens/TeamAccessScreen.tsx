@@ -51,14 +51,19 @@ function BackBtn({ onClick, label }: { onClick: () => void; label: string }) {
 
 export function TeamAccessScreen() {
   const step = useStore((s) => s.access.step);
-  const who = useStore((s) => s.access.who);
   const trade = useStore((s) => s.access.trade);
+  const phone = useStore((s) => s.access.phone);
   const otp = useStore((s) => s.access.otp);
+  const sending = useStore((s) => s.access.sending);
+  const error = useStore((s) => s.access.error);
+  const devCode = useStore((s) => s.access.devCode);
   const worker = useStore((s) => s.access.worker);
   const lang = useStore((s) => s.lang);
   const setLang = useStore((s) => s.setLang);
   const accWho = useStore((s) => s.accWho);
   const accTrade = useStore((s) => s.accTrade);
+  const accSetPhone = useStore((s) => s.accSetPhone);
+  const requestOtp = useStore((s) => s.requestOtp);
   const otpPress = useStore((s) => s.otpPress);
   const accReset = useStore((s) => s.accReset);
   const pickWorker = useStore((s) => s.pickWorker);
@@ -135,28 +140,80 @@ export function TeamAccessScreen() {
     );
   }
 
+  // ---- PHONE (enter number → request OTP) ----
+  if (step === 'phone') {
+    const ready = phone.length === 10 && !sending;
+    return (
+      <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+        <BackBtn onClick={accReset} label={t.back} />
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{t.phoneTitle}</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{t.phoneSub}</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', height: 56, padding: '0 14px', borderRadius: 13, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontWeight: 600, fontSize: 17, color: 'var(--muted)' }}>+91</div>
+          <input
+            type="tel"
+            inputMode="numeric"
+            autoFocus
+            value={phone}
+            onChange={(e) => accSetPhone(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && ready && requestOtp()}
+            placeholder="98765 43210"
+            data-testid="phone-input"
+            style={{ flex: 1, height: 56, padding: '0 16px', borderRadius: 13, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-mono)', fontSize: 20, fontWeight: 600, letterSpacing: '.06em', color: 'var(--ink)', outline: 'none' }}
+          />
+        </div>
+        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        <button
+          onClick={requestOtp}
+          disabled={!ready}
+          data-testid="send-code"
+          style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
+        >
+          {sending ? t.sending : t.sendCode}
+        </button>
+      </div>
+    );
+  }
+
   // ---- OTP ----
   if (step === 'otp') {
-    const phoneShown = who === 'trade' ? '+91 ●●●●● 31207' : '+91 ●●●●● 84021';
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
         <BackBtn onClick={accReset} label={t.back} />
         <div style={{ textAlign: 'center', marginTop: 14 }}>
           <div style={{ fontSize: 22, fontWeight: 700 }}>{t.otp}</div>
-          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{t.sent} {phoneShown}</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{t.sent} +91 {phone}</div>
+          {devCode && (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 12, padding: '6px 12px', borderRadius: 20, background: '#FBF3E4', color: 'var(--amber-text)', fontSize: 12.5, fontWeight: 600 }} data-testid="dev-code">
+              {t.demoCode}: <span style={{ fontFamily: 'var(--font-mono)', letterSpacing: '.1em' }}>{devCode}</span>
+            </div>
+          )}
         </div>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 12, margin: '26px 0 8px' }}>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 12, margin: '22px 0 6px' }}>
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} style={{ width: 52, height: 62, borderRadius: 12, border: '1.5px solid rgba(35,33,28,.2)', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-mono)', fontSize: 28, fontWeight: 600 }}>
+            <div key={i} style={{ width: 52, height: 62, borderRadius: 12, border: `1.5px solid ${error ? 'var(--red-solid)' : 'rgba(35,33,28,.2)'}`, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-mono)', fontSize: 28, fontWeight: 600 }}>
               {otp[i] || ''}
             </div>
           ))}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginTop: 'auto', paddingTop: 20 }}>
+        <div style={{ textAlign: 'center', minHeight: 20, fontSize: 13 }}>
+          {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
+          {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
+        </div>
+        <button
+          onClick={requestOtp}
+          disabled={sending}
+          style={{ background: 'transparent', border: 'none', color: 'var(--muted)', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, cursor: sending ? 'default' : 'pointer', marginTop: 8, alignSelf: 'center' }}
+        >
+          {t.resend}
+        </button>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginTop: 'auto', paddingTop: 16 }}>
           {pad.map((k) => (
             <button
               key={k}
-              disabled={k === '·'}
+              disabled={k === '·' || sending}
               onClick={() => k !== '·' && otpPress(k)}
               data-testid={`otp-${k}`}
               style={{ height: 56, borderRadius: 13, border: '1px solid rgba(35,33,28,.12)', background: k === '·' ? 'transparent' : '#fff', fontFamily: 'var(--font-mono)', fontSize: 22, fontWeight: 600, color: 'var(--ink)', cursor: k === '·' ? 'default' : 'pointer', visibility: k === '·' ? 'hidden' : 'visible' }}

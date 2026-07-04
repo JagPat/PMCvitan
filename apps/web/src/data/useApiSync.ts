@@ -4,15 +4,20 @@ import { useStore } from '@/store/store';
 import { API_BASE, PROJECT_ID, ApiGateway } from './apiGateway';
 
 /**
- * When `VITE_API_URL` is configured: authenticate for the active role, inject
+ * When `VITE_API_URL` is configured: authenticate for the active session, inject
  * the gateway into the store (so mutations persist through the API), hydrate
  * from the snapshot, and open a realtime socket — any change another user makes
  * pushes a `changed` signal and this client refetches its own snapshot.
+ *
+ * Auth source: a real session token (set by a phone-OTP sign-in) is used
+ * directly when present; otherwise it falls back to passwordless dev auth for
+ * the active role (the demo persona switch). Re-runs when either changes.
  *
  * A no-op when the env var is unset: the app runs entirely on the seeded local store.
  */
 export function useApiSync(): void {
   const role = useStore((s) => s.role);
+  const token = useStore((s) => s.sessionToken);
 
   useEffect(() => {
     if (!API_BASE) return;
@@ -29,7 +34,8 @@ export function useApiSync(): void {
     };
 
     (async () => {
-      await gw.connect(role);
+      if (token) gw.setToken(token);
+      else await gw.connect(role);
       if (cancelled) return;
       useStore.getState()._setGateway(gw);
       refresh();
@@ -51,5 +57,5 @@ export function useApiSync(): void {
       socket?.disconnect();
       useStore.getState()._setGateway(null);
     };
-  }, [role]);
+  }, [role, token]);
 }

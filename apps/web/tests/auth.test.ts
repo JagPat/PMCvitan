@@ -1,0 +1,139 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { useStore, getInitialState } from '@/store/store';
+import type { ApiGateway } from '@/data/apiGateway';
+
+const s = () => useStore.getState();
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+beforeEach(() => {
+  useStore.setState(getInitialState());
+  s()._setGateway(null);
+});
+
+describe('team access — local demo (no API)', () => {
+  it('team → phone → otp → real engineer view (any 4-digit code)', () => {
+    s().accWho('team');
+    expect(s().access.step).toBe('phone');
+
+    s().accSetPhone('98765 43210'); // non-digits stripped, capped at 10
+    expect(s().access.phone).toBe('9876543210');
+
+    s().requestOtp();
+    expect(s().access.step).toBe('otp');
+
+    useStore.setState((st) => { st.access.otp = '1234'; });
+    s().otpVerify();
+
+    expect(s().role).toBe('engineer');
+    expect(s().screen).toBe('daily-log');
+    expect(s().sessionToken).toBeNull(); // local demo: no real token
+    expect(s().access.step).toBe('who'); // access reset after sign-in
+  });
+
+  it('requestOtp rejects a number shorter than 10 digits', () => {
+    s().accWho('team');
+    s().accSetPhone('12345');
+    s().requestOtp();
+    expect(s().access.step).toBe('phone'); // did not advance
+    expect(s().access.error).toBeTruthy();
+  });
+});
+
+describe('team access — API mode', () => {
+  it('requestOtp calls the gateway and surfaces the dev-stub code', async () => {
+    const gw = { requestOtp: vi.fn().mockResolvedValue({ sent: true, live: false, devCode: '4242' }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().accWho('team');
+    s().accSetPhone('9876543210');
+    s().requestOtp();
+    expect(gw.requestOtp).toHaveBeenCalledWith('9876543210');
+
+    await flush();
+    expect(s().access.step).toBe('otp');
+    expect(s().access.devCode).toBe('4242');
+    expect(s().access.sending).toBe(false);
+  });
+
+  it('otpVerify success establishes a real engineer session', async () => {
+    const gw = {
+      requestOtp: vi.fn().mockResolvedValue({ sent: true, live: false, devCode: '4242' }),
+      verifyOtp: vi.fn().mockResolvedValue({ token: 'JWT-eng', role: 'engineer', projectId: 'ambli', name: 'Site Engineer' }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().accWho('team');
+    s().accSetPhone('9876543210');
+    s().requestOtp();
+    await flush();
+
+    useStore.setState((st) => { st.access.otp = '4242'; });
+    s().otpVerify();
+    expect(gw.verifyOtp).toHaveBeenCalledWith('9876543210', '4242');
+
+    await flush();
+    expect(s().role).toBe('engineer');
+    expect(s().sessionToken).toBe('JWT-eng');
+    expect(s().userName).toBe('Site Engineer');
+    expect(s().access.step).toBe('who');
+  });
+
+  it('otpVerify failure clears the code and shows an error, session untouched', async () => {
+    const gw = {
+      requestOtp: vi.fn().mockResolvedValue({ sent: true, live: true }),
+      verifyOtp: vi.fn().mockRejectedValue(new Error('/auth/otp/verify 401')),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().accWho('team');
+    s().accSetPhone('9876543210');
+    s().requestOtp();
+    await flush();
+    expect(s().access.devCode).toBeNull(); // live mode: no dev code returned
+
+    useStore.setState((st) => { st.access.otp = '0000'; });
+    s().otpVerify();
+    await flush();
+
+    expect(s().role).toBe('client'); // unchanged
+    expect(s().sessionToken).toBeNull();
+    expect(s().access.otp).toBe(''); // cleared for retry
+    expect(s().access.error).toBeTruthy();
+    expect(s().access.step).toBe('otp');
+  });
+
+  it('worker tap registers a device token but keeps the local job card', () => {
+    const gw = { workerToken: vi.fn().mockResolvedValue({ token: 'JWT-worker', role: 'worker', projectId: 'ambli' }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().pickWorker({ name: 'Suresh', trade: 'Mason', color: '#B4462E', job: 'living' });
+    expect(gw.workerToken).toHaveBeenCalledWith('Suresh', 'Mason');
+    expect(s().access.step).toBe('jobcard'); // proceeds locally regardless
+    expect(s().sessionToken).toBeNull(); // worker path does not swap the data session
+  });
+});
+
+describe('setRole drops any real OTP session', () => {
+  it('clears sessionToken + userName on an explicit persona switch (dev auth)', () => {
+    useStore.setState((st) => { st.sessionToken = 'JWT-eng'; st.userName = 'Site Engineer'; });
+    s().setRole('client');
+    expect(s().sessionToken).toBeNull();
+    expect(s().userName).toBeNull();
+  });
+});
+
+describe('otpPress builds the code and auto-verifies', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('fills the boxes and verifies 250ms after the 4th digit', () => {
+    vi.useFakeTimers();
+    s().accWho('team');
+    s().accSetPhone('9876543210');
+    s().requestOtp(); // local mode → straight to otp
+    ['1', '2', '3', '4'].forEach((d) => s().otpPress(d));
+    expect(s().access.otp).toBe('1234');
+
+    vi.advanceTimersByTime(300);
+    expect(s().role).toBe('engineer'); // auto-verify fired
+  });
+});

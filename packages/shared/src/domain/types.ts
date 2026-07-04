@@ -29,7 +29,7 @@ export type Gate = 'ok' | 'wait' | 'fail' | 'na';
 export type ItemState = 'pass' | 'fail' | 'na' | null;
 export type InspectionResult = 'PASS' | 'FAIL';
 export type ModalType = 'approve' | 'change' | 'qr' | null;
-export type AccessStep = 'who' | 'trade' | 'otp' | 'badge' | 'jobcard' | 'tradehome';
+export type AccessStep = 'who' | 'trade' | 'phone' | 'otp' | 'badge' | 'jobcard' | 'tradehome';
 export type AccessWho = 'team' | 'trade' | 'worker' | null;
 
 export interface DecisionOption {
@@ -145,8 +145,15 @@ export interface AccessState {
   step: AccessStep;
   who: AccessWho;
   trade: string | null;
+  phone: string;
   otp: string;
   worker: Worker | null;
+  /** true while an OTP request/verify is in flight (disables the buttons). */
+  sending: boolean;
+  /** last auth error to surface on the OTP screen, or null. */
+  error: string | null;
+  /** dev-stub OTP hint returned by the server when no SMS provider is configured. */
+  devCode: string | null;
 }
 
 export interface AppNotification {

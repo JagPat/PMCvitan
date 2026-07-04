@@ -57,6 +57,9 @@ export interface AppState {
   activities: Activity[];
   dailyLog: DailyLog;
   notifications: AppNotification[];
+  // real session (set by a phone-OTP sign-in; null = passwordless dev auth)
+  sessionToken: string | null;
+  userName: string | null;
   // project constants
   projStart: string;
   projEnd: string;
@@ -107,6 +110,8 @@ export interface AppActions {
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
   accTrade: (t: string) => void;
+  accSetPhone: (v: string) => void;
+  requestOtp: () => void;
   otpPress: (d: string) => void;
   otpVerify: () => void;
   pickWorker: (w: Worker) => void;
@@ -121,6 +126,11 @@ export interface AppActions {
 export type Store = AppState & AppActions;
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** A pristine access-flow state (used to init and to reset after sign-out). */
+function freshAccess(): AccessState {
+  return { step: 'who', who: null, trade: null, phone: '', otp: '', worker: null, sending: false, error: null, devCode: null };
+}
 
 /** A fresh copy of the seeded initial state (deep-cloned so resets never share references). */
 export function getInitialState(): AppState {
@@ -137,10 +147,12 @@ export function getInitialState(): AppState {
     reinspectionCreated: false,
     online: true,
     syncQueue: [],
-    access: { step: 'who', who: null, trade: null, otp: '', worker: null },
+    access: freshAccess(),
     activities: structuredClone(SEED_ACTIVITIES),
     dailyLog: structuredClone(SEED_DAILY_LOG),
     notifications: structuredClone(SEED_NOTIFICATIONS),
+    sessionToken: null,
+    userName: null,
     projStart: PROJECT.projStart,
     projEnd: PROJECT.projEnd,
     elapsedPct: PROJECT.elapsedPct,
@@ -197,6 +209,9 @@ export const useStore = create<Store>()(
         s.screen = first;
         s.notifOpen = false;
         s.modal = { type: null };
+        // an explicit persona switch is dev auth — drop any real OTP session
+        s.sessionToken = null;
+        s.userName = null;
       });
     },
     setScreen: (k) =>
@@ -463,50 +478,121 @@ export const useStore = create<Store>()(
     accWho: (who) =>
       set((s) => {
         s.access.who = who;
-        s.access.step = who === 'worker' ? 'badge' : who === 'trade' ? 'trade' : 'otp';
-        if (who !== 'worker') s.access.otp = '';
+        // team → phone+OTP; trade → pick trade first; worker → tap-photo badge
+        s.access.step = who === 'worker' ? 'badge' : who === 'trade' ? 'trade' : 'phone';
+        s.access.otp = '';
+        s.access.error = null;
+        s.access.devCode = null;
       }),
     accTrade: (t) =>
       set((s) => {
         s.access.trade = t;
-        s.access.step = 'otp';
+        s.access.step = 'phone';
         s.access.otp = '';
+        s.access.error = null;
+        s.access.devCode = null;
       }),
+    accSetPhone: (v) =>
+      set((s) => {
+        s.access.phone = v.replace(/\D/g, '').slice(0, 10);
+        s.access.error = null;
+      }),
+    requestOtp: () => {
+      const { phone, sending } = get().access;
+      if (sending) return;
+      if (phone.length < 10) {
+        set((s) => { s.access.error = 'Enter a 10-digit mobile number.'; });
+        return;
+      }
+      // local demo (no API): skip straight to the code screen
+      if (!gateway) {
+        set((s) => {
+          s.access.step = 'otp';
+          s.access.otp = '';
+          s.access.error = null;
+          s.access.devCode = null;
+        });
+        return;
+      }
+      set((s) => { s.access.sending = true; s.access.error = null; });
+      gateway
+        .requestOtp(phone)
+        .then((r) => {
+          set((s) => {
+            s.access.sending = false;
+            s.access.step = 'otp';
+            s.access.otp = '';
+            s.access.devCode = r.devCode ?? null;
+          });
+        })
+        .catch(() => {
+          set((s) => {
+            s.access.sending = false;
+            s.access.error = 'Could not send the code — please try again.';
+          });
+        });
+    },
     otpPress: (d) => {
       const cur = get().access.otp;
+      if (get().access.sending) return;
       if (d === 'del') {
-        set((s) => { s.access.otp = cur.slice(0, -1); });
+        set((s) => { s.access.otp = cur.slice(0, -1); s.access.error = null; });
         return;
       }
       if (cur.length >= 4) return;
       const otp = cur + d;
-      set((s) => { s.access.otp = otp; });
+      set((s) => { s.access.otp = otp; s.access.error = null; });
       if (otp.length === 4) setTimeout(() => get().otpVerify(), 250);
     },
     otpVerify: () => {
       const a = get().access;
-      if (a.otp.length < 4) {
-        get().flash('Enter the 4-digit code.');
+      if (a.otp.length < 4 || a.sending) return;
+
+      // team → real engineer session; trade → local scoped mistri view
+      const signIn = (name: string | null, token: string | null): void => {
+        if (a.who === 'team') {
+          set((s) => {
+            s.role = 'engineer';
+            s.screen = 'daily-log';
+            s.sessionToken = token;
+            s.userName = name;
+            s.access = freshAccess();
+          });
+          get().flash('Verified ✓ — signed in as Site Engineer.');
+        } else {
+          set((s) => { s.access.step = 'tradehome'; s.access.sending = false; });
+          get().flash('Verified ✓ — ' + (a.trade ?? '') + ' in-charge signed in.');
+        }
+      };
+
+      // local demo (no API): any 4-digit code signs in
+      if (!gateway) {
+        signIn(null, null);
         return;
       }
-      if (a.who === 'team') {
-        set((s) => {
-          s.role = 'engineer';
-          s.screen = 'daily-log';
-          s.access = { step: 'who', who: null, trade: null, otp: '', worker: null };
+
+      set((s) => { s.access.sending = true; s.access.error = null; });
+      gateway
+        .verifyOtp(a.phone, a.otp)
+        .then((res) => signIn(res.name ?? null, res.token))
+        .catch(() => {
+          set((s) => {
+            s.access.sending = false;
+            s.access.otp = '';
+            s.access.error = 'Wrong or expired code — try again.';
+          });
         });
-        get().flash('Verified ✓ — signed in as Site Engineer.');
-      } else {
-        set((s) => { s.access.step = 'tradehome'; });
-        get().flash('Verified ✓ — ' + a.trade + ' in-charge signed in.');
-      }
     },
-    pickWorker: (w) =>
+    pickWorker: (w) => {
+      // best-effort: register the device server-side (proves the endpoint); the
+      // job card is a self-contained local view either way.
+      if (gateway) gateway.workerToken(w.name, w.trade).catch(() => {});
       set((s) => {
         s.access.worker = w;
         s.access.step = 'jobcard';
-      }),
-    accReset: () => set((s) => { s.access = { step: 'who', who: null, trade: null, otp: '', worker: null }; }),
+      });
+    },
+    accReset: () => set((s) => { s.access = freshAccess(); }),
     speakJob: () => {
       const langName = { en: 'English', hi: 'Hindi', gu: 'Gujarati' }[get().lang];
       get().flash('🔊 Reading the job aloud in ' + langName + '…');
