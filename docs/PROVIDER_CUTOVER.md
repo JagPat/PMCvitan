@@ -18,8 +18,8 @@ Every provider is **env-gated** — no code change or image rebuild is needed to
 | Provider | Gate (both/all required) | State |
 |---|---|---|
 | **Web push (VAPID)** | `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` | ✅ **LIVE** — `/push/public-key` returns the key |
-| **Media (S3/R2)** | `S3_ENDPOINT` + `S3_BUCKET` + `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` | 🟡 **DB dev-stub** — bytes in Postgres, served from `/media/:id` |
-| **SMS OTP (MSG91)** | `MSG91_AUTH_KEY` + `MSG91_TEMPLATE_ID` | 🟡 **dev-stub** — `AUTH_KEY` set, `TEMPLATE_ID` missing (blocked on DLT) |
+| **Media (Cloudflare R2)** | `S3_ENDPOINT` + `S3_BUCKET` + `S3_ACCESS_KEY_ID` + `S3_SECRET_ACCESS_KEY` | ✅ **LIVE** — bucket `vitanpmc`; upload returns an absolute `pub-….r2.dev` URL that fetches back 200 |
+| **SMS OTP (MSG91)** | `MSG91_AUTH_KEY` + `MSG91_TEMPLATE_ID` | 🟡 **dev-stub** — `AUTH_KEY` set, `TEMPLATE_ID` missing (blocked on DLT). See [`MSG91_CUTOVER_TASK.md`](./MSG91_CUTOVER_TASK.md) for the hands-off cutover task |
 
 `GET /projects/ambli/snapshot` is live (200) and includes `dailyLog.photos` — the 7c-media snapshot field is deployed.
 
