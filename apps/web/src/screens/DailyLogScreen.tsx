@@ -10,7 +10,7 @@ export function DailyLogScreen() {
   const dailyLog = useStore((s) => s.dailyLog);
   const photos = useStore(useShallow((s) => s.dailyLog.photos));
   const online = useStore((s) => s.online);
-  const queueCount = useStore((s) => s.syncQueue.length);
+  const queueCount = useStore((s) => s.syncQueue.length + s.outbox.length);
   const total = useStore(selectTotalWorkers);
   const toggleOnline = useStore((s) => s.toggleOnline);
   const checkIn = useStore((s) => s.checkIn);

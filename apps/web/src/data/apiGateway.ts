@@ -176,3 +176,39 @@ export class ApiGateway {
     });
   }
 }
+
+/**
+ * A mutation captured while offline, replayed through the gateway on reconnect
+ * (Phase 8 offline write outbox). Each variant maps 1:1 to a gateway method.
+ */
+export type OutboxOp =
+  | { t: 'approve'; decisionId: string; optionIndex: number }
+  | { t: 'change'; decisionId: string; reason: string; costImpact: number; timeImpactDays: number }
+  | { t: 'submitInspection'; inspectionId: string; items: Checklist['items'] }
+  | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemNames: string[] }
+  | { t: 'startActivity'; activityId: string }
+  | { t: 'completeActivity'; activityId: string }
+  | { t: 'flagMismatch'; decisionId: string }
+  | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'> };
+
+/** Replay one queued mutation; resolves to the fresh snapshot. */
+export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapshot> {
+  switch (op.t) {
+    case 'approve':
+      return gw.approveDecision(op.decisionId, op.optionIndex);
+    case 'change':
+      return gw.requestChange(op.decisionId, op.reason, op.costImpact, op.timeImpactDays);
+    case 'submitInspection':
+      return gw.submitInspection(op.inspectionId, op.items);
+    case 'decideReview':
+      return gw.decideReview(op.inspectionId, op.approve, op.rejectedItemNames);
+    case 'startActivity':
+      return gw.startActivity(op.activityId);
+    case 'completeActivity':
+      return gw.completeActivity(op.activityId);
+    case 'flagMismatch':
+      return gw.flagMismatch(op.decisionId);
+    case 'submitDailyLog':
+      return gw.submitDailyLog(op.log);
+  }
+}
