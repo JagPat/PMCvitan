@@ -49,6 +49,10 @@ The API (`apps/api`, NestJS + Prisma) ships its own `apps/api/Dockerfile`. Deplo
 
 > The API image and the frontend↔API bridge compile and are unit-tested, but the end-to-end wiring hasn't been exercised in CI (no Postgres in the build sandbox). Validate the first API deploy: check the container Logs for `Vitan PMC API listening on :3000`, then hit `GET /projects/ambli/snapshot` with a token from `POST /auth/session`.
 
+### Cutting over the external providers (MSG91 / R2 / VAPID)
+
+The app ships with dev-stubs for SMS OTP, media storage, and web push; each flips to its real provider by setting env vars on the API app + redeploying — no code change. The full runbook (env vars, human prerequisites, Coolify-API steps for a hands-off cutover, live validation commands with expected output, failure modes, rollback, and the agent-vs-human autonomy boundary) is in **[`PROVIDER_CUTOVER.md`](./PROVIDER_CUTOVER.md)**. Check current live state any time with `bash scripts/validate-live.sh`.
+
 ### Migrations & the existing (db-push) database
 
 The schema is now tracked by a baseline Prisma migration at `apps/api/prisma/migrations/0_init`. Going forward, schema changes are new migrations applied by `prisma migrate deploy` on deploy.
