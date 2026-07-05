@@ -181,3 +181,71 @@ describe('otpPress builds the code and auto-verifies', () => {
     expect(s().role).toBe('engineer'); // auto-verify fired
   });
 });
+
+describe('email OTP', () => {
+  it('local demo: email → code → role by email prefix (no token)', () => {
+    s().accGoEmailOtp();
+    expect(s().access.step).toBe('emailentry');
+    s().accSetEmail('client@vitan.in');
+    s().requestEmailOtp();
+    expect(s().access.step).toBe('emailcode');
+    s().accSetCode('123456');
+    s().emailOtpVerify();
+    expect(s().role).toBe('client');
+    expect(s().sessionToken).toBeNull();
+    expect(s().access.step).toBe('who');
+  });
+
+  it('local demo: unknown email provisions engineer', () => {
+    s().accSetEmail('someone@example.com');
+    s().requestEmailOtp();
+    s().accSetCode('0000');
+    s().emailOtpVerify();
+    expect(s().role).toBe('engineer');
+  });
+
+  it('rejects an invalid email', () => {
+    s().accSetEmail('not-an-email');
+    s().requestEmailOtp();
+    expect(s().access.step).not.toBe('emailcode');
+    expect(s().access.error).toBeTruthy();
+  });
+
+  it('API mode: surfaces dev code, then adopts the returned session', async () => {
+    const gw = {
+      emailOtpRequest: vi.fn().mockResolvedValue({ sent: true, live: false, devCode: '424242' }),
+      emailOtpVerify: vi.fn().mockResolvedValue({ token: 'JWT-pmc', role: 'pmc', projectId: 'ambli', name: 'Ar. Vitan' }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().accSetEmail('pmc@vitan.in');
+    s().requestEmailOtp();
+    await flush();
+    expect(s().access.step).toBe('emailcode');
+    expect(s().access.devCode).toBe('424242');
+
+    s().accSetCode('424242');
+    s().emailOtpVerify();
+    expect(gw.emailOtpVerify).toHaveBeenCalledWith('pmc@vitan.in', '424242');
+    await flush();
+    expect(s().role).toBe('pmc');
+    expect(s().sessionToken).toBe('JWT-pmc');
+  });
+});
+
+describe('Google sign-in', () => {
+  it('API mode: exchanges the ID token for a session', async () => {
+    const gw = { googleSignIn: vi.fn().mockResolvedValue({ token: 'JWT-g', role: 'client', projectId: 'ambli', name: 'Mr. Shah' }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().googleSignIn('id-token-abc');
+    expect(gw.googleSignIn).toHaveBeenCalledWith('id-token-abc');
+    await flush();
+    expect(s().role).toBe('client');
+    expect(s().sessionToken).toBe('JWT-g');
+  });
+
+  it('no gateway (demo): flashes that it needs the server', () => {
+    s().googleSignIn('id-token-abc');
+    expect(s().toast).toMatch(/server/i);
+    expect(s().sessionToken).toBeNull();
+  });
+});

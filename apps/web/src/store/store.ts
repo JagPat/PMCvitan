@@ -118,6 +118,12 @@ export interface AppActions {
   accSetPhone: (v: string) => void;
   accGoLogin: () => void;
   login: (email: string, password: string) => void;
+  accSetEmail: (v: string) => void;
+  accGoEmailOtp: () => void;
+  requestEmailOtp: () => void;
+  accSetCode: (v: string) => void;
+  emailOtpVerify: () => void;
+  googleSignIn: (idToken: string) => void;
   requestOtp: () => void;
   otpPress: (d: string) => void;
   otpVerify: () => void;
@@ -136,7 +142,7 @@ let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** A pristine access-flow state (used to init and to reset after sign-out). */
 function freshAccess(): AccessState {
-  return { step: 'who', who: null, trade: null, phone: '', otp: '', worker: null, sending: false, error: null, devCode: null };
+  return { step: 'who', who: null, trade: null, phone: '', email: '', otp: '', worker: null, sending: false, error: null, devCode: null };
 }
 
 /** A fresh copy of the seeded initial state (deep-cloned so resets never share references). */
@@ -234,6 +240,29 @@ export const useStore = create<Store>()(
       persistOutbox();
       get().flash(label + ' — saved offline, will sync when you reconnect.');
       return true;
+    };
+
+    /** Adopt a server auth result as the real session (used by email-OTP + Google). */
+    const applyAuthResult = (res: { role: Role; token: string; name?: string }): void => {
+      set((s) => {
+        s.role = res.role;
+        s.screen = screensFor(res.role)[0].key;
+        s.sessionToken = res.token;
+        s.userName = res.name ?? null;
+        s.access = freshAccess();
+      });
+      get().flash('Signed in as ' + (res.name ?? res.role) + '.');
+    };
+
+    /** Local-demo passwordless sign-in: map an email to a role (else engineer). */
+    const localEmailSignIn = (em: string): void => {
+      const role: Role = em.startsWith('pmc@') ? 'pmc' : em.startsWith('client@') ? 'client' : em.startsWith('contractor@') ? 'contractor' : 'engineer';
+      set((s) => {
+        s.role = role;
+        s.screen = screensFor(role)[0].key;
+        s.access = freshAccess();
+      });
+      get().flash('Signed in as ' + role + ' (demo).');
     };
 
     return {
@@ -616,6 +645,66 @@ export const useStore = create<Store>()(
         s.access = freshAccess();
       });
       get().flash('Signed in as ' + role + ' (demo).');
+    },
+    accSetEmail: (v) =>
+      set((s) => { s.access.email = v; s.access.error = null; }),
+    accGoEmailOtp: () =>
+      set((s) => {
+        s.access.step = 'emailentry';
+        s.access.otp = '';
+        s.access.error = null;
+        s.access.devCode = null;
+        s.access.sending = false;
+      }),
+    requestEmailOtp: () => {
+      const email = get().access.email.trim().toLowerCase();
+      if (get().access.sending) return;
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        set((s) => { s.access.error = 'Enter a valid email address.'; });
+        return;
+      }
+      if (!gateway) {
+        set((s) => { s.access.step = 'emailcode'; s.access.otp = ''; s.access.error = null; s.access.devCode = null; });
+        return;
+      }
+      set((s) => { s.access.sending = true; s.access.error = null; });
+      gateway
+        .emailOtpRequest(email)
+        .then((r) => {
+          set((s) => {
+            s.access.sending = false;
+            s.access.step = 'emailcode';
+            s.access.otp = '';
+            s.access.devCode = r.devCode ?? null;
+          });
+        })
+        .catch(() => set((s) => { s.access.sending = false; s.access.error = 'Could not send the code — please try again.'; }));
+    },
+    accSetCode: (v) =>
+      set((s) => { s.access.otp = v.replace(/\D/g, '').slice(0, 6); s.access.error = null; }),
+    emailOtpVerify: () => {
+      const { email, otp, sending } = get().access;
+      if (otp.length < 4 || sending) return;
+      if (!gateway) {
+        localEmailSignIn(email.trim().toLowerCase());
+        return;
+      }
+      set((s) => { s.access.sending = true; s.access.error = null; });
+      gateway
+        .emailOtpVerify(email.trim().toLowerCase(), otp)
+        .then((res) => applyAuthResult(res))
+        .catch(() => set((s) => { s.access.sending = false; s.access.otp = ''; s.access.error = 'Wrong or expired code — try again.'; }));
+    },
+    googleSignIn: (idToken) => {
+      if (!gateway) {
+        get().flash('Google sign-in needs the server — not available in the local demo.');
+        return;
+      }
+      set((s) => { s.access.sending = true; s.access.error = null; });
+      gateway
+        .googleSignIn(idToken)
+        .then((res) => applyAuthResult(res))
+        .catch(() => set((s) => { s.access.sending = false; s.access.error = 'Google sign-in failed — please try again.'; }));
     },
     requestOtp: () => {
       const { phone, sending } = get().access;

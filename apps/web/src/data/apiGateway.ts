@@ -118,6 +118,18 @@ export class ApiGateway {
   workerToken(name?: string, trade?: string): Promise<AuthResult> {
     return this.pub('/auth/worker/token', { projectId: this.projectId, name, trade });
   }
+  /** Ask the server to email an OTP. `devCode` is present only with no SMTP. */
+  emailOtpRequest(email: string): Promise<{ sent: boolean; live: boolean; devCode?: string }> {
+    return this.pub('/auth/email/request', { email, projectId: this.projectId });
+  }
+  /** Verify an email OTP; on success the server returns a role-scoped session token. */
+  emailOtpVerify(email: string, code: string): Promise<AuthResult> {
+    return this.pub('/auth/email/verify', { email, code, projectId: this.projectId });
+  }
+  /** Exchange a Google ID token for a role-scoped session token. */
+  googleSignIn(idToken: string): Promise<AuthResult> {
+    return this.pub('/auth/google', { idToken, projectId: this.projectId });
+  }
 
   private async req<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await fetch(`${this.base}${path}`, {
