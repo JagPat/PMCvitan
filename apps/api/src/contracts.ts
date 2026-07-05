@@ -36,6 +36,27 @@ export const workerTokenSchema = z.object({
 });
 export type WorkerTokenInput = z.infer<typeof workerTokenSchema>;
 
+// Email-OTP sign-in (zero-DLT universal fallback).
+export const emailOtpRequestSchema = z.object({
+  email: z.string().email(),
+  projectId: z.string().min(1).default('ambli'),
+});
+export type EmailOtpRequestInput = z.infer<typeof emailOtpRequestSchema>;
+
+export const emailOtpVerifySchema = z.object({
+  email: z.string().email(),
+  code: z.string().min(4).max(8),
+  projectId: z.string().min(1).default('ambli'),
+});
+export type EmailOtpVerifyInput = z.infer<typeof emailOtpVerifySchema>;
+
+// Google sign-in — a Google ID token from Google Identity Services on the client.
+export const googleSignInSchema = z.object({
+  idToken: z.string().min(10),
+  projectId: z.string().min(1).default('ambli'),
+});
+export type GoogleSignInInput = z.infer<typeof googleSignInSchema>;
+
 export const approveSchema = z.object({ optionIndex: z.number().int().min(0) });
 export type ApproveInput = z.infer<typeof approveSchema>;
 
