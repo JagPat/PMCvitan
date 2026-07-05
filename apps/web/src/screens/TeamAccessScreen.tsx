@@ -1,5 +1,6 @@
 import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { GoogleSignInButton } from '@/components';
 import { useStore } from '@/store/store';
 import { useT } from '@/i18n/useT';
 import { LANGS, swatch as swatchGradient, type Lang } from '@vitan/shared';
@@ -53,6 +54,7 @@ export function TeamAccessScreen() {
   const step = useStore((s) => s.access.step);
   const trade = useStore((s) => s.access.trade);
   const phone = useStore((s) => s.access.phone);
+  const otpEmail = useStore((s) => s.access.email);
   const otp = useStore((s) => s.access.otp);
   const sending = useStore((s) => s.access.sending);
   const error = useStore((s) => s.access.error);
@@ -65,6 +67,12 @@ export function TeamAccessScreen() {
   const accSetPhone = useStore((s) => s.accSetPhone);
   const accGoLogin = useStore((s) => s.accGoLogin);
   const login = useStore((s) => s.login);
+  const accSetEmail = useStore((s) => s.accSetEmail);
+  const accGoEmailOtp = useStore((s) => s.accGoEmailOtp);
+  const requestEmailOtp = useStore((s) => s.requestEmailOtp);
+  const accSetCode = useStore((s) => s.accSetCode);
+  const emailOtpVerify = useStore((s) => s.emailOtpVerify);
+  const googleSignIn = useStore((s) => s.googleSignIn);
   const requestOtp = useStore((s) => s.requestOtp);
   const otpPress = useStore((s) => s.otpPress);
   const accReset = useStore((s) => s.accReset);
@@ -222,9 +230,92 @@ export function TeamAccessScreen() {
           onClick={submit}
           disabled={!ready}
           data-testid="login-submit"
-          style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
+          style={{ marginTop: 20, height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
         >
           {sending ? t.verifying : 'Sign in'}
+        </button>
+        <button onClick={accGoEmailOtp} data-testid="go-email-otp" style={linkBtn}>
+          Email me a code instead
+        </button>
+        <GoogleSignInButton onToken={googleSignIn} />
+        <div style={{ marginTop: 'auto' }} />
+      </div>
+    );
+  }
+
+  // ---- EMAIL OTP — enter email → request code ----
+  if (step === 'emailentry') {
+    const ready = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(otpEmail.trim()) && !sending;
+    return (
+      <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+        <BackBtn onClick={accReset} label={t.back} />
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>Sign in with email</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>We'll email you a 6-digit code</div>
+        </div>
+        <input
+          type="email"
+          inputMode="email"
+          autoFocus
+          value={otpEmail}
+          onChange={(e) => accSetEmail(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && ready && requestEmailOtp()}
+          placeholder="you@example.com"
+          data-testid="email-input"
+          style={loginField}
+        />
+        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        <button
+          onClick={requestEmailOtp}
+          disabled={!ready}
+          data-testid="email-send"
+          style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
+        >
+          {sending ? t.sending : t.sendCode}
+        </button>
+      </div>
+    );
+  }
+
+  // ---- EMAIL OTP — enter the code ----
+  if (step === 'emailcode') {
+    const ready = otp.length >= 4 && !sending;
+    return (
+      <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+        <BackBtn onClick={accReset} label={t.back} />
+        <div style={{ textAlign: 'center', marginTop: 14 }}>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>Enter the code</div>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>{t.sent} {otpEmail}</div>
+          {devCode && (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 12, padding: '6px 12px', borderRadius: 20, background: '#FBF3E4', color: 'var(--amber-text)', fontSize: 12.5, fontWeight: 600 }} data-testid="email-dev-code">
+              {t.demoCode}: <span style={{ fontFamily: 'var(--font-mono)', letterSpacing: '.1em' }}>{devCode}</span>
+            </div>
+          )}
+        </div>
+        <input
+          inputMode="numeric"
+          autoFocus
+          value={otp}
+          onChange={(e) => accSetCode(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && ready && emailOtpVerify()}
+          placeholder="6-digit code"
+          data-testid="email-code"
+          style={{ ...loginField, marginTop: 24, textAlign: 'center', fontFamily: 'var(--font-mono)', letterSpacing: '.3em', fontSize: 22 }}
+        />
+        <div style={{ textAlign: 'center', minHeight: 20, fontSize: 13, marginTop: 8 }}>
+          {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
+          {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
+        </div>
+        <button onClick={requestEmailOtp} disabled={sending} style={linkBtn}>
+          {t.resend}
+        </button>
+        <button
+          onClick={emailOtpVerify}
+          disabled={!ready}
+          data-testid="email-verify"
+          style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
+        >
+          {t.verify}
         </button>
       </div>
     );
@@ -421,6 +512,18 @@ function langStyle(active: boolean): CSSProperties {
     color: active ? '#fff' : 'var(--ink)',
   };
 }
+
+const linkBtn: CSSProperties = {
+  background: 'transparent',
+  border: 'none',
+  color: 'var(--muted)',
+  fontFamily: 'var(--font-sans)',
+  fontWeight: 600,
+  fontSize: 13,
+  cursor: 'pointer',
+  marginTop: 14,
+  alignSelf: 'center',
+};
 
 const loginField: CSSProperties = {
   height: 54,
