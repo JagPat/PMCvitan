@@ -74,8 +74,13 @@ POST /auth/login         { email, password }            -> { token, role, projec
 POST /auth/otp/request   { phone, projectId }           -> { sent, live, devCode? }            # MSG91 v5; devCode only in stub mode
 POST /auth/otp/verify    { phone, code, projectId }     -> { token, role, projectId, name }    # provisions a site engineer on first use
 POST /auth/worker/token  { projectId, name?, trade? }   -> { token, role: 'worker', ... }      # no-account QR / tap-photo job card
+POST /auth/email/request { email, projectId }           -> { sent, live, devCode? }            # email OTP (zero-DLT); devCode only without SMTP
+POST /auth/email/verify  { email, code, projectId }     -> { token, role, projectId, name }    # reuse account by email, else provision
+POST /auth/google        { idToken, projectId }         -> { token, role, projectId, name }    # verify Google ID token; disabled without GOOGLE_CLIENT_ID
 POST /auth/session       { role, projectId }            -> { token, role, projectId }          # passwordless dev auth; gated by ALLOW_DEV_AUTH
 ```
+
+**Phone-OTP delivery is channel-pluggable** (`SmsService`), priority **MSG91 → Telegram Gateway → dev-stub** (first configured wins): MSG91 is real SMS (needs DLT); **Telegram Gateway** (`TELEGRAM_GATEWAY_TOKEN`) delivers a code we generate via Telegram by phone number (**zero-DLT, free**, verified locally); the stub logs/returns the code. **Email OTP** (`EmailService`, SMTP or stub) and **Google sign-in** (`GoogleAuthService`, verifies an ID token against `GOOGLE_CLIENT_ID`) are additional zero-DLT paths. All passwordless sign-ins resolve via `signInOrProvision` — reuse the account matched by email/phone, else provision a site engineer (same trust model as the original phone-OTP flow).
 
 **OTP delivery** (`SmsService`) uses MSG91's v5 OTP API when `MSG91_AUTH_KEY` + `MSG91_TEMPLATE_ID` are set (MSG91 owns generation, storage and verification against the DLT-approved `##OTP##` template). With no provider configured it falls back to an in-memory dev stub that logs the 4-digit code and returns it, so the flow is demoable without SMS. **RBAC**: only `pmc`/`client` see pending decisions in the snapshot; every other role (contractor, engineer, worker) is restricted to decided ones.
 

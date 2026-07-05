@@ -7,11 +7,17 @@ import {
   otpRequestSchema,
   otpVerifySchema,
   workerTokenSchema,
+  emailOtpRequestSchema,
+  emailOtpVerifySchema,
+  googleSignInSchema,
   type SessionInput,
   type LoginInput,
   type OtpRequestInput,
   type OtpVerifyInput,
   type WorkerTokenInput,
+  type EmailOtpRequestInput,
+  type EmailOtpVerifyInput,
+  type GoogleSignInInput,
 } from '../contracts';
 
 @Controller('auth')
@@ -45,5 +51,20 @@ export class AuthController {
   @Post('worker/token')
   workerToken(@Body(new ZodPipe(workerTokenSchema)) body: WorkerTokenInput) {
     return this.auth.workerToken(body);
+  }
+
+  @Post('email/request')
+  emailRequest(@Body(new ZodPipe(emailOtpRequestSchema)) body: EmailOtpRequestInput) {
+    return this.auth.requestEmailOtp(body);
+  }
+
+  @Post('email/verify')
+  emailVerify(@Body(new ZodPipe(emailOtpVerifySchema)) body: EmailOtpVerifyInput) {
+    return this.auth.verifyEmailOtp(body);
+  }
+
+  @Post('google')
+  google(@Body(new ZodPipe(googleSignInSchema)) body: GoogleSignInInput) {
+    return this.auth.googleSignIn(body);
   }
 }

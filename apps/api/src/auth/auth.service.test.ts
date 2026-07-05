@@ -4,6 +4,8 @@ import { UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
 import { SmsService } from './sms.service';
+import { EmailService } from './email.service';
+import { GoogleAuthService } from './google.service';
 import type { PrismaService } from '../prisma.service';
 
 interface FakeUser {
@@ -44,14 +46,17 @@ function fakePrisma(seed: FakeUser[] = []) {
 function make(prisma: ReturnType<typeof fakePrisma>) {
   const jwt = new JwtService({ secret: 'test-secret', signOptions: { expiresIn: '12h' } });
   const sms = new SmsService();
-  const auth = new AuthService(jwt, prisma as unknown as PrismaService, sms);
-  return { auth, jwt, sms };
+  const email = new EmailService();
+  const google = new GoogleAuthService();
+  const auth = new AuthService(jwt, prisma as unknown as PrismaService, sms, email, google);
+  return { auth, jwt, sms, email, google };
 }
 
 describe('AuthService.login', () => {
   beforeEach(() => {
     delete process.env.MSG91_AUTH_KEY;
     delete process.env.MSG91_TEMPLATE_ID;
+    delete process.env.TELEGRAM_GATEWAY_TOKEN;
   });
 
   it('accepts the right password and issues a role-scoped token', async () => {
@@ -84,6 +89,7 @@ describe('AuthService.verifyOtp', () => {
   beforeEach(() => {
     delete process.env.MSG91_AUTH_KEY;
     delete process.env.MSG91_TEMPLATE_ID;
+    delete process.env.TELEGRAM_GATEWAY_TOKEN;
   });
 
   it('provisions a site engineer on first successful OTP', async () => {
@@ -135,5 +141,51 @@ describe('AuthService.session (dev auth)', () => {
     const res = auth.session({ role: 'client', projectId: 'ambli' });
     const decoded = jwt.verify<{ sub: string; role: string }>(res.token);
     expect(decoded).toMatchObject({ sub: 'dev-client', role: 'client' });
+  });
+});
+
+describe('AuthService — email OTP', () => {
+  beforeEach(() => {
+    delete process.env.SMTP_HOST;
+    delete process.env.SMTP_USER;
+    delete process.env.SMTP_PASS;
+  });
+
+  it('provisions a site engineer on first successful email OTP', async () => {
+    const prisma = fakePrisma();
+    const { auth } = make(prisma);
+    const req = await auth.requestEmailOtp({ email: 'new@vitan.in', projectId: 'ambli' });
+    expect(req.live).toBe(false);
+    const res = await auth.verifyEmailOtp({ email: 'new@vitan.in', code: req.devCode!, projectId: 'ambli' });
+    expect(res.role).toBe('engineer');
+    expect(prisma.users).toHaveLength(1);
+    expect(prisma.users[0]).toMatchObject({ email: 'new@vitan.in', role: 'engineer' });
+  });
+
+  it('reuses an existing account (by email) with its role', async () => {
+    const prisma = fakePrisma([
+      { id: 'u1', projectId: 'ambli', role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in' },
+    ]);
+    const { auth } = make(prisma);
+    const req = await auth.requestEmailOtp({ email: 'pmc@vitan.in', projectId: 'ambli' });
+    const res = await auth.verifyEmailOtp({ email: 'PMC@vitan.in', code: req.devCode!, projectId: 'ambli' });
+    expect(res.role).toBe('pmc');
+    expect(prisma.users).toHaveLength(1); // no new user
+  });
+
+  it('rejects a bad email code', async () => {
+    const prisma = fakePrisma();
+    const { auth } = make(prisma);
+    await auth.requestEmailOtp({ email: 'x@vitan.in', projectId: 'ambli' });
+    await expect(auth.verifyEmailOtp({ email: 'x@vitan.in', code: '000000', projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+});
+
+describe('AuthService — Google sign-in', () => {
+  beforeEach(() => { delete process.env.GOOGLE_CLIENT_ID; });
+
+  it('is unavailable (503) when Google is not configured', async () => {
+    const { auth } = make(fakePrisma());
+    await expect(auth.googleSignIn({ idToken: 'tok', projectId: 'ambli' })).rejects.toThrow();
   });
 });
