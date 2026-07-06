@@ -149,20 +149,32 @@ describe('AuthService — email OTP', () => {
     delete process.env.SMTP_HOST;
     delete process.env.SMTP_USER;
     delete process.env.SMTP_PASS;
+    delete process.env.AUTH_ALLOW_SIGNUP;
   });
 
-  it('provisions a site engineer on first successful email OTP', async () => {
+  it('rejects an unknown email by default (invite-only), creating no account', async () => {
+    const prisma = fakePrisma();
+    const { auth } = make(prisma);
+    const req = await auth.requestEmailOtp({ email: 'stranger@vitan.in', projectId: 'ambli' });
+    expect(req.live).toBe(false);
+    await expect(
+      auth.verifyEmailOtp({ email: 'stranger@vitan.in', code: req.devCode!, projectId: 'ambli' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(prisma.users).toHaveLength(0); // no self-provisioning
+  });
+
+  it('provisions an engineer for an unknown email when AUTH_ALLOW_SIGNUP=true', async () => {
+    process.env.AUTH_ALLOW_SIGNUP = 'true';
     const prisma = fakePrisma();
     const { auth } = make(prisma);
     const req = await auth.requestEmailOtp({ email: 'new@vitan.in', projectId: 'ambli' });
-    expect(req.live).toBe(false);
     const res = await auth.verifyEmailOtp({ email: 'new@vitan.in', code: req.devCode!, projectId: 'ambli' });
     expect(res.role).toBe('engineer');
     expect(prisma.users).toHaveLength(1);
     expect(prisma.users[0]).toMatchObject({ email: 'new@vitan.in', role: 'engineer' });
   });
 
-  it('reuses an existing account (by email) with its role', async () => {
+  it('reuses an existing account (by email) with its role — even when invite-only', async () => {
     const prisma = fakePrisma([
       { id: 'u1', projectId: 'ambli', role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in' },
     ]);
@@ -182,10 +194,32 @@ describe('AuthService — email OTP', () => {
 });
 
 describe('AuthService — Google sign-in', () => {
-  beforeEach(() => { delete process.env.GOOGLE_CLIENT_ID; });
+  beforeEach(() => {
+    delete process.env.GOOGLE_CLIENT_ID;
+    delete process.env.AUTH_ALLOW_SIGNUP;
+  });
 
   it('is unavailable (503) when Google is not configured', async () => {
     const { auth } = make(fakePrisma());
     await expect(auth.googleSignIn({ idToken: 'tok', projectId: 'ambli' })).rejects.toThrow();
+  });
+
+  it('rejects an unknown Google identity by default (invite-only)', async () => {
+    const prisma = fakePrisma();
+    const { auth, google } = make(prisma);
+    google.verify = async () => ({ email: 'stranger@gmail.com', name: 'Stranger', emailVerified: true });
+    await expect(auth.googleSignIn({ idToken: 'tok', projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(prisma.users).toHaveLength(0);
+  });
+
+  it('signs in an existing account matched by Google email', async () => {
+    const prisma = fakePrisma([
+      { id: 'u1', projectId: 'ambli', role: 'client', name: 'Mr. Shah', email: 'client@vitan.in' },
+    ]);
+    const { auth, google } = make(prisma);
+    google.verify = async () => ({ email: 'client@vitan.in', name: 'Mr. Shah', emailVerified: true });
+    const res = await auth.googleSignIn({ idToken: 'tok', projectId: 'ambli' });
+    expect(res.role).toBe('client');
+    expect(prisma.users).toHaveLength(1); // reused, not provisioned
   });
 });

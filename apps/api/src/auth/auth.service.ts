@@ -47,25 +47,48 @@ export class AuthService {
     return this.jwt.sign({ sub, role, projectId, ...extra });
   }
 
+  /** Self-signup for the office channels (email / Google) is invite-only by
+   * default; set AUTH_ALLOW_SIGNUP=true to let an unknown email/Google identity
+   * auto-provision an account. Phone-OTP is exempt — see `signInOrProvision`. */
+  private get selfSignupAllowed(): boolean {
+    return process.env.AUTH_ALLOW_SIGNUP === 'true';
+  }
+
   /**
    * Resolve a passwordless sign-in (phone / email / Google) to a token: reuse an
-   * existing account matched by phone or email, else provision a site engineer.
-   * (Same trust model as the existing phone-OTP flow, extended to more channels.)
+   * existing account matched by phone or email. When there's no match, provision
+   * a site-engineer account **only if `allowProvision`** — otherwise reject
+   * (invite-only). Phone-OTP passes `allowProvision: true` (a phone is the on-site
+   * engineer-onboarding signal); email + Google pass `selfSignupAllowed`, so with
+   * the default (invite-only) a stranger's email/Google can't mint a writable
+   * engineer account — which is what makes the dev-auth lockdown meaningful.
    */
-  private async signInOrProvision(input: { phone?: string; email?: string; name?: string; projectId: string }): Promise<TokenResult> {
-    let user =
+  private async signInOrProvision(input: {
+    phone?: string;
+    email?: string;
+    name?: string;
+    projectId: string;
+    allowProvision: boolean;
+  }): Promise<TokenResult> {
+    const user =
       (input.email && (await this.prisma.user.findUnique({ where: { email: input.email } }))) ||
       (input.phone && (await this.prisma.user.findUnique({ where: { phone: input.phone } }))) ||
       null;
-    user ??= await this.prisma.user.create({
-      data: {
-        projectId: input.projectId,
-        role: 'engineer',
-        name: input.name || 'Site Engineer',
-        email: input.email,
-        phone: input.phone,
-      },
-    });
+    if (!user) {
+      if (!input.allowProvision) {
+        throw new UnauthorizedException('No account for this sign-in. Ask your PMC to add you.');
+      }
+      const created = await this.prisma.user.create({
+        data: {
+          projectId: input.projectId,
+          role: 'engineer',
+          name: input.name || 'Site Engineer',
+          email: input.email,
+          phone: input.phone,
+        },
+      });
+      return { token: this.issue(created.id, 'engineer', created.projectId), role: 'engineer', projectId: created.projectId, name: created.name };
+    }
     return {
       token: this.issue(user.id, user.role as Role, user.projectId),
       role: user.role as Role,
@@ -109,7 +132,8 @@ export class AuthService {
     if (!(await this.sms.verifyOtp(input.phone, input.code))) {
       throw new UnauthorizedException('Invalid or expired code');
     }
-    return this.signInOrProvision({ phone: input.phone, projectId: input.projectId });
+    // Phone-OTP is the on-site engineer onboarding flow — always provisions.
+    return this.signInOrProvision({ phone: input.phone, projectId: input.projectId, allowProvision: true });
   }
 
   /** Start an email-OTP sign-in (zero-DLT fallback). `devCode` only with no SMTP. */
@@ -123,13 +147,15 @@ export class AuthService {
     if (!(await this.email.verifyOtp(input.email, input.code))) {
       throw new UnauthorizedException('Invalid or expired code');
     }
-    return this.signInOrProvision({ email: input.email.toLowerCase(), projectId: input.projectId });
+    // Office channel — invite-only unless AUTH_ALLOW_SIGNUP=true.
+    return this.signInOrProvision({ email: input.email.toLowerCase(), projectId: input.projectId, allowProvision: this.selfSignupAllowed });
   }
 
   /** Google sign-in — verify the ID token, then reuse/provision the account by email. */
   async googleSignIn(input: GoogleSignInInput): Promise<TokenResult> {
     const identity = await this.google.verify(input.idToken);
-    return this.signInOrProvision({ email: identity.email, name: identity.name, projectId: input.projectId });
+    // Office channel — invite-only unless AUTH_ALLOW_SIGNUP=true.
+    return this.signInOrProvision({ email: identity.email, name: identity.name, projectId: input.projectId, allowProvision: this.selfSignupAllowed });
   }
 
   /** Mint a short-lived worker device token (no account) for the QR / tap-photo job card. */

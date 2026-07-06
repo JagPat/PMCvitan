@@ -51,18 +51,28 @@ because only the engineer path has a working real sign-in:
 |---|---|---|
 | Engineer | phone OTP → provisioned engineer | ✅ works (Telegram Gateway is live) |
 | PMC / client / contractor | email + password | ❌ `POST /auth/login` → 401 (demo accounts **not seeded** on the live DB) |
-| Any role | email OTP | 🟡 works but SMTP not configured → the code is shown on-screen (stub) — **not a real gate** |
-| Any role | Google sign-in | ⏳ deferred (`GOOGLE_CLIENT_ID` unset) |
+| PMC / client / contractor | email OTP | 🟡 needs an account (invite-only, below) **and** SMTP; with no SMTP the code is shown on-screen (stub) — not a real gate |
+| PMC / client / contractor | Google sign-in | ⏳ needs an account (invite-only) + `GOOGLE_CLIENT_ID` |
 
 So finish **one** of these first, then flip:
 
-1. **Seed the demo accounts** on the live DB (fastest) — `pmc@ / client@ / contractor@vitan.in`
-   with `SEED_DEMO_PASSWORD`, so password login works; **or**
+1. **Create the office accounts** on the live DB — run the non-destructive
+   `pnpm --filter api ensure-accounts` (upserts `pmc@ / client@ / contractor@vitan.in`
+   with `SEED_DEMO_PASSWORD`; **safe on prod** — unlike `seed.ts`, it wipes nothing).
+   Password login then works; **or**
 2. **Configure Zoho SMTP** (`SMTP_HOST/PORT/SECURE/USER/PASS/FROM`) so email OTP delivers
-   a real code instead of showing it on screen (also review self-provisioning: an unknown
-   email currently provisions an **engineer** with write access — decide the trust model
-   for PMC/client roles); **or**
-3. **Enable Google sign-in** (`GOOGLE_CLIENT_ID` + `VITE_GOOGLE_CLIENT_ID`).
+   a real code — combined with the accounts from (1) this is a real gate; **or**
+3. **Enable Google sign-in** (`GOOGLE_CLIENT_ID` + `VITE_GOOGLE_CLIENT_ID`) — again against
+   the accounts from (1).
+
+### Self-signup trust model (`AUTH_ALLOW_SIGNUP`)
+
+The office channels (**email OTP** and **Google**) are **invite-only by default**: an
+unknown identity with no matching account is **rejected** (`401` "ask your PMC to add
+you"), so a stranger can't mint a writable engineer account and hollow out the lockdown.
+Create accounts with `ensure-accounts` (above). Set `AUTH_ALLOW_SIGNUP=true` to restore
+open self-provisioning (unknown email/Google → a new engineer). **Phone OTP always
+provisions engineers** regardless — a phone is the on-site engineer-onboarding signal.
 
 ---
 
