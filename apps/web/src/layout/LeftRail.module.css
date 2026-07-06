@@ -54,6 +54,40 @@
 .persona {
   padding: 16px 16px 6px;
 }
+.signedInLabel {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.22em;
+  color: rgba(237, 231, 218, 0.4);
+  margin-bottom: 6px;
+}
+.signedInName {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--sidebar-text);
+  margin-bottom: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.signOut {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(237, 231, 218, 0.2);
+  background: transparent;
+  color: rgba(237, 231, 218, 0.72);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+.signOut:hover {
+  background: rgba(237, 231, 218, 0.06);
+  color: var(--sidebar-text);
+}
 
 .nav {
   padding: 14px 12px;

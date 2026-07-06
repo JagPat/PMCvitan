@@ -47,6 +47,19 @@ export interface ApiSnapshot {
 export const API_BASE: string | undefined = import.meta.env.VITE_API_URL;
 export const PROJECT_ID = 'ambli';
 
+/**
+ * Passwordless dev auth (the "Viewing as" persona switcher + auto-connect).
+ * SECURE BY DEFAULT on a real deployment: when an API is configured, dev auth is
+ * off unless VITE_ALLOW_DEV_AUTH is exactly "true" — the persona switcher is
+ * hidden and the shell is gated behind a real sign-in. Mirrors the API's
+ * ALLOW_DEV_AUTH.
+ *
+ * With no API (`VITE_API_URL` unset) the app is the pure local demo — there's no
+ * backend to authenticate against and local sign-in never mints a token, so dev
+ * auth stays ON so the seeded demo (persona switch, any-4-digit OTP) keeps working.
+ */
+export const DEV_AUTH: boolean = import.meta.env.VITE_ALLOW_DEV_AUTH === 'true' || !API_BASE;
+
 /** Result of a real sign-in (phone OTP / worker token / password). */
 export interface AuthResult {
   token: string;

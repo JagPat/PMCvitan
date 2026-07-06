@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { useStore } from '@/store/store';
-import { API_BASE, PROJECT_ID, ApiGateway } from './apiGateway';
+import { API_BASE, PROJECT_ID, DEV_AUTH, ApiGateway } from './apiGateway';
 import { subscribeToPush } from './push';
 
 /**
@@ -10,9 +10,14 @@ import { subscribeToPush } from './push';
  * from the snapshot, and open a realtime socket — any change another user makes
  * pushes a `changed` signal and this client refetches its own snapshot.
  *
- * Auth source: a real session token (set by a phone-OTP sign-in) is used
- * directly when present; otherwise it falls back to passwordless dev auth for
- * the active role (the demo persona switch). Re-runs when either changes.
+ * Auth source, in order:
+ *   1. a real session token (set by a phone/email-OTP or password sign-in) — used directly;
+ *   2. else, when `DEV_AUTH` is on, passwordless dev auth for the active role (demo persona switch);
+ *   3. else (secure default) no auth — the gateway is still injected so the
+ *      sign-in screen can call the public `/auth/*` endpoints; the snapshot fetch
+ *      401s harmlessly and the app shows the seeded local data behind the gate
+ *      until a real sign-in supplies a token.
+ * Re-runs when the role or token changes.
  *
  * A no-op when the env var is unset: the app runs entirely on the seeded local store.
  */
@@ -36,7 +41,9 @@ export function useApiSync(): void {
 
     (async () => {
       if (token) gw.setToken(token);
-      else await gw.connect(role);
+      else if (DEV_AUTH) await gw.connect(role);
+      // else: secure default — inject the gateway unauthenticated so the sign-in
+      // flow reaches the public /auth/* endpoints; snapshot() will 401 until sign-in.
       if (cancelled) return;
       useStore.getState()._setGateway(gw);
       refresh();
