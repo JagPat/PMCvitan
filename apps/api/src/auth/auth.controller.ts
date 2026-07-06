@@ -24,10 +24,16 @@ import {
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
-  /** Passwordless dev auth (demo persona switch). Disabled when ALLOW_DEV_AUTH=false. */
+  /**
+   * Passwordless dev auth (demo persona switch). **Secure by default**: only
+   * enabled when ALLOW_DEV_AUTH is explicitly "true". Any other value — or the
+   * var being unset — returns 403, so a fresh deploy can't hand out a full PMC
+   * token to anyone who POSTs `{role:"pmc"}`. Flip it on for the demo; drop it
+   * once real sign-in (password / email-OTP / Google) covers every role.
+   */
   @Post('session')
   session(@Body(new ZodPipe(sessionSchema)) body: SessionInput) {
-    if (process.env.ALLOW_DEV_AUTH === 'false') {
+    if (process.env.ALLOW_DEV_AUTH !== 'true') {
       throw new ForbiddenException('Dev auth is disabled');
     }
     return this.auth.session(body);

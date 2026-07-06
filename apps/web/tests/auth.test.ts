@@ -157,6 +157,25 @@ describe('email/password login', () => {
   });
 });
 
+describe('signOut ends the session and returns to the sign-in flow', () => {
+  it('clears the token/name, resets the access flow, and drops to a neutral role', () => {
+    useStore.setState((st) => {
+      st.sessionToken = 'JWT-pmc';
+      st.userName = 'Ar. Vitan';
+      st.role = 'pmc';
+      st.screen = 'dashboard';
+      st.notifOpen = true;
+      st.access.step = 'tradehome';
+    });
+    s().signOut();
+    expect(s().sessionToken).toBeNull();
+    expect(s().userName).toBeNull();
+    expect(s().access.step).toBe('who');
+    expect(s().notifOpen).toBe(false);
+    expect(s().role).toBe('client'); // neutral — the auth gate takes over when dev auth is off
+  });
+});
+
 describe('setRole drops any real OTP session', () => {
   it('clears sessionToken + userName on an explicit persona switch (dev auth)', () => {
     useStore.setState((st) => { st.sessionToken = 'JWT-eng'; st.userName = 'Site Engineer'; });

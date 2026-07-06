@@ -1,8 +1,10 @@
 import { useStore } from '@/store/store';
 import { useNavItems } from './useNavItems';
 import { RolePicker } from './RolePicker';
-import { Bell } from '@/lib/icons';
+import { Bell, Power } from '@/lib/icons';
 import { PROJECT } from '@vitan/shared';
+import { DEV_AUTH } from '@/data/apiGateway';
+import { ROLE_LABEL } from '@/lib/screens';
 import logo from '@/assets/vitan-logo.jpeg';
 import styles from './LeftRail.module.css';
 
@@ -12,6 +14,9 @@ export function LeftRail() {
   const setScreen = useStore((s) => s.setScreen);
   const toggleNotif = useStore((s) => s.toggleNotif);
   const notifCount = useStore((s) => s.notifications.length);
+  const role = useStore((s) => s.role);
+  const userName = useStore((s) => s.userName);
+  const signOut = useStore((s) => s.signOut);
 
   return (
     <aside className={styles.rail}>
@@ -25,9 +30,19 @@ export function LeftRail() {
         </div>
       </div>
 
-      <div className={styles.persona}>
-        <RolePicker />
-      </div>
+      {DEV_AUTH ? (
+        <div className={styles.persona}>
+          <RolePicker />
+        </div>
+      ) : (
+        <div className={styles.persona}>
+          <div className={styles.signedInLabel}>SIGNED IN AS</div>
+          <div className={styles.signedInName}>{userName ?? ROLE_LABEL[role]}</div>
+          <button className={styles.signOut} onClick={signOut}>
+            <Power size={13} /> Sign out
+          </button>
+        </div>
+      )}
 
       <nav className={`${styles.nav} vscroll`}>
         <div className={styles.navLabel}>SCREENS</div>

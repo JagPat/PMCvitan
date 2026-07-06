@@ -1,0 +1,48 @@
+/* Full-viewport sign-in gate shown when dev auth is off and there's no session. */
+.gate {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--canvas);
+  overflow: auto;
+}
+.backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+/* A phone-shaped card so the flow's bottom-anchored buttons sit where they should. */
+.card {
+  position: relative;
+  width: 100%;
+  max-width: 460px;
+  height: 100%;
+  max-height: 760px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: 22px;
+  box-shadow: var(--sh-modal);
+}
+/* Let the inner screen own its full height (its steps use min-height:100%). */
+.card > * {
+  flex: 1;
+  min-height: 100%;
+}
+@media (max-width: 520px) {
+  .gate {
+    padding: 0;
+  }
+  .card {
+    max-height: none;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}

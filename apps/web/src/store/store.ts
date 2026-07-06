@@ -73,6 +73,7 @@ export interface AppState {
 export interface AppActions {
   // shell
   setRole: (role: Role) => void;
+  signOut: () => void;
   setScreen: (k: ScreenKey) => void;
   setLang: (l: Lang) => void;
   toggleNotif: () => void;
@@ -285,6 +286,21 @@ export const useStore = create<Store>()(
         s.userName = null;
       });
     },
+    /**
+     * End the real session and return to the sign-in screen. Clears the token,
+     * resets the access flow to 'who', and drops back to a neutral role/screen.
+     * With dev auth off, the AppShell auth-gate then shows the sign-in screen.
+     */
+    signOut: () =>
+      set((s) => {
+        s.sessionToken = null;
+        s.userName = null;
+        s.access = freshAccess();
+        s.role = 'client';
+        s.screen = screensFor('client')[0].key;
+        s.notifOpen = false;
+        s.modal = { type: null };
+      }),
     setScreen: (k) =>
       set((s) => {
         s.screen = k;
