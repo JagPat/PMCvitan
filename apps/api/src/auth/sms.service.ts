@@ -1,9 +1,5 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
-
-interface StubEntry {
-  code: string;
-  expires: number;
-}
+import { HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { OtpStore } from './otp-store';
 
 const OTP_TTL_MS = 5 * 60_000;
 
@@ -28,7 +24,7 @@ export interface OtpSendResult {
 @Injectable()
 export class SmsService {
   private readonly log = new Logger('SmsService');
-  private readonly store = new Map<string, StubEntry>();
+  private readonly otp = new OtpStore(OTP_TTL_MS);
 
   private get authKey(): string | undefined {
     return process.env.MSG91_AUTH_KEY?.trim() || undefined;
@@ -68,36 +64,33 @@ export class SmsService {
   private newCode(): string {
     return String(Math.floor(1000 + Math.random() * 9000));
   }
-  private remember(key: string, code: string): void {
-    this.store.set(key, { code, expires: Date.now() + OTP_TTL_MS });
-  }
 
-  /** Send an OTP over the highest-priority configured channel. */
+  /** Send an OTP over the highest-priority configured channel (throttled per number). */
   async sendOtp(phone: string): Promise<OtpSendResult> {
+    if (!this.otp.canSend(phone)) {
+      throw new HttpException('Please wait a moment before requesting another code.', HttpStatus.TOO_MANY_REQUESTS);
+    }
     if (this.msg91Live) {
       await this.sendViaMsg91(phone);
+      this.otp.markSent(phone); // MSG91 verifies remotely; track send for throttling
       return { live: true, channel: 'sms' };
     }
     if (this.telegramToken) {
       const code = this.newCode();
       await this.sendViaTelegram(phone, code);
-      this.remember(phone, code);
+      this.otp.put(phone, code);
       return { live: true, channel: 'telegram' };
     }
     const code = this.newCode();
-    this.remember(phone, code);
+    this.otp.put(phone, code);
     this.log.warn(`DEV OTP for ${phone}: ${code} (no SMS/Telegram provider)`);
     return { live: false, channel: 'stub', devCode: code };
   }
 
-  /** Verify: MSG91 remote-verifies; Telegram + stub verify against the local store. */
+  /** Verify: MSG91 remote-verifies; Telegram + stub verify against the attempt-limited store. */
   async verifyOtp(phone: string, code: string): Promise<boolean> {
     if (this.msg91Live) return this.verifyViaMsg91(phone, code);
-    const entry = this.store.get(phone);
-    if (!entry || entry.expires < Date.now()) return false;
-    const ok = entry.code === code;
-    if (ok) this.store.delete(phone);
-    return ok;
+    return this.otp.verify(phone, code);
   }
 
   private async sendViaMsg91(phone: string): Promise<void> {
