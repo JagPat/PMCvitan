@@ -1,11 +1,7 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
-
-interface StubEntry {
-  code: string;
-  expires: number;
-}
+import { OtpStore } from './otp-store';
 
 const OTP_TTL_MS = 10 * 60_000;
 
@@ -23,7 +19,7 @@ export interface EmailOtpResult {
 @Injectable()
 export class EmailService {
   private readonly log = new Logger('EmailService');
-  private readonly store = new Map<string, StubEntry>();
+  private readonly otp = new OtpStore(OTP_TTL_MS);
   private transporter: Transporter | null = null;
 
   get configured(): boolean {
@@ -51,8 +47,11 @@ export class EmailService {
   /** Send an email OTP. `devCode` is present only when SMTP is not configured. */
   async sendOtp(email: string): Promise<EmailOtpResult> {
     const key = email.trim().toLowerCase();
+    if (!this.otp.canSend(key)) {
+      throw new HttpException('Please wait a moment before requesting another code.', HttpStatus.TOO_MANY_REQUESTS);
+    }
     const code = this.newCode();
-    this.store.set(key, { code, expires: Date.now() + OTP_TTL_MS });
+    this.otp.put(key, code);
 
     if (!this.configured) {
       this.log.warn(`DEV EMAIL OTP for ${key}: ${code} (no SMTP configured)`);
@@ -75,11 +74,6 @@ export class EmailService {
   }
 
   async verifyOtp(email: string, code: string): Promise<boolean> {
-    const key = email.trim().toLowerCase();
-    const entry = this.store.get(key);
-    if (!entry || entry.expires < Date.now()) return false;
-    const ok = entry.code === code;
-    if (ok) this.store.delete(key);
-    return ok;
+    return this.otp.verify(email.trim().toLowerCase(), code);
   }
 }
