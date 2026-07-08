@@ -53,10 +53,16 @@ export class PushService {
     });
   }
 
-  /** Fan a notification out to every subscription on the project (no-op without VAPID). */
-  async notifyProject(projectId: string, payload: PushPayload): Promise<void> {
+  /**
+   * Fan a notification out to the project's subscriptions (no-op without VAPID).
+   * With `roles`, only subscriptions whose stored role matches are targeted (e.g.
+   * an approval goes to PMC/contractor, a re-inspection to the engineer); omit it
+   * to broadcast to everyone on the project.
+   */
+  async notifyProject(projectId: string, payload: PushPayload, roles?: string[]): Promise<void> {
     if (!this.ready) return;
-    const subs = await this.prisma.pushSubscription.findMany({ where: { projectId } });
+    const where = roles && roles.length ? { projectId, role: { in: roles } } : { projectId };
+    const subs = await this.prisma.pushSubscription.findMany({ where });
     const body = JSON.stringify(payload);
     await Promise.all(
       subs.map(async (sc) => {

@@ -40,8 +40,10 @@ export class InspectionsService {
     if (!insp || insp.projectId !== projectId) throw new NotFoundException(`Inspection ${inspectionId} not found`);
 
     let pushBody: string;
+    let pushRoles: string[];
     if (input.approve) {
       pushBody = 'Inspection approved. Contractor and client notified.';
+      pushRoles = ['contractor', 'client'];
       await this.prisma.$transaction([
         this.prisma.inspection.update({ where: { id: inspectionId }, data: { decided: true } }),
         this.prisma.notification.create({ data: { projectId, text: pushBody, color: '#3F7A54', time: 'just now' } }),
@@ -52,6 +54,7 @@ export class InspectionsService {
       const n = reinspectionCount(projected);
       if (n === 0) throw new BadRequestException('No items rejected. Use approve instead.');
       pushBody = `${n} re-inspection task(s) created with due dates.`;
+      pushRoles = ['engineer']; // the engineer performs the re-inspection
       await this.prisma.$transaction([
         ...input.rejectedItemNames.map((name) => this.prisma.inspectionItem.updateMany({ where: { inspectionId, name }, data: { rejected: true } })),
         this.prisma.inspection.update({ where: { id: inspectionId }, data: { decided: true } }),
@@ -59,7 +62,7 @@ export class InspectionsService {
         this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'inspection.reinspect', entity: 'Inspection', entityId: inspectionId } }),
       ]);
     }
-    this.realtime.notifyChanged(projectId, pushBody);
+    this.realtime.notifyChanged(projectId, pushBody, pushRoles);
     return this.snapshot.build(projectId, user.role);
   }
 }

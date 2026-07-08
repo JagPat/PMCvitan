@@ -15,11 +15,13 @@ function make(storagePutUrl: string | null) {
         return row;
       }),
       findUnique: vi.fn(),
+      delete: vi.fn(async () => ({})),
     },
   };
   const storage = {
     keyFor: vi.fn(() => 'ambli/progress/med1.jpg'),
     put: vi.fn(async () => ({ url: storagePutUrl })),
+    remove: vi.fn(async () => {}),
   };
   const realtime = { notifyChanged: vi.fn() };
   const svc = new MediaService(
@@ -70,5 +72,32 @@ describe('MediaService.fetch', () => {
 
     prisma.media.findUnique.mockResolvedValueOnce(null);
     expect(await svc.fetch('missing')).toBeNull();
+  });
+});
+
+describe('MediaService.remove', () => {
+  it('deletes the bucket object + row for a media in the caller’s project', async () => {
+    const { svc, prisma, storage, realtime } = make(null);
+    prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', projectId: 'ambli', storageKey: 'ambli/progress/m.jpg' });
+
+    expect(await svc.remove('m', 'ambli')).toBe(true);
+    expect(storage.remove).toHaveBeenCalledWith('ambli/progress/m.jpg');
+    expect(prisma.media.delete).toHaveBeenCalledWith({ where: { id: 'm' } });
+    expect(realtime.notifyChanged).toHaveBeenCalledWith('ambli');
+  });
+
+  it('refuses to delete media from another project (tenant isolation)', async () => {
+    const { svc, prisma, storage } = make(null);
+    prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', projectId: 'other', storageKey: 'k' });
+
+    expect(await svc.remove('m', 'ambli')).toBe(false);
+    expect(storage.remove).not.toHaveBeenCalled();
+    expect(prisma.media.delete).not.toHaveBeenCalled();
+  });
+
+  it('returns false when the media does not exist', async () => {
+    const { svc, prisma } = make(null);
+    prisma.media.findUnique.mockResolvedValueOnce(null);
+    expect(await svc.remove('missing', 'ambli')).toBe(false);
   });
 });

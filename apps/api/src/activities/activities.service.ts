@@ -50,7 +50,8 @@ export class ActivitiesService {
       this.prisma.notification.create({ data: { projectId, text: `Closing inspection auto-created: ${a.name}`, color: '#C08A2D', time: 'just now' } }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.complete', entity: 'Activity', entityId: activityId } }),
     ]);
-    this.realtime.notifyChanged(projectId, `Closing inspection auto-created: ${a.name}`);
+    // a closing inspection needs the PMC to review and sign off
+    this.realtime.notifyChanged(projectId, `Closing inspection auto-created: ${a.name}`, ['pmc']);
     return this.snapshot.build(projectId, user.role);
   }
 }

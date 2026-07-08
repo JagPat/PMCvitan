@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 
 const MIME_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -67,6 +67,13 @@ export class StorageService {
     );
     this.log.log(`stored ${key} (${bytes.length} bytes) in S3`);
     return { url: this.publicUrl(key) };
+  }
+
+  /** Delete a stored object (S3 mode). Dev stub keeps bytes in the DB row, so no-op here. */
+  async remove(key: string): Promise<void> {
+    if (!this.configured) return;
+    await this.s3().send(new DeleteObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }));
+    this.log.log(`deleted ${key} from S3`);
   }
 
   /** @internal test seam — inject a fake S3 client. */
