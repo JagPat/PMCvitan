@@ -50,7 +50,8 @@ export interface AppState {
   modal: ModalState;
   decisions: Decision[];
   checklist: Checklist;
-  review: Review;
+  reviews: Review[]; // the PMC review queue (submitted, undecided inspections)
+  activeReviewId: string | null; // which queued review the PMC is looking at (null ⇒ first pending)
   reinspectionCreated: boolean;
   online: boolean;
   syncQueue: string[];
@@ -94,6 +95,7 @@ export interface AppActions {
   setNote: (idx: number, txt: string) => void;
   submitInspection: () => void;
   // inspection (pmc review)
+  setActiveReview: (id: string) => void;
   toggleReject: (idx: number) => void;
   approveInspection: () => void;
   sendReinspection: () => void;
@@ -157,7 +159,8 @@ export function getInitialState(): AppState {
     modal: { type: null },
     decisions: structuredClone(SEED_DECISIONS),
     checklist: structuredClone(SEED_CHECKLIST),
-    review: structuredClone(SEED_REVIEW),
+    reviews: [structuredClone(SEED_REVIEW)],
+    activeReviewId: null,
     reinspectionCreated: false,
     online: true,
     syncQueue: [],
@@ -188,7 +191,8 @@ export const useStore = create<Store>()(
         s.decisions = snap.decisions;
         s.activities = snap.activities;
         if (snap.checklist) s.checklist = snap.checklist;
-        if (snap.review) s.review = snap.review;
+        s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
+        if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         s.reinspectionCreated = snap.reinspectionCreated;
         if (snap.dailyLog) s.dailyLog = snap.dailyLog;
         s.notifications = snap.notifications;
@@ -264,6 +268,17 @@ export const useStore = create<Store>()(
         s.access = freshAccess();
       });
       get().flash('Signed in as ' + role + ' (demo).');
+    };
+
+    /** Index in `reviews` of the review the PMC is acting on: the explicitly
+     *  selected one, else the first pending, else the first. -1 when the queue is empty. */
+    const activeReviewIdx = (): number => {
+      const st = get();
+      if (!st.reviews.length) return -1;
+      const byId = st.activeReviewId ? st.reviews.findIndex((r) => r.id === st.activeReviewId) : -1;
+      if (byId >= 0) return byId;
+      const pending = st.reviews.findIndex((r) => !r.decided);
+      return pending >= 0 ? pending : 0;
     };
 
     return {
@@ -406,28 +421,67 @@ export const useStore = create<Store>()(
         return;
       }
       if (runRemoteOrQueue({ t: 'submitInspection', inspectionId: c.id, items: c.items }, 'Submit inspection', () => gateway!.submitInspection(c.id, c.items), 'Inspection submitted to the architect for review.')) return;
-      set((s) => { s.checklist.submitted = true; });
+      set((s) => {
+        s.checklist.submitted = true;
+        // demo (no API): the submitted checklist enters the PMC review queue,
+        // mapping each item's pass/fail state to a PASS/FAIL result.
+        if (!s.reviews.some((r) => r.id === s.checklist.id)) {
+          s.reviews.push({
+            id: s.checklist.id,
+            title: s.checklist.title,
+            zone: s.checklist.zone,
+            by: 'Site Engineer',
+            date: s.checklist.date,
+            decided: false,
+            items: s.checklist.items.map((it) => ({
+              name: it.name,
+              result: it.state === 'fail' ? 'FAIL' : 'PASS',
+              swatch: 'concrete',
+              note: it.note,
+              rejected: false,
+            })),
+          });
+        }
+      });
       get().flash('Inspection submitted to the architect for review.');
     },
 
-    // ---- pmc review ----
-    toggleReject: (idx) => set((s) => { s.review.items[idx].rejected = !s.review.items[idx].rejected; }),
+    // ---- pmc review (queue) ----
+    setActiveReview: (id) => set((s) => { s.activeReviewId = id; }),
+    toggleReject: (idx) =>
+      set((s) => {
+        const i = activeReviewIdx();
+        if (i < 0) return;
+        s.reviews[i].items[idx].rejected = !s.reviews[i].items[idx].rejected;
+      }),
     approveInspection: () => {
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: get().review.id, approve: true, rejectedItemNames: [] }, 'Approve inspection', () => gateway!.decideReview(get().review.id, true, []), 'Inspection approved. Contractor and client notified.')) return;
-      set((s) => { s.review.decided = true; });
+      const i = activeReviewIdx();
+      if (i < 0) return;
+      const review = get().reviews[i];
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemNames: [] }, 'Approve inspection', () => gateway!.decideReview(review.id, true, []), 'Inspection approved. Contractor and client notified.')) return;
+      set((s) => {
+        const j = s.reviews.findIndex((r) => r.id === review.id);
+        if (j >= 0) s.reviews[j].decided = true;
+        s.activeReviewId = review.id; // keep the just-decided review on screen (REVIEWED)
+      });
       get().flash('Inspection approved. Contractor and client notified.');
     },
     sendReinspection: () => {
-      const n = get().review.items.filter((it) => it.rejected || it.result === 'FAIL').length;
+      const i = activeReviewIdx();
+      if (i < 0) return;
+      const review = get().reviews[i];
+      const n = review.items.filter((it) => it.rejected || it.result === 'FAIL').length;
       if (n === 0) {
         get().flash('No items rejected. Use Approve Inspection instead.');
         return;
       }
-      const rejectedNames = get().review.items.filter((it) => it.rejected).map((it) => it.name);
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: get().review.id, approve: false, rejectedItemNames: rejectedNames }, 'Send re-inspection', () => gateway!.decideReview(get().review.id, false, rejectedNames), n + ' re-inspection task(s) created with due dates.')) return;
+      const rejectedNames = review.items.filter((it) => it.rejected).map((it) => it.name);
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemNames: rejectedNames }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedNames), n + ' re-inspection task(s) created with due dates.')) return;
       set((s) => {
         s.reinspectionCreated = true;
-        s.review.decided = true;
+        const j = s.reviews.findIndex((r) => r.id === review.id);
+        if (j >= 0) s.reviews[j].decided = true;
+        s.activeReviewId = review.id;
       });
       get().flash(n + ' re-inspection task(s) created with due dates.');
     },

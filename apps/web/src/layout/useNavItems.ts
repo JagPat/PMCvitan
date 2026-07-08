@@ -1,4 +1,5 @@
 import { useStore } from '@/store/store';
+import { selectReviewPending } from '@/store/selectors';
 import { screensFor, type ScreenMeta } from '@/lib/screens';
 
 export interface NavItem extends ScreenMeta {
@@ -11,12 +12,12 @@ export function useNavItems(): NavItem[] {
   const role = useStore((s) => s.role);
   const screen = useStore((s) => s.screen);
   const pending = useStore((s) => s.decisions.filter((d) => d.status === 'pending').length);
-  const reviewDecided = useStore((s) => s.review.decided);
+  const reviewPending = useStore(selectReviewPending);
 
   return screensFor(role).map((m) => {
     let badge = 0;
     if (m.key === 'client-decisions') badge = pending;
-    if (m.key === 'inspect-review') badge = reviewDecided ? 0 : 1;
+    if (m.key === 'inspect-review') badge = reviewPending;
     return { ...m, badge, active: screen === m.key };
   });
 }

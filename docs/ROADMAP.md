@@ -7,7 +7,7 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 | **0 — Foundations** | Monorepo (pnpm workspaces), `packages/shared` (types, tokens, i18n, helpers, seed), tsconfig/lint, docs | ✅ Done |
 | **1 — Design system + responsive shell** | Tokens → CSS vars; self-hosted fonts; primitives + lucide icons; responsive nav (bottom tabs ↔ left rail); URL-synced routing; session/role + language; Zustand store + `DataGateway`/local gateway seeded with "Residence at Ambli" | ✅ Done |
 | **2 — Core decision loop** | Decision Log + Client Decisions + approve → confirm modal → lock → log update + dashboard count + notification | ✅ Done |
-| **3 — Inspections** | Engineer checklist (guarded) → PMC review (photo-forward, reject toggles) → re-inspection tasks + failed-count | ✅ Done (UI + logic; checklist↔review wiring is a data-phase item, see below) |
+| **3 — Inspections** | Engineer checklist (guarded) → PMC review (photo-forward, reject toggles) → re-inspection tasks + failed-count. **Checklist↔review now wired**: a submitted checklist (+ auto-created closing inspections) enters a **PMC review queue** — the snapshot returns `reviews[]`, the review screen shows a queue selector, and a checklist item's pass/fail maps to a PASS/FAIL review result | ✅ Done |
 | **4 — Site schedule + gates** | Activities, planned/actual timeline, 4 gate dots, Start (gate-guarded)/Mark-complete → auto closing inspection | ✅ Done |
 | **5 — Daily site log + attendance + offline outbox** | Check-in (GPS/selfie), crew steppers, QR worker check-in, materials + mismatch → block, progress photos, connectivity/queue/flush | ✅ Done (UI + in-store outbox; Dexie/PWA outbox is Phase 8) |
 | **6 — Team access + i18n + worker job card** | Who-are-you → phone+OTP / trade picker → mistri home; worker no-login "tap photo" → job card; en/hi/gu live toggle | ✅ Done |
@@ -33,7 +33,7 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 
 ## Known product gaps (carried forward, not bugs)
 
-- **Checklist ↔ Review are decoupled** in the seeded demo (the submitted `INSP-22` Pre-Tiling checklist does not feed the seeded `INSP-21` Waterproofing review). This mirrors the design prototype exactly; wiring a submitted checklist into the PMC review queue is a Phase 3/7 data task.
+- ~~**Checklist ↔ Review are decoupled**~~ **Resolved.** A submitted checklist now feeds the **PMC review queue**: the snapshot exposes `reviews[]` (every submitted-but-undecided inspection — a submitted checklist, the seeded review, and auto-created closing inspections), the review screen renders a queue selector, and each checklist `state` (pass/fail/na) maps to a review `result` (PASS/FAIL). The demo mirrors this locally (submit as engineer → it appears in the PMC's queue).
 - **Swatches are CSS-placeholder gradients** standing in for material samples in the decision options. Real *site* photos are now first-class (progress-photo upload/gallery + geo/time stamp + tap-to-zoom, `7c-media`); the decision-option swatches remain as material-sample stand-ins.
 - **Persona switcher** ("Viewing as") is now a dev-only device: gated behind `ALLOW_DEV_AUTH`/`VITE_ALLOW_DEV_AUTH` and hidden in the locked-down build, replaced by real sign-in + a full-screen auth gate (`7c-auth lockdown`, `docs/AUTH_LOCKDOWN.md`).
 
