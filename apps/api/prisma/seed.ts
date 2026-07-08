@@ -7,6 +7,8 @@ const PROJECT_ID = 'ambli';
 
 async function main(): Promise<void> {
   // wipe (children first) for an idempotent seed
+  await prisma.membership.deleteMany();
+  await prisma.orgMembership.deleteMany();
   await prisma.workerDevice.deleteMany();
   await prisma.user.deleteMany();
   await prisma.auditLog.deleteMany();
@@ -22,10 +24,15 @@ async function main(): Promise<void> {
   await prisma.activity.deleteMany();
   await prisma.decision.deleteMany();
   await prisma.project.deleteMany();
+  await prisma.org.deleteMany();
+
+  // The practice that owns the project (multi-tenant foundation).
+  const org = await prisma.org.create({ data: { name: 'Vitan Architecture', slug: 'vitan' } });
 
   await prisma.project.create({
     data: {
       id: PROJECT_ID,
+      orgId: org.id,
       name: 'Residence at Ambli, Ahmedabad',
       short: 'Residence at Ambli',
       descriptor: 'G+2 Private Residence',
@@ -161,17 +168,22 @@ async function main(): Promise<void> {
   // to any code the server logs when no MSG91 provider is configured).
   const demoPassword = process.env.SEED_DEMO_PASSWORD || 'vitan123';
   const hash = bcrypt.hashSync(demoPassword, 10);
-  await prisma.user.createMany({
-    data: [
-      { projectId: PROJECT_ID, role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in', passwordHash: hash },
-      { projectId: PROJECT_ID, role: 'client', name: 'Mr. Shah', email: 'client@vitan.in', passwordHash: hash },
-      { projectId: PROJECT_ID, role: 'contractor', name: 'Rajesh (Contractor)', email: 'contractor@vitan.in', passwordHash: hash },
-      { projectId: PROJECT_ID, role: 'engineer', name: 'Site Engineer', phone: '9876543210' },
-    ],
-  });
+  const accounts = [
+    { projectId: PROJECT_ID, role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in', passwordHash: hash },
+    { projectId: PROJECT_ID, role: 'client', name: 'Mr. Shah', email: 'client@vitan.in', passwordHash: hash },
+    { projectId: PROJECT_ID, role: 'contractor', name: 'Rajesh (Contractor)', email: 'contractor@vitan.in', passwordHash: hash },
+    { projectId: PROJECT_ID, role: 'engineer', name: 'Site Engineer', phone: '9876543210' },
+  ];
+  for (const a of accounts) {
+    const user = await prisma.user.create({ data: a });
+    // project membership (the access grant tokens scope to)
+    await prisma.membership.create({ data: { projectId: PROJECT_ID, userId: user.id, role: a.role, status: 'active' } });
+    // the architect administers the org; everyone else is a plain org member
+    await prisma.orgMembership.create({ data: { orgId: org.id, userId: user.id, role: a.role === 'pmc' ? 'owner' : 'member' } });
+  }
 
   // eslint-disable-next-line no-console
-  console.log('Seeded project', PROJECT_ID, '+ demo accounts (pmc/client/contractor @vitan.in)');
+  console.log('Seeded org Vitan Architecture + project', PROJECT_ID, '+ demo accounts & memberships');
 }
 
 main()

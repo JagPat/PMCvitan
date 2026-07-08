@@ -137,3 +137,21 @@ export const issueDrawingSchema = z.object({
   decisionId: z.string().optional(),
 });
 export type IssueDrawingInput = z.infer<typeof issueDrawingSchema>;
+
+// ── Orgs & multi-project (multi-tenant foundation) ───────────────────────────
+export const createOrgSchema = z.object({ name: z.string().min(1) });
+export type CreateOrgInput = z.infer<typeof createOrgSchema>;
+
+export const createProjectSchema = z.object({
+  name: z.string().min(1),
+  short: z.string().min(1),
+  descriptor: z.string().default(''),
+  stage: z.string().default('Planning'),
+  siteCode: z.string().default(''),
+  projStart: z.string().default(''),
+  projEnd: z.string().default(''),
+});
+export type CreateProjectInput = z.infer<typeof createProjectSchema>;
+
+export const switchProjectSchema = z.object({ projectId: z.string().min(1) });
+export type SwitchProjectInput = z.infer<typeof switchProjectSchema>;

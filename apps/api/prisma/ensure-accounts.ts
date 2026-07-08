@@ -41,6 +41,14 @@ async function main(): Promise<void> {
     throw new Error(`Project "${PROJECT_ID}" not found — refusing to create orphan accounts. Set PROJECT_ID.`);
   }
 
+  // Ensure the owning org, and link the project to it (multi-tenant backfill).
+  const orgSlug = process.env.ORG_SLUG || 'vitan';
+  const orgName = process.env.ORG_NAME || 'Vitan Architecture';
+  const org = await prisma.org.upsert({ where: { slug: orgSlug }, update: {}, create: { name: orgName, slug: orgSlug } });
+  if (project.orgId !== org.id) {
+    await prisma.project.update({ where: { id: PROJECT_ID }, data: { orgId: org.id } });
+  }
+
   const accounts: AccountSpec[] = process.env.ACCOUNTS_JSON
     ? (JSON.parse(process.env.ACCOUNTS_JSON) as AccountSpec[])
     : DEFAULT_ACCOUNTS;
@@ -71,12 +79,23 @@ async function main(): Promise<void> {
       update: { projectId: PROJECT_ID, role: a.role, name: a.name, ...(wantsPassword ? { passwordHash } : {}) },
       create: data,
     });
+    // project + org memberships (the multi-tenant access grants)
+    await prisma.membership.upsert({
+      where: { projectId_userId: { projectId: PROJECT_ID, userId: user.id } },
+      update: { role: a.role, status: 'active' },
+      create: { projectId: PROJECT_ID, userId: user.id, role: a.role, status: 'active' },
+    });
+    await prisma.orgMembership.upsert({
+      where: { orgId_userId: { orgId: org.id, userId: user.id } },
+      update: { role: a.role === 'pmc' ? 'owner' : 'member' },
+      create: { orgId: org.id, userId: user.id, role: a.role === 'pmc' ? 'owner' : 'member' },
+    });
     // eslint-disable-next-line no-console
-    console.log(`ensured ${user.role} ${user.email ?? user.phone} (${user.id})`);
+    console.log(`ensured ${user.role} ${user.email ?? user.phone} (${user.id}) + memberships`);
   }
 
   // eslint-disable-next-line no-console
-  console.log(`Done. ${accounts.length} account(s) ensured on project ${PROJECT_ID} (no other data touched).`);
+  console.log(`Done. Org ${orgSlug} + ${accounts.length} account(s) ensured on project ${PROJECT_ID} (no other data touched).`);
 }
 
 main()
