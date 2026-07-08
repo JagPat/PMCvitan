@@ -21,6 +21,7 @@ import {
   SEED_DECISIONS,
   SEED_NOTIFICATIONS,
   SEED_REVIEW,
+  SEED_DRAWINGS,
   PROJECT,
   type AccessState,
   type AccessWho,
@@ -29,6 +30,7 @@ import {
   type Checklist,
   type DailyLog,
   type Decision,
+  type Drawing,
   type ItemState,
   type Lang,
   type ModalState,
@@ -38,7 +40,7 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
-import type { ApiGateway, ApiSnapshot, OutboxOp } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp } from '@/data/apiGateway';
 
 export interface AppState {
@@ -53,6 +55,7 @@ export interface AppState {
   reviews: Review[]; // the PMC review queue (submitted, undecided inspections)
   activeReviewId: string | null; // which queued review the PMC is looking at (null ⇒ first pending)
   reinspectionCreated: boolean;
+  drawings: Drawing[]; // the drawings register (Slice 1)
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
@@ -99,6 +102,8 @@ export interface AppActions {
   toggleReject: (idx: number) => void;
   approveInspection: () => void;
   sendReinspection: () => void;
+  // drawings register
+  issueDrawing: (input: IssueDrawingInput) => void;
   // schedule
   startActivity: (id: string) => void;
   completeActivity: (id: string) => void;
@@ -162,6 +167,7 @@ export function getInitialState(): AppState {
     reviews: [structuredClone(SEED_REVIEW)],
     activeReviewId: null,
     reinspectionCreated: false,
+    drawings: structuredClone(SEED_DRAWINGS),
     online: true,
     syncQueue: [],
     outbox: [],
@@ -194,6 +200,7 @@ export const useStore = create<Store>()(
         s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         s.reinspectionCreated = snap.reinspectionCreated;
+        if (snap.drawings) s.drawings = snap.drawings;
         if (snap.dailyLog) s.dailyLog = snap.dailyLog;
         s.notifications = snap.notifications;
         s.projStart = snap.project.projStart;
@@ -484,6 +491,55 @@ export const useStore = create<Store>()(
         s.activeReviewId = review.id;
       });
       get().flash(n + ' re-inspection task(s) created with due dates.');
+    },
+
+    // ---- drawings register ----
+    issueDrawing: (input) => {
+      if (gateway) {
+        gateway
+          .issueDrawing(input)
+          .then(() => {
+            get().flash(`Drawing issued: ${input.number} Rev ${input.rev} — team notified.`);
+            gateway!.snapshot().then((snap) => applySnapshot(snap)).catch(() => {});
+          })
+          .catch(() => get().flash('Could not issue the drawing — please try again.'));
+        return;
+      }
+      // local demo: add to the register (or add a rev + supersede the prior)
+      set((s) => {
+        const newRev = {
+          id: `${input.number}-${input.rev}`,
+          rev: input.rev,
+          status: input.status ?? 'for_construction',
+          mime: input.mime,
+          url: `data:${input.mime};base64,${input.data}`,
+          sizeBytes: Math.floor((input.data.length * 3) / 4),
+          note: input.note ?? '',
+          issuedBy: 'You (demo)',
+          issuedAt: 'just now',
+        };
+        const existing = s.drawings.find((d) => d.number === input.number);
+        if (existing) {
+          existing.revisions.forEach((r) => { if (r.status !== 'superseded') r.status = 'superseded'; });
+          existing.revisions.unshift(newRev);
+          existing.current = newRev;
+          existing.title = input.title;
+          existing.discipline = input.discipline;
+        } else {
+          s.drawings.unshift({
+            id: `DWG-${s.drawings.length + 1}`,
+            number: input.number,
+            title: input.title,
+            discipline: input.discipline,
+            zone: input.zone ?? null,
+            activityId: input.activityId ?? null,
+            decisionId: input.decisionId ?? null,
+            current: newRev,
+            revisions: [newRev],
+          });
+        }
+      });
+      get().flash(`Drawing issued: ${input.number} Rev ${input.rev} (demo).`);
     },
 
     // ---- schedule ----

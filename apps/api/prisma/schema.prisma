@@ -63,6 +63,7 @@ model Project {
   workerDevices WorkerDevice[]
   media         Media[]
   pushSubs      PushSubscription[]
+  drawings      Drawing[]
 }
 
 // A browser Web Push subscription (Phase 8). Endpoint is unique per device;
@@ -103,6 +104,48 @@ model Media {
   createdAt  DateTime @default(now())
 
   @@index([projectId, kind])
+}
+
+// A controlled drawing in the project's register (the source of truth the team
+// builds from). Identified by its number within the project; each issue is a
+// DrawingRevision, the latest non-superseded one being "current". Files are held
+// by StorageService (S3/R2 or the DB dev stub), same as Media. Slice 1.
+model Drawing {
+  id         String            @id @default(cuid())
+  project    Project           @relation(fields: [projectId], references: [id])
+  projectId  String
+  number     String // e.g. "A-201"
+  title      String
+  discipline String // architectural | structural | mep | other
+  zone       String?
+  activityId String? // the work this drawing governs (Slice 2 linkage)
+  decisionId String?
+  createdAt  DateTime          @default(now())
+  revisions  DrawingRevision[]
+
+  @@unique([projectId, number])
+  @@index([projectId])
+}
+
+// One issued revision of a drawing (Rev A, B, C…). Issuing a new rev supersedes
+// the prior ones so the field only ever builds from `for_construction` current.
+model DrawingRevision {
+  id         String   @id @default(cuid())
+  drawing    Drawing  @relation(fields: [drawingId], references: [id], onDelete: Cascade)
+  drawingId  String
+  rev        String // "A" | "B" | "C" …
+  status     String // for_review | for_construction | superseded
+  mime       String
+  data       Bytes? // dev stub: bytes in the DB; null once stored in S3/R2
+  url        String? // set in S3/R2 mode; null for the dev stub
+  storageKey String?
+  sizeBytes  Int      @default(0)
+  note       String   @default("")
+  issuedBy   String
+  issuedAt   String // display timestamp, e.g. "08 Jul 2026"
+  createdAt  DateTime @default(now())
+
+  @@index([drawingId])
 }
 
 // A real account: PMC / client / contractor sign in with email + password;

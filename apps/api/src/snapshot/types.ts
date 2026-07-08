@@ -60,6 +60,30 @@ export interface ReviewDto {
   items: { name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean }[];
 }
 
+export interface DrawingRevisionDto {
+  id: string;
+  rev: string;
+  status: string; // for_review | for_construction | superseded
+  mime: string;
+  url: string; // resolvable: /drawings/rev/:id (dev stub) or an absolute bucket URL
+  sizeBytes: number;
+  note: string;
+  issuedBy: string;
+  issuedAt: string;
+}
+
+export interface DrawingDto {
+  id: string;
+  number: string;
+  title: string;
+  discipline: string;
+  zone: string | null;
+  activityId: string | null;
+  decisionId: string | null;
+  current: DrawingRevisionDto | null; // the latest non-superseded revision
+  revisions: DrawingRevisionDto[]; // full history, newest first
+}
+
 export interface DailyLogDto {
   date: string;
   checkedIn: boolean;
@@ -96,6 +120,7 @@ export interface SnapshotDto {
   /** @deprecated first pending review — kept for back-compat; use `reviews`. */
   review: ReviewDto | null;
   reinspectionCreated: boolean;
+  drawings: DrawingDto[];
   dailyLog: DailyLogDto | null;
   notifications: { text: string; time: string; color: string }[];
 }

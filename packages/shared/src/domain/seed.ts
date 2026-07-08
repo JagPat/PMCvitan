@@ -12,6 +12,7 @@ import type {
   Decision,
   AppNotification,
   Review,
+  Drawing,
 } from './types';
 
 export const PROJECT = {
@@ -129,6 +130,68 @@ export const SEED_REVIEW: Review = {
     { name: 'Parapet-junction coving intact', result: 'PASS', swatch: 'concrete', note: 'Coving continuous, no cracks.', rejected: false },
   ],
 };
+
+/** A mock title-block sheet as an inline SVG data URL — stands in for a real
+ *  drawing file in the local demo (the API serves real PDFs/DWGs). */
+function sheet(num: string, title: string, rev: string, tag: string): string {
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='420' height='560' viewBox='0 0 420 560'>
+    <rect width='420' height='560' fill='#f4f1ea'/>
+    <rect x='14' y='14' width='392' height='532' fill='none' stroke='#23211c' stroke-width='2'/>
+    <line x1='14' y1='486' x2='406' y2='486' stroke='#23211c' stroke-width='1.5'/>
+    <line x1='300' y1='486' x2='300' y2='546' stroke='#23211c' stroke-width='1.5'/>
+    <rect x='40' y='60' width='340' height='380' fill='none' stroke='#b8b2a6' stroke-dasharray='4 4'/>
+    <text x='210' y='250' font-family='monospace' font-size='15' fill='#b8b2a6' text-anchor='middle'>${tag}</text>
+    <text x='26' y='512' font-family='sans-serif' font-weight='700' font-size='16' fill='#23211c'>${num}</text>
+    <text x='26' y='534' font-family='sans-serif' font-size='12' fill='#5b564c'>${title}</text>
+    <text x='316' y='512' font-family='monospace' font-size='11' fill='#5b564c'>REV</text>
+    <text x='316' y='534' font-family='sans-serif' font-weight='700' font-size='18' fill='#B4462E'>${rev}</text>
+  </svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+export const SEED_DRAWINGS: Drawing[] = [
+  {
+    id: 'DWG-1',
+    number: 'A-201',
+    title: 'Living Room — Flooring Layout',
+    discipline: 'architectural',
+    zone: 'Ground Floor · Living',
+    activityId: 'ACT-31',
+    decisionId: 'DL-014',
+    current: { id: 'A-201-C', rev: 'C', status: 'for_construction', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'C', 'PLAN · 1:50'), sizeBytes: 184320, note: 'Italian marble setting-out; expansion joints marked.', issuedBy: 'Ar. Vitan', issuedAt: '06 Jul 2026' },
+    revisions: [
+      { id: 'A-201-C', rev: 'C', status: 'for_construction', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'C', 'PLAN · 1:50'), sizeBytes: 184320, note: 'Italian marble setting-out; expansion joints marked.', issuedBy: 'Ar. Vitan', issuedAt: '06 Jul 2026' },
+      { id: 'A-201-B', rev: 'B', status: 'superseded', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'B', 'PLAN · 1:50'), sizeBytes: 176128, note: 'Revised border pattern per client.', issuedBy: 'Ar. Vitan', issuedAt: '21 Jun 2026' },
+      { id: 'A-201-A', rev: 'A', status: 'superseded', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'A', 'PLAN · 1:50'), sizeBytes: 170000, note: 'First issue for construction.', issuedBy: 'Ar. Vitan', issuedAt: '02 Jun 2026' },
+    ],
+  },
+  {
+    id: 'DWG-2',
+    number: 'S-101',
+    title: 'Terrace — Slab & Waterproofing Detail',
+    discipline: 'structural',
+    zone: 'Terrace',
+    activityId: 'ACT-28',
+    decisionId: null,
+    current: { id: 'S-101-A', rev: 'A', status: 'for_construction', mime: 'image/vnd.dwg', url: sheet('S-101', 'Terrace Slab Detail', 'A', 'DWG · CAD source'), sizeBytes: 512000, note: 'DWG source — issue the PDF export to the field.', issuedBy: 'Ar. Vitan', issuedAt: '28 May 2026' },
+    revisions: [
+      { id: 'S-101-A', rev: 'A', status: 'for_construction', mime: 'image/vnd.dwg', url: sheet('S-101', 'Terrace Slab Detail', 'A', 'DWG · CAD source'), sizeBytes: 512000, note: 'DWG source — issue the PDF export to the field.', issuedBy: 'Ar. Vitan', issuedAt: '28 May 2026' },
+    ],
+  },
+  {
+    id: 'DWG-3',
+    number: 'SK-07',
+    title: 'Main Door — Veneer Grain Reference',
+    discipline: 'other',
+    zone: 'Ground Floor · Entrance',
+    activityId: 'ACT-33',
+    decisionId: 'DL-011',
+    current: { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026' },
+    revisions: [
+      { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026' },
+    ],
+  },
+];
 
 export const SEED_ACTIVITIES: Activity[] = [
   { id: 'ACT-22', name: 'Electrical Rough-In', zone: 'Second Floor', decisionId: null, ps: 9, pe: 19, as: 9, ae: 18, status: 'done', gm: 'ok', gt: 'ok', gi: 'ok' },

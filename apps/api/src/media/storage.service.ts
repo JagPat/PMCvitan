@@ -9,6 +9,12 @@ const MIME_EXT: Record<string, string> = {
   'image/webp': 'webp',
   'image/heic': 'heic',
   'image/gif': 'gif',
+  // documents (drawings register): PDF for the field, DWG as the CAD source
+  'application/pdf': 'pdf',
+  'image/vnd.dwg': 'dwg',
+  'application/acad': 'dwg',
+  'application/dxf': 'dxf',
+  'image/vnd.dxf': 'dxf',
 };
 
 /**

@@ -118,3 +118,22 @@ export const pushSubscribeSchema = z.object({
   }),
 });
 export type PushSubscribeInput = z.infer<typeof pushSubscribeSchema>;
+
+// ── Drawings register (Slice 1) ──────────────────────────────────────────────
+// Issue a drawing. If `number` already exists in the project a new revision is
+// added and the prior ones are superseded; otherwise a new register entry is
+// created. PDF/DWG/images accepted; DWG is a downloadable source (viewed as PDF).
+export const issueDrawingSchema = z.object({
+  number: z.string().min(1),
+  title: z.string().min(1),
+  discipline: z.enum(['architectural', 'structural', 'mep', 'other']),
+  rev: z.string().min(1),
+  status: z.enum(['for_review', 'for_construction']).default('for_construction'),
+  mime: z.string().min(1),
+  data: z.string().min(1),
+  note: z.string().optional(),
+  zone: z.string().optional(),
+  activityId: z.string().optional(),
+  decisionId: z.string().optional(),
+});
+export type IssueDrawingInput = z.infer<typeof issueDrawingSchema>;

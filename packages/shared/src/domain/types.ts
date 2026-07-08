@@ -19,6 +19,7 @@ export type ScreenKey =
   | 'client-health'
   | 'daily-log'
   | 'engineer-check'
+  | 'drawings'
   | 'team-access';
 
 export type Lang = 'en' | 'hi' | 'gu';
@@ -107,6 +108,34 @@ export interface Review {
   date: string;
   decided: boolean;
   items: ReviewItem[];
+}
+
+// ── Drawings register (Slice 1) ──────────────────────────────────────────────
+export type Discipline = 'architectural' | 'structural' | 'mep' | 'other';
+export type DrawingStatus = 'for_review' | 'for_construction' | 'superseded';
+
+export interface DrawingRevision {
+  id: string;
+  rev: string;
+  status: DrawingStatus;
+  mime: string;
+  url: string; // resolvable: /drawings/rev/:id (dev stub) or an absolute bucket URL
+  sizeBytes: number;
+  note: string;
+  issuedBy: string;
+  issuedAt: string;
+}
+
+export interface Drawing {
+  id: string;
+  number: string;
+  title: string;
+  discipline: Discipline;
+  zone: string | null;
+  activityId: string | null;
+  decisionId: string | null;
+  current: DrawingRevision | null; // latest non-superseded
+  revisions: DrawingRevision[]; // newest first
 }
 
 export interface CrewRow {
