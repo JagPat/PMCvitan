@@ -21,7 +21,7 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisions, activities, inspections, dailyLog, notifications, progressMedia] = await Promise.all([
+    const [decisions, activities, inspections, dailyLog, notifications, progressMedia, drawings] = await Promise.all([
       this.prisma.decision.findMany({
         where: { projectId },
         include: { options: { orderBy: { order: 'asc' } } },
@@ -40,6 +40,11 @@ export class SnapshotService {
         orderBy: { createdAt: 'desc' },
         take: 12,
         select: { id: true, url: true, takenAt: true },
+      }),
+      this.prisma.drawing.findMany({
+        where: { projectId },
+        include: { revisions: { orderBy: { createdAt: 'desc' } } },
+        orderBy: [{ discipline: 'asc' }, { number: 'asc' }],
       }),
     ]);
 
@@ -120,6 +125,33 @@ export class SnapshotService {
       (i) => i.decided && i.items.some((it) => it.rejected || it.result === 'FAIL'),
     );
 
+    // Drawings register: each entry with its full revision history (newest first)
+    // and the current (latest non-superseded) revision the field builds from.
+    const drawingDtos = drawings.map((d) => {
+      const revs = d.revisions.map((r) => ({
+        id: r.id,
+        rev: r.rev,
+        status: r.status,
+        mime: r.mime,
+        url: r.url ?? `/drawings/rev/${r.id}`,
+        sizeBytes: r.sizeBytes,
+        note: r.note,
+        issuedBy: r.issuedBy,
+        issuedAt: r.issuedAt,
+      }));
+      return {
+        id: d.id,
+        number: d.number,
+        title: d.title,
+        discipline: d.discipline,
+        zone: d.zone,
+        activityId: d.activityId,
+        decisionId: d.decisionId,
+        current: revs.find((r) => r.status !== 'superseded') ?? null,
+        revisions: revs,
+      };
+    });
+
     return {
       project: {
         id: project.id,
@@ -149,6 +181,7 @@ export class SnapshotService {
       reviews,
       review: reviews[0] ?? null, // deprecated single (first pending) — back-compat
       reinspectionCreated,
+      drawings: drawingDtos,
       dailyLog: dailyLog
         ? {
             date: dailyLog.date,

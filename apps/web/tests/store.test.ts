@@ -130,6 +130,23 @@ describe('checklist → review queue wiring', () => {
   });
 });
 
+describe('drawings register', () => {
+  it('issues a new drawing, then a new rev supersedes the prior', () => {
+    const before = s().drawings.length;
+    s().issueDrawing({ number: 'M-501', title: 'HVAC Layout', discipline: 'mep', rev: 'A', mime: 'application/pdf', data: btoa('%PDF-A') });
+    expect(s().drawings.length).toBe(before + 1);
+    expect(s().drawings.find((d) => d.number === 'M-501')!.current!.rev).toBe('A');
+
+    s().issueDrawing({ number: 'M-501', title: 'HVAC Layout', discipline: 'mep', rev: 'B', mime: 'application/pdf', data: btoa('%PDF-B') });
+    const d = s().drawings.find((x) => x.number === 'M-501')!;
+    expect(d.current!.rev).toBe('B');
+    expect(d.current!.status).toBe('for_construction');
+    expect(d.revisions).toHaveLength(2);
+    expect(d.revisions.find((r) => r.rev === 'A')!.status).toBe('superseded');
+    expect(s().drawings.filter((x) => x.number === 'M-501')).toHaveLength(1); // same register entry
+  });
+});
+
 describe('guarded inspection submit', () => {
   it('does not submit until all items are marked', () => {
     s().submitInspection();

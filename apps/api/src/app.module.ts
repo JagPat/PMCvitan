@@ -21,6 +21,8 @@ import { RealtimeGateway } from './realtime/realtime.gateway';
 import { StorageService } from './media/storage.service';
 import { MediaService } from './media/media.service';
 import { MediaController } from './media/media.controller';
+import { DrawingsService } from './drawings/drawings.service';
+import { DrawingsController } from './drawings/drawings.controller';
 import { PushService } from './push/push.service';
 import { PushController } from './push/push.controller';
 
@@ -41,6 +43,7 @@ import { PushController } from './push/push.controller';
     InspectionsController,
     DailyLogController,
     MediaController,
+    DrawingsController,
     PushController,
   ],
   providers: [
@@ -57,6 +60,7 @@ import { PushController } from './push/push.controller';
     RealtimeGateway,
     StorageService,
     MediaService,
+    DrawingsService,
     PushService,
   ],
 })

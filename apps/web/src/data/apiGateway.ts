@@ -17,6 +17,7 @@ import type {
   Checklist,
   DailyLog,
   Decision,
+  Drawing,
   Review,
   Role,
 } from '@vitan/shared';
@@ -41,8 +42,24 @@ export interface ApiSnapshot {
   reviews: Review[];
   review: Review | null; // deprecated (first pending) — back-compat; use `reviews`
   reinspectionCreated: boolean;
+  drawings: Drawing[];
   dailyLog: DailyLog | null;
   notifications: AppNotification[];
+}
+
+/** Issue a drawing revision (new register entry, or a new rev that supersedes). */
+export interface IssueDrawingInput {
+  number: string;
+  title: string;
+  discipline: 'architectural' | 'structural' | 'mep' | 'other';
+  rev: string;
+  status?: 'for_review' | 'for_construction';
+  mime: string;
+  data: string; // base64, no data: prefix
+  note?: string;
+  zone?: string;
+  activityId?: string;
+  decisionId?: string;
 }
 
 export const API_BASE: string | undefined = import.meta.env.VITE_API_URL;
@@ -81,6 +98,13 @@ export interface UploadMediaInput {
 
 /** Resolve a snapshot media URL: dev-stub rows are relative (/media/:id) → prefix the API base. */
 export function resolveMediaUrl(url: string): string {
+  if (url && url.startsWith('/') && API_BASE) return `${API_BASE}${url}`;
+  return url;
+}
+
+/** Resolve a drawing revision URL: relative /drawings/rev/:id → prefix the API base;
+ *  data: URLs (the local-demo sheets) and absolute bucket URLs pass through. */
+export function resolveDrawingUrl(url: string): string {
   if (url && url.startsWith('/') && API_BASE) return `${API_BASE}${url}`;
   return url;
 }
@@ -197,6 +221,14 @@ export class ApiGateway {
   /** Upload a site photo; returns its id + resolvable URL. */
   uploadMedia(input: UploadMediaInput): Promise<{ id: string; url: string }> {
     return this.req<{ id: string; url: string }>(`/projects/${this.projectId}/media`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  /** Issue a drawing revision; the snapshot then reconciles via the realtime `changed`. */
+  issueDrawing(input: IssueDrawingInput): Promise<{ drawingId: string; revisionId: string }> {
+    return this.req<{ drawingId: string; revisionId: string }>(`/projects/${this.projectId}/drawings`, {
       method: 'POST',
       body: JSON.stringify(input),
     });

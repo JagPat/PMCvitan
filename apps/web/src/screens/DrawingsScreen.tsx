@@ -1,0 +1,270 @@
+import { useMemo, useState, type CSSProperties } from 'react';
+import { useShallow } from 'zustand/react/shallow';
+import { useStore } from '@/store/store';
+import { resolveDrawingUrl, type IssueDrawingInput } from '@/data/apiGateway';
+import { Eyebrow, Button, Modal } from '@/components';
+import { Download, FileText, History, ChevronRight, X, Plus, Lock } from '@/lib/icons';
+import type { Discipline, Drawing, DrawingRevision } from '@vitan/shared';
+import styles from './responsive.module.css';
+
+const DISCIPLINES: { key: Discipline; label: string }[] = [
+  { key: 'architectural', label: 'Architectural' },
+  { key: 'structural', label: 'Structural' },
+  { key: 'mep', label: 'MEP' },
+  { key: 'other', label: 'Sketches & References' },
+];
+
+function statusMeta(status: string): { label: string; bg: string; fg: string; border: string } {
+  if (status === 'for_construction') return { label: 'FOR CONSTRUCTION', bg: 'var(--green-chip, #E7F0E9)', fg: 'var(--green-text, #2F6B44)', border: '#BFD8C6' };
+  if (status === 'for_review') return { label: 'FOR REVIEW', bg: 'var(--amber-chip)', fg: 'var(--amber-text)', border: 'var(--amber-border)' };
+  return { label: 'SUPERSEDED', bg: 'rgba(35,33,28,.06)', fg: 'var(--faint)', border: 'var(--hairline)' };
+}
+
+/** How a revision file previews: PDF inline, image inline, DWG/other download-only. */
+function previewKind(mime: string): 'image' | 'pdf' | 'download' {
+  if (mime.startsWith('image/') && mime !== 'image/vnd.dwg') return 'image';
+  if (mime === 'application/pdf') return 'pdf';
+  return 'download';
+}
+
+export function DrawingsScreen() {
+  const drawings = useStore(useShallow((s) => s.drawings));
+  const role = useStore((s) => s.role);
+  const [open, setOpen] = useState<Drawing | null>(null);
+  const [issuing, setIssuing] = useState(false);
+
+  const groups = useMemo(
+    () => DISCIPLINES.map((d) => ({ ...d, items: drawings.filter((dr) => dr.discipline === d.key) })).filter((g) => g.items.length),
+    [drawings],
+  );
+
+  return (
+    <div className={`${styles.screen} ${styles.mid}`}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <Eyebrow>DRAWINGS · REGISTER</Eyebrow>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, maxWidth: 520 }}>
+            The current issue the team builds from. New revisions supersede the old — the field always sees the latest <b>For Construction</b> set.
+          </div>
+        </div>
+        {role === 'pmc' && (
+          <Button variant="ink" onClick={() => setIssuing(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 15px', fontSize: 13 }}>
+            <Plus size={16} /> Issue drawing
+          </Button>
+        )}
+      </div>
+
+      {drawings.length === 0 && (
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>No drawings issued yet.</div>
+      )}
+
+      {groups.map((g) => (
+        <div key={g.key} style={{ marginTop: 26 }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.18em', color: 'var(--faint)', marginBottom: 10 }}>{g.label.toUpperCase()}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {g.items.map((d) => {
+              const cur = d.current;
+              const sm = statusMeta(cur?.status ?? 'superseded');
+              return (
+                <button key={d.id} onClick={() => setOpen(d)} data-testid={`drawing-${d.number}`} style={cardStyle}>
+                  <div style={{ width: 46, height: 60, flex: 'none', borderRadius: 6, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {!cur && <FileText size={18} color="#b8b2a6" />}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 13 }}>{d.number}</span>
+                      {cur && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 700, color: 'var(--accent)' }}>Rev {cur.rev}</span>}
+                      <span style={{ ...chip, background: sm.bg, color: sm.fg, borderColor: sm.border }}>{sm.label}</span>
+                    </div>
+                    <div style={{ fontWeight: 600, fontSize: 14.5, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.title}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
+                      {d.zone ?? '—'}
+                      {d.activityId ? ` · governs ${d.activityId}` : ''}
+                      {d.revisions.length > 1 ? ` · ${d.revisions.length} revisions` : ''}
+                    </div>
+                  </div>
+                  <ChevronRight size={18} color="#b8b2a6" />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+
+      {open && <DrawingViewer drawing={open} onClose={() => setOpen(null)} />}
+      {issuing && <IssueDrawingModal onClose={() => setIssuing(false)} />}
+    </div>
+  );
+}
+
+function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose: () => void }) {
+  const [rev, setRev] = useState<DrawingRevision>(drawing.current ?? drawing.revisions[0]);
+  const src = resolveDrawingUrl(rev.url);
+  const kind = previewKind(rev.mime);
+  const sm = statusMeta(rev.status);
+
+  return (
+    <Modal onClose={onClose} maxWidth={760} labelledBy="dwg-title">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '16px 18px', borderBottom: '1px solid var(--hairline)' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div id="dwg-title" style={{ fontWeight: 700, fontSize: 16 }}>
+            <span style={{ fontFamily: 'var(--font-mono)' }}>{drawing.number}</span> · {drawing.title}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
+            Rev {rev.rev} · issued by {rev.issuedBy} · {rev.issuedAt}
+          </div>
+        </div>
+        <span style={{ ...chip, background: sm.bg, color: sm.fg, borderColor: sm.border }}>{sm.label}</span>
+        <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}>
+          <X size={20} />
+        </button>
+      </div>
+
+      <div style={{ background: '#e9e4d8', maxHeight: '58vh', overflow: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
+        {kind === 'image' && <img src={src} alt={`${drawing.number} Rev ${rev.rev}`} style={{ maxWidth: '100%', display: 'block' }} />}
+        {kind === 'pdf' && <iframe src={src} title={`${drawing.number} Rev ${rev.rev}`} style={{ width: '100%', height: '58vh', border: 'none', background: '#fff' }} />}
+        {kind === 'download' && (
+          <div style={{ textAlign: 'center', padding: 40 }}>
+            <FileText size={40} color="#b8b2a6" />
+            <div style={{ fontSize: 13.5, color: 'var(--muted)', margin: '12px 0 16px', maxWidth: 320 }}>
+              {rev.mime.includes('dwg') || rev.mime.includes('dxf') ? 'CAD source (DWG) — not previewable in the browser. Download it, or view the issued PDF.' : 'This file type can’t be previewed. Download to open it.'}
+            </div>
+            <a href={src} download={`${drawing.number}-Rev${rev.rev}`} style={{ ...dlBtn }}>
+              <Download size={16} /> Download
+            </a>
+          </div>
+        )}
+      </div>
+
+      {rev.note && <div style={{ padding: '12px 18px', fontSize: 12.5, color: 'var(--muted)', borderTop: '1px solid var(--hairline)' }}>{rev.note}</div>}
+
+      <div style={{ padding: '12px 18px 16px', borderTop: '1px solid var(--hairline)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--faint)', marginBottom: 8 }}>
+          <History size={13} /> REVISION HISTORY
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {drawing.revisions.map((r) => {
+            const on = r.id === rev.id;
+            const s = statusMeta(r.status);
+            return (
+              <button key={r.id} onClick={() => setRev(r)} style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', padding: '9px 11px', borderRadius: 9, cursor: 'pointer', border: `1px solid ${on ? 'var(--ink)' : 'var(--hairline)'}`, background: on ? 'rgba(35,33,28,.04)' : '#fff' }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 12, width: 42 }}>Rev {r.rev}</span>
+                <span style={{ ...chip, background: s.bg, color: s.fg, borderColor: s.border }}>{s.label}</span>
+                <span style={{ fontSize: 11.5, color: 'var(--muted)', flex: 1 }}>{r.issuedAt} · {r.issuedBy}</span>
+                {r.status !== 'superseded' && <Lock size={12} color="#2F6B44" />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+const DISCIPLINE_OPTS: Discipline[] = ['architectural', 'structural', 'mep', 'other'];
+
+function IssueDrawingModal({ onClose }: { onClose: () => void }) {
+  const issueDrawing = useStore((s) => s.issueDrawing);
+  const [number, setNumber] = useState('');
+  const [title, setTitle] = useState('');
+  const [discipline, setDiscipline] = useState<Discipline>('architectural');
+  const [rev, setRev] = useState('A');
+  const [file, setFile] = useState<{ mime: string; data: string; name: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const onPick = (f: File | undefined) => {
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = String(reader.result);
+      const comma = res.indexOf(',');
+      setFile({ mime: f.type || 'application/octet-stream', data: res.slice(comma + 1), name: f.name });
+    };
+    reader.readAsDataURL(f);
+  };
+
+  const ready = number.trim() && title.trim() && rev.trim() && file && !busy;
+  const submit = () => {
+    if (!ready || !file) return;
+    setBusy(true);
+    const input: IssueDrawingInput = { number: number.trim(), title: title.trim(), discipline, rev: rev.trim(), mime: file.mime, data: file.data, status: 'for_construction' };
+    issueDrawing(input);
+    onClose();
+  };
+
+  return (
+    <Modal onClose={onClose} maxWidth={440} labelledBy="issue-title">
+      <div style={{ padding: '18px 20px' }}>
+        <div id="issue-title" style={{ fontWeight: 700, fontSize: 17 }}>Issue a drawing</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>A matching number adds a revision and supersedes the prior issue.</div>
+
+        <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+          <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder="Number (A-201)" style={{ ...fld, flex: 1 }} />
+          <input value={rev} onChange={(e) => setRev(e.target.value)} placeholder="Rev" style={{ ...fld, width: 70 }} />
+        </div>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" style={{ ...fld, marginTop: 10 }} />
+        <select value={discipline} onChange={(e) => setDiscipline(e.target.value as Discipline)} style={{ ...fld, marginTop: 10 }}>
+          {DISCIPLINE_OPTS.map((d) => <option key={d} value={d}>{d}</option>)}
+        </select>
+        <label style={{ display: 'block', marginTop: 10 }}>
+          <input type="file" accept=".pdf,.dwg,.dxf,image/*,application/pdf" onChange={(e) => onPick(e.target.files?.[0])} style={{ fontSize: 13 }} />
+        </label>
+        {file && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{file.name}</div>}
+
+        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
+          <Button variant="ink" onClick={submit} disabled={!ready} style={{ flex: 1, padding: 12 }}>Issue</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+const cardStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 13,
+  textAlign: 'left',
+  width: '100%',
+  background: '#fff',
+  border: '1px solid var(--hairline)',
+  borderRadius: 13,
+  padding: '12px 14px',
+  cursor: 'pointer',
+};
+
+const chip: CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: 9,
+  fontWeight: 700,
+  letterSpacing: '.08em',
+  padding: '3px 7px',
+  borderRadius: 5,
+  border: '1px solid',
+};
+
+const fld: CSSProperties = {
+  height: 44,
+  padding: '0 12px',
+  borderRadius: 10,
+  border: '1px solid rgba(35,33,28,.18)',
+  background: '#fff',
+  fontFamily: 'var(--font-sans)',
+  fontSize: 14,
+  color: 'var(--ink)',
+  outline: 'none',
+};
+
+const dlBtn: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '11px 18px',
+  borderRadius: 11,
+  background: 'var(--ink)',
+  color: '#fff',
+  fontFamily: 'var(--font-sans)',
+  fontWeight: 700,
+  fontSize: 14,
+  textDecoration: 'none',
+};
