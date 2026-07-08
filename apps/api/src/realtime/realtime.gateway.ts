@@ -29,11 +29,15 @@ export class RealtimeGateway {
     return { ok: true };
   }
 
-  /** Signal the project room to refetch; `pushBody` also sends a push notification. */
-  notifyChanged(projectId: string, pushBody?: string): void {
+  /**
+   * Signal the project room to refetch; `pushBody` also sends a push notification.
+   * `roles` targets the push to specific roles (e.g. an approval to PMC/contractor,
+   * a re-inspection to the engineer); omit it to push to everyone on the project.
+   */
+  notifyChanged(projectId: string, pushBody?: string, roles?: string[]): void {
     this.server?.to(`project:${projectId}`).emit('changed', { projectId });
     if (pushBody) {
-      void this.push.notifyProject(projectId, { title: 'Vitan PMC', body: pushBody });
+      void this.push.notifyProject(projectId, { title: 'Vitan PMC', body: pushBody }, roles);
     }
   }
 }

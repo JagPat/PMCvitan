@@ -1,4 +1,4 @@
-import { Body, Controller, Get, NotFoundException, Param, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, NotFoundException, Param, Post, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { MediaService } from './media.service';
 import { ZodPipe } from '../common/zod.pipe';
@@ -32,5 +32,14 @@ export class MediaController {
     res.setHeader('Content-Type', out.mime);
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     res.send(out.bytes);
+  }
+
+  /** Delete a photo (bucket object + row). Auth required; scoped to the caller's project. */
+  @Delete('media/:id')
+  @UseGuards(JwtGuard)
+  async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean }> {
+    const ok = await this.media.remove(id, user.projectId);
+    if (!ok) throw new NotFoundException('Media not found');
+    return { ok: true };
   }
 }

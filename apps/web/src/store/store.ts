@@ -496,8 +496,23 @@ export const useStore = create<Store>()(
       }
       const [, mime, base64] = m;
       if (gateway) {
+        const input = { kind: 'progress' as const, mime, data: base64 };
+        // Phase 8 media offline queue: when offline, show the photo optimistically
+        // (local data URL) and queue the upload for replay on reconnect — instead
+        // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
+        if (!get().online) {
+          set((s) => {
+            s.outbox.push({ t: 'uploadMedia', input });
+            s.syncQueue.push('Progress photo');
+            s.dailyLog.photos.unshift({ url: dataUrl });
+            s.dailyLog.progress += 1;
+          });
+          persistOutbox();
+          get().flash('Photo saved offline — will upload when signal returns.');
+          return;
+        }
         gateway
-          .uploadMedia({ kind: 'progress', mime, data: base64 })
+          .uploadMedia(input)
           .then((res) => {
             set((s) => {
               s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });

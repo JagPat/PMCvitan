@@ -23,7 +23,7 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 | **8 — Prisma migrations** | Baseline migration (`prisma/migrations/0_init`) captured from the schema; boot runs `prisma migrate deploy` (falls back to `db push` so a deploy never bricks); one-time `migrate resolve --applied 0_init` baselines the existing live DB — see `docs/DEPLOY.md` | ✅ Done |
 | **8 — Offline write outbox** | Gateway mutations captured to a persisted outbox when offline and replayed in order on reconnect (reconciled from the snapshot); connectivity banner counts queued ops; demo (no API) keeps optimistic local writes | ✅ Done |
 | **8 — Web push (VAPID)** | `PushSubscription` model + `PushService` (dev-stub when no VAPID keys) + subscribe endpoint + public-key endpoint; notification-bearing mutations fan out a push via the realtime gateway; service worker `push`/`notificationclick` handlers; frontend subscribes when permission is granted | ✅ Done |
-| **8 — Hardening (rest)** | CI/CD auto-deploy; media offline queueing; richer push targeting (per-role) | ⏳ Planned |
+| **8 — Hardening (rest)** | **CI/CD auto-deploy** (Coolify redeploys both apps on merge to `main`); **media offline queueing** (progress photos captured to the outbox when offline and replayed on reconnect, reconciled from the snapshot); **per-role push targeting** (`notifyProject`/`notifyChanged` take target roles — approvals → PMC/contractor, re-inspections → engineer, mismatches → PMC/contractor — instead of fanning out to all); **`DELETE /media/:id`** (bucket object + row, project-scoped) | ✅ Done |
 
 ### Phase 7 Slice 1 — what's built vs. deferred
 
@@ -34,8 +34,8 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 ## Known product gaps (carried forward, not bugs)
 
 - **Checklist ↔ Review are decoupled** in the seeded demo (the submitted `INSP-22` Pre-Tiling checklist does not feed the seeded `INSP-21` Waterproofing review). This mirrors the design prototype exactly; wiring a submitted checklist into the PMC review queue is a Phase 3/7 data task.
-- **Swatches are CSS-placeholder gradients** standing in for real materials; Phase 8 replaces them with real geo/time-stamped site photos (photos are first-class, tap/click to zoom).
-- **Persona switcher** ("Viewing as") is the temporary session control until auth lands in Phase 7.
+- **Swatches are CSS-placeholder gradients** standing in for material samples in the decision options. Real *site* photos are now first-class (progress-photo upload/gallery + geo/time stamp + tap-to-zoom, `7c-media`); the decision-option swatches remain as material-sample stand-ins.
+- **Persona switcher** ("Viewing as") is now a dev-only device: gated behind `ALLOW_DEV_AUTH`/`VITE_ALLOW_DEV_AUTH` and hidden in the locked-down build, replaced by real sign-in + a full-screen auth gate (`7c-auth lockdown`, `docs/AUTH_LOCKDOWN.md`).
 
 ## Verify locally
 

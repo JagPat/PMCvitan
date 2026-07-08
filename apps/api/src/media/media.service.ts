@@ -59,4 +59,18 @@ export class MediaService {
     if (row.data) return { mime: row.mime, bytes: Buffer.from(row.data) };
     return null;
   }
+
+  /**
+   * Delete a photo (bucket object + DB row). Scoped to the caller's project so
+   * one project can't delete another's media. Returns false when not found /
+   * out of scope. Best-effort on the bucket delete (dev stub is a no-op).
+   */
+  async remove(id: string, projectId: string): Promise<boolean> {
+    const row = await this.prisma.media.findUnique({ where: { id } });
+    if (!row || row.projectId !== projectId) return false;
+    if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
+    await this.prisma.media.delete({ where: { id } });
+    this.realtime.notifyChanged(projectId);
+    return true;
+  }
 }

@@ -30,7 +30,8 @@ export class DailyLogService {
       this.prisma.notification.create({ data: { projectId, text: `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, color: '#B23A34', time: 'just now' } }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'material.mismatch', entity: 'SiteMaterial', entityId: mat.id } }),
     ]);
-    this.realtime.notifyChanged(projectId, `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`);
+    // material mismatch blocks work — alert PMC (resolves it) and contractor (supplied it)
+    this.realtime.notifyChanged(projectId, `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, ['pmc', 'contractor']);
     return this.snapshot.build(projectId, user.role);
   }
 

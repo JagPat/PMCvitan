@@ -226,7 +226,8 @@ export type OutboxOp =
   | { t: 'startActivity'; activityId: string }
   | { t: 'completeActivity'; activityId: string }
   | { t: 'flagMismatch'; decisionId: string }
-  | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'> };
+  | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'> }
+  | { t: 'uploadMedia'; input: UploadMediaInput };
 
 /** Replay one queued mutation; resolves to the fresh snapshot. */
 export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapshot> {
@@ -247,5 +248,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.flagMismatch(op.decisionId);
     case 'submitDailyLog':
       return gw.submitDailyLog(op.log);
+    case 'uploadMedia':
+      // uploadMedia returns {id,url}, not a snapshot — refetch so the flush
+      // reconciles dailyLog.photos (the real, server-stored photo replaces the
+      // optimistic local data-URL one).
+      return gw.uploadMedia(op.input).then(() => gw.snapshot());
   }
 }

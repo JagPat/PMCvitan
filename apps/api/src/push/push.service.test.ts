@@ -56,4 +56,19 @@ describe('PushService — configured (VAPID present)', () => {
     await svc.notifyProject('ambli', { title: 'Vitan PMC', body: 'hi' });
     expect(prisma.pushSubscription.findMany).toHaveBeenCalledWith({ where: { projectId: 'ambli' } });
   });
+
+  it('targets specific roles when given, broadcasts to all when not', async () => {
+    const keys = webpush.generateVAPIDKeys();
+    process.env.VAPID_PUBLIC_KEY = keys.publicKey;
+    process.env.VAPID_PRIVATE_KEY = keys.privateKey;
+
+    const prisma = fakePrisma();
+    const svc = new PushService(prisma as unknown as PrismaService);
+
+    await svc.notifyProject('ambli', { title: 'Vitan PMC', body: 'approved' }, ['contractor', 'client']);
+    expect(prisma.pushSubscription.findMany).toHaveBeenLastCalledWith({ where: { projectId: 'ambli', role: { in: ['contractor', 'client'] } } });
+
+    await svc.notifyProject('ambli', { title: 'Vitan PMC', body: 'all' }, []); // empty ⇒ broadcast
+    expect(prisma.pushSubscription.findMany).toHaveBeenLastCalledWith({ where: { projectId: 'ambli' } });
+  });
 });
