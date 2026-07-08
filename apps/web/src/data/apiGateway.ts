@@ -18,6 +18,9 @@ import type {
   DailyLog,
   Decision,
   Drawing,
+  MembershipSummary,
+  OrgSummary,
+  ProjectMember,
   Review,
   Role,
 } from '@vitan/shared';
@@ -45,6 +48,25 @@ export interface ApiSnapshot {
   drawings: Drawing[];
   dailyLog: DailyLog | null;
   notifications: AppNotification[];
+}
+
+/** Add a project team member (provisions the account when new). */
+export interface AddMemberInput {
+  name: string;
+  role: Role;
+  email?: string;
+  phone?: string;
+}
+
+/** Create a project under an org. */
+export interface NewProjectInput {
+  name: string;
+  short: string;
+  descriptor?: string;
+  stage?: string;
+  siteCode?: string;
+  projStart?: string;
+  projEnd?: string;
 }
 
 /** Issue a drawing revision (new register entry, or a new rev that supersedes). */
@@ -167,6 +189,45 @@ export class ApiGateway {
   /** Exchange a Google ID token for a role-scoped session token. */
   googleSignIn(idToken: string): Promise<AuthResult> {
     return this.pub('/auth/google', { idToken, projectId: this.projectId });
+  }
+
+  /** The project this gateway is scoped to. */
+  get activeProject(): string {
+    return this.projectId;
+  }
+
+  // ── orgs / projects / team (multi-tenant) ──
+  /** Projects the signed-in user can access (drives the project switcher). */
+  listMemberships(): Promise<MembershipSummary[]> {
+    return this.req('/me/memberships');
+  }
+  /** Orgs the user administers/belongs to. */
+  myOrgs(): Promise<OrgSummary[]> {
+    return this.req('/me/orgs');
+  }
+  /** Re-scope the session to another project; returns a fresh token. */
+  switchProject(projectId: string): Promise<AuthResult> {
+    return this.req('/auth/switch', { method: 'POST', body: JSON.stringify({ projectId }) });
+  }
+  /** Create a project under an org (owner/admin); the creator becomes its PMC. */
+  createProject(orgId: string, input: NewProjectInput): Promise<{ id: string; name: string; short: string }> {
+    return this.req(`/orgs/${orgId}/projects`, { method: 'POST', body: JSON.stringify(input) });
+  }
+  /** List the active project's team. */
+  listMembers(): Promise<ProjectMember[]> {
+    return this.req(`/projects/${this.projectId}/members`);
+  }
+  /** Add a member to the active project (provisions the account if new). */
+  addMember(input: AddMemberInput): Promise<ProjectMember> {
+    return this.req(`/projects/${this.projectId}/members`, { method: 'POST', body: JSON.stringify(input) });
+  }
+  /** Change a member's role. */
+  updateMemberRole(userId: string, role: Role): Promise<ProjectMember> {
+    return this.req(`/projects/${this.projectId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role }) });
+  }
+  /** Remove a member from the active project (soft delete). */
+  removeMember(userId: string): Promise<{ ok: boolean }> {
+    return this.req(`/projects/${this.projectId}/members/${userId}`, { method: 'DELETE' });
   }
 
   private async req<T>(path: string, init?: RequestInit): Promise<T> {

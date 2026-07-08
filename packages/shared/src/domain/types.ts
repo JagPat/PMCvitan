@@ -20,6 +20,7 @@ export type ScreenKey =
   | 'daily-log'
   | 'engineer-check'
   | 'drawings'
+  | 'team'
   | 'team-access';
 
 export type Lang = 'en' | 'hi' | 'gu';
@@ -108,6 +109,32 @@ export interface Review {
   date: string;
   decided: boolean;
   items: ReviewItem[];
+}
+
+// ── Orgs, memberships & team (multi-tenant) ──────────────────────────────────
+export interface MembershipSummary {
+  projectId: string;
+  name: string;
+  short: string;
+  role: Role;
+  orgId: string | null;
+  orgName: string | null;
+}
+
+export interface ProjectMember {
+  userId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  role: Role;
+  status: string;
+}
+
+export interface OrgSummary {
+  id: string;
+  name: string;
+  slug: string;
+  role: string;
 }
 
 // ── Drawings register (Slice 1) ──────────────────────────────────────────────

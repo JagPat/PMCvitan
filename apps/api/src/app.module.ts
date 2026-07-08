@@ -27,6 +27,8 @@ import { PushService } from './push/push.service';
 import { PushController } from './push/push.controller';
 import { OrgsService } from './orgs/orgs.service';
 import { OrgsController } from './orgs/orgs.controller';
+import { MembersService } from './orgs/members.service';
+import { MembersController } from './orgs/members.controller';
 
 @Module({
   imports: [
@@ -48,6 +50,7 @@ import { OrgsController } from './orgs/orgs.controller';
     DrawingsController,
     PushController,
     OrgsController,
+    MembersController,
   ],
   providers: [
     JwtGuard,
@@ -66,6 +69,7 @@ import { OrgsController } from './orgs/orgs.controller';
     DrawingsService,
     PushService,
     OrgsService,
+    MembersService,
   ],
 })
 export class AppModule {}

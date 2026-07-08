@@ -36,6 +36,19 @@ fresh token from `POST /auth/switch` (granted only for a project you're a member
 The snapshot + all mutations remain `projectId`-scoped and unchanged; they're now
 protected by the tenancy guard.
 
+### Team management (Slice 2)
+
+Project-scoped, so the tenancy guard already limits the caller to their project.
+Gated to the project's **PMC** or an **owner/admin** of the owning org:
+
+- `GET /projects/:projectId/members` — list the team (name, email/phone, role, status).
+- `POST /projects/:projectId/members { name, role, email? | phone? }` — add a member;
+  provisions the account if new (so, with invite-only auth, they can then sign in by
+  email-OTP / password / phone-OTP) and upserts the `Membership`.
+- `PATCH /projects/:projectId/members/:userId { role }` — change a member's role.
+- `DELETE /projects/:projectId/members/:userId` — soft-remove (`status = removed`);
+  you can't remove yourself.
+
 ## Seed / backfill
 
 - `seed.ts` (destructive — dev only) creates the org **Vitan Architecture** owning

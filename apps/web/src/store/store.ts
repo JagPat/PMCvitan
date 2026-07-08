@@ -31,6 +31,9 @@ import {
   type DailyLog,
   type Decision,
   type Drawing,
+  type MembershipSummary,
+  type OrgSummary,
+  type ProjectMember,
   type ItemState,
   type Lang,
   type ModalState,
@@ -40,8 +43,8 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, NewProjectInput } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, PROJECT_ID } from '@/data/apiGateway';
 
 export interface AppState {
   role: Role;
@@ -56,6 +59,11 @@ export interface AppState {
   activeReviewId: string | null; // which queued review the PMC is looking at (null ⇒ first pending)
   reinspectionCreated: boolean;
   drawings: Drawing[]; // the drawings register (Slice 1)
+  // multi-project (Orgs Slice 2)
+  activeProjectId: string; // the project the session is scoped to
+  memberships: MembershipSummary[]; // projects the user can switch between
+  myOrgs: OrgSummary[]; // orgs the user administers/belongs to
+  members: ProjectMember[]; // the active project's team (Team screen)
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
@@ -104,6 +112,14 @@ export interface AppActions {
   sendReinspection: () => void;
   // drawings register
   issueDrawing: (input: IssueDrawingInput) => void;
+  // multi-project + team
+  loadOrgData: () => void;
+  switchProject: (projectId: string) => void;
+  createProject: (orgId: string, input: NewProjectInput) => void;
+  loadTeam: () => void;
+  addMember: (input: AddMemberInput) => void;
+  updateMemberRole: (userId: string, role: Role) => void;
+  removeMember: (userId: string) => void;
   // schedule
   startActivity: (id: string) => void;
   completeActivity: (id: string) => void;
@@ -168,6 +184,10 @@ export function getInitialState(): AppState {
     activeReviewId: null,
     reinspectionCreated: false,
     drawings: structuredClone(SEED_DRAWINGS),
+    activeProjectId: PROJECT_ID,
+    memberships: [],
+    myOrgs: [],
+    members: [],
     online: true,
     syncQueue: [],
     outbox: [],
@@ -540,6 +560,67 @@ export const useStore = create<Store>()(
         }
       });
       get().flash(`Drawing issued: ${input.number} Rev ${input.rev} (demo).`);
+    },
+
+    // ---- multi-project + team (Orgs Slice 2) ----
+    loadOrgData: () => {
+      if (!gateway) return;
+      gateway.listMemberships().then((ms) => set((s) => { s.memberships = ms; })).catch(() => {});
+      gateway.myOrgs().then((os) => set((s) => { s.myOrgs = os; })).catch(() => {});
+    },
+    switchProject: (projectId) => {
+      if (!gateway || projectId === get().activeProjectId) return;
+      const short = get().memberships.find((m) => m.projectId === projectId)?.short ?? 'project';
+      gateway
+        .switchProject(projectId)
+        .then((res) => {
+          // new token + project → useApiSync re-inits the gateway and refetches
+          set((s) => {
+            s.sessionToken = res.token;
+            s.activeProjectId = projectId;
+            s.role = res.role;
+            s.screen = screensFor(res.role)[0].key;
+            s.members = [];
+          });
+          get().flash('Switched to ' + short + '.');
+        })
+        .catch(() => get().flash('Could not switch project — please try again.'));
+    },
+    createProject: (orgId, input) => {
+      if (!gateway) {
+        get().flash('Creating projects needs the server.');
+        return;
+      }
+      gateway
+        .createProject(orgId, input)
+        .then((p) => {
+          get().flash('Project created: ' + p.short + '.');
+          get().loadOrgData();
+          get().switchProject(p.id);
+        })
+        .catch(() => get().flash('Could not create the project — check your access.'));
+    },
+    loadTeam: () => {
+      if (!gateway) return;
+      gateway.listMembers().then((m) => set((s) => { s.members = m; })).catch(() => {});
+    },
+    addMember: (input) => {
+      if (!gateway) {
+        get().flash('Managing the team needs the server.');
+        return;
+      }
+      gateway
+        .addMember(input)
+        .then(() => { get().loadTeam(); get().flash(input.name + ' added to the team.'); })
+        .catch(() => get().flash('Could not add the member — check the details / your access.'));
+    },
+    updateMemberRole: (userId, role) => {
+      if (!gateway) return;
+      gateway.updateMemberRole(userId, role).then(() => get().loadTeam()).catch(() => get().flash('Could not change the role.'));
+    },
+    removeMember: (userId) => {
+      if (!gateway) return;
+      gateway.removeMember(userId).then(() => { get().loadTeam(); get().flash('Member removed.'); }).catch(() => get().flash('Could not remove the member.'));
     },
 
     // ---- schedule ----

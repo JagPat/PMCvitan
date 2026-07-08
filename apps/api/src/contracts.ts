@@ -155,3 +155,17 @@ export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 
 export const switchProjectSchema = z.object({ projectId: z.string().min(1) });
 export type SwitchProjectInput = z.infer<typeof switchProjectSchema>;
+
+const projectRole = z.enum(['pmc', 'client', 'engineer', 'contractor']);
+export const addMemberSchema = z
+  .object({
+    name: z.string().min(1),
+    role: projectRole,
+    email: z.string().email().optional(),
+    phone: z.string().min(6).optional(),
+  })
+  .refine((v) => v.email || v.phone, { message: 'email or phone required' });
+export type AddMemberInput = z.infer<typeof addMemberSchema>;
+
+export const updateMemberSchema = z.object({ role: projectRole });
+export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
