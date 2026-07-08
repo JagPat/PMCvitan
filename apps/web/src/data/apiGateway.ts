@@ -20,6 +20,8 @@ import type {
   Drawing,
   MembershipSummary,
   OrgSummary,
+  Phase,
+  PortfolioProject,
   ProjectMember,
   Review,
   Role,
@@ -46,6 +48,7 @@ export interface ApiSnapshot {
   review: Review | null; // deprecated (first pending) — back-compat; use `reviews`
   reinspectionCreated: boolean;
   drawings: Drawing[];
+  phases: Phase[];
   dailyLog: DailyLog | null;
   notifications: AppNotification[];
 }
@@ -204,6 +207,10 @@ export class ApiGateway {
   /** Orgs the user administers/belongs to. */
   myOrgs(): Promise<OrgSummary[]> {
     return this.req('/me/orgs');
+  }
+  /** Cross-project monitoring rollup (one row per project the user can access). */
+  getPortfolio(): Promise<PortfolioProject[]> {
+    return this.req('/me/portfolio');
   }
   /** Re-scope the session to another project; returns a fresh token. */
   switchProject(projectId: string): Promise<AuthResult> {

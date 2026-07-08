@@ -1,8 +1,8 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { gatesFor, activityReady, selectSchToday, pctOf } from '@/store/selectors';
+import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase } from '@/store/selectors';
 import { Eyebrow, GateDot, ActivityChip, Button } from '@/components';
-import { dayLabel, gateColor, type Activity } from '@vitan/shared';
+import { dayLabel, gateColor, type Activity, type Phase } from '@vitan/shared';
 import type { AppState } from '@/store/store';
 import styles from './responsive.module.css';
 
@@ -76,8 +76,51 @@ function ScheduleRow({ a, todayPct }: { a: Activity; todayPct: number }) {
   );
 }
 
+/** A phase header + its activities. Rollup counts are recomputed live from the
+ *  activities so Start / Mark-complete move the phase's progress immediately. */
+function PhaseGroup({ phase, activities, todayPct }: { phase: Phase; activities: Activity[]; todayPct: number }) {
+  const acts = activitiesInPhase(activities, [phase], phase.id);
+  if (acts.length === 0) return null;
+  const r = phaseRollup(activities, phase.id);
+  const window = `${dayLabel(phase.plannedStart)} → ${dayLabel(phase.plannedEnd)}`;
+
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div style={{ minWidth: 200 }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.1em', color: 'var(--faint)' }}>PHASE · {window}</div>
+          <div style={{ fontWeight: 700, fontSize: 17, letterSpacing: '-.01em' }}>{phase.name}</div>
+        </div>
+        <div style={{ flex: 1, minWidth: 150, maxWidth: 320 }}>
+          <div style={{ height: 8, borderRadius: 5, background: 'rgba(35,33,28,.1)', overflow: 'hidden' }}>
+            <div style={{ width: `${r.donePct}%`, height: '100%', background: 'var(--green-solid)', transition: 'width .3s' }} />
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--muted)', marginTop: 4 }}>
+            {r.done}/{r.activityTotal} done · {r.donePct}%
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+          {[
+            { v: r.inProgress, l: 'running', c: 'var(--amber-text)' },
+            { v: r.blocked, l: 'blocked', c: 'var(--red-solid)' },
+            { v: r.notStarted, l: 'to start', c: 'var(--muted)' },
+          ].filter((x) => x.v > 0).map((x) => (
+            <span key={x.l} style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: x.c, border: '1px solid var(--hairline)', borderRadius: 6, padding: '3px 8px', background: 'var(--panel)' }}>
+              {x.v} {x.l}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {acts.map((a) => <ScheduleRow key={a.id} a={a} todayPct={todayPct} />)}
+      </div>
+    </div>
+  );
+}
+
 export function ScheduleScreen() {
   const activities = useStore(useShallow((s) => s.activities));
+  const phases = useStore(useShallow((s) => s.phases));
   const sch = useStore(useShallow(selectSchToday));
   const todayDay = useStore((s) => s.todayDay);
   const projStart = useStore((s) => s.projStart);
@@ -135,11 +178,30 @@ export function ScheduleScreen() {
         </span>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {activities.map((a) => (
-          <ScheduleRow key={a.id} a={a} todayPct={todayPct} />
-        ))}
-      </div>
+      {phases.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+          {phases.map((ph) => (
+            <PhaseGroup key={ph.id} phase={ph} activities={activities} todayPct={todayPct} />
+          ))}
+          {/* unphased activities (if any) render under their own group */}
+          {activitiesInPhase(activities, phases, null).length > 0 && (
+            <div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.1em', color: 'var(--faint)', marginBottom: 10 }}>UNPHASED</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {activitiesInPhase(activities, phases, null).map((a) => (
+                  <ScheduleRow key={a.id} a={a} todayPct={todayPct} />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {activities.map((a) => (
+            <ScheduleRow key={a.id} a={a} todayPct={todayPct} />
+          ))}
+        </div>
+      )}
 
       <div style={{ marginTop: 16, fontSize: 11.5, color: 'var(--faint)', lineHeight: 1.5, maxWidth: 760 }}>
         Each activity can only <strong>Start</strong> when its four gates align — the <strong>Decision</strong> is locked, the approved{' '}

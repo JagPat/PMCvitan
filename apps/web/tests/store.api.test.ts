@@ -15,6 +15,7 @@ function makeSnapshot(partial?: Partial<ApiSnapshot>): ApiSnapshot {
     review: null,
     reinspectionCreated: false,
     drawings: [],
+    phases: [],
     dailyLog: null,
     notifications: [{ text: 'SERVER applied', time: 'just now', color: '#3F7A54' }],
     ...partial,
@@ -66,6 +67,29 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     await flush();
     expect(s().memberships).toHaveLength(1);
     expect(s().myOrgs[0]).toMatchObject({ role: 'owner' });
+  });
+
+  it('loadPortfolio populates the cross-project rollup (Slice 3)', async () => {
+    const gw = {
+      getPortfolio: vi.fn().mockResolvedValue([
+        { projectId: 'ambli', name: 'Ambli', short: 'Ambli', stage: 'Finishing', role: 'pmc', orgName: 'Vitan', activityTotal: 6, done: 2, inProgress: 0, blocked: 1, notStarted: 3, donePct: 33, openReviews: 1, pendingDecisions: 3, phaseCount: 3, milestonePct: 72 },
+      ]),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().loadPortfolio();
+    await flush();
+    expect(gw.getPortfolio).toHaveBeenCalled();
+    expect(s().portfolio).toHaveLength(1);
+    expect(s().portfolio[0]).toMatchObject({ projectId: 'ambli', blocked: 1, donePct: 33 });
+  });
+
+  it('applySnapshot hydrates phases[] from the server', () => {
+    const snap = makeSnapshot({
+      phases: [{ id: 'PH-services', name: 'Services', order: 0, plannedStart: 9, plannedEnd: 30, activityTotal: 2, done: 1, inProgress: 0, blocked: 1, notStarted: 0, donePct: 50 }],
+    });
+    s().applySnapshot(snap);
+    expect(s().phases).toHaveLength(1);
+    expect(s().phases[0]).toMatchObject({ id: 'PH-services', donePct: 50 });
   });
 });
 

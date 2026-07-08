@@ -62,3 +62,36 @@ describe('OrgsService.createOrg', () => {
     expect((orgMemberships[0] as { role: string; userId: string })).toMatchObject({ role: 'owner', userId: 'u1' });
   });
 });
+
+describe('OrgsService.portfolio', () => {
+  function makePortfolio(role: string, activityStatuses: string[]) {
+    const project = { id: 'ambli', name: 'Residence at Ambli', short: 'Ambli', stage: 'Finishing', milestonePct: 72, org: { name: 'Vitan' } };
+    const prisma = {
+      membership: { findMany: vi.fn(async () => [{ project, role }]) },
+      user: { findUnique: vi.fn(async () => null) },
+      activity: { findMany: vi.fn(async () => activityStatuses.map((status) => ({ status }))) },
+      inspection: { count: vi.fn(async () => 1) },
+      decision: { count: vi.fn(async () => 3) },
+      phase: { count: vi.fn(async () => 3) },
+    };
+    return { svc: new OrgsService(prisma as unknown as PrismaService), prisma };
+  }
+
+  it('rolls up a project the PMC can access, counting activities by status', async () => {
+    const { svc } = makePortfolio('pmc', ['done', 'done', 'blocked', 'not_started', 'in_progress', 'not_started']);
+    const rows = await svc.portfolio('u1');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      projectId: 'ambli', role: 'pmc', orgName: 'Vitan',
+      activityTotal: 6, done: 2, inProgress: 1, blocked: 1, notStarted: 2,
+      donePct: 33, openReviews: 1, pendingDecisions: 3, phaseCount: 3,
+    });
+  });
+
+  it('hides pending-decision counts from a contractor (RBAC)', async () => {
+    const { svc, prisma } = makePortfolio('contractor', ['done']);
+    const rows = await svc.portfolio('u2');
+    expect(rows[0].pendingDecisions).toBe(0);
+    expect(prisma.decision.count).not.toHaveBeenCalled();
+  });
+});

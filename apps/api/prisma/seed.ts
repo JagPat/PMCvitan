@@ -22,6 +22,7 @@ async function main(): Promise<void> {
   await prisma.dailyLog.deleteMany();
   await prisma.decisionOption.deleteMany();
   await prisma.activity.deleteMany();
+  await prisma.phase.deleteMany();
   await prisma.decision.deleteMany();
   await prisma.project.deleteMany();
   await prisma.org.deleteMany();
@@ -91,13 +92,24 @@ async function main(): Promise<void> {
     });
   }
 
+  // Project phases group activities for phase-level monitoring (planned windows as
+  // day-offsets from 1 Jun 2026). Created before activities so the FK resolves.
+  const phases = [
+    { id: 'PH-services', name: 'Services & Waterproofing', order: 0, plannedStart: 9, plannedEnd: 30 },
+    { id: 'PH-wetareas', name: 'Wet Areas & Fittings', order: 1, plannedStart: 19, plannedEnd: 27 },
+    { id: 'PH-finishing', name: 'Finishing', order: 2, plannedStart: 34, plannedEnd: 47 },
+  ];
+  for (const p of phases) {
+    await prisma.phase.create({ data: { ...p, projectId: PROJECT_ID } });
+  }
+
   const activities = [
-    { id: 'ACT-22', name: 'Electrical Rough-In', zone: 'Second Floor', decisionId: null, plannedStart: 9, plannedEnd: 19, actualStart: 9, actualEnd: 18, status: 'done' as const, gateMaterial: 'ok' as const, gateTeam: 'ok' as const, gateInspection: 'ok' as const, order: 0 },
-    { id: 'ACT-25', name: 'Master Bath CP Fittings', zone: 'Second Floor · Master Bath', decisionId: 'DL-009', plannedStart: 19, plannedEnd: 27, actualStart: 20, actualEnd: 26, status: 'done' as const, gateMaterial: 'ok' as const, gateTeam: 'ok' as const, gateInspection: 'ok' as const, order: 1 },
-    { id: 'ACT-28', name: 'Waterproofing — Terrace', zone: 'Terrace', decisionId: null, plannedStart: 23, plannedEnd: 30, actualStart: 24, actualEnd: null, status: 'blocked' as const, gateMaterial: 'ok' as const, gateTeam: 'ok' as const, gateInspection: 'fail' as const, block: 'Ponding test failed — drain slope', order: 2 },
-    { id: 'ACT-31', name: 'Living Room Flooring', zone: 'Ground Floor · Living', decisionId: 'DL-014', plannedStart: 34, plannedEnd: 41, actualStart: null, actualEnd: null, status: 'not_started' as const, gateMaterial: 'wait' as const, gateTeam: 'wait' as const, gateInspection: 'wait' as const, order: 3 },
-    { id: 'ACT-35', name: 'Staircase Railing', zone: 'Staircase · G to 2', decisionId: 'DL-006', plannedStart: 37, plannedEnd: 44, actualStart: null, actualEnd: null, status: 'not_started' as const, gateMaterial: 'wait' as const, gateTeam: 'na' as const, gateInspection: 'wait' as const, order: 4 },
-    { id: 'ACT-33', name: 'Main Door Veneer', zone: 'Ground Floor · Entrance', decisionId: 'DL-011', plannedStart: 43, plannedEnd: 47, actualStart: null, actualEnd: null, status: 'not_started' as const, gateMaterial: 'wait' as const, gateTeam: 'na' as const, gateInspection: 'na' as const, order: 5 },
+    { id: 'ACT-22', name: 'Electrical Rough-In', zone: 'Second Floor', decisionId: null, phaseId: 'PH-services', plannedStart: 9, plannedEnd: 19, actualStart: 9, actualEnd: 18, status: 'done' as const, gateMaterial: 'ok' as const, gateTeam: 'ok' as const, gateInspection: 'ok' as const, order: 0 },
+    { id: 'ACT-25', name: 'Master Bath CP Fittings', zone: 'Second Floor · Master Bath', decisionId: 'DL-009', phaseId: 'PH-wetareas', plannedStart: 19, plannedEnd: 27, actualStart: 20, actualEnd: 26, status: 'done' as const, gateMaterial: 'ok' as const, gateTeam: 'ok' as const, gateInspection: 'ok' as const, order: 1 },
+    { id: 'ACT-28', name: 'Waterproofing — Terrace', zone: 'Terrace', decisionId: null, phaseId: 'PH-services', plannedStart: 23, plannedEnd: 30, actualStart: 24, actualEnd: null, status: 'blocked' as const, gateMaterial: 'ok' as const, gateTeam: 'ok' as const, gateInspection: 'fail' as const, block: 'Ponding test failed — drain slope', order: 2 },
+    { id: 'ACT-31', name: 'Living Room Flooring', zone: 'Ground Floor · Living', decisionId: 'DL-014', phaseId: 'PH-finishing', plannedStart: 34, plannedEnd: 41, actualStart: null, actualEnd: null, status: 'not_started' as const, gateMaterial: 'wait' as const, gateTeam: 'wait' as const, gateInspection: 'wait' as const, order: 3 },
+    { id: 'ACT-35', name: 'Staircase Railing', zone: 'Staircase · G to 2', decisionId: 'DL-006', phaseId: 'PH-finishing', plannedStart: 37, plannedEnd: 44, actualStart: null, actualEnd: null, status: 'not_started' as const, gateMaterial: 'wait' as const, gateTeam: 'na' as const, gateInspection: 'wait' as const, order: 4 },
+    { id: 'ACT-33', name: 'Main Door Veneer', zone: 'Ground Floor · Entrance', decisionId: 'DL-011', phaseId: 'PH-finishing', plannedStart: 43, plannedEnd: 47, actualStart: null, actualEnd: null, status: 'not_started' as const, gateMaterial: 'wait' as const, gateTeam: 'na' as const, gateInspection: 'na' as const, order: 5 },
   ];
   for (const a of activities) {
     await prisma.activity.create({ data: { ...a, projectId: PROJECT_ID } });

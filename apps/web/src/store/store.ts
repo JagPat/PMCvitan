@@ -22,6 +22,7 @@ import {
   SEED_NOTIFICATIONS,
   SEED_REVIEW,
   SEED_DRAWINGS,
+  SEED_PHASES,
   PROJECT,
   type AccessState,
   type AccessWho,
@@ -33,6 +34,8 @@ import {
   type Drawing,
   type MembershipSummary,
   type OrgSummary,
+  type Phase,
+  type PortfolioProject,
   type ProjectMember,
   type ItemState,
   type Lang,
@@ -59,11 +62,13 @@ export interface AppState {
   activeReviewId: string | null; // which queued review the PMC is looking at (null ⇒ first pending)
   reinspectionCreated: boolean;
   drawings: Drawing[]; // the drawings register (Slice 1)
+  phases: Phase[]; // project phases with rollups (Orgs Slice 3)
   // multi-project (Orgs Slice 2)
   activeProjectId: string; // the project the session is scoped to
   memberships: MembershipSummary[]; // projects the user can switch between
   myOrgs: OrgSummary[]; // orgs the user administers/belongs to
   members: ProjectMember[]; // the active project's team (Team screen)
+  portfolio: PortfolioProject[]; // cross-project monitoring rollup (Orgs Slice 3)
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
@@ -114,6 +119,7 @@ export interface AppActions {
   issueDrawing: (input: IssueDrawingInput) => void;
   // multi-project + team
   loadOrgData: () => void;
+  loadPortfolio: () => void;
   switchProject: (projectId: string) => void;
   createProject: (orgId: string, input: NewProjectInput) => void;
   loadTeam: () => void;
@@ -184,10 +190,12 @@ export function getInitialState(): AppState {
     activeReviewId: null,
     reinspectionCreated: false,
     drawings: structuredClone(SEED_DRAWINGS),
+    phases: structuredClone(SEED_PHASES),
     activeProjectId: PROJECT_ID,
     memberships: [],
     myOrgs: [],
     members: [],
+    portfolio: [],
     online: true,
     syncQueue: [],
     outbox: [],
@@ -221,6 +229,7 @@ export const useStore = create<Store>()(
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         s.reinspectionCreated = snap.reinspectionCreated;
         if (snap.drawings) s.drawings = snap.drawings;
+        if (snap.phases) s.phases = snap.phases;
         if (snap.dailyLog) s.dailyLog = snap.dailyLog;
         s.notifications = snap.notifications;
         s.projStart = snap.project.projStart;
@@ -567,6 +576,10 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       gateway.listMemberships().then((ms) => set((s) => { s.memberships = ms; })).catch(() => {});
       gateway.myOrgs().then((os) => set((s) => { s.myOrgs = os; })).catch(() => {});
+    },
+    loadPortfolio: () => {
+      if (!gateway) return;
+      gateway.getPortfolio().then((p) => set((s) => { s.portfolio = p; })).catch(() => {});
     },
     switchProject: (projectId) => {
       if (!gateway || projectId === get().activeProjectId) return;

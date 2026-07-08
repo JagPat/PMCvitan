@@ -9,6 +9,8 @@ import {
   gateDStateFor,
   activityReady,
   selectTotalWorkers,
+  phaseRollup,
+  activitiesInPhase,
 } from '@/store/selectors';
 
 const s = () => useStore.getState();
@@ -184,5 +186,34 @@ describe('crew total feeds the live counts', () => {
     expect(selectTotalWorkers(s())).toBe(10);
     s().crewStep(2, 1); // electrician 0 → 1
     expect(selectTotalWorkers(s())).toBe(11);
+  });
+});
+
+describe('phase monitoring (Orgs Slice 3)', () => {
+  it('rolls up activities per phase from the seeded state', () => {
+    const acts = s().activities;
+    // Services & Waterproofing: ACT-22 done + ACT-28 blocked
+    const services = phaseRollup(acts, 'PH-services');
+    expect(services).toMatchObject({ activityTotal: 2, done: 1, blocked: 1, donePct: 50 });
+    // Finishing: 3 activities, none started yet
+    const finishing = phaseRollup(acts, 'PH-finishing');
+    expect(finishing).toMatchObject({ activityTotal: 3, done: 0, notStarted: 3, donePct: 0 });
+  });
+
+  it('the rollup moves live when an activity is started/completed', () => {
+    // approve DL-014 so ACT-31 (Finishing) can start, then complete it
+    s().openApprove('DL-014', 1);
+    s().confirmApprove();
+    s().startActivity('ACT-31');
+    expect(phaseRollup(s().activities, 'PH-finishing')).toMatchObject({ inProgress: 1, done: 0 });
+    s().completeActivity('ACT-31');
+    expect(phaseRollup(s().activities, 'PH-finishing')).toMatchObject({ done: 1, donePct: 33 });
+  });
+
+  it('groups activities by phase and gathers the unphased remainder', () => {
+    const { activities, phases } = s();
+    expect(activitiesInPhase(activities, phases, 'PH-services').map((a) => a.id)).toEqual(['ACT-22', 'ACT-28']);
+    // every seeded activity belongs to a phase, so the unphased bucket is empty
+    expect(activitiesInPhase(activities, phases, null)).toHaveLength(0);
   });
 });

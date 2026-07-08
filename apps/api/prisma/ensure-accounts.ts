@@ -94,6 +94,39 @@ async function main(): Promise<void> {
     console.log(`ensured ${user.role} ${user.email ?? user.phone} (${user.id}) + memberships`);
   }
 
+  // Phase backfill for the Ambli demo project (Orgs Slice 3): upsert the phases
+  // and file each known activity under one — but only when the activity has no
+  // phase yet, so a hand-assigned phase is never clobbered. Other projects define
+  // phases through the app, so this is scoped to the seeded demo.
+  if (PROJECT_ID === 'ambli') {
+    const phases = [
+      { id: 'PH-services', name: 'Services & Waterproofing', order: 0, plannedStart: 9, plannedEnd: 30 },
+      { id: 'PH-wetareas', name: 'Wet Areas & Fittings', order: 1, plannedStart: 19, plannedEnd: 27 },
+      { id: 'PH-finishing', name: 'Finishing', order: 2, plannedStart: 34, plannedEnd: 47 },
+    ];
+    for (const p of phases) {
+      await prisma.phase.upsert({
+        where: { id: p.id },
+        update: { name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd },
+        create: { ...p, projectId: PROJECT_ID },
+      });
+    }
+    const actPhase: Record<string, string> = {
+      'ACT-22': 'PH-services',
+      'ACT-28': 'PH-services',
+      'ACT-25': 'PH-wetareas',
+      'ACT-31': 'PH-finishing',
+      'ACT-35': 'PH-finishing',
+      'ACT-33': 'PH-finishing',
+    };
+    for (const [actId, phaseId] of Object.entries(actPhase)) {
+      // updateMany so a missing activity is a no-op; only fill an empty phaseId
+      await prisma.activity.updateMany({ where: { id: actId, projectId: PROJECT_ID, phaseId: null }, data: { phaseId } });
+    }
+    // eslint-disable-next-line no-console
+    console.log(`ensured ${phases.length} phase(s) + activity assignments on ${PROJECT_ID}`);
+  }
+
   // eslint-disable-next-line no-console
   console.log(`Done. Org ${orgSlug} + ${accounts.length} account(s) ensured on project ${PROJECT_ID} (no other data touched).`);
 }
