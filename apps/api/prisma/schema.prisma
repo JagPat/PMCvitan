@@ -64,6 +64,52 @@ model Project {
   media         Media[]
   pushSubs      PushSubscription[]
   drawings      Drawing[]
+  org           Org?           @relation(fields: [orgId], references: [id])
+  orgId         String?
+  memberships   Membership[]
+}
+
+// An Org/Account (an architecture practice, e.g. "Vitan Architecture") — owns
+// projects and the people who administer them. Multi-tenant foundation.
+model Org {
+  id        String          @id @default(cuid())
+  name      String
+  slug      String          @unique
+  createdAt DateTime        @default(now())
+  projects  Project[]
+  members   OrgMembership[]
+}
+
+// Who can administer an org: owner/admin create projects + manage teams; member
+// is a plain participant. Distinct from a project role (pmc/client/…).
+model OrgMembership {
+  id        String   @id @default(cuid())
+  org       Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId     String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  role      String // owner | admin | member
+  createdAt DateTime @default(now())
+
+  @@unique([orgId, userId])
+  @@index([userId])
+}
+
+// A user's access to a specific project, with the role they hold there. A user
+// can have memberships on several projects (different roles on each). This is the
+// grant the app scopes tokens to; the legacy User.projectId/role is the default.
+model Membership {
+  id        String   @id @default(cuid())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  role      String // pmc | client | engineer | contractor
+  status    String   @default("active") // invited | active | removed
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, userId])
+  @@index([userId])
 }
 
 // A browser Web Push subscription (Phase 8). Endpoint is unique per device;
@@ -162,6 +208,9 @@ model User {
   phone        String?  @unique
   passwordHash String?
   createdAt    DateTime @default(now())
+
+  orgMemberships OrgMembership[]
+  memberships    Membership[]
 }
 
 // A worker's device identity (QR / tap-photo job card) — no account, no

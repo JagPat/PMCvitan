@@ -1,6 +1,7 @@
-import { Body, Controller, ForbiddenException, Post } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { ZodPipe } from '../common/zod.pipe';
+import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import {
   sessionSchema,
   loginSchema,
@@ -10,6 +11,7 @@ import {
   emailOtpRequestSchema,
   emailOtpVerifySchema,
   googleSignInSchema,
+  switchProjectSchema,
   type SessionInput,
   type LoginInput,
   type OtpRequestInput,
@@ -18,11 +20,19 @@ import {
   type EmailOtpRequestInput,
   type EmailOtpVerifyInput,
   type GoogleSignInInput,
+  type SwitchProjectInput,
 } from '../contracts';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
+
+  /** Re-scope the session to another project the user belongs to (project switch). */
+  @Post('switch')
+  @UseGuards(JwtGuard)
+  switch(@CurrentUser() user: AuthUser, @Body(new ZodPipe(switchProjectSchema)) body: SwitchProjectInput) {
+    return this.auth.switchProject(user.sub, body.projectId);
+  }
 
   /**
    * Passwordless dev auth (demo persona switch). **Secure by default**: only

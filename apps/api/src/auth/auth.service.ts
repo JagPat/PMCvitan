@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
@@ -169,5 +169,48 @@ export class AuthService {
       projectId: input.projectId,
       name: input.name,
     };
+  }
+
+  /** Projects the user can access (their memberships; falls back to the legacy home project). */
+  async listMemberships(userId: string): Promise<
+    Array<{ projectId: string; name: string; short: string; role: Role; orgId: string | null; orgName: string | null }>
+  > {
+    const memberships = await this.prisma.membership.findMany({
+      where: { userId, status: 'active' },
+      include: { project: { include: { org: true } } },
+    });
+    const rows = memberships.map((m) => ({
+      projectId: m.projectId,
+      name: m.project.name,
+      short: m.project.short,
+      role: m.role as Role,
+      orgId: m.project.orgId,
+      orgName: m.project.org?.name ?? null,
+    }));
+    if (rows.length === 0) {
+      // back-compat: a user provisioned before memberships still has a home project
+      const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { project: { include: { org: true } } } });
+      if (user) rows.push({ projectId: user.projectId, name: user.project.name, short: user.project.short, role: user.role as Role, orgId: user.project.orgId, orgName: user.project.org?.name ?? null });
+    }
+    return rows;
+  }
+
+  /** Issue a fresh token scoped to another project the user belongs to (project switch). */
+  async switchProject(userId: string, projectId: string): Promise<TokenResult> {
+    const membership = await this.prisma.membership.findUnique({
+      where: { projectId_userId: { projectId, userId } },
+    });
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('Unknown user');
+
+    let role: Role;
+    if (membership && membership.status === 'active') {
+      role = membership.role as Role;
+    } else if (user.projectId === projectId) {
+      role = user.role as Role; // back-compat: the user's own home project
+    } else {
+      throw new ForbiddenException('You are not a member of this project');
+    }
+    return { token: this.issue(userId, role, projectId), role, projectId, name: user.name };
   }
 }
