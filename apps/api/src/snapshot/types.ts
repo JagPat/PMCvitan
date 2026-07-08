@@ -90,6 +90,10 @@ export interface SnapshotDto {
   decisions: DecisionDto[];
   activities: ActivityDto[];
   checklist: ChecklistDto | null;
+  /** The PMC review queue: every submitted-but-undecided inspection (a submitted
+   *  checklist, the seeded review, an auto-created closing inspection), oldest first. */
+  reviews: ReviewDto[];
+  /** @deprecated first pending review — kept for back-compat; use `reviews`. */
   review: ReviewDto | null;
   reinspectionCreated: boolean;
   dailyLog: DailyLogDto | null;

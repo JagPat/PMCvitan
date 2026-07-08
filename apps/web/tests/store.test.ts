@@ -4,6 +4,7 @@ import {
   selectPending,
   selectFailedCount,
   selectReviewPending,
+  selectActiveReview,
   selectSchToday,
   gateDStateFor,
   activityReady,
@@ -87,6 +88,45 @@ describe('inspection review → re-inspection', () => {
     expect(selectReviewPending(s())).toBe(0);
     // now counts FAIL || rejected = 2
     expect(selectFailedCount(s())).toBe(2);
+  });
+});
+
+describe('checklist → review queue wiring', () => {
+  it('a submitted checklist joins the PMC review queue and can be decided there', () => {
+    // seeded: one pending review (the waterproofing review)
+    expect(selectReviewPending(s())).toBe(1);
+    const seededReviewId = s().reviews[0].id;
+
+    // engineer marks every item pass, then submits the checklist
+    s().checklist.items.forEach((_, i) => s().setItem(i, 'pass'));
+    s().submitInspection();
+    expect(s().checklist.submitted).toBe(true);
+
+    // it now appears as a second pending review, its pass/fail mapped to PASS/FAIL
+    expect(selectReviewPending(s())).toBe(2);
+    const checklistId = s().checklist.id;
+    const queued = s().reviews.find((r) => r.id === checklistId)!;
+    expect(queued).toBeTruthy();
+    expect(queued.items.every((it) => it.result === 'PASS')).toBe(true);
+
+    // active defaults to the first pending (seeded); the PMC can switch to the checklist one
+    expect(selectActiveReview(s())!.id).toBe(seededReviewId);
+    s().setActiveReview(checklistId);
+    expect(selectActiveReview(s())!.id).toBe(checklistId);
+
+    // approving the checklist-derived review clears it from the queue
+    s().approveInspection();
+    expect(s().reviews.find((r) => r.id === checklistId)!.decided).toBe(true);
+    expect(selectReviewPending(s())).toBe(1); // only the seeded review still pending
+  });
+
+  it('a failed checklist item maps to a FAIL result in the queued review', () => {
+    s().checklist.items.forEach((_, i) => s().setItem(i, 'pass'));
+    s().setItem(1, 'fail');
+    s().addPhoto(1); // a failed item needs a photo to submit
+    s().submitInspection();
+    const queued = s().reviews.find((r) => r.id === s().checklist.id)!;
+    expect(queued.items[1].result).toBe('FAIL');
   });
 });
 

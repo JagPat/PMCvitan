@@ -38,7 +38,8 @@ export interface ApiSnapshot {
   decisions: Decision[];
   activities: Activity[];
   checklist: Checklist | null;
-  review: Review | null;
+  reviews: Review[];
+  review: Review | null; // deprecated (first pending) — back-compat; use `reviews`
   reinspectionCreated: boolean;
   dailyLog: DailyLog | null;
   notifications: AppNotification[];

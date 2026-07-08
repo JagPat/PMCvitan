@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import type { Activity, Decision, DecisionStatus, Gate } from '@vitan/shared';
+import type { Activity, Decision, DecisionStatus, Gate, Review } from '@vitan/shared';
 import type { AppState } from './store';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -31,12 +31,22 @@ export function selectLogDecisions(s: AppState): Decision[] {
 
 // ---- inspections ----
 
-export function selectReviewPending(s: AppState): number {
-  return s.review.decided ? 0 : 1;
+/** The review the PMC is acting on: the selected one, else the first pending, else the first. */
+export function selectActiveReview(s: AppState): Review | null {
+  if (!s.reviews.length) return null;
+  const byId = s.activeReviewId ? s.reviews.find((r) => r.id === s.activeReviewId) : undefined;
+  if (byId) return byId;
+  return s.reviews.find((r) => !r.decided) ?? s.reviews[0];
 }
 
+/** How many inspections are still awaiting the PMC's decision (the queue depth). */
+export function selectReviewPending(s: AppState): number {
+  return s.reviews.filter((r) => !r.decided).length;
+}
+
+/** FAIL-or-rejected items across every queued review. */
 export function selectFailedItems(s: AppState): number {
-  return s.review.items.filter((it) => it.result === 'FAIL' || it.rejected).length;
+  return s.reviews.reduce((n, r) => n + r.items.filter((it) => it.result === 'FAIL' || it.rejected).length, 0);
 }
 
 /**
@@ -46,7 +56,7 @@ export function selectFailedItems(s: AppState): number {
 export function selectFailedCount(s: AppState): number {
   return s.reinspectionCreated
     ? selectFailedItems(s)
-    : s.review.items.filter((it) => it.result === 'FAIL').length;
+    : s.reviews.reduce((n, r) => n + r.items.filter((it) => it.result === 'FAIL').length, 0);
 }
 
 // ---- schedule ----

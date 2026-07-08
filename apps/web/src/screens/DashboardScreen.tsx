@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectPending, selectReviewPending, selectFailedCount, selectTotalWorkers } from '@/store/selectors';
+import { selectPending, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers } from '@/store/selectors';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { PROJECT, SEED_MILESTONES, swatch as swatchGradient } from '@vitan/shared';
@@ -9,6 +9,7 @@ import styles from './responsive.module.css';
 export function DashboardScreen() {
   const pending = useStore(useShallow(selectPending));
   const reviewPending = useStore(selectReviewPending);
+  const activeReview = useStore(selectActiveReview);
   const failedCount = useStore(selectFailedCount);
   const workers = useStore(selectTotalWorkers);
   const materialsCount = useStore((s) => s.dailyLog.materials.length);
@@ -24,7 +25,7 @@ export function DashboardScreen() {
 
   const tiles = [
     { key: 'pending', label: 'DECISIONS PENDING WITH CLIENT', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setRole('client') },
-    { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending ? 'Waterproofing Ponding Test' : 'Nothing pending', onClick: () => setScreen('inspect-review') },
+    { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => setScreen('inspect-review') },
     { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? 'Drain slope · Terrace' : 'None', onClick: () => setScreen('inspect-review') },
     { key: 'photos', label: 'PROGRESS PHOTOS THIS WEEK', value: 24, accent: 'var(--green-solid)', sub: 'Across 6 zones', onClick: () => {} },
   ];

@@ -91,11 +91,34 @@ export class SnapshotService {
       block: a.block ?? undefined,
     }));
 
+    // The engineer keeps seeing their checklist (as "submitted ✓") after they send
+    // it; it ALSO enters the PMC review queue below — two role-views of one inspection.
     const checklistRow = inspections.find((i) => i.kind === 'checklist');
-    const reviewRow = inspections.find((i) => i.kind === 'review' && !i.title.startsWith('Closing inspection'));
-    const reinspectionCreated = reviewRow
-      ? reviewRow.decided && reviewRow.items.some((it) => it.rejected || it.result === 'FAIL')
-      : false;
+    // The review queue: any submitted-but-undecided inspection, whatever its kind
+    // (a submitted checklist, the seeded review, an auto-created closing inspection).
+    // A checklist item's pass/fail/na `state` maps to a review PASS/FAIL result.
+    const reviews = inspections
+      .filter((i) => i.submitted && !i.decided)
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((i) => ({
+        id: i.id,
+        title: i.title,
+        zone: i.zone,
+        by: i.by ?? '',
+        date: i.date,
+        decided: i.decided,
+        items: i.items.map((it) => ({
+          name: it.name,
+          result: (it.result ?? (it.state === 'fail' ? 'FAIL' : 'PASS')) as 'PASS' | 'FAIL',
+          swatch: it.swatch ?? 'concrete',
+          note: it.note,
+          rejected: it.rejected,
+        })),
+      }));
+    // any inspection already decided with a rejected/failed item ⇒ re-inspection exists
+    const reinspectionCreated = inspections.some(
+      (i) => i.decided && i.items.some((it) => it.rejected || it.result === 'FAIL'),
+    );
 
     return {
       project: {
@@ -123,23 +146,8 @@ export class SnapshotService {
             items: checklistRow.items.map((it) => ({ name: it.name, state: it.state, photos: it.photos, note: it.note })),
           }
         : null,
-      review: reviewRow
-        ? {
-            id: reviewRow.id,
-            title: reviewRow.title,
-            zone: reviewRow.zone,
-            by: reviewRow.by ?? '',
-            date: reviewRow.date,
-            decided: reviewRow.decided,
-            items: reviewRow.items.map((it) => ({
-              name: it.name,
-              result: (it.result ?? 'PASS') as 'PASS' | 'FAIL',
-              swatch: it.swatch ?? 'concrete',
-              note: it.note,
-              rejected: it.rejected,
-            })),
-          }
-        : null,
+      reviews,
+      review: reviews[0] ?? null, // deprecated single (first pending) — back-compat
       reinspectionCreated,
       dailyLog: dailyLog
         ? {

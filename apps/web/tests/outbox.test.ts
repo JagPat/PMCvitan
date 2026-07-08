@@ -11,6 +11,7 @@ function makeSnapshot(partial?: Partial<ApiSnapshot>): ApiSnapshot {
     decisions: [],
     activities: [],
     checklist: null,
+    reviews: [],
     review: null,
     reinspectionCreated: false,
     dailyLog: null,
