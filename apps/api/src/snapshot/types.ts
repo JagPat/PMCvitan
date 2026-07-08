@@ -77,6 +77,12 @@ export interface ReviewDto {
   items: { name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean }[];
 }
 
+export interface DrawingAckDto {
+  userName: string;
+  role: string;
+  at: string; // display date, e.g. "08 Jul 2026"
+}
+
 export interface DrawingRevisionDto {
   id: string;
   rev: string;
@@ -87,6 +93,7 @@ export interface DrawingRevisionDto {
   note: string;
   issuedBy: string;
   issuedAt: string;
+  acks: DrawingAckDto[]; // who has acknowledged building to this revision
 }
 
 export interface DrawingDto {
@@ -98,6 +105,7 @@ export interface DrawingDto {
   activityId: string | null;
   decisionId: string | null;
   current: DrawingRevisionDto | null; // the latest non-superseded revision
+  ackedByMe: boolean; // has the caller acknowledged the current revision?
   revisions: DrawingRevisionDto[]; // full history, newest first
 }
 

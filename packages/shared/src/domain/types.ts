@@ -180,6 +180,12 @@ export interface OrgSummary {
 export type Discipline = 'architectural' | 'structural' | 'mep' | 'other';
 export type DrawingStatus = 'for_review' | 'for_construction' | 'superseded';
 
+export interface DrawingAck {
+  userName: string;
+  role: string;
+  at: string; // display date
+}
+
 export interface DrawingRevision {
   id: string;
   rev: string;
@@ -190,6 +196,7 @@ export interface DrawingRevision {
   note: string;
   issuedBy: string;
   issuedAt: string;
+  acks: DrawingAck[]; // who has acknowledged building to this revision
 }
 
 export interface Drawing {
@@ -201,6 +208,7 @@ export interface Drawing {
   activityId: string | null;
   decisionId: string | null;
   current: DrawingRevision | null; // latest non-superseded
+  ackedByMe: boolean; // has the current user acknowledged the current revision?
   revisions: DrawingRevision[]; // newest first
 }
 

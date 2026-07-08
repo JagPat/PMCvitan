@@ -10,6 +10,6 @@ export class ProjectController {
   /** Full project snapshot the frontend hydrates its store from (RBAC-filtered by role). */
   @Get('snapshot')
   snapshotFor(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
-    return this.snapshot.build(projectId, user.role);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

@@ -1,14 +1,17 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from '../media/storage.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { ddMmmYyyy } from '../domain/dates';
+import type { AuthUser } from '../common/auth';
 import type { IssueDrawingInput } from '../contracts';
 
 export interface IssuedDrawing {
   drawingId: string;
   revisionId: string;
 }
+
+const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Site Engineer', contractor: 'Contractor', worker: 'Worker' };
 
 export type RevisionBytes = { mime: string; bytes: Buffer };
 export type RevisionRedirect = { redirect: string };
@@ -88,6 +91,33 @@ export class DrawingsService {
     // issued to the people who build from it
     this.realtime.notifyChanged(projectId, `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}`, ['engineer', 'contractor']);
     return { drawingId, revisionId };
+  }
+
+  /**
+   * Record a build-acknowledgement: the caller confirms they are building to this
+   * revision. Idempotent per (revision, user). Client can't acknowledge (they don't
+   * build); everyone else on the project can. Audited + the PMC is notified.
+   */
+  async acknowledge(projectId: string, revisionId: string, user: AuthUser): Promise<{ ok: boolean; ackCount: number }> {
+    if (user.role === 'client') throw new ForbiddenException('Only the build team acknowledges drawings');
+    const rev = await this.prisma.drawingRevision.findUnique({ where: { id: revisionId }, include: { drawing: true } });
+    if (!rev || rev.drawing.projectId !== projectId) throw new NotFoundException('Drawing revision not found');
+
+    const dbUser = await this.prisma.user.findUnique({ where: { id: user.sub } }).catch(() => null);
+    const userName = dbUser?.name ?? ROLE_LABEL[user.role] ?? 'Team member';
+
+    await this.prisma.drawingAck.upsert({
+      where: { revisionId_userId: { revisionId, userId: user.sub } },
+      update: { userName, role: user.role },
+      create: { revisionId, userId: user.sub, userName, role: user.role },
+    });
+    await this.prisma.auditLog.create({
+      data: { projectId, actor: userName, action: 'drawing_ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } },
+    });
+
+    const ackCount = await this.prisma.drawingAck.count({ where: { revisionId } });
+    this.realtime.notifyChanged(projectId, `${userName} is building to ${rev.drawing.number} Rev ${rev.rev}`, ['pmc']);
+    return { ok: true, ackCount };
   }
 
   /** Fetch a revision's file: inline bytes (dev stub) or a redirect to the bucket URL. */

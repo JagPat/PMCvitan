@@ -47,12 +47,27 @@ revision (PDF/image inline, DWG download) plus the **revision history** with sup
 issues clearly marked. PMC gets an **Issue drawing** flow (file picker → number/title/
 discipline/rev). The local demo seeds three drawings (mock SVG sheets) and issues locally.
 
+## Slice 2 — linkage + acknowledgement + RBAC
+
+- **`DrawingAck`** model — `user × revision` (unique), so acknowledgements are **per
+  revision**: a superseding issue starts a fresh round. The snapshot adds `acks[]` to each
+  revision and `ackedByMe` to each drawing (the caller's ack of the current rev).
+- **`POST /projects/:id/drawings/rev/:revId/ack`** — the caller confirms "building to
+  Rev X". Idempotent; **audited** (`drawing_ack`); the PMC is notified in realtime. Client
+  is refused (they don't build).
+- **RBAC tiers**: **PMC issues** (`POST /drawings` now 403s a non-PMC); **engineer /
+  contractor** view + acknowledge; **client** curated read-only (no ack).
+- **Frontend**: the drawing viewer shows a **"Building to Rev X"** block — who has
+  acknowledged (name · role · date) and, for engineer/contractor, an **"I'm building to
+  Rev X"** button (→ a "You're building to Rev X" confirmation). The **Site Schedule**
+  links each activity to the drawing it builds from (a `A-201 · Rev C` chip that opens the
+  register). The viewer reads the live drawing from the store, so a fresh ack shows at once.
+
 ## Roadmap
 
-- **Slice 1 (this):** register + revisions + viewer + issue + per-role push. ✅
-- **Slice 2:** activity/decision linkage surfaced on the Site Schedule / gate view;
-  drawing on the worker job card; **acknowledgement** ("building to Rev C") + audit; RBAC
-  (PMC issues; engineer/contractor view+ack; client curated read-only).
+- **Slice 1:** register + revisions + viewer + issue + per-role push. ✅
+- **Slice 2:** activity linkage on the schedule; **acknowledgement** ("building to Rev C")
+  + audit; RBAC (PMC issues; engineer/contractor view+ack; client read-only). ✅
 - **Slice 3:** offline PDF caching (PWA) for the field; **presigned direct-to-bucket
   uploads** for large drawings (the current path is the 12 MB base64 body); optional
   server-side DWG→PDF conversion.

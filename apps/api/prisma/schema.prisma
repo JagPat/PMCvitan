@@ -191,8 +191,25 @@ model DrawingRevision {
   issuedBy   String
   issuedAt   String // display timestamp, e.g. "08 Jul 2026"
   createdAt  DateTime @default(now())
+  acks       DrawingAck[]
 
   @@index([drawingId])
+}
+
+// A build-acknowledgement: a contractor / engineer confirming they are building
+// to a specific revision ("building to Rev C"). Per-revision, so a superseding
+// issue starts a fresh round of acks — the PMC can see who is on the current set.
+model DrawingAck {
+  id         String          @id @default(cuid())
+  revision   DrawingRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  revisionId String
+  userId     String
+  userName   String
+  role       String
+  at         DateTime        @default(now())
+
+  @@unique([revisionId, userId])
+  @@index([revisionId])
 }
 
 // A real account: PMC / client / contractor sign in with email + password;

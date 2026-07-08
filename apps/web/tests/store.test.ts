@@ -147,6 +147,24 @@ describe('drawings register', () => {
     expect(d.revisions.find((r) => r.rev === 'A')!.status).toBe('superseded');
     expect(s().drawings.filter((x) => x.number === 'M-501')).toHaveLength(1); // same register entry
   });
+
+  it('acknowledges building to the current revision (Slice 2)', () => {
+    useStore.setState({ role: 'contractor', userName: 'Rajesh (Contractor)' });
+    const dwg = s().drawings.find((d) => d.number === 'A-201')!;
+    const before = dwg.current!.acks.length;
+    expect(dwg.ackedByMe).toBe(false);
+
+    s().acknowledgeDrawing(dwg.id);
+
+    const after = s().drawings.find((d) => d.number === 'A-201')!;
+    expect(after.ackedByMe).toBe(true);
+    expect(after.current!.acks.length).toBe(before + 1);
+    expect(after.current!.acks.at(-1)).toMatchObject({ userName: 'Rajesh (Contractor)', role: 'contractor' });
+
+    // idempotent: a second ack does not add another row
+    s().acknowledgeDrawing(dwg.id);
+    expect(s().drawings.find((d) => d.number === 'A-201')!.current!.acks.length).toBe(before + 1);
+  });
 });
 
 describe('guarded inspection submit', () => {

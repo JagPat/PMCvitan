@@ -302,6 +302,13 @@ export class ApiGateway {
     });
   }
 
+  /** Acknowledge building to a drawing revision ("building to Rev C"). */
+  acknowledgeDrawing(revisionId: string): Promise<{ ok: boolean; ackCount: number }> {
+    return this.req<{ ok: boolean; ackCount: number }>(`/projects/${this.projectId}/drawings/rev/${revisionId}/ack`, {
+      method: 'POST',
+    });
+  }
+
   /** The server's VAPID public key (empty string ⇒ web push disabled server-side). */
   pushPublicKey(): Promise<{ key: string }> {
     return this.req<{ key: string }>(`/push/public-key`);

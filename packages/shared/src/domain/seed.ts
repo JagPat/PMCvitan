@@ -159,11 +159,12 @@ export const SEED_DRAWINGS: Drawing[] = [
     zone: 'Ground Floor · Living',
     activityId: 'ACT-31',
     decisionId: 'DL-014',
-    current: { id: 'A-201-C', rev: 'C', status: 'for_construction', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'C', 'PLAN · 1:50'), sizeBytes: 184320, note: 'Italian marble setting-out; expansion joints marked.', issuedBy: 'Ar. Vitan', issuedAt: '06 Jul 2026' },
+    ackedByMe: false,
+    current: { id: 'A-201-C', rev: 'C', status: 'for_construction', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'C', 'PLAN · 1:50'), sizeBytes: 184320, note: 'Italian marble setting-out; expansion joints marked.', issuedBy: 'Ar. Vitan', issuedAt: '06 Jul 2026', acks: [{ userName: 'Rajesh (Contractor)', role: 'contractor', at: '06 Jul 2026' }] },
     revisions: [
-      { id: 'A-201-C', rev: 'C', status: 'for_construction', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'C', 'PLAN · 1:50'), sizeBytes: 184320, note: 'Italian marble setting-out; expansion joints marked.', issuedBy: 'Ar. Vitan', issuedAt: '06 Jul 2026' },
-      { id: 'A-201-B', rev: 'B', status: 'superseded', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'B', 'PLAN · 1:50'), sizeBytes: 176128, note: 'Revised border pattern per client.', issuedBy: 'Ar. Vitan', issuedAt: '21 Jun 2026' },
-      { id: 'A-201-A', rev: 'A', status: 'superseded', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'A', 'PLAN · 1:50'), sizeBytes: 170000, note: 'First issue for construction.', issuedBy: 'Ar. Vitan', issuedAt: '02 Jun 2026' },
+      { id: 'A-201-C', rev: 'C', status: 'for_construction', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'C', 'PLAN · 1:50'), sizeBytes: 184320, note: 'Italian marble setting-out; expansion joints marked.', issuedBy: 'Ar. Vitan', issuedAt: '06 Jul 2026', acks: [{ userName: 'Rajesh (Contractor)', role: 'contractor', at: '06 Jul 2026' }] },
+      { id: 'A-201-B', rev: 'B', status: 'superseded', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'B', 'PLAN · 1:50'), sizeBytes: 176128, note: 'Revised border pattern per client.', issuedBy: 'Ar. Vitan', issuedAt: '21 Jun 2026', acks: [] },
+      { id: 'A-201-A', rev: 'A', status: 'superseded', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'A', 'PLAN · 1:50'), sizeBytes: 170000, note: 'First issue for construction.', issuedBy: 'Ar. Vitan', issuedAt: '02 Jun 2026', acks: [] },
     ],
   },
   {
@@ -174,9 +175,10 @@ export const SEED_DRAWINGS: Drawing[] = [
     zone: 'Terrace',
     activityId: 'ACT-28',
     decisionId: null,
-    current: { id: 'S-101-A', rev: 'A', status: 'for_construction', mime: 'image/vnd.dwg', url: sheet('S-101', 'Terrace Slab Detail', 'A', 'DWG · CAD source'), sizeBytes: 512000, note: 'DWG source — issue the PDF export to the field.', issuedBy: 'Ar. Vitan', issuedAt: '28 May 2026' },
+    ackedByMe: false,
+    current: { id: 'S-101-A', rev: 'A', status: 'for_construction', mime: 'image/vnd.dwg', url: sheet('S-101', 'Terrace Slab Detail', 'A', 'DWG · CAD source'), sizeBytes: 512000, note: 'DWG source — issue the PDF export to the field.', issuedBy: 'Ar. Vitan', issuedAt: '28 May 2026', acks: [] },
     revisions: [
-      { id: 'S-101-A', rev: 'A', status: 'for_construction', mime: 'image/vnd.dwg', url: sheet('S-101', 'Terrace Slab Detail', 'A', 'DWG · CAD source'), sizeBytes: 512000, note: 'DWG source — issue the PDF export to the field.', issuedBy: 'Ar. Vitan', issuedAt: '28 May 2026' },
+      { id: 'S-101-A', rev: 'A', status: 'for_construction', mime: 'image/vnd.dwg', url: sheet('S-101', 'Terrace Slab Detail', 'A', 'DWG · CAD source'), sizeBytes: 512000, note: 'DWG source — issue the PDF export to the field.', issuedBy: 'Ar. Vitan', issuedAt: '28 May 2026', acks: [] },
     ],
   },
   {
@@ -187,9 +189,10 @@ export const SEED_DRAWINGS: Drawing[] = [
     zone: 'Ground Floor · Entrance',
     activityId: 'ACT-33',
     decisionId: 'DL-011',
-    current: { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026' },
+    ackedByMe: false,
+    current: { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026', acks: [] },
     revisions: [
-      { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026' },
+      { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026', acks: [] },
     ],
   },
 ];

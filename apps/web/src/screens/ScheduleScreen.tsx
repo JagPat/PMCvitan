@@ -2,6 +2,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase } from '@/store/selectors';
 import { Eyebrow, GateDot, ActivityChip, Button } from '@/components';
+import { PencilRuler } from '@/lib/icons';
 import { dayLabel, gateColor, type Activity, type Phase } from '@vitan/shared';
 import type { AppState } from '@/store/store';
 import styles from './responsive.module.css';
@@ -27,8 +28,11 @@ function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
 
 function ScheduleRow({ a, todayPct }: { a: Activity; todayPct: number }) {
   const state = useStore((s) => s) as AppState;
+  const setScreen = useStore((s) => s.setScreen);
   const gates = gatesFor(state, a);
   const ready = activityReady(state, a);
+  // the controlled drawing this activity builds from (Drawings Slice 2 linkage)
+  const linkedDrawing = state.drawings.find((d) => d.activityId === a.id);
   const plannedLine = `Plan ${dayLabel(a.ps)} → ${dayLabel(a.pe)}`;
   const actualLine = a.as == null ? 'Not started' : `Actual ${dayLabel(a.as)} → ${a.ae == null ? 'ongoing' : dayLabel(a.ae)}`;
   const actualColor = a.status === 'blocked' ? 'var(--red-solid)' : a.status === 'done' ? 'var(--green-solid)' : 'var(--accent)';
@@ -43,6 +47,16 @@ function ScheduleRow({ a, todayPct }: { a: Activity; todayPct: number }) {
           </div>
           <div style={{ fontWeight: 600, fontSize: 14.5, marginTop: 4 }}>{a.name}</div>
           <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 1 }}>{a.zone}</div>
+          {linkedDrawing?.current && (
+            <button
+              onClick={() => setScreen('drawings')}
+              data-testid={`sched-dwg-${a.id}`}
+              title={`Governed by ${linkedDrawing.number} — open the Drawings register`}
+              style={{ marginTop: 6, display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 6, padding: '3px 7px', fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--muted)' }}
+            >
+              <PencilRuler size={11} /> {linkedDrawing.number} · Rev {linkedDrawing.current.rev}
+            </button>
+          )}
         </div>
 
         <div className={styles.schedTimelineWrap} style={{ flex: 1 }}>

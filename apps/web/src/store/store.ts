@@ -117,6 +117,7 @@ export interface AppActions {
   sendReinspection: () => void;
   // drawings register
   issueDrawing: (input: IssueDrawingInput) => void;
+  acknowledgeDrawing: (drawingId: string) => void;
   // multi-project + team
   loadOrgData: () => void;
   loadPortfolio: () => void;
@@ -546,6 +547,7 @@ export const useStore = create<Store>()(
           note: input.note ?? '',
           issuedBy: 'You (demo)',
           issuedAt: 'just now',
+          acks: [],
         };
         const existing = s.drawings.find((d) => d.number === input.number);
         if (existing) {
@@ -554,6 +556,7 @@ export const useStore = create<Store>()(
           existing.current = newRev;
           existing.title = input.title;
           existing.discipline = input.discipline;
+          existing.ackedByMe = false; // a fresh rev needs re-acknowledgement
         } else {
           s.drawings.unshift({
             id: `DWG-${s.drawings.length + 1}`,
@@ -563,12 +566,40 @@ export const useStore = create<Store>()(
             zone: input.zone ?? null,
             activityId: input.activityId ?? null,
             decisionId: input.decisionId ?? null,
+            ackedByMe: false,
             current: newRev,
             revisions: [newRev],
           });
         }
       });
       get().flash(`Drawing issued: ${input.number} Rev ${input.rev} (demo).`);
+    },
+    acknowledgeDrawing: (drawingId) => {
+      const drawing = get().drawings.find((d) => d.id === drawingId);
+      if (!drawing?.current || drawing.ackedByMe) return;
+      const rev = drawing.current;
+      if (gateway) {
+        gateway
+          .acknowledgeDrawing(rev.id)
+          .then(() => {
+            get().flash(`Acknowledged — building to ${drawing.number} Rev ${rev.rev}.`);
+            gateway!.snapshot().then((snap) => applySnapshot(snap)).catch(() => {});
+          })
+          .catch(() => get().flash('Could not record the acknowledgement — please try again.'));
+        return;
+      }
+      // local demo: mark building-to on the current rev
+      const label = get().userName ?? { pmc: 'PMC', client: 'Client', engineer: 'Site Engineer', contractor: 'Contractor' }[get().role] ?? 'You';
+      set((s) => {
+        const d = s.drawings.find((x) => x.id === drawingId);
+        if (!d?.current) return;
+        d.ackedByMe = true;
+        const ack = { userName: label, role: s.role, at: 'just now' };
+        d.current.acks.push(ack);
+        const inHistory = d.revisions.find((r) => r.id === d.current!.id);
+        if (inHistory) inHistory.acks.push(ack);
+      });
+      get().flash(`Acknowledged — building to ${drawing.number} Rev ${rev.rev} (demo).`);
     },
 
     // ---- multi-project + team (Orgs Slice 2) ----
