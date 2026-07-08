@@ -26,4 +26,10 @@ EXPOSE 3000
 # migrate deploy can't run (e.g. the pre-migrations live DB before it is
 # baselined once — see docs/DEPLOY.md), so a deploy never bricks. Seed once,
 # separately: `pnpm --filter api seed`.
-CMD ["sh", "-c", "(pnpm prisma:migrate || pnpm prisma:push --accept-data-loss --skip-generate) && node dist/main.js"]
+#
+# Go-live helper: with AUTO_ENSURE_ACCOUNTS=true, boot also runs the
+# non-destructive `ensure-accounts` (upserts the office accounts + org/phase
+# backfill) so real sign-in works and the dev-auth lockdown can't lock anyone
+# out. Failure-tolerant (never bricks a deploy) and a no-op when the flag is
+# unset — existing deploys are unchanged. See docs/GO_LIVE.md.
+CMD ["sh", "-c", "(pnpm prisma:migrate || pnpm prisma:push --accept-data-loss --skip-generate) && { if [ \"$AUTO_ENSURE_ACCOUNTS\" = \"true\" ]; then echo '[boot] ensuring accounts...'; pnpm ensure-accounts || echo '[boot] ensure-accounts failed (non-fatal), continuing'; fi; node dist/main.js; }"]
