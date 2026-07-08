@@ -63,11 +63,29 @@ discipline/rev). The local demo seeds three drawings (mock SVG sheets) and issue
   links each activity to the drawing it builds from (a `A-201 · Rev C` chip that opens the
   register). The viewer reads the live drawing from the store, so a fresh ack shows at once.
 
+## Slice 3 — offline cache + presigned uploads
+
+- **Offline drawing cache (PWA)**: the service worker (`v2`) now runtime-caches drawing /
+  media files (`/drawings/rev/*`, `/media/*`) on **any origin** — the API is a subdomain —
+  with **stale-while-revalidate** into a dedicated `vitan-pmc-files-*` cache. Opaque
+  (no-cors) responses are cacheable and render in `<iframe>`/`<img>`/`<a download>`, so a
+  drawing the field has opened (its thumbnail loads it too) **stays viewable when the
+  signal drops**. A failed revalidate keeps serving the cached copy. API JSON is still
+  never intercepted.
+- **Presigned direct-to-bucket uploads**: `POST /projects/:id/drawings/presign { mime }`
+  (PMC only) returns `{ uploadUrl, storageKey }` in S3/R2 mode, or `{ presign: null }` on
+  the dev stub. The client PUTs the bytes **straight to the bucket** (bypassing the API
+  body limit) then issues with `{ …meta, storageKey, sizeBytes }` instead of base64.
+  `issueDrawing` auto-routes: files ≥ ~3 MB try the presigned path and fall back to the
+  base64 body if no bucket is configured or the PUT fails. Env-only to enable (`S3_*`),
+  same seam as media (`StorageService.presignPut`, `@aws-sdk/s3-request-presigner`).
+
 ## Roadmap
 
 - **Slice 1:** register + revisions + viewer + issue + per-role push. ✅
 - **Slice 2:** activity linkage on the schedule; **acknowledgement** ("building to Rev C")
   + audit; RBAC (PMC issues; engineer/contractor view+ack; client read-only). ✅
-- **Slice 3:** offline PDF caching (PWA) for the field; **presigned direct-to-bucket
-  uploads** for large drawings (the current path is the 12 MB base64 body); optional
-  server-side DWG→PDF conversion.
+- **Slice 3:** offline PDF caching (PWA, service worker `v2`) for the field; **presigned
+  direct-to-bucket uploads** for large drawings (auto-routed, base64 fallback). ✅
+- **Later (optional):** server-side DWG→PDF conversion so the CAD source auto-produces the
+  field PDF; explicit "make available offline" prefetch of the full current set.

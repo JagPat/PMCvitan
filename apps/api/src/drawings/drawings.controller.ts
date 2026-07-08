@@ -2,7 +2,7 @@ import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, P
 import type { Response } from 'express';
 import { DrawingsService } from './drawings.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { issueDrawingSchema, type IssueDrawingInput } from '../contracts';
+import { issueDrawingSchema, presignDrawingSchema, type IssueDrawingInput, type PresignDrawingInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 
 @Controller()
@@ -20,6 +20,18 @@ export class DrawingsController {
   ) {
     if (user.role !== 'pmc') throw new ForbiddenException('Only the PMC can issue drawings');
     return this.drawings.issue(projectId, user.sub, body);
+  }
+
+  /** Presigned direct-to-bucket upload target for a large drawing (PMC only, Slice 3). */
+  @Post('projects/:projectId/drawings/presign')
+  @UseGuards(JwtGuard)
+  presign(
+    @Param('projectId') projectId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(presignDrawingSchema)) body: PresignDrawingInput,
+  ) {
+    if (user.role !== 'pmc') throw new ForbiddenException('Only the PMC can issue drawings');
+    return this.drawings.presign(projectId, body.mime);
   }
 
   /** Acknowledge building to a revision (contractor / engineer / pmc — not client). */

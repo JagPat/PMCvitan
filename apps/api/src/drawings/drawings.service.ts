@@ -30,20 +30,43 @@ export class DrawingsService {
     private readonly realtime: RealtimeGateway,
   ) {}
 
+  /** A presigned direct-to-bucket upload target for a large drawing (Slice 3), or
+   *  `{ presign: null }` with no bucket configured — the client then posts base64. */
+  async presign(projectId: string, mime: string): Promise<{ uploadUrl: string; storageKey: string } | { presign: null }> {
+    const key = this.storage.keyFor(projectId, 'drawings', mime);
+    const res = await this.storage.presignPut(key, mime);
+    return res ? { uploadUrl: res.uploadUrl, storageKey: key } : { presign: null };
+  }
+
   async issue(projectId: string, issuedBy: string, input: IssueDrawingInput): Promise<IssuedDrawing> {
-    const bytes = Buffer.from(input.data, 'base64');
-    const key = this.storage.keyFor(projectId, 'drawings', input.mime);
-    const { url } = await this.storage.put(key, bytes, input.mime);
+    let key: string;
+    let url: string | null;
+    let data: Buffer | null;
+    let sizeBytes: number;
+    if (input.storageKey) {
+      // presigned path: the bytes are already in the bucket; just record the pointer
+      key = input.storageKey;
+      url = this.storage.publicUrl(key);
+      data = null;
+      sizeBytes = input.sizeBytes ?? 0;
+    } else {
+      // base64 path (dev stub / small files): store the bytes, keep them in the row
+      // unless a bucket is configured (then url is set and the row drops the bytes)
+      const bytes = Buffer.from(input.data!, 'base64');
+      key = this.storage.keyFor(projectId, 'drawings', input.mime);
+      ({ url } = await this.storage.put(key, bytes, input.mime));
+      data = url ? null : bytes;
+      sizeBytes = bytes.length;
+    }
 
     const revData = {
       rev: input.rev,
       status: input.status,
       mime: input.mime,
-      // dev stub keeps the bytes in the row; S3/R2 mode drops them (url is set)
-      data: url ? null : bytes,
+      data,
       url,
       storageKey: key,
-      sizeBytes: bytes.length,
+      sizeBytes,
       note: input.note ?? '',
       issuedBy,
       issuedAt: ddMmmYyyy(new Date()),

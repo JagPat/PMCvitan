@@ -87,6 +87,10 @@ export interface IssueDrawingInput {
   decisionId?: string;
 }
 
+/** Base64 payloads above this length (~3 MB file) are uploaded direct-to-bucket
+ *  via a presigned PUT instead of through the API body (Slice 3). */
+const PRESIGN_MIN_DATA_LEN = 4_000_000;
+
 export const API_BASE: string | undefined = import.meta.env.VITE_API_URL;
 export const PROJECT_ID = 'ambli';
 
@@ -294,12 +298,37 @@ export class ApiGateway {
     });
   }
 
-  /** Issue a drawing revision; the snapshot then reconciles via the realtime `changed`. */
-  issueDrawing(input: IssueDrawingInput): Promise<{ drawingId: string; revisionId: string }> {
+  /**
+   * Issue a drawing revision. A large file is uploaded direct-to-bucket via a
+   * presigned PUT (bypassing the API body limit) when the server offers one;
+   * otherwise the base64 body is posted (dev stub / small files). The snapshot
+   * then reconciles via the realtime `changed`.
+   */
+  async issueDrawing(input: IssueDrawingInput): Promise<{ drawingId: string; revisionId: string }> {
+    if (input.data.length >= PRESIGN_MIN_DATA_LEN) {
+      const presigned = await this.presignDrawing(input.mime).catch(() => null);
+      if (presigned && 'uploadUrl' in presigned) {
+        const bytes = Uint8Array.from(atob(input.data), (c) => c.charCodeAt(0));
+        const put = await fetch(presigned.uploadUrl, { method: 'PUT', headers: { 'Content-Type': input.mime }, body: bytes });
+        if (put.ok) {
+          const { data: _drop, ...meta } = input;
+          return this.req(`/projects/${this.projectId}/drawings`, {
+            method: 'POST',
+            body: JSON.stringify({ ...meta, storageKey: presigned.storageKey, sizeBytes: bytes.length }),
+          });
+        }
+        // presigned PUT failed → fall through to the base64 body path
+      }
+    }
     return this.req<{ drawingId: string; revisionId: string }>(`/projects/${this.projectId}/drawings`, {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  }
+
+  /** Request a presigned direct-to-bucket upload target for a drawing (S3 mode). */
+  presignDrawing(mime: string): Promise<{ uploadUrl: string; storageKey: string } | { presign: null }> {
+    return this.req(`/projects/${this.projectId}/drawings/presign`, { method: 'POST', body: JSON.stringify({ mime }) });
   }
 
   /** Acknowledge building to a drawing revision ("building to Rev C"). */

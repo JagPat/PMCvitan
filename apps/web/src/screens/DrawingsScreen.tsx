@@ -47,7 +47,7 @@ export function DrawingsScreen() {
         <div>
           <Eyebrow>DRAWINGS · REGISTER</Eyebrow>
           <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, maxWidth: 520 }}>
-            The current issue the team builds from. New revisions supersede the old — the field always sees the latest <b>For Construction</b> set.
+            The current issue the team builds from. New revisions supersede the old — the field always sees the latest <b>For Construction</b> set. Drawings you open are cached for <b>offline</b> viewing on site.
           </div>
         </div>
         {role === 'pmc' && (

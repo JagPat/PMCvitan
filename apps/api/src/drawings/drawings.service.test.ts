@@ -75,7 +75,13 @@ function make(storagePutUrl: string | null = null) {
     auditLog: { create: vi.fn(async () => ({})) },
     $transaction: (arr: Promise<unknown>[]) => Promise.all(arr),
   };
-  const storage = { keyFor: vi.fn(() => 'ambli/drawings/x.pdf'), put: vi.fn(async () => ({ url: storagePutUrl })), remove: vi.fn(async () => {}) };
+  const storage = {
+    keyFor: vi.fn(() => 'ambli/drawings/x.pdf'),
+    put: vi.fn(async () => ({ url: storagePutUrl })),
+    publicUrl: vi.fn((k: string) => `https://cdn.vitan.in/${k}`),
+    presignPut: vi.fn(async () => (storagePutUrl ? { uploadUrl: 'https://cdn.vitan.in/upload?sig=x', url: storagePutUrl } : null)),
+    remove: vi.fn(async () => {}),
+  };
   const realtime = { notifyChanged: vi.fn() };
   const svc = new DrawingsService(prisma as unknown as PrismaService, storage as unknown as StorageService, realtime as unknown as RealtimeGateway);
   return { svc, prisma, storage, realtime, draws, acks };
@@ -105,6 +111,16 @@ describe('DrawingsService.issue', () => {
     expect(revs.find((r) => r.rev === 'B')!.status).toBe('for_construction');
   });
 
+  it('accepts a presigned storageKey (skips put, records the bucket pointer)', async () => {
+    const { svc, draws, storage } = make();
+    await svc.issue('ambli', 'pmc-1', { ...base, data: undefined as never, storageKey: 'ambli/drawings/big.pdf', sizeBytes: 9_000_000 });
+    expect(storage.put).not.toHaveBeenCalled();
+    const rev = draws[0].revisions[0];
+    expect(rev.storageKey).toBe('ambli/drawings/big.pdf');
+    expect(rev.url).toBe('https://cdn.vitan.in/ambli/drawings/big.pdf');
+    expect(rev.data).toBeNull();
+  });
+
   it('S3 mode drops the bytes (url set); dev stub keeps them', async () => {
     const s3 = make('https://cdn.vitan.in/ambli/drawings/x.pdf');
     await s3.svc.issue('ambli', 'u1', base);
@@ -115,6 +131,19 @@ describe('DrawingsService.issue', () => {
     await stub.svc.issue('ambli', 'u1', base);
     expect(stub.draws[0].revisions[0].url).toBeNull();
     expect(stub.draws[0].revisions[0].data).toBeInstanceOf(Buffer);
+  });
+});
+
+describe('DrawingsService.presign', () => {
+  it('returns a presigned upload target in S3 mode', async () => {
+    const { svc } = make('https://cdn.vitan.in/ambli/drawings/x.pdf');
+    const res = await svc.presign('ambli', 'application/pdf');
+    expect(res).toMatchObject({ storageKey: 'ambli/drawings/x.pdf', uploadUrl: expect.stringContaining('upload') });
+  });
+
+  it('returns { presign: null } with no bucket (dev stub → client posts base64)', async () => {
+    const { svc } = make(null);
+    expect(await svc.presign('ambli', 'application/pdf')).toEqual({ presign: null });
   });
 });
 

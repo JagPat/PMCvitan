@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const MIME_EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -73,6 +74,19 @@ export class StorageService {
     );
     this.log.log(`stored ${key} (${bytes.length} bytes) in S3`);
     return { url: this.publicUrl(key) };
+  }
+
+  /**
+   * A presigned PUT URL for a direct-to-bucket upload (S3 mode) — the client PUTs
+   * the file's bytes straight to the bucket, bypassing the API's request-body
+   * limit (large drawings, Slice 3). Returns null when no bucket is configured, so
+   * the caller falls back to the base64 body path (the current dev-stub default).
+   */
+  async presignPut(key: string, mime: string, expiresIn = 900): Promise<{ uploadUrl: string; url: string } | null> {
+    if (!this.configured) return null;
+    const cmd = new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key, ContentType: mime });
+    const uploadUrl = await getSignedUrl(this.s3(), cmd, { expiresIn });
+    return { uploadUrl, url: this.publicUrl(key) };
   }
 
   /** Delete a stored object (S3 mode). Dev stub keeps bytes in the DB row, so no-op here. */
