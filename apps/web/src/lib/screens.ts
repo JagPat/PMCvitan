@@ -9,6 +9,7 @@ import {
   NotebookPen,
   ListChecks,
   PencilRuler,
+  Users,
   LogIn,
   type LucideIcon,
 } from 'lucide-react';
@@ -32,13 +33,14 @@ export const SCREEN_META: Record<ScreenKey, ScreenMeta> = {
   'daily-log': { key: 'daily-log', label: 'Daily Site Log', short: 'Daily', path: '/site/log', icon: NotebookPen },
   'engineer-check': { key: 'engineer-check', label: "Today's Checklist", short: 'Checklist', path: '/site/checklist', icon: ListChecks },
   drawings: { key: 'drawings', label: 'Drawings', short: 'Drawings', path: '/drawings', icon: PencilRuler },
+  team: { key: 'team', label: 'Team', short: 'Team', path: '/team', icon: Users },
   'team-access': { key: 'team-access', label: 'Team Access & Login', short: 'Access', path: '/access', icon: LogIn },
 };
 
 /** Permission-filtered screen list per role (mirrors the prototype's screensFor). */
 export function screensFor(role: Role): ScreenMeta[] {
   const keys: Record<Role, ScreenKey[]> = {
-    pmc: ['dashboard', 'site-schedule', 'decision-log', 'inspect-review', 'drawings'],
+    pmc: ['dashboard', 'site-schedule', 'decision-log', 'inspect-review', 'drawings', 'team'],
     client: ['client-decisions', 'client-health', 'decision-log', 'drawings'],
     engineer: ['daily-log', 'engineer-check', 'drawings', 'team-access', 'decision-log'],
     contractor: ['drawings', 'team-access', 'decision-log'],

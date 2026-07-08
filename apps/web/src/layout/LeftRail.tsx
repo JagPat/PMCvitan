@@ -1,6 +1,8 @@
 import { useStore } from '@/store/store';
+import { useShallow } from 'zustand/react/shallow';
 import { useNavItems } from './useNavItems';
 import { RolePicker } from './RolePicker';
+import { ProjectSwitcher } from './ProjectSwitcher';
 import { Bell, Power } from '@/lib/icons';
 import { PROJECT } from '@vitan/shared';
 import { DEV_AUTH } from '@/data/apiGateway';
@@ -17,6 +19,9 @@ export function LeftRail() {
   const role = useStore((s) => s.role);
   const userName = useStore((s) => s.userName);
   const signOut = useStore((s) => s.signOut);
+  const memberships = useStore(useShallow((s) => s.memberships));
+  const activeProjectId = useStore((s) => s.activeProjectId);
+  const activeName = memberships.find((m) => m.projectId === activeProjectId)?.short ?? PROJECT.short;
 
   return (
     <aside className={styles.rail}>
@@ -30,12 +35,16 @@ export function LeftRail() {
         </div>
       </div>
 
+      <div className={styles.persona}>
+        <ProjectSwitcher />
+      </div>
+
       {DEV_AUTH ? (
-        <div className={styles.persona}>
+        <div className={styles.persona} style={{ paddingTop: 4 }}>
           <RolePicker />
         </div>
       ) : (
-        <div className={styles.persona}>
+        <div className={styles.persona} style={{ paddingTop: 4 }}>
           <div className={styles.signedInLabel}>SIGNED IN AS</div>
           <div className={styles.signedInName}>{userName ?? ROLE_LABEL[role]}</div>
           <button className={styles.signOut} onClick={signOut}>
@@ -63,7 +72,7 @@ export function LeftRail() {
 
       <div className={styles.footer}>
         <div>
-          <div className={styles.projName}>{PROJECT.short}</div>
+          <div className={styles.projName}>{activeName}</div>
           <div className={styles.projMeta}>G+2 · FINISHING STAGE</div>
         </div>
         <button className={styles.bell} onClick={toggleNotif} aria-label="Notifications">

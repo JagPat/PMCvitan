@@ -24,12 +24,13 @@ import { subscribeToPush } from './push';
 export function useApiSync(): void {
   const role = useStore((s) => s.role);
   const token = useStore((s) => s.sessionToken);
+  const activeProjectId = useStore((s) => s.activeProjectId);
 
   useEffect(() => {
     if (!API_BASE) return;
     let cancelled = false;
     let socket: Socket | null = null;
-    const gw = new ApiGateway(API_BASE);
+    const gw = new ApiGateway(API_BASE, activeProjectId);
 
     const refresh = () => {
       gw.snapshot()
@@ -47,6 +48,8 @@ export function useApiSync(): void {
       if (cancelled) return;
       useStore.getState()._setGateway(gw);
       refresh();
+      // load the projects the user can switch between + their orgs
+      useStore.getState().loadOrgData();
 
       // web push: register this browser if permission is already granted (best-effort)
       void subscribeToPush(gw);
@@ -68,5 +71,5 @@ export function useApiSync(): void {
       socket?.disconnect();
       useStore.getState()._setGateway(null);
     };
-  }, [role, token]);
+  }, [role, token, activeProjectId]);
 }

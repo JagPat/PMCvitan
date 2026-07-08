@@ -8,6 +8,7 @@ import { ClientHealthScreen } from '@/screens/ClientHealthScreen';
 import { DailyLogScreen } from '@/screens/DailyLogScreen';
 import { EngineerChecklistScreen } from '@/screens/EngineerChecklistScreen';
 import { DrawingsScreen } from '@/screens/DrawingsScreen';
+import { TeamScreen } from '@/screens/TeamScreen';
 import { TeamAccessScreen } from '@/screens/TeamAccessScreen';
 
 export function ScreenView() {
@@ -31,6 +32,8 @@ export function ScreenView() {
       return <EngineerChecklistScreen />;
     case 'drawings':
       return <DrawingsScreen />;
+    case 'team':
+      return <TeamScreen />;
     case 'team-access':
       return <TeamAccessScreen />;
     default:

@@ -26,6 +26,49 @@ beforeEach(() => {
   s()._setGateway(null);
 });
 
+describe('multi-project + team (Orgs Slice 2)', () => {
+  it('switchProject adopts the returned token + active project + role', async () => {
+    const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'JWT-p2', role: 'client', projectId: 'p2', name: 'Mr. Shah' }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.memberships = [{ projectId: 'p2', name: 'P2', short: 'Villa 2', role: 'client', orgId: 'o', orgName: 'Vitan' }]; });
+
+    s().switchProject('p2');
+    await flush();
+
+    expect(gw.switchProject).toHaveBeenCalledWith('p2');
+    expect(s().activeProjectId).toBe('p2');
+    expect(s().sessionToken).toBe('JWT-p2');
+    expect(s().role).toBe('client');
+  });
+
+  it('addMember posts then reloads the team', async () => {
+    const gw = {
+      addMember: vi.fn().mockResolvedValue({}),
+      listMembers: vi.fn().mockResolvedValue([{ userId: 'u1', name: 'Nilesh', email: 'n@vitan.in', phone: null, role: 'contractor', status: 'active' }]),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().addMember({ name: 'Nilesh', role: 'contractor', email: 'n@vitan.in' });
+    await flush();
+    await flush();
+
+    expect(gw.addMember).toHaveBeenCalledWith({ name: 'Nilesh', role: 'contractor', email: 'n@vitan.in' });
+    expect(s().members).toEqual([{ userId: 'u1', name: 'Nilesh', email: 'n@vitan.in', phone: null, role: 'contractor', status: 'active' }]);
+  });
+
+  it('loadOrgData populates memberships + orgs', async () => {
+    const gw = {
+      listMemberships: vi.fn().mockResolvedValue([{ projectId: 'ambli', name: 'Ambli', short: 'Ambli', role: 'pmc', orgId: 'o', orgName: 'Vitan' }]),
+      myOrgs: vi.fn().mockResolvedValue([{ id: 'o', name: 'Vitan', slug: 'vitan', role: 'owner' }]),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().loadOrgData();
+    await flush();
+    expect(s().memberships).toHaveLength(1);
+    expect(s().myOrgs[0]).toMatchObject({ role: 'owner' });
+  });
+});
+
 describe('Phase 7b write-cutover — API mode routes mutations through the gateway', () => {
   it('confirmApprove calls the gateway and reconciles from the returned snapshot', async () => {
     const snap = makeSnapshot({
