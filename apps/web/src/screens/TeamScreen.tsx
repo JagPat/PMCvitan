@@ -1,10 +1,10 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { Eyebrow, Button } from '@/components';
-import { Plus, X, Trash2 } from '@/lib/icons';
+import { Eyebrow, Button, Modal } from '@/components';
+import { Plus, X, Trash2, Pencil } from '@/lib/icons';
 import type { Role } from '@vitan/shared';
-import type { AddMemberInput } from '@/data/apiGateway';
+import type { AddMemberInput, NewProjectInput } from '@/data/apiGateway';
 import styles from './responsive.module.css';
 
 const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor'];
@@ -21,16 +21,21 @@ export function TeamScreen() {
   const updateMemberRole = useStore((s) => s.updateMemberRole);
   const removeMember = useStore((s) => s.removeMember);
   const deleteProject = useStore((s) => s.deleteProject);
+  const projStart = useStore((s) => s.projStart);
+  const projEnd = useStore((s) => s.projEnd);
   // membership role when known; else the current session role (covers the demo persona)
-  const myRole = memberships.find((m) => m.projectId === activeProjectId)?.role ?? sessionRole;
+  const activeMembership = memberships.find((m) => m.projectId === activeProjectId);
+  const myRole = activeMembership?.role ?? sessionRole;
   const canManage = myRole === 'pmc';
   // deleting a project is an org-admin power (owner/admin of the project's org)
-  const activeOrgId = memberships.find((m) => m.projectId === activeProjectId)?.orgId ?? null;
+  const activeOrgId = activeMembership?.orgId ?? null;
   const orgRole = myOrgs.find((o) => o.id === activeOrgId)?.role;
   const canDeleteProject = orgRole === 'owner' || orgRole === 'admin';
+  const canEditProject = (canManage || canDeleteProject) && !!activeOrgId;
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editing, setEditing] = useState(false);
 
-  useEffect(() => { loadTeam(); setConfirmDelete(false); }, [loadTeam, activeProjectId]);
+  useEffect(() => { loadTeam(); setConfirmDelete(false); setEditing(false); }, [loadTeam, activeProjectId]);
 
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
@@ -47,10 +52,28 @@ export function TeamScreen() {
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
-      <Eyebrow>PROJECT TEAM</Eyebrow>
-      <div style={{ fontSize: 13, color: 'var(--muted)', margin: '6px 0 20px', maxWidth: 560 }}>
-        Who has access to this project and the role they hold. Adding someone provisions their account, so they can sign in by email/phone.
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <Eyebrow>PROJECT TEAM</Eyebrow>
+          <div style={{ fontSize: 13, color: 'var(--muted)', margin: '6px 0 20px', maxWidth: 560 }}>
+            Who has access to this project and the role they hold. Adding someone provisions their account, so they can sign in by email/phone.
+          </div>
+        </div>
+        {canEditProject && (
+          <Button variant="outline" onClick={() => setEditing(true)} data-testid="edit-project" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 13 }}>
+            <Pencil size={14} /> Edit project
+          </Button>
+        )}
       </div>
+
+      {editing && activeOrgId && (
+        <EditProjectModal
+          orgId={activeOrgId}
+          projectId={activeProjectId}
+          initial={{ name: activeMembership?.name ?? '', short: activeMembership?.short ?? '', projStart, projEnd }}
+          onClose={() => setEditing(false)}
+        />
+      )}
 
       {canManage && (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 22, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
@@ -111,6 +134,48 @@ export function TeamScreen() {
         </div>
       )}
     </div>
+  );
+}
+
+/** Edit a project's details (name/short/stage/dates). Only non-empty fields are sent,
+ *  so the server updates just what changed. PMC / org-admin only. */
+function EditProjectModal({ orgId, projectId, initial, onClose }: { orgId: string; projectId: string; initial: { name: string; short: string; projStart: string; projEnd: string }; onClose: () => void }) {
+  const update = useStore((s) => s.updateProjectDetails);
+  const [name, setName] = useState(initial.name);
+  const [short, setShort] = useState(initial.short);
+  const [stage, setStage] = useState('');
+  const [projStart, setProjStart] = useState(initial.projStart);
+  const [projEnd, setProjEnd] = useState(initial.projEnd);
+
+  const save = () => {
+    const input: Partial<NewProjectInput> = {};
+    if (name.trim() && name.trim() !== initial.name) input.name = name.trim();
+    if (short.trim() && short.trim() !== initial.short) input.short = short.trim();
+    if (stage.trim()) input.stage = stage.trim();
+    if (projStart.trim() && projStart.trim() !== initial.projStart) input.projStart = projStart.trim();
+    if (projEnd.trim() && projEnd.trim() !== initial.projEnd) input.projEnd = projEnd.trim();
+    if (Object.keys(input).length) update(orgId, projectId, input);
+    onClose();
+  };
+
+  return (
+    <Modal onClose={onClose} maxWidth={440} labelledBy="edit-proj-title">
+      <div style={{ padding: '18px 20px' }}>
+        <div id="edit-proj-title" style={{ fontWeight: 700, fontSize: 17 }}>Edit project</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>Update the name, stage, or dates. Blank fields are left unchanged.</div>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" style={{ ...fld, marginTop: 16, width: '100%' }} data-testid="edit-name" />
+        <input value={short} onChange={(e) => setShort(e.target.value)} placeholder="Short name" style={{ ...fld, marginTop: 10, width: '100%' }} />
+        <input value={stage} onChange={(e) => setStage(e.target.value)} placeholder="Stage (e.g. Foundation)" style={{ ...fld, marginTop: 10, width: '100%' }} />
+        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+          <input value={projStart} onChange={(e) => setProjStart(e.target.value)} placeholder="Start" style={{ ...fld, flex: 1 }} />
+          <input value={projEnd} onChange={(e) => setProjEnd(e.target.value)} placeholder="End" style={{ ...fld, flex: 1 }} />
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
+          <Button variant="ink" onClick={save} data-testid="save-project" style={{ flex: 1, padding: 12 }}>Save</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

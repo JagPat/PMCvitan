@@ -1,8 +1,8 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
 import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { createOrgSchema, createProjectSchema, type CreateOrgInput, type CreateProjectInput } from '../contracts';
+import { createOrgSchema, createProjectSchema, updateProjectSchema, type CreateOrgInput, type CreateProjectInput, type UpdateProjectInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 
 @Controller()
@@ -57,6 +57,17 @@ export class OrgsController {
   // NOT `:projectId` — the JwtGuard tenancy check rejects any `:projectId` route that
   // doesn't match the token's project, which would block an admin from deleting a
   // project they aren't currently scoped to. Authorization here is by ORG role instead.
+
+  /** Edit a project's details (project PMC or org owner/admin). */
+  @Patch('orgs/:orgId/projects/:pid')
+  updateProject(
+    @Param('orgId') orgId: string,
+    @Param('pid') pid: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(updateProjectSchema)) body: UpdateProjectInput,
+  ) {
+    return this.orgs.updateProject(orgId, user.sub, pid, body);
+  }
 
   /** Archive (soft-delete) a project — hidden from listings/switcher/portfolio (owner/admin). */
   @Delete('orgs/:orgId/projects/:pid')
