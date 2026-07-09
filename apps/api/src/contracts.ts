@@ -210,3 +210,7 @@ export const addOrgMemberSchema = z
   })
   .refine((v) => v.email || v.phone, { message: 'email or phone required' });
 export type AddOrgMemberInput = z.infer<typeof addOrgMemberSchema>;
+
+// Change an org member's role (owner only) — see OrgsService.updateOrgMemberRole.
+export const updateOrgMemberSchema = z.object({ role: orgRole });
+export type UpdateOrgMemberInput = z.infer<typeof updateOrgMemberSchema>;

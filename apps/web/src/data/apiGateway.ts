@@ -250,9 +250,17 @@ export class ApiGateway {
   listOrgMembers(orgId: string): Promise<OrgMember[]> {
     return this.req(`/orgs/${orgId}/members`);
   }
-  /** Add someone to the org's admin roster — owner/admin/member (owner/admin only). */
+  /** Add someone to the org's admin roster — owner/admin/member (org owner only). */
   addOrgMember(orgId: string, input: AddOrgMemberInput): Promise<OrgMember> {
     return this.req(`/orgs/${orgId}/members`, { method: 'POST', body: JSON.stringify(input) });
+  }
+  /** Change an org member's role (org owner only). */
+  updateOrgMemberRole(orgId: string, userId: string, role: OrgRole): Promise<OrgMember> {
+    return this.req(`/orgs/${orgId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role }) });
+  }
+  /** Revoke someone's org membership (org owner only). */
+  removeOrgMember(orgId: string, userId: string): Promise<{ ok: boolean }> {
+    return this.req(`/orgs/${orgId}/members/${userId}`, { method: 'DELETE' });
   }
 
   /** List the active project's team. */

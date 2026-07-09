@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@n
 import { OrgsService } from './orgs.service';
 import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { addOrgMemberSchema, createOrgSchema, createProjectSchema, updateProjectSchema, type AddOrgMemberInput, type CreateOrgInput, type CreateProjectInput, type UpdateProjectInput } from '../contracts';
+import { addOrgMemberSchema, createOrgSchema, createProjectSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CreateOrgInput, type CreateProjectInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 
 @Controller()
@@ -49,7 +49,7 @@ export class OrgsController {
     return this.orgs.listOrgMembers(orgId, user.sub);
   }
 
-  /** Add someone to the org's admin roster — owner/admin/member (owner/admin only). */
+  /** Add someone to the org's admin roster — owner/admin/member (org owner only). */
   @Post('orgs/:orgId/members')
   addOrgMember(
     @Param('orgId') orgId: string,
@@ -57,6 +57,23 @@ export class OrgsController {
     @Body(new ZodPipe(addOrgMemberSchema)) body: AddOrgMemberInput,
   ) {
     return this.orgs.addOrgMember(orgId, user.sub, body);
+  }
+
+  /** Change an org member's role (org owner only). */
+  @Patch('orgs/:orgId/members/:userId')
+  updateOrgMember(
+    @Param('orgId') orgId: string,
+    @Param('userId') userId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(updateOrgMemberSchema)) body: UpdateOrgMemberInput,
+  ) {
+    return this.orgs.updateOrgMemberRole(orgId, user.sub, userId, body);
+  }
+
+  /** Revoke someone's org membership (org owner only). */
+  @Delete('orgs/:orgId/members/:userId')
+  removeOrgMember(@Param('orgId') orgId: string, @Param('userId') userId: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.removeOrgMember(orgId, user.sub, userId);
   }
 
   /** Create a project under an org (owner/admin only). */

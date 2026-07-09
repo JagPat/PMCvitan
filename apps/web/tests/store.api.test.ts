@@ -95,6 +95,36 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     expect(s().orgMembers).toEqual([{ userId: 'u2', name: 'JP', email: 'jp@vitan.in', phone: '8320303515', orgRole: 'owner' }]);
   });
 
+  it('updateOrgMemberRole patches then reloads the roster', async () => {
+    const gw = {
+      updateOrgMemberRole: vi.fn().mockResolvedValue({}),
+      listOrgMembers: vi.fn().mockResolvedValue([{ userId: 'u2', name: 'JP', email: 'jp@vitan.in', phone: null, orgRole: 'admin' }]),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().updateOrgMemberRole('o', 'u2', 'admin');
+    await flush();
+    await flush();
+
+    expect(gw.updateOrgMemberRole).toHaveBeenCalledWith('o', 'u2', 'admin');
+    expect(s().orgMembers).toEqual([{ userId: 'u2', name: 'JP', email: 'jp@vitan.in', phone: null, orgRole: 'admin' }]);
+  });
+
+  it('removeOrgMember deletes then reloads the roster', async () => {
+    const gw = {
+      removeOrgMember: vi.fn().mockResolvedValue({ ok: true }),
+      listOrgMembers: vi.fn().mockResolvedValue([]),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().removeOrgMember('o', 'u2');
+    await flush();
+    await flush();
+
+    expect(gw.removeOrgMember).toHaveBeenCalledWith('o', 'u2');
+    expect(s().orgMembers).toEqual([]);
+  });
+
   it('loadPortfolio populates the cross-project rollup (Slice 3)', async () => {
     const gw = {
       getPortfolio: vi.fn().mockResolvedValue([
