@@ -53,15 +53,20 @@ export class OrgsController {
     return this.orgs.createProject(orgId, user.sub, body);
   }
 
+  // NOTE: these org-scoped admin routes deliberately name the project param `:pid`,
+  // NOT `:projectId` — the JwtGuard tenancy check rejects any `:projectId` route that
+  // doesn't match the token's project, which would block an admin from deleting a
+  // project they aren't currently scoped to. Authorization here is by ORG role instead.
+
   /** Archive (soft-delete) a project — hidden from listings/switcher/portfolio (owner/admin). */
-  @Delete('orgs/:orgId/projects/:projectId')
-  deleteProject(@Param('orgId') orgId: string, @Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
-    return this.orgs.deleteProject(orgId, user.sub, projectId);
+  @Delete('orgs/:orgId/projects/:pid')
+  deleteProject(@Param('orgId') orgId: string, @Param('pid') pid: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.deleteProject(orgId, user.sub, pid);
   }
 
   /** Restore a previously archived project (owner/admin). */
-  @Post('orgs/:orgId/projects/:projectId/restore')
-  restoreProject(@Param('orgId') orgId: string, @Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
-    return this.orgs.restoreProject(orgId, user.sub, projectId);
+  @Post('orgs/:orgId/projects/:pid/restore')
+  restoreProject(@Param('orgId') orgId: string, @Param('pid') pid: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.restoreProject(orgId, user.sub, pid);
   }
 }
