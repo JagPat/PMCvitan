@@ -150,6 +150,12 @@ describe('JwtGuard tenancy', () => {
     expect(guard.canActivate(ctxFor(token, {}))).toBe(true);
   });
 
+  it('ignores a :pid param — org-scoped admin routes (delete/restore project) are authorized by org role, not the project token', () => {
+    const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
+    // an org admin scoped to 'ambli' deleting a different project 'villa' must not be tenancy-blocked
+    expect(guard.canActivate(ctxFor(token, { orgId: 'org1', pid: 'villa' }))).toBe(true);
+  });
+
   it('rejects a missing/invalid token', () => {
     const ctx = { switchToHttp: () => ({ getRequest: () => ({ headers: {}, params: {} }) }) } as unknown as ExecutionContext;
     expect(() => guard.canActivate(ctx)).toThrow(UnauthorizedException);
