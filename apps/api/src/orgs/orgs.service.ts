@@ -1,7 +1,7 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
-import type { CreateOrgInput, CreateProjectInput } from '../contracts';
+import type { CreateOrgInput, CreateProjectInput, UpdateProjectInput } from '../contracts';
 
 /** A per-project monitoring rollup across every project the user can access. */
 export interface PortfolioProject {
@@ -88,6 +88,22 @@ export class OrgsService {
     // the creator runs the project as its PMC
     await this.prisma.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
     return { id: project.id, name: project.name, short: project.short };
+  }
+
+  /** Edit a project's details (name/stage/dates…). The project's PMC or an org
+   *  owner/admin may edit; only the provided fields change. */
+  async updateProject(orgId: string, userId: string, pid: string, input: UpdateProjectInput): Promise<{ id: string; name: string; short: string }> {
+    const orgRole = await this.orgRole(orgId, userId);
+    let allowed = orgRole === 'owner' || orgRole === 'admin';
+    if (!allowed) {
+      const m = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId: pid, userId } } });
+      allowed = m?.role === 'pmc' && m?.status === 'active';
+    }
+    if (!allowed) throw new ForbiddenException('Only the project PMC or an org admin can edit a project');
+    const project = await this.prisma.project.findUnique({ where: { id: pid }, select: { orgId: true } });
+    if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
+    const updated = await this.prisma.project.update({ where: { id: pid }, data: input });
+    return { id: updated.id, name: updated.name, short: updated.short };
   }
 
   /** Archive (soft-delete) a project — hides it from listings/switcher/portfolio.

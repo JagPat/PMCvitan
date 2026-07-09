@@ -24,6 +24,7 @@ function make(orgRole: string | null) {
     },
     membership: {
       create: vi.fn(async ({ data }: { data: unknown }) => { memberships.push(data); return data; }),
+      findUnique: vi.fn(async () => null as { role: string; status: string } | null),
     },
   };
   const svc = new OrgsService(prisma as unknown as PrismaService);
@@ -53,6 +54,31 @@ describe('OrgsService.createProject', () => {
     await expect(
       svc.createProject('org1', 'stranger', { name: 'X', short: 'X', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '' }),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('OrgsService.updateProject', () => {
+  it('lets an org owner edit a project (only provided fields)', async () => {
+    const { svc, prisma } = make('owner');
+    const res = await svc.updateProject('org1', 'u1', 'villa', { name: 'Villa Renamed', stage: 'Structure' });
+    expect(res.name).toBe('Villa Renamed');
+    const call = prisma.project.update.mock.calls[0][0] as { data: Record<string, unknown> };
+    expect(call.data).toEqual({ name: 'Villa Renamed', stage: 'Structure' });
+  });
+
+  it('lets the project PMC edit even if not an org admin', async () => {
+    const { svc, prisma } = make(null); // not an org member
+    prisma.membership.findUnique.mockResolvedValueOnce({ role: 'pmc', status: 'active' });
+    const res = await svc.updateProject('org1', 'pmcUser', 'villa', { stage: 'Finishing' });
+    expect(res).toBeDefined();
+    expect(prisma.project.update).toHaveBeenCalled();
+  });
+
+  it('forbids a non-admin non-PMC from editing', async () => {
+    const { svc, prisma } = make('member');
+    prisma.membership.findUnique.mockResolvedValueOnce({ role: 'engineer', status: 'active' });
+    await expect(svc.updateProject('org1', 'eng', 'villa', { name: 'x' })).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.project.update).not.toHaveBeenCalled();
   });
 });
 

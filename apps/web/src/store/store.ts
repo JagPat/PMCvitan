@@ -123,6 +123,7 @@ export interface AppActions {
   loadPortfolio: () => void;
   switchProject: (projectId: string) => void;
   createProject: (orgId: string, input: NewProjectInput) => void;
+  updateProjectDetails: (orgId: string, projectId: string, input: Partial<NewProjectInput>) => void;
   deleteProject: (orgId: string, projectId: string) => void;
   loadTeam: () => void;
   addMember: (input: AddMemberInput) => void;
@@ -644,6 +645,20 @@ export const useStore = create<Store>()(
           get().switchProject(p.id);
         })
         .catch(() => get().flash('Could not create the project — check your access.'));
+    },
+    updateProjectDetails: (orgId, projectId, input) => {
+      if (!gateway) {
+        get().flash('Editing projects needs the server.');
+        return;
+      }
+      gateway
+        .updateProject(orgId, projectId, input)
+        .then((p) => {
+          get().flash('Project updated: ' + p.short + '.');
+          get().loadOrgData();
+          get().loadPortfolio();
+        })
+        .catch(() => get().flash('Could not update the project — check your access.'));
     },
     deleteProject: (orgId, projectId) => {
       if (!gateway) {

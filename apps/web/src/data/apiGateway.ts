@@ -224,6 +224,10 @@ export class ApiGateway {
   createProject(orgId: string, input: NewProjectInput): Promise<{ id: string; name: string; short: string }> {
     return this.req(`/orgs/${orgId}/projects`, { method: 'POST', body: JSON.stringify(input) });
   }
+  /** Edit a project's details (project PMC or org owner/admin); only provided fields change. */
+  updateProject(orgId: string, projectId: string, input: Partial<NewProjectInput>): Promise<{ id: string; name: string; short: string }> {
+    return this.req(`/orgs/${orgId}/projects/${projectId}`, { method: 'PATCH', body: JSON.stringify(input) });
+  }
   /** Archive (soft-delete) a project — hides it everywhere; reversible via restore (owner/admin). */
   deleteProject(orgId: string, projectId: string): Promise<{ ok: boolean }> {
     return this.req(`/orgs/${orgId}/projects/${projectId}`, { method: 'DELETE' });

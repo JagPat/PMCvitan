@@ -166,6 +166,20 @@ export const createProjectSchema = z.object({
 });
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 
+// Edit a project's details — every field optional; only provided ones change.
+export const updateProjectSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    short: z.string().min(1).optional(),
+    descriptor: z.string().optional(),
+    stage: z.string().optional(),
+    siteCode: z.string().optional(),
+    projStart: z.string().optional(),
+    projEnd: z.string().optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: 'Provide at least one field to update' });
+export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
+
 export const switchProjectSchema = z.object({ projectId: z.string().min(1) });
 export type SwitchProjectInput = z.infer<typeof switchProjectSchema>;
 

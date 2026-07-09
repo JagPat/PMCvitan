@@ -50,7 +50,9 @@ fresh token from `POST /auth/switch` (granted only for a project you're a member
 - `POST /orgs { name }` — create an org (caller becomes `owner`).
 - `POST /orgs/:orgId/projects { name, short, … }` — create a project (owner/admin only);
   the creator is auto-enrolled as the project's **PMC**.
-- `DELETE /orgs/:orgId/projects/:projectId` — **archive** (soft-delete) a project (owner/admin).
+- `PATCH /orgs/:orgId/projects/:pid` — **edit** a project's details (name/short/stage/dates);
+  only provided fields change. The project's **PMC** or an org **owner/admin** may edit.
+- `DELETE /orgs/:orgId/projects/:pid` — **archive** (soft-delete) a project (owner/admin).
   Sets `Project.archivedAt`; the project is then hidden from `/me/memberships`, `/me/portfolio`,
   the org's project list, and `POST /auth/switch` refuses it. Reversible via
   `POST /orgs/:orgId/projects/:projectId/restore`. Soft (not hard) delete keeps the audit trail
