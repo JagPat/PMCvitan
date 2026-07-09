@@ -48,8 +48,9 @@ export function useApiSync(): void {
       if (cancelled) return;
       useStore.getState()._setGateway(gw);
       refresh();
-      // load the projects the user can switch between + their orgs
+      // load the projects the user can switch between + their orgs + portfolio rollup
       useStore.getState().loadOrgData();
+      useStore.getState().loadPortfolio();
 
       // web push: register this browser if permission is already granted (best-effort)
       void subscribeToPush(gw);

@@ -22,6 +22,7 @@ import {
   SEED_NOTIFICATIONS,
   SEED_REVIEW,
   SEED_DRAWINGS,
+  SEED_PHASES,
   PROJECT,
   type AccessState,
   type AccessWho,
@@ -33,6 +34,8 @@ import {
   type Drawing,
   type MembershipSummary,
   type OrgSummary,
+  type Phase,
+  type PortfolioProject,
   type ProjectMember,
   type ItemState,
   type Lang,
@@ -59,11 +62,13 @@ export interface AppState {
   activeReviewId: string | null; // which queued review the PMC is looking at (null ⇒ first pending)
   reinspectionCreated: boolean;
   drawings: Drawing[]; // the drawings register (Slice 1)
+  phases: Phase[]; // project phases with rollups (Orgs Slice 3)
   // multi-project (Orgs Slice 2)
   activeProjectId: string; // the project the session is scoped to
   memberships: MembershipSummary[]; // projects the user can switch between
   myOrgs: OrgSummary[]; // orgs the user administers/belongs to
   members: ProjectMember[]; // the active project's team (Team screen)
+  portfolio: PortfolioProject[]; // cross-project monitoring rollup (Orgs Slice 3)
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
@@ -112,8 +117,10 @@ export interface AppActions {
   sendReinspection: () => void;
   // drawings register
   issueDrawing: (input: IssueDrawingInput) => void;
+  acknowledgeDrawing: (drawingId: string) => void;
   // multi-project + team
   loadOrgData: () => void;
+  loadPortfolio: () => void;
   switchProject: (projectId: string) => void;
   createProject: (orgId: string, input: NewProjectInput) => void;
   loadTeam: () => void;
@@ -184,10 +191,12 @@ export function getInitialState(): AppState {
     activeReviewId: null,
     reinspectionCreated: false,
     drawings: structuredClone(SEED_DRAWINGS),
+    phases: structuredClone(SEED_PHASES),
     activeProjectId: PROJECT_ID,
     memberships: [],
     myOrgs: [],
     members: [],
+    portfolio: [],
     online: true,
     syncQueue: [],
     outbox: [],
@@ -221,6 +230,7 @@ export const useStore = create<Store>()(
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         s.reinspectionCreated = snap.reinspectionCreated;
         if (snap.drawings) s.drawings = snap.drawings;
+        if (snap.phases) s.phases = snap.phases;
         if (snap.dailyLog) s.dailyLog = snap.dailyLog;
         s.notifications = snap.notifications;
         s.projStart = snap.project.projStart;
@@ -537,6 +547,7 @@ export const useStore = create<Store>()(
           note: input.note ?? '',
           issuedBy: 'You (demo)',
           issuedAt: 'just now',
+          acks: [],
         };
         const existing = s.drawings.find((d) => d.number === input.number);
         if (existing) {
@@ -545,6 +556,7 @@ export const useStore = create<Store>()(
           existing.current = newRev;
           existing.title = input.title;
           existing.discipline = input.discipline;
+          existing.ackedByMe = false; // a fresh rev needs re-acknowledgement
         } else {
           s.drawings.unshift({
             id: `DWG-${s.drawings.length + 1}`,
@@ -554,6 +566,7 @@ export const useStore = create<Store>()(
             zone: input.zone ?? null,
             activityId: input.activityId ?? null,
             decisionId: input.decisionId ?? null,
+            ackedByMe: false,
             current: newRev,
             revisions: [newRev],
           });
@@ -561,12 +574,43 @@ export const useStore = create<Store>()(
       });
       get().flash(`Drawing issued: ${input.number} Rev ${input.rev} (demo).`);
     },
+    acknowledgeDrawing: (drawingId) => {
+      const drawing = get().drawings.find((d) => d.id === drawingId);
+      if (!drawing?.current || drawing.ackedByMe) return;
+      const rev = drawing.current;
+      if (gateway) {
+        gateway
+          .acknowledgeDrawing(rev.id)
+          .then(() => {
+            get().flash(`Acknowledged — building to ${drawing.number} Rev ${rev.rev}.`);
+            gateway!.snapshot().then((snap) => applySnapshot(snap)).catch(() => {});
+          })
+          .catch(() => get().flash('Could not record the acknowledgement — please try again.'));
+        return;
+      }
+      // local demo: mark building-to on the current rev
+      const label = get().userName ?? { pmc: 'PMC', client: 'Client', engineer: 'Site Engineer', contractor: 'Contractor' }[get().role] ?? 'You';
+      set((s) => {
+        const d = s.drawings.find((x) => x.id === drawingId);
+        if (!d?.current) return;
+        d.ackedByMe = true;
+        const ack = { userName: label, role: s.role, at: 'just now' };
+        d.current.acks.push(ack);
+        const inHistory = d.revisions.find((r) => r.id === d.current!.id);
+        if (inHistory) inHistory.acks.push(ack);
+      });
+      get().flash(`Acknowledged — building to ${drawing.number} Rev ${rev.rev} (demo).`);
+    },
 
     // ---- multi-project + team (Orgs Slice 2) ----
     loadOrgData: () => {
       if (!gateway) return;
       gateway.listMemberships().then((ms) => set((s) => { s.memberships = ms; })).catch(() => {});
       gateway.myOrgs().then((os) => set((s) => { s.myOrgs = os; })).catch(() => {});
+    },
+    loadPortfolio: () => {
+      if (!gateway) return;
+      gateway.getPortfolio().then((p) => set((s) => { s.portfolio = p; })).catch(() => {});
     },
     switchProject: (projectId) => {
       if (!gateway || projectId === get().activeProjectId) return;

@@ -1,7 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
-import type { ActivityDto, DecisionDto, SnapshotDto } from './types';
+import type { ActivityDto, DecisionDto, PhaseDto, SnapshotDto } from './types';
 
 const ACTIVITY_STATUS_OUT: Record<string, ActivityDto['status']> = {
   not_started: 'not-started',
@@ -17,11 +18,11 @@ export class SnapshotService {
   /** Build the full project snapshot the frontend hydrates its store from.
    *  Permission-filtered: only PMC & client see pending decisions; every other
    *  role (contractor, engineer, worker) is restricted to decided ones. */
-  async build(projectId: string, role: Role): Promise<SnapshotDto> {
+  async build(projectId: string, role: Role, userId?: string): Promise<SnapshotDto> {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisions, activities, inspections, dailyLog, notifications, progressMedia, drawings] = await Promise.all([
+    const [decisions, activities, inspections, dailyLog, notifications, progressMedia, drawings, phases] = await Promise.all([
       this.prisma.decision.findMany({
         where: { projectId },
         include: { options: { orderBy: { order: 'asc' } } },
@@ -43,9 +44,10 @@ export class SnapshotService {
       }),
       this.prisma.drawing.findMany({
         where: { projectId },
-        include: { revisions: { orderBy: { createdAt: 'desc' } } },
+        include: { revisions: { orderBy: { createdAt: 'desc' }, include: { acks: { orderBy: { at: 'asc' } } } } },
         orderBy: [{ discipline: 'asc' }, { number: 'asc' }],
       }),
+      this.prisma.phase.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
     ]);
 
     const progressPhotos = progressMedia.map((m) => ({
@@ -85,6 +87,7 @@ export class SnapshotService {
       name: a.name,
       zone: a.zone,
       decisionId: a.decisionId,
+      phaseId: a.phaseId,
       ps: a.plannedStart,
       pe: a.plannedEnd,
       as: a.actualStart,
@@ -138,7 +141,10 @@ export class SnapshotService {
         note: r.note,
         issuedBy: r.issuedBy,
         issuedAt: r.issuedAt,
+        acks: r.acks.map((a) => ({ userName: a.userName, role: a.role, at: ddMmmYyyy(a.at) })),
       }));
+      const current = revs.find((r) => r.status !== 'superseded') ?? null;
+      const currentAckRow = current ? d.revisions.find((r) => r.id === current.id)?.acks ?? [] : [];
       return {
         id: d.id,
         number: d.number,
@@ -147,8 +153,32 @@ export class SnapshotService {
         zone: d.zone,
         activityId: d.activityId,
         decisionId: d.decisionId,
-        current: revs.find((r) => r.status !== 'superseded') ?? null,
+        current,
+        ackedByMe: Boolean(userId) && currentAckRow.some((a) => a.userId === userId),
         revisions: revs,
+      };
+    });
+
+    // Phase rollups: each phase's activities counted by status so the schedule
+    // and portfolio can show phase-level progress (done/total → donePct).
+    const phaseDtos: PhaseDto[] = phases.map((p) => {
+      const acts = activityDtos.filter((a) => a.phaseId === p.id);
+      const done = acts.filter((a) => a.status === 'done').length;
+      const inProgress = acts.filter((a) => a.status === 'in-progress').length;
+      const blocked = acts.filter((a) => a.status === 'blocked').length;
+      const notStarted = acts.filter((a) => a.status === 'not-started').length;
+      return {
+        id: p.id,
+        name: p.name,
+        order: p.order,
+        plannedStart: p.plannedStart,
+        plannedEnd: p.plannedEnd,
+        activityTotal: acts.length,
+        done,
+        inProgress,
+        blocked,
+        notStarted,
+        donePct: acts.length ? Math.round((done / acts.length) * 100) : 0,
       };
     });
 
@@ -182,6 +212,7 @@ export class SnapshotService {
       review: reviews[0] ?? null, // deprecated single (first pending) — back-compat
       reinspectionCreated,
       drawings: drawingDtos,
+      phases: phaseDtos,
       dailyLog: dailyLog
         ? {
             date: dailyLog.date,

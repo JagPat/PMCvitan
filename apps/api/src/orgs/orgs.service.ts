@@ -3,6 +3,26 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import type { CreateOrgInput, CreateProjectInput } from '../contracts';
 
+/** A per-project monitoring rollup across every project the user can access. */
+export interface PortfolioProject {
+  projectId: string;
+  name: string;
+  short: string;
+  stage: string;
+  role: string;
+  orgName: string | null;
+  activityTotal: number;
+  done: number;
+  inProgress: number;
+  blocked: number;
+  notStarted: number;
+  donePct: number;
+  openReviews: number;
+  pendingDecisions: number; // 0 unless the user is pmc/client on that project (RBAC)
+  phaseCount: number;
+  milestonePct: number;
+}
+
 function slugify(s: string): string {
   return (
     s
@@ -76,5 +96,58 @@ export class OrgsService {
     const org = await this.prisma.org.findUnique({ where: { id: orgId }, include: { projects: { orderBy: { createdAt: 'asc' } } } });
     if (!org) throw new NotFoundException('Org not found');
     return org.projects.map((p) => ({ id: p.id, name: p.name, short: p.short, stage: p.stage }));
+  }
+
+  /**
+   * A cross-project monitoring rollup — one row per project the user is a member
+   * of (active memberships, with the legacy home project as a fallback). Each row
+   * counts activities by status, open reviews and (RBAC-gated) pending decisions,
+   * so a PMC running several sites sees them all at a glance.
+   */
+  async portfolio(userId: string): Promise<PortfolioProject[]> {
+    const memberships = await this.prisma.membership.findMany({
+      where: { userId, status: 'active' },
+      include: { project: { include: { org: true } } },
+    });
+    let scoped = memberships.map((m) => ({ project: m.project, role: m.role }));
+    if (scoped.length === 0) {
+      // back-compat: a user provisioned before memberships still has a home project
+      const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { project: { include: { org: true } } } });
+      if (user) scoped = [{ project: user.project, role: user.role }];
+    }
+
+    return Promise.all(
+      scoped.map(async ({ project, role }) => {
+        const canSeePending = role === 'pmc' || role === 'client';
+        const [activities, openReviews, pendingDecisions, phaseCount] = await Promise.all([
+          this.prisma.activity.findMany({ where: { projectId: project.id }, select: { status: true } }),
+          this.prisma.inspection.count({ where: { projectId: project.id, submitted: true, decided: false } }),
+          canSeePending ? this.prisma.decision.count({ where: { projectId: project.id, status: 'pending' } }) : Promise.resolve(0),
+          this.prisma.phase.count({ where: { projectId: project.id } }),
+        ]);
+        const done = activities.filter((a) => a.status === 'done').length;
+        const inProgress = activities.filter((a) => a.status === 'in_progress').length;
+        const blocked = activities.filter((a) => a.status === 'blocked').length;
+        const notStarted = activities.filter((a) => a.status === 'not_started').length;
+        return {
+          projectId: project.id,
+          name: project.name,
+          short: project.short,
+          stage: project.stage,
+          role,
+          orgName: project.org?.name ?? null,
+          activityTotal: activities.length,
+          done,
+          inProgress,
+          blocked,
+          notStarted,
+          donePct: activities.length ? Math.round((done / activities.length) * 100) : 0,
+          openReviews,
+          pendingDecisions,
+          phaseCount,
+          milestonePct: project.milestonePct,
+        };
+      }),
+    );
   }
 }

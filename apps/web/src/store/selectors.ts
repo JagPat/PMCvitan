@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import type { Activity, Decision, DecisionStatus, Gate, Review } from '@vitan/shared';
+import type { Activity, Decision, DecisionStatus, Gate, Phase, Review } from '@vitan/shared';
 import type { AppState } from './store';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -110,6 +110,41 @@ export function selectSchToday(s: AppState): { inProgress: number; doneWeek: num
 
 export function selectTodayMarkerPct(s: AppState): number {
   return pctOf(s.todayDay);
+}
+
+// ---- phases (Orgs Slice 3) ----
+
+export interface PhaseRollup {
+  activityTotal: number;
+  done: number;
+  inProgress: number;
+  blocked: number;
+  notStarted: number;
+  donePct: number;
+}
+
+/**
+ * A phase's activity rollup, recomputed LIVE from the activities (so starting or
+ * completing an activity moves the phase's progress immediately — the stored
+ * snapshot counts are only the initial server value). Same discipline as the
+ * schedule gates: derive, never trust a stale stored count.
+ */
+export function phaseRollup(activities: Activity[], phaseId: string): PhaseRollup {
+  const acts = activities.filter((a) => a.phaseId === phaseId);
+  const done = acts.filter((a) => a.status === 'done').length;
+  const inProgress = acts.filter((a) => a.status === 'in-progress').length;
+  const blocked = acts.filter((a) => a.status === 'blocked').length;
+  const notStarted = acts.filter((a) => a.status === 'not-started').length;
+  return { activityTotal: acts.length, done, inProgress, blocked, notStarted, donePct: acts.length ? Math.round((done / acts.length) * 100) : 0 };
+}
+
+/** Activities for a phase, or the "unphased" remainder when `phaseId` is null. */
+export function activitiesInPhase(activities: Activity[], phases: Phase[], phaseId: string | null): Activity[] {
+  if (phaseId === null) {
+    const known = new Set(phases.map((p) => p.id));
+    return activities.filter((a) => !a.phaseId || !known.has(a.phaseId));
+  }
+  return activities.filter((a) => a.phaseId === phaseId);
 }
 
 // ---- daily log ----

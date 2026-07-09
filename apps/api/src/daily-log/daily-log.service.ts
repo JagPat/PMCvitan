@@ -32,7 +32,7 @@ export class DailyLogService {
     ]);
     // material mismatch blocks work — alert PMC (resolves it) and contractor (supplied it)
     this.realtime.notifyChanged(projectId, `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, ['pmc', 'contractor']);
-    return this.snapshot.build(projectId, user.role);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 
   /** Submit the daily log to PMC (must be checked in first). */
@@ -47,6 +47,6 @@ export class DailyLogService {
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'dailylog.submit', entity: 'DailyLog', entityId: log.id } }),
     ]);
     this.realtime.notifyChanged(projectId);
-    return this.snapshot.build(projectId, user.role);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

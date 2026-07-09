@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { resolveDrawingUrl, type IssueDrawingInput } from '@/data/apiGateway';
 import { Eyebrow, Button, Modal } from '@/components';
-import { Download, FileText, History, ChevronRight, X, Plus, Lock } from '@/lib/icons';
+import { Download, FileText, History, ChevronRight, X, Plus, Lock, Check, HardHat } from '@/lib/icons';
 import type { Discipline, Drawing, DrawingRevision } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -30,7 +30,10 @@ function previewKind(mime: string): 'image' | 'pdf' | 'download' {
 export function DrawingsScreen() {
   const drawings = useStore(useShallow((s) => s.drawings));
   const role = useStore((s) => s.role);
-  const [open, setOpen] = useState<Drawing | null>(null);
+  // hold the open drawing by id so the viewer always reflects live store state
+  // (e.g. an acknowledgement) rather than a stale snapshot captured on click.
+  const [openId, setOpenId] = useState<string | null>(null);
+  const open = openId ? drawings.find((d) => d.id === openId) ?? null : null;
   const [issuing, setIssuing] = useState(false);
 
   const groups = useMemo(
@@ -44,7 +47,7 @@ export function DrawingsScreen() {
         <div>
           <Eyebrow>DRAWINGS · REGISTER</Eyebrow>
           <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, maxWidth: 520 }}>
-            The current issue the team builds from. New revisions supersede the old — the field always sees the latest <b>For Construction</b> set.
+            The current issue the team builds from. New revisions supersede the old — the field always sees the latest <b>For Construction</b> set. Drawings you open are cached for <b>offline</b> viewing on site.
           </div>
         </div>
         {role === 'pmc' && (
@@ -66,7 +69,7 @@ export function DrawingsScreen() {
               const cur = d.current;
               const sm = statusMeta(cur?.status ?? 'superseded');
               return (
-                <button key={d.id} onClick={() => setOpen(d)} data-testid={`drawing-${d.number}`} style={cardStyle}>
+                <button key={d.id} onClick={() => setOpenId(d.id)} data-testid={`drawing-${d.number}`} style={cardStyle}>
                   <div style={{ width: 46, height: 60, flex: 'none', borderRadius: 6, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     {!cur && <FileText size={18} color="#b8b2a6" />}
                   </div>
@@ -91,8 +94,55 @@ export function DrawingsScreen() {
         </div>
       ))}
 
-      {open && <DrawingViewer drawing={open} onClose={() => setOpen(null)} />}
+      {open && <DrawingViewer drawing={open} onClose={() => setOpenId(null)} />}
       {issuing && <IssueDrawingModal onClose={() => setIssuing(false)} />}
+    </div>
+  );
+}
+
+const ROLE_SHORT: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Engineer', contractor: 'Contractor', worker: 'Worker' };
+
+/** The build-acknowledgement block for the current revision (Slice 2). Contractor/
+ *  engineer confirm they're building to it; the PMC/everyone sees who has. Reads
+ *  the live current revision so a fresh ack shows immediately. */
+function AckBlock({ drawing }: { drawing: Drawing }) {
+  const role = useStore((s) => s.role);
+  const acknowledgeDrawing = useStore((s) => s.acknowledgeDrawing);
+  const rev = drawing.current;
+  const canAck = role === 'contractor' || role === 'engineer';
+  const acks = rev?.acks ?? [];
+  if (!rev) return null;
+
+  return (
+    <div style={{ padding: '12px 18px 14px', borderTop: '1px solid var(--hairline)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--faint)', marginBottom: 9 }}>
+        <HardHat size={13} /> BUILDING TO REV {rev.rev}
+      </div>
+      {acks.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: canAck ? 12 : 0 }}>
+          {acks.map((a, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+              <Check size={14} color="#2F6B44" />
+              <span style={{ fontWeight: 600 }}>{a.userName}</span>
+              <span style={{ ...chip, background: 'var(--panel)', color: 'var(--muted)', borderColor: 'var(--hairline)' }}>{ROLE_SHORT[a.role] ?? a.role}</span>
+              <span style={{ fontSize: 11, color: 'var(--faint)', marginLeft: 'auto' }}>{a.at}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: canAck ? 12 : 0 }}>No one has acknowledged this revision yet.</div>
+      )}
+      {canAck && (
+        drawing.ackedByMe ? (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 600, color: 'var(--green-text, #2F6B44)' }}>
+            <Check size={16} /> You’re building to Rev {rev.rev}
+          </div>
+        ) : (
+          <Button variant="ink" onClick={() => acknowledgeDrawing(drawing.id)} data-testid="ack-drawing" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 15px', fontSize: 13 }}>
+            <HardHat size={15} /> I’m building to Rev {rev.rev}
+          </Button>
+        )
+      )}
     </div>
   );
 }
@@ -102,6 +152,7 @@ function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose: () => 
   const src = resolveDrawingUrl(rev.url);
   const kind = previewKind(rev.mime);
   const sm = statusMeta(rev.status);
+  const isCurrent = drawing.current?.id === rev.id;
 
   return (
     <Modal onClose={onClose} maxWidth={760} labelledBy="dwg-title">
@@ -137,6 +188,8 @@ function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose: () => 
       </div>
 
       {rev.note && <div style={{ padding: '12px 18px', fontSize: 12.5, color: 'var(--muted)', borderTop: '1px solid var(--hairline)' }}>{rev.note}</div>}
+
+      {isCurrent && rev.status !== 'superseded' && <AckBlock drawing={drawing} />}
 
       <div style={{ padding: '12px 18px 16px', borderTop: '1px solid var(--hairline)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--faint)', marginBottom: 8 }}>

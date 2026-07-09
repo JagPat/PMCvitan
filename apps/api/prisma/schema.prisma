@@ -64,6 +64,7 @@ model Project {
   media         Media[]
   pushSubs      PushSubscription[]
   drawings      Drawing[]
+  phases        Phase[]
   org           Org?           @relation(fields: [orgId], references: [id])
   orgId         String?
   memberships   Membership[]
@@ -190,8 +191,25 @@ model DrawingRevision {
   issuedBy   String
   issuedAt   String // display timestamp, e.g. "08 Jul 2026"
   createdAt  DateTime @default(now())
+  acks       DrawingAck[]
 
   @@index([drawingId])
+}
+
+// A build-acknowledgement: a contractor / engineer confirming they are building
+// to a specific revision ("building to Rev C"). Per-revision, so a superseding
+// issue starts a fresh round of acks — the PMC can see who is on the current set.
+model DrawingAck {
+  id         String          @id @default(cuid())
+  revision   DrawingRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  revisionId String
+  userId     String
+  userName   String
+  role       String
+  at         DateTime        @default(now())
+
+  @@unique([revisionId, userId])
+  @@index([revisionId])
 }
 
 // A real account: PMC / client / contractor sign in with email + password;
@@ -304,9 +322,26 @@ model Activity {
   gateInspection GateState @default(na)
   decision       Decision?      @relation(fields: [decisionId], references: [id])
   decisionId     String?
+  phase          Phase?         @relation(fields: [phaseId], references: [id])
+  phaseId        String?
   order          Int            @default(0)
 
   @@unique([projectId, id])
+}
+
+// A project phase (Foundation → Structure → MEP → Finishing…). Groups activities
+// for phase-level monitoring; planned window as day-offsets (like activities).
+model Phase {
+  id           String     @id @default(cuid())
+  project      Project    @relation(fields: [projectId], references: [id])
+  projectId    String
+  name         String
+  order        Int        @default(0)
+  plannedStart Int        @default(0)
+  plannedEnd   Int        @default(0)
+  activities   Activity[]
+
+  @@index([projectId])
 }
 
 model Inspection {

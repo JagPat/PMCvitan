@@ -15,6 +15,7 @@ function makeSnapshot(partial?: Partial<ApiSnapshot>): ApiSnapshot {
     review: null,
     reinspectionCreated: false,
     drawings: [],
+    phases: [],
     dailyLog: null,
     notifications: [{ text: 'SERVER applied', time: 'just now', color: '#3F7A54' }],
     ...partial,

@@ -31,7 +31,7 @@ export class InspectionsService {
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'inspection.submit', entity: 'Inspection', entityId: inspectionId } }),
     ]);
     this.realtime.notifyChanged(projectId);
-    return this.snapshot.build(projectId, user.role);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 
   /** PMC approves the inspection, or sends rejections (creating re-inspection tasks). */
@@ -63,6 +63,6 @@ export class InspectionsService {
       ]);
     }
     this.realtime.notifyChanged(projectId, pushBody, pushRoles);
-    return this.snapshot.build(projectId, user.role);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

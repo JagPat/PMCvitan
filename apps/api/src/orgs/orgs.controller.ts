@@ -25,6 +25,12 @@ export class OrgsController {
     return this.orgs.myOrgs(user.sub);
   }
 
+  /** Cross-project monitoring rollup — one row per project the user can access. */
+  @Get('me/portfolio')
+  portfolio(@CurrentUser() user: AuthUser) {
+    return this.orgs.portfolio(user.sub);
+  }
+
   /** Create a new org (the caller becomes its owner). */
   @Post('orgs')
   createOrg(@CurrentUser() user: AuthUser, @Body(new ZodPipe(createOrgSchema)) body: CreateOrgInput) {

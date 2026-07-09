@@ -1,14 +1,17 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from '../media/storage.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { ddMmmYyyy } from '../domain/dates';
+import type { AuthUser } from '../common/auth';
 import type { IssueDrawingInput } from '../contracts';
 
 export interface IssuedDrawing {
   drawingId: string;
   revisionId: string;
 }
+
+const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Site Engineer', contractor: 'Contractor', worker: 'Worker' };
 
 export type RevisionBytes = { mime: string; bytes: Buffer };
 export type RevisionRedirect = { redirect: string };
@@ -27,20 +30,43 @@ export class DrawingsService {
     private readonly realtime: RealtimeGateway,
   ) {}
 
+  /** A presigned direct-to-bucket upload target for a large drawing (Slice 3), or
+   *  `{ presign: null }` with no bucket configured — the client then posts base64. */
+  async presign(projectId: string, mime: string): Promise<{ uploadUrl: string; storageKey: string } | { presign: null }> {
+    const key = this.storage.keyFor(projectId, 'drawings', mime);
+    const res = await this.storage.presignPut(key, mime);
+    return res ? { uploadUrl: res.uploadUrl, storageKey: key } : { presign: null };
+  }
+
   async issue(projectId: string, issuedBy: string, input: IssueDrawingInput): Promise<IssuedDrawing> {
-    const bytes = Buffer.from(input.data, 'base64');
-    const key = this.storage.keyFor(projectId, 'drawings', input.mime);
-    const { url } = await this.storage.put(key, bytes, input.mime);
+    let key: string;
+    let url: string | null;
+    let data: Buffer | null;
+    let sizeBytes: number;
+    if (input.storageKey) {
+      // presigned path: the bytes are already in the bucket; just record the pointer
+      key = input.storageKey;
+      url = this.storage.publicUrl(key);
+      data = null;
+      sizeBytes = input.sizeBytes ?? 0;
+    } else {
+      // base64 path (dev stub / small files): store the bytes, keep them in the row
+      // unless a bucket is configured (then url is set and the row drops the bytes)
+      const bytes = Buffer.from(input.data!, 'base64');
+      key = this.storage.keyFor(projectId, 'drawings', input.mime);
+      ({ url } = await this.storage.put(key, bytes, input.mime));
+      data = url ? null : bytes;
+      sizeBytes = bytes.length;
+    }
 
     const revData = {
       rev: input.rev,
       status: input.status,
       mime: input.mime,
-      // dev stub keeps the bytes in the row; S3/R2 mode drops them (url is set)
-      data: url ? null : bytes,
+      data,
       url,
       storageKey: key,
-      sizeBytes: bytes.length,
+      sizeBytes,
       note: input.note ?? '',
       issuedBy,
       issuedAt: ddMmmYyyy(new Date()),
@@ -88,6 +114,33 @@ export class DrawingsService {
     // issued to the people who build from it
     this.realtime.notifyChanged(projectId, `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}`, ['engineer', 'contractor']);
     return { drawingId, revisionId };
+  }
+
+  /**
+   * Record a build-acknowledgement: the caller confirms they are building to this
+   * revision. Idempotent per (revision, user). Client can't acknowledge (they don't
+   * build); everyone else on the project can. Audited + the PMC is notified.
+   */
+  async acknowledge(projectId: string, revisionId: string, user: AuthUser): Promise<{ ok: boolean; ackCount: number }> {
+    if (user.role === 'client') throw new ForbiddenException('Only the build team acknowledges drawings');
+    const rev = await this.prisma.drawingRevision.findUnique({ where: { id: revisionId }, include: { drawing: true } });
+    if (!rev || rev.drawing.projectId !== projectId) throw new NotFoundException('Drawing revision not found');
+
+    const dbUser = await this.prisma.user.findUnique({ where: { id: user.sub } }).catch(() => null);
+    const userName = dbUser?.name ?? ROLE_LABEL[user.role] ?? 'Team member';
+
+    await this.prisma.drawingAck.upsert({
+      where: { revisionId_userId: { revisionId, userId: user.sub } },
+      update: { userName, role: user.role },
+      create: { revisionId, userId: user.sub, userName, role: user.role },
+    });
+    await this.prisma.auditLog.create({
+      data: { projectId, actor: userName, action: 'drawing_ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } },
+    });
+
+    const ackCount = await this.prisma.drawingAck.count({ where: { revisionId } });
+    this.realtime.notifyChanged(projectId, `${userName} is building to ${rev.drawing.number} Rev ${rev.rev}`, ['pmc']);
+    return { ok: true, ackCount };
   }
 
   /** Fetch a revision's file: inline bytes (dev stub) or a redirect to the bucket URL. */

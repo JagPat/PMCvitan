@@ -32,7 +32,7 @@ export class ActivitiesService {
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.start', entity: 'Activity', entityId: activityId } }),
     ]);
     this.realtime.notifyChanged(projectId);
-    return this.snapshot.build(projectId, user.role);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 
   /** Mark complete — records the actual end and auto-creates a closing inspection. */
@@ -52,6 +52,6 @@ export class ActivitiesService {
     ]);
     // a closing inspection needs the PMC to review and sign off
     this.realtime.notifyChanged(projectId, `Closing inspection auto-created: ${a.name}`, ['pmc']);
-    return this.snapshot.build(projectId, user.role);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

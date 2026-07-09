@@ -43,7 +43,7 @@ export class DecisionsService {
 
     // the client approved; PMC/contractor/engineer act on the now-locked decision
     this.realtime.notifyChanged(projectId, `Client approved ${d.title} — ${o.material}`, ['pmc', 'contractor', 'engineer']);
-    return this.snapshot.build(projectId, user.role);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 
   /** Raise a Change Request against a locked decision (re-approval required). */
@@ -60,6 +60,6 @@ export class DecisionsService {
     ]);
 
     this.realtime.notifyChanged(projectId);
-    return this.snapshot.build(projectId, user.role);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

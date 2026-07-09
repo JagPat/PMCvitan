@@ -21,6 +21,7 @@ export type ScreenKey =
   | 'engineer-check'
   | 'drawings'
   | 'team'
+  | 'portfolio'
   | 'team-access';
 
 export type Lang = 'en' | 'hi' | 'gu';
@@ -63,6 +64,8 @@ export interface Activity {
   name: string;
   zone: string;
   decisionId: string | null;
+  /** the phase this activity belongs to (null = unphased) */
+  phaseId: string | null;
   /** planned start / end — day-offsets from 1 Jun 2026 */
   ps: number;
   pe: number;
@@ -75,6 +78,42 @@ export interface Activity {
   gt: Gate;
   gi: Gate;
   block?: string;
+}
+
+/** A project phase with a live rollup of its activities (phase-level monitoring). */
+export interface Phase {
+  id: string;
+  name: string;
+  order: number;
+  /** planned window — day-offsets from 1 Jun 2026 */
+  plannedStart: number;
+  plannedEnd: number;
+  activityTotal: number;
+  done: number;
+  inProgress: number;
+  blocked: number;
+  notStarted: number;
+  donePct: number;
+}
+
+/** A cross-project monitoring rollup (one row per project the user can access). */
+export interface PortfolioProject {
+  projectId: string;
+  name: string;
+  short: string;
+  stage: string;
+  role: Role;
+  orgName: string | null;
+  activityTotal: number;
+  done: number;
+  inProgress: number;
+  blocked: number;
+  notStarted: number;
+  donePct: number;
+  openReviews: number;
+  pendingDecisions: number;
+  phaseCount: number;
+  milestonePct: number;
 }
 
 export interface ChecklistItem {
@@ -141,6 +180,12 @@ export interface OrgSummary {
 export type Discipline = 'architectural' | 'structural' | 'mep' | 'other';
 export type DrawingStatus = 'for_review' | 'for_construction' | 'superseded';
 
+export interface DrawingAck {
+  userName: string;
+  role: string;
+  at: string; // display date
+}
+
 export interface DrawingRevision {
   id: string;
   rev: string;
@@ -151,6 +196,7 @@ export interface DrawingRevision {
   note: string;
   issuedBy: string;
   issuedAt: string;
+  acks: DrawingAck[]; // who has acknowledged building to this revision
 }
 
 export interface Drawing {
@@ -162,6 +208,7 @@ export interface Drawing {
   activityId: string | null;
   decisionId: string | null;
   current: DrawingRevision | null; // latest non-superseded
+  ackedByMe: boolean; // has the current user acknowledged the current revision?
   revisions: DrawingRevision[]; // newest first
 }
 

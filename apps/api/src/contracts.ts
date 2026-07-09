@@ -123,20 +123,33 @@ export type PushSubscribeInput = z.infer<typeof pushSubscribeSchema>;
 // Issue a drawing. If `number` already exists in the project a new revision is
 // added and the prior ones are superseded; otherwise a new register entry is
 // created. PDF/DWG/images accepted; DWG is a downloadable source (viewed as PDF).
-export const issueDrawingSchema = z.object({
-  number: z.string().min(1),
-  title: z.string().min(1),
-  discipline: z.enum(['architectural', 'structural', 'mep', 'other']),
-  rev: z.string().min(1),
-  status: z.enum(['for_review', 'for_construction']).default('for_construction'),
-  mime: z.string().min(1),
-  data: z.string().min(1),
-  note: z.string().optional(),
-  zone: z.string().optional(),
-  activityId: z.string().optional(),
-  decisionId: z.string().optional(),
-});
+export const issueDrawingSchema = z
+  .object({
+    number: z.string().min(1),
+    title: z.string().min(1),
+    discipline: z.enum(['architectural', 'structural', 'mep', 'other']),
+    rev: z.string().min(1),
+    status: z.enum(['for_review', 'for_construction']).default('for_construction'),
+    mime: z.string().min(1),
+    // one of: inline base64 body (dev stub / small files) OR a storageKey from a
+    // completed presigned direct-to-bucket upload (Slice 3, large files).
+    data: z.string().min(1).optional(),
+    storageKey: z.string().min(1).optional(),
+    sizeBytes: z.number().int().nonnegative().optional(),
+    note: z.string().optional(),
+    zone: z.string().optional(),
+    activityId: z.string().optional(),
+    decisionId: z.string().optional(),
+  })
+  .refine((v) => Boolean(v.data) !== Boolean(v.storageKey), {
+    message: 'Provide exactly one of data (base64) or storageKey (presigned upload)',
+  });
 export type IssueDrawingInput = z.infer<typeof issueDrawingSchema>;
+
+export const presignDrawingSchema = z.object({
+  mime: z.string().min(1),
+});
+export type PresignDrawingInput = z.infer<typeof presignDrawingSchema>;
 
 // ── Orgs & multi-project (multi-tenant foundation) ───────────────────────────
 export const createOrgSchema = z.object({ name: z.string().min(1) });

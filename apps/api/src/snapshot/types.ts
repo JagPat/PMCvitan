@@ -30,6 +30,7 @@ export interface ActivityDto {
   name: string;
   zone: string;
   decisionId: string | null;
+  phaseId: string | null;
   ps: number;
   pe: number;
   as: number | null;
@@ -39,6 +40,22 @@ export interface ActivityDto {
   gt: 'ok' | 'wait' | 'fail' | 'na';
   gi: 'ok' | 'wait' | 'fail' | 'na';
   block?: string;
+}
+
+/** A project phase with a live rollup of its activities — the unit of phase-level
+ *  monitoring. `donePct` is done/total (0 when the phase has no activities yet). */
+export interface PhaseDto {
+  id: string;
+  name: string;
+  order: number;
+  plannedStart: number;
+  plannedEnd: number;
+  activityTotal: number;
+  done: number;
+  inProgress: number;
+  blocked: number;
+  notStarted: number;
+  donePct: number;
 }
 
 export interface ChecklistDto {
@@ -60,6 +77,12 @@ export interface ReviewDto {
   items: { name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean }[];
 }
 
+export interface DrawingAckDto {
+  userName: string;
+  role: string;
+  at: string; // display date, e.g. "08 Jul 2026"
+}
+
 export interface DrawingRevisionDto {
   id: string;
   rev: string;
@@ -70,6 +93,7 @@ export interface DrawingRevisionDto {
   note: string;
   issuedBy: string;
   issuedAt: string;
+  acks: DrawingAckDto[]; // who has acknowledged building to this revision
 }
 
 export interface DrawingDto {
@@ -81,6 +105,7 @@ export interface DrawingDto {
   activityId: string | null;
   decisionId: string | null;
   current: DrawingRevisionDto | null; // the latest non-superseded revision
+  ackedByMe: boolean; // has the caller acknowledged the current revision?
   revisions: DrawingRevisionDto[]; // full history, newest first
 }
 
@@ -121,6 +146,9 @@ export interface SnapshotDto {
   review: ReviewDto | null;
   reinspectionCreated: boolean;
   drawings: DrawingDto[];
+  /** Project phases with per-phase activity rollups (empty when none are defined —
+   *  the schedule then renders a flat list, unchanged). */
+  phases: PhaseDto[];
   dailyLog: DailyLogDto | null;
   notifications: { text: string; time: string; color: string }[];
 }

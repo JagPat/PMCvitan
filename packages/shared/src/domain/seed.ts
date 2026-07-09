@@ -13,6 +13,7 @@ import type {
   AppNotification,
   Review,
   Drawing,
+  Phase,
 } from './types';
 
 export const PROJECT = {
@@ -158,11 +159,12 @@ export const SEED_DRAWINGS: Drawing[] = [
     zone: 'Ground Floor · Living',
     activityId: 'ACT-31',
     decisionId: 'DL-014',
-    current: { id: 'A-201-C', rev: 'C', status: 'for_construction', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'C', 'PLAN · 1:50'), sizeBytes: 184320, note: 'Italian marble setting-out; expansion joints marked.', issuedBy: 'Ar. Vitan', issuedAt: '06 Jul 2026' },
+    ackedByMe: false,
+    current: { id: 'A-201-C', rev: 'C', status: 'for_construction', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'C', 'PLAN · 1:50'), sizeBytes: 184320, note: 'Italian marble setting-out; expansion joints marked.', issuedBy: 'Ar. Vitan', issuedAt: '06 Jul 2026', acks: [{ userName: 'Rajesh (Contractor)', role: 'contractor', at: '06 Jul 2026' }] },
     revisions: [
-      { id: 'A-201-C', rev: 'C', status: 'for_construction', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'C', 'PLAN · 1:50'), sizeBytes: 184320, note: 'Italian marble setting-out; expansion joints marked.', issuedBy: 'Ar. Vitan', issuedAt: '06 Jul 2026' },
-      { id: 'A-201-B', rev: 'B', status: 'superseded', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'B', 'PLAN · 1:50'), sizeBytes: 176128, note: 'Revised border pattern per client.', issuedBy: 'Ar. Vitan', issuedAt: '21 Jun 2026' },
-      { id: 'A-201-A', rev: 'A', status: 'superseded', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'A', 'PLAN · 1:50'), sizeBytes: 170000, note: 'First issue for construction.', issuedBy: 'Ar. Vitan', issuedAt: '02 Jun 2026' },
+      { id: 'A-201-C', rev: 'C', status: 'for_construction', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'C', 'PLAN · 1:50'), sizeBytes: 184320, note: 'Italian marble setting-out; expansion joints marked.', issuedBy: 'Ar. Vitan', issuedAt: '06 Jul 2026', acks: [{ userName: 'Rajesh (Contractor)', role: 'contractor', at: '06 Jul 2026' }] },
+      { id: 'A-201-B', rev: 'B', status: 'superseded', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'B', 'PLAN · 1:50'), sizeBytes: 176128, note: 'Revised border pattern per client.', issuedBy: 'Ar. Vitan', issuedAt: '21 Jun 2026', acks: [] },
+      { id: 'A-201-A', rev: 'A', status: 'superseded', mime: 'application/pdf', url: sheet('A-201', 'Living Room Flooring Layout', 'A', 'PLAN · 1:50'), sizeBytes: 170000, note: 'First issue for construction.', issuedBy: 'Ar. Vitan', issuedAt: '02 Jun 2026', acks: [] },
     ],
   },
   {
@@ -173,9 +175,10 @@ export const SEED_DRAWINGS: Drawing[] = [
     zone: 'Terrace',
     activityId: 'ACT-28',
     decisionId: null,
-    current: { id: 'S-101-A', rev: 'A', status: 'for_construction', mime: 'image/vnd.dwg', url: sheet('S-101', 'Terrace Slab Detail', 'A', 'DWG · CAD source'), sizeBytes: 512000, note: 'DWG source — issue the PDF export to the field.', issuedBy: 'Ar. Vitan', issuedAt: '28 May 2026' },
+    ackedByMe: false,
+    current: { id: 'S-101-A', rev: 'A', status: 'for_construction', mime: 'image/vnd.dwg', url: sheet('S-101', 'Terrace Slab Detail', 'A', 'DWG · CAD source'), sizeBytes: 512000, note: 'DWG source — issue the PDF export to the field.', issuedBy: 'Ar. Vitan', issuedAt: '28 May 2026', acks: [] },
     revisions: [
-      { id: 'S-101-A', rev: 'A', status: 'for_construction', mime: 'image/vnd.dwg', url: sheet('S-101', 'Terrace Slab Detail', 'A', 'DWG · CAD source'), sizeBytes: 512000, note: 'DWG source — issue the PDF export to the field.', issuedBy: 'Ar. Vitan', issuedAt: '28 May 2026' },
+      { id: 'S-101-A', rev: 'A', status: 'for_construction', mime: 'image/vnd.dwg', url: sheet('S-101', 'Terrace Slab Detail', 'A', 'DWG · CAD source'), sizeBytes: 512000, note: 'DWG source — issue the PDF export to the field.', issuedBy: 'Ar. Vitan', issuedAt: '28 May 2026', acks: [] },
     ],
   },
   {
@@ -186,20 +189,29 @@ export const SEED_DRAWINGS: Drawing[] = [
     zone: 'Ground Floor · Entrance',
     activityId: 'ACT-33',
     decisionId: 'DL-011',
-    current: { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026' },
+    ackedByMe: false,
+    current: { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026', acks: [] },
     revisions: [
-      { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026' },
+      { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026', acks: [] },
     ],
   },
 ];
 
 export const SEED_ACTIVITIES: Activity[] = [
-  { id: 'ACT-22', name: 'Electrical Rough-In', zone: 'Second Floor', decisionId: null, ps: 9, pe: 19, as: 9, ae: 18, status: 'done', gm: 'ok', gt: 'ok', gi: 'ok' },
-  { id: 'ACT-25', name: 'Master Bath CP Fittings', zone: 'Second Floor · Master Bath', decisionId: 'DL-009', ps: 19, pe: 27, as: 20, ae: 26, status: 'done', gm: 'ok', gt: 'ok', gi: 'ok' },
-  { id: 'ACT-28', name: 'Waterproofing — Terrace', zone: 'Terrace', decisionId: null, ps: 23, pe: 30, as: 24, ae: null, status: 'blocked', gm: 'ok', gt: 'ok', gi: 'fail', block: 'Ponding test failed — drain slope' },
-  { id: 'ACT-31', name: 'Living Room Flooring', zone: 'Ground Floor · Living', decisionId: 'DL-014', ps: 34, pe: 41, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'wait', gi: 'wait' },
-  { id: 'ACT-35', name: 'Staircase Railing', zone: 'Staircase · G to 2', decisionId: 'DL-006', ps: 37, pe: 44, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'na', gi: 'wait' },
-  { id: 'ACT-33', name: 'Main Door Veneer', zone: 'Ground Floor · Entrance', decisionId: 'DL-011', ps: 43, pe: 47, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'na', gi: 'na' },
+  { id: 'ACT-22', name: 'Electrical Rough-In', zone: 'Second Floor', decisionId: null, phaseId: 'PH-services', ps: 9, pe: 19, as: 9, ae: 18, status: 'done', gm: 'ok', gt: 'ok', gi: 'ok' },
+  { id: 'ACT-25', name: 'Master Bath CP Fittings', zone: 'Second Floor · Master Bath', decisionId: 'DL-009', phaseId: 'PH-wetareas', ps: 19, pe: 27, as: 20, ae: 26, status: 'done', gm: 'ok', gt: 'ok', gi: 'ok' },
+  { id: 'ACT-28', name: 'Waterproofing — Terrace', zone: 'Terrace', decisionId: null, phaseId: 'PH-services', ps: 23, pe: 30, as: 24, ae: null, status: 'blocked', gm: 'ok', gt: 'ok', gi: 'fail', block: 'Ponding test failed — drain slope' },
+  { id: 'ACT-31', name: 'Living Room Flooring', zone: 'Ground Floor · Living', decisionId: 'DL-014', phaseId: 'PH-finishing', ps: 34, pe: 41, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'wait', gi: 'wait' },
+  { id: 'ACT-35', name: 'Staircase Railing', zone: 'Staircase · G to 2', decisionId: 'DL-006', phaseId: 'PH-finishing', ps: 37, pe: 44, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'na', gi: 'wait' },
+  { id: 'ACT-33', name: 'Main Door Veneer', zone: 'Ground Floor · Entrance', decisionId: 'DL-011', phaseId: 'PH-finishing', ps: 43, pe: 47, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'na', gi: 'na' },
+];
+
+/** Seeded project phases with rollups pre-computed from SEED_ACTIVITIES above —
+ *  the local-demo mirror of the server's snapshot `phases[]`. */
+export const SEED_PHASES: Phase[] = [
+  { id: 'PH-services', name: 'Services & Waterproofing', order: 0, plannedStart: 9, plannedEnd: 30, activityTotal: 2, done: 1, inProgress: 0, blocked: 1, notStarted: 0, donePct: 50 },
+  { id: 'PH-wetareas', name: 'Wet Areas & Fittings', order: 1, plannedStart: 19, plannedEnd: 27, activityTotal: 1, done: 1, inProgress: 0, blocked: 0, notStarted: 0, donePct: 100 },
+  { id: 'PH-finishing', name: 'Finishing', order: 2, plannedStart: 34, plannedEnd: 47, activityTotal: 3, done: 0, inProgress: 0, blocked: 0, notStarted: 3, donePct: 0 },
 ];
 
 export const SEED_DAILY_LOG: DailyLog = {

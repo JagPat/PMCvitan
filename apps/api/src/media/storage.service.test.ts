@@ -70,3 +70,19 @@ describe('StorageService.put', () => {
     expect(out.url).toBe('https://r2.example.com/vitan-media/ambli/progress/x.jpg');
   });
 });
+
+describe('StorageService.presignPut', () => {
+  it('dev stub (no provider): returns null so the caller posts base64', async () => {
+    const s = new StorageService();
+    expect(await s.presignPut('ambli/drawings/x.pdf', 'application/pdf')).toBeNull();
+  });
+
+  it('S3 mode: returns a presigned upload URL + the public URL', async () => {
+    configureS3();
+    const s = new StorageService();
+    const out = await s.presignPut('ambli/drawings/x.pdf', 'application/pdf');
+    expect(out?.url).toBe('https://r2.example.com/vitan-media/ambli/drawings/x.pdf');
+    expect(out?.uploadUrl).toContain('ambli/drawings/x.pdf');
+    expect(out?.uploadUrl).toMatch(/X-Amz-Signature=/);
+  });
+});

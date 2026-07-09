@@ -47,12 +47,45 @@ revision (PDF/image inline, DWG download) plus the **revision history** with sup
 issues clearly marked. PMC gets an **Issue drawing** flow (file picker → number/title/
 discipline/rev). The local demo seeds three drawings (mock SVG sheets) and issues locally.
 
+## Slice 2 — linkage + acknowledgement + RBAC
+
+- **`DrawingAck`** model — `user × revision` (unique), so acknowledgements are **per
+  revision**: a superseding issue starts a fresh round. The snapshot adds `acks[]` to each
+  revision and `ackedByMe` to each drawing (the caller's ack of the current rev).
+- **`POST /projects/:id/drawings/rev/:revId/ack`** — the caller confirms "building to
+  Rev X". Idempotent; **audited** (`drawing_ack`); the PMC is notified in realtime. Client
+  is refused (they don't build).
+- **RBAC tiers**: **PMC issues** (`POST /drawings` now 403s a non-PMC); **engineer /
+  contractor** view + acknowledge; **client** curated read-only (no ack).
+- **Frontend**: the drawing viewer shows a **"Building to Rev X"** block — who has
+  acknowledged (name · role · date) and, for engineer/contractor, an **"I'm building to
+  Rev X"** button (→ a "You're building to Rev X" confirmation). The **Site Schedule**
+  links each activity to the drawing it builds from (a `A-201 · Rev C` chip that opens the
+  register). The viewer reads the live drawing from the store, so a fresh ack shows at once.
+
+## Slice 3 — offline cache + presigned uploads
+
+- **Offline drawing cache (PWA)**: the service worker (`v2`) now runtime-caches drawing /
+  media files (`/drawings/rev/*`, `/media/*`) on **any origin** — the API is a subdomain —
+  with **stale-while-revalidate** into a dedicated `vitan-pmc-files-*` cache. Opaque
+  (no-cors) responses are cacheable and render in `<iframe>`/`<img>`/`<a download>`, so a
+  drawing the field has opened (its thumbnail loads it too) **stays viewable when the
+  signal drops**. A failed revalidate keeps serving the cached copy. API JSON is still
+  never intercepted.
+- **Presigned direct-to-bucket uploads**: `POST /projects/:id/drawings/presign { mime }`
+  (PMC only) returns `{ uploadUrl, storageKey }` in S3/R2 mode, or `{ presign: null }` on
+  the dev stub. The client PUTs the bytes **straight to the bucket** (bypassing the API
+  body limit) then issues with `{ …meta, storageKey, sizeBytes }` instead of base64.
+  `issueDrawing` auto-routes: files ≥ ~3 MB try the presigned path and fall back to the
+  base64 body if no bucket is configured or the PUT fails. Env-only to enable (`S3_*`),
+  same seam as media (`StorageService.presignPut`, `@aws-sdk/s3-request-presigner`).
+
 ## Roadmap
 
-- **Slice 1 (this):** register + revisions + viewer + issue + per-role push. ✅
-- **Slice 2:** activity/decision linkage surfaced on the Site Schedule / gate view;
-  drawing on the worker job card; **acknowledgement** ("building to Rev C") + audit; RBAC
-  (PMC issues; engineer/contractor view+ack; client curated read-only).
-- **Slice 3:** offline PDF caching (PWA) for the field; **presigned direct-to-bucket
-  uploads** for large drawings (the current path is the 12 MB base64 body); optional
-  server-side DWG→PDF conversion.
+- **Slice 1:** register + revisions + viewer + issue + per-role push. ✅
+- **Slice 2:** activity linkage on the schedule; **acknowledgement** ("building to Rev C")
+  + audit; RBAC (PMC issues; engineer/contractor view+ack; client read-only). ✅
+- **Slice 3:** offline PDF caching (PWA, service worker `v2`) for the field; **presigned
+  direct-to-bucket uploads** for large drawings (auto-routed, base64 fallback). ✅
+- **Later (optional):** server-side DWG→PDF conversion so the CAD source auto-produces the
+  field PDF; explicit "make available offline" prefetch of the full current set.
