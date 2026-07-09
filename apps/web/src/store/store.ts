@@ -181,8 +181,10 @@ function freshAccess(): AccessState {
 /** A fresh copy of the seeded initial state (deep-cloned so resets never share references). */
 export function getInitialState(): AppState {
   return {
-    role: 'client',
-    screen: 'client-decisions',
+    // land on the admin (PMC) view by default — create/manage projects, teams,
+    // portfolio. The persona switcher graduates to team/individual views.
+    role: 'pmc',
+    screen: 'dashboard',
     lang: 'en',
     notifOpen: false,
     toast: null,

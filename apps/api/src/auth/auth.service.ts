@@ -97,8 +97,19 @@ export class AuthService {
     };
   }
 
-  /** Dev auth — passwordless role pick. Gated by ALLOW_DEV_AUTH at the controller. */
-  session(input: SessionInput): TokenResult {
+  /**
+   * Dev auth — passwordless role pick (gated by ALLOW_DEV_AUTH at the controller).
+   * Resolves to the REAL seeded account for this role+project when one exists, so
+   * the persona carries real org/project membership — the "PMC" persona becomes the
+   * actual org-owner admin and sees every admin control (create/edit/archive
+   * projects, all teams, the whole portfolio). Falls back to a synthetic identity
+   * for the pure local demo and for roles without a seeded account (e.g. engineer).
+   */
+  async session(input: SessionInput): Promise<TokenResult> {
+    const real = await this.prisma.user.findFirst({ where: { role: input.role, projectId: input.projectId } });
+    if (real) {
+      return { token: this.issue(real.id, real.role as Role, real.projectId), role: real.role as Role, projectId: real.projectId, name: real.name };
+    }
     return {
       token: this.issue(`dev-${input.role}`, input.role, input.projectId),
       role: input.role,
