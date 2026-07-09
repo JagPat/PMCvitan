@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
-import type { AddOrgMemberInput, CreateOrgInput, CreateProjectInput, UpdateProjectInput } from '../contracts';
+import type { AddOrgMemberInput, CreateOrgInput, CreateProjectInput, UpdateOrgMemberInput, UpdateProjectInput } from '../contracts';
 
 /** A member of an org's admin roster (owner/admin/member). */
 export interface OrgMemberDto {
@@ -57,6 +57,11 @@ export class OrgsService {
     return m?.role ?? null;
   }
 
+  /** How many owners the org currently has — used to protect the last one. */
+  private async ownerCount(orgId: string): Promise<number> {
+    return this.prisma.orgMembership.count({ where: { orgId, role: 'owner' } });
+  }
+
   /** Create a new org; the creator becomes its owner. */
   async createOrg(userId: string, input: CreateOrgInput): Promise<{ id: string; name: string; slug: string }> {
     const slug = `${slugify(input.name)}-${randomUUID().slice(0, 4)}`;
@@ -82,14 +87,14 @@ export class OrgsService {
   /**
    * Add someone to the org's admin roster (owner/admin/member) — the only way to
    * grant org-tier power, which an existing project-member API can't. Gated to an
-   * org owner/admin. Provisions the invited identity if new (homed on the org's
-   * first active project as PMC, so a later phone/email-OTP sign-in resolves to a
-   * PMC session; an org owner then reaches every project via super-admin switch).
-   * Phone is stored as given (bare 10-digit) to match the sign-in input format.
+   * org **owner**: granting/revoking admin access is the owner's alone, so an admin
+   * can't escalate itself or seed new admins. Provisions the invited identity if new
+   * (homed on the org's first active project as PMC, so a later phone/email-OTP
+   * sign-in resolves to a PMC session; an org owner/admin then reaches every project
+   * via the super-admin switch). Phone is stored bare (10-digit) to match sign-in.
    */
   async addOrgMember(orgId: string, callerId: string, input: AddOrgMemberInput): Promise<OrgMemberDto> {
-    const role = await this.orgRole(orgId, callerId);
-    if (role !== 'owner' && role !== 'admin') throw new ForbiddenException('Only an org owner or admin can manage the roster');
+    if ((await this.orgRole(orgId, callerId)) !== 'owner') throw new ForbiddenException('Only an org owner can manage the admin roster');
 
     const org = await this.prisma.org.findUnique({
       where: { id: orgId },
@@ -115,6 +120,37 @@ export class OrgsService {
       create: { orgId, userId: user.id, role: input.role },
     });
     return { userId: user.id, name: user.name, email: user.email, phone: user.phone, orgRole: membership.role };
+  }
+
+  /**
+   * Change an org member's role (owner/admin/member). Owner only. Refuses to strip
+   * the last owner — the org must always have someone who can manage the roster.
+   */
+  async updateOrgMemberRole(orgId: string, callerId: string, userId: string, input: UpdateOrgMemberInput): Promise<OrgMemberDto> {
+    if ((await this.orgRole(orgId, callerId)) !== 'owner') throw new ForbiddenException('Only an org owner can change roles');
+    const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } }, include: { user: true } });
+    if (!existing) throw new NotFoundException('Not a member of this org');
+    if (existing.role === 'owner' && input.role !== 'owner' && (await this.ownerCount(orgId)) <= 1) {
+      throw new BadRequestException('The org must keep at least one owner');
+    }
+    const membership = await this.prisma.orgMembership.update({ where: { orgId_userId: { orgId, userId } }, data: { role: input.role } });
+    return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, orgRole: membership.role };
+  }
+
+  /**
+   * Revoke someone's org membership. Owner only. You can't remove yourself, nor the
+   * last owner (both would leave the org with no one able to manage it).
+   */
+  async removeOrgMember(orgId: string, callerId: string, userId: string): Promise<{ ok: boolean }> {
+    if ((await this.orgRole(orgId, callerId)) !== 'owner') throw new ForbiddenException('Only an org owner can remove members');
+    if (userId === callerId) throw new BadRequestException('You cannot remove yourself from the org');
+    const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } } });
+    if (!existing) throw new NotFoundException('Not a member of this org');
+    if (existing.role === 'owner' && (await this.ownerCount(orgId)) <= 1) {
+      throw new BadRequestException('The org must keep at least one owner');
+    }
+    await this.prisma.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } });
+    return { ok: true };
   }
 
   /** Create a project under an org (owner/admin only); enrol the creator as PMC. */

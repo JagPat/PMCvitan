@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
 import type { PrismaService } from '../prisma.service';
 
@@ -151,8 +151,8 @@ describe('OrgsService.addOrgMember', () => {
 
   it('reuses an existing account (matched by email) instead of provisioning a new one', async () => {
     const existing = { id: 'u9', name: 'JP', email: 'jp@vitan.in', phone: '8320303515', projectId: 'ambli', role: 'pmc' };
-    const { svc, prisma, created } = makeRoster('admin', existing);
-    const res = await svc.addOrgMember('org1', 'admin1', { name: 'JP', email: 'jp@vitan.in', role: 'owner' });
+    const { svc, prisma, created } = makeRoster('owner', existing);
+    const res = await svc.addOrgMember('org1', 'owner1', { name: 'JP', email: 'jp@vitan.in', role: 'owner' });
     expect(res.userId).toBe('u9');
     expect(created).toHaveLength(0); // no new user
     expect(prisma.user.create).not.toHaveBeenCalled();
@@ -164,9 +164,87 @@ describe('OrgsService.addOrgMember', () => {
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
+  it('forbids an admin from managing the roster (owner is the sole gatekeeper)', async () => {
+    const { svc, prisma } = makeRoster('admin');
+    await expect(svc.addOrgMember('org1', 'admin1', { name: 'X', email: 'x@vitan.in', role: 'admin' })).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
   it('refuses to add a member when the org has no active project to home them on', async () => {
     const { svc } = makeRoster('owner', null, []);
     await expect(svc.addOrgMember('org1', 'owner1', { name: 'X', email: 'x@vitan.in', role: 'admin' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
+  // rows model the org's memberships; findUnique/count/update/delete key off userId.
+  function makeManage(rows: Array<{ userId: string; role: string; name?: string }>) {
+    const state = rows.map((r) => ({ ...r, name: r.name ?? r.userId }));
+    const prisma = {
+      orgMembership: {
+        findUnique: vi.fn(async ({ where }: { where: { orgId_userId: { userId: string } } }) => {
+          const r = state.find((x) => x.userId === where.orgId_userId.userId);
+          return r ? { role: r.role, user: { name: r.name, email: null, phone: null } } : null;
+        }),
+        count: vi.fn(async () => state.filter((r) => r.role === 'owner').length),
+        update: vi.fn(async ({ where, data }: { where: { orgId_userId: { userId: string } }; data: { role: string } }) => {
+          const r = state.find((x) => x.userId === where.orgId_userId.userId)!;
+          r.role = data.role;
+          return { role: r.role };
+        }),
+        delete: vi.fn(async ({ where }: { where: { orgId_userId: { userId: string } } }) => {
+          const i = state.findIndex((x) => x.userId === where.orgId_userId.userId);
+          state.splice(i, 1);
+          return {};
+        }),
+      },
+    };
+    return { svc: new OrgsService(prisma as unknown as PrismaService), prisma, state };
+  }
+
+  it('an owner changes an admin down to member', async () => {
+    const { svc, state } = makeManage([{ userId: 'owner1', role: 'owner' }, { userId: 'u2', role: 'admin' }]);
+    const res = await svc.updateOrgMemberRole('org1', 'owner1', 'u2', { role: 'member' });
+    expect(res).toMatchObject({ userId: 'u2', orgRole: 'member' });
+    expect(state.find((x) => x.userId === 'u2')!.role).toBe('member');
+  });
+
+  it('forbids a non-owner (admin) from changing roles', async () => {
+    const { svc } = makeManage([{ userId: 'a1', role: 'admin' }, { userId: 'u2', role: 'member' }]);
+    await expect(svc.updateOrgMemberRole('org1', 'a1', 'u2', { role: 'admin' })).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('refuses to demote the last owner', async () => {
+    const { svc } = makeManage([{ userId: 'owner1', role: 'owner' }]);
+    await expect(svc.updateOrgMemberRole('org1', 'owner1', 'owner1', { role: 'admin' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('demoting one of two owners is allowed', async () => {
+    const { svc, state } = makeManage([{ userId: 'owner1', role: 'owner' }, { userId: 'owner2', role: 'owner' }]);
+    await svc.updateOrgMemberRole('org1', 'owner1', 'owner2', { role: 'admin' });
+    expect(state.find((x) => x.userId === 'owner2')!.role).toBe('admin');
+  });
+
+  it('404s changing a role for a non-member', async () => {
+    const { svc } = makeManage([{ userId: 'owner1', role: 'owner' }]);
+    await expect(svc.updateOrgMemberRole('org1', 'owner1', 'ghost', { role: 'admin' })).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('an owner removes a member', async () => {
+    const { svc, state } = makeManage([{ userId: 'owner1', role: 'owner' }, { userId: 'u2', role: 'member' }]);
+    const res = await svc.removeOrgMember('org1', 'owner1', 'u2');
+    expect(res).toEqual({ ok: true });
+    expect(state.some((x) => x.userId === 'u2')).toBe(false);
+  });
+
+  it('refuses self-removal', async () => {
+    const { svc } = makeManage([{ userId: 'owner1', role: 'owner' }, { userId: 'owner2', role: 'owner' }]);
+    await expect(svc.removeOrgMember('org1', 'owner1', 'owner1')).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('forbids a non-owner from removing anyone', async () => {
+    const { svc } = makeManage([{ userId: 'a1', role: 'admin' }, { userId: 'u2', role: 'member' }]);
+    await expect(svc.removeOrgMember('org1', 'a1', 'u2')).rejects.toBeInstanceOf(ForbiddenException);
   });
 });
 

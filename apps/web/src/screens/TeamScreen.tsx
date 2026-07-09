@@ -33,6 +33,8 @@ export function TeamScreen() {
   const activeOrgId = activeMembership?.orgId ?? null;
   const orgRole = myOrgs.find((o) => o.id === activeOrgId)?.role;
   const canDeleteProject = orgRole === 'owner' || orgRole === 'admin';
+  // Granting/revoking org admins is the OWNER's alone — the single gatekeeper.
+  const canManageOrgRoster = orgRole === 'owner';
   const canEditProject = (canManage || canDeleteProject) && !!activeOrgId;
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -115,7 +117,7 @@ export function TeamScreen() {
         ))}
       </div>
 
-      {canDeleteProject && activeOrgId && <OrgRoster orgId={activeOrgId} />}
+      {canManageOrgRoster && activeOrgId && <OrgRoster orgId={activeOrgId} />}
 
       {canDeleteProject && activeOrgId && (
         <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }}>
@@ -145,13 +147,17 @@ export function TeamScreen() {
  * Organization roster — the admin tier, distinct from a project team. Owners/admins
  * run every project in the org as PMC; a member only sees projects they're added to.
  * Adding someone here provisions their account (homed as PMC on an org project), so
- * they can then sign in by email/phone and land in the admin view. Owner/admin only.
+ * they can then sign in by email/phone and land in the admin view. Managed by the
+ * org OWNER only (the single gatekeeper) — this whole section is owner-gated.
  */
 function OrgRoster({ orgId }: { orgId: string }) {
   const orgMembers = useStore(useShallow((s) => s.orgMembers));
   const loadOrgMembers = useStore((s) => s.loadOrgMembers);
   const addOrgMember = useStore((s) => s.addOrgMember);
+  const updateOrgMemberRole = useStore((s) => s.updateOrgMemberRole);
+  const removeOrgMember = useStore((s) => s.removeOrgMember);
   useEffect(() => { loadOrgMembers(orgId); }, [loadOrgMembers, orgId]);
+  const ownerCount = orgMembers.filter((m) => m.orgRole === 'owner').length;
 
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
@@ -185,16 +191,39 @@ function OrgRoster({ orgId }: { orgId: string }) {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
         {orgMembers.length === 0 && <div style={{ color: 'var(--muted)', fontSize: 13.5 }}>No admins loaded — this needs the server.</div>}
-        {orgMembers.map((m) => (
-          <div key={m.userId} style={cardStyle}>
-            <div style={{ width: 40, height: 40, flex: 'none', borderRadius: '50%', background: 'var(--accent)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 16 }}>{m.name[0]}</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600, fontSize: 15 }}>{m.name}</div>
-              <div style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.email ?? m.phone ?? '—'}</div>
+        {orgMembers.map((m) => {
+          // The sole owner can't be demoted or removed — the org must keep an owner.
+          const lastOwner = m.orgRole === 'owner' && ownerCount <= 1;
+          return (
+            <div key={m.userId} style={cardStyle}>
+              <div style={{ width: 40, height: 40, flex: 'none', borderRadius: '50%', background: 'var(--accent)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 16 }}>{m.name[0]}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 15 }}>{m.name}</div>
+                <div style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.email ?? m.phone ?? '—'}</div>
+              </div>
+              <select
+                value={m.orgRole}
+                disabled={lastOwner}
+                onChange={(e) => updateOrgMemberRole(orgId, m.userId, e.target.value as OrgRole)}
+                aria-label={`Org role for ${m.name}`}
+                data-testid="org-member-role"
+                style={{ ...fld, flex: '0 0 120px', height: 38, opacity: lastOwner ? 0.6 : 1 }}
+              >
+                {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
+              </select>
+              <button
+                onClick={() => removeOrgMember(orgId, m.userId)}
+                disabled={lastOwner}
+                aria-label={`Remove ${m.name}`}
+                title={lastOwner ? 'The org must keep at least one owner' : undefined}
+                data-testid="remove-org-member"
+                style={{ background: 'transparent', border: 'none', cursor: lastOwner ? 'not-allowed' : 'pointer', color: 'var(--muted)', display: 'flex', padding: 4, opacity: lastOwner ? 0.35 : 1 }}
+              >
+                <X size={17} />
+              </button>
             </div>
-            <span style={roleChip}>{ORG_ROLE_LABEL[m.orgRole]}</span>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

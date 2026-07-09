@@ -34,6 +34,7 @@ import {
   type Drawing,
   type MembershipSummary,
   type OrgMember,
+  type OrgRole,
   type OrgSummary,
   type Phase,
   type PortfolioProject,
@@ -134,6 +135,8 @@ export interface AppActions {
   // org roster (owner/admin/member)
   loadOrgMembers: (orgId: string) => void;
   addOrgMember: (orgId: string, input: AddOrgMemberInput) => void;
+  updateOrgMemberRole: (orgId: string, userId: string, role: OrgRole) => void;
+  removeOrgMember: (orgId: string, userId: string) => void;
   // schedule
   startActivity: (id: string) => void;
   completeActivity: (id: string) => void;
@@ -722,6 +725,20 @@ export const useStore = create<Store>()(
         .addOrgMember(orgId, input)
         .then(() => { get().loadOrgMembers(orgId); get().flash(input.name + ' added as org ' + input.role + '.'); })
         .catch(() => get().flash('Could not add to the roster — check the details / your access.'));
+    },
+    updateOrgMemberRole: (orgId, userId, role) => {
+      if (!gateway) return;
+      gateway
+        .updateOrgMemberRole(orgId, userId, role)
+        .then(() => { get().loadOrgMembers(orgId); get().flash('Org role changed to ' + role + '.'); })
+        .catch(() => get().flash('Could not change the role — the org must keep at least one owner.'));
+    },
+    removeOrgMember: (orgId, userId) => {
+      if (!gateway) return;
+      gateway
+        .removeOrgMember(orgId, userId)
+        .then(() => { get().loadOrgMembers(orgId); get().flash('Removed from the org roster.'); })
+        .catch(() => get().flash('Could not remove — you can’t remove yourself or the last owner.'));
     },
 
     // ---- schedule ----
