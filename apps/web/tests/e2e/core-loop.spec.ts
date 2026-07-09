@@ -3,7 +3,9 @@ import { test, expect } from '@playwright/test';
 test('core loop: client approves & locks a decision → Decision Log → PMC dashboard count decrements', async ({ page }) => {
   await page.goto('/');
 
-  // lands on the client "Decisions waiting for you" screen
+  // the app now lands on the admin (PMC) view by default — switch to the Client
+  // persona to drive the client approval flow
+  await page.getByRole('button', { name: 'Client', exact: true }).click();
   await expect(page.getByText('Decisions waiting for you')).toBeVisible();
 
   // approve the architect's pick (Option B) on DL-014

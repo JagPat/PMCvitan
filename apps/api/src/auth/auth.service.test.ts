@@ -28,6 +28,8 @@ function fakePrisma(seed: FakeUser[] = []) {
     user: {
       findUnique: async ({ where }: { where: { email?: string; phone?: string } }) =>
         users.find((u) => (where.email && u.email === where.email) || (where.phone && u.phone === where.phone)) ?? null,
+      findFirst: async ({ where }: { where: { role?: string; projectId?: string } }) =>
+        users.find((u) => (where.role ? u.role === where.role : true) && (where.projectId ? u.projectId === where.projectId : true)) ?? null,
       create: async ({ data }: { data: Omit<FakeUser, 'id'> }) => {
         const u = { id: `u${users.length + 1}`, ...data };
         users.push(u);
@@ -136,11 +138,19 @@ describe('AuthService.workerToken', () => {
 });
 
 describe('AuthService.session (dev auth)', () => {
-  it('issues a passwordless role token', () => {
+  it('issues a synthetic token when no real account exists for the role', async () => {
     const { auth, jwt } = make(fakePrisma());
-    const res = auth.session({ role: 'client', projectId: 'ambli' });
+    const res = await auth.session({ role: 'client', projectId: 'ambli' });
     const decoded = jwt.verify<{ sub: string; role: string }>(res.token);
     expect(decoded).toMatchObject({ sub: 'dev-client', role: 'client' });
+  });
+
+  it('resolves to the REAL seeded account for the role (so the persona carries org/project membership)', async () => {
+    const seed = [{ id: 'real-pmc', projectId: 'ambli', role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in' }];
+    const { auth, jwt } = make(fakePrisma(seed));
+    const res = await auth.session({ role: 'pmc', projectId: 'ambli' });
+    expect(res.name).toBe('Ar. Vitan');
+    expect(jwt.verify<{ sub: string; role: string }>(res.token)).toMatchObject({ sub: 'real-pmc', role: 'pmc', projectId: 'ambli' });
   });
 });
 

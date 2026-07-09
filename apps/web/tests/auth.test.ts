@@ -95,7 +95,7 @@ describe('team access — API mode', () => {
     s().otpVerify();
     await flush();
 
-    expect(s().role).toBe('client'); // unchanged
+    expect(s().role).toBe('pmc'); // unchanged (default admin view)
     expect(s().sessionToken).toBeNull();
     expect(s().access.otp).toBe(''); // cleared for retry
     expect(s().access.error).toBeTruthy();
@@ -125,7 +125,7 @@ describe('email/password login', () => {
 
   it('local demo: rejects an unknown email', () => {
     s().login('stranger@example.com', 'x');
-    expect(s().role).toBe('client'); // unchanged
+    expect(s().role).toBe('pmc'); // unchanged (default admin view)
     expect(s().access.error).toBeTruthy();
   });
 
