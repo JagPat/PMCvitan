@@ -21,6 +21,11 @@ WORKDIR /app
 COPY --from=build /app ./
 WORKDIR /app/apps/api
 ENV PORT=3000
+# Mark the runtime as production so the auth hardening engages (see config.ts):
+# JWT_SECRET + CORS_ORIGINS become REQUIRED (the API refuses to start without
+# them), and phone-OTP self-signup defaults OFF. Set both env vars on the app
+# before deploying, or boot fails fast. See docs/AUTH_LOCKDOWN.md.
+ENV NODE_ENV=production
 EXPOSE 3000
 # On start: apply Prisma migrations, then boot. Falls back to `db push` when
 # migrate deploy can't run (e.g. the pre-migrations live DB before it is

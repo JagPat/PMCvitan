@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
+import { resolveJwtSecret } from './config';
 import { PrismaModule } from './prisma.module';
 import { JwtGuard } from './common/auth';
 import { AuthService } from './auth/auth.service';
@@ -35,7 +36,9 @@ import { MembersController } from './orgs/members.controller';
     PrismaModule,
     JwtModule.register({
       global: true,
-      secret: process.env.JWT_SECRET || 'dev-secret-change-in-prod',
+      // Required in production — resolveJwtSecret() throws at startup rather than
+      // fall back to a public default. See config.ts.
+      secret: resolveJwtSecret(),
       signOptions: { expiresIn: '12h' },
     }),
   ],

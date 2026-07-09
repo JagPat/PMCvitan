@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import { UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
@@ -94,9 +94,14 @@ describe('AuthService.verifyOtp', () => {
     delete process.env.MSG91_TEMPLATE_ID;
     delete process.env.TELEGRAM_GATEWAY_TOKEN;
     delete process.env.FAST2SMS_API_KEY;
+    delete process.env.AUTH_ALLOW_PHONE_SIGNUP;
+  });
+  afterEach(() => {
+    delete process.env.AUTH_ALLOW_PHONE_SIGNUP;
   });
 
-  it('provisions a site engineer on first successful OTP', async () => {
+  it('provisions a site engineer on first successful OTP when phone signup is enabled', async () => {
+    process.env.AUTH_ALLOW_PHONE_SIGNUP = 'true';
     const prisma = fakePrisma();
     const { auth, sms } = make(prisma);
     const { devCode } = await sms.sendOtp('9876543210');
@@ -104,6 +109,29 @@ describe('AuthService.verifyOtp', () => {
     expect(res.role).toBe('engineer');
     expect(prisma.users).toHaveLength(1);
     expect(prisma.users[0]).toMatchObject({ phone: '9876543210', role: 'engineer' });
+  });
+
+  it('rejects an unknown number when phone signup is disabled (no auto-provision)', async () => {
+    process.env.AUTH_ALLOW_PHONE_SIGNUP = 'false';
+    const prisma = fakePrisma();
+    const { auth, sms } = make(prisma);
+    const { devCode } = await sms.sendOtp('9876543210');
+    await expect(
+      auth.verifyOtp({ phone: '9876543210', code: devCode!, projectId: 'ambli' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(prisma.users).toHaveLength(0); // nothing minted
+  });
+
+  it('a known number always signs in, even with phone signup disabled', async () => {
+    process.env.AUTH_ALLOW_PHONE_SIGNUP = 'false';
+    const prisma = fakePrisma([
+      { id: 'u9', projectId: 'ambli', role: 'engineer', name: 'Ramesh', phone: '9876543210' },
+    ]);
+    const { auth, sms } = make(prisma);
+    const { devCode } = await sms.sendOtp('9876543210');
+    const res = await auth.verifyOtp({ phone: '9876543210', code: devCode!, projectId: 'ambli' });
+    expect(res.name).toBe('Ramesh');
+    expect(prisma.users).toHaveLength(1);
   });
 
   it('reuses an existing account for the phone', async () => {

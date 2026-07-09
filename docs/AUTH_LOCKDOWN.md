@@ -104,6 +104,23 @@ To roll back to demo mode: set both to `true` and redeploy.
 
 ---
 
+## Production hardening (required env on the API app)
+
+The production image sets `NODE_ENV=production`, which turns on fail-fast auth
+hardening (`apps/api/src/config.ts`). Set these on the **API** app **before**
+deploying, or boot fails fast:
+
+| Env | Required in prod | Effect |
+|---|---|---|
+| `JWT_SECRET` | **yes** | Token signing secret. No insecure default — the API refuses to start if unset. Use a long random value. |
+| `CORS_ORIGINS` | **yes** | Comma-separated browser origins allowed to call the API (e.g. `https://pms.vitan.in`). No wildcard; the API refuses to start if unset. |
+| `AUTH_ALLOW_PHONE_SIGNUP` | no (default **off**) | When off, an unknown phone number is **rejected** instead of auto-provisioning a site engineer. Set `true` to enable on-site phone onboarding. |
+
+Dev auth stays off unless `ALLOW_DEV_AUTH=true` (above); the office email/Google
+channels stay invite-only unless `AUTH_ALLOW_SIGNUP=true`.
+
+---
+
 ## What the code does
 
 - **`apps/api/src/auth/auth.controller.ts`** — `/auth/session` throws `ForbiddenException`
