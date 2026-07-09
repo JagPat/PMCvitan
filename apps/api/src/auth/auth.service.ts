@@ -49,9 +49,20 @@ export class AuthService {
 
   /** Self-signup for the office channels (email / Google) is invite-only by
    * default; set AUTH_ALLOW_SIGNUP=true to let an unknown email/Google identity
-   * auto-provision an account. Phone-OTP is exempt — see `signInOrProvision`. */
+   * auto-provision an account. */
   private get selfSignupAllowed(): boolean {
     return process.env.AUTH_ALLOW_SIGNUP === 'true';
+  }
+
+  /** Phone-OTP self-signup: auto-provision a site-engineer account for an unknown
+   * number. **Default off in production** so a stranger's phone can't mint a
+   * writable engineer account (which would hollow out the dev-auth lockdown); set
+   * AUTH_ALLOW_PHONE_SIGNUP=true to enable on-site onboarding. Outside production
+   * it defaults on so the local demo's phone flow keeps working. */
+  private get phoneSignupAllowed(): boolean {
+    const v = process.env.AUTH_ALLOW_PHONE_SIGNUP;
+    if (v !== undefined) return v === 'true';
+    return process.env.NODE_ENV !== 'production';
   }
 
   /**
@@ -143,8 +154,10 @@ export class AuthService {
     if (!(await this.sms.verifyOtp(input.phone, input.code))) {
       throw new UnauthorizedException('Invalid or expired code');
     }
-    // Phone-OTP is the on-site engineer onboarding flow — always provisions.
-    return this.signInOrProvision({ phone: input.phone, projectId: input.projectId, allowProvision: true });
+    // An unknown number auto-provisions a site engineer only when phone signup is
+    // enabled (AUTH_ALLOW_PHONE_SIGNUP; off by default in production). A number
+    // already on an account always signs in.
+    return this.signInOrProvision({ phone: input.phone, projectId: input.projectId, allowProvision: this.phoneSignupAllowed });
   }
 
   /** Start an email-OTP sign-in (zero-DLT fallback). `devCode` only with no SMTP. */

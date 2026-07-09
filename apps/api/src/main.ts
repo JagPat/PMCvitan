@@ -2,9 +2,13 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { resolveCorsOrigins } from './config';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { cors: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // CORS is restricted to CORS_ORIGINS in production (no wildcard); any origin in
+  // dev. resolveCorsOrigins() throws at startup if it's unset in production.
+  app.enableCors({ origin: resolveCorsOrigins(), credentials: true });
   // Raise the body limit so base64 photo uploads (Phase 7c-media) fit; the
   // default 100kb is too small. Validation is done per-route with Zod
   // (see common/zod.pipe.ts); no global ValidationPipe.
