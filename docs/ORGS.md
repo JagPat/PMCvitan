@@ -79,6 +79,23 @@ Gated to the project's **PMC** or an **owner/admin** of the owning org:
 - `DELETE /projects/:projectId/members/:userId` — soft-remove (`status = removed`);
   you can't remove yourself.
 
+### Organization roster (org-tier admins)
+
+The **only** way to grant org-tier power (owner/admin/member) — project membership can't.
+Gated to an org **owner/admin**:
+
+- `GET /orgs/:orgId/members` — the org's admin roster (name, email/phone, orgRole).
+- `POST /orgs/:orgId/members { name, role: owner|admin|member, email? | phone? }` —
+  add someone to the roster. A new identity is provisioned **homed on the org's first
+  active project as PMC**, so a later email/phone-OTP sign-in resolves to a PMC session
+  and — for an owner/admin — reaches every project in the org (super-admin switch). Phone
+  is stored as given (bare 10-digit) to match the sign-in input. Upserts the `OrgMembership`.
+  This is how the first real admin (e.g. `jp@vitan.in`) is added when the seed owner
+  (`pmc@vitan.in`) isn't the person actually running the practice.
+
+**Frontend**: the **Team** screen shows an **Organization admins** roster + add-admin form
+to org owners/admins (name, email/phone, owner/admin/member), alongside the project team.
+
 ### Phases & monitoring (Slice 3)
 
 Adds **phase-level monitoring** and a **cross-project portfolio**:

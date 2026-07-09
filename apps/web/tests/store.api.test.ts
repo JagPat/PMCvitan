@@ -69,6 +69,32 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     expect(s().myOrgs[0]).toMatchObject({ role: 'owner' });
   });
 
+  it('loadOrgMembers populates the org roster', async () => {
+    const gw = {
+      listOrgMembers: vi.fn().mockResolvedValue([{ userId: 'u1', name: 'Ar. Vitan', email: 'pmc@vitan.in', phone: null, orgRole: 'owner' }]),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().loadOrgMembers('o');
+    await flush();
+    expect(gw.listOrgMembers).toHaveBeenCalledWith('o');
+    expect(s().orgMembers).toEqual([{ userId: 'u1', name: 'Ar. Vitan', email: 'pmc@vitan.in', phone: null, orgRole: 'owner' }]);
+  });
+
+  it('addOrgMember posts then reloads the roster', async () => {
+    const gw = {
+      addOrgMember: vi.fn().mockResolvedValue({}),
+      listOrgMembers: vi.fn().mockResolvedValue([{ userId: 'u2', name: 'JP', email: 'jp@vitan.in', phone: '8320303515', orgRole: 'owner' }]),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().addOrgMember('o', { name: 'JP', role: 'owner', email: 'jp@vitan.in' });
+    await flush();
+    await flush();
+
+    expect(gw.addOrgMember).toHaveBeenCalledWith('o', { name: 'JP', role: 'owner', email: 'jp@vitan.in' });
+    expect(s().orgMembers).toEqual([{ userId: 'u2', name: 'JP', email: 'jp@vitan.in', phone: '8320303515', orgRole: 'owner' }]);
+  });
+
   it('loadPortfolio populates the cross-project rollup (Slice 3)', async () => {
     const gw = {
       getPortfolio: vi.fn().mockResolvedValue([

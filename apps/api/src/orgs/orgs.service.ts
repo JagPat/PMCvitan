@@ -1,7 +1,16 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
-import type { CreateOrgInput, CreateProjectInput, UpdateProjectInput } from '../contracts';
+import type { AddOrgMemberInput, CreateOrgInput, CreateProjectInput, UpdateProjectInput } from '../contracts';
+
+/** A member of an org's admin roster (owner/admin/member). */
+export interface OrgMemberDto {
+  userId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  orgRole: string;
+}
 
 /** A per-project monitoring rollup across every project the user can access. */
 export interface PortfolioProject {
@@ -60,6 +69,52 @@ export class OrgsService {
   async myOrgs(userId: string): Promise<Array<{ id: string; name: string; slug: string; role: string }>> {
     const memberships = await this.prisma.orgMembership.findMany({ where: { userId }, include: { org: true } });
     return memberships.map((m) => ({ id: m.org.id, name: m.org.name, slug: m.org.slug, role: m.role }));
+  }
+
+  /** The org's admin roster — owners/admins/members. Org owner/admin only. */
+  async listOrgMembers(orgId: string, callerId: string): Promise<OrgMemberDto[]> {
+    const role = await this.orgRole(orgId, callerId);
+    if (role !== 'owner' && role !== 'admin') throw new ForbiddenException('Only an org owner or admin can view the roster');
+    const rows = await this.prisma.orgMembership.findMany({ where: { orgId }, include: { user: true }, orderBy: { createdAt: 'asc' } });
+    return rows.map((m) => ({ userId: m.userId, name: m.user.name, email: m.user.email, phone: m.user.phone, orgRole: m.role }));
+  }
+
+  /**
+   * Add someone to the org's admin roster (owner/admin/member) — the only way to
+   * grant org-tier power, which an existing project-member API can't. Gated to an
+   * org owner/admin. Provisions the invited identity if new (homed on the org's
+   * first active project as PMC, so a later phone/email-OTP sign-in resolves to a
+   * PMC session; an org owner then reaches every project via super-admin switch).
+   * Phone is stored as given (bare 10-digit) to match the sign-in input format.
+   */
+  async addOrgMember(orgId: string, callerId: string, input: AddOrgMemberInput): Promise<OrgMemberDto> {
+    const role = await this.orgRole(orgId, callerId);
+    if (role !== 'owner' && role !== 'admin') throw new ForbiddenException('Only an org owner or admin can manage the roster');
+
+    const org = await this.prisma.org.findUnique({
+      where: { id: orgId },
+      include: { projects: { where: { archivedAt: null }, orderBy: { createdAt: 'asc' }, take: 1 } },
+    });
+    if (!org) throw new NotFoundException('Org not found');
+    const homeProject = org.projects[0];
+    if (!homeProject) throw new BadRequestException('Create a project in this org first, so the new member has a home project');
+
+    const email = input.email?.toLowerCase();
+    const phone = input.phone;
+    let user =
+      (email && (await this.prisma.user.findUnique({ where: { email } }))) ||
+      (phone && (await this.prisma.user.findUnique({ where: { phone } }))) ||
+      null;
+    if (!user) {
+      user = await this.prisma.user.create({ data: { projectId: homeProject.id, role: 'pmc', name: input.name, email, phone } });
+    }
+
+    const membership = await this.prisma.orgMembership.upsert({
+      where: { orgId_userId: { orgId, userId: user.id } },
+      update: { role: input.role },
+      create: { orgId, userId: user.id, role: input.role },
+    });
+    return { userId: user.id, name: user.name, email: user.email, phone: user.phone, orgRole: membership.role };
   }
 
   /** Create a project under an org (owner/admin only); enrol the creator as PMC. */
