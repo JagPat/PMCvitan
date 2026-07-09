@@ -289,7 +289,12 @@ export class ApiGateway {
         ...(init?.headers ?? {}),
       },
     });
-    if (!res.ok) throw new Error(`${path} ${res.status}`);
+    if (!res.ok) {
+      // Surface the HTTP status so callers can react (e.g. 429 throttle vs 503 send-failure).
+      const err = new Error(`${path} ${res.status}`) as Error & { status?: number };
+      err.status = res.status;
+      throw err;
+    }
     return res.json() as Promise<T>;
   }
 
