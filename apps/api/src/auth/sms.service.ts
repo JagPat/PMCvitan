@@ -3,7 +3,7 @@ import { OtpStore } from './otp-store';
 
 const OTP_TTL_MS = 5 * 60_000;
 
-export type OtpChannel = 'sms' | 'telegram' | 'stub';
+export type OtpChannel = 'sms' | 'fast2sms' | 'telegram' | 'stub';
 export interface OtpSendResult {
   live: boolean;
   channel: OtpChannel;
@@ -14,12 +14,17 @@ export interface OtpSendResult {
  * Phone OTP delivery, channel-pluggable and dev-stub-first. Priority:
  *   1. MSG91 (MSG91_AUTH_KEY + MSG91_TEMPLATE_ID) — real SMS; MSG91 owns/verifies
  *      the code against the DLT template. Needs DLT.
- *   2. Telegram Gateway (TELEGRAM_GATEWAY_TOKEN) — a code WE generate, delivered
- *      via Telegram by phone number. **Zero DLT, free.** Verified locally.
- *   3. Dev stub — logs the code and returns it, so the flow is demoable with
+ *   2. Fast2SMS (FAST2SMS_API_KEY) — real SMS to any Indian mobile via the
+ *      **DLT-exempt `otp` route**. A code WE generate, verified locally. The
+ *      easiest real-SMS path (no DLT template) and the one that reaches the whole
+ *      site workforce (no app required).
+ *   3. Telegram Gateway (TELEGRAM_GATEWAY_TOKEN) — a code WE generate, delivered
+ *      via Telegram by phone number. **Zero DLT, free** — but only reaches users
+ *      with Telegram, and a free/unactivated account only texts its own number.
+ *   4. Dev stub — logs the code and returns it, so the flow is demoable with
  *      no provider at all.
- * Codes for the Telegram + stub channels live in an in-memory Map and are
- * verified locally; only MSG91 is remote-verified.
+ * Codes for the Fast2SMS + Telegram + stub channels live in an in-memory Map and
+ * are verified locally; only MSG91 is remote-verified.
  */
 @Injectable()
 export class SmsService {
@@ -35,6 +40,9 @@ export class SmsService {
   private get telegramToken(): string | undefined {
     return process.env.TELEGRAM_GATEWAY_TOKEN?.trim() || undefined;
   }
+  private get fast2smsKey(): string | undefined {
+    return process.env.FAST2SMS_API_KEY?.trim() || undefined;
+  }
 
   /** MSG91 (real SMS) is configured. */
   private get msg91Live(): boolean {
@@ -42,11 +50,12 @@ export class SmsService {
   }
   /** True when a real delivery channel (SMS or Telegram) is configured. */
   get live(): boolean {
-    return this.msg91Live || Boolean(this.telegramToken);
+    return this.msg91Live || Boolean(this.fast2smsKey) || Boolean(this.telegramToken);
   }
   /** The channel that will be used for the next send. */
   get channel(): OtpChannel {
     if (this.msg91Live) return 'sms';
+    if (this.fast2smsKey) return 'fast2sms';
     if (this.telegramToken) return 'telegram';
     return 'stub';
   }
@@ -74,6 +83,12 @@ export class SmsService {
       await this.sendViaMsg91(phone);
       this.otp.markSent(phone); // MSG91 verifies remotely; track send for throttling
       return { live: true, channel: 'sms' };
+    }
+    if (this.fast2smsKey) {
+      const code = this.newCode();
+      await this.sendViaFast2sms(phone, code);
+      this.otp.put(phone, code);
+      return { live: true, channel: 'fast2sms' };
     }
     if (this.telegramToken) {
       const code = this.newCode();
@@ -113,6 +128,27 @@ export class SmsService {
     const res = await fetch(`https://control.msg91.com/api/v5/otp/verify?${params.toString()}`, { headers: { authkey: this.authKey! } });
     const data = (await res.json().catch(() => ({}))) as { type?: string };
     return res.ok && data.type === 'success';
+  }
+
+  /**
+   * Fast2SMS: real SMS to an Indian mobile via the DLT-exempt `otp` route. We
+   * generate the code and pass it as `variables_values`; the account's default
+   * OTP template delivers it. Verified locally against the in-memory store.
+   */
+  private async sendViaFast2sms(phone: string, code: string): Promise<void> {
+    const digits = phone.replace(/\D/g, '');
+    const numbers = digits.length > 10 ? digits.slice(-10) : digits; // bare 10-digit Indian mobile
+    const params = new URLSearchParams({ route: 'otp', variables_values: code, numbers });
+    const res = await fetch(`https://www.fast2sms.com/dev/bulkV2?${params.toString()}`, {
+      method: 'GET',
+      headers: { authorization: this.fast2smsKey! }, // header, not query, so the key stays out of logs
+    });
+    const data = (await res.json().catch(() => ({}))) as { return?: boolean; message?: string | string[] };
+    if (!res.ok || data.return !== true) {
+      const msg = Array.isArray(data.message) ? data.message.join('; ') : data.message;
+      this.log.error(`Fast2SMS send failed (${res.status}): ${msg ?? 'unknown error'}`);
+      throw new ServiceUnavailableException('Could not send the verification code. Please try again.');
+    }
   }
 
   /** Telegram Gateway: deliver a code we generated to the phone's Telegram account. */
