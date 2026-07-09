@@ -12,19 +12,19 @@ the switch works and [`ORGS.md`](./ORGS.md) for accounts/memberships.
 > **✓ SAFE TO LOCK DOWN** before you flip, and `… --verify` must print **✓ LOCKED & SAFE**
 > after. See [`AUTH_LOCKDOWN.md`](./AUTH_LOCKDOWN.md#activate-the-lockdown-once-a-roles-sign-in-works).
 
-## Step 0 — required production env (or the API won't boot)
+## Step 0 — recommended production env
 
-The API image runs with `NODE_ENV=production`, which turns on fail-fast auth hardening.
-Set these on the **API** app **before** the next deploy — a missing one aborts startup
-(the boot log prints e.g. `JWT_SECRET is required in production`):
+The API image runs with `NODE_ENV=production`, which turns on auth hardening. These
+**degrade safely** if unset (the API logs a warning and uses a secure fallback — it
+will **not** crash), but set them on the **API** app for full hardening:
 
-| Env | Value | Notes |
+| Env | Value | If unset (fail-soft) |
 |---|---|---|
-| `JWT_SECRET` | a long random string (`openssl rand -hex 32`) | No insecure default. **Changing it invalidates existing sessions** — everyone re-signs-in once. |
-| `CORS_ORIGINS` | `https://pms.vitan.in` (comma-separated for more) | Browser origins allowed to call the API; no wildcard. |
+| `JWT_SECRET` | a long random string (`openssl rand -hex 32`) | Derives a stable secret from `DATABASE_URL` (never the public default). **Setting/changing it invalidates existing sessions** — everyone re-signs-in once. |
+| `CORS_ORIGINS` | `https://pms.vitan.in` (comma-separated for more) | Reflects the request origin (functional; bearer-token API). Set to lock down cross-origin. |
 | `AUTH_ALLOW_PHONE_SIGNUP` | `true` to keep phone onboarding | Default **off** in prod: an unknown phone is rejected instead of auto-provisioning an engineer. Known numbers always sign in. |
 
-See [`AUTH_LOCKDOWN.md`](./AUTH_LOCKDOWN.md#production-hardening-required-env-on-the-api-app). Then continue below.
+See [`AUTH_LOCKDOWN.md`](./AUTH_LOCKDOWN.md#production-hardening-recommended-env-on-the-api-app). Then continue below.
 
 ## Recommended: email + password (no external service)
 
