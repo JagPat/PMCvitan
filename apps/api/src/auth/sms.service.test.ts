@@ -7,6 +7,7 @@ describe('SmsService (dev stub)', () => {
     delete process.env.MSG91_AUTH_KEY;
     delete process.env.MSG91_TEMPLATE_ID;
     delete process.env.TELEGRAM_GATEWAY_TOKEN;
+    delete process.env.FAST2SMS_API_KEY;
   });
 
   it('reports non-live and returns a 4-digit dev code, channel=stub', async () => {
@@ -47,6 +48,7 @@ describe('SmsService (Telegram Gateway)', () => {
   beforeEach(() => {
     delete process.env.MSG91_AUTH_KEY;
     delete process.env.MSG91_TEMPLATE_ID;
+    delete process.env.FAST2SMS_API_KEY;
     process.env.TELEGRAM_GATEWAY_TOKEN = 'tg-token';
   });
   afterEach(() => {
