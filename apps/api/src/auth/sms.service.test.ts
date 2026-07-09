@@ -91,10 +91,12 @@ describe('SmsService (Fast2SMS)', () => {
     delete process.env.MSG91_AUTH_KEY;
     delete process.env.MSG91_TEMPLATE_ID;
     delete process.env.TELEGRAM_GATEWAY_TOKEN;
+    delete process.env.FAST2SMS_OTP_ID;
     process.env.FAST2SMS_API_KEY = 'f2s-key';
   });
   afterEach(() => {
     delete process.env.FAST2SMS_API_KEY;
+    delete process.env.FAST2SMS_OTP_ID;
     vi.restoreAllMocks();
   });
 
@@ -124,6 +126,29 @@ describe('SmsService (Fast2SMS)', () => {
     expect(await sms.verifyOtp('9876543210', '0000')).toBe(false);
     expect(await sms.verifyOtp('9876543210', code)).toBe(true);
     expect(await sms.verifyOtp('9876543210', code)).toBe(false);
+  });
+
+  it('uses Smart OTP (/dev/otp/send with otp_id + our code) when FAST2SMS_OTP_ID is set', async () => {
+    process.env.FAST2SMS_OTP_ID = 'tmpl_123';
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ return: true, request_id: 'r2' }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const sms = new SmsService();
+    const r = await sms.sendOtp('9876543210');
+    expect(r).toMatchObject({ live: true, channel: 'fast2sms' });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const u = new URL(url as string);
+    expect(u.origin + u.pathname).toBe('https://www.fast2sms.com/dev/otp/send');
+    expect((init as { method: string }).method).toBe('POST');
+    expect(u.searchParams.get('otp_id')).toBe('tmpl_123');
+    expect(u.searchParams.get('mobile')).toBe('9876543210');
+    const code = u.searchParams.get('otp')!;
+    expect(code).toMatch(/^\d{4}$/);
+    expect((init as { headers: Record<string, string> }).headers.authorization).toBe('f2s-key');
+
+    // our own code is verified locally (Smart OTP just delivers it)
+    expect(await sms.verifyOtp('9876543210', code)).toBe(true);
   });
 
   it('throws when Fast2SMS rejects the send (return:false)', async () => {
