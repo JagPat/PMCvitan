@@ -1060,33 +1060,36 @@ export const useStore = create<Store>()(
       const a = get().access;
       if (a.otp.length < 4 || a.sending) return;
 
-      // team → real engineer session; trade → local scoped mistri view
-      const signIn = (name: string | null, token: string | null): void => {
+      // team → sign in with the REAL role the server returns (a phone can belong to
+      // any provisioned member — client / contractor / pmc / engineer), not always
+      // engineer; trade → local scoped mistri view. The demo (no server) defaults to
+      // engineer, the on-site onboarding persona.
+      const signIn = (name: string | null, token: string | null, role: Role): void => {
         if (a.who === 'team') {
           set((s) => {
-            s.role = 'engineer';
-            s.screen = 'daily-log';
+            s.role = role;
+            s.screen = screensFor(role)[0].key;
             s.sessionToken = token;
             s.userName = name;
             s.access = freshAccess();
           });
-          get().flash('Verified ✓ — signed in as Site Engineer.');
+          get().flash('Verified ✓ — signed in as ' + (name ?? role) + '.');
         } else {
           set((s) => { s.access.step = 'tradehome'; s.access.sending = false; });
           get().flash('Verified ✓ — ' + (a.trade ?? '') + ' in-charge signed in.');
         }
       };
 
-      // local demo (no API): any 4-digit code signs in
+      // local demo (no API): any 4-digit code signs in as the demo engineer
       if (!gateway) {
-        signIn(null, null);
+        signIn(null, null, 'engineer');
         return;
       }
 
       set((s) => { s.access.sending = true; s.access.error = null; });
       gateway
         .verifyOtp(a.phone, a.otp)
-        .then((res) => signIn(res.name ?? null, res.token))
+        .then((res) => signIn(res.name ?? null, res.token, res.role))
         .catch(() => {
           set((s) => {
             s.access.sending = false;
