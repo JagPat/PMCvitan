@@ -14,10 +14,11 @@ export interface OtpSendResult {
  * Phone OTP delivery, channel-pluggable and dev-stub-first. Priority:
  *   1. MSG91 (MSG91_AUTH_KEY + MSG91_TEMPLATE_ID) — real SMS; MSG91 owns/verifies
  *      the code against the DLT template. Needs DLT.
- *   2. Fast2SMS (FAST2SMS_API_KEY) — real SMS to any Indian mobile via the
- *      **DLT-exempt `otp` route**. A code WE generate, verified locally. The
- *      easiest real-SMS path (no DLT template) and the one that reaches the whole
- *      site workforce (no app required).
+ *   2. Fast2SMS (FAST2SMS_API_KEY) — a code WE generate, verified locally.
+ *      - With FAST2SMS_OTP_ID: Smart OTP (`/dev/otp/send`) delivers via a linked
+ *        template over **WhatsApp and/or SMS** — no DLT (Meta template approval).
+ *      - Without it: the older DLT-exempt bulkV2 `otp` route (SMS only; requires
+ *        Fast2SMS OTP-route website verification).
  *   3. Telegram Gateway (TELEGRAM_GATEWAY_TOKEN) — a code WE generate, delivered
  *      via Telegram by phone number. **Zero DLT, free** — but only reaches users
  *      with Telegram, and a free/unactivated account only texts its own number.
@@ -34,9 +35,10 @@ export class SmsService {
   constructor() {
     // Announce the resolved channel at boot so the deploy logs show exactly which
     // provider is live (and which keys were detected) — no secrets, just presence.
+    const f2s = this.fast2smsKey ? (this.fast2smsOtpId ? 'true/smart-otp' : 'true/route-otp') : 'false';
     this.log.log(
       `Phone-OTP channel: ${this.channel} ` +
-        `(msg91=${this.msg91Live}, fast2sms=${Boolean(this.fast2smsKey)}, telegram=${Boolean(this.telegramToken)})`,
+        `(msg91=${this.msg91Live}, fast2sms=${f2s}, telegram=${Boolean(this.telegramToken)})`,
     );
   }
 
@@ -51,6 +53,10 @@ export class SmsService {
   }
   private get fast2smsKey(): string | undefined {
     return process.env.FAST2SMS_API_KEY?.trim() || undefined;
+  }
+  /** Fast2SMS Smart OTP template id — when set, deliver via /dev/otp/send (WhatsApp/SMS per the template). */
+  private get fast2smsOtpId(): string | undefined {
+    return process.env.FAST2SMS_OTP_ID?.trim() || undefined;
   }
 
   /** MSG91 (real SMS) is configured. */
@@ -95,7 +101,10 @@ export class SmsService {
     }
     if (this.fast2smsKey) {
       const code = this.newCode();
-      await this.sendViaFast2sms(phone, code);
+      // Smart OTP (WhatsApp/SMS via a linked template) when FAST2SMS_OTP_ID is set;
+      // otherwise the older DLT-exempt bulkV2 `otp` route.
+      if (this.fast2smsOtpId) await this.sendViaFast2smsOtp(phone, code);
+      else await this.sendViaFast2sms(phone, code);
       this.otp.put(phone, code);
       return { live: true, channel: 'fast2sms' };
     }
@@ -156,6 +165,28 @@ export class SmsService {
     if (!res.ok || data.return !== true) {
       const msg = Array.isArray(data.message) ? data.message.join('; ') : data.message;
       this.log.error(`Fast2SMS send failed (${res.status}): ${msg ?? 'unknown error'}`);
+      throw new ServiceUnavailableException('Could not send the verification code. Please try again.');
+    }
+  }
+
+  /**
+   * Fast2SMS Smart OTP (`/dev/otp/send`): deliver our code through a linked OTP
+   * template — WhatsApp and/or SMS, per the template's channel config. We pass our
+   * own `otp` so verification stays local (Fast2SMS just delivers it into the
+   * template's OTP variable). Needs FAST2SMS_OTP_ID (the assigned template id).
+   */
+  private async sendViaFast2smsOtp(phone: string, code: string): Promise<void> {
+    const digits = phone.replace(/\D/g, '');
+    const mobile = digits.length > 10 ? digits.slice(-10) : digits; // bare 10-digit Indian mobile
+    const params = new URLSearchParams({ otp_id: this.fast2smsOtpId!, otp: code, mobile });
+    const res = await fetch(`https://www.fast2sms.com/dev/otp/send?${params.toString()}`, {
+      method: 'POST',
+      headers: { authorization: this.fast2smsKey! }, // header, not query, so the key stays out of logs
+    });
+    const data = (await res.json().catch(() => ({}))) as { return?: boolean; message?: string | string[] };
+    if (!res.ok || data.return !== true) {
+      const msg = Array.isArray(data.message) ? data.message.join('; ') : data.message;
+      this.log.error(`Fast2SMS Smart OTP send failed (${res.status}): ${msg ?? 'unknown error'}`);
       throw new ServiceUnavailableException('Could not send the verification code. Please try again.');
     }
   }
