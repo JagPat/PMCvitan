@@ -78,6 +78,24 @@ describe('team access — API mode', () => {
     expect(s().access.step).toBe('who');
   });
 
+  it('phone OTP adopts the member’s REAL role (a client signs in by phone → client view, not engineer)', async () => {
+    const gw = {
+      requestOtp: vi.fn().mockResolvedValue({ sent: true, live: false, devCode: '4242' }),
+      verifyOtp: vi.fn().mockResolvedValue({ token: 'JWT-cli', role: 'client', projectId: 'ambli', name: 'Mr. Shah' }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().accWho('team');
+    s().accSetPhone('9876543210');
+    s().requestOtp();
+    await flush();
+    useStore.setState((st) => { st.access.otp = '4242'; });
+    s().otpVerify();
+    await flush();
+    expect(s().role).toBe('client'); // real role, not hard-coded engineer
+    expect(s().screen).toBe('client-decisions'); // client's first screen
+    expect(s().userName).toBe('Mr. Shah');
+  });
+
   it('otpVerify failure clears the code and shows an error, session untouched', async () => {
     const gw = {
       requestOtp: vi.fn().mockResolvedValue({ sent: true, live: true }),
