@@ -4,6 +4,7 @@ import { DrawingsService } from './drawings.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { issueDrawingSchema, presignDrawingSchema, type IssueDrawingInput, type PresignDrawingInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
+import { Roles, RolesGuard } from '../common/roles';
 
 @Controller()
 export class DrawingsController {
@@ -59,9 +60,11 @@ export class DrawingsController {
     res.send(out.bytes);
   }
 
-  /** Delete a drawing (all revisions), auth required, scoped to the caller's project. */
+  /** Delete a drawing (all revisions), scoped to the caller's project; PMC only —
+   *  the architect controls the drawing register, matching PMC-only issue. */
   @Delete('drawings/:id')
-  @UseGuards(JwtGuard)
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles('pmc')
   async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean }> {
     const ok = await this.drawings.remove(id, user.projectId);
     if (!ok) throw new NotFoundException('Drawing not found');

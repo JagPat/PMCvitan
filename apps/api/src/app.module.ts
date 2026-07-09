@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { resolveJwtSecret } from './config';
 import { PrismaModule } from './prisma.module';
 import { JwtGuard } from './common/auth';
+import { RolesGuard } from './common/roles';
 import { AuthService } from './auth/auth.service';
 import { AuthController } from './auth/auth.controller';
 import { SmsService } from './auth/sms.service';
@@ -57,6 +58,7 @@ import { MembersController } from './orgs/members.controller';
   ],
   providers: [
     JwtGuard,
+    RolesGuard,
     AuthService,
     SmsService,
     EmailService,
