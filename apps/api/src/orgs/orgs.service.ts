@@ -90,10 +90,35 @@ export class OrgsService {
     return { id: project.id, name: project.name, short: project.short };
   }
 
-  /** Projects in an org (members only). */
+  /** Archive (soft-delete) a project — hides it from listings/switcher/portfolio.
+   *  Reversible via restore. Org owner/admin only; the project must belong to the org. */
+  async deleteProject(orgId: string, userId: string, projectId: string): Promise<{ ok: boolean }> {
+    const role = await this.orgRole(orgId, userId);
+    if (role !== 'owner' && role !== 'admin') {
+      throw new ForbiddenException('Only an org owner or admin can delete projects');
+    }
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
+    if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
+    await this.prisma.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
+    return { ok: true };
+  }
+
+  /** Restore a previously archived project. Org owner/admin only. */
+  async restoreProject(orgId: string, userId: string, projectId: string): Promise<{ ok: boolean }> {
+    const role = await this.orgRole(orgId, userId);
+    if (role !== 'owner' && role !== 'admin') {
+      throw new ForbiddenException('Only an org owner or admin can restore projects');
+    }
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
+    if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
+    await this.prisma.project.update({ where: { id: projectId }, data: { archivedAt: null } });
+    return { ok: true };
+  }
+
+  /** Projects in an org (members only). Archived projects are hidden. */
   async listProjects(orgId: string, userId: string): Promise<Array<{ id: string; name: string; short: string; stage: string }>> {
     if (!(await this.orgRole(orgId, userId))) throw new ForbiddenException('Not a member of this org');
-    const org = await this.prisma.org.findUnique({ where: { id: orgId }, include: { projects: { orderBy: { createdAt: 'asc' } } } });
+    const org = await this.prisma.org.findUnique({ where: { id: orgId }, include: { projects: { where: { archivedAt: null }, orderBy: { createdAt: 'asc' } } } });
     if (!org) throw new NotFoundException('Org not found');
     return org.projects.map((p) => ({ id: p.id, name: p.name, short: p.short, stage: p.stage }));
   }
@@ -109,13 +134,14 @@ export class OrgsService {
       where: { userId, status: 'active' },
       include: { project: { include: { org: true } } },
     });
-    let scoped = memberships.map((m) => ({ project: m.project, role: m.role }));
+    // archived projects are hidden from the board
+    let scoped = memberships.filter((m) => !m.project.archivedAt).map((m) => ({ project: m.project, role: m.role }));
 
-    // Org super-admin reach: owners/admins see every project in their org (as PMC).
+    // Org super-admin reach: owners/admins see every (non-archived) project in their org (as PMC).
     const adminOrgs = await this.prisma.orgMembership.findMany({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
     if (adminOrgs.length) {
       const have = new Set(scoped.map((s) => s.project.id));
-      const projects = await this.prisma.project.findMany({ where: { orgId: { in: adminOrgs.map((o) => o.orgId) } }, include: { org: true } });
+      const projects = await this.prisma.project.findMany({ where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null }, include: { org: true } });
       for (const p of projects) {
         if (!have.has(p.id)) { scoped.push({ project: p, role: 'pmc' }); have.add(p.id); }
       }

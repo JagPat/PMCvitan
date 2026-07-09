@@ -224,6 +224,14 @@ export class ApiGateway {
   createProject(orgId: string, input: NewProjectInput): Promise<{ id: string; name: string; short: string }> {
     return this.req(`/orgs/${orgId}/projects`, { method: 'POST', body: JSON.stringify(input) });
   }
+  /** Archive (soft-delete) a project — hides it everywhere; reversible via restore (owner/admin). */
+  deleteProject(orgId: string, projectId: string): Promise<{ ok: boolean }> {
+    return this.req(`/orgs/${orgId}/projects/${projectId}`, { method: 'DELETE' });
+  }
+  /** Restore a previously archived project (owner/admin). */
+  restoreProject(orgId: string, projectId: string): Promise<{ ok: boolean }> {
+    return this.req(`/orgs/${orgId}/projects/${projectId}/restore`, { method: 'POST' });
+  }
   /** List the active project's team. */
   listMembers(): Promise<ProjectMember[]> {
     return this.req(`/projects/${this.projectId}/members`);

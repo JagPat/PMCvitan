@@ -19,6 +19,8 @@ function make(orgRole: string | null) {
     },
     project: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { projects.push(data); return data; }),
+      findUnique: vi.fn(async () => ({ orgId: 'org1' })),
+      update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => ({ id: where.id, ...data })),
     },
     membership: {
       create: vi.fn(async ({ data }: { data: unknown }) => { memberships.push(data); return data; }),
@@ -51,6 +53,28 @@ describe('OrgsService.createProject', () => {
     await expect(
       svc.createProject('org1', 'stranger', { name: 'X', short: 'X', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '' }),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('OrgsService.deleteProject (archive)', () => {
+  it('archives a project when the caller is an org owner/admin', async () => {
+    const { svc, prisma } = make('owner');
+    const res = await svc.deleteProject('org1', 'u1', 'villa');
+    expect(res).toEqual({ ok: true });
+    const call = prisma.project.update.mock.calls[0][0] as { data: { archivedAt: Date } };
+    expect(call.data.archivedAt).toBeInstanceOf(Date);
+  });
+
+  it('forbids a plain org member from deleting a project', async () => {
+    const { svc, prisma } = make('member');
+    await expect(svc.deleteProject('org1', 'u2', 'villa')).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.project.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a project that is not in the org', async () => {
+    const { svc, prisma } = make('owner');
+    prisma.project.findUnique.mockResolvedValueOnce({ orgId: 'other-org' } as never);
+    await expect(svc.deleteProject('org1', 'u1', 'villa')).rejects.toThrow();
   });
 });
 

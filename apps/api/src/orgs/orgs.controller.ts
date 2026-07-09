@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
 import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
@@ -51,5 +51,17 @@ export class OrgsController {
     @Body(new ZodPipe(createProjectSchema)) body: CreateProjectInput,
   ) {
     return this.orgs.createProject(orgId, user.sub, body);
+  }
+
+  /** Archive (soft-delete) a project — hidden from listings/switcher/portfolio (owner/admin). */
+  @Delete('orgs/:orgId/projects/:projectId')
+  deleteProject(@Param('orgId') orgId: string, @Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.deleteProject(orgId, user.sub, projectId);
+  }
+
+  /** Restore a previously archived project (owner/admin). */
+  @Post('orgs/:orgId/projects/:projectId/restore')
+  restoreProject(@Param('orgId') orgId: string, @Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.restoreProject(orgId, user.sub, projectId);
   }
 }

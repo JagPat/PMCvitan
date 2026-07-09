@@ -53,6 +53,7 @@ model Project {
   todayDay     Int
   milestonePct Int
   createdAt    DateTime @default(now())
+  archivedAt   DateTime? // soft-delete: hidden from listings/switcher/portfolio when set
 
   decisions     Decision[]
   activities    Activity[]

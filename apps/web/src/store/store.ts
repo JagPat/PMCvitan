@@ -123,6 +123,7 @@ export interface AppActions {
   loadPortfolio: () => void;
   switchProject: (projectId: string) => void;
   createProject: (orgId: string, input: NewProjectInput) => void;
+  deleteProject: (orgId: string, projectId: string) => void;
   loadTeam: () => void;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role) => void;
@@ -643,6 +644,25 @@ export const useStore = create<Store>()(
           get().switchProject(p.id);
         })
         .catch(() => get().flash('Could not create the project — check your access.'));
+    },
+    deleteProject: (orgId, projectId) => {
+      if (!gateway) {
+        get().flash('Deleting projects needs the server.');
+        return;
+      }
+      gateway
+        .deleteProject(orgId, projectId)
+        .then(() => {
+          get().flash('Project archived — it’s hidden from everyone. Ask to restore it if needed.');
+          // if we archived the project we're in, switch to another we can access
+          if (projectId === get().activeProjectId) {
+            const next = get().memberships.find((m) => m.projectId !== projectId);
+            if (next) get().switchProject(next.projectId);
+          }
+          get().loadOrgData();
+          get().loadPortfolio();
+        })
+        .catch(() => get().flash('Could not archive the project — check your access.'));
     },
     loadTeam: () => {
       if (!gateway) return;

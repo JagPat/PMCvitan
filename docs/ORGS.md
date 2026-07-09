@@ -50,7 +50,16 @@ fresh token from `POST /auth/switch` (granted only for a project you're a member
 - `POST /orgs { name }` — create an org (caller becomes `owner`).
 - `POST /orgs/:orgId/projects { name, short, … }` — create a project (owner/admin only);
   the creator is auto-enrolled as the project's **PMC**.
-- `GET /orgs/:orgId/projects` — list an org's projects (members only).
+- `DELETE /orgs/:orgId/projects/:projectId` — **archive** (soft-delete) a project (owner/admin).
+  Sets `Project.archivedAt`; the project is then hidden from `/me/memberships`, `/me/portfolio`,
+  the org's project list, and `POST /auth/switch` refuses it. Reversible via
+  `POST /orgs/:orgId/projects/:projectId/restore`. Soft (not hard) delete keeps the audit trail
+  and sidesteps FK-cascade risk; a member's live token still works until it expires.
+- `GET /orgs/:orgId/projects` — list an org's (non-archived) projects (members only).
+
+**Frontend**: the **Team** screen gains a "Danger zone → Archive project" control (org owner/admin
+only, two-click confirm); archiving switches you to another accessible project and the switcher/
+portfolio refresh. Creating a project is the switcher's **New project** flow.
 
 The snapshot + all mutations remain `projectId`-scoped and unchanged; they're now
 protected by the tenancy guard.
