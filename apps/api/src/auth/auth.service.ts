@@ -187,6 +187,21 @@ export class AuthService {
       orgId: m.project.orgId,
       orgName: m.project.org?.name ?? null,
     }));
+
+    // Org super-admin reach: an owner/admin can access every project in their org
+    // (as PMC), even ones they didn't create and aren't an explicit member of.
+    const adminOrgs = await this.prisma.orgMembership.findMany({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
+    if (adminOrgs.length) {
+      const have = new Set(rows.map((r) => r.projectId));
+      const projects = await this.prisma.project.findMany({ where: { orgId: { in: adminOrgs.map((o) => o.orgId) } }, include: { org: true } });
+      for (const p of projects) {
+        if (!have.has(p.id)) {
+          rows.push({ projectId: p.id, name: p.name, short: p.short, role: 'pmc' as Role, orgId: p.orgId, orgName: p.org?.name ?? null });
+          have.add(p.id);
+        }
+      }
+    }
+
     if (rows.length === 0) {
       // back-compat: a user provisioned before memberships still has a home project
       const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { project: { include: { org: true } } } });
@@ -195,7 +210,17 @@ export class AuthService {
     return rows;
   }
 
-  /** Issue a fresh token scoped to another project the user belongs to (project switch). */
+  /** Is this user an owner/admin of the org that owns this project? (org super-admin). */
+  private async isOrgAdminOfProject(userId: string, projectId: string): Promise<boolean> {
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
+    if (!project?.orgId) return false;
+    const om = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId: project.orgId, userId } } });
+    return om?.role === 'owner' || om?.role === 'admin';
+  }
+
+  /** Issue a fresh token scoped to another project the user belongs to (project switch).
+   *  Org owners/admins can switch into ANY project in their org — they operate it as PMC
+   *  even without an explicit membership (the org super-admin reach). */
   async switchProject(userId: string, projectId: string): Promise<TokenResult> {
     const membership = await this.prisma.membership.findUnique({
       where: { projectId_userId: { projectId, userId } },
@@ -208,6 +233,8 @@ export class AuthService {
       role = membership.role as Role;
     } else if (user.projectId === projectId) {
       role = user.role as Role; // back-compat: the user's own home project
+    } else if (await this.isOrgAdminOfProject(userId, projectId)) {
+      role = 'pmc'; // org owner/admin operates any project in their org
     } else {
       throw new ForbiddenException('You are not a member of this project');
     }

@@ -64,11 +64,13 @@ describe('OrgsService.createOrg', () => {
 });
 
 describe('OrgsService.portfolio', () => {
-  function makePortfolio(role: string, activityStatuses: string[]) {
-    const project = { id: 'ambli', name: 'Residence at Ambli', short: 'Ambli', stage: 'Finishing', milestonePct: 72, org: { name: 'Vitan' } };
+  function makePortfolio(role: string, activityStatuses: string[], adminOrgs: Array<{ orgId: string }> = [], orgProjects: unknown[] = []) {
+    const project = { id: 'ambli', name: 'Residence at Ambli', short: 'Ambli', stage: 'Finishing', milestonePct: 72, orgId: 'org1', org: { name: 'Vitan' } };
     const prisma = {
-      membership: { findMany: vi.fn(async () => [{ project, role }]) },
+      membership: { findMany: vi.fn(async () => (role ? [{ project, role }] : [])) },
       user: { findUnique: vi.fn(async () => null) },
+      orgMembership: { findMany: vi.fn(async () => adminOrgs) },
+      project: { findMany: vi.fn(async () => orgProjects) },
       activity: { findMany: vi.fn(async () => activityStatuses.map((status) => ({ status }))) },
       inspection: { count: vi.fn(async () => 1) },
       decision: { count: vi.fn(async () => 3) },
@@ -93,5 +95,14 @@ describe('OrgsService.portfolio', () => {
     const rows = await svc.portfolio('u2');
     expect(rows[0].pendingDecisions).toBe(0);
     expect(prisma.decision.count).not.toHaveBeenCalled();
+  });
+
+  it('an org owner sees org projects they are not a member of (super-admin reach, as PMC)', async () => {
+    // no explicit membership; owner of org1 which owns a "villa" project
+    const villa = { id: 'villa', name: 'Villa', short: 'Villa', stage: 'Planning', milestonePct: 0, orgId: 'org1', org: { name: 'Vitan' } };
+    const { svc } = makePortfolio('', ['done', 'not_started'], [{ orgId: 'org1' }], [villa]);
+    const rows = await svc.portfolio('admin1');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ projectId: 'villa', role: 'pmc', activityTotal: 2, done: 1 });
   });
 });
