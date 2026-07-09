@@ -30,7 +30,8 @@ Rollback: set both flags back to `true` (or unset) and redeploy — the persona 
 
 - **Email OTP (Zoho):** set `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` on the API (a Zoho **app password**, not the mailbox password). Users then get a code by email — no password to manage. Invite-only unless `AUTH_ALLOW_SIGNUP=true`, so seed the accounts (step 1) first. Then lock down (step 3).
 - **Google sign-in:** create an OAuth **Web** client (Google Cloud console), add the web origin to its authorized origins, and set `VITE_GOOGLE_CLIENT_ID` on the web app. The Google button renders automatically. Same invite-only rule — seed the accounts first. Then lock down.
-- **Phone OTP (Telegram, engineers):** already live via the Telegram Gateway; a phone sign-in provisions a site-engineer account. (Free-test delivery is limited to the registered number until the Gateway is fully provisioned.)
+- **Phone OTP (Fast2SMS — recommended for site staff):** real SMS to any Indian mobile via the **DLT-exempt `otp` route**, so it reaches the whole workforce (no Telegram needed). Sign up at [fast2sms.com](https://fast2sms.com), add credit, copy the **Dev API** key, and set `FAST2SMS_API_KEY` on the API. Takes priority over Telegram automatically; a phone sign-in provisions a site-engineer account. This is the way to make phone sign-in work team-wide.
+- **Phone OTP (Telegram, engineers):** live via the Telegram Gateway — but it only reaches users who **have Telegram**, and a free/unactivated Gateway account only texts its own registered number. Use it as a free fallback; prefer Fast2SMS for real coverage.
 
 ## After go-live — security hygiene
 

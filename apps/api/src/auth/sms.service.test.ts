@@ -82,3 +82,56 @@ describe('SmsService (Telegram Gateway)', () => {
     await expect(new SmsService().sendOtp('9876543210')).rejects.toThrow();
   });
 });
+
+// Fast2SMS channel: real SMS via the DLT-exempt `otp` route, code generated + verified locally.
+describe('SmsService (Fast2SMS)', () => {
+  beforeEach(() => {
+    delete process.env.MSG91_AUTH_KEY;
+    delete process.env.MSG91_TEMPLATE_ID;
+    delete process.env.TELEGRAM_GATEWAY_TOKEN;
+    process.env.FAST2SMS_API_KEY = 'f2s-key';
+  });
+  afterEach(() => {
+    delete process.env.FAST2SMS_API_KEY;
+    vi.restoreAllMocks();
+  });
+
+  it('sends via Fast2SMS (otp route, 10-digit), reports live with no devCode, verifies locally', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ return: true, request_id: 'r1', message: ['sent'] }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const sms = new SmsService();
+    expect(sms.channel).toBe('fast2sms');
+    const r = await sms.sendOtp('9876543210');
+    expect(r.live).toBe(true);
+    expect(r.channel).toBe('fast2sms');
+    expect(r.devCode).toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const u = new URL(url as string);
+    expect(u.origin + u.pathname).toBe('https://www.fast2sms.com/dev/bulkV2');
+    expect(u.searchParams.get('route')).toBe('otp');
+    expect(u.searchParams.get('numbers')).toBe('9876543210');
+    const code = u.searchParams.get('variables_values')!;
+    expect(code).toMatch(/^\d{4}$/);
+    // the API key travels in the header, never the query string
+    expect((init as { headers: Record<string, string> }).headers.authorization).toBe('f2s-key');
+    expect(u.searchParams.get('authorization')).toBeNull();
+
+    // locally verified (single-use)
+    expect(await sms.verifyOtp('9876543210', '0000')).toBe(false);
+    expect(await sms.verifyOtp('9876543210', code)).toBe(true);
+    expect(await sms.verifyOtp('9876543210', code)).toBe(false);
+  });
+
+  it('throws when Fast2SMS rejects the send (return:false)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ return: false, message: 'Invalid Authentication' }) }));
+    await expect(new SmsService().sendOtp('9876543210')).rejects.toThrow();
+  });
+
+  it('takes priority over the Telegram Gateway when both are configured', () => {
+    process.env.TELEGRAM_GATEWAY_TOKEN = 'tg';
+    expect(new SmsService().channel).toBe('fast2sms');
+    delete process.env.TELEGRAM_GATEWAY_TOKEN;
+  });
+});
