@@ -15,6 +15,25 @@ with per-project team memberships and token-level tenancy isolation.
 - **`User`** stays the identity (email/phone/password) + a legacy `projectId`/`role`
   (their "home" project) used as a fallback when no membership rows exist.
 
+## Roles — who can do what (the "admin")
+
+Two independent layers of access:
+
+- **Org role** (`OrgMembership.role` = `owner | admin | member`) — *administrative* power over the
+  account: **create projects**, **manage any project's team**, and (super-admin) **operate every
+  project in the org**. `owner` and `admin` are the "admin who can do everything".
+- **Project role** (`Membership.role` = `pmc | client | engineer | contractor`) — *operational*
+  capability **within one project** (what screens/actions you get). PMC = full control of that project.
+
+**Org super-admin reach.** An org `owner`/`admin` isn't limited to projects they're an explicit member
+of — they can switch into **any project in their org and operate it as PMC**, even without a `Membership`
+row. Concretely: `switchProject` issues a `pmc`-scoped token for any org project when the caller is an
+org owner/admin; `/me/memberships` (the switcher) and `/me/portfolio` (the board) list **every** project
+in their org (explicit-membership roles win; the rest surface as PMC); team management (`canManage`) already
+accepts the project's org owner/admin. So the admin can **create projects, build teams, assign roles, and
+run every project** — the full feature set — while a plain org `member` only sees the projects they're
+explicitly added to.
+
 ## Tenancy isolation
 
 A JWT is scoped to **one project** (`{ sub, role, projectId }`). `JwtGuard` now rejects

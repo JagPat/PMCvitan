@@ -110,6 +110,17 @@ export class OrgsService {
       include: { project: { include: { org: true } } },
     });
     let scoped = memberships.map((m) => ({ project: m.project, role: m.role }));
+
+    // Org super-admin reach: owners/admins see every project in their org (as PMC).
+    const adminOrgs = await this.prisma.orgMembership.findMany({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
+    if (adminOrgs.length) {
+      const have = new Set(scoped.map((s) => s.project.id));
+      const projects = await this.prisma.project.findMany({ where: { orgId: { in: adminOrgs.map((o) => o.orgId) } }, include: { org: true } });
+      for (const p of projects) {
+        if (!have.has(p.id)) { scoped.push({ project: p, role: 'pmc' }); have.add(p.id); }
+      }
+    }
+
     if (scoped.length === 0) {
       // back-compat: a user provisioned before memberships still has a home project
       const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { project: { include: { org: true } } } });
