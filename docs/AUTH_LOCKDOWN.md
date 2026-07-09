@@ -81,11 +81,24 @@ provisions engineers** regardless — a phone is the on-site engineer-onboarding
 Env-only, no code change. On the Coolify instance (`https://coolify.vitan.in/api/v1`,
 API app uuid `kesk2npohs3vnoroi6tya7x6`):
 
+0. **Pre-flight (don't skip)** — confirm a real office sign-in already works, so the
+   flip can't lock everyone out:
+   ```
+   ADMIN_PASSWORD='<office password>' bash scripts/lockdown-check.sh
+   ```
+   Exit 0 / **✓ SAFE TO LOCK DOWN** means `pmc@vitan.in` signs in with email+password.
+   Anything else → seed accounts first (`pnpm --filter api ensure-accounts`) and do **not** flip.
 1. **API** — set `ALLOW_DEV_AUTH=false` (or delete it) and redeploy the API app.
    Verify: `curl -s -o /dev/null -w '%{http_code}' -X POST https://pms-api.vitan.in/auth/session -H 'content-type: application/json' -d '{"role":"pmc","projectId":"ambli"}'` → **403**.
 2. **Web** — set `VITE_ALLOW_DEV_AUTH=false` (or delete it) and redeploy the web app
    (build-time var → a rebuild is required). Verify: visit `pms.vitan.in` → the sign-in
    screen ("Who are you?") is shown, no "Viewing as" switcher.
+3. **Post-flip verify** — confirm dev auth is off *and* the office admin can still get in:
+   ```
+   ADMIN_PASSWORD='<office password>' bash scripts/lockdown-check.sh --verify
+   ```
+   Exit 0 / **✓ LOCKED & SAFE**. A **✗ LOCKOUT RISK** here means real sign-in broke —
+   re-open (`ALLOW_DEV_AUTH=true`) immediately and fix accounts before retrying.
 
 To roll back to demo mode: set both to `true` and redeploy.
 

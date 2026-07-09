@@ -8,6 +8,9 @@ the switch works and [`ORGS.md`](./ORGS.md) for accounts/memberships.
 
 > **Lockout guard.** Never flip `ALLOW_DEV_AUTH=false` before a real sign-in works on
 > prod — otherwise no one can get in. The steps below make real sign-in work *first*.
+> Automate the guard: `ADMIN_PASSWORD='<pw>' bash scripts/lockdown-check.sh` must print
+> **✓ SAFE TO LOCK DOWN** before you flip, and `… --verify` must print **✓ LOCKED & SAFE**
+> after. See [`AUTH_LOCKDOWN.md`](./AUTH_LOCKDOWN.md#activate-the-lockdown-once-a-roles-sign-in-works).
 
 ## Recommended: email + password (no external service)
 
@@ -18,8 +21,8 @@ password; everyone signs in on the email+password screen.
    - **Automatic (turnkey):** set `AUTO_ENSURE_ACCOUNTS=true` and `SEED_DEMO_PASSWORD=<a strong password>` on the **API** app in Coolify, then redeploy. Boot runs the non-destructive `ensure-accounts` (idempotent; never clobbers an existing password unless you change `SEED_DEMO_PASSWORD`). Unset `AUTO_ENSURE_ACCOUNTS` again once seeded if you prefer.
    - **Manual (one-off):** in the API container shell — `SEED_DEMO_PASSWORD=<pw> pnpm --filter api ensure-accounts`.
    - Custom roster: set `ACCOUNTS_JSON='[{"role":"pmc","name":"Ar. Vitan","email":"pmc@vitan.in"}, …]'`.
-2. **Verify** you can sign in at the deployed web app with `pmc@vitan.in` + the password (dev-auth is still on, so you can compare against the persona switch).
-3. **Lock down** — on the **API** app set `ALLOW_DEV_AUTH=false`; on the **web** app set `VITE_ALLOW_DEV_AUTH=false`; redeploy both. The persona switcher disappears and the app is gated behind the sign-in screen.
+2. **Verify** you can sign in at the deployed web app with `pmc@vitan.in` + the password (dev-auth is still on, so you can compare against the persona switch). Or check it from the shell: `ADMIN_PASSWORD='<pw>' bash scripts/lockdown-check.sh` → **✓ SAFE TO LOCK DOWN**.
+3. **Lock down** — on the **API** app set `ALLOW_DEV_AUTH=false`; on the **web** app set `VITE_ALLOW_DEV_AUTH=false`; redeploy both. The persona switcher disappears and the app is gated behind the sign-in screen. Confirm: `ADMIN_PASSWORD='<pw>' bash scripts/lockdown-check.sh --verify` → **✓ LOCKED & SAFE**.
 
 Rollback: set both flags back to `true` (or unset) and redeploy — the persona switcher returns immediately.
 
