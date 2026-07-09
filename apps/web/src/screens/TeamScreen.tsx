@@ -2,7 +2,7 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
-import { Plus, X } from '@/lib/icons';
+import { Plus, X, Trash2 } from '@/lib/icons';
 import type { Role } from '@vitan/shared';
 import type { AddMemberInput } from '@/data/apiGateway';
 import styles from './responsive.module.css';
@@ -13,17 +13,24 @@ const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engin
 export function TeamScreen() {
   const members = useStore(useShallow((s) => s.members));
   const memberships = useStore(useShallow((s) => s.memberships));
+  const myOrgs = useStore(useShallow((s) => s.myOrgs));
   const activeProjectId = useStore((s) => s.activeProjectId);
   const sessionRole = useStore((s) => s.role);
   const loadTeam = useStore((s) => s.loadTeam);
   const addMember = useStore((s) => s.addMember);
   const updateMemberRole = useStore((s) => s.updateMemberRole);
   const removeMember = useStore((s) => s.removeMember);
+  const deleteProject = useStore((s) => s.deleteProject);
   // membership role when known; else the current session role (covers the demo persona)
   const myRole = memberships.find((m) => m.projectId === activeProjectId)?.role ?? sessionRole;
   const canManage = myRole === 'pmc';
+  // deleting a project is an org-admin power (owner/admin of the project's org)
+  const activeOrgId = memberships.find((m) => m.projectId === activeProjectId)?.orgId ?? null;
+  const orgRole = myOrgs.find((o) => o.id === activeOrgId)?.role;
+  const canDeleteProject = orgRole === 'owner' || orgRole === 'admin';
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
-  useEffect(() => { loadTeam(); }, [loadTeam, activeProjectId]);
+  useEffect(() => { loadTeam(); setConfirmDelete(false); }, [loadTeam, activeProjectId]);
 
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
@@ -82,6 +89,27 @@ export function TeamScreen() {
           </div>
         ))}
       </div>
+
+      {canDeleteProject && activeOrgId && (
+        <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--red-solid)', marginBottom: 10 }}>DANGER ZONE</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 440 }}>
+              Archiving hides this project from everyone — the switcher, portfolio, and all listings. It’s reversible: an org admin can restore it.
+            </div>
+            {confirmDelete ? (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Button variant="dangerOutline" onClick={() => { deleteProject(activeOrgId, activeProjectId); setConfirmDelete(false); }} data-testid="confirm-delete-project" style={{ fontSize: 13, padding: '10px 14px' }}>Yes, archive it</Button>
+                <Button variant="outline" onClick={() => setConfirmDelete(false)} style={{ fontSize: 13, padding: '10px 14px' }}>Cancel</Button>
+              </div>
+            ) : (
+              <Button variant="dangerOutline" onClick={() => setConfirmDelete(true)} data-testid="delete-project" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, padding: '10px 14px' }}>
+                <Trash2 size={15} /> Archive project
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

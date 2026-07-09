@@ -14,7 +14,7 @@ function fakePrisma(
   memberships: Array<{ projectId: string; userId: string; role: string; status: string }>,
   users: Array<{ id: string; projectId: string; role: string; name: string }>,
   orgMemberships: Array<{ orgId: string; userId: string; role: string }> = [],
-  projects: Array<{ id: string; name: string; short: string; orgId: string }> = [],
+  projects: Array<{ id: string; name: string; short: string; orgId: string; archivedAt?: Date }> = [],
 ) {
   return {
     membership: {
@@ -91,6 +91,16 @@ describe('AuthService.switchProject', () => {
       [{ id: 'villa', name: 'Villa', short: 'Villa', orgId: 'org1' }],
     );
     await expect(auth.switchProject('u2', 'villa')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('refuses switching into an archived project (even for a member)', async () => {
+    const auth = make(
+      [{ projectId: 'arch', userId: 'u1', role: 'pmc', status: 'active' }],
+      [{ id: 'u1', projectId: 'p1', role: 'pmc', name: 'x' }],
+      [],
+      [{ id: 'arch', name: 'Archived', short: 'Archived', orgId: 'org1', archivedAt: new Date() }],
+    );
+    await expect(auth.switchProject('u1', 'arch')).rejects.toBeInstanceOf(ForbiddenException);
   });
 });
 

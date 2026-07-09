@@ -179,21 +179,23 @@ export class AuthService {
       where: { userId, status: 'active' },
       include: { project: { include: { org: true } } },
     });
-    const rows = memberships.map((m) => ({
-      projectId: m.projectId,
-      name: m.project.name,
-      short: m.project.short,
-      role: m.role as Role,
-      orgId: m.project.orgId,
-      orgName: m.project.org?.name ?? null,
-    }));
+    const rows = memberships
+      .filter((m) => !m.project.archivedAt) // hide archived projects
+      .map((m) => ({
+        projectId: m.projectId,
+        name: m.project.name,
+        short: m.project.short,
+        role: m.role as Role,
+        orgId: m.project.orgId,
+        orgName: m.project.org?.name ?? null,
+      }));
 
-    // Org super-admin reach: an owner/admin can access every project in their org
-    // (as PMC), even ones they didn't create and aren't an explicit member of.
+    // Org super-admin reach: an owner/admin can access every (non-archived) project in
+    // their org (as PMC), even ones they didn't create and aren't an explicit member of.
     const adminOrgs = await this.prisma.orgMembership.findMany({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
     if (adminOrgs.length) {
       const have = new Set(rows.map((r) => r.projectId));
-      const projects = await this.prisma.project.findMany({ where: { orgId: { in: adminOrgs.map((o) => o.orgId) } }, include: { org: true } });
+      const projects = await this.prisma.project.findMany({ where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null }, include: { org: true } });
       for (const p of projects) {
         if (!have.has(p.id)) {
           rows.push({ projectId: p.id, name: p.name, short: p.short, role: 'pmc' as Role, orgId: p.orgId, orgName: p.org?.name ?? null });
@@ -222,6 +224,8 @@ export class AuthService {
    *  Org owners/admins can switch into ANY project in their org — they operate it as PMC
    *  even without an explicit membership (the org super-admin reach). */
   async switchProject(userId: string, projectId: string): Promise<TokenResult> {
+    const target = await this.prisma.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
+    if (target?.archivedAt) throw new ForbiddenException('This project has been archived');
     const membership = await this.prisma.membership.findUnique({
       where: { projectId_userId: { projectId, userId } },
     });

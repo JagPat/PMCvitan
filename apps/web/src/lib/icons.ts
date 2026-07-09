@@ -36,6 +36,7 @@ export {
   Wrench,
   HardHat,
   PencilRuler,
+  Trash2,
   Zap,
   Hammer,
   LayoutGrid,
