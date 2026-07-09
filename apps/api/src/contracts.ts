@@ -196,3 +196,17 @@ export type AddMemberInput = z.infer<typeof addMemberSchema>;
 
 export const updateMemberSchema = z.object({ role: projectRole });
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
+
+// Add someone to the org's admin roster (owner/admin/member). This is the org
+// tier — distinct from project membership. An org owner can operate every
+// project in the org as PMC; see OrgsService.addOrgMember.
+const orgRole = z.enum(['owner', 'admin', 'member']);
+export const addOrgMemberSchema = z
+  .object({
+    name: z.string().min(1),
+    email: z.string().email().optional(),
+    phone: z.string().min(6).optional(),
+    role: orgRole,
+  })
+  .refine((v) => v.email || v.phone, { message: 'email or phone required' });
+export type AddOrgMemberInput = z.infer<typeof addOrgMemberSchema>;

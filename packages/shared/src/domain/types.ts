@@ -176,6 +176,18 @@ export interface OrgSummary {
   role: string;
 }
 
+/** Administrative role within an org (distinct from a project role). */
+export type OrgRole = 'owner' | 'admin' | 'member';
+
+/** A member of an org's admin roster (owner/admin/member). */
+export interface OrgMember {
+  userId: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  orgRole: OrgRole;
+}
+
 // ── Drawings register (Slice 1) ──────────────────────────────────────────────
 export type Discipline = 'architectural' | 'structural' | 'mep' | 'other';
 export type DrawingStatus = 'for_review' | 'for_construction' | 'superseded';

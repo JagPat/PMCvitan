@@ -3,12 +3,14 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button, Modal } from '@/components';
 import { Plus, X, Trash2, Pencil } from '@/lib/icons';
-import type { Role } from '@vitan/shared';
+import type { OrgRole, Role } from '@vitan/shared';
 import type { AddMemberInput, NewProjectInput } from '@/data/apiGateway';
 import styles from './responsive.module.css';
 
 const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor'];
 const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Engineer', contractor: 'Contractor', worker: 'Worker' };
+const ORG_ROLES: OrgRole[] = ['owner', 'admin', 'member'];
+const ORG_ROLE_LABEL: Record<OrgRole, string> = { owner: 'Owner', admin: 'Admin', member: 'Member' };
 
 export function TeamScreen() {
   const members = useStore(useShallow((s) => s.members));
@@ -113,6 +115,8 @@ export function TeamScreen() {
         ))}
       </div>
 
+      {canDeleteProject && activeOrgId && <OrgRoster orgId={activeOrgId} />}
+
       {canDeleteProject && activeOrgId && (
         <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--red-solid)', marginBottom: 10 }}>DANGER ZONE</div>
@@ -133,6 +137,65 @@ export function TeamScreen() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Organization roster — the admin tier, distinct from a project team. Owners/admins
+ * run every project in the org as PMC; a member only sees projects they're added to.
+ * Adding someone here provisions their account (homed as PMC on an org project), so
+ * they can then sign in by email/phone and land in the admin view. Owner/admin only.
+ */
+function OrgRoster({ orgId }: { orgId: string }) {
+  const orgMembers = useStore(useShallow((s) => s.orgMembers));
+  const loadOrgMembers = useStore((s) => s.loadOrgMembers);
+  const addOrgMember = useStore((s) => s.addOrgMember);
+  useEffect(() => { loadOrgMembers(orgId); }, [loadOrgMembers, orgId]);
+
+  const [name, setName] = useState('');
+  const [contact, setContact] = useState('');
+  const [role, setRole] = useState<OrgRole>('admin');
+  const isEmail = contact.includes('@');
+  const ready = name.trim() && contact.trim();
+  const submit = () => {
+    if (!ready) return;
+    addOrgMember(orgId, { name: name.trim(), role, ...(isEmail ? { email: contact.trim() } : { phone: contact.replace(/\D/g, '') }) });
+    setName('');
+    setContact('');
+  };
+
+  return (
+    <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }}>
+      <Eyebrow>ORGANIZATION ADMINS</Eyebrow>
+      <div style={{ fontSize: 13, color: 'var(--muted)', margin: '6px 0 16px', maxWidth: 560 }}>
+        Owners &amp; admins can create projects, build teams, and run every project in the org. Adding someone provisions their login and lands them in the admin view.
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 18, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="org-member-name" />
+        <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="org-member-contact" />
+        <select value={role} onChange={(e) => setRole(e.target.value as OrgRole)} style={{ ...fld, flex: '0 0 130px' }} aria-label="Org role">
+          {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
+        </select>
+        <Button variant="ink" onClick={submit} disabled={!ready} data-testid="add-org-member" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '11px 15px', fontSize: 13 }}>
+          <Plus size={15} /> Add admin
+        </Button>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+        {orgMembers.length === 0 && <div style={{ color: 'var(--muted)', fontSize: 13.5 }}>No admins loaded — this needs the server.</div>}
+        {orgMembers.map((m) => (
+          <div key={m.userId} style={cardStyle}>
+            <div style={{ width: 40, height: 40, flex: 'none', borderRadius: '50%', background: 'var(--accent)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 16 }}>{m.name[0]}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 15 }}>{m.name}</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.email ?? m.phone ?? '—'}</div>
+            </div>
+            <span style={roleChip}>{ORG_ROLE_LABEL[m.orgRole]}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

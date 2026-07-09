@@ -33,6 +33,7 @@ import {
   type Decision,
   type Drawing,
   type MembershipSummary,
+  type OrgMember,
   type OrgSummary,
   type Phase,
   type PortfolioProject,
@@ -46,7 +47,7 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, NewProjectInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, PROJECT_ID } from '@/data/apiGateway';
 
 export interface AppState {
@@ -67,6 +68,7 @@ export interface AppState {
   activeProjectId: string; // the project the session is scoped to
   memberships: MembershipSummary[]; // projects the user can switch between
   myOrgs: OrgSummary[]; // orgs the user administers/belongs to
+  orgMembers: OrgMember[]; // the active org's admin roster (owner/admin/member)
   members: ProjectMember[]; // the active project's team (Team screen)
   portfolio: PortfolioProject[]; // cross-project monitoring rollup (Orgs Slice 3)
   online: boolean;
@@ -129,6 +131,9 @@ export interface AppActions {
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role) => void;
   removeMember: (userId: string) => void;
+  // org roster (owner/admin/member)
+  loadOrgMembers: (orgId: string) => void;
+  addOrgMember: (orgId: string, input: AddOrgMemberInput) => void;
   // schedule
   startActivity: (id: string) => void;
   completeActivity: (id: string) => void;
@@ -199,6 +204,7 @@ export function getInitialState(): AppState {
     activeProjectId: PROJECT_ID,
     memberships: [],
     myOrgs: [],
+    orgMembers: [],
     members: [],
     portfolio: [],
     online: true,
@@ -702,6 +708,20 @@ export const useStore = create<Store>()(
     removeMember: (userId) => {
       if (!gateway) return;
       gateway.removeMember(userId).then(() => { get().loadTeam(); get().flash('Member removed.'); }).catch(() => get().flash('Could not remove the member.'));
+    },
+    loadOrgMembers: (orgId) => {
+      if (!gateway) return;
+      gateway.listOrgMembers(orgId).then((m) => set((s) => { s.orgMembers = m; })).catch(() => set((s) => { s.orgMembers = []; }));
+    },
+    addOrgMember: (orgId, input) => {
+      if (!gateway) {
+        get().flash('Managing the org roster needs the server.');
+        return;
+      }
+      gateway
+        .addOrgMember(orgId, input)
+        .then(() => { get().loadOrgMembers(orgId); get().flash(input.name + ' added as org ' + input.role + '.'); })
+        .catch(() => get().flash('Could not add to the roster — check the details / your access.'));
     },
 
     // ---- schedule ----

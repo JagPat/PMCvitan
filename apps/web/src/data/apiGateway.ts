@@ -19,6 +19,8 @@ import type {
   Decision,
   Drawing,
   MembershipSummary,
+  OrgMember,
+  OrgRole,
   OrgSummary,
   Phase,
   PortfolioProject,
@@ -57,6 +59,14 @@ export interface ApiSnapshot {
 export interface AddMemberInput {
   name: string;
   role: Role;
+  email?: string;
+  phone?: string;
+}
+
+/** Add someone to an org's admin roster (owner/admin/member). */
+export interface AddOrgMemberInput {
+  name: string;
+  role: OrgRole;
   email?: string;
   phone?: string;
 }
@@ -236,6 +246,15 @@ export class ApiGateway {
   restoreProject(orgId: string, projectId: string): Promise<{ ok: boolean }> {
     return this.req(`/orgs/${orgId}/projects/${projectId}/restore`, { method: 'POST' });
   }
+  /** The org's admin roster (owner/admin only). */
+  listOrgMembers(orgId: string): Promise<OrgMember[]> {
+    return this.req(`/orgs/${orgId}/members`);
+  }
+  /** Add someone to the org's admin roster — owner/admin/member (owner/admin only). */
+  addOrgMember(orgId: string, input: AddOrgMemberInput): Promise<OrgMember> {
+    return this.req(`/orgs/${orgId}/members`, { method: 'POST', body: JSON.stringify(input) });
+  }
+
   /** List the active project's team. */
   listMembers(): Promise<ProjectMember[]> {
     return this.req(`/projects/${this.projectId}/members`);

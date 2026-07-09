@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@n
 import { OrgsService } from './orgs.service';
 import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { createOrgSchema, createProjectSchema, updateProjectSchema, type CreateOrgInput, type CreateProjectInput, type UpdateProjectInput } from '../contracts';
+import { addOrgMemberSchema, createOrgSchema, createProjectSchema, updateProjectSchema, type AddOrgMemberInput, type CreateOrgInput, type CreateProjectInput, type UpdateProjectInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 
 @Controller()
@@ -41,6 +41,22 @@ export class OrgsController {
   @Get('orgs/:orgId/projects')
   listProjects(@Param('orgId') orgId: string, @CurrentUser() user: AuthUser) {
     return this.orgs.listProjects(orgId, user.sub);
+  }
+
+  /** The org's admin roster (owner/admin only). */
+  @Get('orgs/:orgId/members')
+  listOrgMembers(@Param('orgId') orgId: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.listOrgMembers(orgId, user.sub);
+  }
+
+  /** Add someone to the org's admin roster — owner/admin/member (owner/admin only). */
+  @Post('orgs/:orgId/members')
+  addOrgMember(
+    @Param('orgId') orgId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(addOrgMemberSchema)) body: AddOrgMemberInput,
+  ) {
+    return this.orgs.addOrgMember(orgId, user.sub, body);
   }
 
   /** Create a project under an org (owner/admin only). */

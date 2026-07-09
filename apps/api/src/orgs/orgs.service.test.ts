@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
 import type { PrismaService } from '../prisma.service';
 
@@ -110,6 +110,63 @@ describe('OrgsService.createOrg', () => {
     const org = await svc.createOrg('u1', { name: 'Studio Kaza' });
     expect(org.name).toBe('Studio Kaza');
     expect((orgMemberships[0] as { role: string; userId: string })).toMatchObject({ role: 'owner', userId: 'u1' });
+  });
+});
+
+describe('OrgsService.addOrgMember', () => {
+  function makeRoster(callerRole: string | null, existingUser: unknown = null, projects: unknown[] = [{ id: 'ambli' }]) {
+    const created: unknown[] = [];
+    const orgMemberships: unknown[] = [];
+    const prisma = {
+      orgMembership: {
+        findUnique: vi.fn(async () => (callerRole ? { role: callerRole } : null)),
+        upsert: vi.fn(async ({ create, update }: { create: { role: string }; update: { role: string } }) => {
+          const row = existingUser ? { ...update, ...create } : create;
+          orgMemberships.push(row);
+          return row;
+        }),
+      },
+      org: { findUnique: vi.fn(async () => ({ id: 'org1', projects })) },
+      user: {
+        findUnique: vi.fn(async () => existingUser),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          const u = { id: 'newuser', ...data };
+          created.push(u);
+          return u;
+        }),
+      },
+    };
+    return { svc: new OrgsService(prisma as unknown as PrismaService), prisma, created, orgMemberships };
+  }
+
+  it('lets an org owner add a new admin, provisioning a PMC-homed account', async () => {
+    const { svc, prisma, created } = makeRoster('owner');
+    const res = await svc.addOrgMember('org1', 'owner1', { name: 'JP', email: 'jp@vitan.in', phone: '8320303515', role: 'owner' });
+    expect(res).toMatchObject({ userId: 'newuser', name: 'JP', email: 'jp@vitan.in', phone: '8320303515', orgRole: 'owner' });
+    // new account is homed on the org's first project as PMC, phone stored bare
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ projectId: 'ambli', role: 'pmc', phone: '8320303515' });
+    expect(prisma.orgMembership.upsert).toHaveBeenCalled();
+  });
+
+  it('reuses an existing account (matched by email) instead of provisioning a new one', async () => {
+    const existing = { id: 'u9', name: 'JP', email: 'jp@vitan.in', phone: '8320303515', projectId: 'ambli', role: 'pmc' };
+    const { svc, prisma, created } = makeRoster('admin', existing);
+    const res = await svc.addOrgMember('org1', 'admin1', { name: 'JP', email: 'jp@vitan.in', role: 'owner' });
+    expect(res.userId).toBe('u9');
+    expect(created).toHaveLength(0); // no new user
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('forbids a plain member from managing the roster', async () => {
+    const { svc, prisma } = makeRoster('member');
+    await expect(svc.addOrgMember('org1', 'u2', { name: 'X', email: 'x@vitan.in', role: 'admin' })).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses to add a member when the org has no active project to home them on', async () => {
+    const { svc } = makeRoster('owner', null, []);
+    await expect(svc.addOrgMember('org1', 'owner1', { name: 'X', email: 'x@vitan.in', role: 'admin' })).rejects.toBeInstanceOf(BadRequestException);
   });
 });
 
