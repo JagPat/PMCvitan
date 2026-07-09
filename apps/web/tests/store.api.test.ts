@@ -125,6 +125,32 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     expect(s().orgMembers).toEqual([]);
   });
 
+  it('requestOtp steers to email when the code cannot be delivered to the number', async () => {
+    const err = Object.assign(new Error('/auth/otp/request 503'), { status: 503 });
+    const gw = { requestOtp: vi.fn().mockRejectedValue(err) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().accSetPhone('9408771747');
+
+    s().requestOtp();
+    await flush();
+
+    expect(gw.requestOtp).toHaveBeenCalledWith('9408771747');
+    expect(s().access.error).toMatch(/Sign in with email/i);
+    expect(s().access.sending).toBe(false);
+  });
+
+  it('requestOtp shows a wait message when throttled (429)', async () => {
+    const err = Object.assign(new Error('/auth/otp/request 429'), { status: 429 });
+    const gw = { requestOtp: vi.fn().mockRejectedValue(err) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().accSetPhone('9408771747');
+
+    s().requestOtp();
+    await flush();
+
+    expect(s().access.error).toMatch(/wait a minute/i);
+  });
+
   it('loadPortfolio populates the cross-project rollup (Slice 3)', async () => {
     const gw = {
       getPortfolio: vi.fn().mockResolvedValue([

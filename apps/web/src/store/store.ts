@@ -1074,10 +1074,16 @@ export const useStore = create<Store>()(
             s.access.devCode = r.devCode ?? null;
           });
         })
-        .catch(() => {
+        .catch((e: unknown) => {
+          const status = (e as { status?: number } | null)?.status;
           set((s) => {
             s.access.sending = false;
-            s.access.error = 'Could not send the code — please try again.';
+            // 429 = throttled; anything else = the code couldn't be delivered to this
+            // number (e.g. no Telegram / SMS not provisioned) — steer office roles to email.
+            s.access.error =
+              status === 429
+                ? 'Too many attempts — wait a minute, then try again.'
+                : 'Couldn’t text a code to this number. Architect, client or contractor? Use “Sign in with email” below.';
           });
         });
     },
