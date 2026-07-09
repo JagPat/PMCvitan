@@ -12,6 +12,20 @@ the switch works and [`ORGS.md`](./ORGS.md) for accounts/memberships.
 > **✓ SAFE TO LOCK DOWN** before you flip, and `… --verify` must print **✓ LOCKED & SAFE**
 > after. See [`AUTH_LOCKDOWN.md`](./AUTH_LOCKDOWN.md#activate-the-lockdown-once-a-roles-sign-in-works).
 
+## Step 0 — required production env (or the API won't boot)
+
+The API image runs with `NODE_ENV=production`, which turns on fail-fast auth hardening.
+Set these on the **API** app **before** the next deploy — a missing one aborts startup
+(the boot log prints e.g. `JWT_SECRET is required in production`):
+
+| Env | Value | Notes |
+|---|---|---|
+| `JWT_SECRET` | a long random string (`openssl rand -hex 32`) | No insecure default. **Changing it invalidates existing sessions** — everyone re-signs-in once. |
+| `CORS_ORIGINS` | `https://pms.vitan.in` (comma-separated for more) | Browser origins allowed to call the API; no wildcard. |
+| `AUTH_ALLOW_PHONE_SIGNUP` | `true` to keep phone onboarding | Default **off** in prod: an unknown phone is rejected instead of auto-provisioning an engineer. Known numbers always sign in. |
+
+See [`AUTH_LOCKDOWN.md`](./AUTH_LOCKDOWN.md#production-hardening-required-env-on-the-api-app). Then continue below.
+
 ## Recommended: email + password (no external service)
 
 The simplest way to go live. Office accounts (`pmc@ / client@ / contractor@vitan.in`) get a
