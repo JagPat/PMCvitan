@@ -31,6 +31,15 @@ export class SmsService {
   private readonly log = new Logger('SmsService');
   private readonly otp = new OtpStore(OTP_TTL_MS);
 
+  constructor() {
+    // Announce the resolved channel at boot so the deploy logs show exactly which
+    // provider is live (and which keys were detected) — no secrets, just presence.
+    this.log.log(
+      `Phone-OTP channel: ${this.channel} ` +
+        `(msg91=${this.msg91Live}, fast2sms=${Boolean(this.fast2smsKey)}, telegram=${Boolean(this.telegramToken)})`,
+    );
+  }
+
   private get authKey(): string | undefined {
     return process.env.MSG91_AUTH_KEY?.trim() || undefined;
   }

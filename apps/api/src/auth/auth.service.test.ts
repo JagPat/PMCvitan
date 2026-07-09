@@ -59,6 +59,7 @@ describe('AuthService.login', () => {
     delete process.env.MSG91_AUTH_KEY;
     delete process.env.MSG91_TEMPLATE_ID;
     delete process.env.TELEGRAM_GATEWAY_TOKEN;
+    delete process.env.FAST2SMS_API_KEY;
   });
 
   it('accepts the right password and issues a role-scoped token', async () => {
@@ -92,6 +93,7 @@ describe('AuthService.verifyOtp', () => {
     delete process.env.MSG91_AUTH_KEY;
     delete process.env.MSG91_TEMPLATE_ID;
     delete process.env.TELEGRAM_GATEWAY_TOKEN;
+    delete process.env.FAST2SMS_API_KEY;
   });
 
   it('provisions a site engineer on first successful OTP', async () => {
