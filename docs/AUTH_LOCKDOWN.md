@@ -104,17 +104,18 @@ To roll back to demo mode: set both to `true` and redeploy.
 
 ---
 
-## Production hardening (required env on the API app)
+## Production hardening (recommended env on the API app)
 
-The production image sets `NODE_ENV=production`, which turns on fail-fast auth
-hardening (`apps/api/src/config.ts`). Set these on the **API** app **before**
-deploying, or boot fails fast:
+The production image sets `NODE_ENV=production`, which turns on auth hardening
+(`apps/api/src/config.ts`). These **degrade safely** if unset — the API logs a loud
+warning and uses a secure fallback rather than crashing — but set them for full
+hardening:
 
-| Env | Required in prod | Effect |
+| Env | When set | If unset in prod (fail-soft) |
 |---|---|---|
-| `JWT_SECRET` | **yes** | Token signing secret. No insecure default — the API refuses to start if unset. Use a long random value. |
-| `CORS_ORIGINS` | **yes** | Comma-separated browser origins allowed to call the API (e.g. `https://pms.vitan.in`). No wildcard; the API refuses to start if unset. |
-| `AUTH_ALLOW_PHONE_SIGNUP` | no (default **off**) | When off, an unknown phone number is **rejected** instead of auto-provisioning a site engineer. Set `true` to enable on-site phone onboarding. |
+| `JWT_SECRET` | Token signing secret (long random; rotatable). | Warns + derives a **stable, non-public** secret from `DATABASE_URL`. Sessions reset if the DB URL changes — so set this explicitly. |
+| `CORS_ORIGINS` | Comma-separated browser origins allowed to call the API (e.g. `https://pms.vitan.in`); no wildcard. | Warns + **reflects the request origin** (functional; the API is bearer-token based). |
+| `AUTH_ALLOW_PHONE_SIGNUP` | `true` enables on-site phone onboarding. | Default **off**: an unknown phone is rejected instead of auto-provisioning a site engineer. |
 
 Dev auth stays off unless `ALLOW_DEV_AUTH=true` (above); the office email/Google
 channels stay invite-only unless `AUTH_ALLOW_SIGNUP=true`.
