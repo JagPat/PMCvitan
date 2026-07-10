@@ -3,15 +3,26 @@ import { DecisionsService } from './decisions.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { Roles, RolesGuard } from '../common/roles';
-import { approveSchema, changeSchema, type ApproveInput, type ChangeInput } from '../contracts';
+import { approveSchema, changeSchema, createDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput } from '../contracts';
 
-@Controller('projects/:projectId/decisions/:decisionId')
+@Controller('projects/:projectId/decisions')
 @UseGuards(JwtGuard, RolesGuard)
 export class DecisionsController {
   constructor(private readonly decisions: DecisionsService) {}
 
+  /** Issue a new decision (title/room + options) — the PMC/architect's authority. */
+  @Post()
+  @Roles('pmc')
+  create(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(createDecisionSchema)) body: CreateDecisionInput,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.decisions.create(projectId, body, user);
+  }
+
   /** Approve/lock a decision — the client's choice, or the PMC/architect on their behalf. */
-  @Post('approve')
+  @Post(':decisionId/approve')
   @Roles('client', 'pmc')
   approve(
     @Param('projectId') projectId: string,
@@ -25,7 +36,7 @@ export class DecisionsController {
   /** Raise a change request against a decision — PMC, client, contractor, or the site
    *  engineer (the engineer's Decision Log UI exposes this, and the service records
    *  `actor: user.role`, so all four are legitimate change requesters). */
-  @Post('change')
+  @Post(':decisionId/change')
   @Roles('pmc', 'client', 'contractor', 'engineer')
   change(
     @Param('projectId') projectId: string,

@@ -203,6 +203,64 @@ export const updateCompanySchema = addCompanySchema
   .refine((v) => Object.keys(v).length > 0, { message: 'Provide at least one field to update' });
 export type UpdateCompanyInput = z.infer<typeof updateCompanySchema>;
 
+// Issue a decision (PMC): 2–4 options the client chooses between. Labels/keys are
+// derived from order (Option A/B/…) when omitted; photoUrl is an uploaded media url.
+const decisionOptionInput = z.object({
+  label: z.string().trim().min(1).optional(),
+  material: z.string().trim().min(1),
+  delta: z.number().int(),
+  swatch: z.string().trim().min(1),
+  photoUrl: z.string().trim().optional(),
+  recommended: z.boolean().default(false),
+});
+export const createDecisionSchema = z.object({
+  title: z.string().trim().min(1),
+  room: z.string().trim().min(1),
+  options: z.array(decisionOptionInput).min(2).max(4),
+});
+export type CreateDecisionInput = z.infer<typeof createDecisionSchema>;
+
+// Planning & scheduling (PMC). Planned start/end are day-offsets on the schedule
+// timeline (same unit the seeded schedule uses).
+const gateState = z.enum(['ok', 'wait', 'fail', 'na']);
+export const createActivitySchema = z
+  .object({
+    name: z.string().trim().min(1),
+    zone: z.string().trim().default(''),
+    plannedStart: z.number().int().min(0),
+    plannedEnd: z.number().int().min(0),
+    phaseId: z.string().optional(),
+    decisionId: z.string().optional(),
+    gateMaterial: gateState.default('na'),
+    gateTeam: gateState.default('na'),
+    gateInspection: gateState.default('na'),
+  })
+  .refine((v) => v.plannedEnd >= v.plannedStart, { message: 'plannedEnd must be on or after plannedStart' });
+export type CreateActivityInput = z.infer<typeof createActivitySchema>;
+
+export const updateActivitySchema = z
+  .object({
+    name: z.string().trim().min(1).optional(),
+    zone: z.string().trim().optional(),
+    plannedStart: z.number().int().min(0).optional(),
+    plannedEnd: z.number().int().min(0).optional(),
+    // null clears the link / phase
+    phaseId: z.string().nullable().optional(),
+    decisionId: z.string().nullable().optional(),
+    gateMaterial: gateState.optional(),
+    gateTeam: gateState.optional(),
+    gateInspection: gateState.optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: 'Provide at least one field to update' });
+export type UpdateActivityInput = z.infer<typeof updateActivitySchema>;
+
+export const createPhaseSchema = z.object({
+  name: z.string().trim().min(1),
+  plannedStart: z.number().int().min(0).default(0),
+  plannedEnd: z.number().int().min(0).default(0),
+});
+export type CreatePhaseInput = z.infer<typeof createPhaseSchema>;
+
 export const switchProjectSchema = z.object({ projectId: z.string().min(1) });
 export type SwitchProjectInput = z.infer<typeof switchProjectSchema>;
 

@@ -105,6 +105,28 @@ export interface ArchivedProject {
   archivedAt: string;
 }
 
+/** Issue-decision payload (PMC): 2–4 options; photoUrl comes from a prior media upload. */
+export interface NewDecisionInput {
+  title: string;
+  room: string;
+  options: { material: string; delta: number; swatch: string; photoUrl?: string; recommended?: boolean }[];
+}
+
+export type GateInput = 'ok' | 'wait' | 'fail' | 'na';
+
+/** Plan/edit-activity payload (PMC). Planned start/end are timeline day-offsets. */
+export interface NewActivityInput {
+  name: string;
+  zone?: string;
+  plannedStart: number;
+  plannedEnd: number;
+  phaseId?: string | null;
+  decisionId?: string | null;
+  gateMaterial?: GateInput;
+  gateTeam?: GateInput;
+  gateInspection?: GateInput;
+}
+
 /** Issue a drawing revision (new register entry, or a new rev that supersedes). */
 export interface IssueDrawingInput {
   number: string;
@@ -318,6 +340,31 @@ export class ApiGateway {
   /** Remove a company/consultant. */
   removeCompany(companyId: string): Promise<{ ok: boolean }> {
     return this.req(`/projects/${this.projectId}/companies/${companyId}`, { method: 'DELETE' });
+  }
+
+  /** Issue a new decision (PMC) — appears pending on the client's screen. */
+  createDecision(input: NewDecisionInput): Promise<ApiSnapshot> {
+    return this.p('/decisions', input);
+  }
+  /** Plan a new schedule activity (PMC). */
+  createActivity(input: NewActivityInput): Promise<ApiSnapshot> {
+    return this.p('/activities', input);
+  }
+  /** Edit a planned activity (PMC) — only provided fields change. */
+  updateActivity(activityId: string, input: Partial<NewActivityInput>): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/activities/${activityId}`, { method: 'PATCH', body: JSON.stringify(input) });
+  }
+  /** Remove a planned activity (PMC). */
+  deleteActivity(activityId: string): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/activities/${activityId}`, { method: 'DELETE' });
+  }
+  /** Add a schedule phase (PMC). */
+  createPhase(input: { name: string; plannedStart?: number; plannedEnd?: number }): Promise<ApiSnapshot> {
+    return this.p('/phases', input);
+  }
+  /** Remove a phase (PMC) — its activities become unphased. */
+  deletePhase(phaseId: string): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/phases/${phaseId}`, { method: 'DELETE' });
   }
 
   private async req<T>(path: string, init?: RequestInit): Promise<T> {

@@ -16,6 +16,8 @@ import { DecisionsService } from './decisions/decisions.service';
 import { DecisionsController } from './decisions/decisions.controller';
 import { ActivitiesService } from './activities/activities.service';
 import { ActivitiesController } from './activities/activities.controller';
+import { PhasesService } from './activities/phases.service';
+import { PhasesController } from './activities/phases.controller';
 import { InspectionsService } from './inspections/inspections.service';
 import { InspectionsController } from './inspections/inspections.controller';
 import { DailyLogService } from './daily-log/daily-log.service';
@@ -51,6 +53,7 @@ import { CompaniesController } from './orgs/companies.controller';
     ProjectController,
     DecisionsController,
     ActivitiesController,
+    PhasesController,
     InspectionsController,
     DailyLogController,
     MediaController,
@@ -71,6 +74,7 @@ import { CompaniesController } from './orgs/companies.controller';
     SnapshotService,
     DecisionsService,
     ActivitiesService,
+    PhasesService,
     InspectionsService,
     DailyLogService,
     RealtimeGateway,

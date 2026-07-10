@@ -6,6 +6,7 @@ import { JwtGuard } from './auth';
 import { RolesGuard, ROLES_KEY, PUBLIC_KEY, ANY_ROLE_KEY } from './roles';
 
 import { ActivitiesController } from '../activities/activities.controller';
+import { PhasesController } from '../activities/phases.controller';
 import { AuthController } from '../auth/auth.controller';
 import { DailyLogController } from '../daily-log/daily-log.controller';
 import { DecisionsController } from '../decisions/decisions.controller';
@@ -33,6 +34,7 @@ import { ProjectController } from '../snapshot/project.controller';
 // policy check, so keep it in sync with app.module's `controllers` array.
 const CONTROLLERS = [
   ActivitiesController,
+  PhasesController,
   AuthController,
   DailyLogController,
   DecisionsController,
@@ -143,10 +145,16 @@ describe('route authorization policy', () => {
  * straight from it and this mirror goes away.)
  */
 const EXPECTED_ROLES: Record<string, string[]> = {
+  'DecisionsController.create': ['pmc'],
   'DecisionsController.approve': ['client', 'pmc'],
   'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer'],
+  'ActivitiesController.create': ['pmc'],
+  'ActivitiesController.update': ['pmc'],
+  'ActivitiesController.remove': ['pmc'],
   'ActivitiesController.start': ['engineer', 'pmc'],
   'ActivitiesController.complete': ['engineer', 'pmc'],
+  'PhasesController.create': ['pmc'],
+  'PhasesController.remove': ['pmc'],
   'InspectionsController.submit': ['engineer', 'pmc'],
   'InspectionsController.decide': ['pmc'],
   'DailyLogController.flag': ['engineer', 'pmc'],

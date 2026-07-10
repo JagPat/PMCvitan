@@ -9,10 +9,13 @@ const ALL_ROLES: TokenRole[] = ['pmc', 'client', 'engineer', 'contractor', 'work
  * literal (not derived from ROLE_POLICY) makes an accidental edit to the map fail loudly.
  */
 const EXPECTED: Record<PolicyAction, TokenRole[]> = {
+  'decision.create': ['pmc'],
   'decision.approve': ['client', 'pmc'],
   'decision.change': ['pmc', 'client', 'contractor', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
+  'activity.manage': ['pmc'],
+  'phase.manage': ['pmc'],
   'inspection.submit': ['engineer', 'pmc'],
   'inspection.decide': ['pmc'],
   'dailyLog.flagMismatch': ['engineer', 'pmc'],

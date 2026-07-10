@@ -49,8 +49,14 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID } from '@/data/apiGateway';
+
+/** Issue-decision payload from the UI: an option may carry a captured photo (base64),
+ *  uploaded first so it becomes the created option's photoUrl. */
+export interface IssueDecisionPayload extends Omit<NewDecisionInput, 'options'> {
+  options: (NewDecisionInput['options'][number] & { photo?: { mime: string; data: string } })[];
+}
 
 export interface AppState {
   role: Role;
@@ -143,6 +149,13 @@ export interface AppActions {
   addCompany: (input: CompanyInput) => void;
   updateCompany: (companyId: string, input: Partial<CompanyInput>) => void;
   removeCompany: (companyId: string) => void;
+  // authoring: decisions + planning/scheduling (PMC)
+  issueDecision: (input: IssueDecisionPayload) => void;
+  createActivity: (input: NewActivityInput) => void;
+  updateActivity: (activityId: string, input: Partial<NewActivityInput>) => void;
+  deleteActivity: (activityId: string) => void;
+  createPhase: (name: string) => void;
+  deletePhase: (phaseId: string) => void;
   loadTeam: () => void;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role) => void;
@@ -773,6 +786,65 @@ export const useStore = create<Store>()(
           get().flash('Company removed.');
         })
         .catch(() => get().flash('Could not remove the company — check your access.'));
+    },
+    issueDecision: (input) => {
+      if (!gateway) {
+        get().flash('Issuing decisions needs the server.');
+        return;
+      }
+      const gw = gateway;
+      // Upload any captured option photos first, then create with their urls.
+      void (async () => {
+        try {
+          const options = await Promise.all(
+            input.options.map(async ({ photo, ...o }) => {
+              if (!photo) return o;
+              const up = await gw.uploadMedia({ kind: 'decision', mime: photo.mime, data: photo.data });
+              return { ...o, photoUrl: up.url };
+            }),
+          );
+          const snap = await gw.createDecision({ title: input.title, room: input.room, options });
+          applySnapshot(snap);
+          get().flash(`Decision issued: ${input.title} — the client has been asked to choose.`);
+        } catch {
+          get().flash('Could not issue the decision — check your access and try again.');
+        }
+      })();
+    },
+    createActivity: (input) => {
+      if (!gateway) {
+        get().flash('Planning needs the server.');
+        return;
+      }
+      runRemote(() => gateway!.createActivity(input), `Planned: ${input.name}.`);
+    },
+    updateActivity: (activityId, input) => {
+      if (!gateway) {
+        get().flash('Planning needs the server.');
+        return;
+      }
+      runRemote(() => gateway!.updateActivity(activityId, input), 'Schedule updated.');
+    },
+    deleteActivity: (activityId) => {
+      if (!gateway) {
+        get().flash('Planning needs the server.');
+        return;
+      }
+      runRemote(() => gateway!.deleteActivity(activityId), 'Activity removed from the plan.');
+    },
+    createPhase: (name) => {
+      if (!gateway) {
+        get().flash('Planning needs the server.');
+        return;
+      }
+      runRemote(() => gateway!.createPhase({ name }), `Phase added: ${name}.`);
+    },
+    deletePhase: (phaseId) => {
+      if (!gateway) {
+        get().flash('Planning needs the server.');
+        return;
+      }
+      runRemote(() => gateway!.deletePhase(phaseId), 'Phase removed — its activities stay in the flat list.');
     },
     loadTeam: () => {
       if (!gateway) return;

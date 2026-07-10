@@ -79,6 +79,7 @@ export class SnapshotService {
           material: o.material,
           delta: o.delta,
           swatch: o.swatch,
+          photoUrl: o.photoUrl ?? undefined,
           recommended: o.recommended,
         })),
       }));

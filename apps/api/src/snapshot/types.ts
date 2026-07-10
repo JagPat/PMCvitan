@@ -7,6 +7,7 @@ export interface OptionDto {
   material: string;
   delta: number;
   swatch: string;
+  photoUrl?: string;
   recommended: boolean;
 }
 
