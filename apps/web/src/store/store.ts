@@ -156,6 +156,9 @@ export interface AppActions {
   deleteActivity: (activityId: string) => void;
   createPhase: (name: string) => void;
   deletePhase: (phaseId: string) => void;
+  issueChecklist: (input: { title: string; zone: string; items: string[] }) => void;
+  startDailyLog: () => void;
+  addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string }) => void;
   loadTeam: () => void;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role) => void;
@@ -845,6 +848,27 @@ export const useStore = create<Store>()(
         return;
       }
       runRemote(() => gateway!.deletePhase(phaseId), 'Phase removed — its activities stay in the flat list.');
+    },
+    issueChecklist: (input) => {
+      if (!gateway) {
+        get().flash('Issuing checklists needs the server.');
+        return;
+      }
+      runRemote(() => gateway!.createInspection(input), `Checklist issued: ${input.title} — the engineer has been notified.`);
+    },
+    startDailyLog: () => {
+      if (!gateway) {
+        get().flash('Starting a new log needs the server.');
+        return;
+      }
+      runRemote(() => gateway!.startDailyLog(), 'New daily log started — crew carried over at zero.');
+    },
+    addSiteMaterial: (input) => {
+      if (!gateway) {
+        get().flash('Recording materials needs the server.');
+        return;
+      }
+      runRemote(() => gateway!.addSiteMaterial(input), `Material recorded: ${input.name}.`);
     },
     loadTeam: () => {
       if (!gateway) return;

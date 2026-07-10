@@ -366,6 +366,18 @@ export class ApiGateway {
   deletePhase(phaseId: string): Promise<ApiSnapshot> {
     return this.req(`/projects/${this.projectId}/phases/${phaseId}`, { method: 'DELETE' });
   }
+  /** Issue a stage checklist (PMC) — becomes the engineer's current field checklist. */
+  createInspection(input: { title: string; zone: string; items: string[] }): Promise<ApiSnapshot> {
+    return this.p('/inspections', input);
+  }
+  /** Start a fresh day's daily log (engineer/PMC). */
+  startDailyLog(): Promise<ApiSnapshot> {
+    return this.p('/daily-log/start');
+  }
+  /** Record a material delivery on the open daily log (engineer/PMC). */
+  addSiteMaterial(input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string }): Promise<ApiSnapshot> {
+    return this.p('/daily-log/materials', input);
+  }
 
   private async req<T>(path: string, init?: RequestInit): Promise<T> {
     const res = await fetch(`${this.base}${path}`, {

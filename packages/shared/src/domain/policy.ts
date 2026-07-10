@@ -25,8 +25,11 @@ export const ROLE_POLICY = {
   // planning & scheduling — the PMC authors the plan
   'activity.manage': ['pmc'],
   'phase.manage': ['pmc'],
+  'inspection.create': ['pmc'],
   'inspection.submit': ['engineer', 'pmc'],
   'inspection.decide': ['pmc'],
+  'dailyLog.start': ['engineer', 'pmc'],
+  'dailyLog.addMaterial': ['engineer', 'pmc'],
   'dailyLog.flagMismatch': ['engineer', 'pmc'],
   'dailyLog.submit': ['engineer', 'pmc'],
   'media.upload': ['pmc', 'engineer'],

@@ -261,6 +261,24 @@ export const createPhaseSchema = z.object({
 });
 export type CreatePhaseInput = z.infer<typeof createPhaseSchema>;
 
+// Issue an inspection checklist (PMC) — the engineer fills it in the field.
+export const createInspectionSchema = z.object({
+  title: z.string().trim().min(1),
+  zone: z.string().trim().min(1),
+  items: z.array(z.string().trim().min(1)).min(1).max(20),
+});
+export type CreateInspectionInput = z.infer<typeof createInspectionSchema>;
+
+// Daily-log authoring (engineer/PMC): add a material delivery to today's log.
+export const addMaterialSchema = z.object({
+  name: z.string().trim().min(1),
+  qty: z.string().trim().min(1),
+  zone: z.string().trim().default(''),
+  decisionId: z.string().optional(),
+  swatch: z.string().trim().default('tile'),
+});
+export type AddMaterialInput = z.infer<typeof addMaterialSchema>;
+
 export const switchProjectSchema = z.object({ projectId: z.string().min(1) });
 export type SwitchProjectInput = z.infer<typeof switchProjectSchema>;
 
