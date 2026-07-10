@@ -1,11 +1,14 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * E2E config. Chromium is preinstalled in this environment; point directly at
- * the binary to avoid any Playwright-revision mismatch. The dev server is
- * launched automatically for the run.
+ * E2E config. Browser resolution (TEST-01, portable by default):
+ *   • CI / a normal checkout: Playwright's own managed browser install
+ *     (`npx playwright install chromium`) — no configuration needed;
+ *   • a sandbox with a preinstalled Chromium: point PW_CHROMIUM at the binary
+ *     (e.g. PW_CHROMIUM=/opt/pw-browsers/chromium) to skip the download.
+ * The dev server is launched automatically for the run.
  */
-const CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const executablePath = process.env.PW_CHROMIUM;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -22,7 +25,7 @@ export default defineConfig({
       name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
-        launchOptions: { executablePath: CHROME },
+        ...(executablePath ? { launchOptions: { executablePath } } : {}),
       },
     },
   ],

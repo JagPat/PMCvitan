@@ -83,20 +83,75 @@ describe('Phase 8 offline outbox', () => {
     expect(s().outbox).toHaveLength(0);
   });
 
-  it('persists the queue to storage and rehydrates it', () => {
+  it('persists the queue to identity-scoped storage and rehydrates it (WEB-02)', () => {
     const gw = { approveDecision: vi.fn() };
     s()._setGateway(gw as unknown as ApiGateway);
     useStore.setState((st) => { st.online = false; });
 
     s().openApprove('DL-014', 1);
     s().confirmApprove();
-    expect(globalThis.localStorage?.getItem('vitan.outbox')).toContain('DL-014');
+    // key carries WHO (anon — no session token) and WHERE (the active project)
+    const scopedKey = `vitan.outbox.anon.${s().activeProjectId}`;
+    expect(globalThis.localStorage?.getItem(scopedKey)).toContain('DL-014');
 
     // simulate a reload: fresh state, then hydrate from storage
     useStore.setState(getInitialState());
     expect(s().outbox).toHaveLength(0);
     s().hydrateOutbox();
     expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1 }]);
+  });
+
+  it('WEB-02: work queued under one project is not hydrated in another', () => {
+    const gw = { approveDecision: vi.fn() };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+
+    s().openApprove('DL-014', 1);
+    s().confirmApprove();
+    expect(s().outbox).toHaveLength(1);
+
+    // switch to another project: hydration swaps to THAT scope's (empty) queue…
+    useStore.setState((st) => { st.activeProjectId = 'villa'; });
+    s().hydrateOutbox();
+    expect(s().outbox).toHaveLength(0);
+
+    // …and switching back restores the original project's queued work.
+    useStore.setState((st) => { st.activeProjectId = 'ambli'; });
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1 }]);
+  });
+
+  it('WEB-02: work queued by one user is not hydrated for another (shared browser)', () => {
+    const gw = { approveDecision: vi.fn() };
+    s()._setGateway(gw as unknown as ApiGateway);
+    // JWT payloads: {"sub":"u1"} and {"sub":"u2"} — header/signature are irrelevant here
+    const tokenFor = (sub: string) => `x.${btoa(JSON.stringify({ sub }))}.y`;
+    useStore.setState((st) => { st.online = false; st.sessionToken = tokenFor('u1'); });
+
+    s().openApprove('DL-014', 1);
+    s().confirmApprove();
+    expect(s().outbox).toHaveLength(1);
+
+    // sign out: the queue is quarantined (cleared in memory, persisted under u1's key)
+    s().signOut();
+    expect(s().outbox).toHaveLength(0);
+
+    // another user signs in on the same browser — nothing of u1's leaks in
+    useStore.setState((st) => { st.sessionToken = tokenFor('u2'); });
+    s().hydrateOutbox();
+    expect(s().outbox).toHaveLength(0);
+
+    // u1 returns — their queued work resumes
+    useStore.setState((st) => { st.sessionToken = tokenFor('u1'); });
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1 }]);
+  });
+
+  it('WEB-02: migrates a legacy unscoped queue into the current scope once', () => {
+    globalThis.localStorage?.setItem('vitan.outbox', JSON.stringify([{ t: 'startActivity', activityId: 'ACT-31' }]));
+    s().hydrateOutbox();
+    expect(s().outbox).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    expect(globalThis.localStorage?.getItem('vitan.outbox')).toBeNull(); // legacy key consumed
   });
 
   it('queues a progress photo while offline and shows it optimistically', () => {

@@ -43,7 +43,7 @@ docker run --rm -p 8080:80 vitan-pmc-web
 The API (`apps/api`, NestJS + Prisma) ships its own `apps/api/Dockerfile`. Deploy it as a second resource:
 
 1. **PostgreSQL** — add a Postgres resource in Coolify (or use a managed DB). Note its connection string.
-2. **API Application** — new Application → this repo, branch `main` → **Build Pack: Dockerfile**, Dockerfile location `/apps/api/Dockerfile`, base dir `/`, **Ports Exposes: `3000`**. Set env from `apps/api/.env.example` — at minimum `DATABASE_URL` (the Postgres string) and a strong `JWT_SECRET`. On start the container runs `prisma migrate deploy` to apply migrations, then boots. On a **fresh** database this creates every table from the baseline migration. If migrate deploy can't run it falls back to `prisma db push`, so a deploy never bricks.
+2. **API Application** — new Application → this repo, branch `main` → **Build Pack: Dockerfile**, Dockerfile location `/apps/api/Dockerfile`, base dir `/`, **Ports Exposes: `3000`**. Set env from `apps/api/.env.example` — at minimum `DATABASE_URL` (the Postgres string) and a strong `JWT_SECRET`. On start the container runs `scripts/migrate.sh` (`prisma migrate deploy`, **fail closed**): a fresh database gets every table from the baseline migration; a failed migration exits non-zero so the deploy fails and the previous container keeps running — there is deliberately **no `db push` fallback** in production (a transient failure must never mutate a live schema outside migration history).
 3. **Seed once** — from the API container's terminal (Coolify → Terminal): `pnpm --filter api seed` to load the "Residence at Ambli" sample project. (Re-running the seed wipes and reloads — don't run it on every start.)
 4. **Point the web app at the API** — set a build-time env on the *web* application: `VITE_API_URL=https://<your-api-domain>` and redeploy it. On load, the frontend authenticates for the active role and hydrates from `/projects/ambli/snapshot`; with the var unset it stays on the seeded local store (current behaviour). The bridge lives in `apps/web/src/data/apiGateway.ts` — no screen changes.
 
@@ -57,10 +57,4 @@ The app ships with dev-stubs for SMS OTP, media storage, and web push; each flip
 
 The schema is now tracked by a baseline Prisma migration at `apps/api/prisma/migrations/0_init`. Going forward, schema changes are new migrations applied by `prisma migrate deploy` on deploy.
 
-**One-time baseline for the current live DB** (which was created with `db push`, so its tables already exist but Prisma has no migration history for it): before the first deploy that runs `migrate deploy`, mark the baseline as already-applied so Prisma doesn't try to re-create the tables. From the API container terminal:
-
-```bash
-pnpm --filter api exec prisma migrate resolve --applied 0_init
-```
-
-After that, `migrate deploy` is a no-op on the live DB and applies only *new* migrations on future deploys. (If you skip this step the container's fallback runs `db push` instead — still functional, just without recorded history.) Fresh databases need no baselining — `migrate deploy` creates everything.
+**Baseline for a pre-migrations live DB** (one created with `db push`, so its tables already exist but Prisma has no migration history): `scripts/migrate.sh` handles this automatically — when `migrate deploy` fails with **P3005** ("database schema is not empty"), it marks every existing migration as applied (`prisma migrate resolve --applied …`) and retries. This runs at most once; afterwards `migrate deploy` is a no-op on the live DB and applies only *new* migrations. Any **other** migration failure exits non-zero and fails the deploy — recovery on a production database is an explicit, operator-reviewed action, never an automatic schema sync. Fresh databases need no baselining — `migrate deploy` creates everything.

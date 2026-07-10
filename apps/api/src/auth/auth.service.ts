@@ -66,6 +66,57 @@ export class AuthService {
   }
 
   /**
+   * The role a user may hold on a project — the ONE access-resolution rule every
+   * sign-in channel and the project switch go through (SEC-01). Precedence:
+   *   1. an active membership (the authoritative grant — `removed` DENIES);
+   *   2. org owner/admin super-admin reach (operates any org project as PMC);
+   *   3. the legacy home-project fields on `User` — but ONLY when the user has no
+   *      membership row for that project at all (accounts provisioned before
+   *      memberships existed). A `removed` membership therefore revokes access
+   *      even for legacy accounts: removal always wins over the legacy fields.
+   * Returns null when access is denied.
+   */
+  private async resolveProjectRole(user: { id: string; projectId: string; role: string }, projectId: string): Promise<Role | null> {
+    const membership = await this.prisma.membership.findUnique({
+      where: { projectId_userId: { projectId, userId: user.id } },
+    });
+    if (membership?.status === 'active') return membership.role as Role;
+    if (await this.isOrgAdminOfProject(user.id, projectId)) return 'pmc';
+    if (!membership && user.projectId === projectId) return user.role as Role;
+    return null;
+  }
+
+  /**
+   * Where a successful credential lands (SEC-01): the user's home project when
+   * still permitted, else their first active membership, else any project in an
+   * org they administer. When none of those hold the account has been revoked
+   * everywhere — reject the sign-in even though the credential was valid.
+   */
+  private async signInAccess(user: { id: string; projectId: string; role: string }): Promise<{ projectId: string; role: Role }> {
+    const home = await this.prisma.project.findUnique({ where: { id: user.projectId }, select: { archivedAt: true } });
+    if (home && !home.archivedAt) {
+      const homeRole = await this.resolveProjectRole(user, user.projectId);
+      if (homeRole) return { projectId: user.projectId, role: homeRole };
+    }
+    const membership = await this.prisma.membership.findFirst({
+      where: { userId: user.id, status: 'active', project: { archivedAt: null } },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (membership) return { projectId: membership.projectId, role: membership.role as Role };
+    const adminOrgs = await this.prisma.orgMembership.findMany({
+      where: { userId: user.id, role: { in: ['owner', 'admin'] } },
+      select: { orgId: true },
+    });
+    if (adminOrgs.length) {
+      const project = await this.prisma.project.findFirst({
+        where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null },
+      });
+      if (project) return { projectId: project.id, role: 'pmc' };
+    }
+    throw new UnauthorizedException('Your project access has been removed. Ask your PMC to re-add you.');
+  }
+
+  /**
    * Resolve a passwordless sign-in (phone / email / Google) to a token: reuse an
    * existing account matched by phone or email. When there's no match, provision
    * a site-engineer account **only if `allowProvision`** — otherwise reject
@@ -100,10 +151,11 @@ export class AuthService {
       });
       return { token: this.issue(created.id, 'engineer', created.projectId), role: 'engineer', projectId: created.projectId, name: created.name };
     }
+    const access = await this.signInAccess(user);
     return {
-      token: this.issue(user.id, user.role as Role, user.projectId),
-      role: user.role as Role,
-      projectId: user.projectId,
+      token: this.issue(user.id, access.role, access.projectId),
+      role: access.role,
+      projectId: access.projectId,
       name: user.name,
     };
   }
@@ -135,10 +187,12 @@ export class AuthService {
     if (!user?.passwordHash || !(await bcrypt.compare(input.password, user.passwordHash))) {
       throw new UnauthorizedException('Invalid email or password');
     }
+    // a valid password is not enough — the account must still hold access somewhere
+    const access = await this.signInAccess(user);
     return {
-      token: this.issue(user.id, user.role as Role, user.projectId),
-      role: user.role as Role,
-      projectId: user.projectId,
+      token: this.issue(user.id, access.role, access.projectId),
+      role: access.role,
+      projectId: access.projectId,
       name: user.name,
     };
   }
@@ -178,6 +232,11 @@ export class AuthService {
   /** Google sign-in — verify the ID token, then reuse/provision the account by email. */
   async googleSignIn(input: GoogleSignInInput): Promise<TokenResult> {
     const identity = await this.google.verify(input.idToken);
+    // AUTH-01: matching accounts by email is only safe when Google has verified the
+    // address — an unverified claim could otherwise be linked to someone else's account.
+    if (!identity.emailVerified) {
+      throw new UnauthorizedException('This Google account’s email address is not verified.');
+    }
     // Office channel — invite-only unless AUTH_ALLOW_SIGNUP=true.
     return this.signInOrProvision({ email: identity.email, name: identity.name, projectId: input.projectId, allowProvision: this.selfSignupAllowed });
   }
@@ -240,9 +299,14 @@ export class AuthService {
     }
 
     if (rows.length === 0) {
-      // back-compat: a user provisioned before memberships still has a home project
-      const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { project: { include: { org: true } } } });
-      if (user) rows.push({ projectId: user.projectId, name: user.project.name, short: user.project.short, role: user.role as Role, orgId: user.project.orgId, orgName: user.project.org?.name ?? null });
+      // Back-compat: a user provisioned before memberships still has a home project —
+      // but ONLY when they have no membership rows at all. A user whose memberships
+      // were all `removed` has been revoked, not grandfathered (SEC-01).
+      const anyMembership = await this.prisma.membership.findFirst({ where: { userId }, select: { id: true } });
+      if (!anyMembership) {
+        const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { project: { include: { org: true } } } });
+        if (user) rows.push({ projectId: user.projectId, name: user.project.name, short: user.project.short, role: user.role as Role, orgId: user.project.orgId, orgName: user.project.org?.name ?? null });
+      }
     }
     return rows;
   }
@@ -261,28 +325,18 @@ export class AuthService {
   async switchProject(userId: string, projectId: string): Promise<TokenResult> {
     const target = await this.prisma.project.findUnique({ where: { id: projectId }, select: { archivedAt: true } });
     if (target?.archivedAt) throw new ForbiddenException('This project has been archived');
-    const membership = await this.prisma.membership.findUnique({
-      where: { projectId_userId: { projectId, userId } },
-    });
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('Unknown user');
 
-    // Role precedence (intentional): an explicit membership wins over the org-admin
-    // super-admin reach, so an org owner/admin can deliberately operate a specific
-    // project in a narrower role (e.g. as the `client`) by holding a membership there.
-    // Only when there is no explicit membership does org owner/admin fall through to a
-    // PMC token. `listMemberships` mirrors this precedence. (Changing this to always
-    // grant PMC to org admins is a product decision, not a bug — see docs/ORGS.md.)
-    let role: Role;
-    if (membership && membership.status === 'active') {
-      role = membership.role as Role;
-    } else if (user.projectId === projectId) {
-      role = user.role as Role; // back-compat: the user's own home project
-    } else if (await this.isOrgAdminOfProject(userId, projectId)) {
-      role = 'pmc'; // org owner/admin operates any project in their org (no explicit membership)
-    } else {
-      throw new ForbiddenException('You are not a member of this project');
-    }
+    // Role precedence (intentional): an explicit active membership wins over the
+    // org-admin super-admin reach, so an org owner/admin can deliberately operate a
+    // specific project in a narrower role (e.g. as the `client`) by holding a
+    // membership there. The legacy home-project fields count only when the user has
+    // no membership row for that project — a `removed` membership always denies
+    // (SEC-01). `listMemberships` mirrors this precedence. (Granting PMC to org
+    // admins over an explicit membership is a product decision — see docs/ORGS.md.)
+    const role = await this.resolveProjectRole(user, projectId);
+    if (!role) throw new ForbiddenException('You are not a member of this project');
     return { token: this.issue(userId, role, projectId), role, projectId, name: user.name };
   }
 }

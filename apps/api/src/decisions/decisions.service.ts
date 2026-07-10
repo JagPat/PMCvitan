@@ -19,7 +19,11 @@ export class DecisionsService {
   /** PMC issues a new decision (title/room + 2–4 options) → shows as pending on the
    *  client's Decisions Waiting screen. Labels/keys derive from order when omitted. */
   async create(projectId: string, input: CreateDecisionInput, user: AuthUser): Promise<SnapshotDto> {
-    const existing = await this.prisma.decision.findMany({ where: { projectId }, select: { id: true } });
+    // DATA-01: `Decision.id` is the table's GLOBAL primary key, so the sequence must
+    // scan every project — a per-project scan would mint e.g. DL-003 twice (the demo
+    // project already owns it) and crash the second project's create with P2002.
+    // Durable fix (internal PK + per-project code) is tracked in docs/ROADMAP.md.
+    const existing = await this.prisma.decision.findMany({ select: { id: true } });
     const id = nextSeqId('DL-', existing.map((d) => d.id));
     const lead = input.options.find((o) => o.recommended) ?? input.options[0];
     await this.prisma.$transaction([
