@@ -53,6 +53,8 @@ export interface DecisionOption {
   material: string;
   delta: number;
   swatch: SwatchKey;
+  /** uploaded sample photo (media url); the swatch is the fallback rendering */
+  photoUrl?: string;
   recommended: boolean;
 }
 

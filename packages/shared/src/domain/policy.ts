@@ -17,10 +17,14 @@
 import type { TokenRole } from './types';
 
 export const ROLE_POLICY = {
+  'decision.create': ['pmc'],
   'decision.approve': ['client', 'pmc'],
   'decision.change': ['pmc', 'client', 'contractor', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
+  // planning & scheduling — the PMC authors the plan
+  'activity.manage': ['pmc'],
+  'phase.manage': ['pmc'],
   'inspection.submit': ['engineer', 'pmc'],
   'inspection.decide': ['pmc'],
   'dailyLog.flagMismatch': ['engineer', 'pmc'],

@@ -4,7 +4,8 @@ import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
-import type { ApproveInput, ChangeInput } from '../contracts';
+import { nextSeqId } from '../domain/ids';
+import type { ApproveInput, ChangeInput, CreateDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 
 @Injectable()
@@ -14,6 +15,38 @@ export class DecisionsService {
     private readonly snapshot: SnapshotService,
     private readonly realtime: RealtimeGateway,
   ) {}
+
+  /** PMC issues a new decision (title/room + 2–4 options) → shows as pending on the
+   *  client's Decisions Waiting screen. Labels/keys derive from order when omitted. */
+  async create(projectId: string, input: CreateDecisionInput, user: AuthUser): Promise<SnapshotDto> {
+    const existing = await this.prisma.decision.findMany({ where: { projectId }, select: { id: true } });
+    const id = nextSeqId('DL-', existing.map((d) => d.id));
+    const lead = input.options.find((o) => o.recommended) ?? input.options[0];
+    await this.prisma.$transaction([
+      this.prisma.decision.create({
+        data: { id, projectId, title: input.title, room: input.room, status: 'pending', ageDays: 0, photoSwatch: lead.swatch },
+      }),
+      this.prisma.decisionOption.createMany({
+        data: input.options.map((o, i) => ({
+          decisionId: id,
+          label: o.label ?? `Option ${String.fromCharCode(65 + i)}`,
+          optionKey: String.fromCharCode(97 + i),
+          material: o.material,
+          delta: o.delta,
+          swatch: o.swatch,
+          photoUrl: o.photoUrl || null,
+          recommended: o.recommended,
+          order: i,
+        })),
+      }),
+      this.prisma.decisionEvent.create({ data: { decisionId: id, type: 'issued', actor: user.role, payload: { title: input.title } } }),
+      this.prisma.notification.create({ data: { projectId, text: `Decision awaiting approval: ${input.title}`, color: '#C08A2D', time: 'just now' } }),
+      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'decision.create', entity: 'Decision', entityId: id } }),
+    ]);
+    // the client owns the choice — surface it on their side
+    this.realtime.notifyChanged(projectId, `New decision awaiting your approval: ${input.title}`, ['client']);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
 
   /** Client approves an option → the decision is locked (server-authoritative),
    *  audited, a notification is raised, and any linked activity's Decision gate

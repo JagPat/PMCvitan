@@ -1,10 +1,12 @@
+import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase } from '@/store/selectors';
-import { Eyebrow, GateDot, ActivityChip, Button } from '@/components';
-import { PencilRuler } from '@/lib/icons';
-import { dayLabel, gateColor, type Activity, type Phase } from '@vitan/shared';
+import { Eyebrow, GateDot, ActivityChip, Button, Modal } from '@/components';
+import { PencilRuler, Pencil, Plus, X } from '@/lib/icons';
+import { dayLabel, gateColor, can, type Activity, type Phase, type Gate } from '@vitan/shared';
 import type { AppState } from '@/store/store';
+import type { NewActivityInput } from '@/data/apiGateway';
 import styles from './responsive.module.css';
 
 function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
@@ -26,7 +28,7 @@ function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
   return <Button variant="light" disabled style={{ background: 'var(--amber-chip)', color: 'var(--amber-text)', border: '1px solid var(--amber-border)', fontSize: 12.5, padding: '9px 14px' }}>Waiting</Button>;
 }
 
-function ScheduleRow({ a, todayPct }: { a: Activity; todayPct: number }) {
+function ScheduleRow({ a, todayPct, onEdit }: { a: Activity; todayPct: number; onEdit?: (a: Activity) => void }) {
   const state = useStore((s) => s) as AppState;
   const setScreen = useStore((s) => s.setScreen);
   const gates = gatesFor(state, a);
@@ -44,6 +46,11 @@ function ScheduleRow({ a, todayPct }: { a: Activity; todayPct: number }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)' }}>{a.id}</span>
             <ActivityChip status={a.status} />
+            {onEdit && (
+              <button onClick={() => onEdit(a)} aria-label={`Edit ${a.name}`} data-testid={`edit-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2 }}>
+                <Pencil size={12} />
+              </button>
+            )}
           </div>
           <div style={{ fontWeight: 600, fontSize: 14.5, marginTop: 4 }}>{a.name}</div>
           <div style={{ fontSize: 11, color: 'var(--faint)', marginTop: 1 }}>{a.zone}</div>
@@ -92,9 +99,9 @@ function ScheduleRow({ a, todayPct }: { a: Activity; todayPct: number }) {
 
 /** A phase header + its activities. Rollup counts are recomputed live from the
  *  activities so Start / Mark-complete move the phase's progress immediately. */
-function PhaseGroup({ phase, activities, todayPct }: { phase: Phase; activities: Activity[]; todayPct: number }) {
+function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase }: { phase: Phase; activities: Activity[]; todayPct: number; onEdit?: (a: Activity) => void; onDeletePhase?: (phaseId: string) => void }) {
   const acts = activitiesInPhase(activities, [phase], phase.id);
-  if (acts.length === 0) return null;
+  if (acts.length === 0 && !onDeletePhase) return null;
   const r = phaseRollup(activities, phase.id);
   const window = `${dayLabel(phase.plannedStart)} → ${dayLabel(phase.plannedEnd)}`;
 
@@ -103,7 +110,14 @@ function PhaseGroup({ phase, activities, todayPct }: { phase: Phase; activities:
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 10 }}>
         <div style={{ minWidth: 200 }}>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.1em', color: 'var(--faint)' }}>PHASE · {window}</div>
-          <div style={{ fontWeight: 700, fontSize: 17, letterSpacing: '-.01em' }}>{phase.name}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ fontWeight: 700, fontSize: 17, letterSpacing: '-.01em' }}>{phase.name}</div>
+            {onDeletePhase && (
+              <button onClick={() => onDeletePhase(phase.id)} aria-label={`Remove phase ${phase.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2 }}>
+                <X size={14} />
+              </button>
+            )}
+          </div>
         </div>
         <div style={{ flex: 1, minWidth: 150, maxWidth: 320 }}>
           <div style={{ height: 8, borderRadius: 5, background: 'rgba(35,33,28,.1)', overflow: 'hidden' }}>
@@ -126,7 +140,7 @@ function PhaseGroup({ phase, activities, todayPct }: { phase: Phase; activities:
         </div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {acts.map((a) => <ScheduleRow key={a.id} a={a} todayPct={todayPct} />)}
+        {acts.map((a) => <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} />)}
       </div>
     </div>
   );
@@ -140,7 +154,14 @@ export function ScheduleScreen() {
   const projStart = useStore((s) => s.projStart);
   const projEnd = useStore((s) => s.projEnd);
   const elapsedPct = useStore((s) => s.elapsedPct);
+  const role = useStore((s) => s.role);
+  const deletePhase = useStore((s) => s.deletePhase);
   const todayPct = pctOf(todayDay);
+  const canPlan = can('activity.manage', role);
+  const [plan, setPlan] = useState<'new' | Activity | null>(null);
+  const [addingPhase, setAddingPhase] = useState(false);
+  const onEdit = canPlan ? (a: Activity) => setPlan(a) : undefined;
+  const onDeletePhase = canPlan ? (id: string) => deletePhase(id) : undefined;
 
   const legend: { c: string; label: string }[] = [
     { c: gateColor.ok, label: 'Ready' },
@@ -192,10 +213,23 @@ export function ScheduleScreen() {
         </span>
       </div>
 
+      {canPlan && (
+        <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+          <Button variant="ink" onClick={() => setPlan('new')} data-testid="plan-activity" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5 }}>
+            <Plus size={15} /> Plan activity
+          </Button>
+          <Button variant="outline" onClick={() => setAddingPhase(true)} data-testid="add-phase" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5 }}>
+            <Plus size={15} /> Add phase
+          </Button>
+        </div>
+      )}
+      {plan && <PlanActivityModal activity={plan === 'new' ? null : plan} onClose={() => setPlan(null)} />}
+      {addingPhase && <AddPhaseModal onClose={() => setAddingPhase(false)} />}
+
       {phases.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
           {phases.map((ph) => (
-            <PhaseGroup key={ph.id} phase={ph} activities={activities} todayPct={todayPct} />
+            <PhaseGroup key={ph.id} phase={ph} activities={activities} todayPct={todayPct} onEdit={onEdit} onDeletePhase={onDeletePhase} />
           ))}
           {/* unphased activities (if any) render under their own group */}
           {activitiesInPhase(activities, phases, null).length > 0 && (
@@ -203,7 +237,7 @@ export function ScheduleScreen() {
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.1em', color: 'var(--faint)', marginBottom: 10 }}>UNPHASED</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {activitiesInPhase(activities, phases, null).map((a) => (
-                  <ScheduleRow key={a.id} a={a} todayPct={todayPct} />
+                  <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} />
                 ))}
               </div>
             </div>
@@ -212,7 +246,7 @@ export function ScheduleScreen() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {activities.map((a) => (
-            <ScheduleRow key={a.id} a={a} todayPct={todayPct} />
+            <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} />
           ))}
         </div>
       )}
@@ -225,3 +259,118 @@ export function ScheduleScreen() {
     </div>
   );
 }
+
+const GATE_VALUES: Gate[] = ['na', 'wait', 'ok', 'fail'];
+
+/** PMC plans a new activity or edits an existing one (name, zone, planned window in
+ *  day-offsets, phase, linked decision, and the material/team/inspection gates). */
+function PlanActivityModal({ activity, onClose }: { activity: Activity | null; onClose: () => void }) {
+  const createActivity = useStore((s) => s.createActivity);
+  const updateActivity = useStore((s) => s.updateActivity);
+  const deleteActivity = useStore((s) => s.deleteActivity);
+  const phases = useStore(useShallow((s) => s.phases));
+  const decisions = useStore(useShallow((s) => s.decisions));
+  const [name, setName] = useState(activity?.name ?? '');
+  const [zone, setZone] = useState(activity?.zone ?? '');
+  const [ps, setPs] = useState(String(activity?.ps ?? 0));
+  const [pe, setPe] = useState(String(activity?.pe ?? 7));
+  const [phaseId, setPhaseId] = useState(activity?.phaseId ?? '');
+  const [decisionId, setDecisionId] = useState(activity?.decisionId ?? '');
+  const [gm, setGm] = useState<Gate>(activity?.gm ?? 'na');
+  const [gt, setGt] = useState<Gate>(activity?.gt ?? 'na');
+  const [gi, setGi] = useState<Gate>(activity?.gi ?? 'na');
+
+  const psN = parseInt(ps, 10);
+  const peN = parseInt(pe, 10);
+  const ready = name.trim() && Number.isFinite(psN) && Number.isFinite(peN) && peN >= psN && psN >= 0;
+
+  const save = () => {
+    if (!ready) return;
+    const input: NewActivityInput = {
+      name: name.trim(),
+      zone: zone.trim(),
+      plannedStart: psN,
+      plannedEnd: peN,
+      phaseId: phaseId || null,
+      decisionId: decisionId || null,
+      gateMaterial: gm,
+      gateTeam: gt,
+      gateInspection: gi,
+    };
+    if (activity) updateActivity(activity.id, input);
+    else createActivity(input);
+    onClose();
+  };
+
+  return (
+    <Modal onClose={onClose} maxWidth={480} labelledBy="plan-act-title">
+      <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
+        <div id="plan-act-title" style={{ fontWeight: 700, fontSize: 17 }}>{activity ? `Edit ${activity.id}` : 'Plan activity'}</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
+          Planned dates are day numbers on the schedule timeline; the bar renders from them.
+        </div>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Activity (e.g. Master Bath Tiling)" style={{ ...fldS, marginTop: 14, width: '100%' }} data-testid="act-name" />
+        <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone (e.g. First Floor)" style={{ ...fldS, marginTop: 10, width: '100%' }} />
+        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+          <label style={lblS}>Plan start (day)<input value={ps} onChange={(e) => setPs(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
+          <label style={lblS}>Plan end (day)<input value={pe} onChange={(e) => setPe(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+          <label style={lblS}>Phase
+            <select value={phaseId} onChange={(e) => setPhaseId(e.target.value)} style={{ ...fldS, width: '100%' }}>
+              <option value="">— unphased —</option>
+              {phases.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+          <label style={lblS}>Linked decision
+            <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldS, width: '100%' }}>
+              <option value="">— none —</option>
+              {decisions.map((d) => <option key={d.id} value={d.id}>{d.id} · {d.title}</option>)}
+            </select>
+          </label>
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+          {([['Material', gm, setGm], ['Team', gt, setGt], ['Inspection', gi, setGi]] as const).map(([label, v, set]) => (
+            <label key={label} style={lblS}>{label} gate
+              <select value={v} onChange={(e) => set(e.target.value as Gate)} style={{ ...fldS, width: '100%' }}>
+                {GATE_VALUES.map((g) => <option key={g} value={g}>{g}</option>)}
+              </select>
+            </label>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+          {activity && (
+            <Button variant="dangerOutline" onClick={() => { deleteActivity(activity.id); onClose(); }} style={{ padding: 12 }}>Delete</Button>
+          )}
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
+          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-activity" style={{ flex: 1, padding: 12 }}>{activity ? 'Save' : 'Add to plan'}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function AddPhaseModal({ onClose }: { onClose: () => void }) {
+  const createPhase = useStore((s) => s.createPhase);
+  const [name, setName] = useState('');
+  const save = () => {
+    if (!name.trim()) return;
+    createPhase(name.trim());
+    onClose();
+  };
+  return (
+    <Modal onClose={onClose} maxWidth={380} labelledBy="add-phase-title">
+      <div style={{ padding: '18px 20px' }}>
+        <div id="add-phase-title" style={{ fontWeight: 700, fontSize: 17 }}>Add phase</div>
+        <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && save()} placeholder="Phase name (e.g. Finishing)" style={{ ...fldS, marginTop: 14, width: '100%' }} data-testid="phase-name" />
+        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
+          <Button variant="ink" onClick={save} disabled={!name.trim()} data-testid="save-phase" style={{ flex: 1, padding: 12 }}>Add</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+const fldS: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none', marginTop: 4 };
+const lblS: CSSProperties = { flex: 1, fontSize: 11.5, color: 'var(--muted)', display: 'flex', flexDirection: 'column' };

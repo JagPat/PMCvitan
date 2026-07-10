@@ -298,6 +298,7 @@ model DecisionOption {
   material    String
   delta       Int // rupees
   swatch      String
+  photoUrl    String? // uploaded sample photo (media url); swatch is the fallback
   recommended Boolean  @default(false)
   order       Int      @default(0)
 }
