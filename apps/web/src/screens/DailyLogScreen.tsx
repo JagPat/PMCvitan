@@ -1,9 +1,10 @@
-import { useRef, useState, type ChangeEvent } from 'react';
+import { useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectTotalWorkers } from '@/store/selectors';
-import { Eyebrow, Swatch, PhotoViewer } from '@/components';
+import { Eyebrow, Swatch, PhotoViewer, Modal, Button } from '@/components';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check } from '@/lib/icons';
+import { can, SW, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
@@ -20,9 +21,12 @@ export function DailyLogScreen() {
   const flagMismatch = useStore((s) => s.flagMismatch);
   const addProgressPhoto = useStore((s) => s.addProgressPhoto);
   const submitDailyLog = useStore((s) => s.submitDailyLog);
+  const role = useStore((s) => s.role);
+  const startDailyLog = useStore((s) => s.startDailyLog);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState<string | null>(null);
+  const [addingMaterial, setAddingMaterial] = useState(false);
 
   const onPickPhoto = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -45,10 +49,17 @@ export function DailyLogScreen() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       <div className={styles.mobileScreen} style={{ flex: 1, paddingBottom: 20 }}>
-        <div style={{ padding: '10px 0 12px' }}>
-          <Eyebrow size={9}>DAILY SITE LOG</Eyebrow>
-          <div style={{ fontWeight: 700, fontSize: 22, marginTop: 4 }}>Residence at Ambli</div>
-          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{dailyLog.date}</div>
+        <div style={{ padding: '10px 0 12px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <Eyebrow size={9}>DAILY SITE LOG</Eyebrow>
+            <div style={{ fontWeight: 700, fontSize: 22, marginTop: 4 }}>Residence at Ambli</div>
+            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{dailyLog.date}</div>
+          </div>
+          {dailyLog.submitted && can('dailyLog.start', role) && (
+            <Button variant="outline" onClick={startDailyLog} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
+              <Plus size={15} /> Start new day
+            </Button>
+          )}
         </div>
 
         {/* connectivity */}
@@ -132,6 +143,11 @@ export function DailyLogScreen() {
             </div>
           ))}
         </div>
+        {can('dailyLog.addMaterial', role) && (
+          <button onClick={() => setAddingMaterial(true)} data-testid="add-material" style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            <Plus size={16} /> Record material delivery
+          </button>
+        )}
 
         {/* progress */}
         <div style={sectionLabel}>TODAY'S PROGRESS</div>
@@ -162,6 +178,7 @@ export function DailyLogScreen() {
       </div>
 
       {zoom && <PhotoViewer url={zoom} onClose={() => setZoom(null)} />}
+      {addingMaterial && <AddMaterialModal onClose={() => setAddingMaterial(false)} />}
 
       <div className={styles.stickyFoot} style={{ padding: '12px 16px 20px', borderTop: '1px solid rgba(35,33,28,.1)', background: 'var(--panel)' }}>
         <button
@@ -188,3 +205,63 @@ const stepBtn: React.CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
 };
+
+/** Engineer/PMC affordance: record a material delivery on the open daily log,
+ *  optionally linked to a locked decision so the PMC can confirm the match. */
+function AddMaterialModal({ onClose }: { onClose: () => void }) {
+  const addSiteMaterial = useStore((s) => s.addSiteMaterial);
+  const decisions = useStore(useShallow((s) => s.decisions));
+  const [name, setName] = useState('');
+  const [qty, setQty] = useState('');
+  const [zone, setZone] = useState('');
+  const [decisionId, setDecisionId] = useState('');
+  const [swatch, setSwatch] = useState<SwatchKey>('tile');
+
+  const ready = Boolean(name.trim() && qty.trim());
+  const save = () => {
+    if (!ready) return;
+    addSiteMaterial({ name: name.trim(), qty: qty.trim(), zone: zone.trim(), decisionId: decisionId || undefined, swatch });
+    onClose();
+  };
+  const swatchKeys = Object.keys(SW) as SwatchKey[];
+
+  return (
+    <Modal onClose={onClose} maxWidth={440} labelledBy="add-mat-title">
+      <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
+        <div id="add-mat-title" style={{ fontWeight: 700, fontSize: 17 }}>Record material delivery</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
+          Link it to a locked decision so the PMC can confirm the delivery matches what the client approved.
+        </div>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Material (e.g. Italian Marble slabs)" style={{ ...fldM, marginTop: 14, width: '100%' }} data-testid="mat-name" />
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <input value={qty} onChange={(e) => setQty(e.target.value)} placeholder="Qty (e.g. 40 sqm)" style={{ ...fldM, flex: 1, minWidth: 0 }} data-testid="mat-qty" />
+          <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone" style={{ ...fldM, flex: 1, minWidth: 0 }} data-testid="mat-zone" />
+        </div>
+
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '16px 0 6px' }}>LINK TO DECISION (optional)</div>
+        <select value={decisionId} onChange={(e) => setDecisionId(e.target.value)} style={{ ...fldM, width: '100%' }} data-testid="mat-decision" aria-label="Link to decision">
+          <option value="">— No linked decision —</option>
+          {decisions.map((d) => (
+            <option key={d.id} value={d.id}>{d.id} · {d.title}</option>
+          ))}
+        </select>
+
+        <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
+          <Swatch swatch={swatch} size={40} radius={9} />
+          <select value={swatch} onChange={(e) => setSwatch(e.target.value as SwatchKey)} style={{ ...fldM, flex: 1, minWidth: 0 }} aria-label="Material swatch">
+            {swatchKeys.map((k) => (
+              <option key={k} value={k}>{k}</option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
+          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-material" style={{ flex: 1, padding: 12 }}>Record delivery</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+const fldM: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };

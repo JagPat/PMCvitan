@@ -1,9 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
-import type { FlagMismatchInput, SubmitDailyLogInput } from '../contracts';
+import type { AddMaterialInput, FlagMismatchInput, SubmitDailyLogInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 
 @Injectable()
@@ -32,6 +33,41 @@ export class DailyLogService {
     ]);
     // material mismatch blocks work — alert PMC (resolves it) and contractor (supplied it)
     this.realtime.notifyChanged(projectId, `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, ['pmc', 'contractor']);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /** Engineer starts a fresh day's log once the previous one is submitted. Crew trades
+   *  are carried over at count 0 so the steppers appear pre-populated. */
+  async start(projectId: string, user: AuthUser): Promise<SnapshotDto> {
+    const latest = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: { date: 'desc' }, include: { crew: { orderBy: { order: 'asc' } } } });
+    if (latest && !latest.submitted) throw new ConflictException('The current daily log is still open — submit it before starting a new day');
+    const log = await this.prisma.dailyLog.create({ data: { projectId, date: ddMmmYyyy(new Date()) } });
+    if (latest?.crew.length) {
+      await this.prisma.crewRow.createMany({ data: latest.crew.map((c) => ({ dailyLogId: log.id, trade: c.trade, count: 0, order: c.order })) });
+    }
+    await this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'dailylog.start', entity: 'DailyLog', entityId: log.id } });
+    this.realtime.notifyChanged(projectId);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /** Engineer records a material delivery on the open log (optionally linked to the
+   *  decision that approved it, which is what mismatch-flagging keys off). */
+  async addMaterial(projectId: string, input: AddMaterialInput, user: AuthUser): Promise<SnapshotDto> {
+    const log = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: { date: 'desc' }, include: { materials: true } });
+    if (!log) throw new NotFoundException('No daily log for this project — start one first');
+    if (log.submitted) throw new ConflictException('This log is already submitted — start a new day first');
+    if (input.decisionId) {
+      const d = await this.prisma.decision.findUnique({ where: { id: input.decisionId } });
+      if (!d || d.projectId !== projectId) throw new BadRequestException('Unknown decision for this project');
+    }
+    const order = log.materials.reduce((m, x) => Math.max(m, x.order), 0) + 1;
+    await this.prisma.$transaction([
+      this.prisma.siteMaterial.create({
+        data: { dailyLogId: log.id, name: input.name, qty: input.qty, zone: input.zone, decisionId: input.decisionId ?? null, swatch: input.swatch, matched: true, order },
+      }),
+      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'material.add', entity: 'DailyLog', entityId: log.id } }),
+    ]);
+    this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 

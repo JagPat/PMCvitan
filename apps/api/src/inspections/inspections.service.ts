@@ -3,8 +3,10 @@ import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { checklistSubmitError, reinspectionCount } from '../domain/transitions';
+import { ddMmmYyyy } from '../domain/dates';
+import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
-import type { DecideReviewInput, SubmitInspectionInput } from '../contracts';
+import type { CreateInspectionInput, DecideReviewInput, SubmitInspectionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 
 @Injectable()
@@ -14,6 +16,25 @@ export class InspectionsService {
     private readonly snapshot: SnapshotService,
     private readonly realtime: RealtimeGateway,
   ) {}
+
+  /** PMC issues a stage checklist — becomes the engineer's current field checklist. */
+  async create(projectId: string, input: CreateInspectionInput, user: AuthUser): Promise<SnapshotDto> {
+    const existing = await this.prisma.inspection.findMany({ where: { projectId }, select: { id: true } });
+    const id = nextSeqId('INSP-', existing.map((i) => i.id));
+    await this.prisma.$transaction([
+      this.prisma.inspection.create({
+        data: { id, projectId, kind: 'checklist', title: input.title, zone: input.zone, date: ddMmmYyyy(new Date()), submitted: false, decided: false },
+      }),
+      ...input.items.map((name, i) =>
+        this.prisma.inspectionItem.create({ data: { inspectionId: id, name, order: i, photos: 0, note: '' } }),
+      ),
+      this.prisma.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone}`, color: '#C08A2D', time: 'just now' } }),
+      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'inspection.create', entity: 'Inspection', entityId: id } }),
+    ]);
+    // the engineer fills it in the field
+    this.realtime.notifyChanged(projectId, `New checklist: ${input.title} — ${input.zone}`, ['engineer']);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
 
   /** Engineer submits the checklist (guarded: all marked, failed items need a photo). */
   async submit(projectId: string, inspectionId: string, input: SubmitInspectionInput, user: AuthUser): Promise<SnapshotDto> {

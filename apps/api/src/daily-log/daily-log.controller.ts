@@ -3,12 +3,30 @@ import { DailyLogService } from './daily-log.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { Roles, RolesGuard } from '../common/roles';
-import { flagMismatchSchema, submitDailyLogSchema, type FlagMismatchInput, type SubmitDailyLogInput } from '../contracts';
+import { addMaterialSchema, flagMismatchSchema, submitDailyLogSchema, type AddMaterialInput, type FlagMismatchInput, type SubmitDailyLogInput } from '../contracts';
 
 @Controller('projects/:projectId/daily-log')
 @UseGuards(JwtGuard, RolesGuard)
 export class DailyLogController {
   constructor(private readonly dailyLog: DailyLogService) {}
+
+  /** Start a fresh day's log (previous one must be submitted) — engineer (or PMC). */
+  @Post('start')
+  @Roles('engineer', 'pmc')
+  start(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.dailyLog.start(projectId, user);
+  }
+
+  /** Record a material delivery on the open log — engineer (or PMC). */
+  @Post('materials')
+  @Roles('engineer', 'pmc')
+  addMaterial(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(addMaterialSchema)) body: AddMaterialInput,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.dailyLog.addMaterial(projectId, body, user);
+  }
 
   /** Flag a material mismatch against the plan — the site engineer (or PMC). */
   @Post('flag-mismatch')

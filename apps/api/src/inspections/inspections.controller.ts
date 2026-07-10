@@ -3,15 +3,33 @@ import { InspectionsService } from './inspections.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { Roles, RolesGuard } from '../common/roles';
-import { decideReviewSchema, submitInspectionSchema, type DecideReviewInput, type SubmitInspectionInput } from '../contracts';
+import {
+  createInspectionSchema,
+  decideReviewSchema,
+  submitInspectionSchema,
+  type CreateInspectionInput,
+  type DecideReviewInput,
+  type SubmitInspectionInput,
+} from '../contracts';
 
-@Controller('projects/:projectId/inspections/:inspectionId')
+@Controller('projects/:projectId/inspections')
 @UseGuards(JwtGuard, RolesGuard)
 export class InspectionsController {
   constructor(private readonly inspections: InspectionsService) {}
 
+  /** Issue a stage checklist — the PMC/architect defines what gets inspected. */
+  @Post()
+  @Roles('pmc')
+  create(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(createInspectionSchema)) body: CreateInspectionInput,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inspections.create(projectId, body, user);
+  }
+
   /** Submit an inspection's photo checklist — the site engineer (or PMC). */
-  @Post('submit')
+  @Post(':inspectionId/submit')
   @Roles('engineer', 'pmc')
   submit(
     @Param('projectId') projectId: string,
@@ -23,7 +41,7 @@ export class InspectionsController {
   }
 
   /** Approve or reject a submitted inspection — the PMC/architect only. */
-  @Post('decide')
+  @Post(':inspectionId/decide')
   @Roles('pmc')
   decide(
     @Param('projectId') projectId: string,

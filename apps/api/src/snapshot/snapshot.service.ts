@@ -103,7 +103,9 @@ export class SnapshotService {
 
     // The engineer keeps seeing their checklist (as "submitted ✓") after they send
     // it; it ALSO enters the PMC review queue below — two role-views of one inspection.
-    const checklistRow = inspections.find((i) => i.kind === 'checklist');
+    // The engineer's CURRENT checklist: prefer an open (unsubmitted) one — a freshly
+    // issued checklist supersedes an already-submitted earlier one in the field view.
+    const checklistRow = inspections.find((i) => i.kind === 'checklist' && !i.submitted) ?? inspections.find((i) => i.kind === 'checklist');
     // The review queue: any submitted-but-undecided inspection, whatever its kind
     // (a submitted checklist, the seeded review, an auto-created closing inspection).
     // A checklist item's pass/fail/na `state` maps to a review PASS/FAIL result.
