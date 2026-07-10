@@ -66,10 +66,12 @@ describe('AuthService.switchProject', () => {
     expect(jwt.verify<AuthUser>(res.token)).toMatchObject({ sub: 'u1', role: 'client', projectId: 'p2' });
   });
 
-  it('allows the user’s own home project even without a membership row', async () => {
+  it('forbids the user’s own home project when there is no membership row (legacy fallback retired)', async () => {
+    // Before the org-escalation fix this returned a PMC token from User.projectId/User.role.
+    // Access now requires an explicit membership or org-admin reach; the backfill migration
+    // gives genuine legacy accounts a membership so they are unaffected in practice.
     const auth = make([], [{ id: 'u1', projectId: 'p1', role: 'pmc', name: 'Ar. Vitan' }]);
-    const res = await auth.switchProject('u1', 'p1');
-    expect(res).toMatchObject({ projectId: 'p1', role: 'pmc' });
+    await expect(auth.switchProject('u1', 'p1')).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it('forbids switching to a project the user has no access to', async () => {
@@ -109,8 +111,7 @@ describe('AuthService.switchProject', () => {
     await expect(auth.switchProject('u1', 'arch')).rejects.toBeInstanceOf(ForbiddenException);
   });
 
-  it('SEC-01: a removed membership denies the switch even to the user’s legacy home project', async () => {
-    // Before the fix, `user.projectId === projectId` bypassed the `removed` membership.
+  it('SEC-01: a removed membership denies the switch to the user’s home project', async () => {
     const auth = make(
       [{ projectId: 'p1', userId: 'u1', role: 'contractor', status: 'removed' }],
       [{ id: 'u1', projectId: 'p1', role: 'contractor', name: 'Ex Contractor' }],
@@ -152,11 +153,10 @@ describe('AuthService.listMemberships', () => {
     expect(rows).toHaveLength(2);
   });
 
-  it('a pre-membership legacy account still sees its home project (no membership rows at all)', async () => {
+  it('a legacy account with no membership rows lists NO projects (fallback retired; backfill grants the real membership)', async () => {
     const auth = make([], [{ id: 'u1', projectId: 'p1', role: 'pmc', name: 'x' }]);
     const rows = await auth.listMemberships('u1');
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ projectId: 'p1', role: 'pmc' });
+    expect(rows).toEqual([]);
   });
 
   it('SEC-01: a fully-removed user gets NO projects — the legacy fallback never resurrects access', async () => {

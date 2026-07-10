@@ -67,22 +67,24 @@ export class AuthService {
 
   /**
    * The role a user may hold on a project — the ONE access-resolution rule every
-   * sign-in channel and the project switch go through (SEC-01). Precedence:
-   *   1. an active membership (the authoritative grant — `removed` DENIES);
-   *   2. org owner/admin super-admin reach (operates any org project as PMC);
-   *   3. the legacy home-project fields on `User` — but ONLY when the user has no
-   *      membership row for that project at all (accounts provisioned before
-   *      memberships existed). A `removed` membership therefore revokes access
-   *      even for legacy accounts: removal always wins over the legacy fields.
+   * sign-in channel and the project switch go through (SEC-01 / ORG escalation).
+   * Precedence — project access derives from just TWO authoritative sources:
+   *   1. an active project membership (`removed` / `invited` DENY);
+   *   2. org owner/admin super-admin reach (operates any org project as PMC).
+   * The legacy per-user `User.projectId`/`User.role` fields are deliberately NOT
+   * consulted: they let a roster user provisioned as a plain org `member` (no
+   * membership row, homed on a project as `pmc`) mint a PMC session, and a
+   * demotion/removal that only touches OrgMembership failed to revoke it. Every
+   * provisioning path now writes an explicit Membership, and `ensure-accounts`
+   * backfills any pre-membership legacy account, so this stays complete.
    * Returns null when access is denied.
    */
-  private async resolveProjectRole(user: { id: string; projectId: string; role: string }, projectId: string): Promise<Role | null> {
+  private async resolveProjectRole(user: { id: string }, projectId: string): Promise<Role | null> {
     const membership = await this.prisma.membership.findUnique({
       where: { projectId_userId: { projectId, userId: user.id } },
     });
     if (membership?.status === 'active') return membership.role as Role;
     if (await this.isOrgAdminOfProject(user.id, projectId)) return 'pmc';
-    if (!membership && user.projectId === projectId) return user.role as Role;
     return null;
   }
 
@@ -148,6 +150,11 @@ export class AuthService {
           email: input.email,
           phone: input.phone,
         },
+      });
+      // Write the explicit access grant too — access now derives ONLY from an
+      // active membership (or org-admin reach), never from the User row's fields.
+      await this.prisma.membership.create({
+        data: { projectId: input.projectId, userId: created.id, role: 'engineer', status: 'active' },
       });
       return { token: this.issue(created.id, 'engineer', created.projectId), role: 'engineer', projectId: created.projectId, name: created.name };
     }
@@ -298,16 +305,11 @@ export class AuthService {
       }
     }
 
-    if (rows.length === 0) {
-      // Back-compat: a user provisioned before memberships still has a home project —
-      // but ONLY when they have no membership rows at all. A user whose memberships
-      // were all `removed` has been revoked, not grandfathered (SEC-01).
-      const anyMembership = await this.prisma.membership.findFirst({ where: { userId }, select: { id: true } });
-      if (!anyMembership) {
-        const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { project: { include: { org: true } } } });
-        if (user) rows.push({ projectId: user.projectId, name: user.project.name, short: user.project.short, role: user.role as Role, orgId: user.project.orgId, orgName: user.project.org?.name ?? null });
-      }
-    }
+    // No legacy `User.projectId`/`User.role` fallback here (ORG escalation): listing a
+    // home project from those fields is the same phantom grant that let a roster
+    // `member` see a project as PMC. A genuine pre-membership account is covered by
+    // the `ensure-accounts` membership backfill; anything else legitimately has no
+    // projects to list.
     return rows;
   }
 

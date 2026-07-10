@@ -88,10 +88,18 @@ export class OrgsService {
    * Add someone to the org's admin roster (owner/admin/member) — the only way to
    * grant org-tier power, which an existing project-member API can't. Gated to an
    * org **owner**: granting/revoking admin access is the owner's alone, so an admin
-   * can't escalate itself or seed new admins. Provisions the invited identity if new
-   * (homed on the org's first active project as PMC, so a later phone/email-OTP
-   * sign-in resolves to a PMC session; an org owner/admin then reaches every project
-   * via the super-admin switch). Phone is stored bare (10-digit) to match sign-in.
+   * can't escalate itself or seed new admins.
+   *
+   * Access model (ORG escalation fix): an org `owner`/`admin` reaches every project in
+   * the org as PMC via the super-admin switch (`isOrgAdminOfProject`), so they need NO
+   * project membership; a plain `member` gets NO project access here — they must be
+   * added to a specific project's team to operate it. A brand-new identity is created
+   * WITHOUT any project grant (no membership, and the required `User.projectId` FK is
+   * homed on the org's first project purely to satisfy the schema — it no longer
+   * confers access, since resolution reads memberships + org role only). This is what
+   * makes demotion/removal actually revoke: strip the OrgMembership and an admin loses
+   * the super-admin reach, with no phantom PMC membership left behind. Phone is stored
+   * bare (10-digit) to match sign-in.
    */
   async addOrgMember(orgId: string, callerId: string, input: AddOrgMemberInput): Promise<OrgMemberDto> {
     if ((await this.orgRole(orgId, callerId)) !== 'owner') throw new ForbiddenException('Only an org owner can manage the admin roster');
@@ -111,7 +119,9 @@ export class OrgsService {
       (phone && (await this.prisma.user.findUnique({ where: { phone } }))) ||
       null;
     if (!user) {
-      user = await this.prisma.user.create({ data: { projectId: homeProject.id, role: 'pmc', name: input.name, email, phone } });
+      // Least-privilege home role: dormant now (access is membership + org-role only),
+      // but if the field is ever consulted again it must not read as `pmc`.
+      user = await this.prisma.user.create({ data: { projectId: homeProject.id, role: 'contractor', name: input.name, email, phone } });
     }
 
     const membership = await this.prisma.orgMembership.upsert({
@@ -222,12 +232,29 @@ export class OrgsService {
     return { ok: true };
   }
 
-  /** Projects in an org (members only). Archived projects are hidden. */
+  /**
+   * Projects in an org, scoped by the caller's reach (ORG member-isolation).
+   * An org `owner`/`admin` sees every (non-archived) project — that's the
+   * super-admin reach. A plain `member` sees ONLY the projects where they hold an
+   * active project `Membership`, so they can't enumerate the whole org. Archived
+   * projects are hidden either way.
+   */
   async listProjects(orgId: string, userId: string): Promise<Array<{ id: string; name: string; short: string; stage: string }>> {
-    if (!(await this.orgRole(orgId, userId))) throw new ForbiddenException('Not a member of this org');
+    const role = await this.orgRole(orgId, userId);
+    if (!role) throw new ForbiddenException('Not a member of this org');
     const org = await this.prisma.org.findUnique({ where: { id: orgId }, include: { projects: { where: { archivedAt: null }, orderBy: { createdAt: 'asc' } } } });
     if (!org) throw new NotFoundException('Org not found');
-    return org.projects.map((p) => ({ id: p.id, name: p.name, short: p.short, stage: p.stage }));
+
+    let visible = org.projects;
+    if (role !== 'owner' && role !== 'admin') {
+      const memberships = await this.prisma.membership.findMany({
+        where: { userId, status: 'active', projectId: { in: org.projects.map((p) => p.id) } },
+        select: { projectId: true },
+      });
+      const allowed = new Set(memberships.map((m) => m.projectId));
+      visible = org.projects.filter((p) => allowed.has(p.id));
+    }
+    return visible.map((p) => ({ id: p.id, name: p.name, short: p.short, stage: p.stage }));
   }
 
   /** Archived (soft-deleted) projects in an org — owner/admin only, for the restore UI. */

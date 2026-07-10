@@ -25,17 +25,34 @@ interface FakeMembership {
   status: string;
 }
 
+interface FakeOrgMembership {
+  orgId: string;
+  userId: string;
+  role: string;
+}
+
 /** Minimal in-memory Prisma stand-in for the tables AuthService touches. */
-function fakePrisma(seed: FakeUser[] = [], membershipSeed: FakeMembership[] = []) {
+function fakePrisma(seed: FakeUser[] = [], membershipSeed: FakeMembership[] = [], orgMembershipSeed: FakeOrgMembership[] = []) {
   const users = [...seed];
   const memberships = [...membershipSeed];
+  const orgMemberships = [...orgMembershipSeed];
+  // Known projects: 'ambli' (active, org 'org1'); 'archived-proj' (archived).
+  const projects: Array<{ id: string; orgId: string | null; archivedAt: Date | null }> = [
+    { id: 'ambli', orgId: 'org1', archivedAt: null },
+    { id: 'archived-proj', orgId: 'org1', archivedAt: new Date() },
+  ];
+  const isActiveProject = (projectId: string): boolean => {
+    const p = projects.find((x) => x.id === projectId);
+    return p ? !p.archivedAt : true; // projects not modelled here are treated as active
+  };
   let workerSeq = 0;
   return {
     users,
+    memberships,
     workerCreated: [] as unknown[],
     user: {
-      findUnique: async ({ where }: { where: { email?: string; phone?: string } }) =>
-        users.find((u) => (where.email && u.email === where.email) || (where.phone && u.phone === where.phone)) ?? null,
+      findUnique: async ({ where }: { where: { id?: string; email?: string; phone?: string } }) =>
+        users.find((u) => (where.id && u.id === where.id) || (where.email && u.email === where.email) || (where.phone && u.phone === where.phone)) ?? null,
       findFirst: async ({ where }: { where: { role?: string; projectId?: string } }) =>
         users.find((u) => (where.role ? u.role === where.role : true) && (where.projectId ? u.projectId === where.projectId : true)) ?? null,
       create: async ({ data }: { data: Omit<FakeUser, 'id'> }) => {
@@ -47,12 +64,29 @@ function fakePrisma(seed: FakeUser[] = [], membershipSeed: FakeMembership[] = []
     membership: {
       findUnique: async ({ where }: { where: { projectId_userId: { projectId: string; userId: string } } }) =>
         memberships.find((m) => m.projectId === where.projectId_userId.projectId && m.userId === where.projectId_userId.userId) ?? null,
-      findFirst: async ({ where }: { where: { userId: string; status?: string } }) =>
-        memberships.find((m) => m.userId === where.userId && (where.status ? m.status === where.status : true)) ?? null,
+      findFirst: async ({ where }: { where: { userId: string; status?: string; project?: { archivedAt: null } } }) =>
+        memberships.find(
+          (m) =>
+            m.userId === where.userId &&
+            (where.status ? m.status === where.status : true) &&
+            (where.project?.archivedAt === null ? isActiveProject(m.projectId) : true),
+        ) ?? null,
+      findMany: async ({ where }: { where: { userId: string; status?: string } }) =>
+        memberships
+          .filter((m) => m.userId === where.userId && (where.status ? m.status === where.status : true))
+          .map((m) => ({ ...m, project: { name: m.projectId, short: m.projectId, orgId: 'org1', archivedAt: null, org: { name: 'Vitan' } } })),
+      create: async ({ data }: { data: FakeMembership }) => {
+        memberships.push({ ...data });
+        return { id: `m${memberships.length}`, ...data };
+      },
     },
     orgMembership: {
-      findUnique: async () => null,
-      findMany: async () => [],
+      findUnique: async ({ where }: { where: { orgId_userId: { orgId: string; userId: string } } }) =>
+        orgMemberships.find((o) => o.orgId === where.orgId_userId.orgId && o.userId === where.orgId_userId.userId) ?? null,
+      findMany: async ({ where }: { where: { userId: string; role?: { in: string[] } } }) =>
+        orgMemberships
+          .filter((o) => o.userId === where.userId && (where.role?.in ? where.role.in.includes(o.role) : true))
+          .map((o) => ({ orgId: o.orgId })),
     },
     workerDevice: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
@@ -61,13 +95,11 @@ function fakePrisma(seed: FakeUser[] = [], membershipSeed: FakeMembership[] = []
       },
     },
     project: {
-      // 'ambli' is the seeded demo project; 'archived-proj' exists but is archived.
-      findUnique: async ({ where }: { where: { id: string } }) => {
-        if (where.id === 'ambli') return { archivedAt: null };
-        if (where.id === 'archived-proj') return { archivedAt: new Date() };
-        return null;
-      },
-      findFirst: async () => null,
+      findUnique: async ({ where }: { where: { id: string } }) => projects.find((p) => p.id === where.id) ?? null,
+      findFirst: async ({ where }: { where: { orgId?: { in: string[] }; archivedAt?: null } }) =>
+        projects.find(
+          (p) => (where.orgId?.in ? p.orgId !== null && where.orgId.in.includes(p.orgId) : true) && (where.archivedAt === null ? !p.archivedAt : true),
+        ) ?? null,
     },
   };
 }
@@ -90,9 +122,10 @@ describe('AuthService.login', () => {
   });
 
   it('accepts the right password and issues a role-scoped token', async () => {
-    const prisma = fakePrisma([
-      { id: 'u1', projectId: 'ambli', role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in', passwordHash: bcrypt.hashSync('secret', 10) },
-    ]);
+    const prisma = fakePrisma(
+      [{ id: 'u1', projectId: 'ambli', role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in', passwordHash: bcrypt.hashSync('secret', 10) }],
+      [{ projectId: 'ambli', userId: 'u1', role: 'pmc', status: 'active' }],
+    );
     const { auth, jwt } = make(prisma);
     const res = await auth.login({ email: 'PMC@vitan.in', password: 'secret' });
     expect(res.role).toBe('pmc');
@@ -183,9 +216,10 @@ describe('AuthService.verifyOtp', () => {
 
   it('a known number always signs in, even with phone signup disabled', async () => {
     process.env.AUTH_ALLOW_PHONE_SIGNUP = 'false';
-    const prisma = fakePrisma([
-      { id: 'u9', projectId: 'ambli', role: 'engineer', name: 'Ramesh', phone: '9876543210' },
-    ]);
+    const prisma = fakePrisma(
+      [{ id: 'u9', projectId: 'ambli', role: 'engineer', name: 'Ramesh', phone: '9876543210' }],
+      [{ projectId: 'ambli', userId: 'u9', role: 'engineer', status: 'active' }],
+    );
     const { auth, sms } = make(prisma);
     const { devCode } = await sms.sendOtp('9876543210');
     const res = await auth.verifyOtp({ phone: '9876543210', code: devCode!, projectId: 'ambli' });
@@ -194,9 +228,10 @@ describe('AuthService.verifyOtp', () => {
   });
 
   it('reuses an existing account for the phone', async () => {
-    const prisma = fakePrisma([
-      { id: 'u9', projectId: 'ambli', role: 'engineer', name: 'Ramesh', phone: '9876543210' },
-    ]);
+    const prisma = fakePrisma(
+      [{ id: 'u9', projectId: 'ambli', role: 'engineer', name: 'Ramesh', phone: '9876543210' }],
+      [{ projectId: 'ambli', userId: 'u9', role: 'engineer', status: 'active' }],
+    );
     const { auth, sms } = make(prisma);
     const { devCode } = await sms.sendOtp('9876543210');
     const res = await auth.verifyOtp({ phone: '9876543210', code: devCode!, projectId: 'ambli' });
@@ -315,9 +350,10 @@ describe('AuthService — email OTP', () => {
   });
 
   it('reuses an existing account (by email) with its role — even when invite-only', async () => {
-    const prisma = fakePrisma([
-      { id: 'u1', projectId: 'ambli', role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in' },
-    ]);
+    const prisma = fakePrisma(
+      [{ id: 'u1', projectId: 'ambli', role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in' }],
+      [{ projectId: 'ambli', userId: 'u1', role: 'pmc', status: 'active' }],
+    );
     const { auth } = make(prisma);
     const req = await auth.requestEmailOtp({ email: 'pmc@vitan.in', projectId: 'ambli' });
     const res = await auth.verifyEmailOtp({ email: 'PMC@vitan.in', code: req.devCode!, projectId: 'ambli' });
@@ -353,13 +389,77 @@ describe('AuthService — Google sign-in', () => {
   });
 
   it('signs in an existing account matched by Google email', async () => {
-    const prisma = fakePrisma([
-      { id: 'u1', projectId: 'ambli', role: 'client', name: 'Mr. Shah', email: 'client@vitan.in' },
-    ]);
+    const prisma = fakePrisma(
+      [{ id: 'u1', projectId: 'ambli', role: 'client', name: 'Mr. Shah', email: 'client@vitan.in' }],
+      [{ projectId: 'ambli', userId: 'u1', role: 'client', status: 'active' }],
+    );
     const { auth, google } = make(prisma);
     google.verify = async () => ({ email: 'client@vitan.in', name: 'Mr. Shah', emailVerified: true });
     const res = await auth.googleSignIn({ idToken: 'tok', projectId: 'ambli' });
     expect(res.role).toBe('client');
     expect(prisma.users).toHaveLength(1); // reused, not provisioned
+  });
+
+  it('AUTH-01: rejects a Google identity whose email is not verified', async () => {
+    const prisma = fakePrisma(
+      [{ id: 'u1', projectId: 'ambli', role: 'client', name: 'Mr. Shah', email: 'client@vitan.in' }],
+      [{ projectId: 'ambli', userId: 'u1', role: 'client', status: 'active' }],
+    );
+    const { auth, google } = make(prisma);
+    google.verify = async () => ({ email: 'client@vitan.in', name: 'Mr. Shah', emailVerified: false });
+    await expect(auth.googleSignIn({ idToken: 'tok', projectId: 'ambli' })).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+});
+
+/**
+ * Org-roster escalation (Codex addendum). A roster identity is provisioned homed on a
+ * project as a legacy `contractor` with NO project membership; project access must come
+ * ONLY from an active membership or an org owner/admin role — never the legacy User
+ * fields. These wire roster org-role state directly to AuthService access resolution.
+ */
+describe('AuthService — org-roster access resolution', () => {
+  const pw = bcrypt.hashSync('secret', 10);
+  // A roster-provisioned identity: homed on 'ambli', dormant legacy role, no membership.
+  const rosterUser = () => [{ id: 'u1', projectId: 'ambli', role: 'contractor', name: 'Chitrang', email: 'c@vitan.in', passwordHash: pw }];
+
+  it('a plain org MEMBER (no project membership) cannot obtain a project token', async () => {
+    const prisma = fakePrisma(rosterUser(), [], [{ orgId: 'org1', userId: 'u1', role: 'member' }]);
+    const { auth } = make(prisma);
+    await expect(auth.login({ email: 'c@vitan.in', password: 'secret' })).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.switchProject('u1', 'ambli')).rejects.toBeInstanceOf(ForbiddenException);
+    expect(await auth.listMemberships('u1')).toEqual([]); // can't even enumerate the project
+  });
+
+  it('an org ADMIN reaches the org project as PMC while active', async () => {
+    const prisma = fakePrisma(rosterUser(), [], [{ orgId: 'org1', userId: 'u1', role: 'admin' }]);
+    const { auth } = make(prisma);
+    const res = await auth.login({ email: 'c@vitan.in', password: 'secret' });
+    expect(res).toMatchObject({ projectId: 'ambli', role: 'pmc' });
+    expect(await auth.switchProject('u1', 'ambli')).toMatchObject({ role: 'pmc' });
+  });
+
+  it('demoting that admin to member immediately removes PMC access (no phantom membership left behind)', async () => {
+    // demotion only changes the OrgMembership row — the fix means that IS the whole grant
+    const prisma = fakePrisma(rosterUser(), [], [{ orgId: 'org1', userId: 'u1', role: 'member' }]);
+    const { auth } = make(prisma);
+    await expect(auth.login({ email: 'c@vitan.in', password: 'secret' })).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('removing the org membership entirely leaves no project access', async () => {
+    const prisma = fakePrisma(rosterUser(), [], []); // org membership deleted
+    const { auth } = make(prisma);
+    await expect(auth.login({ email: 'c@vitan.in', password: 'secret' })).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.switchProject('u1', 'ambli')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('an admin who ALSO holds an explicit project membership keeps that project via the membership', async () => {
+    const prisma = fakePrisma(
+      rosterUser(),
+      [{ projectId: 'ambli', userId: 'u1', role: 'client', status: 'active' }], // explicit narrower role
+      [{ orgId: 'org1', userId: 'u1', role: 'admin' }],
+    );
+    const { auth } = make(prisma);
+    // explicit membership wins over the org-admin PMC reach (documented precedence)
+    expect(await auth.switchProject('u1', 'ambli')).toMatchObject({ role: 'client' });
   });
 });
