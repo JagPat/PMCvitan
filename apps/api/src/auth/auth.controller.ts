@@ -4,6 +4,7 @@ import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, Public } from '../common/roles';
 import { Throttle, ThrottleGuard } from '../common/throttle';
+import { isProduction } from '../config';
 
 /** Rate-limit window shared by the auth endpoints. */
 const WINDOW = 10 * 60 * 1000; // 10 minutes
@@ -42,17 +43,18 @@ export class AuthController {
   }
 
   /**
-   * Passwordless dev auth (demo persona switch). **Secure by default**: only
-   * enabled when ALLOW_DEV_AUTH is explicitly "true". Any other value — or the
-   * var being unset — returns 403, so a fresh deploy can't hand out a full PMC
-   * token to anyone who POSTs `{role:"pmc"}`. Flip it on for the demo; drop it
-   * once real sign-in (password / email-OTP / Google) covers every role.
+   * Passwordless dev auth (demo persona switch). **Secure by default**: enabled only
+   * when ALLOW_DEV_AUTH is explicitly "true" AND the API is not running in production.
+   * Anyone reaching it gets a full role-scoped token for the asked role, so it must
+   * NEVER be reachable on a production deploy — even if the env template ships
+   * ALLOW_DEV_AUTH=true, `NODE_ENV=production` hard-disables it here (P1-4). Real
+   * sign-in (password / email-OTP / Google) covers production.
    */
   @Public()
   @Throttle(20, WINDOW)
   @Post('session')
   session(@Body(new ZodPipe(sessionSchema)) body: SessionInput) {
-    if (process.env.ALLOW_DEV_AUTH !== 'true') {
+    if (isProduction() || process.env.ALLOW_DEV_AUTH !== 'true') {
       throw new ForbiddenException('Dev auth is disabled');
     }
     return this.auth.session(body);

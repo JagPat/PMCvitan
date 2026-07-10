@@ -85,6 +85,23 @@ describe('SmsService (Telegram Gateway)', () => {
   });
 });
 
+describe('SmsService — production stub is fail-closed (P1-1)', () => {
+  beforeEach(() => {
+    delete process.env.MSG91_AUTH_KEY;
+    delete process.env.MSG91_TEMPLATE_ID;
+    delete process.env.TELEGRAM_GATEWAY_TOKEN;
+    delete process.env.FAST2SMS_API_KEY;
+    process.env.NODE_ENV = 'production';
+  });
+  afterEach(() => {
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('refuses to send (503) instead of returning a code when no provider is configured', async () => {
+    await expect(new SmsService().sendOtp('9876543210')).rejects.toMatchObject({ status: 503 });
+  });
+});
+
 // Fast2SMS channel: real SMS via the DLT-exempt `otp` route, code generated + verified locally.
 describe('SmsService (Fast2SMS)', () => {
   beforeEach(() => {

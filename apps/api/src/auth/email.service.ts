@@ -2,6 +2,7 @@ import { HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableExcept
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 import { OtpStore } from './otp-store';
+import { isProduction } from '../config';
 
 const OTP_TTL_MS = 10 * 60_000;
 
@@ -50,13 +51,21 @@ export class EmailService {
     if (!this.otp.canSend(key)) {
       throw new HttpException('Please wait a moment before requesting another code.', HttpStatus.TOO_MANY_REQUESTS);
     }
-    const code = this.newCode();
-    this.otp.put(key, code);
-
     if (!this.configured) {
+      // P1-1: never hand the code back to the caller in production — that would let
+      // anyone request an OTP for a known address and read the code from the response
+      // (account takeover). The dev stub is dev/test only; in prod, fail closed.
+      if (isProduction()) {
+        throw new ServiceUnavailableException('Email sign-in is not available — no mail provider is configured.');
+      }
+      const code = this.newCode();
+      this.otp.put(key, code);
       this.log.warn(`DEV EMAIL OTP for ${key}: ${code} (no SMTP configured)`);
       return { live: false, devCode: code };
     }
+
+    const code = this.newCode();
+    this.otp.put(key, code);
 
     try {
       await this.tx().sendMail({

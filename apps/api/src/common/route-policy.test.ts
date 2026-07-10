@@ -146,6 +146,8 @@ describe('route authorization policy', () => {
  */
 const EXPECTED_ROLES: Record<string, string[]> = {
   'ProjectController.snapshotFor': ['pmc', 'client', 'engineer', 'contractor'], // SEC-02: no worker tokens
+  'MembersController.list': ['pmc', 'client', 'engineer', 'contractor'], // P1-2: no worker PII reads
+  'CompaniesController.list': ['pmc', 'client', 'engineer', 'contractor'], // P1-2: no worker contact reads
   'DecisionsController.create': ['pmc'],
   'DecisionsController.approve': ['client', 'pmc'],
   'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer'],
