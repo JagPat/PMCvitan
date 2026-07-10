@@ -49,6 +49,28 @@ async function main(): Promise<void> {
     await prisma.project.update({ where: { id: PROJECT_ID }, data: { orgId: org.id } });
   }
 
+  // Promote a specific existing account to org OWNER (super-admin) — idempotent, additive
+  // (does not demote anyone; the org can have several owners). Use this to hand the owner
+  // role to e.g. jp@vitan.in without shell access: set ORG_OWNER_EMAIL + AUTO_ENSURE_ACCOUNTS
+  // and redeploy. Only an owner can manage the admin roster, so this is how you make the
+  // super-admin who can add/remove other admins.
+  const ownerEmail = process.env.ORG_OWNER_EMAIL?.trim().toLowerCase();
+  if (ownerEmail) {
+    const ownerUser = await prisma.user.findUnique({ where: { email: ownerEmail } });
+    if (!ownerUser) {
+      // eslint-disable-next-line no-console
+      console.warn(`ORG_OWNER_EMAIL="${ownerEmail}" — no such user yet; sign them in once (or add them below), then rerun.`);
+    } else {
+      await prisma.orgMembership.upsert({
+        where: { orgId_userId: { orgId: org.id, userId: ownerUser.id } },
+        update: { role: 'owner' },
+        create: { orgId: org.id, userId: ownerUser.id, role: 'owner' },
+      });
+      // eslint-disable-next-line no-console
+      console.log(`promoted ${ownerEmail} to OWNER of "${org.slug}"`);
+    }
+  }
+
   const accounts: AccountSpec[] = process.env.ACCOUNTS_JSON
     ? (JSON.parse(process.env.ACCOUNTS_JSON) as AccountSpec[])
     : DEFAULT_ACCOUNTS;
