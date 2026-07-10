@@ -295,4 +295,24 @@ describe('OrgsService.portfolio', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ projectId: 'villa', role: 'pmc', activityTotal: 2, done: 1 });
   });
+
+  it('ORG residual: a user with no membership and no org-admin role gets an EMPTY board (no legacy home-project fallback)', async () => {
+    // Fake where the legacy `User.projectId`/`User.role` row still exists — before the fix
+    // portfolio() fell back to it and leaked a project card (with pending-decision counts
+    // when the stale role was pmc/client). Now the board is membership + org-admin only.
+    const home = { id: 'ambli', name: 'Residence at Ambli', short: 'Ambli', stage: 'Finishing', milestonePct: 72, orgId: 'org1', org: { name: 'Vitan' } };
+    const prisma = {
+      membership: { findMany: vi.fn(async () => []) }, // no active memberships
+      user: { findUnique: vi.fn(async () => ({ projectId: 'ambli', role: 'pmc', project: home })) }, // stale legacy fields
+      orgMembership: { findMany: vi.fn(async () => []) }, // not an org owner/admin
+      project: { findMany: vi.fn(async () => []) },
+      activity: { findMany: vi.fn(async () => []) },
+      inspection: { count: vi.fn(async () => 0) },
+      decision: { count: vi.fn(async () => 3) },
+      phase: { count: vi.fn(async () => 0) },
+    };
+    const svc = new OrgsService(prisma as unknown as PrismaService);
+    expect(await svc.portfolio('u1')).toEqual([]);
+    expect(prisma.decision.count).not.toHaveBeenCalled(); // never even reached a project rollup
+  });
 });

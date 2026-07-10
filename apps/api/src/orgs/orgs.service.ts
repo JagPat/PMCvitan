@@ -277,7 +277,7 @@ export class OrgsService {
       include: { project: { include: { org: true } } },
     });
     // archived projects are hidden from the board
-    let scoped = memberships.filter((m) => !m.project.archivedAt).map((m) => ({ project: m.project, role: m.role }));
+    const scoped = memberships.filter((m) => !m.project.archivedAt).map((m) => ({ project: m.project, role: m.role }));
 
     // Org super-admin reach: owners/admins see every (non-archived) project in their org (as PMC).
     const adminOrgs = await this.prisma.orgMembership.findMany({ where: { userId, role: { in: ['owner', 'admin'] } }, select: { orgId: true } });
@@ -289,11 +289,12 @@ export class OrgsService {
       }
     }
 
-    if (scoped.length === 0) {
-      // back-compat: a user provisioned before memberships still has a home project
-      const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { project: { include: { org: true } } } });
-      if (user) scoped = [{ project: user.project, role: user.role }];
-    }
+    // No legacy `User.projectId`/`User.role` fallback (org-escalation fix, mirrors
+    // AuthService.listMemberships): the portfolio board is built from active memberships
+    // and org owner/admin reach only. Falling back to the per-user home fields would put a
+    // project card — with pending-decision counts when the stale role is pmc/client — in
+    // front of a roster `member` or a removed user. Genuine pre-membership accounts are
+    // covered by the `ensure-accounts` membership backfill.
 
     return Promise.all(
       scoped.map(async ({ project, role }) => {
