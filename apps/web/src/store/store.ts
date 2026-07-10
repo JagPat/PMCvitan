@@ -305,10 +305,27 @@ export const useStore = create<Store>()(
         .catch(() => get().flash('Could not reach the server — please try again.'));
     };
 
-    const OUTBOX_KEY = 'vitan.outbox';
+    // WEB-02: queued offline writes are scoped to WHO queued them and WHERE — the
+    // storage key carries the signed-in user (JWT sub) + the active project, so work
+    // queued in one project (or by one user on a shared device) is never replayed
+    // into another. `hydrateOutbox` swaps the in-memory queue whenever that scope
+    // changes (useApiSync re-runs it on every token / project change).
+    const LEGACY_OUTBOX_KEY = 'vitan.outbox';
+    const outboxKey = (): string => {
+      let sub = 'anon';
+      const token = get().sessionToken;
+      if (token) {
+        try {
+          sub = (JSON.parse(atob(token.split('.')[1])) as { sub?: string }).sub ?? 'anon';
+        } catch {
+          /* malformed token — treat as the anonymous scope */
+        }
+      }
+      return `vitan.outbox.${sub}.${get().activeProjectId}`;
+    };
     const persistOutbox = (): void => {
       try {
-        globalThis.localStorage?.setItem(OUTBOX_KEY, JSON.stringify(get().outbox));
+        globalThis.localStorage?.setItem(outboxKey(), JSON.stringify(get().outbox));
       } catch {
         /* storage unavailable — the in-session outbox still works */
       }
@@ -407,6 +424,10 @@ export const useStore = create<Store>()(
         s.screen = screensFor('client')[0].key;
         s.notifOpen = false;
         s.modal = { type: null };
+        // WEB-02: quarantine this user's queued work — it stays persisted under THEIR
+        // scope key and resumes on their next sign-in; the next user never replays it.
+        s.outbox = [];
+        s.syncQueue = [];
       }),
     setScreen: (k) =>
       set((s) => {
@@ -1116,10 +1137,20 @@ export const useStore = create<Store>()(
     },
     hydrateOutbox: () => {
       try {
-        const raw = globalThis.localStorage?.getItem(OUTBOX_KEY);
-        if (!raw) return;
-        const ops = JSON.parse(raw) as OutboxOp[];
-        if (Array.isArray(ops) && ops.length) set((s) => { s.outbox = ops; });
+        const storage = globalThis.localStorage;
+        if (!storage) return;
+        // one-time migration: adopt the old unscoped queue into the current scope
+        const legacy = storage.getItem(LEGACY_OUTBOX_KEY);
+        if (legacy) {
+          storage.removeItem(LEGACY_OUTBOX_KEY);
+          if (!storage.getItem(outboxKey())) storage.setItem(outboxKey(), legacy);
+        }
+        // REPLACE the in-memory queue with this scope's persisted one (WEB-02) —
+        // called again on every sign-in / project switch, so ops queued under a
+        // different user or project never leak into the current context.
+        const raw = storage.getItem(outboxKey());
+        const ops = raw ? (JSON.parse(raw) as OutboxOp[]) : [];
+        set((s) => { s.outbox = Array.isArray(ops) ? ops : []; });
       } catch {
         /* ignore malformed storage */
       }

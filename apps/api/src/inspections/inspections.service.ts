@@ -19,7 +19,8 @@ export class InspectionsService {
 
   /** PMC issues a stage checklist — becomes the engineer's current field checklist. */
   async create(projectId: string, input: CreateInspectionInput, user: AuthUser): Promise<SnapshotDto> {
-    const existing = await this.prisma.inspection.findMany({ where: { projectId }, select: { id: true } });
+    // DATA-01: ids are globally unique — scan every project, not just this one (see decisions.service).
+    const existing = await this.prisma.inspection.findMany({ select: { id: true } });
     const id = nextSeqId('INSP-', existing.map((i) => i.id));
     await this.prisma.$transaction([
       this.prisma.inspection.create({

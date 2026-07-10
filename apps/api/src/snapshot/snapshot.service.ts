@@ -109,6 +109,10 @@ export class SnapshotService {
     // The review queue: any submitted-but-undecided inspection, whatever its kind
     // (a submitted checklist, the seeded review, an auto-created closing inspection).
     // A checklist item's pass/fail/na `state` maps to a review PASS/FAIL result.
+    // AUTH-02: the queue is the PMC's internal sign-off surface — it is serialized
+    // ONLY for the pmc role; clients/contractors/engineers get an empty list, so
+    // hiding the screen in the UI is backed by the API response itself.
+    const isPmc = role === 'pmc';
     const reviews = inspections
       .filter((i) => i.submitted && !i.decided)
       .sort((a, b) => a.id.localeCompare(b.id))
@@ -203,6 +207,9 @@ export class SnapshotService {
       },
       decisions: decisionDtos,
       activities: activityDtos,
+      reviews: isPmc ? reviews : [],
+      review: isPmc ? (reviews[0] ?? null) : null, // deprecated single (first pending) — back-compat
+      reinspectionCreated: isPmc ? reinspectionCreated : false,
       checklist: checklistRow
         ? {
             id: checklistRow.id,
@@ -213,9 +220,6 @@ export class SnapshotService {
             items: checklistRow.items.map((it) => ({ name: it.name, state: it.state, photos: it.photos, note: it.note })),
           }
         : null,
-      reviews,
-      review: reviews[0] ?? null, // deprecated single (first pending) — back-compat
-      reinspectionCreated,
       drawings: drawingDtos,
       phases: phaseDtos,
       dailyLog: dailyLog

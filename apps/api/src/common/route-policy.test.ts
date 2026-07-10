@@ -145,6 +145,7 @@ describe('route authorization policy', () => {
  * straight from it and this mirror goes away.)
  */
 const EXPECTED_ROLES: Record<string, string[]> = {
+  'ProjectController.snapshotFor': ['pmc', 'client', 'engineer', 'contractor'], // SEC-02: no worker tokens
   'DecisionsController.create': ['pmc'],
   'DecisionsController.approve': ['client', 'pmc'],
   'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer'],

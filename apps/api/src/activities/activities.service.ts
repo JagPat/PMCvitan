@@ -32,8 +32,13 @@ export class ActivitiesService {
   /** PMC plans a new activity (name, zone, planned window, gates, phase/decision links). */
   async create(projectId: string, input: CreateActivityInput, user: AuthUser): Promise<SnapshotDto> {
     await this.assertRefs(projectId, input.phaseId, input.decisionId);
-    const existing = await this.prisma.activity.findMany({ where: { projectId }, select: { id: true, order: true } });
-    const id = nextSeqId('ACT-', existing.map((a) => a.id));
+    // DATA-01: ids are globally unique — scan every project for the sequence (see
+    // decisions.service); `order` stays per-project (it drives this schedule's sort).
+    const [allIds, existing] = await Promise.all([
+      this.prisma.activity.findMany({ select: { id: true } }),
+      this.prisma.activity.findMany({ where: { projectId }, select: { order: true } }),
+    ]);
+    const id = nextSeqId('ACT-', allIds.map((a) => a.id));
     const order = existing.reduce((m, a) => Math.max(m, a.order), 0) + 1;
     await this.prisma.$transaction([
       this.prisma.activity.create({

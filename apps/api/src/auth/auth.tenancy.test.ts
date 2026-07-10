@@ -20,13 +20,19 @@ function fakePrisma(
     membership: {
       findUnique: async ({ where }: { where: { projectId_userId: { projectId: string; userId: string } } }) =>
         memberships.find((m) => m.projectId === where.projectId_userId.projectId && m.userId === where.projectId_userId.userId) ?? null,
+      findFirst: async ({ where }: { where: { userId: string; status?: string } }) =>
+        memberships.find((m) => m.userId === where.userId && (where.status ? m.status === where.status : true)) ?? null,
       findMany: async ({ where }: { where: { userId: string } }) =>
         memberships
           .filter((m) => m.userId === where.userId && m.status === 'active')
           .map((m) => ({ ...m, project: { name: 'P', short: 'P', orgId: 'org1', org: { name: 'Vitan' } } })),
     },
     user: {
-      findUnique: async ({ where }: { where: { id: string } }) => users.find((u) => u.id === where.id) ?? null,
+      findUnique: async ({ where }: { where: { id: string } }) => {
+        const u = users.find((x) => x.id === where.id) ?? null;
+        // the legacy fallback `include`s the home project — attach a stub
+        return u ? { ...u, project: { name: 'Home', short: 'Home', orgId: null, org: null } } : null;
+      },
     },
     orgMembership: {
       findUnique: async ({ where }: { where: { orgId_userId: { orgId: string; userId: string } } }) =>
@@ -102,6 +108,23 @@ describe('AuthService.switchProject', () => {
     );
     await expect(auth.switchProject('u1', 'arch')).rejects.toBeInstanceOf(ForbiddenException);
   });
+
+  it('SEC-01: a removed membership denies the switch even to the user’s legacy home project', async () => {
+    // Before the fix, `user.projectId === projectId` bypassed the `removed` membership.
+    const auth = make(
+      [{ projectId: 'p1', userId: 'u1', role: 'contractor', status: 'removed' }],
+      [{ id: 'u1', projectId: 'p1', role: 'contractor', name: 'Ex Contractor' }],
+    );
+    await expect(auth.switchProject('u1', 'p1')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('SEC-01: a removed membership on a non-home project denies the switch', async () => {
+    const auth = make(
+      [{ projectId: 'p2', userId: 'u1', role: 'client', status: 'removed' }],
+      [{ id: 'u1', projectId: 'p1', role: 'pmc', name: 'x' }],
+    );
+    await expect(auth.switchProject('u1', 'p2')).rejects.toBeInstanceOf(ForbiddenException);
+  });
 });
 
 describe('AuthService.listMemberships', () => {
@@ -127,6 +150,22 @@ describe('AuthService.listMemberships', () => {
     expect(byId.p2).toBe('client'); // explicit membership role preserved (not overwritten by admin reach)
     expect(byId.villa).toBe('pmc'); // admin reach as PMC
     expect(rows).toHaveLength(2);
+  });
+
+  it('a pre-membership legacy account still sees its home project (no membership rows at all)', async () => {
+    const auth = make([], [{ id: 'u1', projectId: 'p1', role: 'pmc', name: 'x' }]);
+    const rows = await auth.listMemberships('u1');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ projectId: 'p1', role: 'pmc' });
+  });
+
+  it('SEC-01: a fully-removed user gets NO projects — the legacy fallback never resurrects access', async () => {
+    const auth = make(
+      [{ projectId: 'p1', userId: 'u1', role: 'contractor', status: 'removed' }],
+      [{ id: 'u1', projectId: 'p1', role: 'contractor', name: 'Ex Contractor' }],
+    );
+    const rows = await auth.listMemberships('u1');
+    expect(rows).toEqual([]);
   });
 });
 

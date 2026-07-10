@@ -5,13 +5,18 @@ import * as bcrypt from 'bcryptjs';
  * Non-destructive account provisioning — safe to run against a LIVE database.
  *
  * Unlike `seed.ts` (which wipes every table for a clean demo), this only
- * upserts the office accounts (PMC / client / contractor) so email+password —
- * and, once invite-only is on, email-OTP / Google — work for them without
- * touching decisions, media, daily logs, or anything else.
+ * CREATES the office accounts (PMC / client / contractor) that are missing, so
+ * email+password — and, once invite-only is on, email-OTP / Google — work.
+ *
+ * Strictly create-only (DEP-01): an existing account is never modified — its
+ * password hash is never reset (the sole exception: an office account with no
+ * password yet gets one), and an existing membership keeps its role and status,
+ * so a `removed` member is never resurrected by a redeploy. The only mutating
+ * path for existing rows is ORG_OWNER_EMAIL, an explicit, targeted promotion.
  *
  * Env:
  *   PROJECT_ID           project to attach the accounts to (default "ambli")
- *   SEED_DEMO_PASSWORD   password for the accounts (default "vitan123")
+ *   SEED_DEMO_PASSWORD   password for NEWLY CREATED accounts (default "vitan123")
  *   ACCOUNTS_JSON        optional JSON array to override the default roster,
  *                        e.g. [{"role":"pmc","name":"Ar. Vitan","email":"pmc@vitan.in"}]
  *
@@ -86,30 +91,41 @@ async function main(): Promise<void> {
     }
     // Password only for office roles; engineers sign in by phone OTP.
     const wantsPassword = a.role !== 'engineer' && Boolean(a.email);
-    const data = {
-      projectId: PROJECT_ID,
-      role: a.role,
-      name: a.name,
-      email: a.email,
-      phone: a.phone,
-      ...(wantsPassword ? { passwordHash } : {}),
-    };
     const where = a.email ? { email: a.email } : { phone: a.phone! };
-    const user = await prisma.user.upsert({
-      where,
-      // don't clobber an existing password on re-run unless we're (re)setting the office pw
-      update: { projectId: PROJECT_ID, role: a.role, name: a.name, ...(wantsPassword ? { passwordHash } : {}) },
-      create: data,
-    });
-    // project + org memberships (the multi-tenant access grants)
+
+    // CREATE-ONLY (DEP-01): an account that already exists is left completely
+    // alone — its password hash, role, name and home project are never touched,
+    // so a redeploy with AUTO_ENSURE_ACCOUNTS=true can't reset a live user's
+    // password (that would be an account takeover, not provisioning). The one
+    // exception: an office account that has NO password yet (e.g. provisioned
+    // via OTP) gets one filled in so email+password sign-in starts working.
+    let user = await prisma.user.findUnique({ where });
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          projectId: PROJECT_ID,
+          role: a.role,
+          name: a.name,
+          email: a.email,
+          phone: a.phone,
+          ...(wantsPassword ? { passwordHash } : {}),
+        },
+      });
+    } else if (wantsPassword && !user.passwordHash) {
+      user = await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+    }
+
+    // Memberships are also create-only: a membership row that exists keeps its
+    // role AND its status — this must never resurrect a `removed` member
+    // (removal is the access-revocation record; see SEC-01).
     await prisma.membership.upsert({
       where: { projectId_userId: { projectId: PROJECT_ID, userId: user.id } },
-      update: { role: a.role, status: 'active' },
+      update: {},
       create: { projectId: PROJECT_ID, userId: user.id, role: a.role, status: 'active' },
     });
     await prisma.orgMembership.upsert({
       where: { orgId_userId: { orgId: org.id, userId: user.id } },
-      update: { role: a.role === 'pmc' ? 'owner' : 'member' },
+      update: {},
       create: { orgId: org.id, userId: user.id, role: a.role === 'pmc' ? 'owner' : 'member' },
     });
     // eslint-disable-next-line no-console

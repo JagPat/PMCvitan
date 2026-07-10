@@ -18,9 +18,17 @@ interface FakeUser {
   passwordHash?: string | null;
 }
 
+interface FakeMembership {
+  projectId: string;
+  userId: string;
+  role: string;
+  status: string;
+}
+
 /** Minimal in-memory Prisma stand-in for the tables AuthService touches. */
-function fakePrisma(seed: FakeUser[] = []) {
+function fakePrisma(seed: FakeUser[] = [], membershipSeed: FakeMembership[] = []) {
   const users = [...seed];
+  const memberships = [...membershipSeed];
   let workerSeq = 0;
   return {
     users,
@@ -36,6 +44,16 @@ function fakePrisma(seed: FakeUser[] = []) {
         return u;
       },
     },
+    membership: {
+      findUnique: async ({ where }: { where: { projectId_userId: { projectId: string; userId: string } } }) =>
+        memberships.find((m) => m.projectId === where.projectId_userId.projectId && m.userId === where.projectId_userId.userId) ?? null,
+      findFirst: async ({ where }: { where: { userId: string; status?: string } }) =>
+        memberships.find((m) => m.userId === where.userId && (where.status ? m.status === where.status : true)) ?? null,
+    },
+    orgMembership: {
+      findUnique: async () => null,
+      findMany: async () => [],
+    },
     workerDevice: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
         const d = { id: `w${++workerSeq}`, ...data };
@@ -49,6 +67,7 @@ function fakePrisma(seed: FakeUser[] = []) {
         if (where.id === 'archived-proj') return { archivedAt: new Date() };
         return null;
       },
+      findFirst: async () => null,
     },
   };
 }
@@ -93,6 +112,38 @@ describe('AuthService.login', () => {
   it('rejects an unknown email', async () => {
     const { auth } = make(fakePrisma());
     await expect(auth.login({ email: 'ghost@vitan.in', password: 'secret' })).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('SEC-01: a removed member cannot sign in with a valid password (revocation is authoritative)', async () => {
+    const prisma = fakePrisma(
+      [{ id: 'u1', projectId: 'ambli', role: 'contractor', name: 'Ex Contractor', email: 'ex@vitan.in', passwordHash: bcrypt.hashSync('secret', 10) }],
+      [{ projectId: 'ambli', userId: 'u1', role: 'contractor', status: 'removed' }],
+    );
+    const { auth } = make(prisma);
+    await expect(auth.login({ email: 'ex@vitan.in', password: 'secret' })).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('SEC-01: sign-in lands on the first active membership when home access was revoked', async () => {
+    const prisma = fakePrisma(
+      [{ id: 'u1', projectId: 'ambli', role: 'contractor', name: 'Moved', email: 'moved@vitan.in', passwordHash: bcrypt.hashSync('secret', 10) }],
+      [
+        { projectId: 'ambli', userId: 'u1', role: 'contractor', status: 'removed' },
+        { projectId: 'villa', userId: 'u1', role: 'engineer', status: 'active' },
+      ],
+    );
+    const { auth } = make(prisma);
+    const res = await auth.login({ email: 'moved@vitan.in', password: 'secret' });
+    expect(res).toMatchObject({ projectId: 'villa', role: 'engineer' });
+  });
+
+  it('SEC-01: an active membership overrides the stale legacy role on the User row', async () => {
+    const prisma = fakePrisma(
+      [{ id: 'u1', projectId: 'ambli', role: 'pmc', name: 'Demoted', email: 'demoted@vitan.in', passwordHash: bcrypt.hashSync('secret', 10) }],
+      [{ projectId: 'ambli', userId: 'u1', role: 'client', status: 'active' }],
+    );
+    const { auth } = make(prisma);
+    const res = await auth.login({ email: 'demoted@vitan.in', password: 'secret' });
+    expect(res).toMatchObject({ projectId: 'ambli', role: 'client' }); // membership wins, not user.role
   });
 });
 
@@ -159,6 +210,18 @@ describe('AuthService.verifyOtp', () => {
     await sms.sendOtp('9876543210');
     await expect(
       auth.verifyOtp({ phone: '9876543210', code: '0000', projectId: 'ambli' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('SEC-01: a removed member cannot sign back in via phone OTP', async () => {
+    const prisma = fakePrisma(
+      [{ id: 'u9', projectId: 'ambli', role: 'engineer', name: 'Removed Eng', phone: '9876543210' }],
+      [{ projectId: 'ambli', userId: 'u9', role: 'engineer', status: 'removed' }],
+    );
+    const { auth, sms } = make(prisma);
+    const { devCode } = await sms.sendOtp('9876543210');
+    await expect(
+      auth.verifyOtp({ phone: '9876543210', code: devCode!, projectId: 'ambli' }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 });

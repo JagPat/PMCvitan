@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { useStore } from '@/store/store';
-import { API_BASE, PROJECT_ID, DEV_AUTH, ApiGateway } from './apiGateway';
+import { API_BASE, DEV_AUTH, ApiGateway } from './apiGateway';
 import { subscribeToPush } from './push';
 
 /**
@@ -47,6 +47,9 @@ export function useApiSync(): void {
       // flow reaches the public /auth/* endpoints; snapshot() will 401 until sign-in.
       if (cancelled) return;
       useStore.getState()._setGateway(gw);
+      // WEB-02: (re)load the offline queue for THIS user+project scope — a sign-in
+      // or project switch swaps to that scope's persisted queue.
+      useStore.getState().hydrateOutbox();
       refresh();
       // load the projects the user can switch between + their orgs + portfolio rollup
       useStore.getState().loadOrgData();
@@ -55,9 +58,12 @@ export function useApiSync(): void {
       // web push: register this browser if permission is already granted (best-effort)
       void subscribeToPush(gw);
 
-      // realtime: refetch whenever the project changes on the server
+      // Realtime: refetch whenever the project changes on the server. Join the
+      // ACTIVE project's room (WEB-01) — the effect re-runs on a project switch,
+      // disconnecting this socket (which leaves its room) and joining the new one,
+      // so notifications for the old project stop refreshing the new view.
       socket = io(API_BASE, { transports: ['websocket', 'polling'] });
-      socket.on('connect', () => socket?.emit('join', { projectId: PROJECT_ID }));
+      socket.on('connect', () => socket?.emit('join', { projectId: activeProjectId }));
       socket.on('changed', () => {
         if (!cancelled) refresh();
       });
