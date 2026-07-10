@@ -4,6 +4,7 @@ import { MediaService } from './media.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { createMediaSchema, type CreateMediaInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
+import { Roles, RolesGuard } from '../common/roles';
 
 @Controller()
 export class MediaController {
@@ -34,9 +35,10 @@ export class MediaController {
     res.send(out.bytes);
   }
 
-  /** Delete a photo (bucket object + row). Auth required; scoped to the caller's project. */
+  /** Delete a photo (bucket object + row). Scoped to the caller's project; PMC or site engineer only. */
   @Delete('media/:id')
-  @UseGuards(JwtGuard)
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles('pmc', 'engineer')
   async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean }> {
     const ok = await this.media.remove(id, user.projectId);
     if (!ok) throw new NotFoundException('Media not found');
