@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
@@ -184,6 +184,17 @@ export class AuthService {
 
   /** Mint a short-lived worker device token (no account) for the QR / tap-photo job card. */
   async workerToken(input: WorkerTokenInput): Promise<TokenResult> {
+    // Prod lockdown: when WORKER_ENROLL_SECRET is set, the site QR must carry it. Left
+    // unset in dev/demo so QR onboarding stays open. (The endpoint is also rate-limited.)
+    const enrollSecret = process.env.WORKER_ENROLL_SECRET;
+    if (enrollSecret && input.enrollSecret !== enrollSecret) {
+      throw new ForbiddenException('Invalid or missing worker enrollment secret');
+    }
+    // Only mint a device token for a real, active project — otherwise anyone could seed
+    // WorkerDevice rows (and read snapshots) for arbitrary/unknown project ids.
+    const project = await this.prisma.project.findUnique({ where: { id: input.projectId }, select: { archivedAt: true } });
+    if (!project) throw new NotFoundException('Unknown project');
+    if (project.archivedAt) throw new ForbiddenException('This project has been archived');
     const device = await this.prisma.workerDevice.create({
       data: { projectId: input.projectId, name: input.name, trade: input.trade, token: randomUUID() },
     });
@@ -256,13 +267,19 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('Unknown user');
 
+    // Role precedence (intentional): an explicit membership wins over the org-admin
+    // super-admin reach, so an org owner/admin can deliberately operate a specific
+    // project in a narrower role (e.g. as the `client`) by holding a membership there.
+    // Only when there is no explicit membership does org owner/admin fall through to a
+    // PMC token. `listMemberships` mirrors this precedence. (Changing this to always
+    // grant PMC to org admins is a product decision, not a bug — see docs/ORGS.md.)
     let role: Role;
     if (membership && membership.status === 'active') {
       role = membership.role as Role;
     } else if (user.projectId === projectId) {
       role = user.role as Role; // back-compat: the user's own home project
     } else if (await this.isOrgAdminOfProject(userId, projectId)) {
-      role = 'pmc'; // org owner/admin operates any project in their org
+      role = 'pmc'; // org owner/admin operates any project in their org (no explicit membership)
     } else {
       throw new ForbiddenException('You are not a member of this project');
     }
