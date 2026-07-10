@@ -22,9 +22,11 @@ export class DecisionsController {
     return this.decisions.approve(projectId, decisionId, body, user);
   }
 
-  /** Raise a change request against a decision — PMC, the client, or the contractor. */
+  /** Raise a change request against a decision — PMC, client, contractor, or the site
+   *  engineer (the engineer's Decision Log UI exposes this, and the service records
+   *  `actor: user.role`, so all four are legitimate change requesters). */
   @Post('change')
-  @Roles('pmc', 'client', 'contractor')
+  @Roles('pmc', 'client', 'contractor', 'engineer')
   change(
     @Param('projectId') projectId: string,
     @Param('decisionId') decisionId: string,
