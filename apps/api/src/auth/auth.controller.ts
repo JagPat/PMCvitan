@@ -3,6 +3,10 @@ import { AuthService } from './auth.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, Public } from '../common/roles';
+import { Throttle, ThrottleGuard } from '../common/throttle';
+
+/** Rate-limit window shared by the auth endpoints. */
+const WINDOW = 10 * 60 * 1000; // 10 minutes
 import {
   sessionSchema,
   loginSchema,
@@ -25,6 +29,7 @@ import {
 } from '../contracts';
 
 @Controller('auth')
+@UseGuards(ThrottleGuard)
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
@@ -44,6 +49,7 @@ export class AuthController {
    * once real sign-in (password / email-OTP / Google) covers every role.
    */
   @Public()
+  @Throttle(20, WINDOW)
   @Post('session')
   session(@Body(new ZodPipe(sessionSchema)) body: SessionInput) {
     if (process.env.ALLOW_DEV_AUTH !== 'true') {
@@ -53,18 +59,22 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle(15, WINDOW)
   @Post('login')
   login(@Body(new ZodPipe(loginSchema)) body: LoginInput) {
     return this.auth.login(body);
   }
 
+  // Sending an OTP costs a paid SMS — keep this tight.
   @Public()
+  @Throttle(5, WINDOW)
   @Post('otp/request')
   otpRequest(@Body(new ZodPipe(otpRequestSchema)) body: OtpRequestInput) {
     return this.auth.requestOtp(body);
   }
 
   @Public()
+  @Throttle(15, WINDOW)
   @Post('otp/verify')
   otpVerify(@Body(new ZodPipe(otpVerifySchema)) body: OtpVerifyInput) {
     return this.auth.verifyOtp(body);
@@ -73,25 +83,33 @@ export class AuthController {
   // NOTE: worker/token is unauthenticated by design (QR job-card onboarding) — audit §5.1
   // tracks tightening it (device attestation / rate limiting). Marked @Public so the
   // route-walk test records it as a deliberate public mutation, not an oversight.
+  // NOTE: worker/token is unauthenticated by design (QR job-card onboarding) — audit §5.1
+  // tightens it: WORKER_ENROLL_SECRET (when set) is required, the project must exist, and
+  // this rate limit blunts mass minting. Marked @Public so the route-walk test records it
+  // as a deliberate public mutation, not an oversight.
   @Public()
+  @Throttle(10, WINDOW)
   @Post('worker/token')
   workerToken(@Body(new ZodPipe(workerTokenSchema)) body: WorkerTokenInput) {
     return this.auth.workerToken(body);
   }
 
   @Public()
+  @Throttle(5, WINDOW)
   @Post('email/request')
   emailRequest(@Body(new ZodPipe(emailOtpRequestSchema)) body: EmailOtpRequestInput) {
     return this.auth.requestEmailOtp(body);
   }
 
   @Public()
+  @Throttle(15, WINDOW)
   @Post('email/verify')
   emailVerify(@Body(new ZodPipe(emailOtpVerifySchema)) body: EmailOtpVerifyInput) {
     return this.auth.verifyEmailOtp(body);
   }
 
   @Public()
+  @Throttle(20, WINDOW)
   @Post('google')
   google(@Body(new ZodPipe(googleSignInSchema)) body: GoogleSignInInput) {
     return this.auth.googleSignIn(body);

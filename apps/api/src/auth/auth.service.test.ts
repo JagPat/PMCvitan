@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
 import { SmsService } from './sms.service';
@@ -40,6 +40,14 @@ function fakePrisma(seed: FakeUser[] = []) {
       create: async ({ data }: { data: Record<string, unknown> }) => {
         const d = { id: `w${++workerSeq}`, ...data };
         return d;
+      },
+    },
+    project: {
+      // 'ambli' is the seeded demo project; 'archived-proj' exists but is archived.
+      findUnique: async ({ where }: { where: { id: string } }) => {
+        if (where.id === 'ambli') return { archivedAt: null };
+        if (where.id === 'archived-proj') return { archivedAt: new Date() };
+        return null;
       },
     },
   };
@@ -156,6 +164,10 @@ describe('AuthService.verifyOtp', () => {
 });
 
 describe('AuthService.workerToken', () => {
+  beforeEach(() => {
+    delete process.env.WORKER_ENROLL_SECRET;
+  });
+
   it('mints a worker-scoped token with a worker claim', async () => {
     const prisma = fakePrisma();
     const { auth, jwt } = make(prisma);
@@ -164,6 +176,31 @@ describe('AuthService.workerToken', () => {
     const decoded = jwt.verify<{ sub: string; role: string; worker: boolean }>(res.token);
     expect(decoded).toMatchObject({ role: 'worker', worker: true });
     expect(decoded.sub).toMatch(/^worker-/);
+  });
+
+  it('rejects an unknown project (no minting device tokens for arbitrary ids)', async () => {
+    const { auth } = make(fakePrisma());
+    await expect(auth.workerToken({ projectId: 'does-not-exist' })).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('rejects an archived project', async () => {
+    const { auth } = make(fakePrisma());
+    await expect(auth.workerToken({ projectId: 'archived-proj' })).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('requires the enrollment secret when WORKER_ENROLL_SECRET is set (prod lockdown)', async () => {
+    process.env.WORKER_ENROLL_SECRET = 's3cr3t';
+    const { auth } = make(fakePrisma());
+    await expect(auth.workerToken({ projectId: 'ambli' })).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(auth.workerToken({ projectId: 'ambli', enrollSecret: 'wrong' })).rejects.toBeInstanceOf(ForbiddenException);
+    const ok = await auth.workerToken({ projectId: 'ambli', enrollSecret: 's3cr3t' });
+    expect(ok.role).toBe('worker'); // correct secret passes
+  });
+
+  it('stays open when WORKER_ENROLL_SECRET is unset (dev/demo QR onboarding)', async () => {
+    const { auth } = make(fakePrisma());
+    const res = await auth.workerToken({ projectId: 'ambli' }); // no secret needed
+    expect(res.role).toBe('worker');
   });
 });
 

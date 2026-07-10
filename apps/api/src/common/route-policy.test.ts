@@ -55,6 +55,7 @@ interface RouteInfo {
   anyRoleReason: string | undefined;
   hasJwtGuard: boolean;
   hasRolesGuard: boolean;
+  handlerKey: string;
 }
 
 function guardsOf(target: unknown): unknown[] {
@@ -83,6 +84,7 @@ function collectRoutes(): RouteInfo[] {
         anyRoleReason: Reflect.getMetadata(ANY_ROLE_KEY, handler) as string | undefined,
         hasJwtGuard: guards.includes(JwtGuard),
         hasRolesGuard: guards.includes(RolesGuard),
+        handlerKey: `${Controller.name}.${name}`,
       });
     }
   }
@@ -127,5 +129,49 @@ describe('route authorization policy', () => {
       .filter((r) => r.isPublic && (r.roles !== undefined || r.anyRoleReason !== undefined))
       .map((r) => `${r.id} — marked @Public but also role-restricted`);
     expect(offenders, `Contradictory authz markers:\n${offenders.join('\n')}`).toEqual([]);
+  });
+});
+
+/**
+ * Drift guard for review finding #8. This map MUST stay identical to the canonical
+ * `ROLE_POLICY` in `@vitan/shared` (the web derives its UI gating from that map). The API
+ * can't import the source-only shared package at runtime, so we pin the values here and a
+ * change to any endpoint's `@Roles` fails this test — forcing the shared map to be updated
+ * in lockstep. (Once `@vitan/shared` is a built package the API should `@RolesFor(action)`
+ * straight from it and this mirror goes away.)
+ */
+const EXPECTED_ROLES: Record<string, string[]> = {
+  'DecisionsController.approve': ['client', 'pmc'],
+  'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer'],
+  'ActivitiesController.start': ['engineer', 'pmc'],
+  'ActivitiesController.complete': ['engineer', 'pmc'],
+  'InspectionsController.submit': ['engineer', 'pmc'],
+  'InspectionsController.decide': ['pmc'],
+  'DailyLogController.flag': ['engineer', 'pmc'],
+  'DailyLogController.submit': ['engineer', 'pmc'],
+  'MediaController.upload': ['pmc', 'engineer'],
+  'MediaController.remove': ['pmc', 'engineer'],
+  'DrawingsController.issue': ['pmc'],
+  'DrawingsController.presign': ['pmc'],
+  'DrawingsController.acknowledge': ['pmc', 'engineer', 'contractor'],
+  'DrawingsController.remove': ['pmc'],
+  'OrgsController.createOrg': ['pmc', 'client', 'engineer', 'contractor'],
+};
+
+describe('role allowlists mirror the shared ROLE_POLICY (finding #8 drift guard)', () => {
+  const gated = routes.filter((r) => r.roles !== undefined);
+
+  it('every @Roles endpoint matches its expected allowlist', () => {
+    for (const r of gated) {
+      const expected = EXPECTED_ROLES[r.handlerKey];
+      expect(expected, `No expected allowlist for ${r.handlerKey} — add it here and to @vitan/shared ROLE_POLICY`).toBeDefined();
+      expect([...(r.roles ?? [])].sort(), `${r.handlerKey} @Roles drifted from the shared policy`).toEqual([...expected].sort());
+    }
+  });
+
+  it('every expected allowlist maps to a real gated endpoint (no stale entries)', () => {
+    const gatedKeys = new Set(gated.map((r) => r.handlerKey));
+    const stale = Object.keys(EXPECTED_ROLES).filter((k) => !gatedKeys.has(k));
+    expect(stale, `Expected allowlists with no matching @Roles endpoint:\n${stale.join('\n')}`).toEqual([]);
   });
 });

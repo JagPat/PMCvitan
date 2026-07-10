@@ -33,6 +33,9 @@ export const workerTokenSchema = z.object({
   projectId: z.string().min(1).default('ambli'),
   name: z.string().optional(),
   trade: z.string().optional(),
+  // Enrollment secret from the site QR. Enforced only when WORKER_ENROLL_SECRET is set
+  // on the API (prod lockdown); left unset in dev/demo so QR onboarding stays frictionless.
+  enrollSecret: z.string().optional(),
 });
 export type WorkerTokenInput = z.infer<typeof workerTokenSchema>;
 

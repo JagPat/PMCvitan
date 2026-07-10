@@ -30,13 +30,16 @@ number **auto-supersedes** the prior ones, so the field only ever builds from th
 
 ## API
 
-- `POST /projects/:projectId/drawings` — issue (auth required). New number → new register
+- `POST /projects/:projectId/drawings` — issue (**PMC only**). New number → new register
   entry; existing number → new revision + supersede prior. Fans a **per-role push** to
   `engineer` + `contractor` ("Drawing issued: A-201 Rev C — …").
+- `POST /projects/:projectId/drawings/rev/:revId/ack` — acknowledge building to a revision
+  (**pmc / engineer / contractor** — not client, not worker device tokens).
 - `GET /drawings/rev/:id` — serve a revision's file (inline bytes for the dev stub, 302 to
   the bucket URL for S3/R2). Public (ids are unguessable cuids).
 - `DELETE /drawings/:id` — delete a drawing + all revisions (bucket objects + rows),
-  auth-required, scoped to the caller's project.
+  scoped to the caller's project; **PMC only** (the architect controls the register,
+  matching PMC-only issue).
 - Snapshot exposes `drawings[]`, each with `current` + full `revisions[]` (newest first).
 
 ## Frontend

@@ -4,7 +4,7 @@ import { useStore } from '@/store/store';
 import { resolveDrawingUrl, type IssueDrawingInput } from '@/data/apiGateway';
 import { Eyebrow, Button, Modal } from '@/components';
 import { Download, FileText, History, ChevronRight, X, Plus, Lock, Check, HardHat } from '@/lib/icons';
-import type { Discipline, Drawing, DrawingRevision } from '@vitan/shared';
+import { can, type Discipline, type Drawing, type DrawingRevision } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 const DISCIPLINES: { key: Discipline; label: string }[] = [
@@ -50,7 +50,7 @@ export function DrawingsScreen() {
             The current issue the team builds from. New revisions supersede the old — the field always sees the latest <b>For Construction</b> set. Drawings you open are cached for <b>offline</b> viewing on site.
           </div>
         </div>
-        {role === 'pmc' && (
+        {can('drawing.issue', role) && (
           <Button variant="ink" onClick={() => setIssuing(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 15px', fontSize: 13 }}>
             <Plus size={16} /> Issue drawing
           </Button>
@@ -109,7 +109,9 @@ function AckBlock({ drawing }: { drawing: Drawing }) {
   const role = useStore((s) => s.role);
   const acknowledgeDrawing = useStore((s) => s.acknowledgeDrawing);
   const rev = drawing.current;
-  const canAck = role === 'contractor' || role === 'engineer';
+  // Reads the shared policy so the button appears for exactly the roles the API accepts
+  // (pmc/engineer/contractor) — previously omitted pmc, who the server allows.
+  const canAck = can('drawing.acknowledge', role);
   const acks = rev?.acks ?? [];
   if (!rev) return null;
 

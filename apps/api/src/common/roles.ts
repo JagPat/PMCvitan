@@ -29,8 +29,11 @@ export const AllowAnyRole = (reason: string): MethodDecorator & ClassDecorator =
  * Restrict a handler to specific project roles. Runs after JwtGuard (which sets
  * `req.user`), so it reads the verified token's role — a token cannot claim a role
  * it wasn't issued. Handlers without `@Roles(...)` are unrestricted (tenancy still
- * applies via JwtGuard). An org owner/admin operates a project as `pmc`, so `pmc`
- * covers the super-admin case.
+ * applies via JwtGuard). An org owner/admin operating a project they hold no explicit
+ * membership on gets a `pmc` token (the super-admin reach), so listing `pmc` covers
+ * that case. If they DO hold an explicit membership, that role wins (see
+ * AuthService.switchProject) — so an owner deliberately scoped as e.g. `client` on one
+ * project is gated as a client there, by design, not as `pmc`.
  *
  * At least one role is required — `@Roles()` with no args is a compile error, and an
  * explicitly empty allowlist denies everyone (fail closed), so a stray/placeholder

@@ -49,7 +49,7 @@ import {
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, PROJECT_ID } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID } from '@/data/apiGateway';
 
 export interface AppState {
   role: Role;
@@ -890,25 +890,49 @@ export const useStore = create<Store>()(
         get().flash(n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.');
       }
     },
-    flushOutbox: () => {
+    flushOutbox: async () => {
+      if (!gateway) return;
       const ops = get().outbox.slice();
-      if (!gateway || ops.length === 0) return;
-      const n = ops.length;
-      ops
-        .reduce<Promise<ApiSnapshot | null>>(
-          (chain, op) => chain.then(() => replayOutboxOp(gateway!, op)),
-          Promise.resolve<ApiSnapshot | null>(null),
-        )
-        .then((snap) => {
-          set((s) => {
-            s.outbox = [];
-            s.syncQueue = [];
-          });
-          persistOutbox();
-          if (snap) applySnapshot(snap);
-          get().flash(n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.');
-        })
-        .catch(() => get().flash('Some offline updates could not sync yet — will retry when you reconnect.'));
+      if (ops.length === 0) return;
+
+      // Replay in order, one at a time, committing progress as we go so a later failure
+      // never re-runs an op that already succeeded. A permanently-rejected op (terminal
+      // 4xx) is dropped instead of wedging the queue forever; a transient failure stops
+      // the flush and keeps that op (and everything after it) for the next reconnect.
+      let lastSnap: ApiSnapshot | null = null;
+      let synced = 0;
+      let dropped = 0;
+      let stoppedAt = -1;
+      for (let i = 0; i < ops.length; i++) {
+        try {
+          lastSnap = await replayOutboxOp(gateway, ops[i]);
+          synced += 1;
+        } catch (err) {
+          if (isTerminalOutboxError(err)) {
+            dropped += 1; // server will never accept this one — discard and keep going
+            continue;
+          }
+          stoppedAt = i; // transient — retry this op and the rest on the next reconnect
+          break;
+        }
+      }
+
+      const remaining = stoppedAt >= 0 ? ops.slice(stoppedAt) : [];
+      // Preserve anything queued while we were awaiting (shouldn't happen once online, but
+      // never drop a write): the original ops were the outbox prefix, so slice past them.
+      const appended = get().outbox.slice(ops.length);
+      set((s) => {
+        s.outbox = [...remaining, ...appended];
+        s.syncQueue = []; // local-only labels (check-in, QR) are considered synced on reconnect
+      });
+      persistOutbox();
+      if (lastSnap) applySnapshot(lastSnap);
+
+      const parts: string[] = [];
+      if (synced > 0) parts.push(`${synced} offline update${synced > 1 ? 's' : ''} synced`);
+      if (dropped > 0) parts.push(`${dropped} could not be applied and ${dropped > 1 ? 'were' : 'was'} discarded`);
+      if (remaining.length > 0) parts.push(`${remaining.length} still pending — will retry when you reconnect`);
+      if (parts.length) get().flash(parts.join('; ') + '.');
     },
     hydrateOutbox: () => {
       try {

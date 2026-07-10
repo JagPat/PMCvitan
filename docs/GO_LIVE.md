@@ -23,6 +23,7 @@ will **not** crash), but set them on the **API** app for full hardening:
 | `JWT_SECRET` | a long random string (`openssl rand -hex 32`) | Derives a stable secret from `DATABASE_URL` (never the public default). **Setting/changing it invalidates existing sessions** — everyone re-signs-in once. |
 | `CORS_ORIGINS` | `https://pms.vitan.in` (comma-separated for more) | Reflects the request origin (functional; bearer-token API). Set to lock down cross-origin. |
 | `AUTH_ALLOW_PHONE_SIGNUP` | `true` to keep phone onboarding | Default **off** in prod: an unknown phone is rejected instead of auto-provisioning an engineer. Known numbers always sign in. |
+| `WORKER_ENROLL_SECRET` | a secret embedded in the site QR | Unset ⇒ `POST /auth/worker/token` is open (QR onboarding needs no secret). Set it to require the QR's `enrollSecret`, locking worker minting down. Either way the endpoint is rate-limited and rejects unknown/archived projects. |
 
 See [`AUTH_LOCKDOWN.md`](./AUTH_LOCKDOWN.md#production-hardening-recommended-env-on-the-api-app). Then continue below.
 

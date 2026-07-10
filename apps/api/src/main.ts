@@ -6,6 +6,9 @@ import { resolveCorsOrigins } from './config';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Trust the single reverse proxy (Coolify/Traefik) so `req.ip` reflects the real client
+  // from X-Forwarded-For — the per-IP auth rate limiter (common/throttle.ts) needs it.
+  app.set('trust proxy', 1);
   // CORS is restricted to CORS_ORIGINS in production (no wildcard); any origin in
   // dev. resolveCorsOrigins() throws at startup if it's unset in production.
   app.enableCors({ origin: resolveCorsOrigins(), credentials: true });
