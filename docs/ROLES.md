@@ -1,0 +1,73 @@
+# Vitan PMC — Roles & Access (quick reference)
+
+There are **two** role systems. Someone's access is the combination of both. For the full
+data model see [`ORGS.md`](./ORGS.md); this page is the practical cheat-sheet.
+
+- **Org role** — administrative power over the *account* (the practice): who can create
+  projects, run every project, and manage other admins.
+- **Project role** — operational power *inside a project*: what you can do on the decisions,
+  inspections, drawings, daily log, etc.
+
+---
+
+## Org roles (`owner | admin | member`)
+
+Set on the **Team** screen → **Organization Admins** section (owner only).
+
+| Org role | Runs every project (as PMC) | Create / archive / restore projects | Manage each project's team & companies | Manage the admin roster (add/remove/promote admins & owners) |
+|---|:---:|:---:|:---:|:---:|
+| **owner** (super-admin) | ✅ | ✅ | ✅ | ✅ |
+| **admin** | ✅ | ✅ | ✅ | ❌ |
+| **member** | ❌ (only projects they're an explicit member of) | ❌ | ❌ | ❌ |
+
+**The key guardrails (enforced server-side, not just hidden in the UI):**
+- Managing the admin roster is **owner-only**. An **admin can do everything on projects but
+  cannot add, remove, promote, or demote any admin or owner** — so an admin **can't delete or
+  demote the super-admin**. This is exactly the "full access, but can't touch me" role.
+- The system **refuses to remove the last owner**, so the org can never be left with no one
+  able to manage it.
+
+### Owner vs admin — which to give
+- Want someone with **all portal features but no control over admins / can't remove you** →
+  give **Admin**.
+- Want a **second full super-admin** (who can also manage the roster) → give **Owner**. (Even
+  an owner can't remove the *last* owner.)
+
+### Super-admin reach
+An **owner/admin operates every project in the org as PMC** — even projects they were never
+explicitly added to. They appear in the switcher and portfolio automatically.
+*Exception:* if an owner/admin holds an **explicit membership** on a specific project (e.g. added
+there as `client`), that explicit role wins for that one project — a deliberate way to scope
+yourself down on a particular job.
+
+---
+
+## Project roles (`pmc | client | engineer | contractor` + `worker`)
+
+Set on the **Team** screen → member list. A person can hold different project roles on
+different projects.
+
+| Project role | Typical use | Can do |
+|---|---|---|
+| **pmc** | Architect / PMC | Everything on the project: issue drawings, approve/reject inspections, approve decisions, edit project details, manage the team & companies, archive/restore. (Org owners/admins operate as this.) |
+| **client** | Owner / client | Approve & lock decisions, raise change requests, view drawings & health. |
+| **engineer** | Site engineer | Submit inspection checklists, submit the daily log, start/complete activities, acknowledge drawings, raise change requests. |
+| **contractor** | Contractor | Acknowledge drawings, raise change requests, read-only elsewhere. |
+| **worker** | Site labour (QR job card) | No login account — a device token from the site QR; can only tap-photo / job-card actions. Cannot perform any of the gated project mutations. |
+
+The exact who-can-do-what allowlist for every action lives in one place —
+`packages/shared/src/domain/policy.ts` (`ROLE_POLICY`) — and the API and web UI both read
+from it, with a CI test that fails if they ever drift.
+
+---
+
+## How to make someone an admin
+
+1. Sign in as the **owner** (e.g. `jp@vitan.in`).
+2. **Team** screen → **Organization Admins** → enter their **name + email/phone**, set role
+   **Admin**, click **Add admin**. This provisions their login.
+3. They sign in (email-OTP / password / Google) and immediately have full PMC access to every
+   project — but cannot touch the admin roster or remove you.
+
+> This is a **live-API** action (real sign-in, not the demo), and the Organization Admins
+> section is visible only to the owner — so do it signed in as the owner.
