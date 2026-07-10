@@ -35,9 +35,12 @@ export class DrawingsController {
     return this.drawings.presign(projectId, body.mime);
   }
 
-  /** Acknowledge building to a revision (contractor / engineer / pmc — not client). */
+  /** Acknowledge building to a revision (contractor / engineer / pmc — not client, not
+   *  worker device tokens). The service also rejects `client`; the role gate keeps
+   *  anonymously-minted worker tokens off the drawing-ack register. */
   @Post('projects/:projectId/drawings/rev/:revId/ack')
-  @UseGuards(JwtGuard)
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles('pmc', 'engineer', 'contractor')
   acknowledge(
     @Param('projectId') projectId: string,
     @Param('revId') revId: string,

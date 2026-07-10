@@ -10,9 +10,12 @@ import { Roles, RolesGuard } from '../common/roles';
 export class MediaController {
   constructor(private readonly media: MediaService) {}
 
-  /** Upload a site photo (base64). Returns { id, url } — url is absolute (S3/R2) or /media/:id (dev stub). */
+  /** Upload a site photo (base64). Returns { id, url } — url is absolute (S3/R2) or /media/:id (dev stub).
+   *  PMC or site engineer only — progress photos come from the engineer's daily-log flow; this keeps
+   *  anonymously-minted worker tokens from writing arbitrary blobs, matching the DELETE gate below. */
   @Post('projects/:projectId/media')
-  @UseGuards(JwtGuard)
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles('pmc', 'engineer')
   upload(
     @Param('projectId') projectId: string,
     @CurrentUser() user: AuthUser,

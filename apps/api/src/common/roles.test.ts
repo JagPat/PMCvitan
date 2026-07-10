@@ -28,9 +28,12 @@ describe('RolesGuard', () => {
     expect(guard.canActivate(ctxWithUser(worker))).toBe(true);
   });
 
-  it('allows any authenticated user when @Roles() is empty', () => {
+  it('DENIES everyone when @Roles metadata is present but empty (fail closed, not open)', () => {
+    // A stray/placeholder @Roles([]) must never silently grant access. (The decorator
+    // itself now requires >=1 role at compile time; this guards the runtime path too.)
     const guard = new RolesGuard(reflectorReturning([]));
-    expect(guard.canActivate(ctxWithUser(worker))).toBe(true);
+    expect(() => guard.canActivate(ctxWithUser(worker))).toThrow(ForbiddenException);
+    expect(() => guard.canActivate(ctxWithUser(pmc))).toThrow(ForbiddenException);
   });
 
   it('permits a role that is in the allowlist', () => {
