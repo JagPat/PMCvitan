@@ -71,3 +71,19 @@ from it, with a CI test that fails if they ever drift.
 
 > This is a **live-API** action (real sign-in, not the demo), and the Organization Admins
 > section is visible only to the owner — so do it signed in as the owner.
+
+## Making the owner (bootstrapping / "I don't see Organization Admins")
+
+If **no one you can sign in as is an owner** — the seeded `pmc@vitan.in` is the org owner by
+default; another account (e.g. `jp@vitan.in`) may have been added as an *admin* and so can't
+manage the roster — promote an owner without shell access:
+
+1. On the **API** app set `ORG_OWNER_EMAIL=jp@vitan.in` and `AUTO_ENSURE_ACCOUNTS=true`.
+2. **Redeploy.** On boot, `ensure-accounts` promotes that account's org membership to **owner**
+   (idempotent, and it doesn't demote anyone). The account must already exist — sign them in
+   once first if needed.
+3. Sign in as that account → the **Organization Admins** section now appears. Unset
+   `AUTO_ENSURE_ACCOUNTS` again if you prefer.
+
+(Alternative: sign in as the seeded owner `pmc@vitan.in` — office password, default `vitan123`
+unless changed — and promote the other account to Owner from the roster UI.)
