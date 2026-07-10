@@ -17,6 +17,8 @@ with per-project team memberships and token-level tenancy isolation.
 
 ## Roles — who can do what (the "admin")
 
+> Quick reference / cheat-sheet: [`ROLES.md`](./ROLES.md). This section is the deeper model.
+
 Two independent layers of access:
 
 - **Org role** (`OrgMembership.role` = `owner | admin | member`) — *administrative* power over the
