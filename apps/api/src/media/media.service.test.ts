@@ -2,10 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { MediaService } from './media.service';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './storage.service';
+import type { SignedUrlService } from './signed-url.service';
 import type { RealtimeGateway } from '../realtime/realtime.gateway';
 import type { CreateMediaInput } from '../contracts';
 
-function make(storagePutUrl: string | null) {
+function make(storagePutUrl: string | null, presignedGet: string | null = null) {
   const created: unknown[] = [];
   const prisma = {
     media: {
@@ -21,53 +22,66 @@ function make(storagePutUrl: string | null) {
   const storage = {
     keyFor: vi.fn(() => 'ambli/progress/med1.jpg'),
     put: vi.fn(async () => ({ url: storagePutUrl })),
+    presignGet: vi.fn(async () => presignedGet),
     remove: vi.fn(async () => {}),
   };
+  const signed = { mediaPath: vi.fn((id: string) => `/media/${id}?t=tok`) };
   const realtime = { notifyChanged: vi.fn() };
   const svc = new MediaService(
     prisma as unknown as PrismaService,
     storage as unknown as StorageService,
+    signed as unknown as SignedUrlService,
     realtime as unknown as RealtimeGateway,
   );
-  return { svc, prisma, storage, realtime };
+  return { svc, prisma, storage, signed, realtime };
 }
 
 const input: CreateMediaInput = { kind: 'progress', mime: 'image/jpeg', data: Buffer.from('hello').toString('base64') };
 
 describe('MediaService.create', () => {
-  it('dev stub: keeps bytes in the row and returns a /media/:id url', async () => {
+  it('dev stub: keeps bytes in the row and returns a signed serve path (no public url stored)', async () => {
     const { svc, prisma, realtime } = make(null);
     const res = await svc.create('ambli', 'user-1', input);
 
-    expect(res).toEqual({ id: 'med1', url: '/media/med1' });
+    expect(res).toEqual({ id: 'med1', url: '/media/med1?t=tok' });
     const row = prisma.media.create.mock.calls[0][0].data;
     expect(row.data).toBeInstanceOf(Buffer);
     expect(row.data.toString()).toBe('hello');
-    expect(row.url).toBeNull();
+    expect(row.url).toBeNull(); // never persist a public bucket URL
     expect(row.sizeBytes).toBe(5);
     expect(row.uploadedBy).toBe('user-1');
     expect(realtime.notifyChanged).toHaveBeenCalledWith('ambli');
   });
 
-  it('S3 mode: drops the bytes and returns the absolute bucket url', async () => {
+  it('S3 mode: drops the bytes, stores NO public url, and returns a signed serve path', async () => {
     const { svc, prisma } = make('https://cdn.vitan.in/ambli/progress/med1.jpg');
     const res = await svc.create('ambli', 'user-1', input);
 
-    expect(res.url).toBe('https://cdn.vitan.in/ambli/progress/med1.jpg');
+    expect(res.url).toBe('/media/med1?t=tok'); // signed path, not the bucket url
     const row = prisma.media.create.mock.calls[0][0].data;
-    expect(row.data).toBeNull();
-    expect(row.url).toBe('https://cdn.vitan.in/ambli/progress/med1.jpg');
+    expect(row.data).toBeNull(); // bytes went to the bucket
+    expect(row.url).toBeNull(); // public bucket url is never stored (private delivery)
+    expect(row.storageKey).toBe('ambli/progress/med1.jpg');
   });
 });
 
 describe('MediaService.fetch', () => {
-  it('returns bytes for a stub row, a redirect for an S3 row, null when missing', async () => {
+  it('returns bytes for a stub row', async () => {
     const { svc, prisma } = make(null);
-
-    prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', mime: 'image/png', data: Buffer.from('x'), url: null });
+    prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', mime: 'image/png', data: Buffer.from('x'), storageKey: 'k', url: null });
     expect(await svc.fetch('m')).toEqual({ mime: 'image/png', bytes: Buffer.from('x') });
+  });
 
-    prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', mime: 'image/png', data: null, url: 'https://cdn/x.png' });
+  it('presigns a private-bucket GET for an S3 row (never exposes the object url)', async () => {
+    const { svc, prisma, storage } = make(null, 'https://cdn/ambli/x.jpg?sig=abc');
+    prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', mime: 'image/png', data: null, storageKey: 'ambli/x.jpg', url: null });
+    expect(await svc.fetch('m')).toEqual({ redirect: 'https://cdn/ambli/x.jpg?sig=abc' });
+    expect(storage.presignGet).toHaveBeenCalledWith('ambli/x.jpg');
+  });
+
+  it('falls back to a legacy public url row, and returns null when missing', async () => {
+    const { svc, prisma } = make(null);
+    prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', mime: 'image/png', data: null, storageKey: null, url: 'https://cdn/x.png' });
     expect(await svc.fetch('m')).toEqual({ redirect: 'https://cdn/x.png' });
 
     prisma.media.findUnique.mockResolvedValueOnce(null);

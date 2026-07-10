@@ -40,22 +40,21 @@ export class DrawingsService {
 
   async issue(projectId: string, issuedBy: string, input: IssueDrawingInput): Promise<IssuedDrawing> {
     let key: string;
-    let url: string | null;
     let data: Buffer | null;
     let sizeBytes: number;
     if (input.storageKey) {
-      // presigned path: the bytes are already in the bucket; just record the pointer
+      // presigned path: the bytes are already in the (private) bucket; record the pointer
       key = input.storageKey;
-      url = this.storage.publicUrl(key);
       data = null;
       sizeBytes = input.sizeBytes ?? 0;
     } else {
-      // base64 path (dev stub / small files): store the bytes, keep them in the row
-      // unless a bucket is configured (then url is set and the row drops the bytes)
+      // base64 path (dev stub / small files): S3 mode PUTs to the private bucket and drops
+      // the bytes from the row; dev stub keeps them. We never persist a public bucket URL —
+      // the file is only reached through the token-gated serve endpoint (presigned GET).
       const bytes = Buffer.from(input.data!, 'base64');
       key = this.storage.keyFor(projectId, 'drawings', input.mime);
-      ({ url } = await this.storage.put(key, bytes, input.mime));
-      data = url ? null : bytes;
+      const { url: bucketUrl } = await this.storage.put(key, bytes, input.mime);
+      data = bucketUrl ? null : bytes;
       sizeBytes = bytes.length;
     }
 
@@ -64,7 +63,7 @@ export class DrawingsService {
       status: input.status,
       mime: input.mime,
       data,
-      url,
+      url: null, // never store a public bucket URL (private-file delivery)
       storageKey: key,
       sizeBytes,
       note: input.note ?? '',
@@ -147,8 +146,12 @@ export class DrawingsService {
   async fetchRevision(id: string): Promise<RevisionBytes | RevisionRedirect | null> {
     const row = await this.prisma.drawingRevision.findUnique({ where: { id } });
     if (!row) return null;
-    if (row.url) return { redirect: row.url };
     if (row.data) return { mime: row.mime, bytes: Buffer.from(row.data) };
+    if (row.storageKey) {
+      const signed = await this.storage.presignGet(row.storageKey);
+      if (signed) return { redirect: signed };
+    }
+    if (row.url) return { redirect: row.url }; // legacy public row (back-compat)
     return null;
   }
 

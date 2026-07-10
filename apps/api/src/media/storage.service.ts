@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const MIME_EXT: Record<string, string> = {
@@ -87,6 +87,18 @@ export class StorageService {
     const cmd = new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key, ContentType: mime });
     const uploadUrl = await getSignedUrl(this.s3(), cmd, { expiresIn });
     return { uploadUrl, url: this.publicUrl(key) };
+  }
+
+  /**
+   * A short-lived presigned GET URL for a stored object (S3 mode). The serve endpoint
+   * 302-redirects to it AFTER verifying the caller's file token, so the bucket itself
+   * stays PRIVATE (no public-read) — a copied object URL isn't reachable, and this
+   * signed link expires. Returns null with no bucket configured (dev stub serves bytes).
+   */
+  async presignGet(key: string, expiresIn = 300): Promise<string | null> {
+    if (!this.configured) return null;
+    const cmd = new GetObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key });
+    return getSignedUrl(this.s3(), cmd, { expiresIn });
   }
 
   /** Delete a stored object (S3 mode). Dev stub keeps bytes in the DB row, so no-op here. */
