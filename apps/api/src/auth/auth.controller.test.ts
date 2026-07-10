@@ -46,4 +46,16 @@ describe('AuthController /auth/session dev-auth gate (secure by default)', () =>
     expect(calls).toHaveLength(1);
     expect(res).toMatchObject({ role: 'pmc' });
   });
+
+  it('P1-4: 403s in production even when ALLOW_DEV_AUTH === "true"', () => {
+    process.env.ALLOW_DEV_AUTH = 'true';
+    process.env.NODE_ENV = 'production';
+    try {
+      const { svc, calls } = fakeAuth();
+      expect(() => new AuthController(svc).session(body)).toThrow(ForbiddenException);
+      expect(calls).toHaveLength(0);
+    } finally {
+      process.env.NODE_ENV = 'test';
+    }
+  });
 });

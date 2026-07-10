@@ -3,18 +3,23 @@ import { MembersService } from './members.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { addMemberSchema, updateMemberSchema, type AddMemberInput, type UpdateMemberInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
-import { AllowAnyRole } from '../common/roles';
+import { AllowAnyRole, Roles, RolesGuard } from '../common/roles';
 
 const MEMBERS_AUTHZ = 'MembersService.canManage() enforces project-PMC / org owner-admin authority';
 
 /** Project team management. All routes are project-scoped, so the JwtGuard tenancy
- *  check already limits the caller to the project their token belongs to. */
+ *  check already limits the caller to the project their token belongs to. RolesGuard is
+ *  in the chain so read routes can name their allowed roles (mutations use @AllowAnyRole,
+ *  which RolesGuard passes through to the service's own authority check). */
 @Controller('projects/:projectId/members')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, RolesGuard)
 export class MembersController {
   constructor(private readonly members: MembersService) {}
 
+  /** Roster with contact PII — interactive session roles only. Excludes the
+   *  anonymously-minted `worker` device token, which must never read team PII (P1-2). */
   @Get()
+  @Roles('pmc', 'client', 'engineer', 'contractor')
   list(@Param('projectId') projectId: string) {
     return this.members.list(projectId);
   }

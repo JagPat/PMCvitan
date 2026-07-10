@@ -6,11 +6,20 @@ live means: make a real sign-in work for the office roles, then turn **off** the
 passwordless dev-auth persona switcher. See [`AUTH_LOCKDOWN.md`](./AUTH_LOCKDOWN.md) for how
 the switch works and [`ORGS.md`](./ORGS.md) for accounts/memberships.
 
-> **Lockout guard.** Never flip `ALLOW_DEV_AUTH=false` before a real sign-in works on
-> prod — otherwise no one can get in. The steps below make real sign-in work *first*.
-> Automate the guard: `ADMIN_PASSWORD='<pw>' bash scripts/lockdown-check.sh` must print
-> **✓ SAFE TO LOCK DOWN** before you flip, and `… --verify` must print **✓ LOCKED & SAFE**
-> after. See [`AUTH_LOCKDOWN.md`](./AUTH_LOCKDOWN.md#activate-the-lockdown-once-a-roles-sign-in-works).
+> **Lockout guard.** Passwordless dev-auth (`POST /auth/session`) is now **hard-disabled
+> whenever `NODE_ENV=production`** — regardless of `ALLOW_DEV_AUTH` (P1-4: it hands out a
+> full role token to anyone, so it must never be reachable in prod). The API image sets
+> `NODE_ENV=production`, so on prod **real sign-in must work before anyone can get in** —
+> there is no persona-switch fallback. Make email+password work first (Step 1 below).
+> `ADMIN_PASSWORD='<pw>' bash scripts/lockdown-check.sh` should print **✓ SAFE TO LOCK
+> DOWN** before you rely on it. See [`AUTH_LOCKDOWN.md`](./AUTH_LOCKDOWN.md#activate-the-lockdown-once-a-roles-sign-in-works).
+
+> **OTP needs a real provider in production.** With `NODE_ENV=production`, the email- and
+> phone-OTP endpoints **fail closed (503)** when no SMTP / SMS provider is configured —
+> they will NOT return the code in the response (P1-1: doing so would let anyone read a
+> known user's code and sign in as them). Email-OTP works once SMTP is set (it is, via
+> Zoho); phone-OTP needs MSG91 / Fast2SMS / Telegram before site engineers can use it.
+> Until then engineers sign in by email (password or email-OTP).
 
 ## Step 0 — recommended production env
 
@@ -33,7 +42,7 @@ The simplest way to go live. Office accounts (`pmc@ / client@ / contractor@vitan
 password; everyone signs in on the email+password screen.
 
 1. **Seed the office accounts on prod** — pick one:
-   - **Automatic (turnkey):** set `AUTO_ENSURE_ACCOUNTS=true` and `SEED_DEMO_PASSWORD=<a strong password>` on the **API** app in Coolify, then redeploy. Boot runs the **create-only** `ensure-accounts`: it creates the office accounts that are missing (with `SEED_DEMO_PASSWORD`) and leaves every existing account completely untouched — an existing password is **never** reset by a redeploy, and a `removed` team member is never re-activated. (To reset a live password, do it deliberately via a shell/SQL one-off, not a deploy.) It also **backfills project memberships** for any pre-membership legacy account (e.g. an engineer who signed in by phone-OTP before this change), so nobody loses access when the legacy auth fallback is retired. Keep it on for the deploy that ships the org-access fix; unset it again afterwards if you prefer.
+   - **Automatic (turnkey):** set `AUTO_ENSURE_ACCOUNTS=true` and `SEED_DEMO_PASSWORD=<a strong password ≥ 10 chars>` on the **API** app in Coolify, then redeploy. Boot runs the **create-only** `ensure-accounts`: it creates the office accounts that are missing (with `SEED_DEMO_PASSWORD`) and leaves every existing account completely untouched — an existing password is **never** reset OR back-filled by a redeploy, and a `removed` team member is never re-activated (P1-5). There is **no default password**: if `SEED_DEMO_PASSWORD` is unset, new office accounts are created *without* a password (they use email-OTP or a deliberate reset) rather than a guessable default. (To set/reset a live password, do it deliberately, not via a deploy.) It also **backfills project memberships** for any pre-membership legacy account (e.g. an engineer who signed in by phone-OTP before this change), so nobody loses access when the legacy auth fallback is retired. Keep it on for the deploy that ships the org-access fix; unset it again afterwards if you prefer.
    - **Manual (one-off):** in the API container shell — `SEED_DEMO_PASSWORD=<pw> pnpm --filter api ensure-accounts`.
    - Custom roster: set `ACCOUNTS_JSON='[{"role":"pmc","name":"Ar. Vitan","email":"pmc@vitan.in"}, …]'`.
 2. **Verify** you can sign in at the deployed web app with `pmc@vitan.in` + the password (dev-auth is still on, so you can compare against the persona switch). Or check it from the shell: `ADMIN_PASSWORD='<pw>' bash scripts/lockdown-check.sh` → **✓ SAFE TO LOCK DOWN**.

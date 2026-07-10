@@ -33,4 +33,14 @@ describe('EmailService (dev stub — no SMTP)', () => {
     delete process.env.SMTP_USER;
     delete process.env.SMTP_PASS;
   });
+
+  it('P1-1: in production with no SMTP, refuses (503) instead of returning the code', async () => {
+    process.env.NODE_ENV = 'production';
+    try {
+      const svc = new EmailService();
+      await expect(svc.sendOtp('jp@vitan.in')).rejects.toMatchObject({ status: 503 });
+    } finally {
+      process.env.NODE_ENV = 'test';
+    }
+  });
 });

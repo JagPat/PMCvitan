@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { OtpStore } from './otp-store';
+import { isProduction } from '../config';
 
 const OTP_TTL_MS = 5 * 60_000;
 
@@ -113,6 +114,12 @@ export class SmsService {
       await this.sendViaTelegram(phone, code);
       this.otp.put(phone, code);
       return { live: true, channel: 'telegram' };
+    }
+    // P1-1: the dev stub returns the code to the caller — dev/test ONLY. In production
+    // with no SMS provider configured, refuse rather than hand out a code anyone could
+    // read from the response to take over a known number's account.
+    if (isProduction()) {
+      throw new ServiceUnavailableException('Phone sign-in is not available — no SMS provider is configured.');
     }
     const code = this.newCode();
     this.otp.put(phone, code);

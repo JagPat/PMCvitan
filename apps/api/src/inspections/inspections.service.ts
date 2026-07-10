@@ -39,16 +39,32 @@ export class InspectionsService {
 
   /** Engineer submits the checklist (guarded: all marked, failed items need a photo). */
   async submit(projectId: string, inspectionId: string, input: SubmitInspectionInput, user: AuthUser): Promise<SnapshotDto> {
-    const insp = await this.prisma.inspection.findUnique({ where: { id: inspectionId } });
+    const insp = await this.prisma.inspection.findUnique({ where: { id: inspectionId }, include: { items: true } });
     if (!insp || insp.projectId !== projectId) throw new NotFoundException(`Inspection ${inspectionId} not found`);
 
-    const err = checklistSubmitError(input.items);
+    // P2-3: guard the state machine. A submitted inspection is in the PMC's review
+    // queue (or already decided) — resubmitting would silently rewrite what's under
+    // review, so refuse. And validate against the ISSUED checklist, not just whatever
+    // items the request carries: an engineer can't slip through an empty or short
+    // payload to mark it submitted while items go unverified.
+    if (insp.decided) throw new BadRequestException('This inspection has already been decided.');
+    if (insp.submitted) throw new BadRequestException('This checklist has already been submitted and is awaiting review.');
+    if (insp.items.length === 0) throw new BadRequestException('This inspection has no checklist items to submit.');
+
+    const submitted = new Map(input.items.map((it) => [it.name, it]));
+    const merged = insp.items.map((dbIt) => {
+      const s = submitted.get(dbIt.name);
+      return { state: s?.state ?? null, photos: s?.photos ?? 0 };
+    });
+    const err = checklistSubmitError(merged);
     if (err) throw new BadRequestException(err);
 
     await this.prisma.$transaction([
-      ...input.items.map((it) =>
-        this.prisma.inspectionItem.updateMany({ where: { inspectionId, name: it.name }, data: { state: it.state, photos: it.photos, note: it.note } }),
-      ),
+      // only write items that belong to this inspection (updateMany by inspectionId+name)
+      ...insp.items.map((dbIt) => {
+        const s = submitted.get(dbIt.name)!;
+        return this.prisma.inspectionItem.updateMany({ where: { inspectionId, name: dbIt.name }, data: { state: s.state, photos: s.photos, note: s.note } });
+      }),
       this.prisma.inspection.update({ where: { id: inspectionId }, data: { submitted: true } }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'inspection.submit', entity: 'Inspection', entityId: inspectionId } }),
     ]);
@@ -60,6 +76,10 @@ export class InspectionsService {
   async decide(projectId: string, inspectionId: string, input: DecideReviewInput, user: AuthUser): Promise<SnapshotDto> {
     const insp = await this.prisma.inspection.findUnique({ where: { id: inspectionId }, include: { items: true } });
     if (!insp || insp.projectId !== projectId) throw new NotFoundException(`Inspection ${inspectionId} not found`);
+    // P2-3: a decision is terminal — don't let it be re-decided (which would re-notify
+    // and re-create re-inspection tasks). It must have been submitted first.
+    if (!insp.submitted) throw new BadRequestException('This inspection has not been submitted yet.');
+    if (insp.decided) throw new BadRequestException('This inspection has already been decided.');
 
     let pushBody: string;
     let pushRoles: string[];

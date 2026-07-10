@@ -100,11 +100,16 @@ export const flagMismatchSchema = z.object({ decisionId: z.string().min(1) });
 export type FlagMismatchInput = z.infer<typeof flagMismatchSchema>;
 
 // ── Phase 7c-media ─────────────────────────────────────────────────────────
-// A site photo upload. `data` is base64 (no data: URL prefix). Images only.
+// A site photo upload. `data` is base64 (no data: URL prefix).
+// P2-5: a raster-image allowlist — NOT `image/*`, which admits `image/svg+xml`
+// (active content → stored XSS when the file is served inline). Base64 is capped so
+// a single request can't push an unbounded blob through the API body.
+export const RASTER_IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/heic', 'image/heif'] as const;
+export const MAX_MEDIA_BASE64 = 14_000_000; // ~10.5 MB decoded
 export const createMediaSchema = z.object({
   kind: z.enum(['progress', 'inspection', 'decision', 'attendance', 'material']),
-  mime: z.string().regex(/^image\//, 'images only'),
-  data: z.string().min(1),
+  mime: z.enum(RASTER_IMAGE_MIMES),
+  data: z.string().min(1).max(MAX_MEDIA_BASE64, 'image too large'),
   decisionId: z.string().optional(),
   dailyLogId: z.string().optional(),
   geoLat: z.number().optional(),
@@ -114,9 +119,34 @@ export const createMediaSchema = z.object({
 export type CreateMediaInput = z.infer<typeof createMediaSchema>;
 
 // ── Phase 8: web push ────────────────────────────────────────────────────────
+// P2-1: constrain the push endpoint to a public HTTPS host — reject non-https and any
+// localhost / private / link-local / reserved literal, so the subscription can't be used
+// to make the server POST to internal services or the cloud metadata endpoint (SSRF).
+export function isSafeExternalHttpsUrl(raw: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'https:') return false;
+  const host = u.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return false;
+  if (host.includes(':')) return false; // IPv6 literal (incl. ::1, ULA) — not a push provider
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    const [a, b] = host.split('.').map(Number);
+    if (a === 0 || a === 10 || a === 127) return false;
+    if (a === 169 && b === 254) return false; // link-local + cloud metadata (169.254.169.254)
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false; // CGNAT
+    return false; // any other bare-IP endpoint is not a real push provider
+  }
+  return true;
+}
 export const pushSubscribeSchema = z.object({
   subscription: z.object({
-    endpoint: z.string().url(),
+    endpoint: z.string().url().refine(isSafeExternalHttpsUrl, 'endpoint must be an https URL to a public host'),
     keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }),
   }),
 });
@@ -126,6 +156,23 @@ export type PushSubscribeInput = z.infer<typeof pushSubscribeSchema>;
 // Issue a drawing. If `number` already exists in the project a new revision is
 // added and the prior ones are superseded; otherwise a new register entry is
 // created. PDF/DWG/images accepted; DWG is a downloadable source (viewed as PDF).
+// P2-5: a drawing MIME allowlist (PDF / CAD / raster) — excludes SVG and any
+// text/html/script type. Inline base64 is capped; the large-file path goes direct
+// to the bucket via presign with a server-enforced size cap.
+export const DRAWING_MIMES = [
+  'application/pdf',
+  'image/vnd.dwg',
+  'application/acad',
+  'application/dwg',
+  'image/vnd.dxf',
+  'application/dxf',
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/webp',
+] as const;
+export const MAX_DRAWING_BASE64 = 14_000_000; // ~10.5 MB inline; larger files use presign
+export const MAX_DRAWING_BYTES = 100_000_000; // 100 MB hard cap for presigned uploads
 export const issueDrawingSchema = z
   .object({
     number: z.string().min(1),
@@ -133,12 +180,12 @@ export const issueDrawingSchema = z
     discipline: z.enum(['architectural', 'structural', 'mep', 'other']),
     rev: z.string().min(1),
     status: z.enum(['for_review', 'for_construction']).default('for_construction'),
-    mime: z.string().min(1),
+    mime: z.enum(DRAWING_MIMES),
     // one of: inline base64 body (dev stub / small files) OR a storageKey from a
     // completed presigned direct-to-bucket upload (Slice 3, large files).
-    data: z.string().min(1).optional(),
+    data: z.string().min(1).max(MAX_DRAWING_BASE64, 'file too large for inline upload').optional(),
     storageKey: z.string().min(1).optional(),
-    sizeBytes: z.number().int().nonnegative().optional(),
+    sizeBytes: z.number().int().nonnegative().max(MAX_DRAWING_BYTES, 'file too large').optional(),
     note: z.string().optional(),
     zone: z.string().optional(),
     activityId: z.string().optional(),
@@ -150,7 +197,7 @@ export const issueDrawingSchema = z
 export type IssueDrawingInput = z.infer<typeof issueDrawingSchema>;
 
 export const presignDrawingSchema = z.object({
-  mime: z.string().min(1),
+  mime: z.enum(DRAWING_MIMES),
 });
 export type PresignDrawingInput = z.infer<typeof presignDrawingSchema>;
 

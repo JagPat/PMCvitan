@@ -80,8 +80,16 @@ async function main(): Promise<void> {
     ? (JSON.parse(process.env.ACCOUNTS_JSON) as AccountSpec[])
     : DEFAULT_ACCOUNTS;
 
-  const password = process.env.SEED_DEMO_PASSWORD || 'vitan123';
-  const passwordHash = bcrypt.hashSync(password, 10);
+  // P1-5: NO default password. A known-fallback password (the old `vitan123`) on a
+  // reachable production account is an account-takeover. A newly-created office account
+  // gets a password ONLY when SEED_DEMO_PASSWORD is explicitly set to a non-trivial value;
+  // otherwise it is created password-less (sign in by email-OTP, or set one via a
+  // deliberate reset). Existing accounts are never given a password here.
+  const seedPassword = process.env.SEED_DEMO_PASSWORD?.trim();
+  if (seedPassword && seedPassword.length < 10) {
+    throw new Error('SEED_DEMO_PASSWORD is too weak — use at least 10 characters, or unset it to create password-less accounts.');
+  }
+  const passwordHash = seedPassword ? bcrypt.hashSync(seedPassword, 10) : null;
 
   for (const a of accounts) {
     if (!a.email && !a.phone) {
@@ -89,16 +97,16 @@ async function main(): Promise<void> {
       console.warn(`skip ${a.role} "${a.name}" — needs an email or phone`);
       continue;
     }
-    // Password only for office roles; engineers sign in by phone OTP.
-    const wantsPassword = a.role !== 'engineer' && Boolean(a.email);
+    // Password only for office roles, only when a strong SEED_DEMO_PASSWORD is provided,
+    // and only on CREATE. Engineers sign in by phone OTP.
+    const setPassword = a.role !== 'engineer' && Boolean(a.email) && passwordHash !== null;
     const where = a.email ? { email: a.email } : { phone: a.phone! };
 
-    // CREATE-ONLY (DEP-01): an account that already exists is left completely
-    // alone — its password hash, role, name and home project are never touched,
-    // so a redeploy with AUTO_ENSURE_ACCOUNTS=true can't reset a live user's
-    // password (that would be an account takeover, not provisioning). The one
-    // exception: an office account that has NO password yet (e.g. provisioned
-    // via OTP) gets one filled in so email+password sign-in starts working.
+    // CREATE-ONLY (DEP-01 / P1-5): an account that already exists is left completely
+    // untouched — its password hash, role, name and home project are never modified. A
+    // redeploy with AUTO_ENSURE_ACCOUNTS=true therefore can never reset OR back-fill a
+    // password on a live identity (both are takeover vectors). Existing password-less
+    // accounts stay password-less; give them one through a deliberate reset flow, not a boot.
     let user = await prisma.user.findUnique({ where });
     if (!user) {
       user = await prisma.user.create({
@@ -108,11 +116,13 @@ async function main(): Promise<void> {
           name: a.name,
           email: a.email,
           phone: a.phone,
-          ...(wantsPassword ? { passwordHash } : {}),
+          ...(setPassword ? { passwordHash } : {}),
         },
       });
-    } else if (wantsPassword && !user.passwordHash) {
-      user = await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+      if (a.role !== 'engineer' && a.email && !setPassword) {
+        // eslint-disable-next-line no-console
+        console.warn(`created ${a.email} WITHOUT a password (SEED_DEMO_PASSWORD unset) — they must use email-OTP or a reset.`);
+      }
     }
 
     // Memberships are also create-only: a membership row that exists keeps its
