@@ -410,6 +410,24 @@ export type OutboxOp =
   | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'> }
   | { t: 'uploadMedia'; input: UploadMediaInput };
 
+/**
+ * Classify an outbox replay failure. A *terminal* failure is one the server will keep
+ * rejecting however many times we retry — a business-rule 4xx (bad request, forbidden,
+ * not found, conflict, unprocessable, …). Such an op must be DROPPED from the outbox, or
+ * it poisons the queue: every reconnect re-runs it and re-runs every op behind it,
+ * duplicating the server writes that already succeeded.
+ *
+ * Everything else is transient and the op is kept for a later retry: a network error
+ * (no `status`), auth (401 — recoverable by re-signing-in), request timeout (408),
+ * rate limiting (429), and any 5xx.
+ */
+export function isTerminalOutboxError(err: unknown): boolean {
+  const status = (err as { status?: number } | null)?.status;
+  if (typeof status !== 'number') return false; // network / unknown → transient, retry later
+  if (status === 401 || status === 408 || status === 429) return false; // recoverable
+  return status >= 400 && status < 500; // other 4xx → permanent client error, drop it
+}
+
 /** Replay one queued mutation; resolves to the fresh snapshot. */
 export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapshot> {
   switch (op.t) {
