@@ -132,6 +132,38 @@ async function main(): Promise<void> {
     console.log(`ensured ${user.role} ${user.email ?? user.phone} (${user.id}) + memberships`);
   }
 
+  // Legacy-membership backfill (ORG escalation fix). Access now derives ONLY from
+  // an active project Membership or an org owner/admin role — the legacy
+  // `User.projectId`/`User.role` fallback is retired. To keep genuine
+  // pre-membership accounts (e.g. a phone-OTP engineer, an old seed row) signing
+  // in, give each one an explicit active Membership on their home project.
+  //
+  // Deliberately SKIP any user who holds an org membership: those are org-roster
+  // identities whose access is owner/admin super-admin reach (or nothing, for a
+  // plain member). Backfilling them a project membership from their (now-dormant)
+  // User.role would re-introduce the very phantom-PMC grant this fix removes and
+  // would survive a later demotion. This runs create-only (skips existing
+  // memberships) and is safe to re-run.
+  const legacyUsers = await prisma.user.findMany({
+    where: {
+      role: { in: ['pmc', 'client', 'engineer', 'contractor'] },
+      memberships: { none: {} },
+      orgMemberships: { none: {} },
+    },
+    select: { id: true, projectId: true, role: true, email: true, phone: true },
+  });
+  let backfilled = 0;
+  for (const u of legacyUsers) {
+    await prisma.membership.create({ data: { projectId: u.projectId, userId: u.id, role: u.role, status: 'active' } });
+    backfilled += 1;
+    // eslint-disable-next-line no-console
+    console.log(`backfilled membership for legacy ${u.role} ${u.email ?? u.phone ?? u.id} on ${u.projectId}`);
+  }
+  if (backfilled === 0) {
+    // eslint-disable-next-line no-console
+    console.log('no legacy accounts needed a membership backfill');
+  }
+
   // Phase backfill for the Ambli demo project (Orgs Slice 3): upsert the phases
   // and file each known activity under one — but only when the activity has no
   // phase yet, so a hand-assigned phase is never clobbered. Other projects define

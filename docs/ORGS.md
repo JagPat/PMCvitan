@@ -36,6 +36,16 @@ accepts the project's org owner/admin. So the admin can **create projects, build
 run every project** — the full feature set — while a plain org `member` only sees the projects they're
 explicitly added to.
 
+**Access resolution (authoritative).** A user's project role comes from exactly two sources: an **active
+project `Membership`**, or the **org owner/admin super-admin reach** (→ PMC). The legacy per-user
+`User.projectId`/`User.role` fields are **not** consulted — they once let a roster identity provisioned as
+a plain `member` (homed on a project as `pmc`, with no `Membership`) mint a PMC session, and a
+demotion/removal that only touched `OrgMembership` failed to revoke it. Every provisioning path now writes
+an explicit `Membership` (or, for the roster, deliberately none), and `ensure-accounts` backfills any
+pre-membership legacy account, so demotion/removal of an org role revokes project access with nothing left
+behind. Adding someone to the roster as `member` therefore grants **no** project access until they're added
+to a specific project's team.
+
 ## Tenancy isolation
 
 A JWT is scoped to **one project** (`{ sub, role, projectId }`). `JwtGuard` now rejects

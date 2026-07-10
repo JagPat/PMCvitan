@@ -135,17 +135,22 @@ describe('OrgsService.addOrgMember', () => {
           return u;
         }),
       },
+      membership: { create: vi.fn() }, // must NOT be called by addOrgMember (no phantom project grant)
     };
     return { svc: new OrgsService(prisma as unknown as PrismaService), prisma, created, orgMemberships };
   }
 
-  it('lets an org owner add a new admin, provisioning a PMC-homed account', async () => {
+  it('lets an org owner add a new roster member with NO phantom project grant', async () => {
     const { svc, prisma, created } = makeRoster('owner');
     const res = await svc.addOrgMember('org1', 'owner1', { name: 'JP', email: 'jp@vitan.in', phone: '8320303515', role: 'owner' });
     expect(res).toMatchObject({ userId: 'newuser', name: 'JP', email: 'jp@vitan.in', phone: '8320303515', orgRole: 'owner' });
-    // new account is homed on the org's first project as PMC, phone stored bare
+    // New account is homed on the org's first project only to satisfy the FK, with a
+    // least-privilege dormant role and NO project membership — access comes from the
+    // org role (super-admin reach), never a phantom PMC grant (ORG escalation fix).
     expect(created).toHaveLength(1);
-    expect(created[0]).toMatchObject({ projectId: 'ambli', role: 'pmc', phone: '8320303515' });
+    expect(created[0]).toMatchObject({ projectId: 'ambli', role: 'contractor', phone: '8320303515' });
+    expect(created[0].role).not.toBe('pmc');
+    expect(prisma.membership.create).not.toHaveBeenCalled(); // no project membership minted
     expect(prisma.orgMembership.upsert).toHaveBeenCalled();
   });
 

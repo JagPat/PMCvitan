@@ -155,10 +155,11 @@ export function TeamScreen() {
 
 /**
  * Organization roster — the admin tier, distinct from a project team. Owners/admins
- * run every project in the org as PMC; a member only sees projects they're added to.
- * Adding someone here provisions their account (homed as PMC on an org project), so
- * they can then sign in by email/phone and land in the admin view. Managed by the
- * org OWNER only (the single gatekeeper) — this whole section is owner-gated.
+ * run every project in the org as PMC (super-admin reach); a plain member gets NO
+ * project access from being on the roster — they must be added to a specific
+ * project's team to see it. Adding someone here provisions their login only; their
+ * project access comes from their org role (owner/admin) or an explicit project
+ * membership. Managed by the org OWNER only — this whole section is owner-gated.
  */
 function OrgRoster({ orgId }: { orgId: string }) {
   const orgMembers = useStore(useShallow((s) => s.orgMembers));
@@ -185,7 +186,7 @@ function OrgRoster({ orgId }: { orgId: string }) {
     <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }}>
       <Eyebrow>ORGANIZATION ADMINS</Eyebrow>
       <div style={{ fontSize: 13, color: 'var(--muted)', margin: '6px 0 16px', maxWidth: 560 }}>
-        Owners &amp; admins can create projects, build teams, and run every project in the org. Adding someone provisions their login and lands them in the admin view.
+        Owners &amp; admins can create projects, build teams, and run every project in the org. A plain member gets no project access here — add them to a specific project&apos;s team for that.
       </div>
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 18, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
