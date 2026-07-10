@@ -4,9 +4,14 @@ import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { addOrgMemberSchema, createOrgSchema, createProjectSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CreateOrgInput, type CreateProjectInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
+import { AllowAnyRole, Roles, RolesGuard } from '../common/roles';
+
+/** Org owner/admin authority is enforced per-route inside OrgsService (these are org-role
+ *  checks, not project-role checks, so they can't be a simple @Roles allowlist). */
+const ORG_AUTHZ = 'OrgsService enforces org owner/admin authority for this route';
 
 @Controller()
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, RolesGuard)
 export class OrgsController {
   constructor(
     private readonly orgs: OrgsService,
@@ -31,8 +36,11 @@ export class OrgsController {
     return this.orgs.portfolio(user.sub);
   }
 
-  /** Create a new org (the caller becomes its owner). */
+  /** Create a new org (the caller becomes its owner). Real account holders only — a
+   *  `worker` device token has no User row, so letting it through creates an ownerless
+   *  org (its owner-membership FK fails). Excluding `worker` closes that path. */
   @Post('orgs')
+  @Roles('pmc', 'client', 'engineer', 'contractor')
   createOrg(@CurrentUser() user: AuthUser, @Body(new ZodPipe(createOrgSchema)) body: CreateOrgInput) {
     return this.orgs.createOrg(user.sub, body);
   }
@@ -51,6 +59,7 @@ export class OrgsController {
 
   /** Add someone to the org's admin roster — owner/admin/member (org owner only). */
   @Post('orgs/:orgId/members')
+  @AllowAnyRole(ORG_AUTHZ)
   addOrgMember(
     @Param('orgId') orgId: string,
     @CurrentUser() user: AuthUser,
@@ -61,6 +70,7 @@ export class OrgsController {
 
   /** Change an org member's role (org owner only). */
   @Patch('orgs/:orgId/members/:userId')
+  @AllowAnyRole(ORG_AUTHZ)
   updateOrgMember(
     @Param('orgId') orgId: string,
     @Param('userId') userId: string,
@@ -72,12 +82,14 @@ export class OrgsController {
 
   /** Revoke someone's org membership (org owner only). */
   @Delete('orgs/:orgId/members/:userId')
+  @AllowAnyRole(ORG_AUTHZ)
   removeOrgMember(@Param('orgId') orgId: string, @Param('userId') userId: string, @CurrentUser() user: AuthUser) {
     return this.orgs.removeOrgMember(orgId, user.sub, userId);
   }
 
   /** Create a project under an org (owner/admin only). */
   @Post('orgs/:orgId/projects')
+  @AllowAnyRole(ORG_AUTHZ)
   createProject(
     @Param('orgId') orgId: string,
     @CurrentUser() user: AuthUser,
@@ -93,6 +105,7 @@ export class OrgsController {
 
   /** Edit a project's details (project PMC or org owner/admin). */
   @Patch('orgs/:orgId/projects/:pid')
+  @AllowAnyRole(ORG_AUTHZ)
   updateProject(
     @Param('orgId') orgId: string,
     @Param('pid') pid: string,
@@ -104,12 +117,14 @@ export class OrgsController {
 
   /** Archive (soft-delete) a project — hidden from listings/switcher/portfolio (owner/admin). */
   @Delete('orgs/:orgId/projects/:pid')
+  @AllowAnyRole(ORG_AUTHZ)
   deleteProject(@Param('orgId') orgId: string, @Param('pid') pid: string, @CurrentUser() user: AuthUser) {
     return this.orgs.deleteProject(orgId, user.sub, pid);
   }
 
   /** Restore a previously archived project (owner/admin). */
   @Post('orgs/:orgId/projects/:pid/restore')
+  @AllowAnyRole(ORG_AUTHZ)
   restoreProject(@Param('orgId') orgId: string, @Param('pid') pid: string, @CurrentUser() user: AuthUser) {
     return this.orgs.restoreProject(orgId, user.sub, pid);
   }
