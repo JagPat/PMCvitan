@@ -1,10 +1,10 @@
-import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, NotFoundException, Param, Post, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { DrawingsService } from './drawings.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { issueDrawingSchema, presignDrawingSchema, type IssueDrawingInput, type PresignDrawingInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
-import { Roles, RolesGuard } from '../common/roles';
+import { Public, Roles, RolesGuard } from '../common/roles';
 
 @Controller()
 export class DrawingsController {
@@ -13,25 +13,24 @@ export class DrawingsController {
   /** Issue a drawing (new register entry, or a new revision that supersedes the prior).
    *  PMC only — issuing controlled drawings is the architect's authority. */
   @Post('projects/:projectId/drawings')
-  @UseGuards(JwtGuard)
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles('pmc')
   issue(
     @Param('projectId') projectId: string,
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(issueDrawingSchema)) body: IssueDrawingInput,
   ) {
-    if (user.role !== 'pmc') throw new ForbiddenException('Only the PMC can issue drawings');
     return this.drawings.issue(projectId, user.sub, body);
   }
 
   /** Presigned direct-to-bucket upload target for a large drawing (PMC only, Slice 3). */
   @Post('projects/:projectId/drawings/presign')
-  @UseGuards(JwtGuard)
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles('pmc')
   presign(
     @Param('projectId') projectId: string,
-    @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(presignDrawingSchema)) body: PresignDrawingInput,
   ) {
-    if (user.role !== 'pmc') throw new ForbiddenException('Only the PMC can issue drawings');
     return this.drawings.presign(projectId, body.mime);
   }
 
@@ -49,7 +48,9 @@ export class DrawingsController {
     return this.drawings.acknowledge(projectId, revId, user);
   }
 
-  /** Serve a revision's file: inline bytes (dev stub) or a 302 to the bucket URL (S3/R2). */
+  /** Serve a revision's file: inline bytes (dev stub) or a 302 to the bucket URL (S3/R2).
+   *  Public — revision ids are unguessable cuids, same posture as public media serve. */
+  @Public()
   @Get('drawings/rev/:id')
   async serve(@Param('id') id: string, @Res() res: Response): Promise<void> {
     const out = await this.drawings.fetchRevision(id);
