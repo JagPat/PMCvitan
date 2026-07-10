@@ -5,6 +5,7 @@ import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
 import { nextSeqId } from '../domain/ids';
+import { pendingDecisionNotice } from '../domain/notifications';
 import type { ApproveInput, ChangeInput, CreateDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 
@@ -44,7 +45,7 @@ export class DecisionsService {
         })),
       }),
       this.prisma.decisionEvent.create({ data: { decisionId: id, type: 'issued', actor: user.role, payload: { title: input.title } } }),
-      this.prisma.notification.create({ data: { projectId, text: `Decision awaiting approval: ${input.title}`, color: '#C08A2D', time: 'just now' } }),
+      this.prisma.notification.create({ data: { projectId, text: pendingDecisionNotice(input.title), color: '#C08A2D', time: 'just now' } }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'decision.create', entity: 'Decision', entityId: id } }),
     ]);
     // the client owns the choice — surface it on their side

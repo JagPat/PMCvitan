@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
+import { isPendingDecisionNotice } from '../domain/notifications';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
 import type { ActivityDto, DecisionDto, PhaseDto, SnapshotDto } from './types';
@@ -248,7 +249,12 @@ export class SnapshotService {
             photos: progressPhotos,
           }
         : null,
-      notifications: notifications.map((n) => ({ text: n.text, time: n.time, color: n.color })),
+      // AUTH-02: a pending-decision notice ("Decision awaiting approval: …") is
+      // pmc/client-only — drop it from the feed for roles that have pending decisions
+      // hidden, so a decision's title can't leak through the bell.
+      notifications: notifications
+        .filter((n) => !(hidePending && isPendingDecisionNotice(n.text)))
+        .map((n) => ({ text: n.text, time: n.time, color: n.color })),
       companies: companies.map((c) => ({
         id: c.id,
         name: c.name,

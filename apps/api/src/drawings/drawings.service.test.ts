@@ -121,6 +121,13 @@ describe('DrawingsService.issue', () => {
     expect(rev.data).toBeNull();
   });
 
+  it('rejects a storageKey that belongs to another project (cross-project drawing read)', async () => {
+    const { svc } = make();
+    await expect(
+      svc.issue('ambli', 'pmc-1', { ...base, data: undefined as never, storageKey: 'villa/drawings/secret.pdf', sizeBytes: 100 }),
+    ).rejects.toThrow(/does not belong to this project/);
+  });
+
   it('S3 mode drops the bytes and stores no public url; dev stub keeps the bytes', async () => {
     const s3 = make('https://cdn.vitan.in/ambli/drawings/x.pdf');
     await s3.svc.issue('ambli', 'u1', base);

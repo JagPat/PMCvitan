@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from '../media/storage.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
@@ -43,7 +43,13 @@ export class DrawingsService {
     let data: Buffer | null;
     let sizeBytes: number;
     if (input.storageKey) {
-      // presigned path: the bytes are already in the (private) bucket; record the pointer
+      // presigned path: the bytes are already in the (private) bucket; record the pointer.
+      // The key is client-supplied (echoed back from /presign), so bind it to this project:
+      // our keys are `${projectId}/drawings/<uuid>.<ext>` — reject anything else so a PMC
+      // can't point a revision at (and later serve) another project's object.
+      if (!input.storageKey.startsWith(`${projectId}/drawings/`)) {
+        throw new BadRequestException('storageKey does not belong to this project');
+      }
       key = input.storageKey;
       data = null;
       sizeBytes = input.sizeBytes ?? 0;
