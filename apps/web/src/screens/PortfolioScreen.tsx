@@ -21,6 +21,12 @@ export function PortfolioScreen() {
   const loadPortfolio = useStore((s) => s.loadPortfolio);
   const switchProject = useStore((s) => s.switchProject);
   const activeProjectId = useStore((s) => s.activeProjectId);
+  const myOrgs = useStore(useShallow((s) => s.myOrgs));
+  const archivedProjects = useStore(useShallow((s) => s.archivedProjects));
+  const loadArchivedProjects = useStore((s) => s.loadArchivedProjects);
+  const restoreProject = useStore((s) => s.restoreProject);
+  // Restore is an org-admin power; use the caller's first owner/admin org (single-practice case).
+  const adminOrg = myOrgs.find((o) => o.role === 'owner' || o.role === 'admin');
 
   // demo fallback: with no server the portfolio endpoint returns nothing, so
   // build one row from the seeded local state (keeps the screen meaningful).
@@ -60,6 +66,7 @@ export function PortfolioScreen() {
   }, [portfolio, activities, phases, decisions, reviews, role, activeProjectId]);
 
   useEffect(() => { loadPortfolio(); }, [loadPortfolio, activeProjectId]);
+  useEffect(() => { if (adminOrg) loadArchivedProjects(adminOrg.id); }, [loadArchivedProjects, adminOrg]);
 
   return (
     <div className={`${styles.screen} ${styles.wide}`}>
@@ -120,6 +127,28 @@ export function PortfolioScreen() {
           );
         })}
       </div>
+
+      {adminOrg && archivedProjects.length > 0 && (
+        <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }}>
+          <Eyebrow>ARCHIVED PROJECTS</Eyebrow>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', margin: '6px 0 14px', maxWidth: 560 }}>
+            Archived projects are hidden from the switcher and portfolio. Restore one to bring it back.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+            {archivedProjects.map((p) => (
+              <div key={p.id} style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px' }} data-testid={`archived-${p.id}`}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 15 }}>{p.short}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{p.name}</div>
+                </div>
+                <Button variant="outline" onClick={() => restoreProject(adminOrg.id, p.id)} data-testid={`restore-${p.id}`} style={{ fontSize: 12.5, padding: '9px 14px' }}>
+                  Restore
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

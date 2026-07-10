@@ -181,6 +181,20 @@ export interface ProjectMember {
   status: string;
 }
 
+/** Kind of firm/consultant attached to a project. */
+export type CompanyKind = 'client' | 'contractor' | 'architect' | 'structural' | 'mep' | 'pmc' | 'consultant' | 'other';
+
+/** A firm/consultant on a project — an organisation + a contact (distinct from a member/person). */
+export interface ProjectCompany {
+  id: string;
+  name: string;
+  kind: CompanyKind;
+  contactName: string;
+  contactEmail: string;
+  contactPhone: string;
+  notes: string;
+}
+
 export interface OrgSummary {
   id: string;
   name: string;

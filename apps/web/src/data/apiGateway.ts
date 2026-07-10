@@ -24,6 +24,8 @@ import type {
   OrgSummary,
   Phase,
   PortfolioProject,
+  ProjectCompany,
+  CompanyKind,
   ProjectMember,
   Review,
   Role,
@@ -37,6 +39,7 @@ export interface ApiSnapshot {
     descriptor: string;
     stage: string;
     siteCode: string;
+    location: string;
     projStart: string;
     projEnd: string;
     elapsedPct: number;
@@ -53,6 +56,7 @@ export interface ApiSnapshot {
   phases: Phase[];
   dailyLog: DailyLog | null;
   notifications: AppNotification[];
+  companies: ProjectCompany[];
 }
 
 /** Add a project team member (provisions the account when new). */
@@ -78,8 +82,27 @@ export interface NewProjectInput {
   descriptor?: string;
   stage?: string;
   siteCode?: string;
+  location?: string;
   projStart?: string;
   projEnd?: string;
+}
+
+/** Create/update payload for a project company/consultant. */
+export interface CompanyInput {
+  name: string;
+  kind: CompanyKind;
+  contactName?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  notes?: string;
+}
+
+/** An archived project row (restore UI). */
+export interface ArchivedProject {
+  id: string;
+  name: string;
+  short: string;
+  archivedAt: string;
 }
 
 /** Issue a drawing revision (new register entry, or a new rev that supersedes). */
@@ -246,6 +269,10 @@ export class ApiGateway {
   restoreProject(orgId: string, projectId: string): Promise<{ ok: boolean }> {
     return this.req(`/orgs/${orgId}/projects/${projectId}/restore`, { method: 'POST' });
   }
+  /** Archived (soft-deleted) projects in an org — owner/admin only, for the restore UI. */
+  listArchivedProjects(orgId: string): Promise<ArchivedProject[]> {
+    return this.req(`/orgs/${orgId}/projects/archived`);
+  }
   /** The org's admin roster (owner/admin only). */
   listOrgMembers(orgId: string): Promise<OrgMember[]> {
     return this.req(`/orgs/${orgId}/members`);
@@ -278,6 +305,19 @@ export class ApiGateway {
   /** Remove a member from the active project (soft delete). */
   removeMember(userId: string): Promise<{ ok: boolean }> {
     return this.req(`/projects/${this.projectId}/members/${userId}`, { method: 'DELETE' });
+  }
+
+  /** Add a company/consultant to the active project. */
+  addCompany(input: CompanyInput): Promise<ProjectCompany> {
+    return this.req(`/projects/${this.projectId}/companies`, { method: 'POST', body: JSON.stringify(input) });
+  }
+  /** Edit a company/consultant (only provided fields change). */
+  updateCompany(companyId: string, input: Partial<CompanyInput>): Promise<ProjectCompany> {
+    return this.req(`/projects/${this.projectId}/companies/${companyId}`, { method: 'PATCH', body: JSON.stringify(input) });
+  }
+  /** Remove a company/consultant. */
+  removeCompany(companyId: string): Promise<{ ok: boolean }> {
+    return this.req(`/projects/${this.projectId}/companies/${companyId}`, { method: 'DELETE' });
   }
 
   private async req<T>(path: string, init?: RequestInit): Promise<T> {
