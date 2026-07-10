@@ -8,7 +8,19 @@
 
 import type { SwatchKey } from '../tokens/swatches';
 
-export type Role = 'pmc' | 'client' | 'engineer' | 'contractor';
+/**
+ * Every role a bearer token can carry — including the account-less `worker` device
+ * token the API issues for QR job-card onboarding. This is the canonical role set the
+ * authorization policy (`domain/policy.ts`) and the API's tokens are keyed on.
+ */
+export type TokenRole = 'pmc' | 'client' | 'engineer' | 'contractor' | 'worker';
+
+/**
+ * The interactive session roles the web renders a full app shell for. `worker` is
+ * excluded on purpose: workers use the job-card flow (never a role session), so the
+ * screen/label maps stay a clean four-role set.
+ */
+export type Role = Exclude<TokenRole, 'worker'>;
 
 export type ScreenKey =
   | 'dashboard'
