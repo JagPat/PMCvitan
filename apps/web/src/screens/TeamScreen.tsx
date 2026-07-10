@@ -3,14 +3,18 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button, Modal } from '@/components';
 import { Plus, X, Trash2, Pencil } from '@/lib/icons';
-import type { OrgRole, Role } from '@vitan/shared';
-import type { AddMemberInput, NewProjectInput } from '@/data/apiGateway';
+import type { OrgRole, Role, CompanyKind, ProjectCompany } from '@vitan/shared';
+import type { AddMemberInput, NewProjectInput, CompanyInput } from '@/data/apiGateway';
 import styles from './responsive.module.css';
 
 const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor'];
 const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Engineer', contractor: 'Contractor', worker: 'Worker' };
 const ORG_ROLES: OrgRole[] = ['owner', 'admin', 'member'];
 const ORG_ROLE_LABEL: Record<OrgRole, string> = { owner: 'Owner', admin: 'Admin', member: 'Member' };
+const COMPANY_KINDS: CompanyKind[] = ['client', 'contractor', 'architect', 'structural', 'mep', 'pmc', 'consultant', 'other'];
+const COMPANY_KIND_LABEL: Record<CompanyKind, string> = {
+  client: 'Client', contractor: 'Contractor', architect: 'Architect', structural: 'Structural', mep: 'MEP', pmc: 'PMC', consultant: 'Consultant', other: 'Other',
+};
 
 export function TeamScreen() {
   const members = useStore(useShallow((s) => s.members));
@@ -25,6 +29,10 @@ export function TeamScreen() {
   const deleteProject = useStore((s) => s.deleteProject);
   const projStart = useStore((s) => s.projStart);
   const projEnd = useStore((s) => s.projEnd);
+  const descriptor = useStore((s) => s.descriptor);
+  const stage = useStore((s) => s.stage);
+  const siteCode = useStore((s) => s.siteCode);
+  const location = useStore((s) => s.location);
   // membership role when known; else the current session role (covers the demo persona)
   const activeMembership = memberships.find((m) => m.projectId === activeProjectId);
   const myRole = activeMembership?.role ?? sessionRole;
@@ -74,7 +82,7 @@ export function TeamScreen() {
         <EditProjectModal
           orgId={activeOrgId}
           projectId={activeProjectId}
-          initial={{ name: activeMembership?.name ?? '', short: activeMembership?.short ?? '', projStart, projEnd }}
+          initial={{ name: activeMembership?.name ?? '', short: activeMembership?.short ?? '', descriptor, stage, siteCode, location, projStart, projEnd }}
           onClose={() => setEditing(false)}
         />
       )}
@@ -116,6 +124,8 @@ export function TeamScreen() {
           </div>
         ))}
       </div>
+
+      <CompaniesSection canManage={canEditProject} />
 
       {canManageOrgRoster && activeOrgId && <OrgRoster orgId={activeOrgId} />}
 
@@ -231,11 +241,25 @@ function OrgRoster({ orgId }: { orgId: string }) {
 
 /** Edit a project's details (name/short/stage/dates). Only non-empty fields are sent,
  *  so the server updates just what changed. PMC / org-admin only. */
-function EditProjectModal({ orgId, projectId, initial, onClose }: { orgId: string; projectId: string; initial: { name: string; short: string; projStart: string; projEnd: string }; onClose: () => void }) {
+interface EditProjectInitial {
+  name: string;
+  short: string;
+  descriptor: string;
+  stage: string;
+  siteCode: string;
+  location: string;
+  projStart: string;
+  projEnd: string;
+}
+
+function EditProjectModal({ orgId, projectId, initial, onClose }: { orgId: string; projectId: string; initial: EditProjectInitial; onClose: () => void }) {
   const update = useStore((s) => s.updateProjectDetails);
   const [name, setName] = useState(initial.name);
   const [short, setShort] = useState(initial.short);
-  const [stage, setStage] = useState('');
+  const [descriptor, setDescriptor] = useState(initial.descriptor);
+  const [stage, setStage] = useState(initial.stage);
+  const [siteCode, setSiteCode] = useState(initial.siteCode);
+  const [location, setLocation] = useState(initial.location);
   const [projStart, setProjStart] = useState(initial.projStart);
   const [projEnd, setProjEnd] = useState(initial.projEnd);
 
@@ -243,7 +267,10 @@ function EditProjectModal({ orgId, projectId, initial, onClose }: { orgId: strin
     const input: Partial<NewProjectInput> = {};
     if (name.trim() && name.trim() !== initial.name) input.name = name.trim();
     if (short.trim() && short.trim() !== initial.short) input.short = short.trim();
-    if (stage.trim()) input.stage = stage.trim();
+    if (descriptor.trim() !== initial.descriptor) input.descriptor = descriptor.trim();
+    if (stage.trim() !== initial.stage) input.stage = stage.trim();
+    if (siteCode.trim() !== initial.siteCode) input.siteCode = siteCode.trim();
+    if (location.trim() !== initial.location) input.location = location.trim();
     if (projStart.trim() && projStart.trim() !== initial.projStart) input.projStart = projStart.trim();
     if (projEnd.trim() && projEnd.trim() !== initial.projEnd) input.projEnd = projEnd.trim();
     if (Object.keys(input).length) update(orgId, projectId, input);
@@ -251,13 +278,18 @@ function EditProjectModal({ orgId, projectId, initial, onClose }: { orgId: strin
   };
 
   return (
-    <Modal onClose={onClose} maxWidth={440} labelledBy="edit-proj-title">
+    <Modal onClose={onClose} maxWidth={460} labelledBy="edit-proj-title">
       <div style={{ padding: '18px 20px' }}>
         <div id="edit-proj-title" style={{ fontWeight: 700, fontSize: 17 }}>Edit project</div>
-        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>Update the name, stage, or dates. Blank fields are left unchanged.</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>Update the details below. Blank fields are left unchanged.</div>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" style={{ ...fld, marginTop: 16, width: '100%' }} data-testid="edit-name" />
         <input value={short} onChange={(e) => setShort(e.target.value)} placeholder="Short name" style={{ ...fld, marginTop: 10, width: '100%' }} />
-        <input value={stage} onChange={(e) => setStage(e.target.value)} placeholder="Stage (e.g. Foundation)" style={{ ...fld, marginTop: 10, width: '100%' }} />
+        <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Location / site address" style={{ ...fld, marginTop: 10, width: '100%' }} data-testid="edit-location" />
+        <input value={descriptor} onChange={(e) => setDescriptor(e.target.value)} placeholder="Descriptor (e.g. G+2 Private Residence)" style={{ ...fld, marginTop: 10, width: '100%' }} />
+        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+          <input value={stage} onChange={(e) => setStage(e.target.value)} placeholder="Stage" style={{ ...fld, flex: 1 }} />
+          <input value={siteCode} onChange={(e) => setSiteCode(e.target.value)} placeholder="Site code" style={{ ...fld, flex: 1 }} />
+        </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
           <input value={projStart} onChange={(e) => setProjStart(e.target.value)} placeholder="Start" style={{ ...fld, flex: 1 }} />
           <input value={projEnd} onChange={(e) => setProjEnd(e.target.value)} placeholder="End" style={{ ...fld, flex: 1 }} />
@@ -271,6 +303,99 @@ function EditProjectModal({ orgId, projectId, initial, onClose }: { orgId: strin
   );
 }
 
+/** Companies & consultants for the active project — the client firm, main contractor,
+ *  structural/MEP consultants, etc. Add/edit/remove for the PMC or org admin. */
+function CompaniesSection({ canManage }: { canManage: boolean }) {
+  const companies = useStore(useShallow((s) => s.companies));
+  const removeCompany = useStore((s) => s.removeCompany);
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<ProjectCompany | null>(null);
+
+  return (
+    <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+        <Eyebrow>COMPANIES &amp; CONSULTANTS</Eyebrow>
+        {canManage && (
+          <Button variant="ink" onClick={() => { setEditing(null); setAdding(true); }} data-testid="add-company" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5 }}>
+            <Plus size={15} /> Add company
+          </Button>
+        )}
+      </div>
+
+      {companies.length === 0 ? (
+        <div style={{ color: 'var(--muted)', fontSize: 13.5 }}>No companies or consultants recorded yet{canManage ? ' — add the client firm, contractor, and consultants.' : '.'}</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+          {companies.map((c) => (
+            <div key={c.id} style={cardStyle}>
+              <span style={{ ...roleChip, flex: 'none' }}>{COMPANY_KIND_LABEL[c.kind]}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 15 }}>{c.name}</div>
+                <div style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {[c.contactName, c.contactPhone, c.contactEmail].filter(Boolean).join(' · ') || (c.notes ? c.notes : '—')}
+                </div>
+              </div>
+              {canManage && (
+                <>
+                  <button onClick={() => { setAdding(false); setEditing(c); }} aria-label={`Edit ${c.name}`} style={iconBtn}><Pencil size={16} /></button>
+                  <button onClick={() => removeCompany(c.id)} aria-label={`Remove ${c.name}`} style={iconBtn}><X size={17} /></button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {canManage && (adding || editing) && (
+        <CompanyModal company={editing} onClose={() => { setAdding(false); setEditing(null); }} />
+      )}
+    </div>
+  );
+}
+
+/** Add or edit a single company/consultant. */
+function CompanyModal({ company, onClose }: { company: ProjectCompany | null; onClose: () => void }) {
+  const addCompany = useStore((s) => s.addCompany);
+  const updateCompany = useStore((s) => s.updateCompany);
+  const [name, setName] = useState(company?.name ?? '');
+  const [kind, setKind] = useState<CompanyKind>(company?.kind ?? 'contractor');
+  const [contactName, setContactName] = useState(company?.contactName ?? '');
+  const [contactPhone, setContactPhone] = useState(company?.contactPhone ?? '');
+  const [contactEmail, setContactEmail] = useState(company?.contactEmail ?? '');
+  const [notes, setNotes] = useState(company?.notes ?? '');
+
+  const save = () => {
+    if (!name.trim()) return;
+    const payload: CompanyInput = { name: name.trim(), kind, contactName: contactName.trim(), contactPhone: contactPhone.trim(), contactEmail: contactEmail.trim(), notes: notes.trim() };
+    if (company) updateCompany(company.id, payload);
+    else addCompany(payload);
+    onClose();
+  };
+
+  return (
+    <Modal onClose={onClose} maxWidth={460} labelledBy="company-title">
+      <div style={{ padding: '18px 20px' }}>
+        <div id="company-title" style={{ fontWeight: 700, fontSize: 17 }}>{company ? 'Edit company' : 'Add company / consultant'}</div>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Firm / organisation name" style={{ ...fld, marginTop: 16, width: '100%' }} data-testid="company-name" />
+        <select value={kind} onChange={(e) => setKind(e.target.value as CompanyKind)} style={{ ...fld, marginTop: 10, width: '100%' }} data-testid="company-kind">
+          {COMPANY_KINDS.map((k) => <option key={k} value={k}>{COMPANY_KIND_LABEL[k]}</option>)}
+        </select>
+        <input value={contactName} onChange={(e) => setContactName(e.target.value)} placeholder="Contact person" style={{ ...fld, marginTop: 10, width: '100%' }} />
+        <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+          <input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} placeholder="Phone" style={{ ...fld, flex: 1 }} />
+          <input value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="Email" style={{ ...fld, flex: 1 }} />
+        </div>
+        <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes (optional)" style={{ ...fld, marginTop: 10, width: '100%' }} />
+        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
+          <Button variant="ink" onClick={save} disabled={!name.trim()} data-testid="save-company" style={{ flex: 1, padding: 12 }}>Save</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 const cardStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, background: '#fff', border: '1px solid var(--hairline)', borderRadius: 13, padding: '12px 14px' };
 const fld: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)', outline: 'none' };
 const roleChip: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '.06em', padding: '4px 9px', borderRadius: 6, border: '1px solid var(--hairline)', color: 'var(--muted)', textTransform: 'uppercase' };
+const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 4 };

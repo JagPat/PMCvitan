@@ -164,6 +164,7 @@ export const createProjectSchema = z.object({
   descriptor: z.string().default(''),
   stage: z.string().default('Planning'),
   siteCode: z.string().default(''),
+  location: z.string().default(''),
   projStart: z.string().default(''),
   projEnd: z.string().default(''),
 });
@@ -177,11 +178,30 @@ export const updateProjectSchema = z
     descriptor: z.string().optional(),
     stage: z.string().optional(),
     siteCode: z.string().optional(),
+    location: z.string().optional(),
     projStart: z.string().optional(),
     projEnd: z.string().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'Provide at least one field to update' });
 export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
+
+// Companies & consultants attached to a project (firm + contact, keyed by kind).
+export const companyKindSchema = z.enum(['client', 'contractor', 'architect', 'structural', 'mep', 'pmc', 'consultant', 'other']);
+const optText = z.string().trim().optional();
+export const addCompanySchema = z.object({
+  name: z.string().min(1),
+  kind: companyKindSchema,
+  contactName: optText,
+  contactEmail: z.string().trim().email().optional().or(z.literal('')),
+  contactPhone: optText,
+  notes: optText,
+});
+export type AddCompanyInput = z.infer<typeof addCompanySchema>;
+
+export const updateCompanySchema = addCompanySchema
+  .partial()
+  .refine((v) => Object.keys(v).length > 0, { message: 'Provide at least one field to update' });
+export type UpdateCompanyInput = z.infer<typeof updateCompanySchema>;
 
 export const switchProjectSchema = z.object({ projectId: z.string().min(1) });
 export type SwitchProjectInput = z.infer<typeof switchProjectSchema>;

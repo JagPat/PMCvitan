@@ -7,7 +7,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 function makeSnapshot(partial?: Partial<ApiSnapshot>): ApiSnapshot {
   return {
-    project: { id: 'ambli', name: 'Residence at Ambli, Ahmedabad', short: 'Residence at Ambli', descriptor: 'G+2', stage: 'Finishing', siteCode: 'AMB-24', projStart: '12 Jan 2026', projEnd: '30 Sep 2026', elapsedPct: 58, todayDay: 32, milestonePct: 72 },
+    project: { id: 'ambli', name: 'Residence at Ambli, Ahmedabad', short: 'Residence at Ambli', descriptor: 'G+2', stage: 'Finishing', siteCode: 'AMB-24', location: '', projStart: '12 Jan 2026', projEnd: '30 Sep 2026', elapsedPct: 58, todayDay: 32, milestonePct: 72 },
     decisions: [],
     activities: [],
     checklist: null,
@@ -18,6 +18,7 @@ function makeSnapshot(partial?: Partial<ApiSnapshot>): ApiSnapshot {
     phases: [],
     dailyLog: null,
     notifications: [{ text: 'SERVER applied', time: 'just now', color: '#3F7A54' }],
+    companies: [],
     ...partial,
   };
 }

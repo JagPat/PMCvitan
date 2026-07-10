@@ -51,6 +51,12 @@ export class OrgsController {
     return this.orgs.listProjects(orgId, user.sub);
   }
 
+  /** Archived projects in an org (owner/admin) — drives the restore UI. */
+  @Get('orgs/:orgId/projects/archived')
+  listArchivedProjects(@Param('orgId') orgId: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.listArchivedProjects(orgId, user.sub);
+  }
+
   /** The org's admin roster (owner/admin only). */
   @Get('orgs/:orgId/members')
   listOrgMembers(@Param('orgId') orgId: string, @CurrentUser() user: AuthUser) {

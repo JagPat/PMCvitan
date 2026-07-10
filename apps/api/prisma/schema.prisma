@@ -47,6 +47,7 @@ model Project {
   descriptor   String
   stage        String
   siteCode     String
+  location     String   @default("") // site address / locality (free text)
   projStart    String
   projEnd      String
   elapsedPct   Int
@@ -69,6 +70,25 @@ model Project {
   org           Org?           @relation(fields: [orgId], references: [id])
   orgId         String?
   memberships   Membership[]
+  companies     ProjectCompany[]
+}
+
+// A firm/consultant associated with a project — the client company, the main
+// contractor, the structural/MEP consultants, etc. Distinct from Membership (which
+// is a *person* with a login role); a company is an organisation + a contact.
+model ProjectCompany {
+  id           String   @id @default(cuid())
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId    String
+  name         String // firm / organisation name
+  kind         String // client | contractor | architect | structural | mep | pmc | consultant | other
+  contactName  String?
+  contactEmail String?
+  contactPhone String?
+  notes        String?
+  createdAt    DateTime @default(now())
+
+  @@index([projectId])
 }
 
 // An Org/Account (an architecture practice, e.g. "Vitan Architecture") — owns

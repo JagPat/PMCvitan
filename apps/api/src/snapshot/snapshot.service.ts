@@ -22,7 +22,7 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisions, activities, inspections, dailyLog, notifications, progressMedia, drawings, phases] = await Promise.all([
+    const [decisions, activities, inspections, dailyLog, notifications, progressMedia, drawings, phases, companies] = await Promise.all([
       this.prisma.decision.findMany({
         where: { projectId },
         include: { options: { orderBy: { order: 'asc' } } },
@@ -48,6 +48,7 @@ export class SnapshotService {
         orderBy: [{ discipline: 'asc' }, { number: 'asc' }],
       }),
       this.prisma.phase.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
+      this.prisma.projectCompany.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
     ]);
 
     const progressPhotos = progressMedia.map((m) => ({
@@ -190,6 +191,7 @@ export class SnapshotService {
         descriptor: project.descriptor,
         stage: project.stage,
         siteCode: project.siteCode,
+        location: project.location,
         projStart: project.projStart,
         projEnd: project.projEnd,
         elapsedPct: project.elapsedPct,
@@ -234,6 +236,15 @@ export class SnapshotService {
           }
         : null,
       notifications: notifications.map((n) => ({ text: n.text, time: n.time, color: n.color })),
+      companies: companies.map((c) => ({
+        id: c.id,
+        name: c.name,
+        kind: c.kind,
+        contactName: c.contactName ?? '',
+        contactEmail: c.contactEmail ?? '',
+        contactPhone: c.contactPhone ?? '',
+        notes: c.notes ?? '',
+      })),
     };
   }
 }

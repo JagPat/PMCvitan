@@ -230,6 +230,14 @@ export class OrgsService {
     return org.projects.map((p) => ({ id: p.id, name: p.name, short: p.short, stage: p.stage }));
   }
 
+  /** Archived (soft-deleted) projects in an org — owner/admin only, for the restore UI. */
+  async listArchivedProjects(orgId: string, userId: string): Promise<Array<{ id: string; name: string; short: string; archivedAt: string }>> {
+    const role = await this.orgRole(orgId, userId);
+    if (role !== 'owner' && role !== 'admin') throw new ForbiddenException('Only an org owner or admin can view archived projects');
+    const rows = await this.prisma.project.findMany({ where: { orgId, archivedAt: { not: null } }, orderBy: { archivedAt: 'desc' } });
+    return rows.map((p) => ({ id: p.id, name: p.name, short: p.short, archivedAt: p.archivedAt!.toISOString() }));
+  }
+
   /**
    * A cross-project monitoring rollup — one row per project the user is a member
    * of (active memberships, with the legacy home project as a fallback). Each row

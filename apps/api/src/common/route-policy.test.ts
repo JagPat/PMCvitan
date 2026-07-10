@@ -13,6 +13,7 @@ import { DrawingsController } from '../drawings/drawings.controller';
 import { InspectionsController } from '../inspections/inspections.controller';
 import { MediaController } from '../media/media.controller';
 import { MembersController } from '../orgs/members.controller';
+import { CompaniesController } from '../orgs/companies.controller';
 import { OrgsController } from '../orgs/orgs.controller';
 import { PushController } from '../push/push.controller';
 import { ProjectController } from '../snapshot/project.controller';
@@ -39,6 +40,7 @@ const CONTROLLERS = [
   InspectionsController,
   MediaController,
   MembersController,
+  CompaniesController,
   OrgsController,
   PushController,
   ProjectController,

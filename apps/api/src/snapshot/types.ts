@@ -127,11 +127,22 @@ export interface ProjectMetaDto {
   descriptor: string;
   stage: string;
   siteCode: string;
+  location: string;
   projStart: string;
   projEnd: string;
   elapsedPct: number;
   todayDay: number;
   milestonePct: number;
+}
+
+export interface CompanyDto {
+  id: string;
+  name: string;
+  kind: string;
+  contactName: string;
+  contactEmail: string;
+  contactPhone: string;
+  notes: string;
 }
 
 export interface SnapshotDto {
@@ -151,4 +162,6 @@ export interface SnapshotDto {
   phases: PhaseDto[];
   dailyLog: DailyLogDto | null;
   notifications: { text: string; time: string; color: string }[];
+  /** Firms & consultants attached to the project (client company, contractor, MEP/structural consultants, …). */
+  companies: CompanyDto[];
 }

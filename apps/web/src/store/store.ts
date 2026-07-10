@@ -39,6 +39,7 @@ import {
   type Phase,
   type PortfolioProject,
   type ProjectMember,
+  type ProjectCompany,
   type ItemState,
   type Lang,
   type ModalState,
@@ -48,7 +49,7 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID } from '@/data/apiGateway';
 
 export interface AppState {
@@ -83,11 +84,19 @@ export interface AppState {
   sessionToken: string | null;
   userName: string | null;
   // project constants
+  descriptor: string;
+  stage: string;
+  siteCode: string;
+  location: string;
   projStart: string;
   projEnd: string;
   elapsedPct: number;
   todayDay: number;
   milestonePct: number;
+  // firms & consultants on the active project (client company, contractor, MEP/structural, …)
+  companies: ProjectCompany[];
+  // archived projects (owner/admin restore UI, lazy-loaded)
+  archivedProjects: ArchivedProject[];
 }
 
 export interface AppActions {
@@ -128,6 +137,12 @@ export interface AppActions {
   createProject: (orgId: string, input: NewProjectInput) => void;
   updateProjectDetails: (orgId: string, projectId: string, input: Partial<NewProjectInput>) => void;
   deleteProject: (orgId: string, projectId: string) => void;
+  restoreProject: (orgId: string, projectId: string) => void;
+  loadArchivedProjects: (orgId: string) => void;
+  // companies & consultants
+  addCompany: (input: CompanyInput) => void;
+  updateCompany: (companyId: string, input: Partial<CompanyInput>) => void;
+  removeCompany: (companyId: string) => void;
   loadTeam: () => void;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role) => void;
@@ -219,11 +234,17 @@ export function getInitialState(): AppState {
     notifications: structuredClone(SEED_NOTIFICATIONS),
     sessionToken: null,
     userName: null,
+    descriptor: PROJECT.descriptor,
+    stage: PROJECT.stage,
+    siteCode: PROJECT.siteCode,
+    location: '',
     projStart: PROJECT.projStart,
     projEnd: PROJECT.projEnd,
     elapsedPct: PROJECT.elapsedPct,
     todayDay: PROJECT.todayDay,
     milestonePct: PROJECT.milestonePct,
+    companies: [],
+    archivedProjects: [],
   };
 }
 
@@ -246,11 +267,16 @@ export const useStore = create<Store>()(
         if (snap.phases) s.phases = snap.phases;
         if (snap.dailyLog) s.dailyLog = snap.dailyLog;
         s.notifications = snap.notifications;
+        s.descriptor = snap.project.descriptor;
+        s.stage = snap.project.stage;
+        s.siteCode = snap.project.siteCode;
+        s.location = snap.project.location ?? '';
         s.projStart = snap.project.projStart;
         s.projEnd = snap.project.projEnd;
         s.elapsedPct = snap.project.elapsedPct;
         s.todayDay = snap.project.todayDay;
         s.milestonePct = snap.project.milestonePct;
+        if (snap.companies) s.companies = snap.companies;
       });
     };
 
@@ -689,6 +715,64 @@ export const useStore = create<Store>()(
           get().loadPortfolio();
         })
         .catch(() => get().flash('Could not archive the project — check your access.'));
+    },
+    restoreProject: (orgId, projectId) => {
+      if (!gateway) {
+        get().flash('Restoring projects needs the server.');
+        return;
+      }
+      gateway
+        .restoreProject(orgId, projectId)
+        .then(() => {
+          get().flash('Project restored — it’s visible again.');
+          get().loadArchivedProjects(orgId);
+          get().loadOrgData();
+          get().loadPortfolio();
+        })
+        .catch(() => get().flash('Could not restore the project — check your access.'));
+    },
+    loadArchivedProjects: (orgId) => {
+      if (!gateway) return;
+      gateway.listArchivedProjects(orgId).then((rows: ArchivedProject[]) => set((s) => { s.archivedProjects = rows; })).catch(() => {});
+    },
+    addCompany: (input) => {
+      if (!gateway) {
+        get().flash('Managing companies needs the server.');
+        return;
+      }
+      gateway
+        .addCompany(input)
+        .then((c) => {
+          set((s) => { s.companies.push(c); });
+          get().flash(`Added ${c.name}.`);
+        })
+        .catch(() => get().flash('Could not add the company — check your access.'));
+    },
+    updateCompany: (companyId, input) => {
+      if (!gateway) {
+        get().flash('Managing companies needs the server.');
+        return;
+      }
+      gateway
+        .updateCompany(companyId, input)
+        .then((c) => {
+          set((s) => { const i = s.companies.findIndex((x) => x.id === companyId); if (i >= 0) s.companies[i] = c; });
+          get().flash(`Updated ${c.name}.`);
+        })
+        .catch(() => get().flash('Could not update the company — check your access.'));
+    },
+    removeCompany: (companyId) => {
+      if (!gateway) {
+        get().flash('Managing companies needs the server.');
+        return;
+      }
+      gateway
+        .removeCompany(companyId)
+        .then(() => {
+          set((s) => { s.companies = s.companies.filter((x) => x.id !== companyId); });
+          get().flash('Company removed.');
+        })
+        .catch(() => get().flash('Could not remove the company — check your access.'));
     },
     loadTeam: () => {
       if (!gateway) return;
