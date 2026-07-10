@@ -1,6 +1,7 @@
-import { Body, Controller, Delete, Get, NotFoundException, Param, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { DrawingsService } from './drawings.service';
+import { SignedUrlService } from '../media/signed-url.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { issueDrawingSchema, presignDrawingSchema, type IssueDrawingInput, type PresignDrawingInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
@@ -8,7 +9,10 @@ import { Public, Roles, RolesGuard } from '../common/roles';
 
 @Controller()
 export class DrawingsController {
-  constructor(private readonly drawings: DrawingsService) {}
+  constructor(
+    private readonly drawings: DrawingsService,
+    private readonly signed: SignedUrlService,
+  ) {}
 
   /** Issue a drawing (new register entry, or a new revision that supersedes the prior).
    *  PMC only — issuing controlled drawings is the architect's authority. */
@@ -48,11 +52,16 @@ export class DrawingsController {
     return this.drawings.acknowledge(projectId, revId, user);
   }
 
-  /** Serve a revision's file: inline bytes (dev stub) or a 302 to the bucket URL (S3/R2).
-   *  Public — revision ids are unguessable cuids, same posture as public media serve. */
+  /**
+   * Serve a revision's file. Private: requires a short-lived `?t=` token minted by the
+   * authorized snapshot (403 otherwise). Dev stub returns inline bytes; S3/R2 returns a
+   * 302 to a short-lived presigned GET (private bucket). @Public at the route level
+   * because an iframe/img `src` can't send a bearer — the token IS the authorization.
+   */
   @Public()
   @Get('drawings/rev/:id')
-  async serve(@Param('id') id: string, @Res() res: Response): Promise<void> {
+  async serve(@Param('id') id: string, @Query('t') token: string | undefined, @Res() res: Response): Promise<void> {
+    if (!this.signed.verify('drawing', id, token)) throw new ForbiddenException('Invalid or expired file link');
     const out = await this.drawings.fetchRevision(id);
     if (!out) throw new NotFoundException('Drawing revision not found');
     if ('redirect' in out) {
@@ -60,7 +69,7 @@ export class DrawingsController {
       return;
     }
     res.setHeader('Content-Type', out.mime);
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Cache-Control', `private, max-age=${this.signed.cacheMaxAge()}`);
     res.send(out.bytes);
   }
 

@@ -281,7 +281,15 @@ export const useStore = create<Store>()(
         s.reinspectionCreated = snap.reinspectionCreated;
         if (snap.drawings) s.drawings = snap.drawings;
         if (snap.phases) s.phases = snap.phases;
-        if (snap.dailyLog) s.dailyLog = snap.dailyLog;
+        if (snap.dailyLog) {
+          // Progress photos come back as signed, API-relative serve paths
+          // (/media/:id?t=…); resolve them against the API base so the <img src>
+          // hits the API, not the SPA origin. Drawings resolve at render time.
+          s.dailyLog = {
+            ...snap.dailyLog,
+            photos: snap.dailyLog.photos.map((p) => ({ ...p, url: resolveMediaUrl(p.url) })),
+          };
+        }
         s.notifications = snap.notifications;
         s.descriptor = snap.project.descriptor;
         s.stage = snap.project.stage;

@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { SignedUrlService } from '../media/signed-url.service';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
 import type { ActivityDto, DecisionDto, PhaseDto, SnapshotDto } from './types';
@@ -13,7 +14,10 @@ const ACTIVITY_STATUS_OUT: Record<string, ActivityDto['status']> = {
 
 @Injectable()
 export class SnapshotService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly signed: SignedUrlService,
+  ) {}
 
   /** Build the full project snapshot the frontend hydrates its store from.
    *  Permission-filtered: only PMC & client see pending decisions; every other
@@ -53,8 +57,9 @@ export class SnapshotService {
 
     const progressPhotos = progressMedia.map((m) => ({
       id: m.id,
-      // S3/R2 rows carry an absolute url; dev-stub rows are served from /media/:id
-      url: m.url ?? `/media/${m.id}`,
+      // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
+      // a caller authorized to see this snapshot gets a token, and it expires quickly.
+      url: this.signed.mediaPath(m.id),
       takenAt: m.takenAt ?? undefined,
     }));
 
@@ -144,7 +149,8 @@ export class SnapshotService {
         rev: r.rev,
         status: r.status,
         mime: r.mime,
-        url: r.url ?? `/drawings/rev/${r.id}`,
+        // private delivery: short-lived signed serve path (never a public bucket URL)
+        url: this.signed.drawingPath(r.id),
         sizeBytes: r.sizeBytes,
         note: r.note,
         issuedBy: r.issuedBy,

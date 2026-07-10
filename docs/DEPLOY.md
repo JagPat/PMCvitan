@@ -53,6 +53,8 @@ The API (`apps/api`, NestJS + Prisma) ships its own `apps/api/Dockerfile`. Deplo
 
 The app ships with dev-stubs for SMS OTP, media storage, and web push; each flips to its real provider by setting env vars on the API app + redeploying — no code change. The full runbook (env vars, human prerequisites, Coolify-API steps for a hands-off cutover, live validation commands with expected output, failure modes, rollback, and the agent-vs-human autonomy boundary) is in **[`PROVIDER_CUTOVER.md`](./PROVIDER_CUTOVER.md)**. Check current live state any time with `bash scripts/validate-live.sh`.
 
+> **Private file delivery (media & drawings).** Files are never public: `GET /media/:id` and `GET /drawings/rev/:id` require a short-lived `?t=` token that the API mints only inside the RBAC-filtered snapshot / on upload. When you cut over to S3/R2, **make the bucket private (disable public read)** — the API presigns a short-lived GET per request, so a public bucket would defeat the point. Optional: `FILE_URL_TTL_SEC` (default `3600`) tunes how long a signed file link stays valid; lower is more secure, but if it's shorter than how long a user views a page without a snapshot refetch, images may need a reload. `S3_PUBLIC_BASE` is no longer used for serving.
+
 ### Migrations & the existing (db-push) database
 
 The schema is now tracked by a baseline Prisma migration at `apps/api/prisma/migrations/0_init`. Going forward, schema changes are new migrations applied by `prisma migrate deploy` on deploy.

@@ -1,6 +1,7 @@
-import { Body, Controller, Delete, Get, NotFoundException, Param, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { MediaService } from './media.service';
+import { SignedUrlService } from './signed-url.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { createMediaSchema, type CreateMediaInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
@@ -8,7 +9,10 @@ import { Public, Roles, RolesGuard } from '../common/roles';
 
 @Controller()
 export class MediaController {
-  constructor(private readonly media: MediaService) {}
+  constructor(
+    private readonly media: MediaService,
+    private readonly signed: SignedUrlService,
+  ) {}
 
   /** Upload a site photo (base64). Returns { id, url } — url is absolute (S3/R2) or /media/:id (dev stub).
    *  PMC or site engineer only — progress photos come from the engineer's daily-log flow; this keeps
@@ -24,10 +28,17 @@ export class MediaController {
     return this.media.create(projectId, user.sub, body);
   }
 
-  /** Serve a photo: inline bytes (dev stub) or a 302 to the bucket URL (S3/R2). Public (URLs are unguessable cuids). */
+  /**
+   * Serve a photo. Private: requires a short-lived `?t=` file token minted by the
+   * authorized snapshot/upload (a bad or missing token is 403 — no more "public because
+   * the cuid is unguessable"). Dev stub returns inline bytes; S3/R2 returns a 302 to a
+   * short-lived presigned GET (bucket stays private). Marked @Public at the route level
+   * because `<img>` can't send a bearer — the token IS the authorization.
+   */
   @Public()
   @Get('media/:id')
-  async serve(@Param('id') id: string, @Res() res: Response): Promise<void> {
+  async serve(@Param('id') id: string, @Query('t') token: string | undefined, @Res() res: Response): Promise<void> {
+    if (!this.signed.verify('media', id, token)) throw new ForbiddenException('Invalid or expired file link');
     const out = await this.media.fetch(id);
     if (!out) throw new NotFoundException('Media not found');
     if ('redirect' in out) {
@@ -35,7 +46,7 @@ export class MediaController {
       return;
     }
     res.setHeader('Content-Type', out.mime);
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Cache-Control', `private, max-age=${this.signed.cacheMaxAge()}`);
     res.send(out.bytes);
   }
 

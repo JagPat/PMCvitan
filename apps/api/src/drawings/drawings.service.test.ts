@@ -111,21 +111,22 @@ describe('DrawingsService.issue', () => {
     expect(revs.find((r) => r.rev === 'B')!.status).toBe('for_construction');
   });
 
-  it('accepts a presigned storageKey (skips put, records the bucket pointer)', async () => {
+  it('accepts a presigned storageKey (skips put, records the bucket pointer, stores no public url)', async () => {
     const { svc, draws, storage } = make();
     await svc.issue('ambli', 'pmc-1', { ...base, data: undefined as never, storageKey: 'ambli/drawings/big.pdf', sizeBytes: 9_000_000 });
     expect(storage.put).not.toHaveBeenCalled();
     const rev = draws[0].revisions[0];
     expect(rev.storageKey).toBe('ambli/drawings/big.pdf');
-    expect(rev.url).toBe('https://cdn.vitan.in/ambli/drawings/big.pdf');
+    expect(rev.url).toBeNull(); // private delivery: never persist the public bucket url
     expect(rev.data).toBeNull();
   });
 
-  it('S3 mode drops the bytes (url set); dev stub keeps them', async () => {
+  it('S3 mode drops the bytes and stores no public url; dev stub keeps the bytes', async () => {
     const s3 = make('https://cdn.vitan.in/ambli/drawings/x.pdf');
     await s3.svc.issue('ambli', 'u1', base);
-    expect(s3.draws[0].revisions[0].url).toBe('https://cdn.vitan.in/ambli/drawings/x.pdf');
+    expect(s3.draws[0].revisions[0].url).toBeNull(); // private delivery
     expect(s3.draws[0].revisions[0].data).toBeNull();
+    expect(s3.draws[0].revisions[0].storageKey).toBe('ambli/drawings/x.pdf');
 
     const stub = make(null);
     await stub.svc.issue('ambli', 'u1', base);
