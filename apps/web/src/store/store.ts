@@ -57,6 +57,7 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
+import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID } from '@/data/apiGateway';
 
@@ -172,9 +173,12 @@ export interface AppActions {
   publishDecision: (decisionId: string) => void;
   /** Publish EVERY draft (decisions + drawings) in one action — the Drafts workspace "Publish all". */
   publishAllDrafts: () => void;
-  /** Create a zone/room/element and resolve to its new id (for the inline location picker). */
-  addLocationNode: (input: { name: string; kind: 'zone' | 'room' | 'element'; parentId?: string | null }) => Promise<string | null>;
+  /** Create a zone/room/element and resolve to its new id (for the inline location picker).
+   *  `publish: false` keeps it a private draft only its author sees until published. */
+  addLocationNode: (input: { name: string; kind: 'zone' | 'room' | 'element'; parentId?: string | null; publish?: boolean }) => Promise<string | null>;
   renameNode: (nodeId: string, name: string) => void;
+  /** Publish a private draft location (and its draft branch) — reveals it to everyone (works offline in the demo). */
+  publishNode: (nodeId: string) => void;
   deleteNode: (nodeId: string) => void;
   createActivity: (input: NewActivityInput) => void;
   updateActivity: (activityId: string, input: Partial<NewActivityInput>) => void;
@@ -1011,6 +1015,25 @@ export const useStore = create<Store>()(
         return;
       }
       runRemote(() => gateway!.renameNode(nodeId, name), `Renamed to ${name}.`);
+    },
+    publishNode: (nodeId) => {
+      const node = get().nodes.find((n) => n.id === nodeId);
+      if (!node || !node.draft) return;
+      // API mode: the server flips the whole branch (subtree + draft ancestors) live and
+      // returns a fresh snapshot — the location becomes visible to every role at once.
+      if (gateway) {
+        runRemote(() => gateway!.publishNode(nodeId), `Published location: ${node.name} — now visible to the team.`);
+        return;
+      }
+      // Demo (no server): flip the branch live locally so the draft→publish flow is demoable.
+      // Matches the server's cascade — the node, everything below it, and any draft ancestor
+      // (so no published child is ever left hanging off a still-hidden parent).
+      set((s) => {
+        const branch = new Set<string>([...subtreeIds(s.nodes, nodeId), ...ancestorIds(s.nodes, nodeId)]);
+        for (const n of s.nodes) if (branch.has(n.id) && n.draft) n.draft = false;
+        s.notifications.unshift({ text: `New location added: ${node.name}`, time: 'just now', color: '#C08A2D' });
+      });
+      get().flash(`Published location: ${node.name} — now visible to the team.`);
     },
     deleteNode: (nodeId) => {
       if (!gateway) {

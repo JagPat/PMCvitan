@@ -303,6 +303,10 @@ export const SEED_NODES: ProjectNode[] = [
   { id: 'z-sf', parentId: null, name: 'Second Floor', kind: 'zone', order: 1 },
   { id: 'r-mbath', parentId: 'z-sf', name: 'Master Bath', kind: 'room', order: 0 },
   { id: 'z-terrace', parentId: null, name: 'Terrace', kind: 'zone', order: 2 },
+  // A DRAFT branch the PMC is still planning privately — hidden from the client, the Site Map
+  // and the filing pickers until published from the Decision Log's Locations editor.
+  { id: 'z-basement', parentId: null, name: 'Basement', kind: 'zone', order: 3, draft: true },
+  { id: 'r-cellar', parentId: 'z-basement', name: 'Wine Cellar', kind: 'room', order: 0, draft: true },
 ];
 
 /** A mock site photo as an inline SVG data URL — stands in for a real geo/time-stamped

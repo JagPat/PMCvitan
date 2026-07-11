@@ -135,6 +135,8 @@ export interface NewNodeInput {
   name: string;
   kind: NodeKind;
   parentId?: string | null;
+  /** default true → live on the tree at once; false → a private draft only its author sees */
+  publish?: boolean;
 }
 
 export type GateInput = 'ok' | 'wait' | 'fail' | 'na';
@@ -383,6 +385,10 @@ export class ApiGateway {
   /** Create a location node (zone/room/element) — PMC. Returns a node-carrying snapshot. */
   createNode(input: NewNodeInput): Promise<ApiSnapshot> {
     return this.p('/nodes', input);
+  }
+  /** Publish a private draft node (PMC) — reveals it (and its draft branch) to everyone. */
+  publishNode(nodeId: string): Promise<ApiSnapshot> {
+    return this.p(`/nodes/${nodeId}/publish`, {});
   }
   /** Rename a location node (PMC). */
   renameNode(nodeId: string, name: string): Promise<ApiSnapshot> {

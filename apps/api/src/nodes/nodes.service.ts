@@ -32,9 +32,29 @@ export class NodesService {
   async create(projectId: string, input: CreateNodeInput, user: AuthUser): Promise<SnapshotDto> {
     const parent = await this.requireParentForKind(projectId, input.kind, input.parentId ?? null);
     const order = await this.nextOrder(projectId, input.parentId ?? null);
+    // Draft → Publish: a node under a DRAFT parent must itself be a draft (a published child of a
+    // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
+    const parentIsDraft = parent ? parent.publishedAt === null : false;
+    const publishedAt = input.publish && !parentIsDraft ? new Date() : null;
     await this.prisma.projectNode.create({
-      data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order },
+      data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order, authorId: user.sub, publishedAt },
     });
+    return this.done(projectId, user);
+  }
+
+  /** Publish a private draft location → it (its subtree, and any draft ancestors so the path is
+   *  whole) become visible to the team and available in the filing pickers. PMC authority. */
+  async publish(projectId: string, nodeId: string, user: AuthUser): Promise<SnapshotDto> {
+    const node = await this.requireNode(projectId, nodeId);
+    // publish the whole branch: draft ancestors (so the breadcrumb is complete) + the subtree.
+    const ancestors = await this.ancestorIds(nodeId);
+    const subtree = await this.subtreeIds(nodeId);
+    const branch = [...new Set([...ancestors, ...subtree])];
+    await this.prisma.projectNode.updateMany({
+      where: { id: { in: branch }, projectId, publishedAt: null },
+      data: { publishedAt: new Date() },
+    });
+    void node;
     return this.done(projectId, user);
   }
 
@@ -125,5 +145,20 @@ export class NodesService {
   /** True when `nodeId` is `ancestorId` or a descendant of it (cycle guard for move). */
   private async isDescendant(nodeId: string, ancestorId: string): Promise<boolean> {
     return (await this.subtreeIds(ancestorId)).includes(nodeId);
+  }
+
+  /** Ancestor ids of a node (nearest-first), EXCLUDING the node itself (cycle-safe). */
+  private async ancestorIds(nodeId: string): Promise<string[]> {
+    const all = await this.prisma.projectNode.findMany({ select: { id: true, parentId: true } });
+    const parentOf = new Map(all.map((n) => [n.id, n.parentId]));
+    const out: string[] = [];
+    const seen = new Set<string>();
+    let cur = parentOf.get(nodeId) ?? null;
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      out.push(cur);
+      cur = parentOf.get(cur) ?? null;
+    }
+    return out;
   }
 }

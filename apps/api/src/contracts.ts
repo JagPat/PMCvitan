@@ -295,6 +295,10 @@ export const createNodeSchema = z.object({
   name: z.string().trim().min(1).max(80),
   kind: z.enum(NODE_KINDS),
   parentId: z.string().trim().min(1).nullish(),
+  // Draft → Publish: default true (a node created inline while filing is live immediately, so
+  // the item can attach to it). Pass false from the "stage a layout" flow to create a private
+  // draft node. A node created under a draft parent is always a draft, regardless of this flag.
+  publish: z.boolean().default(true),
 });
 export type CreateNodeInput = z.infer<typeof createNodeSchema>;
 

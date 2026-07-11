@@ -320,31 +320,37 @@ function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   const nodes = useStore(useShallow((s) => s.nodes));
   const renameNode = useStore((s) => s.renameNode);
   const deleteNode = useStore((s) => s.deleteNode);
+  const publishNode = useStore((s) => s.publishNode);
   const addLocationNode = useStore((s) => s.addLocationNode);
   const [newZone, setNewZone] = useState('');
+  const [asDraft, setAsDraft] = useState(false);
 
-  const rowsFor = (parentId: string | null, depth: number): { id: string; name: string; kind: string; depth: number }[] =>
-    childrenOf(nodes, parentId).flatMap((n) => [{ id: n.id, name: n.name, kind: n.kind, depth }, ...rowsFor(n.id, depth + 1)]);
+  const rowsFor = (parentId: string | null, depth: number): { id: string; name: string; kind: string; depth: number; draft: boolean }[] =>
+    childrenOf(nodes, parentId).flatMap((n) => [{ id: n.id, name: n.name, kind: n.kind, depth, draft: Boolean(n.draft) }, ...rowsFor(n.id, depth + 1)]);
   const list = rowsFor(null, 0);
-  const addZone = () => { if (newZone.trim()) { void addLocationNode({ name: newZone.trim(), kind: 'zone', parentId: null }); setNewZone(''); } };
+  const addZone = () => { if (newZone.trim()) { void addLocationNode({ name: newZone.trim(), kind: 'zone', parentId: null, publish: !asDraft }); setNewZone(''); } };
 
   return (
     <Modal onClose={onClose} maxWidth={480} labelledBy="manage-loc-title">
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
         <div id="manage-loc-title" style={{ fontWeight: 700, fontSize: 17 }}>Locations</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          Zones contain rooms; rooms contain objects. Rename or remove any — a location with decisions on it can&apos;t be deleted until you move them.
+          Zones contain rooms; rooms contain objects. Rename or remove any — a location with decisions on it can&apos;t be deleted until you move them. A <b>draft</b> location is private to you until you publish it.
         </div>
 
         <div style={{ display: 'flex', gap: 8, margin: '14px 0 6px' }}>
           <input value={newZone} onChange={(e) => setNewZone(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addZone(); }} placeholder="Add a zone (e.g. Ground Floor)" style={{ ...fldD, flex: 1, minWidth: 0 }} data-testid="manage-new-zone" />
           <Button variant="ink" onClick={addZone} style={{ padding: '0 14px', fontSize: 12.5 }}>Add</Button>
         </div>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--muted)', cursor: 'pointer', marginBottom: 4 }}>
+          <input type="checkbox" checked={asDraft} onChange={(e) => setAsDraft(e.target.checked)} data-testid="manage-zone-draft" />
+          Add as a private draft (publish later)
+        </label>
 
         {list.length === 0 && <div style={{ color: 'var(--faint)', fontSize: 12.5, padding: '8px 0' }}>No locations yet — add a zone to start.</div>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
           {list.map((n) => (
-            <LocationRow key={n.id} id={n.id} name={n.name} kind={n.kind} depth={n.depth} onRename={(name) => renameNode(n.id, name)} onDelete={() => deleteNode(n.id)} />
+            <LocationRow key={n.id} id={n.id} name={n.name} kind={n.kind} depth={n.depth} draft={n.draft} onRename={(name) => renameNode(n.id, name)} onPublish={() => publishNode(n.id)} onDelete={() => deleteNode(n.id)} />
           ))}
         </div>
 
@@ -356,28 +362,42 @@ function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function LocationRow({ id, name, kind, depth, onRename, onDelete }: { id: string; name: string; kind: string; depth: number; onRename: (name: string) => void; onDelete: () => void }) {
+function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDelete }: { id: string; name: string; kind: string; depth: number; draft: boolean; onRename: (name: string) => void; onPublish: () => void; onDelete: () => void }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(name);
-  const commit = () => { if (draft.trim()) onRename(draft.trim()); setEditing(false); };
+  const [value, setValue] = useState(name);
+  const commit = () => { if (value.trim()) onRename(value.trim()); setEditing(false); };
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: depth * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
       {editing ? (
         <>
-          <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} style={{ ...fldD, flex: 1, minWidth: 0, height: 34 }} />
+          <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commit(); }} style={{ ...fldD, flex: 1, minWidth: 0, height: 34 }} />
           <button onClick={commit} style={iconBtn} aria-label="Save">✓</button>
         </>
       ) : (
         <>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.1em', color: 'var(--faint)', width: 44, flex: 'none' }}>{kind.toUpperCase()}</span>
-          <span style={{ flex: 1, fontSize: 13.5, fontWeight: kind === 'zone' ? 600 : 400 }}>{name}</span>
-          <button onClick={() => { setDraft(name); setEditing(true); }} style={iconBtn} aria-label={`Rename ${name}`}><Pencil size={13} /></button>
+          <span style={{ flex: 1, fontSize: 13.5, fontWeight: kind === 'zone' ? 600 : 400, color: draft ? 'var(--muted)' : 'var(--ink)' }}>{name}</span>
+          {draft && <span style={draftChip} data-testid={`loc-draft-${id}`}>DRAFT</span>}
+          {draft && <Button variant="success" onClick={onPublish} data-testid={`loc-publish-${id}`} style={{ padding: '4px 9px', fontSize: 11 }}>Publish</Button>}
+          <button onClick={() => { setValue(name); setEditing(true); }} style={iconBtn} aria-label={`Rename ${name}`}><Pencil size={13} /></button>
           <button onClick={onDelete} style={{ ...iconBtn, color: 'var(--red-solid)' }} aria-label={`Delete ${name}`}><Trash2 size={13} /></button>
         </>
       )}
     </div>
   );
 }
+
+const draftChip: CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: 8.5,
+  fontWeight: 700,
+  letterSpacing: '.08em',
+  padding: '2px 6px',
+  borderRadius: 5,
+  border: '1px solid var(--amber-solid)',
+  color: 'var(--amber-solid)',
+  flex: 'none',
+};
 
 const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', alignItems: 'center', padding: 5 };
 const fldD: CSSProperties = { height: 42, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', outline: 'none' };

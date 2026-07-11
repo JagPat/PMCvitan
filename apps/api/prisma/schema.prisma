@@ -301,6 +301,12 @@ model ProjectNode {
   name      String
   kind      String // zone | room | element
   order     Int      @default(0)
+  // Draft → Publish lifecycle (mirrors Decision/Drawing). A node with a null `publishedAt` is a
+  // private DRAFT: it's delivered only to its author and hidden from the team's Site Map and the
+  // filing pickers — so no published item can ever be filed on a draft node (the invariant that
+  // keeps the location spine safe). Publishing a node publishes its subtree + draft ancestors.
+  publishedAt DateTime?
+  authorId  String?
   createdAt DateTime @default(now())
 
   children    ProjectNode[]  @relation("NodeChildren")

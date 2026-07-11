@@ -119,6 +119,8 @@ export interface ProjectNode {
   name: string;
   kind: NodeKind;
   order: number;
+  /** a private, unpublished DRAFT location — only its author sees it; published to the team on publish */
+  draft?: boolean;
 }
 
 export interface Decision {

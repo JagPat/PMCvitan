@@ -36,7 +36,9 @@ export function LocationPicker({
   onChange: (nodeId: string | null) => void;
   idPrefix?: string;
 }) {
-  const nodes = useStore(useShallow((s) => s.nodes));
+  // Only PUBLISHED locations are offered — a decision/drawing/photo must never file onto a
+  // private draft node (that would leak the draft, and orphan the item if the draft is dropped).
+  const nodes = useStore(useShallow((s) => s.nodes.filter((n) => !n.draft)));
   const addLocationNode = useStore((s) => s.addLocationNode);
   const [zone, setZone] = useState<string | null>(null);
   const [room, setRoom] = useState<string | null>(null);
