@@ -87,3 +87,18 @@ describe('draft → publish lifecycle (drawings)', () => {
     expect(s().notifications.length).toBe(after);
   });
 });
+
+describe('publishAllDrafts — batch publish the whole workspace', () => {
+  it('issues every draft (decisions + drawings) in one action', () => {
+    const total = selectDraftDecisions(s()).length + selectDraftDrawings(s()).length;
+    expect(total).toBeGreaterThanOrEqual(2); // seeded: DL-015 + A-305
+    const notifBefore = s().notifications.length;
+
+    s().publishAllDrafts();
+
+    expect(selectDraftDecisions(s())).toHaveLength(0);
+    expect(selectDraftDrawings(s())).toHaveLength(0);
+    // one notification per published draft
+    expect(s().notifications.length).toBe(notifBefore + total);
+  });
+});

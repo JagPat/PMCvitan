@@ -20,14 +20,23 @@ export function DraftsScreen() {
   const drawings = useStore(useShallow(selectDraftDrawings));
   const publishDecision = useStore((s) => s.publishDecision);
   const publishDrawing = useStore((s) => s.publishDrawing);
-  const empty = decisions.length === 0 && drawings.length === 0;
+  const publishAllDrafts = useStore((s) => s.publishAllDrafts);
+  const total = decisions.length + drawings.length;
+  const empty = total === 0;
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
       <Eyebrow>DRAFTS · PRIVATE TO YOU</Eyebrow>
       <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em', marginTop: 4 }}>Drafts</div>
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--muted)', marginTop: 8, maxWidth: 560 }}>
-        <Lock size={13} /> Work in progress, visible only to you. Keep feeding data — nothing reaches the client or the team until you <b>Publish</b>.
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap', marginTop: 8 }}>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--muted)', maxWidth: 560 }}>
+          <Lock size={13} /> Work in progress, visible only to you. Keep feeding data — nothing reaches the client or the team until you <b>Publish</b>.
+        </div>
+        {total >= 2 && (
+          <Button variant="ink" onClick={publishAllDrafts} data-testid="publish-all" style={{ marginLeft: 'auto', flex: 'none', padding: '9px 14px', fontSize: 13 }}>
+            Publish all {total} <ArrowUpRight size={15} />
+          </Button>
+        )}
       </div>
 
       {empty ? (
