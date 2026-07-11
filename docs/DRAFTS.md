@@ -31,6 +31,9 @@ your data.
   or **Publish** (issue in one step: a decision goes to the client, a drawing to the build team).
 - **"For You"** — the PMC's action queue shows *"N drafts in progress"* (decisions + drawings) so
   a draft never gets forgotten in the drawer.
+- **Publish all** — when the workspace holds two or more drafts, a **Publish all N** button issues
+  every one in a single action (each decision to the client, each drawing to the team) — "feed in
+  a batch, release it together."
 
 ---
 

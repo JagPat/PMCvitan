@@ -170,6 +170,8 @@ export interface AppActions {
   issueDecision: (input: IssueDecisionPayload) => void;
   /** Publish a private draft decision → issue it to the client (works offline in the demo). */
   publishDecision: (decisionId: string) => void;
+  /** Publish EVERY draft (decisions + drawings) in one action — the Drafts workspace "Publish all". */
+  publishAllDrafts: () => void;
   /** Create a zone/room/element and resolve to its new id (for the inline location picker). */
   addLocationNode: (input: { name: string; kind: 'zone' | 'room' | 'element'; parentId?: string | null }) => Promise<string | null>;
   renameNode: (nodeId: string, name: string) => void;
@@ -717,6 +719,44 @@ export const useStore = create<Store>()(
         s.notifications.unshift({ text: `Drawing issued: ${row.number} — ${row.title}`, time: 'just now', color: '#C08A2D' });
       });
       get().flash(`Published: ${d.number} — the build team has been notified.`);
+    },
+    publishAllDrafts: () => {
+      const decIds = get().decisions.filter((d) => d.draft).map((d) => d.id);
+      const dwgIds = get().drawings.filter((d) => d.draft).map((d) => d.id);
+      const total = decIds.length + dwgIds.length;
+      if (total === 0) return;
+      const done = () => get().flash(`Published ${total} draft${total === 1 ? '' : 's'} — the team has been notified.`);
+      // API mode: publish each in turn, then reconcile once from a fresh snapshot.
+      if (gateway) {
+        const gw = gateway;
+        void (async () => {
+          try {
+            for (const id of decIds) await gw.publishDecision(id);
+            for (const id of dwgIds) await gw.publishDrawing(id);
+            applySnapshot(await gw.snapshot());
+            done();
+          } catch {
+            get().flash('Could not publish every draft — some may still be drafts. Please try again.');
+          }
+        })();
+        return;
+      }
+      // Demo (no server): flip them all live in one pass + raise each item's notification.
+      set((s) => {
+        for (const row of s.decisions) {
+          if (row.draft && decIds.includes(row.id)) {
+            row.draft = false;
+            s.notifications.unshift({ text: `Decision awaiting approval: ${row.title}`, time: 'just now', color: '#C08A2D' });
+          }
+        }
+        for (const row of s.drawings) {
+          if (row.draft && dwgIds.includes(row.id)) {
+            row.draft = false;
+            s.notifications.unshift({ text: `Drawing issued: ${row.number} — ${row.title}`, time: 'just now', color: '#C08A2D' });
+          }
+        }
+      });
+      done();
     },
     acknowledgeDrawing: (drawingId) => {
       const drawing = get().drawings.find((d) => d.id === drawingId);

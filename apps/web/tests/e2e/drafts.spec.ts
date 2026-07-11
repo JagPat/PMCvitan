@@ -23,6 +23,21 @@ test('drafts: a drawing draft stays private until published, then enters the reg
   await expect(page.getByTestId('drawing-A-305')).toBeVisible();
 });
 
+test('drafts: "Publish all" issues every draft at once', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Drafts' }).click();
+  // both a draft decision and a draft drawing are seeded
+  await expect(page.getByTestId('draft-DL-015')).toBeVisible();
+  await expect(page.getByTestId('draft-DWG-4')).toBeVisible();
+
+  // one click publishes the whole workspace
+  await page.getByTestId('publish-all').click();
+  await expect(page.getByTestId('draft-DL-015')).toHaveCount(0);
+  await expect(page.getByTestId('draft-DWG-4')).toHaveCount(0);
+  await expect(page.getByText('No drafts yet')).toBeVisible();
+});
+
 test('drafts: a private decision stays in the workspace until the PMC publishes it', async ({ page }) => {
   await page.goto('/');
 
