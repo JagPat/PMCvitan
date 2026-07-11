@@ -169,6 +169,24 @@ export class SnapshotService {
       (i) => i.decided && i.items.some((it) => it.rejected || it.result === 'FAIL'),
     );
 
+    // Location spine: every inspection with its place, for the Site Map's "inspections here".
+    // AUTH-02: inspections are an internal sign-off surface — serialized ONLY for the roles
+    // that run them (pmc/engineer); client/contractor/consultant get an empty list, so the
+    // Place view can't surface an inspection to them even though it shares the location tree.
+    const canSeeInspections = role === 'pmc' || role === 'engineer';
+    const placedInspections = canSeeInspections
+      ? inspections.map((i) => ({
+          id: i.id,
+          title: i.title,
+          zone: i.zone,
+          nodeId: i.nodeId ?? undefined,
+          kind: i.kind,
+          submitted: i.submitted,
+          decided: i.decided,
+          failedItems: i.items.filter((it) => it.rejected || it.result === 'FAIL').length,
+        }))
+      : [];
+
     // Drawings register: each entry with its full revision history (newest first)
     // and the current (latest non-superseded) revision the field builds from.
     const drawingDtos = drawings.map((d) => {
@@ -242,6 +260,7 @@ export class SnapshotService {
       },
       decisions: decisionDtos,
       activities: activityDtos,
+      placedInspections,
       reviews: isPmc ? reviews : [],
       review: isPmc ? (reviews[0] ?? null) : null, // deprecated single (first pending) — back-compat
       reinspectionCreated: isPmc ? reinspectionCreated : false,

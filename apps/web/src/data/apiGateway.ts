@@ -31,6 +31,7 @@ import type {
   NodeKind,
   Photo,
   Material,
+  PlacedInspection,
   Review,
   Role,
 } from '@vitan/shared';
@@ -52,6 +53,8 @@ export interface ApiSnapshot {
   };
   decisions: Decision[];
   activities: Activity[];
+  /** inspections placed on the tree — Site Map's "inspections here" (pmc/engineer only) */
+  placedInspections: PlacedInspection[];
   checklist: Checklist | null;
   reviews: Review[];
   review: Review | null; // deprecated (first pending) — back-compat; use `reviews`

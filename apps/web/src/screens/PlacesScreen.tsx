@@ -4,9 +4,9 @@ import { useStore } from '@/store/store';
 import { resolveDrawingUrl } from '@/data/apiGateway';
 import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer } from '@/components';
 import { DrawingViewer } from '@/screens/DrawingsScreen';
-import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat } from '@/lib/icons';
+import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat, CircleCheck } from '@/lib/icons';
 import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
-import { type Drawing, type Photo, type SwatchKey } from '@vitan/shared';
+import { type Drawing, type Photo, type PlacedInspection, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 const KIND_LABEL: Record<string, string> = { zone: 'ZONE', room: 'ROOM', element: 'OBJECT' };
@@ -30,6 +30,11 @@ export function PlacesScreen() {
   const photos = useStore(useShallow((s) => s.photos));
   const activities = useStore(useShallow((s) => s.activities));
   const materials = useStore(useShallow((s) => s.materials));
+  // AUTH-02: inspections are a pmc/engineer surface — never fed to the client/contractor/
+  // consultant Place view (the server already sends them [] for those roles; this mirrors it
+  // in the demo where the store is shared across the persona switcher).
+  const canSeeInspections = useStore((s) => s.role === 'pmc' || s.role === 'engineer');
+  const inspections = useStore(useShallow((s) => (s.role === 'pmc' || s.role === 'engineer' ? s.placedInspections : [])));
 
   const [sel, setSel] = useState<string | null>(null); // null = whole project
   const [zoom, setZoom] = useState<string | null>(null);
@@ -42,8 +47,8 @@ export function PlacesScreen() {
   const trail = useMemo(() => [{ id: null as string | null, name: 'Whole project' }, ...trailOf(nodes, active)], [nodes, active]);
   const children = useMemo(() => childrenOf(nodes, active), [nodes, active]);
   const contents = useMemo(
-    () => placeContents(active, nodes, decisions, drawings, photos, activities, materials),
-    [active, nodes, decisions, drawings, photos, activities, materials],
+    () => placeContents(active, nodes, decisions, drawings, photos, activities, materials, inspections),
+    [active, nodes, decisions, drawings, photos, activities, materials, inspections],
   );
 
   const countsFor = (id: string) => {
@@ -160,6 +165,32 @@ export function PlacesScreen() {
               </div>
             )}
           </Section>
+
+          {/* Inspections — quality checks here (pmc/engineer only) */}
+          {canSeeInspections && (
+            <Section icon={<CircleCheck size={13} />} title="Inspections" count={contents.inspections.length} sub="quality checks here">
+              {contents.inspections.length === 0 ? (
+                <Empty>No inspections here yet.</Empty>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                  {contents.inspections.map((i) => {
+                    const st = inspectionStatus(i);
+                    return (
+                      <div key={i.id} data-testid={`place-inspection-${i.id}`} style={{ ...rowCard, cursor: 'default' }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{i.id}</span>
+                            <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{i.title}</span>
+                          </div>
+                        </div>
+                        <span style={{ ...relChip, color: st.color, borderColor: st.color }}>{st.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Section>
+          )}
 
           {/* Reality — photos */}
           <Section icon={<Camera size={13} />} title="Reality" count={contents.photos.length} sub="photos of what's built">
@@ -343,6 +374,13 @@ function Section({ icon, title, count, sub, children }: { icon: React.ReactNode;
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 12.5, color: 'var(--faint)', padding: '6px 0' }}>{children}</div>;
+}
+
+/** A placed inspection's Site-Map status: open → in review → passed/failed. */
+function inspectionStatus(i: PlacedInspection): { label: string; color: string } {
+  if (!i.submitted) return { label: 'Open', color: 'var(--muted)' };
+  if (!i.decided) return { label: 'In review', color: 'var(--amber-solid)' };
+  return i.failedItems > 0 ? { label: 'Failed', color: 'var(--red-solid)' } : { label: 'Passed', color: 'var(--green-solid)' };
 }
 
 const nodeCard: CSSProperties = {

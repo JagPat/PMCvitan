@@ -111,7 +111,7 @@ SiteMaterial.nodeId String?  FK → ProjectNode  ON DELETE SET NULL   -- where t
 All three use **subtree** semantics in the Site Map (a room includes its objects' items). The shared **`resolveProjectNode`** guard validates every node against the project on create/update (`400` for a cross-project node), the same as decisions/media/drawings. A completed activity's **auto-created closing inspection inherits the activity's `nodeId`** (the sign-off happens where the work did).
 
 - **Activities** — `createActivity` / `updateActivity` take an optional `nodeId`; the snapshot's top-level `activities[]` carries it. The Site Map's **Work** section lists the activities at a place with their live status (and block reason).
-- **Inspections** — `createInspection` takes an optional `nodeId`; the PMC review queue (`reviews[]`) and the field `checklist` carry it. (Inspections stay on the PMC/engineer surfaces — no all-roles Site Map section, preserving the AUTH-02 review-queue gating.)
+- **Inspections** — `createInspection` takes an optional `nodeId`; the PMC review queue (`reviews[]`) and the field `checklist` carry it. The snapshot also emits a top-level **`placedInspections[]`** (every inspection with its place + status), **role-gated to pmc/engineer** — client/contractor/consultant get an empty list, so the Site Map's **Inspections** section (which only renders for pmc/engineer) preserves the AUTH-02 review-queue gating even though it shares the location tree.
 - **Materials** — `addMaterial` takes an optional `nodeId`. Because the daily log only carries the *current* day's rows, the snapshot adds a top-level **`materials[]`** (all deliveries across the project, with `nodeId`) so the Site Map's **Materials** section shows everything delivered to a place, not just today's.
 
 ```
@@ -121,7 +121,7 @@ POST  /projects/:id/inspections        { …, nodeId? }   -> Snapshot   # pmc
 POST  /projects/:id/daily-log/material { …, nodeId? }   -> Snapshot   # pmc, engineer
 ```
 
-The **Zone › Room › Object picker** is now in the plan-activity, issue-checklist and add-material flows (with inline node creation). The Site Map (`placeContents` in `lib/locationTree.ts`) aggregates decisions, drawings, photos, **activities and materials** for the selected place.
+The **Zone › Room › Object picker** is now in the plan-activity, issue-checklist and add-material flows (with inline node creation). The Site Map (`placeContents` in `lib/locationTree.ts`) aggregates decisions, drawings, photos, **activities, materials and inspections** for the selected place (the Inspections section is pmc/engineer-only).
 
 **Intent vs Reality.** Drilling into an object with both a governing drawing and site photos surfaces an **Intent vs Reality** band at the top of the place view: the drawing that governs it (with the build-acknowledgement state — "Building to Rev C · N acknowledged") beside the latest photo of what's actually built. "Does what's built match what was drawn?" becomes a glance. The governing drawing is the most specific one that applies (`here` > `detail` > `inherited`).
 
