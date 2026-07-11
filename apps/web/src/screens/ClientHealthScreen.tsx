@@ -1,13 +1,13 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectPending, selectTotalWorkers } from '@/store/selectors';
+import { selectApprovedDecisions, selectPending, selectTotalWorkers } from '@/store/selectors';
 import { Eyebrow, ProgressBar, Swatch } from '@/components';
 import { ArrowRight } from '@/lib/icons';
 import { PROJECT, signed, swatch as swatchGradient } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function ClientHealthScreen() {
-  const decisions = useStore(useShallow((s) => s.decisions));
+  const approved = useStore(useShallow(selectApprovedDecisions));
   const pending = useStore(useShallow(selectPending));
   const workers = useStore(selectTotalWorkers);
   const checkedIn = useStore((s) => s.dailyLog.checkedIn);
@@ -15,7 +15,6 @@ export function ClientHealthScreen() {
 
   const healthLine = checkedIn ? `Site active today · ${workers} workers` : 'Site opens shortly today';
   const countLabel = `${pending.length} ${pending.length === 1 ? 'decision waiting' : 'decisions waiting'} for you`;
-  const approved = decisions.filter((d) => d.status === 'approved');
 
   const photos = [
     { label: 'Living Room · flooring', date: '02 Jul 2026', swatch: 'marble' },
