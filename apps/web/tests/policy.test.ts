@@ -10,6 +10,7 @@ const ALL_ROLES: TokenRole[] = ['pmc', 'client', 'engineer', 'contractor', 'work
  */
 const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'decision.create': ['pmc'],
+  'decision.publish': ['pmc'],
   'decision.approve': ['client', 'pmc'],
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'activity.start': ['engineer', 'pmc'],

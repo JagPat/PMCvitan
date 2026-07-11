@@ -270,7 +270,8 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
   const updateActivity = useStore((s) => s.updateActivity);
   const deleteActivity = useStore((s) => s.deleteActivity);
   const phases = useStore(useShallow((s) => s.phases));
-  const decisions = useStore(useShallow((s) => s.decisions));
+  // only a published decision can be linked to an activity — never an unpublished draft
+  const decisions = useStore(useShallow((s) => s.decisions.filter((d) => !d.draft)));
   const [name, setName] = useState(activity?.name ?? '');
   const [zone, setZone] = useState(activity?.zone ?? '');
   const [ps, setPs] = useState(String(activity?.ps ?? 0));

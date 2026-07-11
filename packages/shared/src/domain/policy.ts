@@ -18,6 +18,8 @@ import type { TokenRole } from './types';
 
 export const ROLE_POLICY = {
   'decision.create': ['pmc'],
+  // publish a private draft decision → issue it to the client (the architect's authority)
+  'decision.publish': ['pmc'],
   'decision.approve': ['client', 'pmc'],
   // consultants raise change requests to flag a conflict in their discipline (read-mostly otherwise)
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],

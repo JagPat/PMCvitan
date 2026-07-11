@@ -35,6 +35,23 @@ export const PROJECT = {
 
 export const SEED_DECISIONS: Decision[] = [
   {
+    // A private work-in-progress DRAFT: the architect is still choosing the shortlist. It sits
+    // only in the Drafts workspace (author-only) and does NOT appear on the client's screen,
+    // the Decision Log, or the pending count — until it's published.
+    id: 'DL-015',
+    nodeId: 'r-living',
+    title: 'Living Room Feature Wall',
+    room: 'Ground Floor · Living',
+    status: 'pending',
+    draft: true,
+    ageDays: 0,
+    photoSwatch: 'walnut',
+    options: [
+      { label: 'Option A', key: 'A', material: 'Fluted Walnut', delta: 0, swatch: 'walnut', recommended: true },
+      { label: 'Option B', key: 'B', material: 'Textured Stone', delta: 48000, swatch: 'marble', recommended: false },
+    ],
+  },
+  {
     id: 'DL-014',
     nodeId: 'r-living',
     title: 'Living Room Flooring',

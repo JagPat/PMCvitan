@@ -32,7 +32,8 @@ export function PortfolioScreen() {
   // build one row from the seeded local state (keeps the screen meaningful).
   const activities = useStore(useShallow((s) => s.activities));
   const phases = useStore(useShallow((s) => s.phases));
-  const decisions = useStore(useShallow((s) => s.decisions));
+  // exclude private drafts from the cross-project pending-decision rollup
+  const decisions = useStore(useShallow((s) => s.decisions.filter((d) => !d.draft)));
   const reviews = useStore(useShallow((s) => s.reviews));
   const role = useStore((s) => s.role);
 

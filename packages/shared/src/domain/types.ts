@@ -75,6 +75,7 @@ export type ScreenKey =
   | 'inbox'
   | 'dashboard'
   | 'site-schedule'
+  | 'drafts'
   | 'decision-log'
   | 'inspect-review'
   | 'client-decisions'
@@ -127,6 +128,8 @@ export interface Decision {
   /** location-tree node this decision attaches to (undefined = ungrouped, legacy `room`) */
   nodeId?: string;
   status: DecisionStatus;
+  /** a private, unpublished DRAFT — only its author sees it, and the app ignores it until published */
+  draft?: boolean;
   ageDays?: number;
   photoSwatch: SwatchKey;
   options: DecisionOption[];

@@ -14,6 +14,7 @@ export {
   Check,
   Download,
   FileText,
+  FileEdit,
   History,
   ArrowRight,
   ArrowUpRight,

@@ -279,6 +279,9 @@ export const createDecisionSchema = z.object({
   nodeId: z.string().trim().min(1).optional(),
   room: z.string().trim().default(''),
   options: z.array(decisionOptionInput).min(2).max(4),
+  // Draft → Publish lifecycle: default is to save a PRIVATE DRAFT (author-only, no client
+  // notice). Pass `publish: true` to create it already-published (the one-step "issue now").
+  publish: z.boolean().default(false),
 });
 export type CreateDecisionInput = z.infer<typeof createDecisionSchema>;
 

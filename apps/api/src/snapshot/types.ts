@@ -34,6 +34,8 @@ export interface DecisionDto {
   approver?: string;
   date?: string;
   cost?: number;
+  /** a private, unpublished DRAFT — only ever present in its own author's snapshot */
+  draft?: boolean;
 }
 
 export interface ActivityDto {

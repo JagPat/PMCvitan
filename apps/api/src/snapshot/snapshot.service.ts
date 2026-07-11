@@ -81,13 +81,21 @@ export class SnapshotService {
 
     const hidePending = role !== 'pmc' && role !== 'client';
     const decisionDtos: DecisionDto[] = decisions
-      .filter((d) => !(hidePending && d.status === 'pending'))
+      .filter((d) => {
+        // Draft → Publish: an unpublished decision is author-private — it is delivered ONLY
+        // to its creator, never to the client or anyone else. Enforced here (server-side),
+        // not merely hidden in the UI, so a draft's title can't leak through any surface.
+        if (d.publishedAt === null) return !!userId && d.authorId === userId;
+        // AUTH-02: only pmc/client see published-but-pending decisions.
+        return !(hidePending && d.status === 'pending');
+      })
       .map((d) => ({
         id: d.id,
         title: d.title,
         room: d.room,
         nodeId: d.nodeId ?? undefined,
         status: d.status,
+        draft: d.publishedAt === null,
         ageDays: d.ageDays ?? undefined,
         photoSwatch: d.photoSwatch,
         approvedOption: d.approvedOption ?? undefined,

@@ -326,6 +326,13 @@ model Decision {
   date           String? // display date, e.g. "12 Jun 2026"
   cost           Int? // rupees
   createdAt      DateTime         @default(now())
+  // Draft → Publish lifecycle. While `publishedAt` is null the decision is a private
+  // DRAFT: the snapshot delivers it only to its author (`authorId`), it never notifies
+  // the client, and the app treats it as weightless (no pending count, no gate). Publish
+  // sets `publishedAt` and fires the normal side-effects. Both nullable/additive so the
+  // migration is safe on the live DB; existing rows (published) are backfilled to createdAt.
+  publishedAt    DateTime?
+  authorId       String?
 
   options        DecisionOption[]
   events         DecisionEvent[]

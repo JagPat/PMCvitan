@@ -123,6 +123,8 @@ export interface NewDecisionInput {
   nodeId?: string;
   room?: string;
   options: { material: string; delta: number; swatch: string; photoUrl?: string; recommended?: boolean }[];
+  /** default false → saved as a private draft; true → issued to the client in one step */
+  publish?: boolean;
 }
 
 /** Create a location-tree node (PMC). */
@@ -365,9 +367,13 @@ export class ApiGateway {
     return this.req(`/projects/${this.projectId}/companies/${companyId}`, { method: 'DELETE' });
   }
 
-  /** Issue a new decision (PMC) — appears pending on the client's screen. */
+  /** Create a decision (PMC). Defaults to a private draft; pass `publish: true` to issue it. */
   createDecision(input: NewDecisionInput): Promise<ApiSnapshot> {
     return this.p('/decisions', input);
+  }
+  /** Publish a private draft decision (PMC) → issue it to the client. */
+  publishDecision(decisionId: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/publish`, {});
   }
   /** Create a location node (zone/room/element) — PMC. Returns a node-carrying snapshot. */
   createNode(input: NewNodeInput): Promise<ApiSnapshot> {
