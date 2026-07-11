@@ -230,6 +230,25 @@ export const SEED_DRAWINGS: Drawing[] = [
       { id: 'SK-07-A', rev: 'A', status: 'for_construction', mime: 'image/svg+xml', url: sheet('SK-07', 'Veneer Grain Reference', 'A', 'SKETCH · reference'), sizeBytes: 96000, note: 'Site sketch — walnut grain direction for the main door.', issuedBy: 'Ar. Vitan', issuedAt: '03 Jul 2026', acks: [] },
     ],
   },
+  {
+    // A private work-in-progress DRAFT drawing — the architect is still preparing the feature
+    // wall elevation. It sits only in the Drafts workspace (author-only): not in the register,
+    // not on the Site Map, and the build team is not asked to acknowledge it, until published.
+    id: 'DWG-4',
+    number: 'A-305',
+    nodeId: 'r-living',
+    title: 'Living Room — Feature Wall Elevation',
+    discipline: 'architectural',
+    zone: 'Ground Floor · Living',
+    activityId: null,
+    decisionId: null,
+    draft: true,
+    ackedByMe: false,
+    current: { id: 'A-305-A', rev: 'A', status: 'for_construction', mime: 'application/pdf', url: sheet('A-305', 'Feature Wall Elevation', 'A', 'ELEV · 1:25'), sizeBytes: 128000, note: 'Draft — fluted walnut vs stone, dimensions being finalised.', issuedBy: 'Ar. Vitan', issuedAt: 'just now', acks: [] },
+    revisions: [
+      { id: 'A-305-A', rev: 'A', status: 'for_construction', mime: 'application/pdf', url: sheet('A-305', 'Feature Wall Elevation', 'A', 'ELEV · 1:25'), sizeBytes: 128000, note: 'Draft — fluted walnut vs stone, dimensions being finalised.', issuedBy: 'Ar. Vitan', issuedAt: 'just now', acks: [] },
+    ],
+  },
 ];
 
 export const SEED_ACTIVITIES: Activity[] = [

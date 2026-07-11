@@ -167,6 +167,8 @@ export interface IssueDrawingInput {
   activityId?: string;
   decisionId?: string;
   nodeId?: string; // location spine: the place this drawing governs
+  /** default false → saved as a private draft; true → issued to the build team in one step */
+  publish?: boolean;
 }
 
 /** Base64 payloads above this length (~3 MB file) are uploaded direct-to-bucket
@@ -531,6 +533,11 @@ export class ApiGateway {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  }
+
+  /** Publish a private draft drawing (PMC) → issue it to the build team. */
+  publishDrawing(drawingId: string): Promise<ApiSnapshot> {
+    return this.p(`/drawings/${drawingId}/publish`, {});
   }
 
   /** Request a presigned direct-to-bucket upload target for a drawing (S3 mode). */

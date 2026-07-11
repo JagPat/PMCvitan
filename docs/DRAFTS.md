@@ -15,20 +15,22 @@ When it's ready you **Publish** it. Only then does it enter the shared snapshot,
 to act, and start driving the app. Publishing is the single moment the app "takes action" on
 your data.
 
-> Piloted on **decisions** (the highest-value case). The same pattern generalises to drawings,
-> the location tree, and other authored records; those adopt it in later slices.
+> Applies to **decisions** and **drawings** today (the same `publishedAt` + `authorId` model on
+> each). The pattern generalises further to the location tree and other authored records in
+> later slices.
 
 ---
 
 ## Where it lives
 
-- **Drafts workspace** (`/drafts`, PMC) — your private holding area. Every draft decision is
-  listed with its shortlisted options and a **Publish to client** button (with a readiness
-  check). Nothing here is visible to anyone else.
-- **New-decision modal** — the Decision Log's *New decision* dialog offers **Save as draft**
-  (private) or **Publish to client** (issue in one step).
-- **"For You"** — the PMC's action queue shows *"N draft decisions in progress"* so a draft
-  never gets forgotten in the drawer.
+- **Drafts workspace** (`/drafts`, PMC) — your private holding area, unified across entity types.
+  Draft **decisions** list their shortlisted options with a **Publish to client** button; draft
+  **drawings** show a thumbnail + revision with a **Publish to team** button. Both with a
+  readiness check. Nothing here is visible to anyone else.
+- **New-decision / New-drawing modals** — each *New…* dialog offers **Save as draft** (private)
+  or **Publish** (issue in one step: a decision goes to the client, a drawing to the build team).
+- **"For You"** — the PMC's action queue shows *"N drafts in progress"* (decisions + drawings) so
+  a draft never gets forgotten in the drawer.
 
 ---
 
@@ -50,6 +52,13 @@ Both nullable/additive, so the migration is safe on the live DB with no backfill
   issue in one step. A draft creates **no** client notification and **no** realtime push.
 - `POST /projects/:id/decisions/:decisionId/publish` (**pmc**) — flips `publishedAt`, notifies
   the client, and fires the same side-effects a one-step issue does. Re-publishing conflicts.
+
+**Drawings mirror this exactly.** `Drawing` gained the same `publishedAt` + `authorId`
+(migration `20260810000000_drawing_draft_lifecycle`). `POST /projects/:id/drawings` **creates a
+new drawing as a draft by default** (`publish: true` issues in one step; a draft notifies no
+one); `POST /projects/:id/drawings/:drawingId/publish` (**pmc**) issues a draft to the build
+team. A draft drawing is absent from the register, the Site Map, and the acknowledgement queue
+until published. (Adding a revision to an already-published drawing is a normal issue.)
 
 ## Snapshot visibility (the guarantee)
 

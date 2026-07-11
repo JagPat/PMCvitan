@@ -147,6 +147,8 @@ export interface AppActions {
   sendReinspection: () => void;
   // drawings register
   issueDrawing: (input: IssueDrawingInput) => void;
+  /** Publish a private draft drawing → issue it to the build team (works offline in the demo). */
+  publishDrawing: (drawingId: string) => void;
   acknowledgeDrawing: (drawingId: string) => void;
   // location spine: re-file a drawing / photo onto a location node (null = unfile)
   fileDrawing: (drawingId: string, nodeId: string | null) => void;
@@ -675,6 +677,7 @@ export const useStore = create<Store>()(
           existing.discipline = input.discipline;
           existing.nodeId = input.nodeId ?? existing.nodeId;
           existing.ackedByMe = false; // a fresh rev needs re-acknowledgement
+          if (input.publish) existing.draft = false;
         } else {
           s.drawings.unshift({
             id: `DWG-${s.drawings.length + 1}`,
@@ -685,13 +688,35 @@ export const useStore = create<Store>()(
             activityId: input.activityId ?? null,
             decisionId: input.decisionId ?? null,
             nodeId: input.nodeId,
+            draft: !input.publish, // a new drawing is a private draft unless issued now
             ackedByMe: false,
             current: newRev,
             revisions: [newRev],
           });
         }
       });
-      get().flash(`Drawing issued: ${input.number} Rev ${input.rev} (demo).`);
+      get().flash(
+        input.publish
+          ? `Drawing issued: ${input.number} Rev ${input.rev} (demo).`
+          : `Draft saved: ${input.number} — visible only to you until you publish it (demo).`,
+      );
+    },
+    publishDrawing: (drawingId) => {
+      const d = get().drawings.find((x) => x.id === drawingId);
+      if (!d) return;
+      // API mode: the server flips publishedAt, notifies the build team, returns a snapshot.
+      if (gateway) {
+        runRemote(() => gateway!.publishDrawing(drawingId), `Published: ${d.number} — the build team has been notified.`);
+        return;
+      }
+      // Demo (no server): flip the draft live locally + raise the build-team notification.
+      set((s) => {
+        const row = s.drawings.find((x) => x.id === drawingId);
+        if (!row || !row.draft) return;
+        row.draft = false;
+        s.notifications.unshift({ text: `Drawing issued: ${row.number} — ${row.title}`, time: 'just now', color: '#C08A2D' });
+      });
+      get().flash(`Published: ${d.number} — the build team has been notified.`);
     },
     acknowledgeDrawing: (drawingId) => {
       const drawing = get().drawings.find((d) => d.id === drawingId);

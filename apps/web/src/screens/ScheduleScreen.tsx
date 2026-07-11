@@ -35,7 +35,7 @@ function ScheduleRow({ a, todayPct, onEdit }: { a: Activity; todayPct: number; o
   const gates = gatesFor(state, a);
   const ready = activityReady(state, a);
   // the controlled drawing this activity builds from (Drawings Slice 2 linkage)
-  const linkedDrawing = state.drawings.find((d) => d.activityId === a.id);
+  const linkedDrawing = state.drawings.find((d) => !d.draft && d.activityId === a.id);
   const plannedLine = `Plan ${dayLabel(a.ps)} → ${dayLabel(a.pe)}`;
   const actualLine = a.as == null ? 'Not started' : `Actual ${dayLabel(a.as)} → ${a.ae == null ? 'ongoing' : dayLabel(a.ae)}`;
   const actualColor = a.status === 'blocked' ? 'var(--red-solid)' : a.status === 'done' ? 'var(--green-solid)' : 'var(--accent)';

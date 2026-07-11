@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
-import { selectDraftDecisions, selectPending, selectLogDecisions, selectApprovedDecisions } from '@/store/selectors';
+import { selectDraftDecisions, selectDraftDrawings, selectPending, selectLogDecisions, selectApprovedDecisions, selectActionItems } from '@/store/selectors';
 
 const s = () => useStore.getState();
 
@@ -58,5 +58,32 @@ describe('draft → publish lifecycle (decisions)', () => {
     const notifAfterFirst = s().notifications.length;
     s().publishDecision('DL-015'); // already live — nothing changes
     expect(s().notifications.length).toBe(notifAfterFirst);
+  });
+});
+
+describe('draft → publish lifecycle (drawings)', () => {
+  it('a draft drawing is private: in the Drafts workspace, and never demanded for acknowledgement', () => {
+    expect(selectDraftDrawings(s()).map((d) => d.number)).toContain('A-305'); // the seeded draft
+
+    // the contractor/engineer "For You" ack queue is built from published for-construction
+    // sheets only — the draft A-305 must not appear anywhere in it
+    s().setRole('contractor');
+    expect(selectActionItems(s()).some((i) => (i.detail ?? '').includes('A-305'))).toBe(false);
+  });
+
+  it('publishing a draft drawing issues it — it leaves Drafts and the build team is notified', () => {
+    const notifBefore = s().notifications.length;
+    const id = selectDraftDrawings(s())[0].id;
+
+    s().publishDrawing(id);
+
+    expect(selectDraftDrawings(s()).some((d) => d.id === id)).toBe(false);
+    expect(s().notifications.length).toBe(notifBefore + 1);
+    expect(s().notifications[0].text).toContain('A-305');
+
+    // publishing again is a no-op (already live)
+    const after = s().notifications.length;
+    s().publishDrawing(id);
+    expect(s().notifications.length).toBe(after);
   });
 });

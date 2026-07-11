@@ -1,5 +1,5 @@
 import { useStore } from '@/store/store';
-import { selectActionItems, selectDraftDecisions, selectReviewPending } from '@/store/selectors';
+import { selectActionItems, selectDraftDecisions, selectDraftDrawings, selectReviewPending } from '@/store/selectors';
 import { screensFor, type ScreenMeta } from '@/lib/screens';
 
 export interface NavItem extends ScreenMeta {
@@ -15,7 +15,7 @@ export function useNavItems(): NavItem[] {
   const pending = useStore((s) => s.decisions.filter((d) => d.status === 'pending' && !d.draft).length);
   const reviewPending = useStore(selectReviewPending);
   const actionCount = useStore((s) => selectActionItems(s).length);
-  const draftCount = useStore((s) => selectDraftDecisions(s).length);
+  const draftCount = useStore((s) => selectDraftDecisions(s).length + selectDraftDrawings(s).length);
 
   return screensFor(role).map((m) => {
     let badge = 0;

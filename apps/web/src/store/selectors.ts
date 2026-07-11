@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import { drawingDisciplineFor, type Activity, type Decision, type DecisionStatus, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
+import { drawingDisciplineFor, type Activity, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -34,6 +34,11 @@ export function selectLogDecisions(s: AppState): Decision[] {
 /** Private, unpublished draft decisions — the author's Drafts workspace. */
 export function selectDraftDecisions(s: AppState): Decision[] {
   return s.decisions.filter((d) => d.draft);
+}
+
+/** Private, unpublished draft drawings — the author's Drafts workspace. */
+export function selectDraftDrawings(s: AppState): Drawing[] {
+  return s.drawings.filter((d) => d.draft);
 }
 
 /** Approved (locked) decisions for the shared surfaces (client health, badge). Excludes
@@ -192,8 +197,9 @@ export function selectActionItems(s: AppState): ActionItem[] {
   // Drafts are private + weightless — they never appear as pending/change work for anyone.
   const pending = s.decisions.filter((d) => d.status === 'pending' && !d.draft);
   const changes = s.decisions.filter((d) => d.status === 'change' && !d.draft);
-  const drafts = s.decisions.filter((d) => d.draft);
-  const unacked = s.drawings.filter((d) => d.current && d.current.status === 'for_construction' && !d.ackedByMe);
+  // private work-in-progress across entity types (decisions + drawings) — the Drafts workspace
+  const drafts = [...s.decisions.filter((d) => d.draft), ...s.drawings.filter((d) => d.draft)];
+  const unacked = s.drawings.filter((d) => !d.draft && d.current && d.current.status === 'for_construction' && !d.ackedByMe);
   const blocked = s.activities.filter((a) => a.status === 'blocked');
   const names = (xs: { title?: string; name?: string; number?: string }[], n = 3) =>
     xs.slice(0, n).map((x) => x.title ?? x.name ?? x.number ?? '').filter(Boolean).join(', ');
@@ -214,7 +220,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
   }
 
   if (s.role === 'pmc') {
-    if (drafts.length) items.push({ key: 'pmc-drafts', title: `${drafts.length} draft decision${plural(drafts.length)} in progress`, detail: names(drafts), screen: 'drafts', cta: 'Review & publish', tone: 'ink' });
+    if (drafts.length) items.push({ key: 'pmc-drafts', title: `${drafts.length} draft${plural(drafts.length)} in progress`, detail: names(drafts), screen: 'drafts', cta: 'Review & publish', tone: 'ink' });
     if (s.reviews.length) items.push({ key: 'pmc-reviews', title: `${s.reviews.length} inspection${plural(s.reviews.length)} awaiting your review`, detail: names(s.reviews), screen: 'inspect-review', cta: 'Review', tone: 'amber' });
     if (changes.length) items.push({ key: 'pmc-change', title: `${changes.length} change request${plural(changes.length)} to resolve`, detail: names(changes), screen: 'decision-log', cta: 'Open', tone: 'red' });
     if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red' });
@@ -225,7 +231,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
     const disc = s.memberships.find((m) => m.projectId === s.activeProjectId)?.discipline ?? (s.memberships.length === 0 ? 'structural' : undefined);
     if (disc) {
       const bucket = drawingDisciplineFor(disc);
-      const mine = s.drawings.filter((d) => d.discipline === bucket && d.current && d.current.status === 'for_construction');
+      const mine = s.drawings.filter((d) => !d.draft && d.discipline === bucket && d.current && d.current.status === 'for_construction');
       if (mine.length) items.push({ key: 'cons-review', title: `${mine.length} ${bucket} drawing${plural(mine.length)} in the current set`, detail: 'Review the issued set in your discipline', screen: 'drawings', cta: 'Review drawings', tone: 'ink' });
     }
   }

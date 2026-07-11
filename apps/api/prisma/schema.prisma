@@ -204,6 +204,12 @@ model Drawing {
   // drawing (it becomes unfiled). Location spine.
   node       ProjectNode?      @relation(fields: [nodeId], references: [id], onDelete: SetNull)
   nodeId     String?
+  // Draft → Publish lifecycle (mirrors Decision). While `publishedAt` is null the drawing is
+  // a private DRAFT: the snapshot delivers it only to its author, it never notifies the build
+  // team, and it's absent from the register / Site Map. Publishing issues it. Both nullable/
+  // additive; existing rows backfilled to createdAt so nothing becomes an invisible draft.
+  publishedAt DateTime?
+  authorId   String?
   createdAt  DateTime          @default(now())
   revisions  DrawingRevision[]
 

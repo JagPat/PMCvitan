@@ -30,7 +30,8 @@ function previewKind(mime: string): 'image' | 'pdf' | 'download' {
 }
 
 export function DrawingsScreen() {
-  const drawings = useStore(useShallow((s) => s.drawings));
+  // drafts are private WIP — the register shows only published drawings
+  const drawings = useStore(useShallow((s) => s.drawings.filter((d) => !d.draft)));
   const nodes = useStore(useShallow((s) => s.nodes));
   const role = useStore((s) => s.role);
   const memberships = useStore(useShallow((s) => s.memberships));
@@ -322,10 +323,10 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
   };
 
   const ready = number.trim() && title.trim() && rev.trim() && file && !busy;
-  const submit = () => {
+  const submit = (publish: boolean) => {
     if (!ready || !file) return;
     setBusy(true);
-    const input: IssueDrawingInput = { number: number.trim(), title: title.trim(), discipline, rev: rev.trim(), mime: file.mime, data: file.data, status: 'for_construction', ...(nodeId ? { nodeId } : {}) };
+    const input: IssueDrawingInput = { number: number.trim(), title: title.trim(), discipline, rev: rev.trim(), mime: file.mime, data: file.data, status: 'for_construction', publish, ...(nodeId ? { nodeId } : {}) };
     issueDrawing(input);
     onClose();
   };
@@ -333,8 +334,8 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal onClose={onClose} maxWidth={440} labelledBy="issue-title">
       <div style={{ padding: '18px 20px' }}>
-        <div id="issue-title" style={{ fontWeight: 700, fontSize: 17 }}>Issue a drawing</div>
-        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>A matching number adds a revision and supersedes the prior issue.</div>
+        <div id="issue-title" style={{ fontWeight: 700, fontSize: 17 }}>New drawing</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>A matching number adds a revision and supersedes the prior. <b>Save as draft</b> to prepare it privately, or <b>Publish</b> to issue it to the build team.</div>
 
         <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
           <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder="Number (A-201)" style={{ ...fld, flex: 1 }} />
@@ -355,8 +356,9 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
         {file && <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{file.name}</div>}
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
-          <Button variant="ink" onClick={submit} disabled={!ready} style={{ flex: 1, padding: 12 }}>Issue</Button>
+          <Button variant="outline" onClick={onClose} style={{ flex: '0 0 auto', padding: '12px 16px' }}>Cancel</Button>
+          <Button variant="light" onClick={() => submit(false)} disabled={!ready} data-testid="save-draft-drawing" style={{ flex: 1, padding: 12 }}>Save as draft</Button>
+          <Button variant="ink" onClick={() => submit(true)} disabled={!ready} data-testid="publish-drawing" style={{ flex: 1, padding: 12 }}>Publish</Button>
         </div>
       </div>
     </Modal>

@@ -176,6 +176,7 @@ const EXPECTED_ROLES: Record<string, string[]> = {
   'MediaController.remove': ['pmc', 'engineer'],
   'MediaController.setNode': ['pmc', 'engineer'],
   'DrawingsController.issue': ['pmc'],
+  'DrawingsController.publish': ['pmc'],
   'DrawingsController.presign': ['pmc'],
   'DrawingsController.acknowledge': ['pmc', 'engineer', 'contractor'],
   'DrawingsController.remove': ['pmc'],
