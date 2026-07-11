@@ -5,7 +5,7 @@ test('For You: the client lands on their action queue and a card jumps straight 
 
   // switch to the Client persona — every role now lands on the "For You" home
   await page.getByRole('button', { name: 'Client', exact: true }).click();
-  await expect(page.getByText('need you')).toBeVisible();
+  await expect(page.getByText('Everything waiting on you across the project')).toBeVisible();
 
   // their pending-decisions action is listed, with a one-tap CTA
   const card = page.getByTestId('inbox-item-client-pending');
