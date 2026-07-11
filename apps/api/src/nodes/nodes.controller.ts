@@ -30,6 +30,13 @@ export class NodesController {
     return this.nodes.move(projectId, nodeId, body, user);
   }
 
+  /** Publish a private draft location (its subtree + draft ancestors) to the team. PMC only. */
+  @Post(':nodeId/publish')
+  @Roles('pmc')
+  publish(@Param('projectId') projectId: string, @Param('nodeId') nodeId: string, @CurrentUser() user: AuthUser) {
+    return this.nodes.publish(projectId, nodeId, user);
+  }
+
   @Delete(':nodeId')
   @Roles('pmc')
   remove(@Param('projectId') projectId: string, @Param('nodeId') nodeId: string, @CurrentUser() user: AuthUser) {

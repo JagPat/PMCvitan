@@ -5,7 +5,7 @@ import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { RealtimeGateway } from '../realtime/realtime.gateway';
 
-interface Node { id: string; projectId: string; parentId: string | null; name: string; kind: string; order: number }
+interface Node { id: string; projectId: string; parentId: string | null; name: string; kind: string; order: number; publishedAt?: Date | null; authorId?: string | null }
 
 function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
   const nodes = [...seed];
@@ -25,6 +25,17 @@ function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
         const n = nodes.find((x) => x.id === where.id)!;
         Object.assign(n, data);
         return n;
+      }),
+      updateMany: vi.fn(async ({ where, data }: { where: { id: { in: string[] }; projectId?: string; publishedAt?: null }; data: Partial<Node> }) => {
+        let count = 0;
+        for (const n of nodes) {
+          const draftOnly = where.publishedAt === null ? n.publishedAt == null : true;
+          if (where.id.in.includes(n.id) && (where.projectId ? n.projectId === where.projectId : true) && draftOnly) {
+            Object.assign(n, data);
+            count++;
+          }
+        }
+        return { count };
       }),
       delete: vi.fn(async ({ where }: { where: { id: string } }) => {
         const i = nodes.findIndex((x) => x.id === where.id);
@@ -114,5 +125,38 @@ describe('NodesService.move — cycle safety', () => {
     ]);
     // an element must sit under a room — moving it under a zone is rejected
     await expect(svc.move('ambli', 'e1', { parentId: 'z1' }, user)).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('NodesService — draft → publish lifecycle', () => {
+  it('publishes by default; publish:false makes a private draft; a child under a draft is forced draft', async () => {
+    const { svc, nodes, user } = make();
+    await svc.create('ambli', { name: 'GF', kind: 'zone', parentId: null, publish: true } as never, user);
+    const gf = nodes.find((n) => n.name === 'GF')!;
+    expect(gf.publishedAt).not.toBeNull();
+    expect(gf.authorId).toBe('u1');
+
+    await svc.create('ambli', { name: 'Basement', kind: 'zone', parentId: null, publish: false } as never, user);
+    const bs = nodes.find((n) => n.name === 'Basement')!;
+    expect(bs.publishedAt).toBeNull(); // a private draft
+
+    // a room under the DRAFT basement is forced to a draft even with publish:true
+    await svc.create('ambli', { name: 'Store', kind: 'room', parentId: bs.id, publish: true } as never, user);
+    expect(nodes.find((n) => n.name === 'Store')!.publishedAt).toBeNull();
+  });
+
+  it('publish() flips the whole branch live — the node, its subtree, and draft ancestors', async () => {
+    const { svc, nodes, user } = make();
+    await svc.create('ambli', { name: 'Basement', kind: 'zone', parentId: null, publish: false } as never, user);
+    const bs = nodes.find((n) => n.name === 'Basement')!;
+    await svc.create('ambli', { name: 'Store', kind: 'room', parentId: bs.id, publish: false } as never, user);
+    const store = nodes.find((n) => n.name === 'Store')!;
+    expect(bs.publishedAt).toBeNull();
+    expect(store.publishedAt).toBeNull();
+
+    // publishing the child publishes its draft ancestor (Basement) too, so the path is whole
+    await svc.publish('ambli', store.id, user);
+    expect(nodes.find((n) => n.id === bs.id)!.publishedAt).not.toBeNull();
+    expect(nodes.find((n) => n.id === store.id)!.publishedAt).not.toBeNull();
   });
 });

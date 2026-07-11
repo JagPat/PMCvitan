@@ -15,9 +15,9 @@ When it's ready you **Publish** it. Only then does it enter the shared snapshot,
 to act, and start driving the app. Publishing is the single moment the app "takes action" on
 your data.
 
-> Applies to **decisions** and **drawings** today (the same `publishedAt` + `authorId` model on
-> each). The pattern generalises further to the location tree and other authored records in
-> later slices.
+> Applies to **decisions**, **drawings** and **locations** today (the same `publishedAt` +
+> `authorId` model on each). The pattern generalises further to other authored records in later
+> slices.
 
 ---
 
@@ -63,6 +63,21 @@ one); `POST /projects/:id/drawings/:drawingId/publish` (**pmc**) issues a draft 
 team. A draft drawing is absent from the register, the Site Map, and the acknowledgement queue
 until published. (Adding a revision to an already-published drawing is a normal issue.)
 
+**Locations extend the pattern to the project's spine.** `ProjectNode` gained the same
+`publishedAt` + `authorId` (migration `20260815000000_node_draft_lifecycle`), so a PMC can build
+out a new floor — a whole zone→room→object branch — **privately** before it exists for anyone
+else. `POST /projects/:id/nodes` **publishes by default** (`publish: false` makes a private
+draft); a child created under a draft parent is **forced draft too** (you can't have a live room
+inside a hidden floor). `POST /projects/:id/nodes/:nodeId/publish` (**pmc**) reveals the branch —
+and because the location spine is what six other modules file onto, publishing keeps two
+invariants:
+
+- **cascade, no orphan** — publishing a node also publishes its whole **subtree** *and* any
+  still-draft **ancestors**, so a live location never hangs off a hidden parent;
+- **nothing files onto a draft** — the location pickers (Issue-decision / Issue-drawing / photo
+  upload) only ever offer **published** nodes, so no published record can point at a draft node.
+  A draft node is therefore always empty, and is hidden from the Site Map until published.
+
 ## Snapshot visibility (the guarantee)
 
 The snapshot filters decisions like this:
@@ -83,6 +98,11 @@ same server-side discipline as the AUTH-02 pending-decision gating.
 - `selectDraftDecisions` powers the workspace; `selectPending` / `selectLogDecisions` and the
   Site Map / schedule / daily-log / portfolio surfaces all **exclude drafts**, so a draft stays
   weightless everywhere but the Drafts workspace.
+- Shared `ProjectNode.draft?: boolean`; the store's `publishNode(id)` mirrors the server cascade
+  (subtree + draft ancestors) and works offline in the demo. A PMC manages draft locations in the
+  Decision Log's **Locations** editor (a DRAFT chip + **Publish** button per draft row, plus an
+  "add as a private draft" toggle); the **LocationPicker** and **Site Map** read
+  `nodes.filter(n => !n.draft)`, which is what keeps a draft node out of every filing surface.
 
 The role→action allowlist for `decision.publish` lives in the shared `ROLE_POLICY`
 (`packages/shared/src/domain/policy.ts`), mirrored by the API's `@Roles` and pinned by the

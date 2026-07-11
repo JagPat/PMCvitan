@@ -318,7 +318,11 @@ export class SnapshotService {
         notes: c.notes ?? '',
       })),
       // The project location tree (zones → rooms → elements) the register groups by.
-      nodes: nodes.map((n) => ({ id: n.id, parentId: n.parentId ?? null, name: n.name, kind: n.kind as 'zone' | 'room' | 'element', order: n.order })),
+      // Draft → Publish: an unpublished location is author-private — delivered only to its
+      // creator, hidden from the team's Site Map and the filing pickers until published.
+      nodes: nodes
+        .filter((n) => n.publishedAt !== null || (Boolean(userId) && n.authorId === userId))
+        .map((n) => ({ id: n.id, parentId: n.parentId ?? null, name: n.name, kind: n.kind as 'zone' | 'room' | 'element', order: n.order, draft: n.publishedAt === null })),
       // The location spine's reality layer: placed (and unplaced) site photos for the Place view.
       photos: photoDtos,
       // All materials delivered across the project, with their place — the Site Map's "materials here".

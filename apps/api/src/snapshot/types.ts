@@ -17,6 +17,8 @@ export interface NodeDto {
   name: string;
   kind: 'zone' | 'room' | 'element';
   order: number;
+  /** a private, unpublished DRAFT location — only ever present in its own author's snapshot */
+  draft?: boolean;
 }
 
 export interface DecisionDto {

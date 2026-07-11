@@ -23,8 +23,10 @@ const RELATION_META: Record<DrawingRelation, { label: string; color: string }> =
  * built. One coordinate every discipline agrees on, so intent and reality sit side by side.
  */
 export function PlacesScreen() {
-  const nodes = useStore(useShallow((s) => s.nodes));
-  // drafts are private WIP — the Site Map shows shared reality, so they're excluded here
+  // drafts are private WIP — the Site Map shows shared reality, so draft locations (and the
+  // draft decisions/drawings below) are excluded here. A PMC publishes a draft location from
+  // the Decision Log's Locations editor; only then does it appear on the map.
+  const nodes = useStore(useShallow((s) => s.nodes.filter((n) => !n.draft)));
   const decisions = useStore(useShallow((s) => s.decisions.filter((d) => !d.draft)));
   // drafts are private WIP — the Site Map shows only published drawings
   const drawings = useStore(useShallow((s) => s.drawings.filter((d) => !d.draft)));
