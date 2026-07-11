@@ -18,6 +18,7 @@ import { CompaniesController } from '../orgs/companies.controller';
 import { OrgsController } from '../orgs/orgs.controller';
 import { PushController } from '../push/push.controller';
 import { ProjectController } from '../snapshot/project.controller';
+import { NodesController } from '../nodes/nodes.controller';
 
 /**
  * Route-walk policy test — makes role-gating fail closed *by construction*.
@@ -46,6 +47,7 @@ const CONTROLLERS = [
   OrgsController,
   PushController,
   ProjectController,
+  NodesController,
 ];
 
 const MUTATING = new Set([RequestMethod.POST, RequestMethod.PUT, RequestMethod.PATCH, RequestMethod.DELETE]);
@@ -148,6 +150,10 @@ const EXPECTED_ROLES: Record<string, string[]> = {
   'ProjectController.snapshotFor': ['pmc', 'client', 'engineer', 'contractor'], // SEC-02: no worker tokens
   'MembersController.list': ['pmc', 'client', 'engineer', 'contractor'], // P1-2: no worker PII reads
   'CompaniesController.list': ['pmc', 'client', 'engineer', 'contractor'], // P1-2: no worker contact reads
+  'NodesController.create': ['pmc'],
+  'NodesController.rename': ['pmc'],
+  'NodesController.move': ['pmc'],
+  'NodesController.remove': ['pmc'],
   'DecisionsController.create': ['pmc'],
   'DecisionsController.approve': ['client', 'pmc'],
   'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer'],

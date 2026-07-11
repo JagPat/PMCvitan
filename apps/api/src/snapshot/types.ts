@@ -11,10 +11,20 @@ export interface OptionDto {
   recommended: boolean;
 }
 
+export interface NodeDto {
+  id: string;
+  parentId: string | null;
+  name: string;
+  kind: 'zone' | 'room' | 'element';
+  order: number;
+}
+
 export interface DecisionDto {
   id: string;
   title: string;
   room: string;
+  /** the location-tree node this decision attaches to (null/absent = ungrouped, legacy `room`) */
+  nodeId?: string;
   status: 'pending' | 'approved' | 'change';
   ageDays?: number;
   photoSwatch: string;
@@ -165,4 +175,6 @@ export interface SnapshotDto {
   notifications: { text: string; time: string; color: string }[];
   /** Firms & consultants attached to the project (client company, contractor, MEP/structural consultants, …). */
   companies: CompanyDto[];
+  /** The project location tree (zones → rooms → elements) the decision register groups by. */
+  nodes: NodeDto[];
 }

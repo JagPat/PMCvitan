@@ -58,10 +58,23 @@ export interface DecisionOption {
   recommended: boolean;
 }
 
+export type NodeKind = 'zone' | 'room' | 'element';
+
+/** A node in a project's location tree: zone → room → element (the object). */
+export interface ProjectNode {
+  id: string;
+  parentId: string | null;
+  name: string;
+  kind: NodeKind;
+  order: number;
+}
+
 export interface Decision {
   id: string;
   title: string;
   room: string;
+  /** location-tree node this decision attaches to (undefined = ungrouped, legacy `room`) */
+  nodeId?: string;
   status: DecisionStatus;
   ageDays?: number;
   photoSwatch: SwatchKey;

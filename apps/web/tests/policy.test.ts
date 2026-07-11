@@ -16,6 +16,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],
   'phase.manage': ['pmc'],
+  'node.manage': ['pmc'],
   'inspection.create': ['pmc'],
   'inspection.submit': ['engineer', 'pmc'],
   'inspection.decide': ['pmc'],

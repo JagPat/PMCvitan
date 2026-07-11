@@ -40,6 +40,7 @@ import {
   type PortfolioProject,
   type ProjectMember,
   type ProjectCompany,
+  type ProjectNode,
   type ItemState,
   type Lang,
   type ModalState,
@@ -66,6 +67,7 @@ export interface AppState {
   toast: string | null;
   modal: ModalState;
   decisions: Decision[];
+  nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   checklist: Checklist;
   reviews: Review[]; // the PMC review queue (submitted, undecided inspections)
   activeReviewId: string | null; // which queued review the PMC is looking at (null ⇒ first pending)
@@ -151,6 +153,10 @@ export interface AppActions {
   removeCompany: (companyId: string) => void;
   // authoring: decisions + planning/scheduling (PMC)
   issueDecision: (input: IssueDecisionPayload) => void;
+  /** Create a zone/room/element and resolve to its new id (for the inline location picker). */
+  addLocationNode: (input: { name: string; kind: 'zone' | 'room' | 'element'; parentId?: string | null }) => Promise<string | null>;
+  renameNode: (nodeId: string, name: string) => void;
+  deleteNode: (nodeId: string) => void;
   createActivity: (input: NewActivityInput) => void;
   updateActivity: (activityId: string, input: Partial<NewActivityInput>) => void;
   deleteActivity: (activityId: string) => void;
@@ -229,6 +235,7 @@ export function getInitialState(): AppState {
     toast: null,
     modal: { type: null },
     decisions: structuredClone(SEED_DECISIONS),
+    nodes: [], // populated from the server snapshot (empty in the local seed demo)
     checklist: structuredClone(SEED_CHECKLIST),
     reviews: [structuredClone(SEED_REVIEW)],
     activeReviewId: null,
@@ -301,6 +308,7 @@ export const useStore = create<Store>()(
         s.todayDay = snap.project.todayDay;
         s.milestonePct = snap.project.milestonePct;
         if (snap.companies) s.companies = snap.companies;
+        s.nodes = snap.nodes ?? [];
       });
     };
 
@@ -835,13 +843,45 @@ export const useStore = create<Store>()(
               return { ...o, photoUrl: up.url };
             }),
           );
-          const snap = await gw.createDecision({ title: input.title, room: input.room, options });
+          const snap = await gw.createDecision({ title: input.title, nodeId: input.nodeId, room: input.room, options });
           applySnapshot(snap);
           get().flash(`Decision issued: ${input.title} — the client has been asked to choose.`);
         } catch {
           get().flash('Could not issue the decision — check your access and try again.');
         }
       })();
+    },
+    addLocationNode: async (input) => {
+      if (!gateway) {
+        get().flash('Managing locations needs the server.');
+        return null;
+      }
+      const before = new Set(get().nodes.map((n) => n.id));
+      try {
+        const snap = await gateway.createNode(input);
+        applySnapshot(snap);
+        get().flash(`Added ${input.kind}: ${input.name}.`);
+        // the newly-created node is the one whose id wasn't present before
+        const created = get().nodes.find((n) => !before.has(n.id) && n.name === input.name && n.kind === input.kind);
+        return created?.id ?? null;
+      } catch {
+        get().flash('Could not add the location — check your access and try again.');
+        return null;
+      }
+    },
+    renameNode: (nodeId, name) => {
+      if (!gateway) {
+        get().flash('Managing locations needs the server.');
+        return;
+      }
+      runRemote(() => gateway!.renameNode(nodeId, name), `Renamed to ${name}.`);
+    },
+    deleteNode: (nodeId) => {
+      if (!gateway) {
+        get().flash('Managing locations needs the server.');
+        return;
+      }
+      runRemote(() => gateway!.deleteNode(nodeId), 'Location removed.');
     },
     createActivity: (input) => {
       if (!gateway) {
