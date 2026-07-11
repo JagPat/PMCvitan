@@ -41,6 +41,8 @@ export const ROLE_POLICY = {
   // re-file a photo onto a location-tree node (or unfile) — same authority as upload
   'media.file': ['pmc', 'engineer'],
   'drawing.issue': ['pmc'],
+  // publish a private draft drawing → issue it to the build team
+  'drawing.publish': ['pmc'],
   'drawing.presign': ['pmc'],
   'drawing.acknowledge': ['pmc', 'engineer', 'contractor'],
   'drawing.delete': ['pmc'],

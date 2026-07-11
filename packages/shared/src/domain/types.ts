@@ -326,6 +326,8 @@ export interface Drawing {
   decisionId: string | null;
   /** location-tree node this drawing governs; inherited down to rooms/objects beneath it */
   nodeId?: string;
+  /** a private, unpublished DRAFT — only its author sees it; issued to the team on publish */
+  draft?: boolean;
   current: DrawingRevision | null; // latest non-superseded
   ackedByMe: boolean; // has the current user acknowledged the current revision?
   revisions: DrawingRevision[]; // newest first

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { DrawingsService } from './drawings.service';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './../media/storage.service';
@@ -8,7 +8,7 @@ import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { IssueDrawingInput } from '../contracts';
 
 interface Rev { id: string; drawingId: string; status: string; rev: string; storageKey?: string | null; mime: string; data: Buffer | null; url: string | null }
-interface Draw { id: string; projectId: string; number: string; title: string; discipline: string; zone?: string | null; activityId?: string | null; decisionId?: string | null; nodeId?: string | null; revisions: Rev[] }
+interface Draw { id: string; projectId: string; number: string; title: string; discipline: string; zone?: string | null; activityId?: string | null; decisionId?: string | null; nodeId?: string | null; publishedAt?: Date | null; authorId?: string | null; revisions: Rev[] }
 interface NodeRow { id: string; projectId: string }
 
 /** In-memory Prisma stand-in for the drawings tables. Methods mutate synchronously
@@ -30,7 +30,7 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = []) {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> & { revisions: { create: Omit<Rev, 'id' | 'drawingId'> } } }) => {
         const id = `d${++dseq}`;
         const rev: Rev = { id: `r${++rseq}`, drawingId: id, ...(data.revisions.create as Omit<Rev, 'id' | 'drawingId'>) };
-        const d: Draw = { id, projectId: data.projectId as string, number: data.number as string, title: data.title as string, discipline: data.discipline as string, zone: data.zone as string, nodeId: (data.nodeId as string) ?? null, revisions: [rev] };
+        const d: Draw = { id, projectId: data.projectId as string, number: data.number as string, title: data.title as string, discipline: data.discipline as string, zone: data.zone as string, nodeId: (data.nodeId as string) ?? null, publishedAt: (data.publishedAt as Date) ?? null, authorId: (data.authorId as string) ?? null, revisions: [rev] };
         draws.push(d);
         return { ...d };
       }),
@@ -99,13 +99,35 @@ const drawUser = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
 const base: IssueDrawingInput = { number: 'A-201', title: 'Living Room Flooring Layout', discipline: 'architectural', rev: 'A', status: 'for_construction', mime: 'application/pdf', data: Buffer.from('%PDF-1.4').toString('base64') };
 
 describe('DrawingsService.issue', () => {
-  it('creates a new register entry for a new number', async () => {
+  it('creates a new register entry as a private draft by default (no team notice)', async () => {
     const { svc, draws, realtime } = make();
     await svc.issue('ambli', 'user-1', base);
     expect(draws).toHaveLength(1);
     expect(draws[0].revisions).toHaveLength(1);
     expect(draws[0].revisions[0].status).toBe('for_construction');
+    expect(draws[0].publishedAt).toBeNull(); // it's a draft
+    expect(draws[0].authorId).toBe('user-1'); // owned by its creator
+    expect(realtime.notifyChanged).not.toHaveBeenCalled(); // a draft notifies no one
+  });
+
+  it('issues in one step when publish is set — publishedAt set, build team notified', async () => {
+    const { svc, draws, realtime } = make();
+    await svc.issue('ambli', 'user-1', { ...base, publish: true });
+    expect(draws[0].publishedAt).not.toBeNull();
     expect(realtime.notifyChanged).toHaveBeenCalledWith('ambli', expect.stringContaining('A-201 Rev A'), ['engineer', 'contractor']);
+  });
+
+  it('publish() flips a draft drawing live and notifies; re-publishing conflicts', async () => {
+    const { svc, draws, realtime } = make();
+    await svc.issue('ambli', 'user-1', base); // draft
+    const id = draws[0].id;
+    expect(realtime.notifyChanged).not.toHaveBeenCalled();
+
+    await svc.publish('ambli', id, drawUser);
+    expect(draws[0].publishedAt).not.toBeNull();
+    expect(realtime.notifyChanged).toHaveBeenCalledWith('ambli', expect.stringContaining('A-201'), ['engineer', 'contractor']);
+
+    await expect(svc.publish('ambli', id, drawUser)).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('adds a revision and supersedes the prior one for an existing number', async () => {

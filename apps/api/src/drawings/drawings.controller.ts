@@ -27,6 +27,18 @@ export class DrawingsController {
     return this.drawings.issue(projectId, user.sub, body);
   }
 
+  /** Publish a private draft drawing → issue it to the build team (PMC only). */
+  @Post('projects/:projectId/drawings/:drawingId/publish')
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles('pmc')
+  publish(
+    @Param('projectId') projectId: string,
+    @Param('drawingId') drawingId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.drawings.publish(projectId, drawingId, user);
+  }
+
   /** Presigned direct-to-bucket upload target for a large drawing (PMC only, Slice 3). */
   @Post('projects/:projectId/drawings/presign')
   @UseGuards(JwtGuard, RolesGuard)

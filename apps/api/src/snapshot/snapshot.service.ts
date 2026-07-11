@@ -189,7 +189,11 @@ export class SnapshotService {
 
     // Drawings register: each entry with its full revision history (newest first)
     // and the current (latest non-superseded) revision the field builds from.
-    const drawingDtos = drawings.map((d) => {
+    // Draft → Publish: an unpublished drawing is author-private — delivered ONLY to its
+    // creator, never to the build team or anyone else (server-enforced, like decisions).
+    const drawingDtos = drawings
+      .filter((d) => d.publishedAt !== null || (Boolean(userId) && d.authorId === userId))
+      .map((d) => {
       const revs = d.revisions.map((r) => ({
         id: r.id,
         rev: r.rev,
@@ -214,6 +218,7 @@ export class SnapshotService {
         activityId: d.activityId,
         decisionId: d.decisionId,
         nodeId: d.nodeId ?? undefined, // location spine: the place this drawing governs
+        draft: d.publishedAt === null, // private, unpublished — only in its author's snapshot
         current,
         ackedByMe: Boolean(userId) && currentAckRow.some((a) => a.userId === userId),
         revisions: revs,

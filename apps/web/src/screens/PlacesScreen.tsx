@@ -26,7 +26,8 @@ export function PlacesScreen() {
   const nodes = useStore(useShallow((s) => s.nodes));
   // drafts are private WIP — the Site Map shows shared reality, so they're excluded here
   const decisions = useStore(useShallow((s) => s.decisions.filter((d) => !d.draft)));
-  const drawings = useStore(useShallow((s) => s.drawings));
+  // drafts are private WIP — the Site Map shows only published drawings
+  const drawings = useStore(useShallow((s) => s.drawings.filter((d) => !d.draft)));
   const photos = useStore(useShallow((s) => s.photos));
   const activities = useStore(useShallow((s) => s.activities));
   const materials = useStore(useShallow((s) => s.materials));

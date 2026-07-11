@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from '../media/storage.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
@@ -89,7 +89,13 @@ export class DrawingsService {
 
     let drawingId: string;
     let revisionId: string;
+    // Draft → Publish: a brand-new drawing is a private draft unless `publish` is set. An
+    // existing drawing that's already published stays published (adding a revision is a normal
+    // issue); publishing an existing draft is also honoured. `published` decides the notice.
+    let published: boolean;
     if (existing) {
+      published = existing.publishedAt !== null || input.publish;
+      const publishedAt = existing.publishedAt ?? (input.publish ? new Date() : null);
       const [, rev] = await this.prisma.$transaction([
         // supersede whatever was current before this issue
         this.prisma.drawingRevision.updateMany({
@@ -99,12 +105,13 @@ export class DrawingsService {
         this.prisma.drawingRevision.create({ data: { ...revData, drawingId: existing.id } }),
         this.prisma.drawing.update({
           where: { id: existing.id },
-          data: { title: input.title, discipline: input.discipline, zone: input.zone, activityId: input.activityId, decisionId: input.decisionId, nodeId },
+          data: { title: input.title, discipline: input.discipline, zone: input.zone, activityId: input.activityId, decisionId: input.decisionId, nodeId, publishedAt },
         }),
       ]);
       drawingId = existing.id;
       revisionId = rev.id;
     } else {
+      published = input.publish;
       const drawing = await this.prisma.drawing.create({
         data: {
           projectId,
@@ -115,6 +122,8 @@ export class DrawingsService {
           activityId: input.activityId,
           decisionId: input.decisionId,
           nodeId,
+          authorId: issuedBy,
+          publishedAt: published ? new Date() : null,
           revisions: { create: revData },
         },
         include: { revisions: true },
@@ -123,9 +132,24 @@ export class DrawingsService {
       revisionId = drawing.revisions[0].id;
     }
 
-    // issued to the people who build from it
-    this.realtime.notifyChanged(projectId, `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}`, ['engineer', 'contractor']);
+    // A draft notifies no one — only a published drawing reaches the people who build from it.
+    if (published) {
+      this.realtime.notifyChanged(projectId, `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}`, ['engineer', 'contractor']);
+    }
     return { drawingId, revisionId };
+  }
+
+  /** Publish a private draft drawing → issue it to the build team. PMC authority; the fresh
+   *  snapshot returns it. Re-publishing an already-published drawing conflicts. */
+  async publish(projectId: string, drawingId: string, user: AuthUser): Promise<SnapshotDto> {
+    const d = await this.prisma.drawing.findUnique({ where: { id: drawingId } });
+    if (!d || d.projectId !== projectId) throw new NotFoundException('Drawing not found');
+    if (d.publishedAt) throw new ConflictException('Drawing is already published');
+
+    await this.prisma.drawing.update({ where: { id: drawingId }, data: { publishedAt: new Date() } });
+    await this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId } });
+    this.realtime.notifyChanged(projectId, `Drawing issued: ${d.number} — ${d.title}`, ['engineer', 'contractor']);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 
   /** Re-file a drawing onto a location-tree node (or null to unfile). Scoped to the

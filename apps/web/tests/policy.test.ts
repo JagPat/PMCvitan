@@ -29,6 +29,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'media.delete': ['pmc', 'engineer'],
   'media.file': ['pmc', 'engineer'],
   'drawing.issue': ['pmc'],
+  'drawing.publish': ['pmc'],
   'drawing.presign': ['pmc'],
   'drawing.acknowledge': ['pmc', 'engineer', 'contractor'],
   'drawing.delete': ['pmc'],

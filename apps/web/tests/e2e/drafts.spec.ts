@@ -1,5 +1,28 @@
 import { test, expect } from '@playwright/test';
 
+test('drafts: a drawing draft stays private until published, then enters the register', async ({ page }) => {
+  await page.goto('/');
+
+  // PMC opens the Drafts workspace — the seeded draft drawing is there (under Drawings)
+  await page.getByRole('button', { name: 'Drafts' }).click();
+  await expect(page.getByTestId('draft-DWG-4')).toBeVisible();
+  await expect(page.getByTestId('draft-DWG-4')).toContainText('A-305');
+
+  // it is NOT in the shared Drawings register yet
+  await page.getByRole('button', { name: 'Drawings', exact: true }).click();
+  await expect(page.getByText('DRAWINGS · REGISTER')).toBeVisible();
+  await expect(page.getByTestId('drawing-A-305')).toHaveCount(0);
+
+  // publish it from the workspace → it leaves Drafts…
+  await page.getByRole('button', { name: 'Drafts' }).click();
+  await page.getByTestId('publish-DWG-4').click();
+  await expect(page.getByTestId('draft-DWG-4')).toHaveCount(0);
+
+  // …and now appears in the register for the build team
+  await page.getByRole('button', { name: 'Drawings', exact: true }).click();
+  await expect(page.getByTestId('drawing-A-305')).toBeVisible();
+});
+
 test('drafts: a private decision stays in the workspace until the PMC publishes it', async ({ page }) => {
   await page.goto('/');
 

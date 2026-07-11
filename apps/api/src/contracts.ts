@@ -201,6 +201,10 @@ export const issueDrawingSchema = z
     // Location spine: the place this drawing governs (a location-tree node). Filed at its
     // natural level and inherited down to rooms/objects beneath it. Optional (unfiled).
     nodeId: z.string().trim().min(1).nullish(),
+    // Draft → Publish: default saves a NEW drawing as a private draft (author-only, no team
+    // notice); `publish: true` issues it in one step. Ignored when adding a revision to an
+    // already-published drawing (that's a normal issue).
+    publish: z.boolean().default(false),
   })
   .refine((v) => Boolean(v.data) !== Boolean(v.storageKey), {
     message: 'Provide exactly one of data (base64) or storageKey (presigned upload)',

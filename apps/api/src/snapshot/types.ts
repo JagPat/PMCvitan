@@ -152,6 +152,8 @@ export interface DrawingDto {
   decisionId: string | null;
   /** location-tree node this drawing governs (inherited down to rooms/objects beneath it) */
   nodeId?: string;
+  /** a private, unpublished DRAFT — only ever present in its own author's snapshot */
+  draft?: boolean;
   current: DrawingRevisionDto | null; // the latest non-superseded revision
   ackedByMe: boolean; // has the caller acknowledged the current revision?
   revisions: DrawingRevisionDto[]; // full history, newest first
