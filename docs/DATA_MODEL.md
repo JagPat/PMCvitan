@@ -15,14 +15,14 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 | `DecisionOption` | An option presented for a decision | label, material, deltaPaise, swatch, recommended |
 | `DecisionEvent` | **Append-only** lifecycle/audit log | type (`issued\|approved\|locked\|change_requested`), actor, at, payload |
 | `ChangeRequest` | A change against a locked decision | reason, costImpactPaise, timeImpactDays, status |
-| `Activity` | A unit of site work (the spine) | code (ACT-31), name, zone, decisionId, plannedStart/End, actualStart/End, **status** (`not-started\|in-progress\|done\|blocked`) |
+| `Activity` | A unit of site work (the spine) | code (ACT-31), name, zone, decisionId, **nodeId** (location), plannedStart/End, actualStart/End, **status** (`not-started\|in-progress\|done\|blocked`) |
 | `ActivityGate` | The four readiness gates | activityId, kind (`decision\|material\|team\|inspection`), state (`ok\|wait\|fail\|na`) |
-| `Inspection` | A checklist / review | code (INSP-22), title, zone, submittedBy, submittedAt, decidedAt |
+| `Inspection` | A checklist / review | code (INSP-22), title, zone, **nodeId** (location), submittedBy, submittedAt, decidedAt |
 | `InspectionItem` | A line item | name, state/result, note, reinspectionOfId |
 | `DailyLog` | One site-day | projectId, date, checkedInAt, submittedAt |
 | `AttendanceEvent` | Check-in / QR / face | dailyLogId, workerId, kind, at, geo, selfieMediaId |
 | `CrewCount` | Crew present per trade | dailyLogId, trade, count |
-| `SiteMaterial` | Material delivered on site | name, decisionId, qty, zone, matched, mediaId |
+| `SiteMaterial` | Material delivered on site | name, decisionId, qty, zone, matched, **nodeId** (location), mediaId |
 | `Media` | An uploaded photo | url, geo, takenAt, activityId?, decisionId? |
 | `Notification` | Feed item | projectId, text, kind/color, at |
 | `SyncOutboxEntry` | Offline mutation queue (idempotency) | clientId, opType, payload, appliedAt |
@@ -97,6 +97,33 @@ POST  /projects/:id/drawings                   { …, nodeId? }          -> { dr
 The snapshot adds a top-level `photos: PhotoDto[]` (`id`, signed `url`, `takenAt`, `nodeId`, `kind`) and `drawing.nodeId`. The **Site Map screen** (`places`, all roles) browses the tree: pick a node (or the whole project) and see its decisions, the drawings that govern it (with `here`/`inherited`/`detail` badges), and photos of what's built — so the client, architect and site team read the same place the same way. `placeContents()` in `lib/locationTree.ts` computes the aggregation.
 
 > **Migration** `20260720000000_location_spine_media_drawings` is **additive and nullable** — adds `Media.nodeId` and `Drawing.nodeId` (both FK `ON DELETE SET NULL`); no backfill, safe on a live database. Existing media/drawings stay unfiled and appear in the whole-project view.
+
+### The spine, extended to the site modules (activities, inspections, materials)
+
+The final wave puts the whole project on the spine, so a place shows its *full* picture:
+
+```
+Activity.nodeId     String?  FK → ProjectNode  ON DELETE SET NULL   -- where this work happens
+Inspection.nodeId   String?  FK → ProjectNode  ON DELETE SET NULL   -- where this quality check happens
+SiteMaterial.nodeId String?  FK → ProjectNode  ON DELETE SET NULL   -- where this material was delivered
+```
+
+All three use **subtree** semantics in the Site Map (a room includes its objects' items). The shared **`resolveProjectNode`** guard validates every node against the project on create/update (`400` for a cross-project node), the same as decisions/media/drawings. A completed activity's **auto-created closing inspection inherits the activity's `nodeId`** (the sign-off happens where the work did).
+
+- **Activities** — `createActivity` / `updateActivity` take an optional `nodeId`; the snapshot's top-level `activities[]` carries it. The Site Map's **Work** section lists the activities at a place with their live status (and block reason).
+- **Inspections** — `createInspection` takes an optional `nodeId`; the PMC review queue (`reviews[]`) and the field `checklist` carry it. (Inspections stay on the PMC/engineer surfaces — no all-roles Site Map section, preserving the AUTH-02 review-queue gating.)
+- **Materials** — `addMaterial` takes an optional `nodeId`. Because the daily log only carries the *current* day's rows, the snapshot adds a top-level **`materials[]`** (all deliveries across the project, with `nodeId`) so the Site Map's **Materials** section shows everything delivered to a place, not just today's.
+
+```
+POST  /projects/:id/activities        { …, nodeId? }   -> Snapshot   # pmc
+PATCH /projects/:id/activities/:id     { …, nodeId? }   -> Snapshot   # pmc (null clears)
+POST  /projects/:id/inspections        { …, nodeId? }   -> Snapshot   # pmc
+POST  /projects/:id/daily-log/material { …, nodeId? }   -> Snapshot   # pmc, engineer
+```
+
+The **Zone › Room › Object picker** is now in the plan-activity, issue-checklist and add-material flows (with inline node creation). The Site Map (`placeContents` in `lib/locationTree.ts`) aggregates decisions, drawings, photos, **activities and materials** for the selected place.
+
+> **Migration** `20260725000000_location_spine_site_modules` is **additive and nullable** — adds `Activity.nodeId`, `Inspection.nodeId`, `SiteMaterial.nodeId` (all FK `ON DELETE SET NULL`); no backfill, safe on a live database.
 
 ## API contract (Phase 7, ts-rest sketch)
 

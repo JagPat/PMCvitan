@@ -23,6 +23,7 @@ function makeSnapshot(partial?: Partial<ApiSnapshot>): ApiSnapshot {
     companies: [],
     nodes: [],
     photos: [],
+    materials: [],
     ...partial,
   };
 }

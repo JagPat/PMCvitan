@@ -42,6 +42,8 @@ export interface ActivityDto {
   zone: string;
   decisionId: string | null;
   phaseId: string | null;
+  /** location-tree node where this work happens */
+  nodeId?: string;
   ps: number;
   pe: number;
   as: number | null;
@@ -73,6 +75,8 @@ export interface ChecklistDto {
   id: string;
   title: string;
   zone: string;
+  /** location-tree node where this check happens */
+  nodeId?: string;
   date: string;
   submitted: boolean;
   items: { name: string; state: string | null; photos: number; note: string }[];
@@ -82,10 +86,25 @@ export interface ReviewDto {
   id: string;
   title: string;
   zone: string;
+  /** location-tree node where this check happens */
+  nodeId?: string;
   by: string;
   date: string;
   decided: boolean;
   items: { name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean }[];
+}
+
+/** A material delivery placed on the location spine — the Site Map's "materials here". */
+export interface MaterialDto {
+  id: string;
+  name: string;
+  qty: string;
+  zone: string;
+  matched: boolean;
+  swatch: string;
+  decisionId?: string;
+  /** location-tree node where it was delivered (undefined = unplaced) */
+  nodeId?: string;
 }
 
 export interface DrawingAckDto {
@@ -191,4 +210,6 @@ export interface SnapshotDto {
   nodes: NodeDto[];
   /** Site photos placed on the location tree — the reality layer for the Place view. */
   photos: PhotoDto[];
+  /** All material deliveries across the project, with their place — the Site Map's "materials here". */
+  materials: MaterialDto[];
 }

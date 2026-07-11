@@ -231,12 +231,13 @@ function AddMaterialModal({ onClose }: { onClose: () => void }) {
   const [qty, setQty] = useState('');
   const [zone, setZone] = useState('');
   const [decisionId, setDecisionId] = useState('');
+  const [nodeId, setNodeId] = useState<string | null>(null);
   const [swatch, setSwatch] = useState<SwatchKey>('tile');
 
   const ready = Boolean(name.trim() && qty.trim());
   const save = () => {
     if (!ready) return;
-    addSiteMaterial({ name: name.trim(), qty: qty.trim(), zone: zone.trim(), decisionId: decisionId || undefined, swatch });
+    addSiteMaterial({ name: name.trim(), qty: qty.trim(), zone: zone.trim(), decisionId: decisionId || undefined, swatch, ...(nodeId ? { nodeId } : {}) });
     onClose();
   };
   const swatchKeys = Object.keys(SW) as SwatchKey[];
@@ -261,6 +262,9 @@ function AddMaterialModal({ onClose }: { onClose: () => void }) {
             <option key={d.id} value={d.id}>{d.id} · {d.title}</option>
           ))}
         </select>
+
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '16px 0 6px' }}>LOCATION (optional)</div>
+        <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="mat-loc" />
 
         <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
           <Swatch swatch={swatch} size={40} radius={9} />

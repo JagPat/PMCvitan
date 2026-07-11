@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { deriveDecisionGate, isActivityReady } from '../domain/transitions';
+import { resolveProjectNode } from '../nodes/node-scope';
 import { ddMmmYyyy } from '../domain/dates';
 import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
@@ -17,8 +18,8 @@ export class ActivitiesService {
     private readonly realtime: RealtimeGateway,
   ) {}
 
-  /** Referenced phase/decision must exist on THIS project (cross-tenant links refused). */
-  private async assertRefs(projectId: string, phaseId?: string | null, decisionId?: string | null): Promise<void> {
+  /** Referenced phase/decision/location-node must exist on THIS project (cross-tenant links refused). */
+  private async assertRefs(projectId: string, phaseId?: string | null, decisionId?: string | null, nodeId?: string | null): Promise<void> {
     if (phaseId) {
       const p = await this.prisma.phase.findUnique({ where: { id: phaseId } });
       if (!p || p.projectId !== projectId) throw new BadRequestException('Unknown phase for this project');
@@ -27,11 +28,13 @@ export class ActivitiesService {
       const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
       if (!d || d.projectId !== projectId) throw new BadRequestException('Unknown decision for this project');
     }
+    // Location spine: resolveProjectNode throws for an unknown/cross-project node.
+    await resolveProjectNode(this.prisma, projectId, nodeId);
   }
 
   /** PMC plans a new activity (name, zone, planned window, gates, phase/decision links). */
   async create(projectId: string, input: CreateActivityInput, user: AuthUser): Promise<SnapshotDto> {
-    await this.assertRefs(projectId, input.phaseId, input.decisionId);
+    await this.assertRefs(projectId, input.phaseId, input.decisionId, input.nodeId);
     // DATA-01: ids are globally unique — scan every project for the sequence (see
     // decisions.service); `order` stays per-project (it drives this schedule's sort).
     const [allIds, existing] = await Promise.all([
@@ -51,6 +54,7 @@ export class ActivitiesService {
           plannedEnd: input.plannedEnd,
           phaseId: input.phaseId ?? null,
           decisionId: input.decisionId ?? null,
+          nodeId: input.nodeId ?? null,
           gateMaterial: input.gateMaterial,
           gateTeam: input.gateTeam,
           gateInspection: input.gateInspection,
@@ -70,7 +74,7 @@ export class ActivitiesService {
     const ps = input.plannedStart ?? a.plannedStart;
     const pe = input.plannedEnd ?? a.plannedEnd;
     if (pe < ps) throw new BadRequestException('plannedEnd must be on or after plannedStart');
-    await this.assertRefs(projectId, input.phaseId, input.decisionId);
+    await this.assertRefs(projectId, input.phaseId, input.decisionId, input.nodeId);
     await this.prisma.$transaction([
       this.prisma.activity.update({ where: { id: activityId }, data: input }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.update', entity: 'Activity', entityId: activityId } }),
@@ -123,7 +127,8 @@ export class ActivitiesService {
     await this.prisma.$transaction([
       this.prisma.activity.update({ where: { id: activityId }, data: { status: 'done', actualEnd: project.todayDay } }),
       this.prisma.inspection.create({
-        data: { id: `INSP-${activityId}-close`, projectId, kind: 'review', title: `Closing inspection: ${a.name}`, zone: a.zone, date: ddMmmYyyy(new Date()), submitted: true, decided: false },
+        // the closing inspection happens at the same place as the work it closes
+        data: { id: `INSP-${activityId}-close`, projectId, kind: 'review', title: `Closing inspection: ${a.name}`, zone: a.zone, nodeId: a.nodeId, date: ddMmmYyyy(new Date()), submitted: true, decided: false },
       }),
       this.prisma.notification.create({ data: { projectId, text: `Closing inspection auto-created: ${a.name}`, color: '#C08A2D', time: 'just now' } }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.complete', entity: 'Activity', entityId: activityId } }),

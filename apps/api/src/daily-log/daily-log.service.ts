@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { resolveProjectNode } from '../nodes/node-scope';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
 import type { AddMaterialInput, FlagMismatchInput, SubmitDailyLogInput } from '../contracts';
@@ -60,10 +61,12 @@ export class DailyLogService {
       const d = await this.prisma.decision.findUnique({ where: { id: input.decisionId } });
       if (!d || d.projectId !== projectId) throw new BadRequestException('Unknown decision for this project');
     }
+    // Location spine: validate the place this material was delivered to.
+    const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
     const order = log.materials.reduce((m, x) => Math.max(m, x.order), 0) + 1;
     await this.prisma.$transaction([
       this.prisma.siteMaterial.create({
-        data: { dailyLogId: log.id, name: input.name, qty: input.qty, zone: input.zone, decisionId: input.decisionId ?? null, swatch: input.swatch, matched: true, order },
+        data: { dailyLogId: log.id, name: input.name, qty: input.qty, zone: input.zone, decisionId: input.decisionId ?? null, swatch: input.swatch, matched: true, nodeId, order },
       }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'material.add', entity: 'DailyLog', entityId: log.id } }),
     ]);

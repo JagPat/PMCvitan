@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase } from '@/store/selectors';
 import { Eyebrow, GateDot, ActivityChip, Button, Modal } from '@/components';
+import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, X } from '@/lib/icons';
 import { dayLabel, gateColor, can, type Activity, type Phase, type Gate } from '@vitan/shared';
 import type { AppState } from '@/store/store';
@@ -276,6 +277,7 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
   const [pe, setPe] = useState(String(activity?.pe ?? 7));
   const [phaseId, setPhaseId] = useState(activity?.phaseId ?? '');
   const [decisionId, setDecisionId] = useState(activity?.decisionId ?? '');
+  const [nodeId, setNodeId] = useState<string | null>(activity?.nodeId ?? null);
   const [gm, setGm] = useState<Gate>(activity?.gm ?? 'na');
   const [gt, setGt] = useState<Gate>(activity?.gt ?? 'na');
   const [gi, setGi] = useState<Gate>(activity?.gi ?? 'na');
@@ -293,6 +295,7 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
       plannedEnd: peN,
       phaseId: phaseId || null,
       decisionId: decisionId || null,
+      nodeId: nodeId,
       gateMaterial: gm,
       gateTeam: gt,
       gateInspection: gi,
@@ -310,7 +313,9 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
           Planned dates are day numbers on the schedule timeline; the bar renders from them.
         </div>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Activity (e.g. Master Bath Tiling)" style={{ ...fldS, marginTop: 14, width: '100%' }} data-testid="act-name" />
-        <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone (e.g. First Floor)" style={{ ...fldS, marginTop: 10, width: '100%' }} />
+        <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone (free text — or pick a location below)" style={{ ...fldS, marginTop: 10, width: '100%' }} />
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em', color: 'var(--muted)', margin: '12px 0 6px' }}>LOCATION (OPTIONAL)</div>
+        <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="act-loc" />
         <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
           <label style={lblS}>Plan start (day)<input value={ps} onChange={(e) => setPs(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>
           <label style={lblS}>Plan end (day)<input value={pe} onChange={(e) => setPe(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} /></label>

@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { checklistSubmitError, reinspectionCount } from '../domain/transitions';
+import { resolveProjectNode } from '../nodes/node-scope';
 import { ddMmmYyyy } from '../domain/dates';
 import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
@@ -19,12 +20,14 @@ export class InspectionsService {
 
   /** PMC issues a stage checklist — becomes the engineer's current field checklist. */
   async create(projectId: string, input: CreateInspectionInput, user: AuthUser): Promise<SnapshotDto> {
+    // Location spine: validate the place this check happens belongs to this project.
+    const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
     // DATA-01: ids are globally unique — scan every project, not just this one (see decisions.service).
     const existing = await this.prisma.inspection.findMany({ select: { id: true } });
     const id = nextSeqId('INSP-', existing.map((i) => i.id));
     await this.prisma.$transaction([
       this.prisma.inspection.create({
-        data: { id, projectId, kind: 'checklist', title: input.title, zone: input.zone, date: ddMmmYyyy(new Date()), submitted: false, decided: false },
+        data: { id, projectId, kind: 'checklist', title: input.title, zone: input.zone, nodeId, date: ddMmmYyyy(new Date()), submitted: false, decided: false },
       }),
       ...input.items.map((name, i) =>
         this.prisma.inspectionItem.create({ data: { inspectionId: id, name, order: i, photos: 0, note: '' } }),

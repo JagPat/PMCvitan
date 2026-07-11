@@ -27,7 +27,7 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisions, activities, inspections, dailyLog, notifications, siteMedia, drawings, phases, companies, nodes] = await Promise.all([
+    const [decisions, activities, inspections, dailyLog, notifications, siteMedia, drawings, phases, companies, nodes, allMaterials] = await Promise.all([
       this.prisma.decision.findMany({
         where: { projectId },
         include: { options: { orderBy: { order: 'asc' } } },
@@ -57,6 +57,9 @@ export class SnapshotService {
       this.prisma.phase.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
       this.prisma.projectCompany.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
+      // All materials across the project's daily logs (for the Site Map's "materials here"),
+      // not just the current day. Same visibility as the daily-log materials.
+      this.prisma.siteMaterial.findMany({ where: { dailyLog: { projectId } }, orderBy: { order: 'asc' } }),
     ]);
 
     // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
@@ -109,6 +112,8 @@ export class SnapshotService {
       zone: a.zone,
       decisionId: a.decisionId,
       phaseId: a.phaseId,
+      nodeId: a.nodeId ?? undefined, // location spine: where this work happens
+
       ps: a.plannedStart,
       pe: a.plannedEnd,
       as: a.actualStart,
@@ -139,6 +144,7 @@ export class SnapshotService {
         id: i.id,
         title: i.title,
         zone: i.zone,
+        nodeId: i.nodeId ?? undefined, // location spine: where this check happens
         by: i.by ?? '',
         date: i.date,
         decided: i.decided,
@@ -236,6 +242,7 @@ export class SnapshotService {
             id: checklistRow.id,
             title: checklistRow.title,
             zone: checklistRow.zone,
+            nodeId: checklistRow.nodeId ?? undefined, // location spine
             date: checklistRow.date,
             submitted: checklistRow.submitted,
             items: checklistRow.items.map((it) => ({ name: it.name, state: it.state, photos: it.photos, note: it.note })),
@@ -282,6 +289,17 @@ export class SnapshotService {
       nodes: nodes.map((n) => ({ id: n.id, parentId: n.parentId ?? null, name: n.name, kind: n.kind as 'zone' | 'room' | 'element', order: n.order })),
       // The location spine's reality layer: placed (and unplaced) site photos for the Place view.
       photos: photoDtos,
+      // All materials delivered across the project, with their place — the Site Map's "materials here".
+      materials: allMaterials.map((m) => ({
+        id: m.id,
+        name: m.name,
+        qty: m.qty,
+        zone: m.zone,
+        matched: m.matched,
+        swatch: m.swatch,
+        decisionId: m.decisionId ?? undefined,
+        nodeId: m.nodeId ?? undefined,
+      })),
     };
   }
 }

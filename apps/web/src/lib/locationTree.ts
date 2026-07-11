@@ -1,4 +1,4 @@
-import type { Decision, Drawing, Photo, ProjectNode } from '@vitan/shared';
+import type { Activity, Decision, Drawing, Material, Photo, ProjectNode } from '@vitan/shared';
 
 /** Direct children of a node (parentId=null → top-level zones), in display order. */
 export function childrenOf(nodes: ProjectNode[], parentId: string | null): ProjectNode[] {
@@ -165,17 +165,21 @@ export interface PlaceContents {
   photos: Photo[];
   /** drawings that apply here — filed on the node, inherited from above, or a child detail */
   drawings: PlacedDrawing[];
-  counts: { decisions: number; drawings: number; photos: number };
+  /** activities (site work) in this node's subtree */
+  activities: Activity[];
+  /** material deliveries in this node's subtree */
+  materials: Material[];
+  counts: { decisions: number; drawings: number; photos: number; activities: number; materials: number };
 }
 
 const RELATION_RANK: Record<DrawingRelation, number> = { here: 0, detail: 1, inherited: 2 };
 
 /**
- * Gather everything at a place for the Place view. Decisions and photos use SUBTREE
- * semantics (a room includes its objects' items); drawings use INHERIT-DOWN semantics —
- * a room shows drawings filed on it (`here`), on any ancestor (`inherited`, e.g. the floor
- * plan), or on a descendant object (`detail`, e.g. a door detail). `nodeId === null`
- * means the whole project: every decision, photo and drawing, unfiled ones included.
+ * Gather everything at a place for the Site Map. Decisions, photos, activities and
+ * materials use SUBTREE semantics (a room includes its objects' items); drawings use
+ * INHERIT-DOWN semantics — a room shows drawings filed on it (`here`), on any ancestor
+ * (`inherited`, e.g. the floor plan), or on a descendant object (`detail`, e.g. a door
+ * detail). `nodeId === null` means the whole project: everything, unfiled items included.
  */
 export function placeContents(
   nodeId: string | null,
@@ -183,6 +187,8 @@ export function placeContents(
   decisions: Decision[],
   drawings: Drawing[],
   photos: Photo[],
+  activities: Activity[] = [],
+  materials: Material[] = [],
 ): PlaceContents {
   if (!nodeId) {
     const placed: PlacedDrawing[] = [...drawings]
@@ -192,7 +198,9 @@ export function placeContents(
       decisions: [...decisions],
       photos: [...photos],
       drawings: placed,
-      counts: { decisions: decisions.length, drawings: drawings.length, photos: photos.length },
+      activities: [...activities],
+      materials: [...materials],
+      counts: { decisions: decisions.length, drawings: drawings.length, photos: photos.length, activities: activities.length, materials: materials.length },
     };
   }
 
@@ -200,6 +208,8 @@ export function placeContents(
   const anc = ancestorIds(nodes, nodeId);
   const decisionsHere = decisions.filter((d) => d.nodeId && sub.has(d.nodeId));
   const photosHere = photos.filter((p) => p.nodeId && sub.has(p.nodeId));
+  const activitiesHere = activities.filter((a) => a.nodeId && sub.has(a.nodeId));
+  const materialsHere = materials.filter((m) => m.nodeId && sub.has(m.nodeId));
 
   const placedDrawings: PlacedDrawing[] = [];
   for (const drawing of drawings) {
@@ -219,6 +229,8 @@ export function placeContents(
     decisions: decisionsHere,
     photos: photosHere,
     drawings: placedDrawings,
-    counts: { decisions: decisionsHere.length, drawings: placedDrawings.length, photos: photosHere.length },
+    activities: activitiesHere,
+    materials: materialsHere,
+    counts: { decisions: decisionsHere.length, drawings: placedDrawings.length, photos: photosHere.length, activities: activitiesHere.length, materials: materialsHere.length },
   };
 }

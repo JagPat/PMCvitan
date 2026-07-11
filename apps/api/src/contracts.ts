@@ -311,6 +311,8 @@ export const createActivitySchema = z
     plannedEnd: z.number().int().min(0),
     phaseId: z.string().optional(),
     decisionId: z.string().optional(),
+    // Location spine: the place this work happens (a location-tree node).
+    nodeId: z.string().trim().min(1).optional(),
     gateMaterial: gateState.default('na'),
     gateTeam: gateState.default('na'),
     gateInspection: gateState.default('na'),
@@ -324,9 +326,10 @@ export const updateActivitySchema = z
     zone: z.string().trim().optional(),
     plannedStart: z.number().int().min(0).optional(),
     plannedEnd: z.number().int().min(0).optional(),
-    // null clears the link / phase
+    // null clears the link / phase / location
     phaseId: z.string().nullable().optional(),
     decisionId: z.string().nullable().optional(),
+    nodeId: z.string().nullable().optional(),
     gateMaterial: gateState.optional(),
     gateTeam: gateState.optional(),
     gateInspection: gateState.optional(),
@@ -346,6 +349,8 @@ export const createInspectionSchema = z.object({
   title: z.string().trim().min(1),
   zone: z.string().trim().min(1),
   items: z.array(z.string().trim().min(1)).min(1).max(20),
+  // Location spine: the place this quality check happens (a location-tree node).
+  nodeId: z.string().trim().min(1).optional(),
 });
 export type CreateInspectionInput = z.infer<typeof createInspectionSchema>;
 
@@ -356,6 +361,8 @@ export const addMaterialSchema = z.object({
   zone: z.string().trim().default(''),
   decisionId: z.string().optional(),
   swatch: z.string().trim().default('tile'),
+  // Location spine: where this material was delivered / is staged (a location-tree node).
+  nodeId: z.string().trim().min(1).optional(),
 });
 export type AddMaterialInput = z.infer<typeof addMaterialSchema>;
 

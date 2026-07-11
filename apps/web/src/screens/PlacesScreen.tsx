@@ -2,11 +2,11 @@ import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { resolveDrawingUrl } from '@/data/apiGateway';
-import { Eyebrow, DecisionChip, PhotoViewer } from '@/components';
+import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer } from '@/components';
 import { DrawingViewer } from '@/screens/DrawingsScreen';
-import { MapPin, ChevronRight, FileText, Camera, LayoutGrid } from '@/lib/icons';
+import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks } from '@/lib/icons';
 import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation } from '@/lib/locationTree';
-import { type Drawing } from '@vitan/shared';
+import { type Drawing, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 const KIND_LABEL: Record<string, string> = { zone: 'ZONE', room: 'ROOM', element: 'OBJECT' };
@@ -27,6 +27,8 @@ export function PlacesScreen() {
   const decisions = useStore(useShallow((s) => s.decisions));
   const drawings = useStore(useShallow((s) => s.drawings));
   const photos = useStore(useShallow((s) => s.photos));
+  const activities = useStore(useShallow((s) => s.activities));
+  const materials = useStore(useShallow((s) => s.materials));
 
   const [sel, setSel] = useState<string | null>(null); // null = whole project
   const [zoom, setZoom] = useState<string | null>(null);
@@ -38,21 +40,28 @@ export function PlacesScreen() {
 
   const trail = useMemo(() => [{ id: null as string | null, name: 'Whole project' }, ...trailOf(nodes, active)], [nodes, active]);
   const children = useMemo(() => childrenOf(nodes, active), [nodes, active]);
-  const contents = useMemo(() => placeContents(active, nodes, decisions, drawings, photos), [active, nodes, decisions, drawings, photos]);
+  const contents = useMemo(
+    () => placeContents(active, nodes, decisions, drawings, photos, activities, materials),
+    [active, nodes, decisions, drawings, photos, activities, materials],
+  );
 
   const countsFor = (id: string) => {
     const sub = subtreeIds(nodes, id);
+    const inSub = <T extends { nodeId?: string }>(xs: T[]) => xs.filter((x) => x.nodeId && sub.has(x.nodeId)).length;
     return {
-      decisions: decisions.filter((d) => d.nodeId && sub.has(d.nodeId)).length,
-      drawings: drawings.filter((dr) => dr.nodeId && sub.has(dr.nodeId)).length,
-      photos: photos.filter((p) => p.nodeId && sub.has(p.nodeId)).length,
+      decisions: inSub(decisions),
+      drawings: inSub(drawings),
+      photos: inSub(photos),
+      activities: inSub(activities),
+      materials: inSub(materials),
     };
   };
 
   const activeNode = nodes.find((n) => n.id === active);
+  const total = contents.counts;
   // Only truly empty when there's no tree AND nothing filed anywhere — otherwise the
-  // whole-project view still lists unfiled decisions/drawings (e.g. the seeded demo).
-  const nothingYet = nodes.length === 0 && contents.decisions.length === 0 && contents.drawings.length === 0 && contents.photos.length === 0;
+  // whole-project view still lists unfiled items (e.g. the seeded demo).
+  const nothingYet = nodes.length === 0 && total.decisions === 0 && total.drawings === 0 && total.photos === 0 && total.activities === 0 && total.materials === 0;
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
@@ -101,10 +110,12 @@ export function PlacesScreen() {
                       <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.name}</span>
                       <ChevronRight size={15} color="#b8b2a6" style={{ flex: 'none' }} />
                     </div>
-                    <div style={{ display: 'flex', gap: 10, marginTop: 8, fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--muted)' }}>
+                    <div style={{ display: 'flex', gap: 9, marginTop: 8, flexWrap: 'wrap', fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--muted)' }}>
                       <span title="decisions">◆ {c.decisions}</span>
                       <span title="drawings">▤ {c.drawings}</span>
                       <span title="photos">▦ {c.photos}</span>
+                      <span title="activities">⚒ {c.activities}</span>
+                      <span title="materials">▧ {c.materials}</span>
                     </div>
                   </button>
                 );
@@ -115,6 +126,28 @@ export function PlacesScreen() {
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.14em', color: 'var(--faint)', margin: '4px 0 12px' }}>
             {activeNode ? `AT ${activeNode.name.toUpperCase()}${children.length ? ' AND BELOW' : ''}` : 'ACROSS THE WHOLE PROJECT'}
           </div>
+
+          {/* Work — activities happening here */}
+          <Section icon={<Hammer size={13} />} title="Work" count={contents.activities.length} sub="site activities here">
+            {contents.activities.length === 0 ? (
+              <Empty>No activities planned here yet.</Empty>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                {contents.activities.map((a) => (
+                  <div key={a.id} data-testid={`place-activity-${a.id}`} style={{ ...rowCard, cursor: 'default' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>{a.id}</span>
+                        <span style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name}</span>
+                      </div>
+                      {a.block && <div style={{ fontSize: 11.5, color: 'var(--red-solid)', marginTop: 2 }}>{a.block}</div>}
+                    </div>
+                    <ActivityChip status={a.status} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </Section>
 
           {/* Reality — photos */}
           <Section icon={<Camera size={13} />} title="Reality" count={contents.photos.length} sub="photos of what's built">
@@ -157,6 +190,26 @@ export function PlacesScreen() {
                     </button>
                   );
                 })}
+              </div>
+            )}
+          </Section>
+
+          {/* Materials delivered here */}
+          <Section icon={<Blocks size={13} />} title="Materials" count={contents.materials.length} sub="delivered to this place">
+            {contents.materials.length === 0 ? (
+              <Empty>No materials delivered here yet.</Empty>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                {contents.materials.map((m) => (
+                  <div key={m.id} data-testid={`place-material-${m.id}`} style={{ ...rowCard, cursor: 'default' }}>
+                    <Swatch swatch={m.swatch as SwatchKey} size={30} radius={7} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</div>
+                      <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>{m.qty}</div>
+                    </div>
+                    {!m.matched && <span style={{ ...relChip, color: 'var(--red-solid)', borderColor: 'var(--red-solid)' }}>Mismatch</span>}
+                  </div>
+                ))}
               </div>
             )}
           </Section>
