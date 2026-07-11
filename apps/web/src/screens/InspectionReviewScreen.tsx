@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectActiveReview } from '@/store/selectors';
 import { Eyebrow, ResultChip, Button, Modal } from '@/components';
+import { LocationPicker } from '@/components/LocationPicker';
 import { X, Plus, Minus } from '@/lib/icons';
 import { swatch as swatchGradient, can, type Review } from '@vitan/shared';
 import styles from './responsive.module.css';
@@ -158,6 +159,7 @@ function IssueChecklistModal({ onClose }: { onClose: () => void }) {
   const issueChecklist = useStore((s) => s.issueChecklist);
   const [title, setTitle] = useState('');
   const [zone, setZone] = useState('');
+  const [nodeId, setNodeId] = useState<string | null>(null);
   const [items, setItems] = useState<string[]>(['']);
 
   const clean = items.map((s) => s.trim()).filter(Boolean);
@@ -169,7 +171,7 @@ function IssueChecklistModal({ onClose }: { onClose: () => void }) {
 
   const save = () => {
     if (!ready) return;
-    issueChecklist({ title: title.trim(), zone: zone.trim(), items: clean });
+    issueChecklist({ title: title.trim(), zone: zone.trim(), items: clean, ...(nodeId ? { nodeId } : {}) });
     onClose();
   };
 
@@ -181,7 +183,9 @@ function IssueChecklistModal({ onClose }: { onClose: () => void }) {
           The site engineer fills this in the field with photos, then submits it back here for your review.
         </div>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (e.g. Waterproofing — 2nd coat)" style={{ ...fld, marginTop: 14, width: '100%' }} data-testid="chk-title" />
-        <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone (e.g. Terrace / Level 3)" style={{ ...fld, marginTop: 10, width: '100%' }} data-testid="chk-zone" />
+        <input value={zone} onChange={(e) => setZone(e.target.value)} placeholder="Zone (free text — or pick a location below)" style={{ ...fld, marginTop: 10, width: '100%' }} data-testid="chk-zone" />
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '14px 0 7px' }}>LOCATION (OPTIONAL)</div>
+        <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="chk-loc" />
 
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '16px 0 8px' }}>CHECKLIST ITEMS</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

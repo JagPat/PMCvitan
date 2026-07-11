@@ -30,6 +30,7 @@ import type {
   ProjectNode,
   NodeKind,
   Photo,
+  Material,
   Review,
   Role,
 } from '@vitan/shared';
@@ -63,6 +64,8 @@ export interface ApiSnapshot {
   nodes: ProjectNode[];
   /** site photos placed on the location tree — the reality layer for the Place view */
   photos: Photo[];
+  /** all material deliveries across the project, with their place — the Site Map's "materials here" */
+  materials: Material[];
 }
 
 /** Add a project team member (provisions the account when new). */
@@ -137,6 +140,7 @@ export interface NewActivityInput {
   plannedEnd: number;
   phaseId?: string | null;
   decisionId?: string | null;
+  nodeId?: string | null; // location spine: where this work happens
   gateMaterial?: GateInput;
   gateTeam?: GateInput;
   gateInspection?: GateInput;
@@ -400,7 +404,7 @@ export class ApiGateway {
     return this.req(`/projects/${this.projectId}/phases/${phaseId}`, { method: 'DELETE' });
   }
   /** Issue a stage checklist (PMC) — becomes the engineer's current field checklist. */
-  createInspection(input: { title: string; zone: string; items: string[] }): Promise<ApiSnapshot> {
+  createInspection(input: { title: string; zone: string; items: string[]; nodeId?: string }): Promise<ApiSnapshot> {
     return this.p('/inspections', input);
   }
   /** Start a fresh day's daily log (engineer/PMC). */
@@ -408,7 +412,7 @@ export class ApiGateway {
     return this.p('/daily-log/start');
   }
   /** Record a material delivery on the open daily log (engineer/PMC). */
-  addSiteMaterial(input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string }): Promise<ApiSnapshot> {
+  addSiteMaterial(input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }): Promise<ApiSnapshot> {
     return this.p('/daily-log/materials', input);
   }
 

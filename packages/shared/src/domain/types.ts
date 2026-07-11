@@ -94,6 +94,8 @@ export interface Activity {
   decisionId: string | null;
   /** the phase this activity belongs to (null = unphased) */
   phaseId: string | null;
+  /** location-tree node where this work happens (undefined = unplaced) */
+  nodeId?: string;
   /** planned start / end — day-offsets from 1 Jun 2026 */
   ps: number;
   pe: number;
@@ -155,6 +157,8 @@ export interface Checklist {
   id: string;
   title: string;
   zone: string;
+  /** location-tree node where this check happens (undefined = unplaced) */
+  nodeId?: string;
   date: string;
   submitted: boolean;
   items: ChecklistItem[];
@@ -172,6 +176,8 @@ export interface Review {
   id: string;
   title: string;
   zone: string;
+  /** location-tree node where this check happens (undefined = unplaced) */
+  nodeId?: string;
   by: string;
   date: string;
   decided: boolean;
@@ -292,6 +298,20 @@ export interface SiteMaterial {
   matched: boolean;
   swatch: SwatchKey;
   photo: boolean;
+}
+
+/** A material delivery placed on the location tree — the Site Map's "materials here"
+ *  (the whole project's deliveries, not just the current day's daily-log rows). */
+export interface Material {
+  id: string;
+  name: string;
+  qty: string;
+  zone: string;
+  matched: boolean;
+  swatch: SwatchKey;
+  decisionId?: string;
+  /** location-tree node where it was delivered (undefined = unplaced) */
+  nodeId?: string;
 }
 
 /** A reference to an uploaded photo. `url` is absolute (S3/R2) or a data URL (local demo). */

@@ -42,6 +42,7 @@ import {
   type ProjectCompany,
   type ProjectNode,
   type Photo,
+  type Material,
   type ItemState,
   type Lang,
   type ModalState,
@@ -75,6 +76,7 @@ export interface AppState {
   reinspectionCreated: boolean;
   drawings: Drawing[]; // the drawings register (Slice 1)
   photos: Photo[]; // site photos placed on the location tree (the Place view's reality layer)
+  materials: Material[]; // all deliveries across the project, with their place (Site Map)
   phases: Phase[]; // project phases with rollups (Orgs Slice 3)
   // multi-project (Orgs Slice 2)
   activeProjectId: string; // the project the session is scoped to
@@ -167,9 +169,9 @@ export interface AppActions {
   deleteActivity: (activityId: string) => void;
   createPhase: (name: string) => void;
   deletePhase: (phaseId: string) => void;
-  issueChecklist: (input: { title: string; zone: string; items: string[] }) => void;
+  issueChecklist: (input: { title: string; zone: string; items: string[]; nodeId?: string }) => void;
   startDailyLog: () => void;
-  addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string }) => void;
+  addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }) => void;
   loadTeam: () => void;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role) => void;
@@ -247,6 +249,7 @@ export function getInitialState(): AppState {
     reinspectionCreated: false,
     drawings: structuredClone(SEED_DRAWINGS),
     photos: [], // placed site photos come from the server snapshot (empty in the local seed demo)
+    materials: [], // placed materials come from the server snapshot (empty in the local seed demo)
     phases: structuredClone(SEED_PHASES),
     activeProjectId: PROJECT_ID,
     memberships: [],
@@ -296,6 +299,7 @@ export const useStore = create<Store>()(
         // Placed site photos come back as signed API-relative serve paths — resolve
         // them against the API base so the Place view's <img src> hits the API.
         if (snap.photos) s.photos = snap.photos.map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
+        if (snap.materials) s.materials = snap.materials;
         if (snap.phases) s.phases = snap.phases;
         if (snap.dailyLog) {
           // Progress photos come back as signed, API-relative serve paths

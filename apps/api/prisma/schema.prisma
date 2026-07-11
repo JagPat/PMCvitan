@@ -294,10 +294,13 @@ model ProjectNode {
   order     Int      @default(0)
   createdAt DateTime @default(now())
 
-  children  ProjectNode[] @relation("NodeChildren")
-  decisions Decision[]
-  media     Media[]
-  drawings  Drawing[]
+  children    ProjectNode[]  @relation("NodeChildren")
+  decisions   Decision[]
+  media       Media[]
+  drawings    Drawing[]
+  activities  Activity[]
+  inspections Inspection[]
+  materials   SiteMaterial[]
 
   @@index([projectId])
   @@index([parentId])
@@ -385,9 +388,13 @@ model Activity {
   decisionId     String?
   phase          Phase?         @relation(fields: [phaseId], references: [id])
   phaseId        String?
+  // Location spine: where this work happens (zone/room/object). SET NULL on node delete.
+  node           ProjectNode?   @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  nodeId         String?
   order          Int            @default(0)
 
   @@unique([projectId, id])
+  @@index([nodeId])
 }
 
 // A project phase (Foundation → Structure → MEP → Finishing…). Groups activities
@@ -416,7 +423,12 @@ model Inspection {
   date      String
   submitted Boolean          @default(false)
   decided   Boolean          @default(false)
+  // Location spine: where this quality check happens. SET NULL on node delete.
+  node      ProjectNode?     @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  nodeId    String?
   items     InspectionItem[]
+
+  @@index([nodeId])
 }
 
 model InspectionItem {
@@ -469,7 +481,12 @@ model SiteMaterial {
   matched    Boolean   @default(true)
   swatch     String
   photo      Boolean   @default(false)
+  // Location spine: where this material was delivered / is staged. SET NULL on node delete.
+  node       ProjectNode? @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  nodeId     String?
   order      Int       @default(0)
+
+  @@index([nodeId])
 }
 
 model Notification {
