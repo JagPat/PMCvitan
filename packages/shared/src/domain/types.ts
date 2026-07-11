@@ -371,6 +371,22 @@ export interface Material {
   nodeId?: string;
 }
 
+/** An inspection placed on the location tree — the Site Map's "inspections here".
+ *  Delivered only to pmc/engineer (AUTH-02: the review queue is an internal sign-off
+ *  surface), so it never reaches the client/contractor/consultant Place view. */
+export interface PlacedInspection {
+  id: string;
+  title: string;
+  zone: string;
+  /** location-tree node where this check happens (undefined = unplaced) */
+  nodeId?: string;
+  kind: string; // 'checklist' | 'review'
+  submitted: boolean;
+  decided: boolean;
+  /** count of failed/rejected items — a passed inspection has 0 */
+  failedItems: number;
+}
+
 /** A reference to an uploaded photo. `url` is absolute (S3/R2) or a data URL (local demo). */
 export interface MediaRef {
   id?: string;

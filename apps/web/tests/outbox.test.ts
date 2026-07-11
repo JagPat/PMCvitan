@@ -12,6 +12,7 @@ function makeSnapshot(partial?: Partial<ApiSnapshot>): ApiSnapshot {
     project: { id: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', descriptor: 'G+2', stage: 'Finishing', siteCode: 'AMB-24', location: '', projStart: '12 Jan 2026', projEnd: '30 Sep 2026', elapsedPct: 58, todayDay: 32, milestonePct: 72 },
     decisions: [],
     activities: [],
+    placedInspections: [],
     checklist: null,
     reviews: [],
     review: null,

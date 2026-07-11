@@ -17,6 +17,7 @@ import type {
   ProjectNode,
   Photo,
   Material,
+  PlacedInspection,
 } from './types';
 
 export const PROJECT = {
@@ -155,6 +156,13 @@ export const SEED_REVIEW: Review = {
     { name: 'Parapet-junction coving intact', result: 'PASS', swatch: 'concrete', note: 'Coving continuous, no cracks.', rejected: false },
   ],
 };
+
+/** Inspections placed on the location tree for the demo Site Map (pmc/engineer only).
+ *  A passed one has failedItems 0; INSP-21 mirrors the seeded review (one failing item). */
+export const SEED_PLACED_INSPECTIONS: PlacedInspection[] = [
+  { id: 'INSP-21', title: 'Waterproofing Ponding Test', zone: 'Terrace', nodeId: 'z-terrace', kind: 'review', submitted: true, decided: false, failedItems: 1 },
+  { id: 'INSP-18', title: 'CP Fittings & Pressure Test', zone: 'Second Floor · Master Bath', nodeId: 'r-mbath', kind: 'review', submitted: true, decided: true, failedItems: 0 },
+];
 
 /** A mock title-block sheet as an inline SVG data URL — stands in for a real
  *  drawing file in the local demo (the API serves real PDFs/DWGs). */

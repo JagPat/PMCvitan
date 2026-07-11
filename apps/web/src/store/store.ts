@@ -26,6 +26,7 @@ import {
   SEED_NODES,
   SEED_PHOTOS,
   SEED_MATERIALS,
+  SEED_PLACED_INSPECTIONS,
   PROJECT,
   type AccessState,
   type AccessWho,
@@ -46,6 +47,7 @@ import {
   type ProjectNode,
   type Photo,
   type Material,
+  type PlacedInspection,
   type ItemState,
   type Lang,
   type ModalState,
@@ -80,6 +82,7 @@ export interface AppState {
   drawings: Drawing[]; // the drawings register (Slice 1)
   photos: Photo[]; // site photos placed on the location tree (the Place view's reality layer)
   materials: Material[]; // all deliveries across the project, with their place (Site Map)
+  placedInspections: PlacedInspection[]; // inspections on the tree for the Site Map (pmc/engineer only)
   phases: Phase[]; // project phases with rollups (Orgs Slice 3)
   // multi-project (Orgs Slice 2)
   activeProjectId: string; // the project the session is scoped to
@@ -256,6 +259,7 @@ export function getInitialState(): AppState {
     drawings: structuredClone(SEED_DRAWINGS),
     photos: structuredClone(SEED_PHOTOS), // placed site photos for the demo Site Map
     materials: structuredClone(SEED_MATERIALS), // placed deliveries for the demo Site Map
+    placedInspections: structuredClone(SEED_PLACED_INSPECTIONS), // placed inspections for the demo Site Map
     phases: structuredClone(SEED_PHASES),
     activeProjectId: PROJECT_ID,
     memberships: [],
@@ -306,6 +310,8 @@ export const useStore = create<Store>()(
         // them against the API base so the Place view's <img src> hits the API.
         if (snap.photos) s.photos = snap.photos.map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
         if (snap.materials) s.materials = snap.materials;
+        // pmc/engineer get the placed inspections; other roles get [] from the server
+        s.placedInspections = snap.placedInspections ?? [];
         if (snap.phases) s.phases = snap.phases;
         if (snap.dailyLog) {
           // Progress photos come back as signed, API-relative serve paths

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { Activity, Decision, Drawing, Material, Photo, ProjectNode } from '@vitan/shared';
+import type { Activity, Decision, Drawing, Material, Photo, PlacedInspection, ProjectNode } from '@vitan/shared';
 import { pathOf, locationSegments, groupDecisions, ancestorIds, subtreeIds, trailOf, placeContents } from '@/lib/locationTree';
 
 const nodes: ProjectNode[] = [
@@ -89,10 +89,13 @@ describe('placeContents — everything at a place', () => {
   const mat = (id: string, nodeId?: string): Material => ({ id, name: id, qty: '1', zone: '', matched: true, swatch: 'tile', nodeId });
   const activities = [act('ACT-1', 'e1'), act('ACT-2', 'r2')]; // one under the door, one in Guest Bath
   const materials = [mat('M-1', 'r1'), mat('M-2')]; // one in Master Bedroom, one unplaced
+  const insp = (id: string, nodeId?: string, failedItems = 0): PlacedInspection =>
+    ({ id, title: id, zone: '', nodeId, kind: 'review', submitted: true, decided: true, failedItems });
+  const inspections = [insp('INSP-1', 'e1'), insp('INSP-2', 'r2', 1)]; // one under the door, one in Guest Bath
 
   it('a room shows its subtree decisions/photos/work/materials, inherits ancestor drawings, and surfaces child details', () => {
     const c = placeContents('r1', nodes, decisions, drawings, photos, activities, materials);
-    expect(c.counts).toEqual({ decisions: 2, drawings: 2, photos: 1, activities: 1, materials: 1 });
+    expect(c.counts).toEqual({ decisions: 2, drawings: 2, photos: 1, activities: 1, materials: 1, inspections: 0 });
     // A-100 (filed on the zone above) is inherited; A-201 (on the door below) is a detail
     const byNum = Object.fromEntries(c.drawings.map((d) => [d.drawing.number, d.relation]));
     expect(byNum).toEqual({ 'A-100': 'inherited', 'A-201': 'detail' });
@@ -107,12 +110,22 @@ describe('placeContents — everything at a place', () => {
     const c = placeContents('e1', nodes, decisions, drawings, photos, activities, materials);
     const byNum = Object.fromEntries(c.drawings.map((d) => [d.drawing.number, d.relation]));
     expect(byNum).toEqual({ 'A-201': 'here', 'A-100': 'inherited' });
-    expect(c.counts).toEqual({ decisions: 1, drawings: 2, photos: 1, activities: 1, materials: 0 });
+    expect(c.counts).toEqual({ decisions: 1, drawings: 2, photos: 1, activities: 1, materials: 0, inspections: 0 });
   });
 
   it('whole project (null) returns everything, unfiled items included', () => {
     const c = placeContents(null, nodes, decisions, drawings, photos, activities, materials);
-    expect(c.counts).toEqual({ decisions: 2, drawings: 3, photos: 3, activities: 2, materials: 2 });
+    expect(c.counts).toEqual({ decisions: 2, drawings: 3, photos: 3, activities: 2, materials: 2, inspections: 0 });
     expect(c.drawings.every((d) => d.relation === 'here')).toBe(true);
+  });
+
+  it('inspections aggregate by subtree, like the other placed modules', () => {
+    // r1 (Master Bedroom) contains the door e1 → its inspection is in the subtree; INSP-2 (r2) is not
+    const room = placeContents('r1', nodes, decisions, drawings, photos, activities, materials, inspections);
+    expect(room.inspections.map((i) => i.id)).toEqual(['INSP-1']);
+    expect(room.counts.inspections).toBe(1);
+    // whole project returns every inspection (placed + unplaced would be included)
+    const all = placeContents(null, nodes, decisions, drawings, photos, activities, materials, inspections);
+    expect(all.counts.inspections).toBe(2);
   });
 });

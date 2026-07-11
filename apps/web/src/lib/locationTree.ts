@@ -1,4 +1,4 @@
-import type { Activity, Decision, Drawing, Material, Photo, ProjectNode } from '@vitan/shared';
+import type { Activity, Decision, Drawing, Material, Photo, PlacedInspection, ProjectNode } from '@vitan/shared';
 
 /** Direct children of a node (parentId=null → top-level zones), in display order. */
 export function childrenOf(nodes: ProjectNode[], parentId: string | null): ProjectNode[] {
@@ -169,7 +169,9 @@ export interface PlaceContents {
   activities: Activity[];
   /** material deliveries in this node's subtree */
   materials: Material[];
-  counts: { decisions: number; drawings: number; photos: number; activities: number; materials: number };
+  /** inspections in this node's subtree (pmc/engineer only — callers pass [] for other roles) */
+  inspections: PlacedInspection[];
+  counts: { decisions: number; drawings: number; photos: number; activities: number; materials: number; inspections: number };
 }
 
 const RELATION_RANK: Record<DrawingRelation, number> = { here: 0, detail: 1, inherited: 2 };
@@ -189,6 +191,7 @@ export function placeContents(
   photos: Photo[],
   activities: Activity[] = [],
   materials: Material[] = [],
+  inspections: PlacedInspection[] = [],
 ): PlaceContents {
   if (!nodeId) {
     const placed: PlacedDrawing[] = [...drawings]
@@ -200,7 +203,8 @@ export function placeContents(
       drawings: placed,
       activities: [...activities],
       materials: [...materials],
-      counts: { decisions: decisions.length, drawings: drawings.length, photos: photos.length, activities: activities.length, materials: materials.length },
+      inspections: [...inspections],
+      counts: { decisions: decisions.length, drawings: drawings.length, photos: photos.length, activities: activities.length, materials: materials.length, inspections: inspections.length },
     };
   }
 
@@ -210,6 +214,7 @@ export function placeContents(
   const photosHere = photos.filter((p) => p.nodeId && sub.has(p.nodeId));
   const activitiesHere = activities.filter((a) => a.nodeId && sub.has(a.nodeId));
   const materialsHere = materials.filter((m) => m.nodeId && sub.has(m.nodeId));
+  const inspectionsHere = inspections.filter((i) => i.nodeId && sub.has(i.nodeId));
 
   const placedDrawings: PlacedDrawing[] = [];
   for (const drawing of drawings) {
@@ -231,6 +236,7 @@ export function placeContents(
     drawings: placedDrawings,
     activities: activitiesHere,
     materials: materialsHere,
-    counts: { decisions: decisionsHere.length, drawings: placedDrawings.length, photos: photosHere.length, activities: activitiesHere.length, materials: materialsHere.length },
+    inspections: inspectionsHere,
+    counts: { decisions: decisionsHere.length, drawings: placedDrawings.length, photos: photosHere.length, activities: activitiesHere.length, materials: materialsHere.length, inspections: inspectionsHere.length },
   };
 }

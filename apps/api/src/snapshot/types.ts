@@ -57,6 +57,20 @@ export interface ActivityDto {
   block?: string;
 }
 
+/** An inspection placed on the location tree — the Site Map's "inspections here".
+ *  Serialized ONLY for pmc/engineer (AUTH-02); empty for everyone else. */
+export interface PlacedInspectionDto {
+  id: string;
+  title: string;
+  zone: string;
+  nodeId?: string;
+  kind: string; // 'checklist' | 'review'
+  submitted: boolean;
+  decided: boolean;
+  /** count of failed/rejected items — a passed inspection has 0 */
+  failedItems: number;
+}
+
 /** A project phase with a live rollup of its activities — the unit of phase-level
  *  monitoring. `donePct` is done/total (0 when the phase has no activities yet). */
 export interface PhaseDto {
@@ -193,6 +207,8 @@ export interface SnapshotDto {
   project: ProjectMetaDto;
   decisions: DecisionDto[];
   activities: ActivityDto[];
+  /** every inspection with its place, for the Site Map (pmc/engineer only; empty otherwise) */
+  placedInspections: PlacedInspectionDto[];
   checklist: ChecklistDto | null;
   /** The PMC review queue: every submitted-but-undecided inspection (a submitted
    *  checklist, the seeded review, an auto-created closing inspection), oldest first. */
