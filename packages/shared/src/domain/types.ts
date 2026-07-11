@@ -32,6 +32,7 @@ export type ScreenKey =
   | 'daily-log'
   | 'engineer-check'
   | 'drawings'
+  | 'places'
   | 'team'
   | 'portfolio'
   | 'team-access';
@@ -260,9 +261,22 @@ export interface Drawing {
   zone: string | null;
   activityId: string | null;
   decisionId: string | null;
+  /** location-tree node this drawing governs; inherited down to rooms/objects beneath it */
+  nodeId?: string;
   current: DrawingRevision | null; // latest non-superseded
   ackedByMe: boolean; // has the current user acknowledged the current revision?
   revisions: DrawingRevision[]; // newest first
+}
+
+/** A site photo placed on the location tree — the "reality" layer the Place view reads.
+ *  `url` is a resolvable signed serve path (or a data URL in the local demo). */
+export interface Photo {
+  id: string;
+  url: string;
+  takenAt?: string;
+  /** location-tree node this photo shows (undefined = unplaced) */
+  nodeId?: string;
+  kind: string; // progress | inspection | material
 }
 
 export interface CrewRow {

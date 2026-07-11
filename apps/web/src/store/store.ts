@@ -41,6 +41,7 @@ import {
   type ProjectMember,
   type ProjectCompany,
   type ProjectNode,
+  type Photo,
   type ItemState,
   type Lang,
   type ModalState,
@@ -73,6 +74,7 @@ export interface AppState {
   activeReviewId: string | null; // which queued review the PMC is looking at (null ⇒ first pending)
   reinspectionCreated: boolean;
   drawings: Drawing[]; // the drawings register (Slice 1)
+  photos: Photo[]; // site photos placed on the location tree (the Place view's reality layer)
   phases: Phase[]; // project phases with rollups (Orgs Slice 3)
   // multi-project (Orgs Slice 2)
   activeProjectId: string; // the project the session is scoped to
@@ -138,6 +140,9 @@ export interface AppActions {
   // drawings register
   issueDrawing: (input: IssueDrawingInput) => void;
   acknowledgeDrawing: (drawingId: string) => void;
+  // location spine: re-file a drawing / photo onto a location node (null = unfile)
+  fileDrawing: (drawingId: string, nodeId: string | null) => void;
+  filePhoto: (photoId: string, nodeId: string | null) => void;
   // multi-project + team
   loadOrgData: () => void;
   loadPortfolio: () => void;
@@ -183,7 +188,7 @@ export interface AppActions {
   scanWorker: () => void;
   crewStep: (idx: number, delta: number) => void;
   addProgress: () => void;
-  addProgressPhoto: (dataUrl: string) => void;
+  addProgressPhoto: (dataUrl: string, nodeId?: string | null) => void;
   submitDailyLog: () => void;
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
@@ -241,6 +246,7 @@ export function getInitialState(): AppState {
     activeReviewId: null,
     reinspectionCreated: false,
     drawings: structuredClone(SEED_DRAWINGS),
+    photos: [], // placed site photos come from the server snapshot (empty in the local seed demo)
     phases: structuredClone(SEED_PHASES),
     activeProjectId: PROJECT_ID,
     memberships: [],
@@ -287,6 +293,9 @@ export const useStore = create<Store>()(
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         s.reinspectionCreated = snap.reinspectionCreated;
         if (snap.drawings) s.drawings = snap.drawings;
+        // Placed site photos come back as signed API-relative serve paths — resolve
+        // them against the API base so the Place view's <img src> hits the API.
+        if (snap.photos) s.photos = snap.photos.map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
         if (snap.phases) s.phases = snap.phases;
         if (snap.dailyLog) {
           // Progress photos come back as signed, API-relative serve paths
@@ -648,6 +657,7 @@ export const useStore = create<Store>()(
           existing.current = newRev;
           existing.title = input.title;
           existing.discipline = input.discipline;
+          existing.nodeId = input.nodeId ?? existing.nodeId;
           existing.ackedByMe = false; // a fresh rev needs re-acknowledgement
         } else {
           s.drawings.unshift({
@@ -658,6 +668,7 @@ export const useStore = create<Store>()(
             zone: input.zone ?? null,
             activityId: input.activityId ?? null,
             decisionId: input.decisionId ?? null,
+            nodeId: input.nodeId,
             ackedByMe: false,
             current: newRev,
             revisions: [newRev],
@@ -692,6 +703,28 @@ export const useStore = create<Store>()(
         if (inHistory) inHistory.acks.push(ack);
       });
       get().flash(`Acknowledged — building to ${drawing.number} Rev ${rev.rev} (demo).`);
+    },
+    fileDrawing: (drawingId, nodeId) => {
+      if (gateway) {
+        runRemote(() => gateway!.setDrawingNode(drawingId, nodeId), nodeId ? 'Drawing filed to location.' : 'Drawing unfiled.');
+        return;
+      }
+      set((s) => {
+        const d = s.drawings.find((x) => x.id === drawingId);
+        if (d) d.nodeId = nodeId ?? undefined;
+      });
+      get().flash(nodeId ? 'Drawing filed to location (demo).' : 'Drawing unfiled (demo).');
+    },
+    filePhoto: (photoId, nodeId) => {
+      if (gateway) {
+        runRemote(() => gateway!.setMediaNode(photoId, nodeId), nodeId ? 'Photo filed to location.' : 'Photo unfiled.');
+        return;
+      }
+      set((s) => {
+        const p = s.photos.find((x) => x.id === photoId);
+        if (p) p.nodeId = nodeId ?? undefined;
+      });
+      get().flash(nodeId ? 'Photo filed to location (demo).' : 'Photo unfiled (demo).');
     },
 
     // ---- multi-project + team (Orgs Slice 2) ----
@@ -1046,7 +1079,7 @@ export const useStore = create<Store>()(
       set((s) => { s.dailyLog.progress += 1; });
       get().record('Progress photo');
     },
-    addProgressPhoto: (dataUrl) => {
+    addProgressPhoto: (dataUrl, nodeId) => {
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
         get().flash('Could not read that photo — please try again.');
@@ -1054,7 +1087,8 @@ export const useStore = create<Store>()(
       }
       const [, mime, base64] = m;
       if (gateway) {
-        const input = { kind: 'progress' as const, mime, data: base64 };
+        // Location spine: tag the photo with the place it shows, if one was chosen.
+        const input = { kind: 'progress' as const, mime, data: base64, ...(nodeId ? { nodeId } : {}) };
         // Phase 8 media offline queue: when offline, show the photo optimistically
         // (local data URL) and queue the upload for replay on reconnect — instead
         // of losing it. Mirrors runRemoteOrQueue for the JSON mutations.
@@ -1081,10 +1115,12 @@ export const useStore = create<Store>()(
           .catch(() => get().flash('Could not upload the photo — please try again.'));
         return;
       }
-      // local demo: keep the data URL as the image source
+      // local demo: keep the data URL as the image source; also place it on the tree
+      // (with the chosen node) so the Place view reflects it without a server.
       set((s) => {
         s.dailyLog.photos.unshift({ url: dataUrl });
         s.dailyLog.progress += 1;
+        s.photos.unshift({ id: `demo-photo-${s.photos.length + 1}`, url: dataUrl, nodeId: nodeId ?? undefined, kind: 'progress' });
       });
       get().record('Progress photo');
       get().flash(get().online ? 'Progress photo added — geo + time stamped.' : 'Photo saved offline — will upload when signal returns.');

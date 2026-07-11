@@ -29,6 +29,7 @@ import type {
   ProjectMember,
   ProjectNode,
   NodeKind,
+  Photo,
   Review,
   Role,
 } from '@vitan/shared';
@@ -60,6 +61,8 @@ export interface ApiSnapshot {
   notifications: AppNotification[];
   companies: ProjectCompany[];
   nodes: ProjectNode[];
+  /** site photos placed on the location tree — the reality layer for the Place view */
+  photos: Photo[];
 }
 
 /** Add a project team member (provisions the account when new). */
@@ -152,6 +155,7 @@ export interface IssueDrawingInput {
   zone?: string;
   activityId?: string;
   decisionId?: string;
+  nodeId?: string; // location spine: the place this drawing governs
 }
 
 /** Base64 payloads above this length (~3 MB file) are uploaded direct-to-bucket
@@ -187,6 +191,7 @@ export interface UploadMediaInput {
   mime: string;
   data: string; // base64, no data: prefix
   decisionId?: string;
+  nodeId?: string; // location spine: the place this photo shows
   geoLat?: number;
   geoLng?: number;
   takenAt?: string;
@@ -466,6 +471,22 @@ export class ApiGateway {
     return this.req<{ id: string; url: string }>(`/projects/${this.projectId}/media`, {
       method: 'POST',
       body: JSON.stringify(input),
+    });
+  }
+
+  /** Re-file a photo onto a location-tree node (null = unfile). Returns the fresh snapshot. */
+  setMediaNode(mediaId: string, nodeId: string | null): Promise<ApiSnapshot> {
+    return this.req<ApiSnapshot>(`/projects/${this.projectId}/media/${mediaId}/node`, {
+      method: 'PATCH',
+      body: JSON.stringify({ nodeId }),
+    });
+  }
+
+  /** Re-file a drawing onto a location-tree node (null = unfile). Returns the fresh snapshot. */
+  setDrawingNode(drawingId: string, nodeId: string | null): Promise<ApiSnapshot> {
+    return this.req<ApiSnapshot>(`/projects/${this.projectId}/drawings/${drawingId}/node`, {
+      method: 'PATCH',
+      body: JSON.stringify({ nodeId }),
     });
   }
 

@@ -3,7 +3,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { resolveDrawingUrl, type IssueDrawingInput } from '@/data/apiGateway';
 import { Eyebrow, Button, Modal } from '@/components';
-import { Download, FileText, History, ChevronRight, X, Plus, Lock, Check, HardHat } from '@/lib/icons';
+import { LocationPicker } from '@/components/LocationPicker';
+import { pathOf } from '@/lib/locationTree';
+import { Download, FileText, History, ChevronRight, X, Plus, Lock, Check, HardHat, MapPin } from '@/lib/icons';
 import { can, type Discipline, type Drawing, type DrawingRevision } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -29,6 +31,7 @@ function previewKind(mime: string): 'image' | 'pdf' | 'download' {
 
 export function DrawingsScreen() {
   const drawings = useStore(useShallow((s) => s.drawings));
+  const nodes = useStore(useShallow((s) => s.nodes));
   const role = useStore((s) => s.role);
   // hold the open drawing by id so the viewer always reflects live store state
   // (e.g. an acknowledgement) rather than a stale snapshot captured on click.
@@ -68,6 +71,7 @@ export function DrawingsScreen() {
             {g.items.map((d) => {
               const cur = d.current;
               const sm = statusMeta(cur?.status ?? 'superseded');
+              const place = pathOf(nodes, d.nodeId).join(' › ');
               return (
                 <button key={d.id} onClick={() => setOpenId(d.id)} data-testid={`drawing-${d.number}`} style={cardStyle}>
                   <div style={{ width: 46, height: 60, flex: 'none', borderRadius: 6, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -80,8 +84,12 @@ export function DrawingsScreen() {
                       <span style={{ ...chip, background: sm.bg, color: sm.fg, borderColor: sm.border }}>{sm.label}</span>
                     </div>
                     <div style={{ fontWeight: 600, fontSize: 14.5, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.title}</div>
-                    <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
-                      {d.zone ?? '—'}
+                    <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                      {place ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--accent)' }}><MapPin size={11} /> {place}</span>
+                      ) : (
+                        <span>{d.zone ?? '—'}</span>
+                      )}
                       {d.activityId ? ` · governs ${d.activityId}` : ''}
                       {d.revisions.length > 1 ? ` · ${d.revisions.length} revisions` : ''}
                     </div>
@@ -149,7 +157,7 @@ function AckBlock({ drawing }: { drawing: Drawing }) {
   );
 }
 
-function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose: () => void }) {
+export function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose: () => void }) {
   const [rev, setRev] = useState<DrawingRevision>(drawing.current ?? drawing.revisions[0]);
   const src = resolveDrawingUrl(rev.url);
   const kind = previewKind(rev.mime);
@@ -191,6 +199,8 @@ function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose: () => 
 
       {rev.note && <div style={{ padding: '12px 18px', fontSize: 12.5, color: 'var(--muted)', borderTop: '1px solid var(--hairline)' }}>{rev.note}</div>}
 
+      <DrawingLocationBlock drawing={drawing} />
+
       {isCurrent && rev.status !== 'superseded' && <AckBlock drawing={drawing} />}
 
       <div style={{ padding: '12px 18px 16px', borderTop: '1px solid var(--hairline)' }}>
@@ -216,6 +226,48 @@ function DrawingViewer({ drawing, onClose }: { drawing: Drawing; onClose: () => 
   );
 }
 
+/** Location of a drawing on the spine + a PMC re-file control. Everyone sees where the
+ *  drawing sits; the PMC (drawing.file) can move it, and rooms below inherit it. */
+function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
+  const nodes = useStore(useShallow((s) => s.nodes));
+  const role = useStore((s) => s.role);
+  const fileDrawing = useStore((s) => s.fileDrawing);
+  const canFile = can('drawing.file', role);
+  const place = pathOf(nodes, drawing.nodeId).join(' › ');
+  const [editing, setEditing] = useState(false);
+
+  return (
+    <div style={{ padding: '12px 18px 14px', borderTop: '1px solid var(--hairline)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.16em', color: 'var(--faint)', marginBottom: 9 }}>
+        <MapPin size={13} /> LOCATION
+      </div>
+      {!editing && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, fontWeight: place ? 600 : 400, color: place ? 'var(--ink)' : 'var(--muted)' }}>
+            {place || 'Not filed to a location (project-wide)'}
+          </span>
+          {canFile && (
+            <button onClick={() => setEditing(true)} data-testid="drawing-refile" style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid var(--hairline)', borderRadius: 8, padding: '5px 10px', fontSize: 12, cursor: 'pointer', color: 'var(--accent)' }}>
+              {place ? 'Move' : 'File to a location'}
+            </button>
+          )}
+        </div>
+      )}
+      {editing && canFile && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <LocationPicker value={drawing.nodeId ?? null} onChange={(id) => { fileDrawing(drawing.id, id); }} idPrefix="dwg-refile" />
+          <div style={{ display: 'flex', gap: 8 }}>
+            {drawing.nodeId && (
+              <Button variant="outline" onClick={() => { fileDrawing(drawing.id, null); setEditing(false); }} style={{ padding: '7px 12px', fontSize: 12 }}>Unfile</Button>
+            )}
+            <Button variant="ink" onClick={() => setEditing(false)} style={{ padding: '7px 12px', fontSize: 12, marginLeft: 'auto' }}>Done</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const DISCIPLINE_OPTS: Discipline[] = ['architectural', 'structural', 'mep', 'other'];
 
 function IssueDrawingModal({ onClose }: { onClose: () => void }) {
@@ -224,6 +276,7 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState('');
   const [discipline, setDiscipline] = useState<Discipline>('architectural');
   const [rev, setRev] = useState('A');
+  const [nodeId, setNodeId] = useState<string | null>(null);
   const [file, setFile] = useState<{ mime: string; data: string; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -242,7 +295,7 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
   const submit = () => {
     if (!ready || !file) return;
     setBusy(true);
-    const input: IssueDrawingInput = { number: number.trim(), title: title.trim(), discipline, rev: rev.trim(), mime: file.mime, data: file.data, status: 'for_construction' };
+    const input: IssueDrawingInput = { number: number.trim(), title: title.trim(), discipline, rev: rev.trim(), mime: file.mime, data: file.data, status: 'for_construction', ...(nodeId ? { nodeId } : {}) };
     issueDrawing(input);
     onClose();
   };
@@ -261,6 +314,11 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
         <select value={discipline} onChange={(e) => setDiscipline(e.target.value as Discipline)} style={{ ...fld, marginTop: 10 }}>
           {DISCIPLINE_OPTS.map((d) => <option key={d} value={d}>{d}</option>)}
         </select>
+
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '.1em', color: 'var(--muted)', margin: '14px 0 7px' }}>LOCATION (OPTIONAL)</div>
+        <div style={{ fontSize: 11.5, color: 'var(--faint)', marginBottom: 7 }}>File it at its level — a floor plan on the zone, a detail on the object. Rooms below inherit it.</div>
+        <LocationPicker value={nodeId} onChange={setNodeId} idPrefix="dwg-loc" />
+
         <label style={{ display: 'block', marginTop: 10 }}>
           <input type="file" accept=".pdf,.dwg,.dxf,image/*,application/pdf" onChange={(e) => onPick(e.target.files?.[0])} style={{ fontSize: 13 }} />
         </label>
