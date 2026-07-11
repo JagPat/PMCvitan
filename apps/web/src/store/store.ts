@@ -102,7 +102,10 @@ export interface AppState {
   // real session (set by a phone-OTP sign-in; null = passwordless dev auth)
   sessionToken: string | null;
   userName: string | null;
-  // project constants
+  // live project identity — seeded from PROJECT, replaced wholesale by each snapshot
+  // (so switching projects re-labels every screen; never read the PROJECT seed in a screen)
+  name: string;
+  short: string;
   descriptor: string;
   stage: string;
   siteCode: string;
@@ -112,6 +115,9 @@ export interface AppState {
   elapsedPct: number;
   todayDay: number;
   milestonePct: number;
+  /** true from the moment a project switch is requested until its snapshot lands —
+   *  screens show a loading state instead of the previous project's records. */
+  projectSwitching: boolean;
   // firms & consultants on the active project (client company, contractor, MEP/structural, …)
   companies: ProjectCompany[];
   // archived projects (owner/admin restore UI, lazy-loaded)
@@ -284,6 +290,8 @@ export function getInitialState(): AppState {
     notifications: structuredClone(SEED_NOTIFICATIONS),
     sessionToken: null,
     userName: null,
+    name: PROJECT.name,
+    short: PROJECT.short,
     descriptor: PROJECT.descriptor,
     stage: PROJECT.stage,
     siteCode: PROJECT.siteCode,
@@ -293,6 +301,7 @@ export function getInitialState(): AppState {
     elapsedPct: PROJECT.elapsedPct,
     todayDay: PROJECT.todayDay,
     milestonePct: PROJECT.milestonePct,
+    projectSwitching: false,
     companies: [],
     archivedProjects: [],
   };
@@ -307,6 +316,11 @@ export const useStore = create<Store>()(
 
     const applySnapshot = (snap: ApiSnapshot): void => {
       set((s) => {
+        // Ignore a snapshot for a project we've since left (a late reply from the
+        // previous project, or a socket refetch that raced a switch) — applying it
+        // would show the wrong project's records under the active selection.
+        if (snap.project.id !== s.activeProjectId) return;
+        s.projectSwitching = false; // the active project's data has landed
         s.decisions = snap.decisions;
         s.activities = snap.activities;
         if (snap.checklist) s.checklist = snap.checklist;
@@ -331,6 +345,8 @@ export const useStore = create<Store>()(
           };
         }
         s.notifications = snap.notifications;
+        s.name = snap.project.name;
+        s.short = snap.project.short;
         s.descriptor = snap.project.descriptor;
         s.stage = snap.project.stage;
         s.siteCode = snap.project.siteCode;
@@ -824,21 +840,50 @@ export const useStore = create<Store>()(
     },
     switchProject: (projectId) => {
       if (!gateway || projectId === get().activeProjectId) return;
-      const short = get().memberships.find((m) => m.projectId === projectId)?.short ?? 'project';
+      const membership = get().memberships.find((m) => m.projectId === projectId);
+      const short = membership?.short ?? 'project';
       gateway
         .switchProject(projectId)
         .then((res) => {
-          // new token + project → useApiSync re-inits the gateway and refetches
+          // new token + project → useApiSync re-inits the gateway and refetches.
+          // Atomically swap to the new project: adopt the token/role, and DROP every
+          // project-scoped record so the previous project's data can never show under
+          // the new selection. `projectSwitching` gates a loading state until the fresh
+          // snapshot (guarded by project id in applySnapshot) repopulates them.
           set((s) => {
             s.sessionToken = res.token;
             s.activeProjectId = projectId;
             s.role = res.role;
             s.screen = screensFor(res.role)[0].key;
+            s.projectSwitching = true;
+            // identity: show the target project's name immediately (from the membership),
+            // blanking the finer metadata until the snapshot fills it in.
+            s.name = membership?.name ?? short;
+            s.short = short;
+            s.descriptor = '';
+            s.stage = '';
+            s.siteCode = '';
+            // project-scoped collections — cleared, not carried over
+            s.decisions = [];
+            s.activities = [];
+            s.drawings = [];
+            s.nodes = [];
+            s.photos = [];
+            s.materials = [];
+            s.placedInspections = [];
+            s.phases = [];
+            s.reviews = [];
+            s.activeReviewId = null;
+            s.notifications = [];
+            s.companies = [];
             s.members = [];
           });
           get().flash('Switched to ' + short + '.');
         })
-        .catch(() => get().flash('Could not switch project — please try again.'));
+        .catch(() => {
+          set((s) => { s.projectSwitching = false; });
+          get().flash('Could not switch project — please try again.');
+        });
     },
     createProject: (orgId, input) => {
       if (!gateway) {

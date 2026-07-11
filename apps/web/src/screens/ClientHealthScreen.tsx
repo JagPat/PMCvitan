@@ -3,7 +3,7 @@ import { useStore } from '@/store/store';
 import { selectApprovedDecisions, selectPending, selectTotalWorkers } from '@/store/selectors';
 import { Eyebrow, ProgressBar, Swatch } from '@/components';
 import { ArrowRight } from '@/lib/icons';
-import { PROJECT, signed, swatch as swatchGradient } from '@vitan/shared';
+import { signed, swatch as swatchGradient } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function ClientHealthScreen() {
@@ -12,6 +12,8 @@ export function ClientHealthScreen() {
   const workers = useStore(selectTotalWorkers);
   const checkedIn = useStore((s) => s.dailyLog.checkedIn);
   const setScreen = useStore((s) => s.setScreen);
+  const short = useStore((s) => s.short); // live project identity, not the seed
+  const milestonePct = useStore((s) => s.milestonePct);
 
   const healthLine = checkedIn ? `Site active today · ${workers} workers` : 'Site opens shortly today';
   const countLabel = `${pending.length} ${pending.length === 1 ? 'decision waiting' : 'decisions waiting'} for you`;
@@ -26,7 +28,7 @@ export function ClientHealthScreen() {
     <div className={styles.clientScreen}>
       <div style={{ padding: '8px 0 12px' }}>
         <Eyebrow size={9}>PROJECT HEALTH</Eyebrow>
-        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 26, fontWeight: 500, marginTop: 4, lineHeight: 1.15 }}>{PROJECT.short}</div>
+        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 26, fontWeight: 500, marginTop: 4, lineHeight: 1.15 }}>{short}</div>
         <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>Finishing stage · On track</div>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 10, background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 20, padding: '6px 12px' }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)' }} />
@@ -50,10 +52,10 @@ export function ClientHealthScreen() {
       <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.12)', borderRadius: 16, padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <span style={{ fontWeight: 600, fontSize: 14 }}>Overall progress</span>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{PROJECT.milestonePct}%</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{milestonePct}%</span>
         </div>
         <div style={{ marginTop: 10 }}>
-          <ProgressBar pct={PROJECT.milestonePct} />
+          <ProgressBar pct={milestonePct} />
         </div>
       </div>
 

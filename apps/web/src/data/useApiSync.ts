@@ -37,7 +37,11 @@ export function useApiSync(): void {
         .then((snap) => {
           if (!cancelled) useStore.getState().applySnapshot(snap);
         })
-        .catch(() => {});
+        .catch(() => {
+          // the snapshot didn't arrive — don't strand the app in the project-switch
+          // loading state (the records were already cleared, so nothing stale shows).
+          if (!cancelled) useStore.setState((s) => { s.projectSwitching = false; });
+        });
     };
 
     (async () => {

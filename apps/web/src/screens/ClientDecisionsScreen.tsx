@@ -3,7 +3,7 @@ import { useStore } from '@/store/store';
 import { selectPending } from '@/store/selectors';
 import { Eyebrow, Swatch, Button } from '@/components';
 import { Check } from '@/lib/icons';
-import { signed, PROJECT, type Decision } from '@vitan/shared';
+import { signed, type Decision } from '@vitan/shared';
 import { groupDecisions } from '@/lib/locationTree';
 import styles from './responsive.module.css';
 
@@ -11,6 +11,7 @@ export function ClientDecisionsScreen() {
   const pending = useStore(useShallow(selectPending));
   const nodes = useStore(useShallow((s) => s.nodes));
   const openApprove = useStore((s) => s.openApprove);
+  const short = useStore((s) => s.short); // live project identity, not the seed
 
   const countLabel = `${pending.length} ${pending.length === 1 ? 'decision waiting' : 'decisions waiting'}`;
   // group by location so the client can work through a zone/room at a time
@@ -19,7 +20,7 @@ export function ClientDecisionsScreen() {
   return (
     <div className={styles.clientScreen}>
       <div style={{ padding: '10px 0 16px' }}>
-        <Eyebrow size={9}>{PROJECT.short.toUpperCase()}</Eyebrow>
+        <Eyebrow size={9}>{short.toUpperCase()}</Eyebrow>
         <div style={{ fontFamily: 'var(--font-serif)', fontSize: 27, fontWeight: 500, marginTop: 4, lineHeight: 1.15 }}>
           Decisions waiting for you
         </div>

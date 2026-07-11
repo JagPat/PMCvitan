@@ -47,6 +47,49 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     expect(s().role).toBe('client');
   });
 
+  it('switchProject drops the previous project’s records + shows a loading state (no stale data)', async () => {
+    const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'JWT-p2', role: 'client', projectId: 'p2', name: 'Mr. Shah' }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.memberships = [{ projectId: 'p2', name: 'Villa Shah', short: 'Villa 2', role: 'client', orgId: 'o', orgName: 'Vitan' }]; });
+    // sanity: we start on the seeded Ambli project with records loaded
+    expect(s().decisions.length).toBeGreaterThan(0);
+
+    s().switchProject('p2');
+    await flush();
+
+    // the previous project's records are gone (not carried under the new selection)
+    expect(s().decisions).toEqual([]);
+    expect(s().activities).toEqual([]);
+    expect(s().drawings).toEqual([]);
+    expect(s().nodes).toEqual([]);
+    expect(s().notifications).toEqual([]);
+    // and we're in the loading state, re-labelled to the new project, until its snapshot lands
+    expect(s().projectSwitching).toBe(true);
+    expect(s().short).toBe('Villa 2');
+    expect(s().name).toBe('Villa Shah');
+  });
+
+  it('applySnapshot ignores a snapshot for a project we’ve since left (no cross-project overwrite)', () => {
+    // pretend we've switched to p2 and are awaiting its snapshot
+    useStore.setState((st) => { st.activeProjectId = 'p2'; st.projectSwitching = true; st.decisions = []; });
+    // a late snapshot from the OLD project (ambli) arrives — it must be dropped
+    s().applySnapshot(makeSnapshot({ decisions: [{ id: 'DL-OLD', title: 'stale', room: '', status: 'pending', photoSwatch: 'marble', options: [] }] }));
+    expect(s().decisions).toEqual([]); // not applied
+    expect(s().projectSwitching).toBe(true); // still waiting for p2
+
+    // the matching p2 snapshot lands → applied, loading cleared, identity live
+    s().applySnapshot(makeSnapshot({ project: { ...makeSnapshot().project, id: 'p2', name: 'Villa Shah', short: 'Villa 2' } }));
+    expect(s().projectSwitching).toBe(false);
+    expect(s().short).toBe('Villa 2');
+    expect(s().name).toBe('Villa Shah');
+  });
+
+  it('applySnapshot hydrates live project identity (name + short) from the snapshot', () => {
+    s().applySnapshot(makeSnapshot({ project: { ...makeSnapshot().project, name: 'Bodakdev House', short: 'Bodakdev' } }));
+    expect(s().name).toBe('Bodakdev House');
+    expect(s().short).toBe('Bodakdev');
+  });
+
   it('addMember posts then reloads the team', async () => {
     const gw = {
       addMember: vi.fn().mockResolvedValue({}),

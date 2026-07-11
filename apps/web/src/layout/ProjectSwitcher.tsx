@@ -3,7 +3,6 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Modal } from '@/components';
 import { ChevronRight, Plus, Check } from '@/lib/icons';
-import { PROJECT } from '@vitan/shared';
 import type { NewProjectInput } from '@/data/apiGateway';
 
 /** Active-project display + switcher for the left rail. Real data arrives from
@@ -17,8 +16,9 @@ export function ProjectSwitcher() {
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
 
+  const liveShort = useStore((s) => s.short);
   const active = memberships.find((m) => m.projectId === activeProjectId);
-  const label = active?.short ?? PROJECT.short;
+  const label = active?.short ?? liveShort;
   const adminOrg = myOrgs.find((o) => o.role === 'owner' || o.role === 'admin');
   const canSwitch = memberships.length > 1 || Boolean(adminOrg);
 

@@ -29,6 +29,7 @@ export function InboxScreen() {
   const state = useStore((s) => s);
   const items = useMemo(() => selectActionItems(state), [state]);
   const role = useStore((s) => s.role);
+  const short = useStore((s) => s.short); // this queue is scoped to the active project
   const setScreen = useStore((s) => s.setScreen);
 
   return (
@@ -38,7 +39,7 @@ export function InboxScreen() {
         {items.length ? `${items.length} thing${items.length === 1 ? ' needs' : 's need'} you` : 'You’re all caught up'}
       </div>
       <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6, maxWidth: 560 }}>
-        Everything waiting on you across the project — decisions, drawings, inspections and the site log — in one place. Tap a card to go straight there.
+        Everything waiting on you in <b>{short}</b> — decisions, drawings, inspections and the site log — in one place. Tap a card to go straight there. Switch projects in the left rail to see another.
       </div>
 
       {items.length === 0 ? (
