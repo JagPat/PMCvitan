@@ -71,6 +71,7 @@ model Project {
   orgId         String?
   memberships   Membership[]
   companies     ProjectCompany[]
+  nodes         ProjectNode[]
 }
 
 // A firm/consultant associated with a project — the client company, the main
@@ -266,12 +267,35 @@ model WorkerDevice {
   lastSeen  DateTime @default(now())
 }
 
+// A node in a project's location tree: zone → room → element (the object). Decisions
+// (and later activities / inspections / materials) attach to a node so they can be
+// grouped, filtered and browsed by where they live in the building.
+model ProjectNode {
+  id        String   @id @default(cuid())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  parent    ProjectNode?  @relation("NodeChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  parentId  String?
+  name      String
+  kind      String // zone | room | element
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  children  ProjectNode[] @relation("NodeChildren")
+  decisions Decision[]
+
+  @@index([projectId])
+  @@index([parentId])
+}
+
 model Decision {
   id             String           @id // e.g. "DL-014"
   project        Project          @relation(fields: [projectId], references: [id])
   projectId      String
   title          String
-  room           String
+  room           String // display fallback / legacy; the node path is authoritative when nodeId is set
+  node           ProjectNode?     @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  nodeId         String?
   status         DecisionStatus   @default(pending)
   ageDays        Int?
   photoSwatch    String

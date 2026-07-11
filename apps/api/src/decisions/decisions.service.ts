@@ -27,9 +27,23 @@ export class DecisionsService {
     const existing = await this.prisma.decision.findMany({ select: { id: true } });
     const id = nextSeqId('DL-', existing.map((d) => d.id));
     const lead = input.options.find((o) => o.recommended) ?? input.options[0];
+
+    // Location: when a tree node is given, validate it belongs to this project and derive
+    // the display `room` from the node's name (the full breadcrumb is built client-side
+    // from the node tree). Otherwise fall back to the free-text `room`.
+    let nodeId: string | null = null;
+    let room = input.room;
+    if (input.nodeId) {
+      const node = await this.prisma.projectNode.findUnique({ where: { id: input.nodeId } });
+      if (!node || node.projectId !== projectId) throw new BadRequestException('Unknown location for this project');
+      nodeId = node.id;
+      room = node.name;
+    }
+    if (!room) throw new BadRequestException('A decision needs a location (pick one, or type a room).');
+
     await this.prisma.$transaction([
       this.prisma.decision.create({
-        data: { id, projectId, title: input.title, room: input.room, status: 'pending', ageDays: 0, photoSwatch: lead.swatch },
+        data: { id, projectId, title: input.title, room, nodeId, status: 'pending', ageDays: 0, photoSwatch: lead.swatch },
       }),
       this.prisma.decisionOption.createMany({
         data: input.options.map((o, i) => ({

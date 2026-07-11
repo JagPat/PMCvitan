@@ -27,7 +27,7 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisions, activities, inspections, dailyLog, notifications, progressMedia, drawings, phases, companies] = await Promise.all([
+    const [decisions, activities, inspections, dailyLog, notifications, progressMedia, drawings, phases, companies, nodes] = await Promise.all([
       this.prisma.decision.findMany({
         where: { projectId },
         include: { options: { orderBy: { order: 'asc' } } },
@@ -54,6 +54,7 @@ export class SnapshotService {
       }),
       this.prisma.phase.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
       this.prisma.projectCompany.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
+      this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
     ]);
 
     const progressPhotos = progressMedia.map((m) => ({
@@ -71,6 +72,7 @@ export class SnapshotService {
         id: d.id,
         title: d.title,
         room: d.room,
+        nodeId: d.nodeId ?? undefined,
         status: d.status,
         ageDays: d.ageDays ?? undefined,
         photoSwatch: d.photoSwatch,
@@ -264,6 +266,8 @@ export class SnapshotService {
         contactPhone: c.contactPhone ?? '',
         notes: c.notes ?? '',
       })),
+      // The project location tree (zones → rooms → elements) the register groups by.
+      nodes: nodes.map((n) => ({ id: n.id, parentId: n.parentId ?? null, name: n.name, kind: n.kind as 'zone' | 'room' | 'element', order: n.order })),
     };
   }
 }

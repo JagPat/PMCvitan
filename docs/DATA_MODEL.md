@@ -7,10 +7,11 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 | Entity | Purpose | Key fields |
 |---|---|---|
 | `Project` | A construction project the practice manages | name, descriptor, stage, siteCode, projStart/projEnd |
+| `ProjectNode` | A node in the project's **location tree** (zone → room → object) | projectId, parentId, name, **kind** (`zone\|room\|element`), order |
 | `User` | An account-holding member (PMC/client/contractor) | name, email, phone |
 | `Membership` | A user's role on a project | userId, projectId, **role** (`pmc\|client\|engineer\|contractor`) |
 | `Worker` | On-site identity **without an account** (recognised by QR/face) | name, tradeKey, projectId |
-| `Decision` | A client decision | code (DL-014), title, room, **status** (`pending\|approved\|change`), approvedOptionId, approver, approvedAt, costPaise |
+| `Decision` | A client decision | code (DL-014), title, room, **nodeId** (location-tree link), **status** (`pending\|approved\|change`), approvedOptionId, approver, approvedAt, costPaise |
 | `DecisionOption` | An option presented for a decision | label, material, deltaPaise, swatch, recommended |
 | `DecisionEvent` | **Append-only** lifecycle/audit log | type (`issued\|approved\|locked\|change_requested`), actor, at, payload |
 | `ChangeRequest` | A change against a locked decision | reason, costImpactPaise, timeImpactDays, status |
@@ -42,6 +43,36 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 3. **Material mismatch**: flags `SiteMaterial.matched=false`, sets the linked `Activity` material gate to `fail`, transitions the activity to `blocked`, notifies PMC.
 4. **Complete activity**: sets `actualEnd`, auto-creates a closing `Inspection`, notifies.
 5. **Offline sync**: `SyncOutboxEntry` rows replay with idempotency keys on reconnect; stale writes to locked decisions are rejected.
+
+## Location tree (zones → rooms → objects)
+
+Decisions (and, in time, activities, inspections and materials) attach to a place on site instead of a free-text room string. `ProjectNode` is a per-project, self-referential tree with a **strict three-level hierarchy**:
+
+```
+ProjectNode  id, projectId, parentId?, name, kind (zone|room|element), order, createdAt
+             zone   → parentId = null           (e.g. "Ground Floor")
+             room   → parent is a zone           (e.g. "Master Bedroom")
+             element→ parent is a room           (e.g. "Main Door")  ← the "object"
+```
+
+An **object** ("Main Door") is an `element`; it can carry many decisions (the lock, the veneer) or just one. `Decision.nodeId` points at whichever level the decision belongs to (a room-wide finish attaches to the room; a lock attaches to the element). The link is `SET NULL` on delete so a decision is never lost when its node is removed.
+
+**Rules the server enforces** (`NodesService`):
+- **Parent-kind**: a `zone` has no parent; a `room` must sit under a `zone`; an `element` must sit under a `room`. Creating or moving a node to a wrong-kind parent is a `400`.
+- **Same project**: a parent must belong to the same project (else `404`).
+- **Cycle-safe move**: a node cannot be reparented under itself or any of its descendants.
+- **Delete guard**: a node whose subtree has any decision attached cannot be deleted (`400`) — detach or move the decisions first.
+
+```
+POST   /projects/:id/nodes                { name, kind, parentId? }   -> Snapshot   # pmc only
+PATCH  /projects/:id/nodes/:nodeId        { name }                    -> Snapshot   # pmc only
+POST   /projects/:id/nodes/:nodeId/move   { parentId, order? }        -> Snapshot   # pmc only
+DELETE /projects/:id/nodes/:nodeId                                    -> Snapshot   # pmc only
+```
+
+The snapshot carries the flat `nodes: NodeDto[]` list; the client rebuilds the tree (`apps/web/src/lib/locationTree.ts`) and **groups the register by location / room / object / status / flat**, showing the finer breadcrumb (`Master Bedroom › Main Door`) as a per-row caption. Issuing a decision uses a cascading Zone › Room › Object picker (with inline "＋ New…" node creation) rather than a free-text room field. Decisions issued before the tree existed keep their `room` string and fall back to an "Unfiled"/room-named group.
+
+> **Migration** `20260715000000_add_location_tree` is **additive and nullable** — it creates `ProjectNode` and adds a nullable `Decision.nodeId` (FK `ON DELETE SET NULL`); no backfill, no data rewrite, safe to apply on a live database.
 
 ## API contract (Phase 7, ts-rest sketch)
 

@@ -25,6 +25,7 @@ export const ROLE_POLICY = {
   // planning & scheduling — the PMC authors the plan
   'activity.manage': ['pmc'],
   'phase.manage': ['pmc'],
+  'node.manage': ['pmc'],
   'inspection.create': ['pmc'],
   'inspection.submit': ['engineer', 'pmc'],
   'inspection.decide': ['pmc'],

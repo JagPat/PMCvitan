@@ -262,10 +262,32 @@ const decisionOptionInput = z.object({
 });
 export const createDecisionSchema = z.object({
   title: z.string().trim().min(1),
-  room: z.string().trim().min(1),
+  // Location: either a tree node (authoritative) or the legacy free-text room. At least
+  // one is required — the service derives the display `room` from the node path when nodeId
+  // is set. `room` stays for back-compat and for decisions authored without the tree.
+  nodeId: z.string().trim().min(1).optional(),
+  room: z.string().trim().default(''),
   options: z.array(decisionOptionInput).min(2).max(4),
 });
 export type CreateDecisionInput = z.infer<typeof createDecisionSchema>;
+
+// ── Location tree (zones → rooms → elements) ─────────────────────────────────
+export const NODE_KINDS = ['zone', 'room', 'element'] as const;
+export const createNodeSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  kind: z.enum(NODE_KINDS),
+  parentId: z.string().trim().min(1).nullish(),
+});
+export type CreateNodeInput = z.infer<typeof createNodeSchema>;
+
+export const renameNodeSchema = z.object({ name: z.string().trim().min(1).max(80) });
+export type RenameNodeInput = z.infer<typeof renameNodeSchema>;
+
+export const moveNodeSchema = z.object({
+  parentId: z.string().trim().min(1).nullable(),
+  order: z.number().int().min(0).optional(),
+});
+export type MoveNodeInput = z.infer<typeof moveNodeSchema>;
 
 // Planning & scheduling (PMC). Planned start/end are day-offsets on the schedule
 // timeline (same unit the seeded schedule uses).

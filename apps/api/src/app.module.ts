@@ -28,6 +28,8 @@ import { SignedUrlService } from './media/signed-url.service';
 import { MediaService } from './media/media.service';
 import { MediaController } from './media/media.controller';
 import { DrawingsService } from './drawings/drawings.service';
+import { NodesService } from './nodes/nodes.service';
+import { NodesController } from './nodes/nodes.controller';
 import { DrawingsController } from './drawings/drawings.controller';
 import { PushService } from './push/push.service';
 import { PushController } from './push/push.controller';
@@ -63,6 +65,7 @@ import { CompaniesController } from './orgs/companies.controller';
     OrgsController,
     MembersController,
     CompaniesController,
+    NodesController,
   ],
   providers: [
     JwtGuard,
@@ -87,6 +90,7 @@ import { CompaniesController } from './orgs/companies.controller';
     OrgsService,
     MembersService,
     CompaniesService,
+    NodesService,
   ],
 })
 export class AppModule {}

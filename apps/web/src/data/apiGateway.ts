@@ -27,6 +27,8 @@ import type {
   ProjectCompany,
   CompanyKind,
   ProjectMember,
+  ProjectNode,
+  NodeKind,
   Review,
   Role,
 } from '@vitan/shared';
@@ -57,6 +59,7 @@ export interface ApiSnapshot {
   dailyLog: DailyLog | null;
   notifications: AppNotification[];
   companies: ProjectCompany[];
+  nodes: ProjectNode[];
 }
 
 /** Add a project team member (provisions the account when new). */
@@ -105,11 +108,20 @@ export interface ArchivedProject {
   archivedAt: string;
 }
 
-/** Issue-decision payload (PMC): 2–4 options; photoUrl comes from a prior media upload. */
+/** Issue-decision payload (PMC): 2–4 options; photoUrl comes from a prior media upload.
+ *  Location is either a tree node (`nodeId`, authoritative) or the free-text `room`. */
 export interface NewDecisionInput {
   title: string;
-  room: string;
+  nodeId?: string;
+  room?: string;
   options: { material: string; delta: number; swatch: string; photoUrl?: string; recommended?: boolean }[];
+}
+
+/** Create a location-tree node (PMC). */
+export interface NewNodeInput {
+  name: string;
+  kind: NodeKind;
+  parentId?: string | null;
 }
 
 export type GateInput = 'ok' | 'wait' | 'fail' | 'na';
@@ -345,6 +357,22 @@ export class ApiGateway {
   /** Issue a new decision (PMC) — appears pending on the client's screen. */
   createDecision(input: NewDecisionInput): Promise<ApiSnapshot> {
     return this.p('/decisions', input);
+  }
+  /** Create a location node (zone/room/element) — PMC. Returns a node-carrying snapshot. */
+  createNode(input: NewNodeInput): Promise<ApiSnapshot> {
+    return this.p('/nodes', input);
+  }
+  /** Rename a location node (PMC). */
+  renameNode(nodeId: string, name: string): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/nodes/${nodeId}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+  }
+  /** Reparent/reorder a location node (PMC). */
+  moveNode(nodeId: string, parentId: string | null, order?: number): Promise<ApiSnapshot> {
+    return this.p(`/nodes/${nodeId}/move`, { parentId, order });
+  }
+  /** Delete a location node (PMC) — refused server-side if decisions are attached. */
+  deleteNode(nodeId: string): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/nodes/${nodeId}`, { method: 'DELETE' });
   }
   /** Plan a new schedule activity (PMC). */
   createActivity(input: NewActivityInput): Promise<ApiSnapshot> {
