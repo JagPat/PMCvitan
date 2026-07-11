@@ -23,6 +23,9 @@ import {
   SEED_REVIEW,
   SEED_DRAWINGS,
   SEED_PHASES,
+  SEED_NODES,
+  SEED_PHOTOS,
+  SEED_MATERIALS,
   PROJECT,
   type AccessState,
   type AccessWho,
@@ -242,14 +245,14 @@ export function getInitialState(): AppState {
     toast: null,
     modal: { type: null },
     decisions: structuredClone(SEED_DECISIONS),
-    nodes: [], // populated from the server snapshot (empty in the local seed demo)
+    nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     reviews: [structuredClone(SEED_REVIEW)],
     activeReviewId: null,
     reinspectionCreated: false,
     drawings: structuredClone(SEED_DRAWINGS),
-    photos: [], // placed site photos come from the server snapshot (empty in the local seed demo)
-    materials: [], // placed materials come from the server snapshot (empty in the local seed demo)
+    photos: structuredClone(SEED_PHOTOS), // placed site photos for the demo Site Map
+    materials: structuredClone(SEED_MATERIALS), // placed deliveries for the demo Site Map
     phases: structuredClone(SEED_PHASES),
     activeProjectId: PROJECT_ID,
     memberships: [],

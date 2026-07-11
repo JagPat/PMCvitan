@@ -4,9 +4,9 @@ import { useStore } from '@/store/store';
 import { resolveDrawingUrl } from '@/data/apiGateway';
 import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer } from '@/components';
 import { DrawingViewer } from '@/screens/DrawingsScreen';
-import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks } from '@/lib/icons';
-import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation } from '@/lib/locationTree';
-import { type Drawing, type SwatchKey } from '@vitan/shared';
+import { MapPin, ChevronRight, FileText, Camera, LayoutGrid, Hammer, Blocks, HardHat } from '@/lib/icons';
+import { childrenOf, subtreeIds, trailOf, placeContents, type DrawingRelation, type PlacedDrawing } from '@/lib/locationTree';
+import { type Drawing, type Photo, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 const KIND_LABEL: Record<string, string> = { zone: 'ZONE', room: 'ROOM', element: 'OBJECT' };
@@ -127,6 +127,17 @@ export function PlacesScreen() {
             {activeNode ? `AT ${activeNode.name.toUpperCase()}${children.length ? ' AND BELOW' : ''}` : 'ACROSS THE WHOLE PROJECT'}
           </div>
 
+          {/* Intent vs Reality — the drawing that governs this place beside the photos of
+              what's actually built. Only where a comparison is meaningful (a node with both). */}
+          {active && contents.drawings.length > 0 && contents.photos.length > 0 && (
+            <IntentReality
+              placed={contents.drawings[0]}
+              photos={contents.photos}
+              onOpenDrawing={() => setOpenDrawing(contents.drawings[0].drawing)}
+              onZoom={setZoom}
+            />
+          )}
+
           {/* Work — activities happening here */}
           <Section icon={<Hammer size={13} />} title="Work" count={contents.activities.length} sub="site activities here">
             {contents.activities.length === 0 ? (
@@ -244,6 +255,78 @@ export function PlacesScreen() {
   );
 }
 
+/** Intent vs Reality — the governing drawing beside the site photos of what's built, so
+ *  "does it match?" is a glance. Shows the build-acknowledgement state on the drawing. */
+function IntentReality({
+  placed,
+  photos,
+  onOpenDrawing,
+  onZoom,
+}: {
+  placed: PlacedDrawing;
+  photos: Photo[];
+  onOpenDrawing: () => void;
+  onZoom: (url: string) => void;
+}) {
+  const { drawing, relation } = placed;
+  const cur = drawing.current;
+  const acks = cur?.acks ?? [];
+  const ackLine = !cur
+    ? 'No current revision'
+    : acks.length > 0
+      ? `Building to Rev ${cur.rev} · ${acks.length} acknowledged`
+      : `Rev ${cur.rev} · not yet acknowledged`;
+  const hero = photos[0];
+  const rm = RELATION_META[relation];
+
+  return (
+    <div data-testid="intent-reality" style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 14, padding: 14, marginBottom: 22 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
+        <span style={{ fontWeight: 700, fontSize: 14.5 }}>Intent vs Reality</span>
+        <span style={{ fontSize: 11.5, color: 'var(--faint)', marginLeft: 'auto' }}>drawn vs built</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 12, alignItems: 'stretch' }}>
+        {/* Intent — the drawing */}
+        <button onClick={onOpenDrawing} data-testid="ir-drawing" style={{ ...irCard, textAlign: 'left' }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.14em', color: 'var(--faint)', marginBottom: 6 }}>INTENT · DRAWN</div>
+          <div style={{ width: '100%', aspectRatio: '3 / 4', maxHeight: 210, borderRadius: 8, border: '1px solid var(--hairline)', background: cur ? `center/cover no-repeat url("${resolveDrawingUrl(cur.url)}"), var(--panel)` : 'var(--panel)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {!cur && <FileText size={22} color="#b8b2a6" />}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 12 }}>{drawing.number}</span>
+            <span style={{ ...relChip, color: rm.color, borderColor: rm.color }}>{rm.label}</span>
+          </div>
+          <div style={{ fontWeight: 600, fontSize: 13, marginTop: 3, lineHeight: 1.25 }}>{drawing.title}</div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: acks.length ? 'var(--green-text, #2F6B44)' : 'var(--muted)', marginTop: 6 }}>
+            <HardHat size={12} /> {ackLine}
+          </div>
+        </button>
+
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--faint)' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.1em' }}>VS</span>
+        </div>
+
+        {/* Reality — the photos */}
+        <div style={{ ...irCard }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.14em', color: 'var(--faint)', marginBottom: 6 }}>REALITY · BUILT</div>
+          <button onClick={() => hero && onZoom(hero.url)} data-testid="ir-photo" style={{ width: '100%', aspectRatio: '3 / 4', maxHeight: 210, borderRadius: 8, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+            {hero && <img src={hero.url} alt="Latest site photo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+            {photos.slice(1, 4).map((p) => (
+              <button key={p.id} onClick={() => onZoom(p.url)} style={{ width: 34, height: 34, borderRadius: 6, border: '1px solid rgba(35,33,28,.12)', padding: 0, overflow: 'hidden', cursor: 'zoom-in', background: '#000' }}>
+                <img src={p.url} alt="Site photo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              </button>
+            ))}
+            {photos.length > 4 && <span style={{ fontSize: 11, color: 'var(--faint)' }}>+{photos.length - 4}</span>}
+          </div>
+          {hero?.takenAt && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Latest · {hero.takenAt}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Section({ icon, title, count, sub, children }: { icon: React.ReactNode; title: string; count: number; sub: string; children: React.ReactNode }) {
   return (
     <div style={{ marginBottom: 22 }}>
@@ -268,6 +351,16 @@ const nodeCard: CSSProperties = {
   borderRadius: 12,
   padding: '11px 13px',
   cursor: 'pointer',
+};
+
+const irCard: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  background: '#fff',
+  border: '1px solid var(--hairline)',
+  borderRadius: 12,
+  padding: 11,
+  minWidth: 0,
 };
 
 const rowCard: CSSProperties = {

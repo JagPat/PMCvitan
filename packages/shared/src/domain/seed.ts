@@ -14,6 +14,9 @@ import type {
   Review,
   Drawing,
   Phase,
+  ProjectNode,
+  Photo,
+  Material,
 } from './types';
 
 export const PROJECT = {
@@ -33,6 +36,7 @@ export const PROJECT = {
 export const SEED_DECISIONS: Decision[] = [
   {
     id: 'DL-014',
+    nodeId: 'r-living',
     title: 'Living Room Flooring',
     room: 'Ground Floor · Living',
     status: 'pending',
@@ -45,6 +49,7 @@ export const SEED_DECISIONS: Decision[] = [
   },
   {
     id: 'DL-011',
+    nodeId: 'e-maindoor',
     title: 'Main Door Veneer',
     room: 'Ground Floor · Entrance',
     status: 'pending',
@@ -57,6 +62,7 @@ export const SEED_DECISIONS: Decision[] = [
   },
   {
     id: 'DL-009',
+    nodeId: 'r-mbath',
     title: 'Master Bath CP Fittings',
     room: 'Second Floor · Master Bath',
     status: 'approved',
@@ -89,6 +95,7 @@ export const SEED_DECISIONS: Decision[] = [
   },
   {
     id: 'DL-003',
+    nodeId: 'r-kitchen',
     title: 'Kitchen Counter Top',
     room: 'Ground Floor · Kitchen',
     status: 'change',
@@ -154,6 +161,7 @@ export const SEED_DRAWINGS: Drawing[] = [
   {
     id: 'DWG-1',
     number: 'A-201',
+    nodeId: 'r-living',
     title: 'Living Room — Flooring Layout',
     discipline: 'architectural',
     zone: 'Ground Floor · Living',
@@ -170,6 +178,7 @@ export const SEED_DRAWINGS: Drawing[] = [
   {
     id: 'DWG-2',
     number: 'S-101',
+    nodeId: 'z-terrace',
     title: 'Terrace — Slab & Waterproofing Detail',
     discipline: 'structural',
     zone: 'Terrace',
@@ -184,6 +193,7 @@ export const SEED_DRAWINGS: Drawing[] = [
   {
     id: 'DWG-3',
     number: 'SK-07',
+    nodeId: 'e-maindoor',
     title: 'Main Door — Veneer Grain Reference',
     discipline: 'other',
     zone: 'Ground Floor · Entrance',
@@ -199,11 +209,11 @@ export const SEED_DRAWINGS: Drawing[] = [
 
 export const SEED_ACTIVITIES: Activity[] = [
   { id: 'ACT-22', name: 'Electrical Rough-In', zone: 'Second Floor', decisionId: null, phaseId: 'PH-services', ps: 9, pe: 19, as: 9, ae: 18, status: 'done', gm: 'ok', gt: 'ok', gi: 'ok' },
-  { id: 'ACT-25', name: 'Master Bath CP Fittings', zone: 'Second Floor · Master Bath', decisionId: 'DL-009', phaseId: 'PH-wetareas', ps: 19, pe: 27, as: 20, ae: 26, status: 'done', gm: 'ok', gt: 'ok', gi: 'ok' },
-  { id: 'ACT-28', name: 'Waterproofing — Terrace', zone: 'Terrace', decisionId: null, phaseId: 'PH-services', ps: 23, pe: 30, as: 24, ae: null, status: 'blocked', gm: 'ok', gt: 'ok', gi: 'fail', block: 'Ponding test failed — drain slope' },
-  { id: 'ACT-31', name: 'Living Room Flooring', zone: 'Ground Floor · Living', decisionId: 'DL-014', phaseId: 'PH-finishing', ps: 34, pe: 41, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'wait', gi: 'wait' },
+  { id: 'ACT-25', nodeId: 'r-mbath', name: 'Master Bath CP Fittings', zone: 'Second Floor · Master Bath', decisionId: 'DL-009', phaseId: 'PH-wetareas', ps: 19, pe: 27, as: 20, ae: 26, status: 'done', gm: 'ok', gt: 'ok', gi: 'ok' },
+  { id: 'ACT-28', nodeId: 'z-terrace', name: 'Waterproofing — Terrace', zone: 'Terrace', decisionId: null, phaseId: 'PH-services', ps: 23, pe: 30, as: 24, ae: null, status: 'blocked', gm: 'ok', gt: 'ok', gi: 'fail', block: 'Ponding test failed — drain slope' },
+  { id: 'ACT-31', nodeId: 'r-living', name: 'Living Room Flooring', zone: 'Ground Floor · Living', decisionId: 'DL-014', phaseId: 'PH-finishing', ps: 34, pe: 41, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'wait', gi: 'wait' },
   { id: 'ACT-35', name: 'Staircase Railing', zone: 'Staircase · G to 2', decisionId: 'DL-006', phaseId: 'PH-finishing', ps: 37, pe: 44, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'na', gi: 'wait' },
-  { id: 'ACT-33', name: 'Main Door Veneer', zone: 'Ground Floor · Entrance', decisionId: 'DL-011', phaseId: 'PH-finishing', ps: 43, pe: 47, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'na', gi: 'na' },
+  { id: 'ACT-33', nodeId: 'e-maindoor', name: 'Main Door Veneer', zone: 'Ground Floor · Entrance', decisionId: 'DL-011', phaseId: 'PH-finishing', ps: 43, pe: 47, as: null, ae: null, status: 'not-started', gm: 'wait', gt: 'na', gi: 'na' },
 ];
 
 /** Seeded project phases with rollups pre-computed from SEED_ACTIVITIES above —
@@ -233,6 +243,49 @@ export const SEED_DAILY_LOG: DailyLog = {
   progress: 2,
   photos: [],
 };
+
+/**
+ * The project's location tree (zones → rooms → objects) for the local demo. The API
+ * serves the real tree; this lets the whole location spine — the Decision Log grouping,
+ * the pickers and the Site Map — work offline. Ids are stable so the seed rows above
+ * (decisions, drawings, activities) reference them.
+ */
+export const SEED_NODES: ProjectNode[] = [
+  { id: 'z-gf', parentId: null, name: 'Ground Floor', kind: 'zone', order: 0 },
+  { id: 'r-living', parentId: 'z-gf', name: 'Living Room', kind: 'room', order: 0 },
+  { id: 'r-entrance', parentId: 'z-gf', name: 'Entrance', kind: 'room', order: 1 },
+  { id: 'e-maindoor', parentId: 'r-entrance', name: 'Main Door', kind: 'element', order: 0 },
+  { id: 'r-kitchen', parentId: 'z-gf', name: 'Kitchen', kind: 'room', order: 2 },
+  { id: 'z-sf', parentId: null, name: 'Second Floor', kind: 'zone', order: 1 },
+  { id: 'r-mbath', parentId: 'z-sf', name: 'Master Bath', kind: 'room', order: 0 },
+  { id: 'z-terrace', parentId: null, name: 'Terrace', kind: 'zone', order: 2 },
+];
+
+/** A mock site photo as an inline SVG data URL — stands in for a real geo/time-stamped
+ *  photo in the local demo (the API serves real images). */
+function photo(label: string, tint: string): string {
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400'>
+    <rect width='400' height='400' fill='${tint}'/>
+    <rect width='400' height='120' y='280' fill='rgba(0,0,0,.28)'/>
+    <text x='20' y='330' font-family='sans-serif' font-weight='700' font-size='19' fill='#fff'>${label}</text>
+    <text x='20' y='356' font-family='monospace' font-size='12' fill='rgba(255,255,255,.85)'>SITE PHOTO · geo + time stamped</text>
+  </svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+/** Placed site photos for the demo Site Map — the "reality" layer at a location. */
+export const SEED_PHOTOS: Photo[] = [
+  { id: 'ph-3', url: photo('Living Room — marble dry-lay', '#b7a98d'), takenAt: '03 Jul 2026', nodeId: 'r-living', kind: 'progress' },
+  { id: 'ph-2', url: photo('Living Room — screed poured', '#8a8378'), takenAt: '01 Jul 2026', nodeId: 'r-living', kind: 'progress' },
+  { id: 'ph-1', url: photo('Main Door — veneer applied', '#6b4a2f'), takenAt: '03 Jul 2026', nodeId: 'e-maindoor', kind: 'progress' },
+];
+
+/** All material deliveries across the project, placed on the tree — the Site Map's
+ *  "materials here" (the demo mirror of the server's top-level `materials[]`). */
+export const SEED_MATERIALS: Material[] = [
+  { id: 'm-1', name: 'Italian Marble (Botticino)', qty: '42 boxes', zone: 'Zone B · covered, on pallets', matched: true, swatch: 'marble', decisionId: 'DL-014', nodeId: 'r-living' },
+  { id: 'm-2', name: 'CP Fittings — Kohler', qty: 'Set of 6', zone: 'Store room · locked', matched: true, swatch: 'chrome', decisionId: 'DL-009', nodeId: 'r-mbath' },
+];
 
 export const SEED_NOTIFICATIONS: AppNotification[] = [
   { text: 'Client approved Master Bath CP Fittings — Kohler', time: '2h ago', color: '#3F7A54' },
