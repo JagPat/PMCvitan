@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
-import { selectDraftDecisions, selectPending, selectLogDecisions } from '@/store/selectors';
+import { selectDraftDecisions, selectPending, selectLogDecisions, selectApprovedDecisions } from '@/store/selectors';
 
 const s = () => useStore.getState();
 
@@ -42,6 +42,15 @@ describe('draft → publish lifecycle (decisions)', () => {
     // the client is told, exactly once
     expect(s().notifications.length).toBe(notifBefore + 1);
     expect(s().notifications[0].text).toContain('Living Room Feature Wall');
+  });
+
+  it('selectApprovedDecisions excludes a draft even if it were marked approved (defensive)', () => {
+    // force the impossible-today state to prove the client-facing surfaces can never leak a draft
+    useStore.setState((st) => {
+      const row = st.decisions.find((d) => d.id === 'DL-015')!;
+      row.status = 'approved';
+    });
+    expect(selectApprovedDecisions(s()).some((d) => d.id === 'DL-015')).toBe(false);
   });
 
   it('publishing is idempotent-ish: a second publish of the same id is a no-op', () => {

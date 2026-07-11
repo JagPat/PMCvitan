@@ -79,7 +79,7 @@ export function TeamAccessScreen() {
   const pickWorker = useStore((s) => s.pickWorker);
   const speakJob = useStore((s) => s.speakJob);
   const workerDone = useStore((s) => s.workerDone);
-  const approvedDecisions = useStore(useShallow((s) => s.decisions.filter((d) => d.status === 'approved').slice(0, 2)));
+  const approvedDecisions = useStore(useShallow((s) => s.decisions.filter((d) => d.status === 'approved' && !d.draft).slice(0, 2)));
   const { t, trade: tradeLabel, workerTrade } = useT();
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');

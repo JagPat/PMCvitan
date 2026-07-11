@@ -36,6 +36,13 @@ export function selectDraftDecisions(s: AppState): Decision[] {
   return s.decisions.filter((d) => d.draft);
 }
 
+/** Approved (locked) decisions for the shared surfaces (client health, badge). Excludes
+ *  drafts defensively: a draft is never approved today, but this guard keeps these
+ *  client-facing reads matching the server's author-only rule regardless of future state. */
+export function selectApprovedDecisions(s: AppState): Decision[] {
+  return s.decisions.filter((d) => d.status === 'approved' && !d.draft);
+}
+
 // ---- inspections ----
 
 /** The review the PMC is acting on: the selected one, else the first pending, else the first. */
