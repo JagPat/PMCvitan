@@ -67,6 +67,15 @@ HVAC / Lighting / Landscape / Interior / Façade / Acoustics / Other). Change or
 by switching their role. (A firm can also be recorded as a **Company / Consultant** on the same
 screen — that's a directory contact, distinct from a login-bearing member.)
 
+**Discipline-scoped views.** A consultant's discipline scopes what they land on: the **Drawings
+register defaults to their discipline's set** — the four register buckets are
+`architectural | structural | mep | other`, and `drawingDisciplineFor()` maps the finer
+disciplines onto them (so lighting / plumbing / electrical / HVAC → **MEP**, architect /
+interior / façade → **architectural**, etc.). It's a **soft default**, not a hard filter: a
+one-tap **"All disciplines"** toggle shows the whole register, because consultants routinely need
+to coordinate against other trades' drawings. (The discipline travels on `/me/memberships`; the
+demo persona has no membership, so a consultant there falls back to a representative discipline.)
+
 The exact who-can-do-what allowlist for every action lives in one place —
 `packages/shared/src/domain/policy.ts` (`ROLE_POLICY`) — and the API and web UI both read
 from it, with a CI test that fails if they ever drift.

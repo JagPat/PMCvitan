@@ -274,7 +274,7 @@ export class AuthService {
 
   /** Projects the user can access (their memberships; falls back to the legacy home project). */
   async listMemberships(userId: string): Promise<
-    Array<{ projectId: string; name: string; short: string; role: Role; orgId: string | null; orgName: string | null }>
+    Array<{ projectId: string; name: string; short: string; role: Role; discipline?: string; orgId: string | null; orgName: string | null }>
   > {
     const memberships = await this.prisma.membership.findMany({
       where: { userId, status: 'active' },
@@ -287,6 +287,8 @@ export class AuthService {
         name: m.project.name,
         short: m.project.short,
         role: m.role as Role,
+        // a consultant's discipline scopes what they see by default (e.g. their drawings)
+        discipline: m.discipline ?? undefined,
         orgId: m.project.orgId,
         orgName: m.project.org?.name ?? null,
       }));
@@ -299,7 +301,7 @@ export class AuthService {
       const projects = await this.prisma.project.findMany({ where: { orgId: { in: adminOrgs.map((o) => o.orgId) }, archivedAt: null }, include: { org: true } });
       for (const p of projects) {
         if (!have.has(p.id)) {
-          rows.push({ projectId: p.id, name: p.name, short: p.short, role: 'pmc' as Role, orgId: p.orgId, orgName: p.org?.name ?? null });
+          rows.push({ projectId: p.id, name: p.name, short: p.short, role: 'pmc' as Role, discipline: undefined, orgId: p.orgId, orgName: p.org?.name ?? null });
           have.add(p.id);
         }
       }
