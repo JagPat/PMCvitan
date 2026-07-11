@@ -9,6 +9,8 @@ export interface MemberDto {
   email: string | null;
   phone: string | null;
   role: string;
+  /** for a `consultant` member: the discipline they cover */
+  discipline?: string;
   status: string;
 }
 
@@ -43,13 +45,19 @@ export class MembersService {
       include: { user: true },
       orderBy: { createdAt: 'asc' },
     });
-    return rows.map((m) => ({ userId: m.userId, name: m.user.name, email: m.user.email, phone: m.user.phone, role: m.role, status: m.status }));
+    return rows.map((m) => ({ userId: m.userId, name: m.user.name, email: m.user.email, phone: m.user.phone, role: m.role, discipline: m.discipline ?? undefined, status: m.status }));
+  }
+
+  /** A discipline is only meaningful for a consultant — clear it for any other role. */
+  private disciplineFor(role: string, discipline?: string): string | null {
+    return role === 'consultant' ? (discipline ?? null) : null;
   }
 
   async add(projectId: string, requester: AuthUser, input: AddMemberInput): Promise<MemberDto> {
     await this.assertCanManage(projectId, requester);
     const email = input.email?.toLowerCase();
     const phone = input.phone;
+    const discipline = this.disciplineFor(input.role, input.discipline);
 
     let user =
       (email && (await this.prisma.user.findUnique({ where: { email } }))) ||
@@ -62,18 +70,21 @@ export class MembersService {
 
     const membership = await this.prisma.membership.upsert({
       where: { projectId_userId: { projectId, userId: user.id } },
-      update: { role: input.role, status: 'active' },
-      create: { projectId, userId: user.id, role: input.role, status: 'active' },
+      update: { role: input.role, discipline, status: 'active' },
+      create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
     });
-    return { userId: user.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, status: membership.status };
+    return { userId: user.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status };
   }
 
   async updateRole(projectId: string, requester: AuthUser, userId: string, input: UpdateMemberInput): Promise<MemberDto> {
     await this.assertCanManage(projectId, requester);
     const existing = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { user: true } });
     if (!existing) throw new NotFoundException('Member not found on this project');
-    const membership = await this.prisma.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { role: input.role } });
-    return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, role: membership.role, status: membership.status };
+    const membership = await this.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId } },
+      data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
+    });
+    return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status };
   }
 
   async remove(projectId: string, requester: AuthUser, userId: string): Promise<{ ok: boolean }> {

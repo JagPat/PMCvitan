@@ -74,6 +74,8 @@ export interface AddMemberInput {
   role: Role;
   email?: string;
   phone?: string;
+  /** for a consultant: the discipline they cover (architect / lighting / plumbing / …) */
+  discipline?: string;
 }
 
 /** Add someone to an org's admin roster (owner/admin/member). */
@@ -341,9 +343,9 @@ export class ApiGateway {
   addMember(input: AddMemberInput): Promise<ProjectMember> {
     return this.req(`/projects/${this.projectId}/members`, { method: 'POST', body: JSON.stringify(input) });
   }
-  /** Change a member's role. */
-  updateMemberRole(userId: string, role: Role): Promise<ProjectMember> {
-    return this.req(`/projects/${this.projectId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role }) });
+  /** Change a member's role (and, for a consultant, their discipline). */
+  updateMemberRole(userId: string, role: Role, discipline?: string): Promise<ProjectMember> {
+    return this.req(`/projects/${this.projectId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role, ...(discipline ? { discipline } : {}) }) });
   }
   /** Remove a member from the active project (soft delete). */
   removeMember(userId: string): Promise<{ ok: boolean }> {

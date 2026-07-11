@@ -3,12 +3,13 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button, Modal } from '@/components';
 import { Plus, X, Trash2, Pencil } from '@/lib/icons';
-import type { OrgRole, Role, CompanyKind, ProjectCompany } from '@vitan/shared';
+import { CONSULTANT_DISCIPLINES, type OrgRole, type Role, type CompanyKind, type ProjectCompany } from '@vitan/shared';
 import type { AddMemberInput, NewProjectInput, CompanyInput } from '@/data/apiGateway';
 import styles from './responsive.module.css';
 
-const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor'];
-const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Engineer', contractor: 'Contractor', worker: 'Worker' };
+const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor', 'consultant'];
+const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Engineer', contractor: 'Contractor', consultant: 'Consultant', worker: 'Worker' };
+const discLabel = (d: string) => d.charAt(0).toUpperCase() + d.slice(1);
 const ORG_ROLES: OrgRole[] = ['owner', 'admin', 'member'];
 const ORG_ROLE_LABEL: Record<OrgRole, string> = { owner: 'Owner', admin: 'Admin', member: 'Member' };
 const COMPANY_KINDS: CompanyKind[] = ['client', 'contractor', 'architect', 'structural', 'mep', 'pmc', 'consultant', 'other'];
@@ -52,11 +53,17 @@ export function TeamScreen() {
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
   const [role, setRole] = useState<Role>('engineer');
+  const [discipline, setDiscipline] = useState<string>('architect');
   const isEmail = contact.includes('@');
   const ready = name.trim() && contact.trim();
   const submit = () => {
     if (!ready) return;
-    const input: AddMemberInput = { name: name.trim(), role, ...(isEmail ? { email: contact.trim() } : { phone: contact.replace(/\D/g, '') }) };
+    const input: AddMemberInput = {
+      name: name.trim(),
+      role,
+      ...(role === 'consultant' ? { discipline } : {}),
+      ...(isEmail ? { email: contact.trim() } : { phone: contact.replace(/\D/g, '') }),
+    };
     addMember(input);
     setName('');
     setContact('');
@@ -91,9 +98,14 @@ export function TeamScreen() {
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 22, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="member-name" />
           <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="member-contact" />
-          <select value={role} onChange={(e) => setRole(e.target.value as Role)} style={{ ...fld, flex: '0 0 130px' }}>
+          <select value={role} onChange={(e) => setRole(e.target.value as Role)} style={{ ...fld, flex: '0 0 130px' }} data-testid="member-role">
             {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
           </select>
+          {role === 'consultant' && (
+            <select value={discipline} onChange={(e) => setDiscipline(e.target.value)} style={{ ...fld, flex: '0 0 130px' }} data-testid="member-discipline" aria-label="Discipline">
+              {CONSULTANT_DISCIPLINES.map((d) => <option key={d} value={d}>{discLabel(d)}</option>)}
+            </select>
+          )}
           <Button variant="ink" onClick={submit} disabled={!ready} data-testid="add-member" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '11px 15px', fontSize: 13 }}>
             <Plus size={15} /> Add
           </Button>
@@ -106,15 +118,25 @@ export function TeamScreen() {
           <div key={m.userId} style={cardStyle}>
             <div style={{ width: 40, height: 40, flex: 'none', borderRadius: '50%', background: 'var(--ink)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 16 }}>{m.name[0]}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600, fontSize: 15 }}>{m.name}</div>
+              <div style={{ fontWeight: 600, fontSize: 15, display: 'flex', alignItems: 'center', gap: 7 }}>
+                {m.name}
+                {m.role === 'consultant' && m.discipline && <span style={discChip}>{discLabel(m.discipline)}</span>}
+              </div>
               <div style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.email ?? m.phone ?? '—'}</div>
             </div>
             {canManage ? (
-              <select value={m.role} onChange={(e) => updateMemberRole(m.userId, e.target.value as Role)} style={{ ...fld, flex: '0 0 120px', height: 38 }}>
-                {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
-              </select>
+              <>
+                <select value={m.role} onChange={(e) => { const r = e.target.value as Role; updateMemberRole(m.userId, r, r === 'consultant' ? (m.discipline ?? 'architect') : undefined); }} style={{ ...fld, flex: '0 0 120px', height: 38 }} data-testid={`member-role-${m.userId}`}>
+                  {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                </select>
+                {m.role === 'consultant' && (
+                  <select value={m.discipline ?? 'architect'} onChange={(e) => updateMemberRole(m.userId, 'consultant', e.target.value)} style={{ ...fld, flex: '0 0 120px', height: 38 }} aria-label={`Discipline for ${m.name}`}>
+                    {CONSULTANT_DISCIPLINES.map((d) => <option key={d} value={d}>{discLabel(d)}</option>)}
+                  </select>
+                )}
+              </>
             ) : (
-              <span style={roleChip}>{ROLE_LABEL[m.role]}</span>
+              <span style={roleChip}>{ROLE_LABEL[m.role]}{m.role === 'consultant' && m.discipline ? ` · ${discLabel(m.discipline)}` : ''}</span>
             )}
             {canManage && (
               <button onClick={() => removeMember(m.userId)} aria-label={`Remove ${m.name}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 4 }}>
@@ -399,4 +421,5 @@ function CompanyModal({ company, onClose }: { company: ProjectCompany | null; on
 const cardStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, background: '#fff', border: '1px solid var(--hairline)', borderRadius: 13, padding: '12px 14px' };
 const fld: CSSProperties = { height: 44, padding: '0 12px', borderRadius: 10, border: '1px solid rgba(35,33,28,.18)', background: '#fff', fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)', outline: 'none' };
 const roleChip: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 700, letterSpacing: '.06em', padding: '4px 9px', borderRadius: 6, border: '1px solid var(--hairline)', color: 'var(--muted)', textTransform: 'uppercase' };
+const discChip: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 8.5, fontWeight: 700, letterSpacing: '.06em', padding: '2px 6px', borderRadius: 5, border: '1px solid var(--accent)', color: 'var(--accent)', textTransform: 'uppercase' };
 const iconBtn: CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 4 };

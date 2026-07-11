@@ -9,7 +9,7 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 | `Project` | A construction project the practice manages | name, descriptor, stage, siteCode, projStart/projEnd |
 | `ProjectNode` | A node in the project's **location tree** (zone → room → object) | projectId, parentId, name, **kind** (`zone\|room\|element`), order |
 | `User` | An account-holding member (PMC/client/contractor) | name, email, phone |
-| `Membership` | A user's role on a project | userId, projectId, **role** (`pmc\|client\|engineer\|contractor`) |
+| `Membership` | A user's role on a project | userId, projectId, **role** (`pmc\|client\|engineer\|contractor\|consultant`), **discipline** (label for a consultant, e.g. lighting/plumbing) |
 | `Worker` | On-site identity **without an account** (recognised by QR/face) | name, tradeKey, projectId |
 | `Decision` | A client decision | code (DL-014), title, room, **nodeId** (location-tree link), **status** (`pending\|approved\|change`), approvedOptionId, approver, approvedAt, costPaise |
 | `DecisionOption` | An option presented for a decision | label, material, deltaPaise, swatch, recommended |

@@ -12,7 +12,7 @@ export class ProjectController {
    *  Interactive session roles only — an anonymously-minted worker device token gets the
    *  QR job-card flow, not the project's decisions/drawings/inspections (SEC-02). */
   @Get('snapshot')
-  @Roles('pmc', 'client', 'engineer', 'contractor')
+  @Roles('pmc', 'client', 'engineer', 'contractor', 'consultant')
   snapshotFor(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
     return this.snapshot.build(projectId, user.role, user.sub);
   }

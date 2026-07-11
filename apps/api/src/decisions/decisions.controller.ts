@@ -37,7 +37,7 @@ export class DecisionsController {
    *  engineer (the engineer's Decision Log UI exposes this, and the service records
    *  `actor: user.role`, so all four are legitimate change requesters). */
   @Post(':decisionId/change')
-  @Roles('pmc', 'client', 'contractor', 'engineer')
+  @Roles('pmc', 'client', 'contractor', 'engineer', 'consultant')
   change(
     @Param('projectId') projectId: string,
     @Param('decisionId') decisionId: string,

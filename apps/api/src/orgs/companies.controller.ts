@@ -18,7 +18,7 @@ export class CompaniesController {
   /** Consultant/company contacts & notes — interactive session roles only; never the
    *  anonymously-minted `worker` device token (P1-2). */
   @Get()
-  @Roles('pmc', 'client', 'engineer', 'contractor')
+  @Roles('pmc', 'client', 'engineer', 'contractor', 'consultant')
   list(@Param('projectId') projectId: string) {
     return this.companies.list(projectId);
   }
