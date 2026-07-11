@@ -76,6 +76,23 @@ one-tap **"All disciplines"** toggle shows the whole register, because consultan
 to coordinate against other trades' drawings. (The discipline travels on `/me/memberships`; the
 demo persona has no membership, so a consultant there falls back to a representative discipline.)
 
+### The "For You" home (per-role landing)
+
+Every role lands on a **"For You"** screen — a live, cross-cutting to-do list of exactly what's
+waiting on *them*, each card a one-tap jump to where they act. It's a pure derivation of state
+(`selectActionItems`), so an item disappears the moment it's dealt with:
+
+| Role | What "For You" surfaces |
+|---|---|
+| **client** | decisions awaiting your approval |
+| **engineer** | today's checklist to complete, an unsubmitted site log, drawings to acknowledge |
+| **contractor** | drawings to acknowledge, open change requests |
+| **pmc** | inspections to review, change requests to resolve, blocked activities, decisions waiting on the client |
+| **consultant** | the issued drawing set in your discipline |
+
+It surfaces work; it doesn't grant it — every CTA still lands on a screen the role is already
+permitted to use (the allowlist below is unchanged).
+
 The exact who-can-do-what allowlist for every action lives in one place —
 `packages/shared/src/domain/policy.ts` (`ROLE_POLICY`) — and the API and web UI both read
 from it, with a CI test that fails if they ever drift.

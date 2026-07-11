@@ -72,6 +72,7 @@ export function drawingDisciplineFor(discipline: string | undefined | null): 'ar
 export type Role = Exclude<TokenRole, 'worker'>;
 
 export type ScreenKey =
+  | 'inbox'
   | 'dashboard'
   | 'site-schedule'
   | 'decision-log'
