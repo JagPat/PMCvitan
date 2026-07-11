@@ -112,11 +112,19 @@ export const createMediaSchema = z.object({
   data: z.string().min(1).max(MAX_MEDIA_BASE64, 'image too large'),
   decisionId: z.string().optional(),
   dailyLogId: z.string().optional(),
+  // Location spine: the place this photo shows (a location-tree node). Optional — an
+  // unplaced photo still uploads; a placed one appears in that location's Place view.
+  nodeId: z.string().trim().min(1).optional(),
   geoLat: z.number().optional(),
   geoLng: z.number().optional(),
   takenAt: z.string().optional(),
 });
 export type CreateMediaInput = z.infer<typeof createMediaSchema>;
+
+// Re-file an existing photo or drawing onto a location-tree node (or null to unfile).
+// Shared by PATCH /media/:id/node and /drawings/:id/node — "manage & modify" from the tree.
+export const setNodeSchema = z.object({ nodeId: z.string().trim().min(1).nullable() });
+export type SetNodeInput = z.infer<typeof setNodeSchema>;
 
 // ── Phase 8: web push ────────────────────────────────────────────────────────
 // P2-1: constrain the push endpoint to a public HTTPS host — reject non-https and any
@@ -190,6 +198,9 @@ export const issueDrawingSchema = z
     zone: z.string().optional(),
     activityId: z.string().optional(),
     decisionId: z.string().optional(),
+    // Location spine: the place this drawing governs (a location-tree node). Filed at its
+    // natural level and inherited down to rooms/objects beneath it. Optional (unfiled).
+    nodeId: z.string().trim().min(1).nullish(),
   })
   .refine((v) => Boolean(v.data) !== Boolean(v.storageKey), {
     message: 'Provide exactly one of data (base64) or storageKey (presigned upload)',

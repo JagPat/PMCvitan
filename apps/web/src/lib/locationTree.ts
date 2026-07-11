@@ -1,4 +1,4 @@
-import type { Decision, ProjectNode } from '@vitan/shared';
+import type { Decision, Drawing, Photo, ProjectNode } from '@vitan/shared';
 
 /** Direct children of a node (parentId=null → top-level zones), in display order. */
 export function childrenOf(nodes: ProjectNode[], parentId: string | null): ProjectNode[] {
@@ -9,6 +9,35 @@ export function nodeById(nodes: ProjectNode[], id: string | undefined | null): P
   return id ? nodes.find((n) => n.id === id) : undefined;
 }
 
+/** Ancestor ids of a node, nearest-first, EXCLUDING the node itself (cycle-safe). */
+export function ancestorIds(nodes: ProjectNode[], id: string | undefined | null): Set<string> {
+  const out = new Set<string>();
+  let cur = nodeById(nodes, id)?.parentId ?? null;
+  const guard = new Set<string>();
+  while (cur && !guard.has(cur)) {
+    guard.add(cur);
+    out.add(cur);
+    cur = nodeById(nodes, cur)?.parentId ?? null;
+  }
+  return out;
+}
+
+/** All node ids in the subtree rooted at `id`, INCLUDING `id` itself (cycle-safe). */
+export function subtreeIds(nodes: ProjectNode[], id: string): Set<string> {
+  const childrenBy = new Map<string, string[]>();
+  for (const n of nodes) {
+    if (n.parentId) childrenBy.set(n.parentId, [...(childrenBy.get(n.parentId) ?? []), n.id]);
+  }
+  const out = new Set<string>();
+  const walk = (cur: string): void => {
+    if (out.has(cur)) return;
+    out.add(cur);
+    for (const c of childrenBy.get(cur) ?? []) walk(c);
+  };
+  walk(id);
+  return out;
+}
+
 /** Breadcrumb of names from root → node, e.g. ["Ground Floor","Master Bedroom","Main Door"]. */
 export function pathOf(nodes: ProjectNode[], nodeId: string | undefined | null): string[] {
   const out: string[] = [];
@@ -17,6 +46,19 @@ export function pathOf(nodes: ProjectNode[], nodeId: string | undefined | null):
   while (cur && !seen.has(cur.id)) {
     seen.add(cur.id);
     out.unshift(cur.name);
+    cur = nodeById(nodes, cur.parentId ?? undefined);
+  }
+  return out;
+}
+
+/** Breadcrumb of {id,name} from root → node (cycle-safe). Empty when the node is missing. */
+export function trailOf(nodes: ProjectNode[], nodeId: string | undefined | null): { id: string; name: string }[] {
+  const out: { id: string; name: string }[] = [];
+  const seen = new Set<string>();
+  let cur = nodeById(nodes, nodeId);
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    out.unshift({ id: cur.id, name: cur.name });
     cur = nodeById(nodes, cur.parentId ?? undefined);
   }
   return out;
@@ -103,4 +145,80 @@ export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode
     groups.sort((a, b) => a.label.localeCompare(b.label));
   }
   return groups;
+}
+
+// ── Place view: everything at one location ───────────────────────────────────
+
+/** How a drawing relates to the selected place: filed on it, inherited from an
+ *  ancestor (a floor plan applies to every room below), or a detail on a child. */
+export type DrawingRelation = 'here' | 'inherited' | 'detail';
+
+export interface PlacedDrawing {
+  drawing: Drawing;
+  relation: DrawingRelation;
+}
+
+export interface PlaceContents {
+  /** decisions in this node's subtree (all decisions when `nodeId` is null = whole project) */
+  decisions: Decision[];
+  /** site photos in this node's subtree (all photos, incl. unplaced, when whole project) */
+  photos: Photo[];
+  /** drawings that apply here — filed on the node, inherited from above, or a child detail */
+  drawings: PlacedDrawing[];
+  counts: { decisions: number; drawings: number; photos: number };
+}
+
+const RELATION_RANK: Record<DrawingRelation, number> = { here: 0, detail: 1, inherited: 2 };
+
+/**
+ * Gather everything at a place for the Place view. Decisions and photos use SUBTREE
+ * semantics (a room includes its objects' items); drawings use INHERIT-DOWN semantics —
+ * a room shows drawings filed on it (`here`), on any ancestor (`inherited`, e.g. the floor
+ * plan), or on a descendant object (`detail`, e.g. a door detail). `nodeId === null`
+ * means the whole project: every decision, photo and drawing, unfiled ones included.
+ */
+export function placeContents(
+  nodeId: string | null,
+  nodes: ProjectNode[],
+  decisions: Decision[],
+  drawings: Drawing[],
+  photos: Photo[],
+): PlaceContents {
+  if (!nodeId) {
+    const placed: PlacedDrawing[] = [...drawings]
+      .sort((a, b) => a.number.localeCompare(b.number))
+      .map((drawing) => ({ drawing, relation: 'here' as const }));
+    return {
+      decisions: [...decisions],
+      photos: [...photos],
+      drawings: placed,
+      counts: { decisions: decisions.length, drawings: drawings.length, photos: photos.length },
+    };
+  }
+
+  const sub = subtreeIds(nodes, nodeId);
+  const anc = ancestorIds(nodes, nodeId);
+  const decisionsHere = decisions.filter((d) => d.nodeId && sub.has(d.nodeId));
+  const photosHere = photos.filter((p) => p.nodeId && sub.has(p.nodeId));
+
+  const placedDrawings: PlacedDrawing[] = [];
+  for (const drawing of drawings) {
+    const nid = drawing.nodeId;
+    if (!nid) continue;
+    let relation: DrawingRelation | null = null;
+    if (nid === nodeId) relation = 'here';
+    else if (anc.has(nid)) relation = 'inherited';
+    else if (sub.has(nid)) relation = 'detail';
+    if (relation) placedDrawings.push({ drawing, relation });
+  }
+  placedDrawings.sort(
+    (a, b) => RELATION_RANK[a.relation] - RELATION_RANK[b.relation] || a.drawing.number.localeCompare(b.drawing.number),
+  );
+
+  return {
+    decisions: decisionsHere,
+    photos: photosHere,
+    drawings: placedDrawings,
+    counts: { decisions: decisionsHere.length, drawings: placedDrawings.length, photos: photosHere.length },
+  };
 }

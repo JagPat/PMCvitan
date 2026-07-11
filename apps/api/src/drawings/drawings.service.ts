@@ -2,8 +2,11 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { PrismaService } from '../prisma.service';
 import { StorageService } from '../media/storage.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { SnapshotService } from '../snapshot/snapshot.service';
+import { resolveProjectNode } from '../nodes/node-scope';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
+import type { SnapshotDto } from '../snapshot/types';
 import type { IssueDrawingInput } from '../contracts';
 
 export interface IssuedDrawing {
@@ -28,6 +31,7 @@ export class DrawingsService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly realtime: RealtimeGateway,
+    private readonly snapshot: SnapshotService,
   ) {}
 
   /** A presigned direct-to-bucket upload target for a large drawing (Slice 3), or
@@ -39,6 +43,8 @@ export class DrawingsService {
   }
 
   async issue(projectId: string, issuedBy: string, input: IssueDrawingInput): Promise<IssuedDrawing> {
+    // Location spine: validate the place this drawing governs belongs to this project.
+    const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
     let key: string;
     let data: Buffer | null;
     let sizeBytes: number;
@@ -93,7 +99,7 @@ export class DrawingsService {
         this.prisma.drawingRevision.create({ data: { ...revData, drawingId: existing.id } }),
         this.prisma.drawing.update({
           where: { id: existing.id },
-          data: { title: input.title, discipline: input.discipline, zone: input.zone, activityId: input.activityId, decisionId: input.decisionId },
+          data: { title: input.title, discipline: input.discipline, zone: input.zone, activityId: input.activityId, decisionId: input.decisionId, nodeId },
         }),
       ]);
       drawingId = existing.id;
@@ -108,6 +114,7 @@ export class DrawingsService {
           zone: input.zone,
           activityId: input.activityId,
           decisionId: input.decisionId,
+          nodeId,
           revisions: { create: revData },
         },
         include: { revisions: true },
@@ -119,6 +126,17 @@ export class DrawingsService {
     // issued to the people who build from it
     this.realtime.notifyChanged(projectId, `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}`, ['engineer', 'contractor']);
     return { drawingId, revisionId };
+  }
+
+  /** Re-file a drawing onto a location-tree node (or null to unfile). Scoped to the
+   *  caller's project. Returns the fresh snapshot so the client reconciles. Location spine. */
+  async setNode(id: string, projectId: string, nodeId: string | null, user: AuthUser): Promise<SnapshotDto> {
+    const drawing = await this.prisma.drawing.findUnique({ where: { id } });
+    if (!drawing || drawing.projectId !== projectId) throw new NotFoundException('Drawing not found');
+    const resolved = await resolveProjectNode(this.prisma, projectId, nodeId);
+    await this.prisma.drawing.update({ where: { id }, data: { nodeId: resolved } });
+    this.realtime.notifyChanged(projectId);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 
   /**

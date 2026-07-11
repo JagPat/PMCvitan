@@ -1,16 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { DrawingsService } from './drawings.service';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './../media/storage.service';
 import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { IssueDrawingInput } from '../contracts';
 
 interface Rev { id: string; drawingId: string; status: string; rev: string; storageKey?: string | null; mime: string; data: Buffer | null; url: string | null }
-interface Draw { id: string; projectId: string; number: string; title: string; discipline: string; zone?: string | null; activityId?: string | null; decisionId?: string | null; revisions: Rev[] }
+interface Draw { id: string; projectId: string; number: string; title: string; discipline: string; zone?: string | null; activityId?: string | null; decisionId?: string | null; nodeId?: string | null; revisions: Rev[] }
+interface NodeRow { id: string; projectId: string }
 
 /** In-memory Prisma stand-in for the drawings tables. Methods mutate synchronously
  *  (before any await) so $transaction preserves supersede-then-create ordering. */
-function make(storagePutUrl: string | null = null) {
+function make(storagePutUrl: string | null = null, nodes: NodeRow[] = []) {
   const draws: Draw[] = [];
   const acks: Array<{ revisionId: string; userId: string; userName?: string; role?: string }> = [];
   let dseq = 0;
@@ -27,7 +30,7 @@ function make(storagePutUrl: string | null = null) {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> & { revisions: { create: Omit<Rev, 'id' | 'drawingId'> } } }) => {
         const id = `d${++dseq}`;
         const rev: Rev = { id: `r${++rseq}`, drawingId: id, ...(data.revisions.create as Omit<Rev, 'id' | 'drawingId'>) };
-        const d: Draw = { id, projectId: data.projectId as string, number: data.number as string, title: data.title as string, discipline: data.discipline as string, zone: data.zone as string, revisions: [rev] };
+        const d: Draw = { id, projectId: data.projectId as string, number: data.number as string, title: data.title as string, discipline: data.discipline as string, zone: data.zone as string, nodeId: (data.nodeId as string) ?? null, revisions: [rev] };
         draws.push(d);
         return { ...d };
       }),
@@ -73,6 +76,9 @@ function make(storagePutUrl: string | null = null) {
     },
     user: { findUnique: vi.fn(async () => null) },
     auditLog: { create: vi.fn(async () => ({})) },
+    projectNode: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null),
+    },
     $transaction: (arr: Promise<unknown>[]) => Promise.all(arr),
   };
   const storage = {
@@ -83,9 +89,12 @@ function make(storagePutUrl: string | null = null) {
     remove: vi.fn(async () => {}),
   };
   const realtime = { notifyChanged: vi.fn() };
-  const svc = new DrawingsService(prisma as unknown as PrismaService, storage as unknown as StorageService, realtime as unknown as RealtimeGateway);
-  return { svc, prisma, storage, realtime, draws, acks };
+  const snapshot = { build: vi.fn(async () => ({ ok: true })) };
+  const svc = new DrawingsService(prisma as unknown as PrismaService, storage as unknown as StorageService, realtime as unknown as RealtimeGateway, snapshot as unknown as SnapshotService);
+  return { svc, prisma, storage, realtime, snapshot, draws, acks };
 }
+
+const drawUser = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
 
 const base: IssueDrawingInput = { number: 'A-201', title: 'Living Room Flooring Layout', discipline: 'architectural', rev: 'A', status: 'for_construction', mime: 'application/pdf', data: Buffer.from('%PDF-1.4').toString('base64') };
 
@@ -205,5 +214,37 @@ describe('DrawingsService.remove', () => {
     expect(await svc.remove(id, 'ambli')).toBe(true);
     expect(draws).toHaveLength(0);
     expect(storage.remove).toHaveBeenCalled();
+  });
+});
+
+describe('DrawingsService — location spine (nodeId)', () => {
+  it('files a drawing on a valid node at issue', async () => {
+    const { svc, draws } = make(null, [{ id: 'z1', projectId: 'ambli' }]);
+    await svc.issue('ambli', 'u1', { ...base, nodeId: 'z1' });
+    expect(draws[0].nodeId).toBe('z1');
+  });
+
+  it('rejects a drawing filed to another project’s node', async () => {
+    const { svc } = make(null, [{ id: 'z1', projectId: 'other' }]);
+    await expect(svc.issue('ambli', 'u1', { ...base, nodeId: 'z1' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('setNode re-files a drawing and returns a snapshot', async () => {
+    const { svc, draws, snapshot } = make(null, [{ id: 'r1', projectId: 'ambli' }]);
+    await svc.issue('ambli', 'u1', base);
+    const id = draws[0].id;
+    const out = await svc.setNode(id, 'ambli', 'r1', drawUser);
+    expect(draws[0].nodeId).toBe('r1');
+    expect(snapshot.build).toHaveBeenCalled();
+    expect(out).toEqual({ ok: true });
+  });
+
+  it('setNode with null unfiles, and refuses a drawing from another project', async () => {
+    const { svc, draws } = make(null, [{ id: 'r1', projectId: 'ambli' }]);
+    await svc.issue('ambli', 'u1', { ...base, nodeId: 'r1' });
+    const id = draws[0].id;
+    await svc.setNode(id, 'ambli', null, drawUser);
+    expect(draws[0].nodeId).toBeNull();
+    await expect(svc.setNode(id, 'other', null, drawUser)).rejects.toBeInstanceOf(NotFoundException);
   });
 });

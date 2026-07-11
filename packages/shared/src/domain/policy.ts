@@ -35,10 +35,14 @@ export const ROLE_POLICY = {
   'dailyLog.submit': ['engineer', 'pmc'],
   'media.upload': ['pmc', 'engineer'],
   'media.delete': ['pmc', 'engineer'],
+  // re-file a photo onto a location-tree node (or unfile) — same authority as upload
+  'media.file': ['pmc', 'engineer'],
   'drawing.issue': ['pmc'],
   'drawing.presign': ['pmc'],
   'drawing.acknowledge': ['pmc', 'engineer', 'contractor'],
   'drawing.delete': ['pmc'],
+  // re-file a drawing onto a location-tree node (or unfile) — architect controls placement
+  'drawing.file': ['pmc'],
   // Real account holders only — a `worker` device token has no User row (see the API's
   // POST /orgs gate), so it is intentionally excluded.
   'org.create': ['pmc', 'client', 'engineer', 'contractor'],

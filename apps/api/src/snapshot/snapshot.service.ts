@@ -27,7 +27,7 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisions, activities, inspections, dailyLog, notifications, progressMedia, drawings, phases, companies, nodes] = await Promise.all([
+    const [decisions, activities, inspections, dailyLog, notifications, siteMedia, drawings, phases, companies, nodes] = await Promise.all([
       this.prisma.decision.findMany({
         where: { projectId },
         include: { options: { orderBy: { order: 'asc' } } },
@@ -41,11 +41,13 @@ export class SnapshotService {
         orderBy: { date: 'desc' },
       }),
       this.prisma.notification.findMany({ where: { projectId }, orderBy: { at: 'desc' } }),
+      // Site-reality photos for the daily-log gallery AND the Place view. One query,
+      // capped, newest first; carries nodeId so a photo can be shown at its location.
       this.prisma.media.findMany({
-        where: { projectId, kind: 'progress' },
+        where: { projectId, kind: { in: ['progress', 'inspection', 'material'] } },
         orderBy: { createdAt: 'desc' },
-        take: 12,
-        select: { id: true, url: true, takenAt: true },
+        take: 300,
+        select: { id: true, kind: true, url: true, takenAt: true, nodeId: true },
       }),
       this.prisma.drawing.findMany({
         where: { projectId },
@@ -57,12 +59,21 @@ export class SnapshotService {
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
     ]);
 
-    const progressPhotos = progressMedia.map((m) => ({
+    // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
+    // a caller authorized to see this snapshot gets a token, and it expires quickly.
+    // The daily-log gallery keeps the newest 12 progress photos, unchanged.
+    const progressPhotos = siteMedia
+      .filter((m) => m.kind === 'progress')
+      .slice(0, 12)
+      .map((m) => ({ id: m.id, url: this.signed.mediaPath(m.id), takenAt: m.takenAt ?? undefined }));
+    // The location spine's "reality" layer: every site photo with its place tag, so the
+    // Place view can show a location's photos beside its drawings and decisions.
+    const photoDtos = siteMedia.map((m) => ({
       id: m.id,
-      // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
-      // a caller authorized to see this snapshot gets a token, and it expires quickly.
       url: this.signed.mediaPath(m.id),
       takenAt: m.takenAt ?? undefined,
+      nodeId: m.nodeId ?? undefined,
+      kind: m.kind,
     }));
 
     const hidePending = role !== 'pmc' && role !== 'client';
@@ -170,6 +181,7 @@ export class SnapshotService {
         zone: d.zone,
         activityId: d.activityId,
         decisionId: d.decisionId,
+        nodeId: d.nodeId ?? undefined, // location spine: the place this drawing governs
         current,
         ackedByMe: Boolean(userId) && currentAckRow.some((a) => a.userId === userId),
         revisions: revs,
@@ -268,6 +280,8 @@ export class SnapshotService {
       })),
       // The project location tree (zones → rooms → elements) the register groups by.
       nodes: nodes.map((n) => ({ id: n.id, parentId: n.parentId ?? null, name: n.name, kind: n.kind as 'zone' | 'room' | 'element', order: n.order })),
+      // The location spine's reality layer: placed (and unplaced) site photos for the Place view.
+      photos: photoDtos,
     };
   }
 }

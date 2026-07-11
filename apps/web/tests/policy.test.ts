@@ -26,10 +26,12 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'dailyLog.submit': ['engineer', 'pmc'],
   'media.upload': ['pmc', 'engineer'],
   'media.delete': ['pmc', 'engineer'],
+  'media.file': ['pmc', 'engineer'],
   'drawing.issue': ['pmc'],
   'drawing.presign': ['pmc'],
   'drawing.acknowledge': ['pmc', 'engineer', 'contractor'],
   'drawing.delete': ['pmc'],
+  'drawing.file': ['pmc'],
   'org.create': ['pmc', 'client', 'engineer', 'contractor'],
 };
 

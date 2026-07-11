@@ -1,9 +1,9 @@
-import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { MediaService } from './media.service';
 import { SignedUrlService } from './signed-url.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { createMediaSchema, type CreateMediaInput } from '../contracts';
+import { createMediaSchema, setNodeSchema, type CreateMediaInput, type SetNodeInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { Public, Roles, RolesGuard } from '../common/roles';
 
@@ -26,6 +26,20 @@ export class MediaController {
     @Body(new ZodPipe(createMediaSchema)) body: CreateMediaInput,
   ) {
     return this.media.create(projectId, user.sub, body);
+  }
+
+  /** Re-file a photo onto a location-tree node (or null to unfile). PMC or site engineer —
+   *  the same authority that uploads them. Returns the fresh snapshot. Location spine. */
+  @Patch('projects/:projectId/media/:mediaId/node')
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles('pmc', 'engineer')
+  setNode(
+    @Param('projectId') projectId: string,
+    @Param('mediaId') mediaId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(setNodeSchema)) body: SetNodeInput,
+  ) {
+    return this.media.setNode(mediaId, projectId, body.nodeId, user);
   }
 
   /**

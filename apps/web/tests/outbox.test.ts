@@ -22,6 +22,7 @@ function makeSnapshot(partial?: Partial<ApiSnapshot>): ApiSnapshot {
     notifications: [{ text: 'SERVER applied', time: 'just now', color: '#3F7A54' }],
     companies: [],
     nodes: [],
+    photos: [],
     ...partial,
   };
 }

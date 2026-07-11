@@ -74,6 +74,30 @@ The snapshot carries the flat `nodes: NodeDto[]` list; the client rebuilds the t
 
 > **Migration** `20260715000000_add_location_tree` is **additive and nullable** — it creates `ProjectNode` and adds a nullable `Decision.nodeId` (FK `ON DELETE SET NULL`); no backfill, no data rewrite, safe to apply on a live database.
 
+### The spine, extended to photos & drawings (the "Site Map")
+
+The location tree is the project's **single spatial index** — one agreed name every discipline pins to. Beyond decisions, **photos** and **drawings** now carry a `nodeId`, so a place resolves the *intent* (drawings) and the *reality* (photos) on the same coordinate:
+
+```
+Media.nodeId    String?   FK → ProjectNode  ON DELETE SET NULL   -- the place a site photo shows
+Drawing.nodeId  String?   FK → ProjectNode  ON DELETE SET NULL   -- the place a drawing governs
+```
+
+- **Photos** use **subtree** semantics — a room shows every photo pinned to it or to any object beneath it. Uploaded from the daily log with an optional Zone › Room › Object tag.
+- **Drawings** use **inherit-down** semantics (the chosen filing model): a drawing is filed at its natural level — a floor plan on the zone, a joinery detail on the object — and a room automatically shows every drawing filed on it (`here`), on any ancestor (`inherited`, e.g. the floor plan), or on a descendant object (`detail`). No re-filing a plan per room. Issued PMC-only with an optional location; a PMC can re-file later.
+- **Re-filing** (manage & modify): `PATCH …/media/:id/node` (pmc/engineer) and `PATCH …/drawings/:id/node` (pmc) move an item onto a node or `null` to unfile; both return a fresh snapshot. A shared `resolveProjectNode` guard rejects a node from another project (`400`), same as decisions.
+
+```
+PATCH /projects/:id/media/:mediaId/node       { nodeId: string|null }  -> Snapshot   # pmc, engineer
+PATCH /projects/:id/drawings/:drawingId/node  { nodeId: string|null }  -> Snapshot   # pmc only
+POST  /projects/:id/media                      { …, nodeId? }          -> { id, url } # upload, place optional
+POST  /projects/:id/drawings                   { …, nodeId? }          -> { drawingId, revisionId } # issue, place optional
+```
+
+The snapshot adds a top-level `photos: PhotoDto[]` (`id`, signed `url`, `takenAt`, `nodeId`, `kind`) and `drawing.nodeId`. The **Site Map screen** (`places`, all roles) browses the tree: pick a node (or the whole project) and see its decisions, the drawings that govern it (with `here`/`inherited`/`detail` badges), and photos of what's built — so the client, architect and site team read the same place the same way. `placeContents()` in `lib/locationTree.ts` computes the aggregation.
+
+> **Migration** `20260720000000_location_spine_media_drawings` is **additive and nullable** — adds `Media.nodeId` and `Drawing.nodeId` (both FK `ON DELETE SET NULL`); no backfill, safe on a live database. Existing media/drawings stay unfiled and appear in the whole-project view.
+
 ## API contract (Phase 7, ts-rest sketch)
 
 ```
@@ -122,8 +146,10 @@ Site photos are provider-agnostic and dev-stub-first (same shape as OTP). One ad
 ```
 Media  id, projectId, kind (progress|inspection|decision|attendance|material),
        mime, data (Bytes, dev stub), url (S3/R2), storageKey, sizeBytes,
-       geoLat?, geoLng?, takenAt?, uploadedBy, decisionId?, dailyLogId?, createdAt
+       geoLat?, geoLng?, takenAt?, uploadedBy, decisionId?, dailyLogId?, nodeId?, createdAt
 ```
+
+> `Media.nodeId` / `Drawing.nodeId` (the location spine) are documented under [Location tree → the spine, extended to photos & drawings](#the-spine-extended-to-photos--drawings-the-site-map).
 
 ```
 POST /projects/:id/media   { kind, mime, data (base64), decisionId?, geoLat?, geoLng?, takenAt? }  -> { id, url }   # auth

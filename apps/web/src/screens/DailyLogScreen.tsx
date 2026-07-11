@@ -3,13 +3,16 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectTotalWorkers } from '@/store/selectors';
 import { Eyebrow, Swatch, PhotoViewer, Modal, Button } from '@/components';
-import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check } from '@/lib/icons';
+import { LocationPicker } from '@/components/LocationPicker';
+import { pathOf } from '@/lib/locationTree';
+import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin } from '@/lib/icons';
 import { can, SW, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
   const dailyLog = useStore((s) => s.dailyLog);
   const photos = useStore(useShallow((s) => s.dailyLog.photos));
+  const nodes = useStore(useShallow((s) => s.nodes));
   const online = useStore((s) => s.online);
   const queueCount = useStore((s) => s.syncQueue.length + s.outbox.length);
   const total = useStore(selectTotalWorkers);
@@ -27,13 +30,14 @@ export function DailyLogScreen() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState<string | null>(null);
   const [addingMaterial, setAddingMaterial] = useState(false);
+  const [photoNode, setPhotoNode] = useState<string | null>(null); // location spine: place the next photo
 
   const onPickPhoto = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
       reader.onload = () => {
-        if (typeof reader.result === 'string') addProgressPhoto(reader.result);
+        if (typeof reader.result === 'string') addProgressPhoto(reader.result, photoNode);
       };
       reader.readAsDataURL(file);
     }
@@ -161,6 +165,18 @@ export function DailyLogScreen() {
             <Camera size={14} /> Add
           </button>
         </div>
+        {/* Location spine: place the next photo so it shows up at that zone/room/object. */}
+        {nodes.length > 0 && (
+          <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 13, padding: 12, marginTop: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.12em', color: 'var(--faint)', marginBottom: 8 }}>
+              <MapPin size={12} /> PLACE THIS PHOTO {photoNode ? '' : '(OPTIONAL)'}
+            </div>
+            <LocationPicker value={photoNode} onChange={setPhotoNode} idPrefix="photo-loc" />
+            {photoNode && (
+              <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 6 }}>Next photo → {pathOf(nodes, photoNode).join(' › ')}</div>
+            )}
+          </div>
+        )}
         {photos.length > 0 && (
           <div style={{ display: 'flex', gap: 8, marginTop: 10, overflowX: 'auto', paddingBottom: 4 }}>
             {photos.map((p, i) => (

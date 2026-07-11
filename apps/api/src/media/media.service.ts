@@ -1,8 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
 import { SignedUrlService } from './signed-url.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { SnapshotService } from '../snapshot/snapshot.service';
+import { resolveProjectNode } from '../nodes/node-scope';
+import type { AuthUser } from '../common/auth';
+import type { SnapshotDto } from '../snapshot/types';
 import type { CreateMediaInput } from '../contracts';
 
 export interface UploadedMedia {
@@ -21,10 +25,13 @@ export class MediaService {
     private readonly storage: StorageService,
     private readonly signed: SignedUrlService,
     private readonly realtime: RealtimeGateway,
+    private readonly snapshot: SnapshotService,
   ) {}
 
   /** Persist an uploaded photo and return its id + a signed, resolvable URL. */
   async create(projectId: string, uploadedBy: string, input: CreateMediaInput): Promise<UploadedMedia> {
+    // Location spine: validate the place tag belongs to this project before storing.
+    const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
     const bytes = Buffer.from(input.data, 'base64');
     const key = this.storage.keyFor(projectId, input.kind, input.mime);
     // S3 mode PUTs the bytes to the (private) bucket and returns its url; we DON'T persist
@@ -47,12 +54,24 @@ export class MediaService {
         takenAt: input.takenAt,
         decisionId: input.decisionId,
         dailyLogId: input.dailyLogId,
+        nodeId,
       },
     });
 
     this.realtime.notifyChanged(projectId);
     // a short-lived, signed path resolved against the API base by the frontend
     return { id: row.id, url: this.signed.mediaPath(row.id) };
+  }
+
+  /** Re-file a photo onto a location-tree node (or null to unfile). Scoped to the
+   *  caller's project. Returns the fresh snapshot so the client reconciles. Location spine. */
+  async setNode(id: string, projectId: string, nodeId: string | null, user: AuthUser): Promise<SnapshotDto> {
+    const row = await this.prisma.media.findUnique({ where: { id } });
+    if (!row || row.projectId !== projectId) throw new NotFoundException('Media not found');
+    const resolved = await resolveProjectNode(this.prisma, projectId, nodeId);
+    await this.prisma.media.update({ where: { id }, data: { nodeId: resolved } });
+    this.realtime.notifyChanged(projectId);
+    return this.snapshot.build(projectId, user.role, user.sub);
   }
 
   /**

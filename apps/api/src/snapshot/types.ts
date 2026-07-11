@@ -115,9 +115,21 @@ export interface DrawingDto {
   zone: string | null;
   activityId: string | null;
   decisionId: string | null;
+  /** location-tree node this drawing governs (inherited down to rooms/objects beneath it) */
+  nodeId?: string;
   current: DrawingRevisionDto | null; // the latest non-superseded revision
   ackedByMe: boolean; // has the caller acknowledged the current revision?
   revisions: DrawingRevisionDto[]; // full history, newest first
+}
+
+/** A site photo placed on the location spine — the "reality" layer of the Place view. */
+export interface PhotoDto {
+  id: string;
+  url: string; // resolvable signed serve path
+  takenAt?: string;
+  /** location-tree node this photo shows (undefined = unplaced) */
+  nodeId?: string;
+  kind: string; // progress | inspection | material
 }
 
 export interface DailyLogDto {
@@ -177,4 +189,6 @@ export interface SnapshotDto {
   companies: CompanyDto[];
   /** The project location tree (zones → rooms → elements) the decision register groups by. */
   nodes: NodeDto[];
+  /** Site photos placed on the location tree — the reality layer for the Place view. */
+  photos: PhotoDto[];
 }

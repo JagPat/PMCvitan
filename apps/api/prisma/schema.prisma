@@ -170,9 +170,15 @@ model Media {
   uploadedBy String
   decisionId String?
   dailyLogId String?
+  // The place this photo shows the reality of (zone/room/object). The location tree is
+  // the shared spatial spine: a photo here + a drawing on the same node = intent vs reality
+  // for one object. SET NULL so removing a node never deletes the photo. Location spine.
+  node       ProjectNode? @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  nodeId     String?
   createdAt  DateTime @default(now())
 
   @@index([projectId, kind])
+  @@index([nodeId])
 }
 
 // A controlled drawing in the project's register (the source of truth the team
@@ -189,11 +195,18 @@ model Drawing {
   zone       String?
   activityId String? // the work this drawing governs (Slice 2 linkage)
   decisionId String?
+  // The place this drawing governs (zone/room/object). Filed at its natural level — a
+  // floor plan on the zone, a joinery detail on the element — and inherited DOWN: a room
+  // shows every drawing filed on it or any ancestor. SET NULL so a node delete keeps the
+  // drawing (it becomes unfiled). Location spine.
+  node       ProjectNode?      @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  nodeId     String?
   createdAt  DateTime          @default(now())
   revisions  DrawingRevision[]
 
   @@unique([projectId, number])
   @@index([projectId])
+  @@index([nodeId])
 }
 
 // One issued revision of a drawing (Rev A, B, C…). Issuing a new rev supersedes
@@ -283,6 +296,8 @@ model ProjectNode {
 
   children  ProjectNode[] @relation("NodeChildren")
   decisions Decision[]
+  media     Media[]
+  drawings  Drawing[]
 
   @@index([projectId])
   @@index([parentId])

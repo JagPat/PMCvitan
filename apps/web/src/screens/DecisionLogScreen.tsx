@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore, type IssueDecisionPayload } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, DecisionChip, Button, Modal } from '@/components';
+import { LocationPicker } from '@/components/LocationPicker';
 import { Lock, Plus, X, ChevronRight, Pencil, Trash2 } from '@/lib/icons';
 import { signed, swatch as swatchGradient, decisionRail, can, SW, type Decision, type SwatchKey } from '@vitan/shared';
 import { childrenOf, groupDecisions, locationSegments, type GroupBy } from '@/lib/locationTree';
@@ -309,81 +310,6 @@ function IssueDecisionModal({ onClose }: { onClose: () => void }) {
         </div>
       </div>
     </Modal>
-  );
-}
-
-const KIND_LABEL: Record<'zone' | 'room' | 'element', string> = { zone: 'Zone', room: 'Room', element: 'Object' };
-
-/**
- * Cascading location picker — Zone › Room › Object. Each level lets the PMC pick an
- * existing node or create a new one inline (which persists to the tree). A decision
- * attaches to the DEEPEST level chosen, so it works whether "Main Door" is one decision
- * or the parent of several (Lock, Veneer).
- */
-function LocationPicker({ value, onChange }: { value: string | null; onChange: (nodeId: string | null) => void }) {
-  const nodes = useStore(useShallow((s) => s.nodes));
-  const addLocationNode = useStore((s) => s.addLocationNode);
-  const [zone, setZone] = useState<string | null>(null);
-  const [room, setRoom] = useState<string | null>(null);
-
-  const setLevel = (kind: 'zone' | 'room' | 'element', id: string | null) => {
-    if (kind === 'zone') { setZone(id); setRoom(null); onChange(id); }
-    else if (kind === 'room') { setRoom(id); onChange(id ?? zone); }
-    else onChange(id ?? room ?? zone);
-  };
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <Level kind="zone" parentId={null} nodes={nodes} selected={zone} onSelect={(id) => setLevel('zone', id)} onCreate={(name) => addLocationNode({ name, kind: 'zone', parentId: null })} />
-      {zone && <Level kind="room" parentId={zone} nodes={nodes} selected={room} onSelect={(id) => setLevel('room', id)} onCreate={(name) => addLocationNode({ name, kind: 'room', parentId: zone })} />}
-      {room && <Level kind="element" parentId={room} nodes={nodes} selected={value === room ? null : value} onSelect={(id) => setLevel('element', id)} onCreate={(name) => addLocationNode({ name, kind: 'element', parentId: room })} />}
-    </div>
-  );
-}
-
-function Level({
-  kind, parentId, nodes, selected, onSelect, onCreate,
-}: {
-  kind: 'zone' | 'room' | 'element';
-  parentId: string | null;
-  nodes: ReturnType<typeof useStore.getState>['nodes'];
-  selected: string | null;
-  onSelect: (id: string | null) => void;
-  onCreate: (name: string) => Promise<string | null>;
-}) {
-  const opts = childrenOf(nodes, parentId);
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState('');
-  const add = async () => {
-    const n = name.trim();
-    if (!n) return;
-    const id = await onCreate(n);
-    setName('');
-    setCreating(false);
-    if (id) onSelect(id);
-  };
-  return (
-    <div>
-      {creating ? (
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void add(); }} placeholder={`New ${KIND_LABEL[kind].toLowerCase()} name`} style={{ ...fldD, flex: 1, minWidth: 0 }} data-testid={`loc-new-${kind}`} />
-          <Button variant="ink" onClick={() => void add()} style={{ padding: '0 14px', fontSize: 12.5 }}>Add</Button>
-          <Button variant="outline" onClick={() => { setCreating(false); setName(''); }} style={{ padding: '0 12px', fontSize: 12.5 }}>Cancel</Button>
-        </div>
-      ) : (
-        <select
-          value={selected ?? ''}
-          onChange={(e) => (e.target.value === '__new__' ? setCreating(true) : onSelect(e.target.value || null))}
-          data-testid={`loc-select-${kind}`}
-          aria-label={KIND_LABEL[kind]}
-          style={{ ...fldD, width: '100%' }}
-        >
-          <option value="">{KIND_LABEL[kind]}…</option>
-          {opts.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
-          <option value="__new__">+ New {KIND_LABEL[kind].toLowerCase()}…</option>
-        </select>
-      )}
-    </div>
   );
 }
 

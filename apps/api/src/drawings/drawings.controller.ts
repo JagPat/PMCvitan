@@ -1,9 +1,9 @@
-import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { DrawingsService } from './drawings.service';
 import { SignedUrlService } from '../media/signed-url.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { issueDrawingSchema, presignDrawingSchema, type IssueDrawingInput, type PresignDrawingInput } from '../contracts';
+import { issueDrawingSchema, presignDrawingSchema, setNodeSchema, type IssueDrawingInput, type PresignDrawingInput, type SetNodeInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { Public, Roles, RolesGuard } from '../common/roles';
 
@@ -50,6 +50,20 @@ export class DrawingsController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.drawings.acknowledge(projectId, revId, user);
+  }
+
+  /** Re-file a drawing onto a location-tree node (or null to unfile). PMC only — the
+   *  architect controls where a drawing sits, matching PMC-only issue. Location spine. */
+  @Patch('projects/:projectId/drawings/:drawingId/node')
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles('pmc')
+  setNode(
+    @Param('projectId') projectId: string,
+    @Param('drawingId') drawingId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(setNodeSchema)) body: SetNodeInput,
+  ) {
+    return this.drawings.setNode(drawingId, projectId, body.nodeId, user);
   }
 
   /**
