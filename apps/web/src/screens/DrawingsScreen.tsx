@@ -6,7 +6,7 @@ import { Eyebrow, Button, Modal } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
 import { Download, FileText, History, ChevronRight, X, Plus, Lock, Check, HardHat, MapPin } from '@/lib/icons';
-import { can, type Discipline, type Drawing, type DrawingRevision } from '@vitan/shared';
+import { can, drawingDisciplineFor, type Discipline, type Drawing, type DrawingRevision } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 const DISCIPLINES: { key: Discipline; label: string }[] = [
@@ -33,16 +33,28 @@ export function DrawingsScreen() {
   const drawings = useStore(useShallow((s) => s.drawings));
   const nodes = useStore(useShallow((s) => s.nodes));
   const role = useStore((s) => s.role);
+  const memberships = useStore(useShallow((s) => s.memberships));
+  const activeProjectId = useStore((s) => s.activeProjectId);
   // hold the open drawing by id so the viewer always reflects live store state
   // (e.g. an acknowledgement) rather than a stale snapshot captured on click.
   const [openId, setOpenId] = useState<string | null>(null);
   const open = openId ? drawings.find((d) => d.id === openId) ?? null : null;
   const [issuing, setIssuing] = useState(false);
 
-  const groups = useMemo(
-    () => DISCIPLINES.map((d) => ({ ...d, items: drawings.filter((dr) => dr.discipline === d.key) })).filter((g) => g.items.length),
-    [drawings],
-  );
+  // Discipline-scoped default: a consultant lands on THEIR discipline's drawings (e.g. a
+  // lighting consultant → the MEP set), with a one-tap escape to the whole register. Their
+  // discipline comes from the active membership (live API); the demo persona has no
+  // membership, so a consultant there falls back to a representative discipline.
+  const myMembership = memberships.find((m) => m.projectId === activeProjectId);
+  const myDiscipline = myMembership?.discipline ?? (role === 'consultant' && memberships.length === 0 ? 'structural' : undefined);
+  const scopeKey = role === 'consultant' && myDiscipline ? drawingDisciplineFor(myDiscipline) : null;
+  const [scoped, setScoped] = useState(true); // consultants default to their discipline
+
+  const groups = useMemo(() => {
+    const all = DISCIPLINES.map((d) => ({ ...d, items: drawings.filter((dr) => dr.discipline === d.key) })).filter((g) => g.items.length);
+    return scopeKey && scoped ? all.filter((g) => g.key === scopeKey) : all;
+  }, [drawings, scopeKey, scoped]);
+  const scopeLabel = scopeKey ? DISCIPLINES.find((d) => d.key === scopeKey)?.label ?? scopeKey : '';
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
@@ -60,8 +72,26 @@ export function DrawingsScreen() {
         )}
       </div>
 
+      {/* consultant discipline scope — their set by default, one tap to see everything */}
+      {scopeKey && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0 2px', flexWrap: 'wrap' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.12em', color: 'var(--faint)' }}>SHOWING</span>
+          <div style={{ display: 'inline-flex', background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 10, padding: 2 }}>
+            <button onClick={() => setScoped(true)} data-testid="scope-mine" style={scopeBtn(scoped)}>My discipline · {scopeLabel}</button>
+            <button onClick={() => setScoped(false)} data-testid="scope-all" style={scopeBtn(!scoped)}>All disciplines</button>
+          </div>
+        </div>
+      )}
+
       {drawings.length === 0 && (
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>No drawings issued yet.</div>
+      )}
+
+      {scopeKey && scoped && groups.length === 0 && drawings.length > 0 && (
+        <div style={{ marginTop: 30, textAlign: 'center', color: 'var(--muted)', fontSize: 13.5 }}>
+          No {scopeLabel} drawings filed yet —{' '}
+          <button onClick={() => setScoped(false)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--accent)', fontSize: 13.5, padding: 0 }}>show all disciplines</button>.
+        </div>
       )}
 
       {groups.map((g) => (
@@ -332,6 +362,18 @@ function IssueDrawingModal({ onClose }: { onClose: () => void }) {
     </Modal>
   );
 }
+
+const scopeBtn = (active: boolean): CSSProperties => ({
+  padding: '6px 11px',
+  borderRadius: 8,
+  border: 'none',
+  cursor: 'pointer',
+  fontFamily: 'var(--font-sans)',
+  fontSize: 12,
+  fontWeight: 600,
+  background: active ? 'var(--ink)' : 'transparent',
+  color: active ? '#fff' : 'var(--muted)',
+});
 
 const cardStyle: CSSProperties = {
   display: 'flex',

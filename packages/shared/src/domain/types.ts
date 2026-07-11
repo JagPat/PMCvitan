@@ -40,6 +40,31 @@ export const CONSULTANT_DISCIPLINES: ConsultantDiscipline[] = [
 ];
 
 /**
+ * Map a consultant's (fine-grained) discipline to the drawing register's four buckets
+ * (`architectural | structural | mep | other`), so a lighting/plumbing/HVAC consultant's
+ * default drawing view is the MEP set, an architect's is architectural, and so on. Used to
+ * scope what a consultant sees by default (they can still switch to "all disciplines").
+ */
+export function drawingDisciplineFor(discipline: string | undefined | null): 'architectural' | 'structural' | 'mep' | 'other' {
+  switch (discipline) {
+    case 'architect':
+    case 'interior':
+    case 'facade':
+      return 'architectural';
+    case 'structural':
+      return 'structural';
+    case 'mep':
+    case 'plumbing':
+    case 'electrical':
+    case 'hvac':
+    case 'lighting':
+      return 'mep';
+    default:
+      return 'other';
+  }
+}
+
+/**
  * The interactive session roles the web renders a full app shell for. `worker` is
  * excluded on purpose: workers use the job-card flow (never a role session), so the
  * screen/label maps stay a clean four-role set.
@@ -214,6 +239,8 @@ export interface MembershipSummary {
   name: string;
   short: string;
   role: Role;
+  /** for a `consultant`: the discipline they cover (scopes their default views) */
+  discipline?: string;
   orgId: string | null;
   orgName: string | null;
 }
