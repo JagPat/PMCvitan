@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import type { Activity, Decision, DecisionStatus, Gate, Phase, Review } from '@vitan/shared';
+import { drawingDisciplineFor, type Activity, type Decision, type DecisionStatus, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -151,4 +151,67 @@ export function activitiesInPhase(activities: Activity[], phases: Phase[], phase
 
 export function selectTotalWorkers(s: AppState): number {
   return s.dailyLog.crew.reduce((a, c) => a + c.count, 0);
+}
+
+// ---- "Needs you" action queue ----
+
+/** One thing awaiting the current user, with where to go and do it. */
+export interface ActionItem {
+  key: string;
+  title: string;
+  detail?: string;
+  screen: ScreenKey;
+  cta: string;
+  tone: 'amber' | 'red' | 'green' | 'ink';
+}
+
+const plural = (n: number, s = 's') => (n === 1 ? '' : s);
+
+/**
+ * The cross-cutting to-do list for whoever is signed in — aggregated across decisions,
+ * drawings, inspections, the daily log and the schedule so each role sees exactly what
+ * needs them, with a one-tap jump to act. Pure function of state (recomputed live), so
+ * approving/acknowledging/submitting removes the item immediately. The Inbox is the home.
+ */
+export function selectActionItems(s: AppState): ActionItem[] {
+  const items: ActionItem[] = [];
+  const pending = s.decisions.filter((d) => d.status === 'pending');
+  const changes = s.decisions.filter((d) => d.status === 'change');
+  const unacked = s.drawings.filter((d) => d.current && d.current.status === 'for_construction' && !d.ackedByMe);
+  const blocked = s.activities.filter((a) => a.status === 'blocked');
+  const names = (xs: { title?: string; name?: string; number?: string }[], n = 3) =>
+    xs.slice(0, n).map((x) => x.title ?? x.name ?? x.number ?? '').filter(Boolean).join(', ');
+
+  if (s.role === 'client' && pending.length) {
+    items.push({ key: 'client-pending', title: `${pending.length} decision${plural(pending.length)} awaiting your approval`, detail: names(pending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber' });
+  }
+
+  if (s.role === 'engineer') {
+    if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber' });
+    if (!s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', screen: 'daily-log', cta: 'Open daily log', tone: 'ink' });
+    if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber' });
+  }
+
+  if (s.role === 'contractor') {
+    if (unacked.length) items.push({ key: 'con-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber' });
+    if (changes.length) items.push({ key: 'con-change', title: `${changes.length} change request${plural(changes.length)} open`, detail: 'Awaiting the PMC', screen: 'decision-log', cta: 'View', tone: 'ink' });
+  }
+
+  if (s.role === 'pmc') {
+    if (s.reviews.length) items.push({ key: 'pmc-reviews', title: `${s.reviews.length} inspection${plural(s.reviews.length)} awaiting your review`, detail: names(s.reviews), screen: 'inspect-review', cta: 'Review', tone: 'amber' });
+    if (changes.length) items.push({ key: 'pmc-change', title: `${changes.length} change request${plural(changes.length)} to resolve`, detail: names(changes), screen: 'decision-log', cta: 'Open', tone: 'red' });
+    if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red' });
+    if (pending.length) items.push({ key: 'pmc-pending', title: `${pending.length} decision${plural(pending.length)} awaiting the client`, detail: 'Issued — waiting on client approval', screen: 'decision-log', cta: 'View', tone: 'ink' });
+  }
+
+  if (s.role === 'consultant') {
+    const disc = s.memberships.find((m) => m.projectId === s.activeProjectId)?.discipline ?? (s.memberships.length === 0 ? 'structural' : undefined);
+    if (disc) {
+      const bucket = drawingDisciplineFor(disc);
+      const mine = s.drawings.filter((d) => d.discipline === bucket && d.current && d.current.status === 'for_construction');
+      if (mine.length) items.push({ key: 'cons-review', title: `${mine.length} ${bucket} drawing${plural(mine.length)} in the current set`, detail: 'Review the issued set in your discipline', screen: 'drawings', cta: 'Review drawings', tone: 'ink' });
+    }
+  }
+
+  return items;
 }

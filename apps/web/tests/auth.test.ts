@@ -25,7 +25,7 @@ describe('team access — local demo (no API)', () => {
     s().otpVerify();
 
     expect(s().role).toBe('engineer');
-    expect(s().screen).toBe('daily-log');
+    expect(s().screen).toBe('inbox'); // every role lands on the "For You" home
     expect(s().sessionToken).toBeNull(); // local demo: no real token
     expect(s().access.step).toBe('who'); // access reset after sign-in
   });
@@ -92,7 +92,7 @@ describe('team access — API mode', () => {
     s().otpVerify();
     await flush();
     expect(s().role).toBe('client'); // real role, not hard-coded engineer
-    expect(s().screen).toBe('client-decisions'); // client's first screen
+    expect(s().screen).toBe('inbox'); // every role lands on the "For You" home
     expect(s().userName).toBe('Mr. Shah');
   });
 

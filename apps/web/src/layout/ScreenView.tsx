@@ -1,4 +1,5 @@
 import { useStore } from '@/store/store';
+import { InboxScreen } from '@/screens/InboxScreen';
 import { DashboardScreen } from '@/screens/DashboardScreen';
 import { ScheduleScreen } from '@/screens/ScheduleScreen';
 import { DecisionLogScreen } from '@/screens/DecisionLogScreen';
@@ -16,6 +17,8 @@ import { TeamAccessScreen } from '@/screens/TeamAccessScreen';
 export function ScreenView() {
   const screen = useStore((s) => s.screen);
   switch (screen) {
+    case 'inbox':
+      return <InboxScreen />;
     case 'dashboard':
       return <DashboardScreen />;
     case 'site-schedule':

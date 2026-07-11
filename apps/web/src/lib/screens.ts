@@ -1,5 +1,6 @@
 import type { Role, ScreenKey } from '@vitan/shared';
 import {
+  Inbox,
   LayoutDashboard,
   CalendarDays,
   ClipboardList,
@@ -26,6 +27,7 @@ export interface ScreenMeta {
 }
 
 export const SCREEN_META: Record<ScreenKey, ScreenMeta> = {
+  inbox: { key: 'inbox', label: 'For You', short: 'For You', path: '/for-you', icon: Inbox },
   dashboard: { key: 'dashboard', label: 'Dashboard', short: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
   'site-schedule': { key: 'site-schedule', label: 'Site Schedule', short: 'Schedule', path: '/schedule', icon: CalendarDays },
   'decision-log': { key: 'decision-log', label: 'Decision Log', short: 'Log', path: '/decisions', icon: ClipboardList },
@@ -43,13 +45,15 @@ export const SCREEN_META: Record<ScreenKey, ScreenMeta> = {
 
 /** Permission-filtered screen list per role (mirrors the prototype's screensFor). */
 export function screensFor(role: Role): ScreenMeta[] {
+  // 'inbox' ("For You") is the home for every role — a live, cross-cutting to-do list, first
+  // in the nav so everyone lands on exactly what needs them before drilling into a screen.
   const keys: Record<Role, ScreenKey[]> = {
-    pmc: ['dashboard', 'site-schedule', 'decision-log', 'inspect-review', 'drawings', 'places', 'team', 'portfolio'],
-    client: ['client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
-    engineer: ['daily-log', 'engineer-check', 'drawings', 'places', 'team-access', 'decision-log'],
-    contractor: ['drawings', 'places', 'team-access', 'decision-log'],
+    pmc: ['inbox', 'dashboard', 'site-schedule', 'decision-log', 'inspect-review', 'drawings', 'places', 'team', 'portfolio'],
+    client: ['inbox', 'client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
+    engineer: ['inbox', 'daily-log', 'engineer-check', 'drawings', 'places', 'team-access', 'decision-log'],
+    contractor: ['inbox', 'drawings', 'places', 'team-access', 'decision-log'],
     // a discipline consultant: read-mostly reviewer — drawings, the register, the Site Map, project health
-    consultant: ['drawings', 'decision-log', 'places', 'client-health'],
+    consultant: ['inbox', 'drawings', 'decision-log', 'places', 'client-health'],
   };
   return keys[role].map((k) => SCREEN_META[k]);
 }

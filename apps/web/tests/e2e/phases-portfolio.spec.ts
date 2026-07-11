@@ -3,8 +3,10 @@ import { test, expect } from '@playwright/test';
 test('schedule groups activities by phase; portfolio shows a project card (Orgs Slice 3)', async ({ page }) => {
   await page.goto('/');
 
-  // become the PMC (dev-auth persona switch in the local demo)
+  // become the PMC (dev-auth persona switch in the local demo) and open the Dashboard
+  // (every role now lands on the "For You" action queue first)
   await page.getByRole('button', { name: 'PMC', exact: true }).click();
+  await page.getByRole('button', { name: 'Dashboard' }).click();
   await expect(page.getByText('PROJECT DASHBOARD')).toBeVisible();
 
   // Site Schedule now groups under phase headers with a rollup

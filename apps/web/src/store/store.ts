@@ -239,7 +239,8 @@ export function getInitialState(): AppState {
     // land on the admin (PMC) view by default — create/manage projects, teams,
     // portfolio. The persona switcher graduates to team/individual views.
     role: 'pmc',
-    screen: 'dashboard',
+    // 'inbox' ("For You") is every role's home — the live cross-cutting action queue.
+    screen: 'inbox',
     lang: 'en',
     notifOpen: false,
     toast: null,

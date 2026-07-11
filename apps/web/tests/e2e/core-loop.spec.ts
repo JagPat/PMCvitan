@@ -3,9 +3,10 @@ import { test, expect } from '@playwright/test';
 test('core loop: client approves & locks a decision → Decision Log → PMC dashboard count decrements', async ({ page }) => {
   await page.goto('/');
 
-  // the app now lands on the admin (PMC) view by default — switch to the Client
-  // persona to drive the client approval flow
+  // every role now lands on the "For You" action queue — switch to the Client
+  // persona, then open their Decisions Waiting screen to drive the approval flow
   await page.getByRole('button', { name: 'Client', exact: true }).click();
+  await page.getByRole('button', { name: 'Decisions Waiting' }).click();
   await expect(page.getByText('Decisions waiting for you')).toBeVisible();
 
   // approve the architect's pick (Option B) on DL-014
@@ -24,8 +25,9 @@ test('core loop: client approves & locks a decision → Decision Log → PMC das
   await expect(row).toContainText('APPROVED & LOCKED');
   await expect(page.getByTestId('lock-DL-014')).toBeVisible();
 
-  // switch persona to PMC → the dashboard "Decisions pending" tile has decremented 2 → 1
+  // switch persona to PMC and open the Dashboard → the "Decisions pending" tile has decremented 2 → 1
   await page.getByRole('button', { name: 'PMC', exact: true }).click();
+  await page.getByRole('button', { name: 'Dashboard' }).click();
   await expect(page.getByText('PROJECT DASHBOARD')).toBeVisible();
   await expect(page.getByTestId('tile-pending-value')).toHaveText('1');
 });

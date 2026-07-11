@@ -5,7 +5,8 @@ test('consultant: the Drawings register defaults to their discipline, with an al
 
   // become a consultant (the demo persona maps to a representative discipline → structural)
   await page.getByRole('button', { name: 'Consultant', exact: true }).click();
-  await page.getByRole('button', { name: 'Drawings' }).click();
+  // 'Drawings' is exact here: the "For You" home also shows a "Review drawings" CTA
+  await page.getByRole('button', { name: 'Drawings', exact: true }).click();
 
   // scoped by default: the structural sheet shows, the architectural one is hidden
   await expect(page.getByTestId('scope-mine')).toBeVisible();
