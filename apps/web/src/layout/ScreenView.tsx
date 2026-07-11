@@ -1,5 +1,6 @@
 import { useStore } from '@/store/store';
 import { InboxScreen } from '@/screens/InboxScreen';
+import { DraftsScreen } from '@/screens/DraftsScreen';
 import { DashboardScreen } from '@/screens/DashboardScreen';
 import { ScheduleScreen } from '@/screens/ScheduleScreen';
 import { DecisionLogScreen } from '@/screens/DecisionLogScreen';
@@ -19,6 +20,8 @@ export function ScreenView() {
   switch (screen) {
     case 'inbox':
       return <InboxScreen />;
+    case 'drafts':
+      return <DraftsScreen />;
     case 'dashboard':
       return <DashboardScreen />;
     case 'site-schedule':

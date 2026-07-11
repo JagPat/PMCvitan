@@ -163,6 +163,8 @@ export interface AppActions {
   removeCompany: (companyId: string) => void;
   // authoring: decisions + planning/scheduling (PMC)
   issueDecision: (input: IssueDecisionPayload) => void;
+  /** Publish a private draft decision → issue it to the client (works offline in the demo). */
+  publishDecision: (decisionId: string) => void;
   /** Create a zone/room/element and resolve to its new id (for the inline location picker). */
   addLocationNode: (input: { name: string; kind: 'zone' | 'room' | 'element'; parentId?: string | null }) => Promise<string | null>;
   renameNode: (nodeId: string, name: string) => void;
@@ -884,13 +886,35 @@ export const useStore = create<Store>()(
               return { ...o, photoUrl: up.url };
             }),
           );
-          const snap = await gw.createDecision({ title: input.title, nodeId: input.nodeId, room: input.room, options });
+          const snap = await gw.createDecision({ title: input.title, nodeId: input.nodeId, room: input.room, options, publish: input.publish });
           applySnapshot(snap);
-          get().flash(`Decision issued: ${input.title} — the client has been asked to choose.`);
+          get().flash(
+            input.publish
+              ? `Decision issued: ${input.title} — the client has been asked to choose.`
+              : `Draft saved: ${input.title} — visible only to you until you publish it.`,
+          );
         } catch {
-          get().flash('Could not issue the decision — check your access and try again.');
+          get().flash(input.publish ? 'Could not issue the decision — check your access and try again.' : 'Could not save the draft — check your access and try again.');
         }
       })();
+    },
+    publishDecision: (decisionId) => {
+      const d = get().decisions.find((x) => x.id === decisionId);
+      if (!d) return;
+      // API mode: the server flips publishedAt, notifies the client, and returns a fresh snapshot.
+      if (gateway) {
+        runRemote(() => gateway!.publishDecision(decisionId), `Published: ${d.title} — the client has been asked to choose.`);
+        return;
+      }
+      // Demo (no server): flip the draft live locally and raise the client's notification,
+      // so the whole "hold then publish" flow is demoable offline.
+      set((s) => {
+        const row = s.decisions.find((x) => x.id === decisionId);
+        if (!row || !row.draft) return;
+        row.draft = false;
+        s.notifications.unshift({ text: `Decision awaiting approval: ${row.title}`, time: 'just now', color: '#C08A2D' });
+      });
+      get().flash(`Published: ${d.title} — the client has been asked to choose.`);
     },
     addLocationNode: async (input) => {
       if (!gateway) {

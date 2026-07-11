@@ -241,11 +241,12 @@ function IssueDecisionModal({ onClose }: { onClose: () => void }) {
   };
 
   const ready = Boolean(title.trim() && nodeId && options.every((o) => o.material.trim()));
-  const save = () => {
+  const save = (publish: boolean) => {
     if (!ready) return;
     const payload: IssueDecisionPayload = {
       title: title.trim(),
       nodeId: nodeId ?? undefined,
+      publish,
       options: options.map((o) => ({
         material: o.material.trim(),
         delta: parseInt(o.delta.replace(/[^\d-]/g, ''), 10) || 0,
@@ -261,9 +262,9 @@ function IssueDecisionModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal onClose={onClose} maxWidth={560} labelledBy="issue-dec-title">
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
-        <div id="issue-dec-title" style={{ fontWeight: 700, fontSize: 17 }}>Issue decision</div>
+        <div id="issue-dec-title" style={{ fontWeight: 700, fontSize: 17 }}>New decision</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          Place it in the building, then present 2–4 options; the client picks one and it locks.
+          Place it in the building, then present 2–4 options. <b>Save as draft</b> to keep working privately, or <b>Publish</b> to send it to the client to choose.
         </div>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title (e.g. Veneer finish, Lock & hardware)" style={{ ...fldD, marginTop: 14, width: '100%' }} data-testid="dec-title" />
 
@@ -305,8 +306,9 @@ function IssueDecisionModal({ onClose }: { onClose: () => void }) {
         )}
 
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
-          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-decision" style={{ flex: 1, padding: 12 }}>Issue to client</Button>
+          <Button variant="outline" onClick={onClose} style={{ flex: '0 0 auto', padding: '12px 16px' }}>Cancel</Button>
+          <Button variant="light" onClick={() => save(false)} disabled={!ready} data-testid="save-draft" style={{ flex: 1, padding: 12 }}>Save as draft</Button>
+          <Button variant="ink" onClick={() => save(true)} disabled={!ready} data-testid="save-decision" style={{ flex: 1, padding: 12 }}>Publish to client</Button>
         </div>
       </div>
     </Modal>

@@ -226,7 +226,8 @@ const stepBtn: React.CSSProperties = {
  *  optionally linked to a locked decision so the PMC can confirm the match. */
 function AddMaterialModal({ onClose }: { onClose: () => void }) {
   const addSiteMaterial = useStore((s) => s.addSiteMaterial);
-  const decisions = useStore(useShallow((s) => s.decisions));
+  // a delivery matches a published decision — drafts aren't linkable
+  const decisions = useStore(useShallow((s) => s.decisions.filter((d) => !d.draft)));
   const [name, setName] = useState('');
   const [qty, setQty] = useState('');
   const [zone, setZone] = useState('');

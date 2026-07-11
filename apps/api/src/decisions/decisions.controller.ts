@@ -21,6 +21,17 @@ export class DecisionsController {
     return this.decisions.create(projectId, body, user);
   }
 
+  /** Publish a private draft decision → issue it to the client (PMC/architect authority). */
+  @Post(':decisionId/publish')
+  @Roles('pmc')
+  publish(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.decisions.publish(projectId, decisionId, user);
+  }
+
   /** Approve/lock a decision — the client's choice, or the PMC/architect on their behalf. */
   @Post(':decisionId/approve')
   @Roles('client', 'pmc')

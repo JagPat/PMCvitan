@@ -18,15 +18,22 @@ export const pctOf = (d: number): number => (d / WIN) * 100;
 // ---- decisions ----
 
 export function selectPending(s: AppState): Decision[] {
-  return s.decisions.filter((d) => d.status === 'pending');
+  // A draft is weightless: it isn't awaiting the client, so it never counts as pending.
+  return s.decisions.filter((d) => d.status === 'pending' && !d.draft);
 }
 
-/** Decision log is permission-filtered: contractor & engineer never see pending rows. */
+/** Decision log is permission-filtered: contractor & engineer never see pending rows.
+ *  Private drafts are excluded for everyone — they live only in the Drafts workspace. */
 export function selectLogDecisions(s: AppState): Decision[] {
   if (s.role === 'contractor' || s.role === 'engineer') {
-    return s.decisions.filter((d) => d.status !== 'pending');
+    return s.decisions.filter((d) => d.status !== 'pending' && !d.draft);
   }
-  return s.decisions;
+  return s.decisions.filter((d) => !d.draft);
+}
+
+/** Private, unpublished draft decisions — the author's Drafts workspace. */
+export function selectDraftDecisions(s: AppState): Decision[] {
+  return s.decisions.filter((d) => d.draft);
 }
 
 // ---- inspections ----
@@ -175,8 +182,10 @@ const plural = (n: number, s = 's') => (n === 1 ? '' : s);
  */
 export function selectActionItems(s: AppState): ActionItem[] {
   const items: ActionItem[] = [];
-  const pending = s.decisions.filter((d) => d.status === 'pending');
-  const changes = s.decisions.filter((d) => d.status === 'change');
+  // Drafts are private + weightless — they never appear as pending/change work for anyone.
+  const pending = s.decisions.filter((d) => d.status === 'pending' && !d.draft);
+  const changes = s.decisions.filter((d) => d.status === 'change' && !d.draft);
+  const drafts = s.decisions.filter((d) => d.draft);
   const unacked = s.drawings.filter((d) => d.current && d.current.status === 'for_construction' && !d.ackedByMe);
   const blocked = s.activities.filter((a) => a.status === 'blocked');
   const names = (xs: { title?: string; name?: string; number?: string }[], n = 3) =>
@@ -198,6 +207,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
   }
 
   if (s.role === 'pmc') {
+    if (drafts.length) items.push({ key: 'pmc-drafts', title: `${drafts.length} draft decision${plural(drafts.length)} in progress`, detail: names(drafts), screen: 'drafts', cta: 'Review & publish', tone: 'ink' });
     if (s.reviews.length) items.push({ key: 'pmc-reviews', title: `${s.reviews.length} inspection${plural(s.reviews.length)} awaiting your review`, detail: names(s.reviews), screen: 'inspect-review', cta: 'Review', tone: 'amber' });
     if (changes.length) items.push({ key: 'pmc-change', title: `${changes.length} change request${plural(changes.length)} to resolve`, detail: names(changes), screen: 'decision-log', cta: 'Open', tone: 'red' });
     if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red' });

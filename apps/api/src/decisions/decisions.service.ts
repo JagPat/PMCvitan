@@ -41,9 +41,13 @@ export class DecisionsService {
     }
     if (!room) throw new BadRequestException('A decision needs a location (pick one, or type a room).');
 
+    // Draft by default: `publishedAt` stays null (author-private, weightless) until the PMC
+    // publishes. `publish: true` is the one-step "issue now" — created already live.
+    const publishedAt = input.publish ? new Date() : null;
+
     await this.prisma.$transaction([
       this.prisma.decision.create({
-        data: { id, projectId, title: input.title, room, nodeId, status: 'pending', ageDays: 0, photoSwatch: lead.swatch },
+        data: { id, projectId, title: input.title, room, nodeId, status: 'pending', ageDays: 0, photoSwatch: lead.swatch, authorId: user.sub, publishedAt },
       }),
       this.prisma.decisionOption.createMany({
         data: input.options.map((o, i) => ({
@@ -58,12 +62,34 @@ export class DecisionsService {
           order: i,
         })),
       }),
-      this.prisma.decisionEvent.create({ data: { decisionId: id, type: 'issued', actor: user.role, payload: { title: input.title } } }),
-      this.prisma.notification.create({ data: { projectId, text: pendingDecisionNotice(input.title), color: '#C08A2D', time: 'just now' } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'decision.create', entity: 'Decision', entityId: id } }),
+      this.prisma.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: user.role, payload: { title: input.title } } }),
+      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id } }),
     ]);
-    // the client owns the choice — surface it on their side
-    this.realtime.notifyChanged(projectId, `New decision awaiting your approval: ${input.title}`, ['client']);
+    // Only a PUBLISHED decision reaches the client (a draft is private to its author, and
+    // must not notify anyone). When published in one step, fire the same side-effects publish() does.
+    if (input.publish) {
+      await this.prisma.notification.create({ data: { projectId, text: pendingDecisionNotice(input.title), color: '#C08A2D', time: 'just now' } });
+      this.realtime.notifyChanged(projectId, `New decision awaiting your approval: ${input.title}`, ['client']);
+    }
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /** Publish a private draft decision → it enters the shared snapshot, the client is asked
+   *  to choose, and it starts driving the app (pending count, linked gate). Idempotent-ish:
+   *  publishing an already-published decision is a no-op conflict. Author/PMC authority. */
+  async publish(projectId: string, decisionId: string, user: AuthUser): Promise<SnapshotDto> {
+    const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
+    if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
+    if (d.publishedAt) throw new ConflictException('Decision is already published');
+
+    await this.prisma.$transaction([
+      this.prisma.decision.update({ where: { id: decisionId }, data: { publishedAt: new Date() } }),
+      this.prisma.decisionEvent.create({ data: { decisionId, type: 'issued', actor: user.role, payload: { title: d.title } } }),
+      this.prisma.notification.create({ data: { projectId, text: pendingDecisionNotice(d.title), color: '#C08A2D', time: 'just now' } }),
+      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'decision.publish', entity: 'Decision', entityId: decisionId } }),
+    ]);
+    // now it's live — surface it on the client's side, exactly like a one-step issue
+    this.realtime.notifyChanged(projectId, `New decision awaiting your approval: ${d.title}`, ['client']);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 

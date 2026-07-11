@@ -24,7 +24,8 @@ const RELATION_META: Record<DrawingRelation, { label: string; color: string }> =
  */
 export function PlacesScreen() {
   const nodes = useStore(useShallow((s) => s.nodes));
-  const decisions = useStore(useShallow((s) => s.decisions));
+  // drafts are private WIP — the Site Map shows shared reality, so they're excluded here
+  const decisions = useStore(useShallow((s) => s.decisions.filter((d) => !d.draft)));
   const drawings = useStore(useShallow((s) => s.drawings));
   const photos = useStore(useShallow((s) => s.photos));
   const activities = useStore(useShallow((s) => s.activities));

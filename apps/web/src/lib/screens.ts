@@ -3,6 +3,7 @@ import {
   Inbox,
   LayoutDashboard,
   CalendarDays,
+  FileEdit,
   ClipboardList,
   ClipboardCheck,
   BadgeCheck,
@@ -29,6 +30,7 @@ export interface ScreenMeta {
 export const SCREEN_META: Record<ScreenKey, ScreenMeta> = {
   inbox: { key: 'inbox', label: 'For You', short: 'For You', path: '/for-you', icon: Inbox },
   dashboard: { key: 'dashboard', label: 'Dashboard', short: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+  drafts: { key: 'drafts', label: 'Drafts', short: 'Drafts', path: '/drafts', icon: FileEdit },
   'site-schedule': { key: 'site-schedule', label: 'Site Schedule', short: 'Schedule', path: '/schedule', icon: CalendarDays },
   'decision-log': { key: 'decision-log', label: 'Decision Log', short: 'Log', path: '/decisions', icon: ClipboardList },
   'inspect-review': { key: 'inspect-review', label: 'Inspection Review', short: 'Review', path: '/review', icon: ClipboardCheck },
@@ -48,7 +50,7 @@ export function screensFor(role: Role): ScreenMeta[] {
   // 'inbox' ("For You") is the home for every role — a live, cross-cutting to-do list, first
   // in the nav so everyone lands on exactly what needs them before drilling into a screen.
   const keys: Record<Role, ScreenKey[]> = {
-    pmc: ['inbox', 'dashboard', 'site-schedule', 'decision-log', 'inspect-review', 'drawings', 'places', 'team', 'portfolio'],
+    pmc: ['inbox', 'dashboard', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'places', 'team', 'portfolio'],
     client: ['inbox', 'client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
     engineer: ['inbox', 'daily-log', 'engineer-check', 'drawings', 'places', 'team-access', 'decision-log'],
     contractor: ['inbox', 'drawings', 'places', 'team-access', 'decision-log'],

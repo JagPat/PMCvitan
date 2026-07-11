@@ -155,6 +155,7 @@ const EXPECTED_ROLES: Record<string, string[]> = {
   'NodesController.move': ['pmc'],
   'NodesController.remove': ['pmc'],
   'DecisionsController.create': ['pmc'],
+  'DecisionsController.publish': ['pmc'],
   'DecisionsController.approve': ['client', 'pmc'],
   'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'ActivitiesController.create': ['pmc'],
