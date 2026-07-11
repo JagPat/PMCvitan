@@ -123,6 +123,10 @@ POST  /projects/:id/daily-log/material { …, nodeId? }   -> Snapshot   # pmc, e
 
 The **Zone › Room › Object picker** is now in the plan-activity, issue-checklist and add-material flows (with inline node creation). The Site Map (`placeContents` in `lib/locationTree.ts`) aggregates decisions, drawings, photos, **activities and materials** for the selected place.
 
+**Intent vs Reality.** Drilling into an object with both a governing drawing and site photos surfaces an **Intent vs Reality** band at the top of the place view: the drawing that governs it (with the build-acknowledgement state — "Building to Rev C · N acknowledged") beside the latest photo of what's actually built. "Does what's built match what was drawn?" becomes a glance. The governing drawing is the most specific one that applies (`here` > `detail` > `inherited`).
+
+> The **local demo** ships a small seeded location tree (`SEED_NODES`) with the seeded decisions/drawings/activities/materials and a couple of placed photos (`SEED_PHOTOS`/`SEED_MATERIALS`) already attached, so the whole spine — the Decision Log grouping, the pickers, the Site Map and the Intent-vs-Reality band — works offline without the API.
+
 > **Migration** `20260725000000_location_spine_site_modules` is **additive and nullable** — adds `Activity.nodeId`, `Inspection.nodeId`, `SiteMaterial.nodeId` (all FK `ON DELETE SET NULL`); no backfill, safe on a live database.
 
 ## API contract (Phase 7, ts-rest sketch)
