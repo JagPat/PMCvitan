@@ -147,16 +147,16 @@ describe('route authorization policy', () => {
  * straight from it and this mirror goes away.)
  */
 const EXPECTED_ROLES: Record<string, string[]> = {
-  'ProjectController.snapshotFor': ['pmc', 'client', 'engineer', 'contractor'], // SEC-02: no worker tokens
-  'MembersController.list': ['pmc', 'client', 'engineer', 'contractor'], // P1-2: no worker PII reads
-  'CompaniesController.list': ['pmc', 'client', 'engineer', 'contractor'], // P1-2: no worker contact reads
+  'ProjectController.snapshotFor': ['pmc', 'client', 'engineer', 'contractor', 'consultant'], // SEC-02: no worker tokens
+  'MembersController.list': ['pmc', 'client', 'engineer', 'contractor', 'consultant'], // P1-2: no worker PII reads
+  'CompaniesController.list': ['pmc', 'client', 'engineer', 'contractor', 'consultant'], // P1-2: no worker contact reads
   'NodesController.create': ['pmc'],
   'NodesController.rename': ['pmc'],
   'NodesController.move': ['pmc'],
   'NodesController.remove': ['pmc'],
   'DecisionsController.create': ['pmc'],
   'DecisionsController.approve': ['client', 'pmc'],
-  'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer'],
+  'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'ActivitiesController.create': ['pmc'],
   'ActivitiesController.update': ['pmc'],
   'ActivitiesController.remove': ['pmc'],

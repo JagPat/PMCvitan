@@ -2,7 +2,7 @@ import { useStore } from '@/store/store';
 import { ROLE_LABEL, ROLE_SUBTITLE } from '@/lib/screens';
 import type { Role } from '@vitan/shared';
 
-const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor'];
+const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor', 'consultant'];
 
 /**
  * Persona switcher — the session/identity control. Until auth (Phase 7) this

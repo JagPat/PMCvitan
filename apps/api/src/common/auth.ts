@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 
-export type Role = 'pmc' | 'client' | 'engineer' | 'contractor' | 'worker';
+export type Role = 'pmc' | 'client' | 'engineer' | 'contractor' | 'consultant' | 'worker';
 
 export interface AuthUser {
   sub: string;

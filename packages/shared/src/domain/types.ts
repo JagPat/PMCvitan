@@ -13,7 +13,31 @@ import type { SwatchKey } from '../tokens/swatches';
  * token the API issues for QR job-card onboarding. This is the canonical role set the
  * authorization policy (`domain/policy.ts`) and the API's tokens are keyed on.
  */
-export type TokenRole = 'pmc' | 'client' | 'engineer' | 'contractor' | 'worker';
+export type TokenRole = 'pmc' | 'client' | 'engineer' | 'contractor' | 'consultant' | 'worker';
+
+/**
+ * Disciplines a consultant can be responsible for. This is a LABEL on the membership,
+ * not a permission set — every consultant shares the same (read-mostly) `consultant`
+ * role; the discipline just records what they cover, so the practice can add a lighting
+ * or plumbing consultant without a new role. Free-form 'other' catches anything unlisted.
+ */
+export type ConsultantDiscipline =
+  | 'architect'
+  | 'structural'
+  | 'mep'
+  | 'plumbing'
+  | 'electrical'
+  | 'hvac'
+  | 'lighting'
+  | 'landscape'
+  | 'interior'
+  | 'facade'
+  | 'acoustics'
+  | 'other';
+
+export const CONSULTANT_DISCIPLINES: ConsultantDiscipline[] = [
+  'architect', 'structural', 'mep', 'plumbing', 'electrical', 'hvac', 'lighting', 'landscape', 'interior', 'facade', 'acoustics', 'other',
+];
 
 /**
  * The interactive session roles the web renders a full app shell for. `worker` is
@@ -199,6 +223,8 @@ export interface ProjectMember {
   name: string;
   email: string | null;
   phone: string | null;
+  /** for a `consultant` member: the discipline they cover (undefined for other roles) */
+  discipline?: string;
   role: Role;
   status: string;
 }

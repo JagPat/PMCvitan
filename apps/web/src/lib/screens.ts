@@ -48,6 +48,8 @@ export function screensFor(role: Role): ScreenMeta[] {
     client: ['client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
     engineer: ['daily-log', 'engineer-check', 'drawings', 'places', 'team-access', 'decision-log'],
     contractor: ['drawings', 'places', 'team-access', 'decision-log'],
+    // a discipline consultant: read-mostly reviewer — drawings, the register, the Site Map, project health
+    consultant: ['drawings', 'decision-log', 'places', 'client-health'],
   };
   return keys[role].map((k) => SCREEN_META[k]);
 }
@@ -67,6 +69,7 @@ export const ROLE_LABEL: Record<Role, string> = {
   client: 'Client',
   engineer: 'Engineer',
   contractor: 'Contractor',
+  consultant: 'Consultant',
 };
 
 export const ROLE_SUBTITLE: Record<Role, string> = {
@@ -74,4 +77,5 @@ export const ROLE_SUBTITLE: Record<Role, string> = {
   client: 'Owner · Mr. & Mrs. Shah',
   engineer: 'Site Engineer · Ramesh',
   contractor: 'Contractor · read-only',
+  consultant: 'Discipline consultant · reviews',
 };

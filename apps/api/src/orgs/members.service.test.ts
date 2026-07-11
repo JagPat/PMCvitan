@@ -65,6 +65,19 @@ describe('MembersService.add', () => {
     await svc.add('p1', client, { name: 'Y', role: 'engineer', phone: '9998887777' });
     expect(memberships).toHaveLength(1);
   });
+
+  it('adds a consultant with a discipline (a lighting consultant, no new role needed)', async () => {
+    const { svc, memberships } = make();
+    const m = await svc.add('p1', pmc, { name: 'Lumen Studio', role: 'consultant', discipline: 'lighting', email: 'lumen@studio.in' });
+    expect(m).toMatchObject({ role: 'consultant', discipline: 'lighting' });
+    expect(memberships[0].role).toBe('consultant');
+  });
+
+  it('ignores a discipline for a non-consultant role', async () => {
+    const { svc } = make();
+    const m = await svc.add('p1', pmc, { name: 'Ravi', role: 'engineer', discipline: 'lighting', email: 'ravi@vitan.in' });
+    expect(m.discipline).toBeUndefined();
+  });
 });
 
 describe('MembersService.updateRole / remove', () => {
@@ -75,6 +88,12 @@ describe('MembersService.updateRole / remove', () => {
 
     await svc.updateRole('p1', pmc, uid, { role: 'contractor' });
     expect(memberships[0].role).toBe('contractor');
+
+    // promoting to consultant sets the discipline; changing away clears it
+    await svc.updateRole('p1', pmc, uid, { role: 'consultant', discipline: 'plumbing' });
+    expect(memberships[0]).toMatchObject({ role: 'consultant', discipline: 'plumbing' });
+    await svc.updateRole('p1', pmc, uid, { role: 'contractor' });
+    expect(memberships[0].discipline).toBeNull();
 
     await expect(svc.remove('p1', { ...pmc, sub: uid }, uid)).rejects.toBeInstanceOf(BadRequestException); // self
     await svc.remove('p1', pmc, uid);

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const sessionSchema = z.object({
-  role: z.enum(['pmc', 'client', 'engineer', 'contractor']),
+  role: z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant']),
   projectId: z.string().min(1),
 });
 export type SessionInput = z.infer<typeof sessionSchema>;
@@ -369,18 +369,22 @@ export type AddMaterialInput = z.infer<typeof addMaterialSchema>;
 export const switchProjectSchema = z.object({ projectId: z.string().min(1) });
 export type SwitchProjectInput = z.infer<typeof switchProjectSchema>;
 
-const projectRole = z.enum(['pmc', 'client', 'engineer', 'contractor']);
+const projectRole = z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant']);
+// A consultant's discipline is a free-ish label (a new consultant type needs no code);
+// trimmed, capped, optional. Only meaningful for role === 'consultant'.
+const disciplineField = z.string().trim().min(1).max(40).optional();
 export const addMemberSchema = z
   .object({
     name: z.string().min(1),
     role: projectRole,
     email: z.string().email().optional(),
     phone: z.string().min(6).optional(),
+    discipline: disciplineField,
   })
   .refine((v) => v.email || v.phone, { message: 'email or phone required' });
 export type AddMemberInput = z.infer<typeof addMemberSchema>;
 
-export const updateMemberSchema = z.object({ role: projectRole });
+export const updateMemberSchema = z.object({ role: projectRole, discipline: disciplineField });
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
 
 // Add someone to the org's admin roster (owner/admin/member). This is the org

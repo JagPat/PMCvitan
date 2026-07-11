@@ -177,7 +177,7 @@ export interface AppActions {
   addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }) => void;
   loadTeam: () => void;
   addMember: (input: AddMemberInput) => void;
-  updateMemberRole: (userId: string, role: Role) => void;
+  updateMemberRole: (userId: string, role: Role, discipline?: string) => void;
   removeMember: (userId: string) => void;
   // org roster (owner/admin/member)
   loadOrgMembers: (orgId: string) => void;
@@ -699,7 +699,7 @@ export const useStore = create<Store>()(
         return;
       }
       // local demo: mark building-to on the current rev
-      const label = get().userName ?? { pmc: 'PMC', client: 'Client', engineer: 'Site Engineer', contractor: 'Contractor' }[get().role] ?? 'You';
+      const label = get().userName ?? { pmc: 'PMC', client: 'Client', engineer: 'Site Engineer', contractor: 'Contractor', consultant: 'Consultant' }[get().role] ?? 'You';
       set((s) => {
         const d = s.drawings.find((x) => x.id === drawingId);
         if (!d?.current) return;
@@ -993,9 +993,9 @@ export const useStore = create<Store>()(
         .then(() => { get().loadTeam(); get().flash(input.name + ' added to the team.'); })
         .catch(() => get().flash('Could not add the member — check the details / your access.'));
     },
-    updateMemberRole: (userId, role) => {
+    updateMemberRole: (userId, role, discipline) => {
       if (!gateway) return;
-      gateway.updateMemberRole(userId, role).then(() => get().loadTeam()).catch(() => get().flash('Could not change the role.'));
+      gateway.updateMemberRole(userId, role, discipline).then(() => get().loadTeam()).catch(() => get().flash('Could not change the role.'));
     },
     removeMember: (userId) => {
       if (!gateway) return;

@@ -19,7 +19,8 @@ import type { TokenRole } from './types';
 export const ROLE_POLICY = {
   'decision.create': ['pmc'],
   'decision.approve': ['client', 'pmc'],
-  'decision.change': ['pmc', 'client', 'contractor', 'engineer'],
+  // consultants raise change requests to flag a conflict in their discipline (read-mostly otherwise)
+  'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

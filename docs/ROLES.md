@@ -42,7 +42,7 @@ yourself down on a particular job.
 
 ---
 
-## Project roles (`pmc | client | engineer | contractor` + `worker`)
+## Project roles (`pmc | client | engineer | contractor | consultant` + `worker`)
 
 Set on the **Team** screen → member list. A person can hold different project roles on
 different projects.
@@ -53,7 +53,19 @@ different projects.
 | **client** | Owner / client | Approve & lock decisions, raise change requests, view drawings & health. |
 | **engineer** | Site engineer | Submit inspection checklists, submit the daily log, start/complete activities, acknowledge drawings, raise change requests. |
 | **contractor** | Contractor | Acknowledge drawings, raise change requests, read-only elsewhere. |
+| **consultant** | Discipline consultant (architect / structural / MEP / **plumbing** / **lighting** / HVAC / …) | Read-mostly reviewer: view the drawings, decision register, Site Map & project health; raise a change request to flag a conflict in their discipline. Does **not** approve decisions or issue drawings. Carries a **discipline** label (see below). |
 | **worker** | Site labour (QR job card) | No login account — a device token from the site QR; can only tap-photo / job-card actions. Cannot perform any of the gated project mutations. |
+
+### Consultants: one role, many disciplines
+
+Every consultant shares the same `consultant` role (the access tier). What distinguishes an
+architect from a lighting or plumbing consultant is a **`discipline`** label on their
+membership — a record of *what they cover*, **not** a permission set. So adding a new kind of
+consultant needs **no new role and no code**: on the **Team** screen, add the member, set role
+**Consultant**, and pick their discipline (Architect / Structural / MEP / Plumbing / Electrical /
+HVAC / Lighting / Landscape / Interior / Façade / Acoustics / Other). Change or clear it any time
+by switching their role. (A firm can also be recorded as a **Company / Consultant** on the same
+screen — that's a directory contact, distinct from a login-bearing member.)
 
 The exact who-can-do-what allowlist for every action lives in one place —
 `packages/shared/src/domain/policy.ts` (`ROLE_POLICY`) — and the API and web UI both read
