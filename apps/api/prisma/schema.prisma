@@ -50,6 +50,12 @@ model Project {
   location     String   @default("") // site address / locality (free text)
   projStart    String
   projEnd      String
+  // Real civil dates (Phase 0 Task 6). scheduleStartDate is the SCHEDULE ANCHOR —
+  // the calendar day legacy day-offset 0 refers to (proven by characterization:
+  // dayLabel(0) === '1 Jun'); display projStart/projEnd stay as legacy strings.
+  scheduleStartDate DateTime? @db.Date
+  scheduleEndDate   DateTime? @db.Date
+  timeZone          String    @default("Asia/Kolkata")
   elapsedPct   Int
   todayDay     Int
   milestonePct Int
@@ -459,11 +465,17 @@ model Activity {
   name           String
   zone           String
   status         ActivityStatus @default(not_started)
-  // planned/actual as day-offsets from 1 Jun 2026 (frontend timeline model)
+  // planned/actual as day-offsets from 1 Jun 2026 (LEGACY prototype timeline model —
+  // kept for compatibility; the civil dates below are canonical going forward)
   plannedStart   Int
   plannedEnd     Int
   actualStart    Int?
   actualEnd      Int?
+  // Real civil dates (Phase 0 Task 6); display strings are derived, never compared
+  plannedStartDate DateTime? @db.Date
+  plannedEndDate   DateTime? @db.Date
+  actualStartDate  DateTime? @db.Date
+  actualEndDate    DateTime? @db.Date
   block          String?
   // stored readiness gates; the Decision gate is derived live from the decision
   gateMaterial   GateState @default(na)
@@ -491,8 +503,11 @@ model Phase {
   projectId    String
   name         String
   order        Int        @default(0)
-  plannedStart Int        @default(0)
-  plannedEnd   Int        @default(0)
+  plannedStart Int        @default(0) // LEGACY day-offset (kept for compatibility)
+  plannedEnd   Int        @default(0) // LEGACY day-offset (kept for compatibility)
+  // Real civil dates (Phase 0 Task 6)
+  plannedStartDate DateTime? @db.Date
+  plannedEndDate   DateTime? @db.Date
   activities   Activity[]
 
   @@index([projectId])
@@ -506,7 +521,8 @@ model Inspection {
   title     String
   zone      String
   by        String?
-  date      String
+  date      String // LEGACY display string (derived; never sorted or compared)
+  inspectionDate DateTime? @db.Date // real civil date (Phase 0 Task 6)
   submitted Boolean          @default(false)
   decided   Boolean          @default(false)
   // Location spine: where this quality check happens. SET NULL on node delete.
@@ -537,9 +553,10 @@ model DailyLog {
   id          String         @id @default(cuid())
   project     Project        @relation(fields: [projectId], references: [id])
   projectId   String
-  date        String
-  // real creation instant — "latest log" orders by THIS, never by the display-string
-  // `date` (lexical "03 Jul 2026" < "28 Jun 2026" picks the wrong day across months)
+  date        String // LEGACY display string (derived; never sorted or compared)
+  // The civil day the site work belongs to (Phase 0 Task 6) — "latest log" orders by
+  // THIS first; createdAt (the immutable creation instant) is only the tie-breaker.
+  logDate     DateTime?      @db.Date
   createdAt   DateTime       @default(now())
   checkedIn   Boolean        @default(false)
   checkinTime String?

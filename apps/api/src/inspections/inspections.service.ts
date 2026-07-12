@@ -1,10 +1,13 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Inject, BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { checklistSubmitError, reinspectionCount } from '../domain/transitions';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { ddMmmYyyy } from '../domain/dates';
+import { CLOCK, type Clock } from '../common/clock';
+import { fromIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
 import type { CreateInspectionInput, DecideReviewInput, SubmitInspectionInput } from '../contracts';
@@ -16,6 +19,7 @@ export class InspectionsService {
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
     private readonly realtime: RealtimeGateway,
+    @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
   /** PMC issues a stage checklist — becomes the engineer's current field checklist. */
@@ -25,9 +29,11 @@ export class InspectionsService {
     // DATA-01: ids are globally unique — scan every project, not just this one (see decisions.service).
     const existing = await this.prisma.inspection.findMany({ select: { id: true } });
     const id = nextSeqId('INSP-', existing.map((i) => i.id));
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+    const today = this.clock.today(project.timeZone); // real civil date in the project's zone
     await this.prisma.$transaction([
       this.prisma.inspection.create({
-        data: { id, projectId, kind: 'checklist', title: input.title, zone: input.zone, nodeId, date: ddMmmYyyy(new Date()), submitted: false, decided: false },
+        data: { id, projectId, kind: 'checklist', title: input.title, zone: input.zone, nodeId, date: ddMmmYyyy(fromIsoCivilDate(today)!), inspectionDate: fromIsoCivilDate(today), submitted: false, decided: false },
       }),
       ...input.items.map((name, i) =>
         this.prisma.inspectionItem.create({ data: { inspectionId: id, name, order: i, photos: 0, note: '' } }),

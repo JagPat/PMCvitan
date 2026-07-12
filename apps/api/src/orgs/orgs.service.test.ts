@@ -20,6 +20,7 @@ function make(orgRole: string | null) {
     project: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { projects.push(data); return data; }),
       findUnique: vi.fn(async () => ({ orgId: 'org1' })),
+      findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => ({ id: where.id, ...data })),
     },
     membership: {
@@ -27,7 +28,7 @@ function make(orgRole: string | null) {
       findUnique: vi.fn(async () => null as { role: string; status: string } | null),
     },
   };
-  const svc = new OrgsService(prisma as unknown as PrismaService);
+  const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
   return { svc, prisma, projects, memberships, orgMemberships };
 }
 
@@ -137,7 +138,7 @@ describe('OrgsService.addOrgMember', () => {
       },
       membership: { create: vi.fn() }, // must NOT be called by addOrgMember (no phantom project grant)
     };
-    return { svc: new OrgsService(prisma as unknown as PrismaService), prisma, created, orgMemberships };
+    return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }), prisma, created, orgMemberships };
   }
 
   it('lets an org owner add a new roster member with NO phantom project grant', async () => {
@@ -204,7 +205,7 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
         }),
       },
     };
-    return { svc: new OrgsService(prisma as unknown as PrismaService), prisma, state };
+    return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }), prisma, state };
   }
 
   it('an owner changes an admin down to member', async () => {
@@ -311,7 +312,7 @@ describe('OrgsService.portfolio', () => {
       decision: { count: vi.fn(async () => 3) },
       phase: { count: vi.fn(async () => 0) },
     };
-    const svc = new OrgsService(prisma as unknown as PrismaService);
+    const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
     expect(await svc.portfolio('u1')).toEqual([]);
     expect(prisma.decision.count).not.toHaveBeenCalled(); // never even reached a project rollup
   });
@@ -341,6 +342,7 @@ function makeCopy(source: {
     project: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
       findUnique: vi.fn(async () => (source.sourceProject === undefined ? { orgId: 'org1', archivedAt: null } : source.sourceProject)),
+      findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
     },
     membership: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
     projectNode: { findMany: vi.fn(async () => source.nodes ?? []) },
@@ -350,7 +352,7 @@ function makeCopy(source: {
     inspection: { findMany: vi.fn().mockResolvedValueOnce(source.inspections ?? []).mockResolvedValueOnce([{ id: 'INSP-22' }]) },
     $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)),
   };
-  const svc = new OrgsService(prisma as unknown as PrismaService);
+  const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
   return { svc, prisma, created };
 }
 
@@ -456,8 +458,9 @@ function makeModules(opts: {
   const prisma = {
     orgMembership: { findUnique: vi.fn(async () => (opts.orgRole === undefined ? { role: 'owner' } : opts.orgRole ? { role: opts.orgRole } : null)) },
     project: {
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
+      create: vi.fn(async ({ data }: { data: Record<unknown, unknown> }) => data),
       findUnique: vi.fn(async () => ({ orgId: 'org1', archivedAt: null })),
+      findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
     },
     membership: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
     projectNode: { findMany: vi.fn(async () => opts.sourceNodes ?? []) },
@@ -472,7 +475,7 @@ function makeModules(opts: {
     },
     $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)),
   };
-  const svc = new OrgsService(prisma as unknown as PrismaService);
+  const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
   return { svc, prisma, created, tx };
 }
 

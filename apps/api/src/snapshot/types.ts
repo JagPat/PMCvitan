@@ -52,6 +52,11 @@ export interface ActivityDto {
   pe: number;
   as: number | null;
   ae: number | null;
+  /** Task 6: real civil dates (ISO YYYY-MM-DD); ints above are the legacy compat timeline */
+  plannedStartDate: string | null;
+  plannedEndDate: string | null;
+  actualStartDate: string | null;
+  actualEndDate: string | null;
   status: 'not-started' | 'in-progress' | 'done' | 'blocked';
   gm: 'ok' | 'wait' | 'fail' | 'na';
   gt: 'ok' | 'wait' | 'fail' | 'na';
@@ -81,6 +86,8 @@ export interface PhaseDto {
   order: number;
   plannedStart: number;
   plannedEnd: number;
+  plannedStartDate: string | null;
+  plannedEndDate: string | null;
   activityTotal: number;
   done: number;
   inProgress: number;
@@ -173,6 +180,8 @@ export interface PhotoDto {
 
 export interface DailyLogDto {
   date: string;
+  /** Task 6: the civil day the site work belongs to (ISO) */
+  logDate: string | null;
   checkedIn: boolean;
   checkinTime: string | null;
   submitted: boolean;
@@ -192,6 +201,10 @@ export interface ProjectMetaDto {
   location: string;
   projStart: string;
   projEnd: string;
+  /** Task 6: the schedule anchor (the day offset 0 refers to) + real window end */
+  scheduleStartDate: string | null;
+  scheduleEndDate: string | null;
+  timeZone: string;
   elapsedPct: number;
   todayDay: number;
   milestonePct: number;

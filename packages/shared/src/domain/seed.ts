@@ -28,6 +28,10 @@ export const PROJECT = {
   siteCode: 'AMB-24',
   projStart: '12 Jan 2026',
   projEnd: '30 Sep 2026',
+  /** the SCHEDULE ANCHOR — the civil day legacy offset 0 refers to (1 Jun 2026) */
+  scheduleStartDate: '2026-06-01',
+  scheduleEndDate: '2026-09-30',
+  timeZone: 'Asia/Kolkata',
   elapsedPct: 58,
   /** day-offset from 1 Jun 2026 = "today" (3 Jul 2026) */
   todayDay: 32,

@@ -5,7 +5,7 @@ import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activities
 import { Eyebrow, GateDot, ActivityChip, Button, Modal } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, X } from '@/lib/icons';
-import { dayLabel, gateColor, can, type Activity, type Phase, type Gate } from '@vitan/shared';
+import { dayLabel, gateColor, can, diffCivilDays, formatCivilDate, type Activity, type Phase, type Gate } from '@vitan/shared';
 import type { AppState } from '@/store/store';
 import type { NewActivityInput } from '@/data/apiGateway';
 import styles from './responsive.module.css';
@@ -29,6 +29,17 @@ function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
   return <Button variant="light" disabled style={{ background: 'var(--amber-chip)', color: 'var(--amber-text)', border: '1px solid var(--amber-border)', fontSize: 12.5, padding: '9px 14px' }}>Waiting</Button>;
 }
 
+/** Task 6: real civil dates are canonical when present — offsets for the timeline are
+ *  DERIVED from the schedule anchor at render time; legacy ints are the demo fallback. */
+function offsetOf(anchor: string | null, iso: string | null | undefined, legacy: number | null): number | null {
+  if (anchor && iso) return diffCivilDays(anchor, iso);
+  return legacy;
+}
+function labelOf(iso: string | null | undefined, legacy: number | null): string {
+  if (iso) return formatCivilDate(iso);
+  return legacy == null ? '' : dayLabel(legacy);
+}
+
 function ScheduleRow({ a, todayPct, onEdit }: { a: Activity; todayPct: number; onEdit?: (a: Activity) => void }) {
   const state = useStore((s) => s) as AppState;
   const setScreen = useStore((s) => s.setScreen);
@@ -36,8 +47,13 @@ function ScheduleRow({ a, todayPct, onEdit }: { a: Activity; todayPct: number; o
   const ready = activityReady(state, a);
   // the controlled drawing this activity builds from (Drawings Slice 2 linkage)
   const linkedDrawing = state.drawings.find((d) => !d.draft && d.activityId === a.id);
-  const plannedLine = `Plan ${dayLabel(a.ps)} → ${dayLabel(a.pe)}`;
-  const actualLine = a.as == null ? 'Not started' : `Actual ${dayLabel(a.as)} → ${a.ae == null ? 'ongoing' : dayLabel(a.ae)}`;
+  const anchor = state.scheduleStartDate;
+  const ps = offsetOf(anchor, a.plannedStartDate, a.ps) ?? a.ps;
+  const pe = offsetOf(anchor, a.plannedEndDate, a.pe) ?? a.pe;
+  const as_ = offsetOf(anchor, a.actualStartDate, a.as);
+  const ae_ = offsetOf(anchor, a.actualEndDate, a.ae);
+  const plannedLine = `Plan ${labelOf(a.plannedStartDate, a.ps)} → ${labelOf(a.plannedEndDate, a.pe)}`;
+  const actualLine = as_ == null ? 'Not started' : `Actual ${labelOf(a.actualStartDate, a.as)} → ${ae_ == null ? 'ongoing' : labelOf(a.actualEndDate, a.ae)}`;
   const actualColor = a.status === 'blocked' ? 'var(--red-solid)' : a.status === 'done' ? 'var(--green-solid)' : 'var(--accent)';
 
   return (
@@ -70,9 +86,9 @@ function ScheduleRow({ a, todayPct, onEdit }: { a: Activity; todayPct: number; o
         <div className={styles.schedTimelineWrap} style={{ flex: 1 }}>
           <div style={{ position: 'relative', height: 28, minWidth: 320, margin: '0 4px' }}>
             <div style={{ position: 'absolute', left: 0, right: 0, top: 13, height: 1, background: 'rgba(35,33,28,.1)' }} />
-            <div style={{ position: 'absolute', top: 5, height: 7, borderRadius: 4, background: 'rgba(35,33,28,.16)', left: `${pctOf(a.ps)}%`, width: `${pctOf(a.pe - a.ps)}%` }} />
-            {a.as != null && (
-              <div style={{ position: 'absolute', top: 14, height: 7, borderRadius: 4, background: actualColor, left: `${pctOf(a.as)}%`, width: `${pctOf((a.ae == null ? state.todayDay : a.ae) - a.as)}%` }} />
+            <div style={{ position: 'absolute', top: 5, height: 7, borderRadius: 4, background: 'rgba(35,33,28,.16)', left: `${pctOf(ps)}%`, width: `${pctOf(pe - ps)}%` }} />
+            {as_ != null && (
+              <div style={{ position: 'absolute', top: 14, height: 7, borderRadius: 4, background: actualColor, left: `${pctOf(as_!)}%`, width: `${pctOf((ae_ ?? state.todayDay) - as_!)}%` }} />
             )}
             <div style={{ position: 'absolute', top: -4, bottom: -4, width: 2, background: 'var(--accent)', left: `${todayPct}%` }} />
           </div>
@@ -104,7 +120,7 @@ function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase }: { ph
   const acts = activitiesInPhase(activities, [phase], phase.id);
   if (acts.length === 0 && !onDeletePhase) return null;
   const r = phaseRollup(activities, phase.id);
-  const window = `${dayLabel(phase.plannedStart)} → ${dayLabel(phase.plannedEnd)}`;
+  const window = `${labelOf(phase.plannedStartDate, phase.plannedStart)} → ${labelOf(phase.plannedEndDate, phase.plannedEnd)}`;
 
   return (
     <div style={{ marginBottom: 4 }}>

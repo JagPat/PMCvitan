@@ -13,15 +13,15 @@ const user: AuthUser = { sub: 'u1', role: 'engineer', projectId: 'p1' } as AuthU
  * sort silently picks the wrong day across month/year boundaries (audit P1).
  */
 describe('DailyLogService — latest-log selection', () => {
-  it('queries by createdAt desc (id tiebreak), not the display-string date', async () => {
+  it('queries by the real civil day (logDate desc, nulls last), createdAt + id as tie-breakers', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
     const prisma = { dailyLog: { findFirst } } as unknown as PrismaService;
-    const svc = new DailyLogService(prisma, {} as SnapshotService, {} as RealtimeGateway);
+    const svc = new DailyLogService(prisma, {} as SnapshotService, {} as RealtimeGateway, { today: () => '2026-07-03' });
 
     await expect(svc.flagMismatch('p1', { decisionId: 'DL-1' }, user)).rejects.toThrow('No daily log');
 
     expect(findFirst).toHaveBeenCalledTimes(1);
     const args = findFirst.mock.calls[0][0] as { orderBy: unknown };
-    expect(args.orderBy).toEqual([{ createdAt: 'desc' }, { id: 'desc' }]);
+    expect(args.orderBy).toEqual([{ logDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }]);
   });
 });

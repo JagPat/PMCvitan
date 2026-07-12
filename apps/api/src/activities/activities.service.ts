@@ -1,10 +1,12 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { deriveDecisionGate, isActivityReady } from '../domain/transitions';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { ddMmmYyyy } from '../domain/dates';
+import { CLOCK, type Clock } from '../common/clock';
+import { addCivilDays, diffCivilDays, fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
 import type { CreateActivityInput, UpdateActivityInput } from '../contracts';
@@ -16,7 +18,22 @@ export class ActivitiesService {
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
     private readonly realtime: RealtimeGateway,
+    @Inject(CLOCK) private readonly clock: Clock,
   ) {}
+
+  /** Planned civil dates for a write: prefer explicit ISO input; else derive from the
+   *  project's schedule anchor + the legacy day-offset (offset 0 IS the anchor day). */
+  private plannedDates(anchor: string | null, iso: { start?: string; end?: string }, legacy: { start?: number; end?: number }) {
+    const startIso = iso.start ?? (anchor && legacy.start !== undefined ? addCivilDays(anchor, legacy.start) : null);
+    const endIso = iso.end ?? (anchor && legacy.end !== undefined ? addCivilDays(anchor, legacy.end) : null);
+    return {
+      plannedStartDate: fromIsoCivilDate(startIso),
+      plannedEndDate: fromIsoCivilDate(endIso),
+      // keep the legacy ints coherent when ISO input drove the write
+      ...(iso.start && anchor ? { plannedStart: diffCivilDays(anchor, iso.start) } : {}),
+      ...(iso.end && anchor ? { plannedEnd: diffCivilDays(anchor, iso.end) } : {}),
+    };
+  }
 
   /** Referenced phase/decision/location-node must exist on THIS project (cross-tenant links refused). */
   private async assertRefs(projectId: string, phaseId?: string | null, decisionId?: string | null, nodeId?: string | null): Promise<void> {
@@ -35,6 +52,8 @@ export class ActivitiesService {
   /** PMC plans a new activity (name, zone, planned window, gates, phase/decision links). */
   async create(projectId: string, input: CreateActivityInput, user: AuthUser): Promise<SnapshotDto> {
     await this.assertRefs(projectId, input.phaseId, input.decisionId, input.nodeId);
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+    const anchor = toIsoCivilDate(project.scheduleStartDate);
     // DATA-01: ids are globally unique — scan every project for the sequence (see
     // decisions.service); `order` stays per-project (it drives this schedule's sort).
     const [allIds, existing] = await Promise.all([
@@ -52,6 +71,7 @@ export class ActivitiesService {
           zone: input.zone,
           plannedStart: input.plannedStart,
           plannedEnd: input.plannedEnd,
+          ...this.plannedDates(anchor, { start: input.plannedStartDate, end: input.plannedEndDate }, { start: input.plannedStart, end: input.plannedEnd }),
           phaseId: input.phaseId ?? null,
           decisionId: input.decisionId ?? null,
           nodeId: input.nodeId ?? null,
@@ -75,8 +95,23 @@ export class ActivitiesService {
     const pe = input.plannedEnd ?? a.plannedEnd;
     if (pe < ps) throw new BadRequestException('plannedEnd must be on or after plannedStart');
     await this.assertRefs(projectId, input.phaseId, input.decisionId, input.nodeId);
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+    const anchor = toIsoCivilDate(project.scheduleStartDate);
+    const { plannedStartDate: inputStartDate, plannedEndDate: inputEndDate, ...rest } = input;
+    const data = {
+      ...rest,
+      // whichever representation the caller sent, both stay coherent
+      ...(inputStartDate || input.plannedStart !== undefined
+        ? this.plannedDates(anchor, { start: inputStartDate }, { start: input.plannedStart })
+        : {}),
+      ...(inputEndDate || input.plannedEnd !== undefined
+        ? (({ plannedEndDate, plannedEnd }) => ({ plannedEndDate, ...(plannedEnd !== undefined ? { plannedEnd } : {}) }))(
+            this.plannedDates(anchor, { end: inputEndDate }, { end: input.plannedEnd }),
+          )
+        : {}),
+    };
     await this.prisma.$transaction([
-      this.prisma.activity.update({ where: { id: activityId }, data: input }),
+      this.prisma.activity.update({ where: { id: activityId }, data }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.update', entity: 'Activity', entityId: activityId } }),
     ]);
     this.realtime.notifyChanged(projectId);
@@ -114,8 +149,20 @@ export class ActivitiesService {
     }
 
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+    // the actual start is TODAY in the project's time zone — a real civil date,
+    // never the prototype's todayDay counter
+    const today = this.clock.today(project.timeZone);
+    const anchor = toIsoCivilDate(project.scheduleStartDate);
     await this.prisma.$transaction([
-      this.prisma.activity.update({ where: { id: activityId }, data: { status: 'in_progress', actualStart: project.todayDay } }),
+      this.prisma.activity.update({
+        where: { id: activityId },
+        data: {
+          status: 'in_progress',
+          actualStartDate: fromIsoCivilDate(today),
+          // legacy offset kept coherent for the compat timeline (derived from real dates)
+          actualStart: anchor ? diffCivilDays(anchor, today) : null,
+        },
+      }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.start', entity: 'Activity', entityId: activityId } }),
     ]);
     this.realtime.notifyChanged(projectId);
@@ -129,11 +176,20 @@ export class ActivitiesService {
     if (a.status !== 'in_progress') throw new ConflictException('Only a running activity can be marked complete');
 
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
+    const today = this.clock.today(project.timeZone);
+    const anchor = toIsoCivilDate(project.scheduleStartDate);
     await this.prisma.$transaction([
-      this.prisma.activity.update({ where: { id: activityId }, data: { status: 'done', actualEnd: project.todayDay } }),
+      this.prisma.activity.update({
+        where: { id: activityId },
+        data: {
+          status: 'done',
+          actualEndDate: fromIsoCivilDate(today),
+          actualEnd: anchor ? diffCivilDays(anchor, today) : null,
+        },
+      }),
       this.prisma.inspection.create({
         // the closing inspection happens at the same place as the work it closes
-        data: { id: `INSP-${activityId}-close`, projectId, kind: 'review', title: `Closing inspection: ${a.name}`, zone: a.zone, nodeId: a.nodeId, date: ddMmmYyyy(new Date()), submitted: true, decided: false },
+        data: { id: `INSP-${activityId}-close`, projectId, kind: 'review', title: `Closing inspection: ${a.name}`, zone: a.zone, nodeId: a.nodeId, date: ddMmmYyyy(fromIsoCivilDate(today)!), inspectionDate: fromIsoCivilDate(today), submitted: true, decided: false },
       }),
       this.prisma.notification.create({ data: { projectId, text: `Closing inspection auto-created: ${a.name}`, color: '#C08A2D', time: 'just now' } }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.complete', entity: 'Activity', entityId: activityId } }),

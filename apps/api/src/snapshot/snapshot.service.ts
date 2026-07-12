@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { toIsoCivilDate } from '../common/civil-date';
 import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice } from '../domain/notifications';
 import { ddMmmYyyy } from '../domain/dates';
@@ -38,7 +39,8 @@ export class SnapshotService {
       this.prisma.dailyLog.findFirst({
         where: { projectId },
         include: { crew: { orderBy: { order: 'asc' } }, materials: { orderBy: { order: 'asc' } } },
-        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        // real civil day first (Task 6); creation instant is only the tie-breaker
+        orderBy: [{ logDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
       }),
       this.prisma.notification.findMany({ where: { projectId }, orderBy: { at: 'desc' } }),
       // Site-reality photos for the daily-log gallery AND the Place view. One query,
@@ -126,6 +128,11 @@ export class SnapshotService {
       pe: a.plannedEnd,
       as: a.actualStart,
       ae: a.actualEnd,
+      // Task 6: real civil dates (canonical); the ints above are the legacy compat timeline
+      plannedStartDate: toIsoCivilDate(a.plannedStartDate),
+      plannedEndDate: toIsoCivilDate(a.plannedEndDate),
+      actualStartDate: toIsoCivilDate(a.actualStartDate),
+      actualEndDate: toIsoCivilDate(a.actualEndDate),
       status: ACTIVITY_STATUS_OUT[a.status],
       gm: a.gateMaterial,
       gt: a.gateTeam,
@@ -239,6 +246,8 @@ export class SnapshotService {
         order: p.order,
         plannedStart: p.plannedStart,
         plannedEnd: p.plannedEnd,
+        plannedStartDate: toIsoCivilDate(p.plannedStartDate),
+        plannedEndDate: toIsoCivilDate(p.plannedEndDate),
         activityTotal: acts.length,
         done,
         inProgress,
@@ -259,6 +268,9 @@ export class SnapshotService {
         location: project.location,
         projStart: project.projStart,
         projEnd: project.projEnd,
+        scheduleStartDate: toIsoCivilDate(project.scheduleStartDate),
+        scheduleEndDate: toIsoCivilDate(project.scheduleEndDate),
+        timeZone: project.timeZone,
         elapsedPct: project.elapsedPct,
         todayDay: project.todayDay,
         milestonePct: project.milestonePct,
@@ -285,6 +297,7 @@ export class SnapshotService {
       dailyLog: dailyLog
         ? {
             date: dailyLog.date,
+            logDate: toIsoCivilDate(dailyLog.logDate),
             checkedIn: dailyLog.checkedIn,
             checkinTime: dailyLog.checkinTime,
             submitted: dailyLog.submitted,
