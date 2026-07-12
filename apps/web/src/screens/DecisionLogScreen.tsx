@@ -4,7 +4,7 @@ import { useStore, type IssueDecisionPayload } from '@/store/store';
 import { selectLogDecisions } from '@/store/selectors';
 import { Eyebrow, DecisionChip, Button, Modal } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
-import { Lock, Plus, X, ChevronRight, Pencil, Trash2 } from '@/lib/icons';
+import { Lock, Plus, X, ChevronRight, Pencil, Trash2, BookmarkPlus } from '@/lib/icons';
 import { signed, swatch as swatchGradient, decisionRail, can, SW, type Decision, type SwatchKey } from '@vitan/shared';
 import { childrenOf, groupDecisions, locationSegments, type GroupBy } from '@/lib/locationTree';
 import styles from './responsive.module.css';
@@ -322,6 +322,7 @@ function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   const deleteNode = useStore((s) => s.deleteNode);
   const publishNode = useStore((s) => s.publishNode);
   const addLocationNode = useStore((s) => s.addLocationNode);
+  const saveZoneAsModule = useStore((s) => s.saveZoneAsModule);
   const [newZone, setNewZone] = useState('');
   const [asDraft, setAsDraft] = useState(false);
 
@@ -350,7 +351,7 @@ function ManageLocationsModal({ onClose }: { onClose: () => void }) {
         {list.length === 0 && <div style={{ color: 'var(--faint)', fontSize: 12.5, padding: '8px 0' }}>No locations yet — add a zone to start.</div>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
           {list.map((n) => (
-            <LocationRow key={n.id} id={n.id} name={n.name} kind={n.kind} depth={n.depth} draft={n.draft} onRename={(name) => renameNode(n.id, name)} onPublish={() => publishNode(n.id)} onDelete={() => deleteNode(n.id)} />
+            <LocationRow key={n.id} id={n.id} name={n.name} kind={n.kind} depth={n.depth} draft={n.draft} onRename={(name) => renameNode(n.id, name)} onPublish={() => publishNode(n.id)} onDelete={() => deleteNode(n.id)} onSaveAsModule={n.kind === 'zone' ? () => saveZoneAsModule(n.id, n.name) : undefined} />
           ))}
         </div>
 
@@ -362,7 +363,7 @@ function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDelete }: { id: string; name: string; kind: string; depth: number; draft: boolean; onRename: (name: string) => void; onPublish: () => void; onDelete: () => void }) {
+function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDelete, onSaveAsModule }: { id: string; name: string; kind: string; depth: number; draft: boolean; onRename: (name: string) => void; onPublish: () => void; onDelete: () => void; onSaveAsModule?: () => void }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(name);
   const commit = () => { if (value.trim()) onRename(value.trim()); setEditing(false); };
@@ -379,6 +380,11 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
           <span style={{ flex: 1, fontSize: 13.5, fontWeight: kind === 'zone' ? 600 : 400, color: draft ? 'var(--muted)' : 'var(--ink)' }}>{name}</span>
           {draft && <span style={draftChip} data-testid={`loc-draft-${id}`}>DRAFT</span>}
           {draft && <Button variant="success" onClick={onPublish} data-testid={`loc-publish-${id}`} style={{ padding: '4px 9px', fontSize: 11 }}>Publish</Button>}
+          {onSaveAsModule && (
+            <button onClick={onSaveAsModule} style={iconBtn} data-testid={`loc-module-${id}`} title="Save this zone (rooms, objects, checklists) as a reusable module" aria-label={`Save ${name} as a module`}>
+              <BookmarkPlus size={13} />
+            </button>
+          )}
           <button onClick={() => { setValue(name); setEditing(true); }} style={iconBtn} aria-label={`Rename ${name}`}><Pencil size={13} /></button>
           <button onClick={onDelete} style={{ ...iconBtn, color: 'var(--red-solid)' }} aria-label={`Delete ${name}`}><Trash2 size={13} /></button>
         </>

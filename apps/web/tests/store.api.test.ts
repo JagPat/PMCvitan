@@ -107,6 +107,34 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     expect(gw.switchProject).toHaveBeenCalledWith('samb-1'); // lands in the new project
   });
 
+  it('module menu (Templates Slice 2): loads the org menu, saves a zone as a module, and composes at create', async () => {
+    const kitchen = { id: 'mod-k', name: 'Kitchen', category: 'space', anchorKind: 'zone', version: 1, description: '', counts: { nodes: 2, phases: 0, activities: 0, inspections: 1 } };
+    const gw = {
+      listModules: vi.fn().mockResolvedValue([kitchen]),
+      createModule: vi.fn().mockResolvedValue(kitchen),
+      createProject: vi.fn().mockResolvedValue({ id: 'p9', name: 'X', short: 'X' }),
+      listMemberships: vi.fn().mockResolvedValue([]),
+      myOrgs: vi.fn().mockResolvedValue([]),
+      switchProject: vi.fn().mockResolvedValue({ token: 'J', role: 'pmc', projectId: 'p9' }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.memberships = [{ projectId: 'ambli', name: 'Ambli', short: 'Ambli', role: 'pmc', orgId: 'org1', orgName: 'Vitan' }]; });
+
+    s().loadOrgModules('org1');
+    await flush();
+    expect(s().orgModules).toEqual([kitchen]);
+
+    // saving a zone resolves the active project's org and extracts server-side
+    s().saveZoneAsModule('z-gf', 'Ground Floor');
+    await flush();
+    expect(gw.createModule).toHaveBeenCalledWith('org1', { name: 'Ground Floor', category: 'space', fromProject: 'ambli', fromNodeId: 'z-gf' });
+
+    // composing at create passes the selections through untouched
+    s().createProject('org1', { name: 'X', short: 'X', stage: 'Planning', modules: [{ moduleId: 'mod-k', count: 2, underZone: 'Second Floor' }] });
+    await flush();
+    expect(gw.createProject).toHaveBeenCalledWith('org1', expect.objectContaining({ modules: [{ moduleId: 'mod-k', count: 2, underZone: 'Second Floor' }] }));
+  });
+
   it('addMember posts then reloads the team', async () => {
     const gw = {
       addMember: vi.fn().mockResolvedValue({}),

@@ -432,3 +432,138 @@ describe('OrgsService.createProject — structureFrom (Templates Slice 1)', () =
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 });
+
+// ── Templates Slice 2 — the org module menu + composition at create-project ──
+
+function makeModules(opts: {
+  orgRole?: string | null;
+  modules?: Record<string, unknown>[];
+  sourceNodes?: CopyRow[];
+  sourceInspections?: CopyRow[];
+}) {
+  const created = { nodes: [] as Record<string, unknown>[], phases: [] as Record<string, unknown>[], activities: [] as Record<string, unknown>[], inspections: [] as Record<string, unknown>[], modules: [] as Record<string, unknown>[] };
+  let cuid = 0;
+  const tx = {
+    projectNode: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-n${++cuid}`, ...data }; created.nodes.push(row); return row; }),
+      findMany: vi.fn(async () => created.nodes.filter((n) => n.kind === 'zone')), // zones already in the target
+    },
+    phase: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-p${++cuid}`, ...data }; created.phases.push(row); return row; }) },
+    activity: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.activities.push(data); return data; }) },
+    inspection: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.inspections.push(data); return data; }) },
+  };
+  const prisma = {
+    orgMembership: { findUnique: vi.fn(async () => (opts.orgRole === undefined ? { role: 'owner' } : opts.orgRole ? { role: opts.orgRole } : null)) },
+    project: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
+      findUnique: vi.fn(async () => ({ orgId: 'org1', archivedAt: null })),
+    },
+    membership: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+    projectNode: { findMany: vi.fn(async () => opts.sourceNodes ?? []) },
+    phase: { findMany: vi.fn(async () => []) },
+    activity: { findMany: vi.fn(async () => []) },
+    inspection: { findMany: vi.fn(async (args: { where?: { kind?: string } } = {}) => (args?.where?.kind === 'checklist' ? (opts.sourceInspections ?? []) : [])) },
+    templateModule: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `mod-${++cuid}`, version: 1, archivedAt: null, ...data }; created.modules.push(row); return row; }),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (opts.modules ?? []).find((m) => m.id === where.id) ?? null),
+      findMany: vi.fn(async () => opts.modules ?? []),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
+    },
+    $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)),
+  };
+  const svc = new OrgsService(prisma as unknown as PrismaService);
+  return { svc, prisma, created };
+}
+
+const KITCHEN_MODULE = {
+  id: 'mod-kitchen',
+  orgId: 'org1',
+  archivedAt: null,
+  name: 'Kitchen',
+  category: 'space',
+  anchorKind: 'zone', // roots are rooms → grafts under a zone
+  version: 1,
+  description: '',
+  payload: {
+    nodes: [
+      { key: 'k', parentKey: null, name: 'Kitchen', kind: 'room', order: 0 },
+      { key: 'sink', parentKey: 'k', name: 'Sink', kind: 'element', order: 0 },
+    ],
+    inspections: [{ title: 'Kitchen waterproofing', zone: 'Kitchen', nodeKey: 'k', items: ['Counter slope', 'Sink sealing'] }],
+  },
+};
+
+describe('OrgsService — module menu (Templates Slice 2)', () => {
+  it('createModule with an explicit payload infers the anchor from the root nodes', async () => {
+    const { svc, created } = makeModules({});
+    const summary = await svc.createModule('org1', 'u1', {
+      name: 'Kitchen', category: 'space', description: '',
+      payload: { nodes: [{ key: 'k', parentKey: null, name: 'Kitchen', kind: 'room', order: 0 }], phases: [], activities: [], inspections: [] },
+    } as never);
+    expect(created.modules[0]).toMatchObject({ orgId: 'org1', name: 'Kitchen', anchorKind: 'zone' });
+    expect(summary.counts).toMatchObject({ nodes: 1, inspections: 0 });
+  });
+
+  it('createModule fromProject + fromNodeId extracts that subtree and its checklists (no phases/activities)', async () => {
+    const { svc, created } = makeModules({
+      sourceNodes: [
+        { id: 'z1', projectId: 'ambli', parentId: null, name: 'GF', kind: 'zone', order: 0 },
+        { id: 'r1', projectId: 'ambli', parentId: 'z1', name: 'Kitchen', kind: 'room', order: 2 },
+        { id: 'e1', projectId: 'ambli', parentId: 'r1', name: 'Sink', kind: 'element', order: 0 },
+        { id: 'r2', projectId: 'ambli', parentId: 'z1', name: 'Living', kind: 'room', order: 0 }, // outside the subtree
+      ],
+      sourceInspections: [{ id: 'INSP-9', projectId: 'ambli', kind: 'checklist', title: 'Kitchen QA', zone: 'Kitchen', nodeId: 'r1', items: [{ name: 'Slope', order: 0 }] }],
+    });
+    await svc.createModule('org1', 'u1', { name: 'Kitchen', category: 'space', description: '', fromProject: 'ambli', fromNodeId: 'r1' } as never);
+    const payload = created.modules[0].payload as { nodes: { key: string; parentKey: string | null; name: string }[]; inspections: { nodeKey?: string }[]; phases: unknown[]; activities: unknown[] };
+    expect(payload.nodes.map((n) => n.name).sort()).toEqual(['Kitchen', 'Sink']); // subtree only
+    expect(payload.nodes.find((n) => n.name === 'Kitchen')!.parentKey).toBeNull(); // parent outside the subtree → root
+    expect(payload.nodes.find((n) => n.name === 'Sink')!.parentKey).toBe('r1');
+    expect(payload.inspections[0].nodeKey).toBe('r1');
+    expect(payload.phases).toEqual([]); // spatial module: no schedule shape
+    expect(payload.activities).toEqual([]);
+    expect(created.modules[0].anchorKind).toBe('zone');
+  });
+
+  it('createProject composes modules: ×2 under a zone → suffixed copies grafted onto ONE created draft zone', async () => {
+    const { svc, created } = makeModules({ modules: [KITCHEN_MODULE] });
+    await svc.createProject('org1', 'u1', { ...CREATE_INPUT, structureFrom: undefined, modules: [{ moduleId: 'mod-kitchen', count: 2, underZone: 'Second Floor' }] } as never);
+
+    const zones = created.nodes.filter((n) => n.kind === 'zone');
+    expect(zones).toHaveLength(1); // the underZone was created once and reused for both copies
+    expect(zones[0]).toMatchObject({ name: 'Second Floor', publishedAt: null, authorId: 'u1' });
+
+    const rooms = created.nodes.filter((n) => n.kind === 'room');
+    expect(rooms.map((r) => r.name).sort()).toEqual(['Kitchen 1', 'Kitchen 2']); // roots suffixed
+    for (const r of rooms) expect(r.parentId).toBe(zones[0].id);
+
+    const sinks = created.nodes.filter((n) => n.kind === 'element');
+    expect(sinks).toHaveLength(2); // children ride along, unsuffixed, under their own copy
+    expect(new Set(sinks.map((s) => s.parentId))).toEqual(new Set(rooms.map((r) => r.id)));
+
+    expect(created.inspections.map((i) => i.title).sort()).toEqual(['Kitchen waterproofing 1', 'Kitchen waterproofing 2']);
+    for (const i of created.inspections) expect(i).toMatchObject({ submitted: false, decided: false, kind: 'checklist' });
+  });
+
+  it('a plain member can read the menu but not create modules', async () => {
+    const { svc } = makeModules({ orgRole: 'member', modules: [KITCHEN_MODULE] });
+    await expect(svc.listModules('org1', 'u2')).resolves.toHaveLength(1);
+    await expect(svc.createModule('org1', 'u2', { name: 'X', category: 'space', description: '', payload: { nodes: [], phases: [], activities: [], inspections: [] } } as never)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('an element-anchored module is rejected at create-project (needs a room to graft into)', async () => {
+    const doorModule = { ...KITCHEN_MODULE, id: 'mod-door', anchorKind: 'room', payload: { nodes: [{ key: 'd', parentKey: null, name: 'Main Door', kind: 'element', order: 0 }] } };
+    const { svc } = makeModules({ modules: [doorModule] });
+    await expect(
+      svc.createProject('org1', 'u1', { ...CREATE_INPUT, structureFrom: undefined, modules: [{ moduleId: 'mod-door', count: 1 }] } as never),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('a module from another org (or archived) is rejected', async () => {
+    const foreign = { ...KITCHEN_MODULE, id: 'mod-x', orgId: 'OTHER' };
+    const { svc } = makeModules({ modules: [foreign] });
+    await expect(
+      svc.createProject('org1', 'u1', { ...CREATE_INPUT, structureFrom: undefined, modules: [{ moduleId: 'mod-x', count: 1 }] } as never),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+});

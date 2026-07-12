@@ -58,7 +58,7 @@ import {
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID, API_BASE } from '@/data/apiGateway';
 import { parseLocation } from '@/lib/screens';
 
@@ -112,6 +112,7 @@ export interface AppState {
   memberships: MembershipSummary[]; // projects the user can switch between
   myOrgs: OrgSummary[]; // orgs the user administers/belongs to
   orgMembers: OrgMember[]; // the active org's admin roster (owner/admin/member)
+  orgModules: OrgTemplateModule[]; // the org's reusable structure modules (Templates Slice 2)
   members: ProjectMember[]; // the active project's team (Team screen)
   portfolio: PortfolioProject[]; // cross-project monitoring rollup (Orgs Slice 3)
   online: boolean;
@@ -222,6 +223,10 @@ export interface AppActions {
   removeMember: (userId: string) => void;
   // org roster (owner/admin/member)
   loadOrgMembers: (orgId: string) => void;
+  /** Load the org's reusable structure modules — the template menu (Templates Slice 2). */
+  loadOrgModules: (orgId: string) => void;
+  /** Save a zone's subtree (rooms/objects + its checklists) as a reusable org module. */
+  saveZoneAsModule: (zoneId: string, zoneName: string) => void;
   addOrgMember: (orgId: string, input: AddOrgMemberInput) => void;
   updateOrgMemberRole: (orgId: string, userId: string, role: OrgRole) => void;
   removeOrgMember: (orgId: string, userId: string) => void;
@@ -302,6 +307,7 @@ export function getInitialState(): AppState {
     memberships: [],
     myOrgs: [],
     orgMembers: [],
+    orgModules: [],
     members: [],
     portfolio: [],
     online: true,
@@ -1191,6 +1197,25 @@ export const useStore = create<Store>()(
     loadOrgMembers: (orgId) => {
       if (!gateway) return;
       gateway.listOrgMembers(orgId).then((m) => set((s) => { s.orgMembers = m; })).catch(() => set((s) => { s.orgMembers = []; }));
+    },
+    loadOrgModules: (orgId) => {
+      if (!gateway) return;
+      gateway.listModules(orgId).then((m) => set((s) => { s.orgModules = m; })).catch(() => set((s) => { s.orgModules = []; }));
+    },
+    saveZoneAsModule: (zoneId, zoneName) => {
+      // the module lands in the org library — resolve the active project's org
+      const orgId = get().memberships.find((m) => m.projectId === get().activeProjectId)?.orgId ?? get().myOrgs[0]?.id;
+      if (!gateway || !orgId) {
+        get().flash('Saving modules needs the server.');
+        return;
+      }
+      gateway
+        .createModule(orgId, { name: zoneName, category: 'space', fromProject: get().activeProjectId, fromNodeId: zoneId })
+        .then((m) => {
+          set((s) => { s.orgModules = [...s.orgModules.filter((x) => x.id !== m.id), m]; });
+          get().flash(`Saved "${zoneName}" as a module — pick it when creating your next project.`);
+        })
+        .catch(() => get().flash('Could not save the module — check your access and try again.'));
     },
     addOrgMember: (orgId, input) => {
       if (!gateway) {
