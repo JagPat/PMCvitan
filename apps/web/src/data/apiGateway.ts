@@ -104,6 +104,19 @@ export interface NewProjectInput {
   structureFrom?: string;
   /** Templates Slice 2: compose the new project from org modules (unions with structureFrom). */
   modules?: ModuleSelection[];
+  /** Templates Slice 3: start from a named preset (expands to its module selection). */
+  templateId?: string;
+}
+
+/** A named org preset — an ordered module selection ("G+2 Residence"). */
+export interface OrgProjectTemplate {
+  id: string;
+  name: string;
+  description: string;
+  version: number;
+  items: ModuleSelection[];
+  /** module names resolved for display, e.g. ["Ground Floor", "Kitchen ×2"] */
+  moduleNames: string[];
 }
 
 /** An org-owned reusable structure module (Templates Slice 2) — the menu row shape. */
@@ -371,6 +384,18 @@ export class ApiGateway {
   /** Archive a module — removes it from the menu; existing projects untouched (owner/admin). */
   archiveModule(orgId: string, moduleId: string): Promise<{ ok: boolean }> {
     return this.req(`/orgs/${orgId}/modules/${moduleId}`, { method: 'DELETE' });
+  }
+  /** The org's named presets — module selections ready to start a project from (Slice 3). */
+  listTemplates(orgId: string): Promise<OrgProjectTemplate[]> {
+    return this.req(`/orgs/${orgId}/templates`);
+  }
+  /** Create a preset — explicit module items, or a whole project's structure (owner/admin). */
+  createTemplate(orgId: string, input: { name: string; description?: string; items?: ModuleSelection[]; fromProject?: string }): Promise<OrgProjectTemplate> {
+    return this.req(`/orgs/${orgId}/templates`, { method: 'POST', body: JSON.stringify(input) });
+  }
+  /** Archive a preset — leaves the picker; modules and existing projects untouched (owner/admin). */
+  archiveTemplate(orgId: string, templateId: string): Promise<{ ok: boolean }> {
+    return this.req(`/orgs/${orgId}/templates/${templateId}`, { method: 'DELETE' });
   }
   /** The org's admin roster (owner/admin only). */
   listOrgMembers(orgId: string): Promise<OrgMember[]> {

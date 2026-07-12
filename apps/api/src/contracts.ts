@@ -283,6 +283,20 @@ export const moduleSelectionSchema = z.object({
   underZone: z.string().trim().min(1).optional(),
 });
 
+/** Create a named preset (Slice 3): an explicit module selection, or `fromProject` —
+ *  which captures that project's full structure as ONE new module and wraps it in a
+ *  preset (a single coherent module keeps activity/checklist place references intact;
+ *  richer multi-module presets are hand-composed from the menu via `items`). */
+export const createTemplateSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    description: z.string().default(''),
+    items: z.array(moduleSelectionSchema).min(1).max(50).optional(),
+    fromProject: z.string().trim().min(1).optional(),
+  })
+  .refine((v) => Boolean(v.items) !== Boolean(v.fromProject), { message: 'Provide exactly one of items or fromProject' });
+export type CreateTemplateInput = z.infer<typeof createTemplateSchema>;
+
 export const createProjectSchema = z.object({
   name: z.string().min(1),
   short: z.string().min(1),
@@ -299,6 +313,9 @@ export const createProjectSchema = z.object({
   /** Templates Slice 2: compose the new project from org modules (may combine with
    *  structureFrom — the result is the union). */
   modules: z.array(moduleSelectionSchema).max(50).optional(),
+  /** Templates Slice 3: start from a named preset — expands to its module selection
+   *  ahead of any explicit `modules` picks (the result is the union of all sources). */
+  templateId: z.string().trim().min(1).optional(),
 });
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 

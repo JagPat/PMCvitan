@@ -323,8 +323,11 @@ function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   const publishNode = useStore((s) => s.publishNode);
   const addLocationNode = useStore((s) => s.addLocationNode);
   const saveZoneAsModule = useStore((s) => s.saveZoneAsModule);
+  const saveProjectAsTemplate = useStore((s) => s.saveProjectAsTemplate);
   const [newZone, setNewZone] = useState('');
   const [asDraft, setAsDraft] = useState(false);
+  const [tplName, setTplName] = useState('');
+  const saveTemplate = () => { if (tplName.trim()) { saveProjectAsTemplate(tplName.trim()); setTplName(''); } };
 
   const rowsFor = (parentId: string | null, depth: number): { id: string; name: string; kind: string; depth: number; draft: boolean }[] =>
     childrenOf(nodes, parentId).flatMap((n) => [{ id: n.id, name: n.name, kind: n.kind, depth, draft: Boolean(n.draft) }, ...rowsFor(n.id, depth + 1)]);
@@ -353,6 +356,18 @@ function ManageLocationsModal({ onClose }: { onClose: () => void }) {
           {list.map((n) => (
             <LocationRow key={n.id} id={n.id} name={n.name} kind={n.kind} depth={n.depth} draft={n.draft} onRename={(name) => renameNode(n.id, name)} onPublish={() => publishNode(n.id)} onDelete={() => deleteNode(n.id)} onSaveAsModule={n.kind === 'zone' ? () => saveZoneAsModule(n.id, n.name) : undefined} />
           ))}
+        </div>
+
+        {/* Templates Slice 3: capture this project's whole structure as a named preset */}
+        <div style={{ borderTop: '1px dashed rgba(35,33,28,.15)', marginTop: 16, paddingTop: 12 }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--muted)', marginBottom: 6 }}>SAVE AS TEMPLATE</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input value={tplName} onChange={(e) => setTplName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') saveTemplate(); }} placeholder="Template name (e.g. G+2 Residence)" style={{ ...fldD, flex: 1, minWidth: 0 }} data-testid="save-template-name" />
+            <Button variant="outline" onClick={saveTemplate} data-testid="save-template" style={{ padding: '0 14px', fontSize: 12.5 }}>Save</Button>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 5, lineHeight: 1.5 }}>
+            Captures the whole structure — locations, phases, planned activities, checklists — as a starting point for future projects. Never this project&apos;s approvals, dates, photos or people.
+          </div>
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 18 }}>
