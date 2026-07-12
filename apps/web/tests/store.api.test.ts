@@ -374,15 +374,19 @@ describe('P0 session correctness (architecture audit)', () => {
     expect(s().projectLoadState).toBe('loading');
   });
 
-  it('signing in to the project already active keeps state (no needless clearing)', async () => {
+  it('signing in to the project already active still starts a NEW scope (a new identity never inherits records)', async () => {
+    // Codex gate finding 6: a same-project re-auth is a new session identity — a
+    // different user/role sees different records, so the previous identity's data
+    // clears and its in-flight replies are refused; the fresh snapshot refetches.
     const gw = { login: vi.fn().mockResolvedValue({ token: 'JWT-a', role: 'pmc', projectId: 'ambli' }) };
     s()._setGateway(gw as unknown as ApiGateway);
-    const before = s().decisions.length;
+    const staleScope = s().captureProjectScope();
     s().login('pmc@vitan.in', 'secret');
     await flush();
     expect(s().activeProjectId).toBe('ambli');
-    expect(s().projectLoadState).toBe('idle'); // no transition — nothing was cleared
-    expect(s().decisions.length).toBe(before);
+    expect(s().projectLoadState).toBe('loading'); // awaiting THIS identity's snapshot
+    expect(s().decisions).toEqual([]);
+    expect(s().applySnapshot(makeSnapshot(), staleScope)).toBe(false); // pre-auth reply refused
   });
 
   it('a project with no checklist / daily log REPLACES the previous one’s (nullable state cannot leak)', () => {
