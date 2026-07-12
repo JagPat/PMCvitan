@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { SEED_NODES, SEED_DECISIONS, SEED_ACTIVITIES, SEED_INSPECTIONS, SEED_LOG_MATERIALS, createStarterLibrary } from '../src/domain/seed-data';
 
 /**
  * Non-destructive account provisioning — safe to run against a LIVE database.
@@ -205,7 +206,67 @@ async function main(): Promise<void> {
     }
     // eslint-disable-next-line no-console
     console.log(`ensured ${phases.length} phase(s) + activity assignments on ${PROJECT_ID}`);
+
+    // Location-spine backfill for the seeded demo project (Templates Slice 4 / data-flow
+    // audit #1): the live ambli DB predates ProjectNode, so its Site Map is empty. Guarded
+    // at the PROJECT level — it runs only while the project has NO nodes at all (mirroring
+    // createStarterLibrary's zero-modules guard), so a tree the PMC has since built or
+    // curated (including deleting seed nodes) is never added to, resurrected or re-filed.
+    // Create + attach commit in ONE transaction: a half-applied backfill (tree without its
+    // filings) can't survive a mid-boot crash and then be skipped forever by the guard.
+    const nodeCount = await prisma.projectNode.count({ where: { projectId: PROJECT_ID } });
+    if (nodeCount === 0) {
+      const pmcUser = await prisma.user.findUnique({ where: { email: 'pmc@vitan.in' }, select: { id: true } });
+      let nodesCreated = 0;
+      await prisma.$transaction(async (tx) => {
+        for (const n of SEED_NODES) {
+          // An authorless draft (publishedAt null + authorId null) is visible to NO ONE and
+          // create-only means it would never be repaired — if the roster (ACCOUNTS_JSON)
+          // has no pmc@vitan.in, skip the demo draft branch rather than seed ghost rows.
+          if (n.draft && !pmcUser) continue;
+          await tx.projectNode.create({
+            data: {
+              id: n.id,
+              projectId: PROJECT_ID,
+              parentId: n.parentId,
+              name: n.name,
+              kind: n.kind,
+              order: n.order,
+              publishedAt: n.draft ? null : new Date(),
+              authorId: n.draft ? pmcUser!.id : null,
+            },
+          });
+          nodesCreated += 1;
+        }
+        // File the known demo records onto the fresh spine ONLY where nodeId is still
+        // null — a hand-filed (or deliberately unfiled) place is never moved.
+        for (const d of SEED_DECISIONS) {
+          if (d.nodeId) await tx.decision.updateMany({ where: { id: d.id, projectId: PROJECT_ID, nodeId: null }, data: { nodeId: d.nodeId } });
+        }
+        for (const a of SEED_ACTIVITIES) {
+          if (a.nodeId) await tx.activity.updateMany({ where: { id: a.id, projectId: PROJECT_ID, nodeId: null }, data: { nodeId: a.nodeId } });
+        }
+        for (const i of SEED_INSPECTIONS) {
+          if (i.nodeId) await tx.inspection.updateMany({ where: { id: i.id, projectId: PROJECT_ID, nodeId: null }, data: { nodeId: i.nodeId } });
+        }
+        for (const m of SEED_LOG_MATERIALS) {
+          if (m.nodeId) await tx.siteMaterial.updateMany({ where: { name: m.name, decisionId: m.decisionId, nodeId: null, dailyLog: { projectId: PROJECT_ID } }, data: { nodeId: m.nodeId } });
+        }
+      });
+      // eslint-disable-next-line no-console
+      console.log(`backfilled ${nodesCreated} location node(s) + spine attachments on ${PROJECT_ID}`);
+    } else {
+      // eslint-disable-next-line no-console
+      console.log('project already has location nodes — spine untouched');
+    }
   }
+
+  // The Vitan starter template library (Templates Slice 4): modules + the "G+2 Residence"
+  // preset. Create-only — runs ONLY when the org has no modules at all, so a curated
+  // library is never touched by a redeploy.
+  const seededLibrary = await createStarterLibrary(prisma, org.id);
+  // eslint-disable-next-line no-console
+  console.log(seededLibrary ? `seeded the starter template library for org ${org.slug}` : `org ${org.slug} already has modules — library untouched`);
 
   // eslint-disable-next-line no-console
   console.log(`Done. Org ${orgSlug} + ${accounts.length} account(s) ensured on project ${PROJECT_ID} (no other data touched).`);
