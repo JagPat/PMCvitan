@@ -3,11 +3,23 @@ import {
   ExecutionContext,
   ForbiddenException,
   Injectable,
+  SetMetadata,
   UnauthorizedException,
   createParamDecorator,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { ProjectAccessService } from './project-access.service';
+
+/**
+ * Marks routes that authorize by IDENTITY, not project access: the /me discovery
+ * reads and org administration, whose services check LIVE org-membership rows
+ * themselves. Everything else — including routes WITHOUT a `:projectId` param,
+ * like the global media/drawing deletes — is live-authorized against the token's
+ * project on every request (Codex gate finding 2).
+ */
+export const IDENTITY_SCOPED = 'auth:identityScoped';
+export const IdentityScoped = () => SetMetadata(IDENTITY_SCOPED, true);
 
 export type Role = 'pmc' | 'client' | 'engineer' | 'contractor' | 'consultant' | 'worker';
 
@@ -33,6 +45,7 @@ export class JwtGuard implements CanActivate {
   constructor(
     private readonly jwt: JwtService,
     private readonly projectAccess: ProjectAccessService,
+    private readonly reflector: Reflector,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -51,7 +64,13 @@ export class JwtGuard implements CanActivate {
     if (routeProject && routeProject !== user.projectId) {
       throw new ForbiddenException('Token is not scoped to this project');
     }
-    req.user = routeProject ? await this.projectAccess.authorize(user, routeProject) : user;
+    // LIVE authorization on EVERY guarded route (finding 2): a route without a
+    // `:projectId` param (global-scoped deletes) is authorized against the
+    // token's own project — a removed member's unexpired token must not retain
+    // destructive access anywhere. Identity-scoped routes (/me, org admin) opt
+    // out because their services check live org/membership rows themselves.
+    const identityScoped = this.reflector.getAllAndOverride<boolean>(IDENTITY_SCOPED, [ctx.getHandler(), ctx.getClass()]);
+    req.user = identityScoped ? user : await this.projectAccess.authorize(user, routeProject ?? user.projectId);
     return true;
   }
 }
