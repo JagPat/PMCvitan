@@ -90,7 +90,19 @@ export class NodesService {
     if (attached > 0) {
       throw new BadRequestException(`Move or remove the ${attached} decision(s) under this location before deleting it.`);
     }
-    await this.prisma.projectNode.delete({ where: { id: nodeId } }); // children cascade
+    // The (projectId, nodeId) FKs are NO ACTION (a composite SET NULL would null
+    // the owning projectId too), so unfiling is service-owned: clear every
+    // reference in the doomed subtree in the SAME transaction as the delete —
+    // the records stay, they just become unplaced (Codex gate finding 4).
+    const inSubtree = { projectId, nodeId: { in: subtree } };
+    await this.prisma.$transaction([
+      this.prisma.activity.updateMany({ where: inSubtree, data: { nodeId: null } }),
+      this.prisma.inspection.updateMany({ where: inSubtree, data: { nodeId: null } }),
+      this.prisma.media.updateMany({ where: inSubtree, data: { nodeId: null } }),
+      this.prisma.drawing.updateMany({ where: inSubtree, data: { nodeId: null } }),
+      this.prisma.siteMaterial.updateMany({ where: inSubtree, data: { nodeId: null } }),
+      this.prisma.projectNode.delete({ where: { id: nodeId } }), // children cascade
+    ]);
     return this.done(projectId, user);
   }
 

@@ -78,6 +78,7 @@ model Project {
   memberships   Membership[]
   companies     ProjectCompany[]
   nodes         ProjectNode[]
+  siteMaterials SiteMaterial[]
 }
 
 // A firm/consultant associated with a project — the client company, the main
@@ -232,7 +233,7 @@ model Media {
   // The place this photo shows the reality of (zone/room/object). The location tree is
   // the shared spatial spine: a photo here + a drawing on the same node = intent vs reality
   // for one object. SET NULL so removing a node never deletes the photo. Location spine.
-  node       ProjectNode? @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  node       ProjectNode? @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   nodeId     String?
   createdAt  DateTime @default(now())
 
@@ -260,9 +261,10 @@ model Drawing {
   decisionId String?
   // The place this drawing governs (zone/room/object). Filed at its natural level — a
   // floor plan on the zone, a joinery detail on the element — and inherited DOWN: a room
-  // shows every drawing filed on it or any ancestor. SET NULL so a node delete keeps the
-  // drawing (it becomes unfiled). Location spine.
-  node       ProjectNode?      @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  // shows every drawing filed on it or any ancestor. A node delete keeps the drawing
+  // (it becomes unfiled) — NodesService unlinks in-transaction; the composite FK makes
+  // a cross-project filing impossible even on a direct write. Location spine.
+  node       ProjectNode?      @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   nodeId     String?
   // Draft → Publish lifecycle (mirrors Decision). While `publishedAt` is null the drawing is
   // a private DRAFT: the snapshot delivers it only to its author, it never notifies the build
@@ -356,7 +358,10 @@ model ProjectNode {
   id        String   @id @default(cuid())
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId String
-  parent    ProjectNode?  @relation("NodeChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  // Composite self-FK: a node can only hang under a parent in the SAME project —
+  // PostgreSQL rejects a cross-project tree edge even on a direct write. Cascade
+  // still removes the subtree when a parent goes.
+  parent    ProjectNode?  @relation("NodeChildren", fields: [projectId, parentId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
   parentId  String?
   name      String
   kind      String // zone | room | element
@@ -377,6 +382,8 @@ model ProjectNode {
   inspections Inspection[]
   materials   SiteMaterial[]
 
+  // composite identity for the (projectId, nodeId) FKs — see Media/Decision/…
+  @@unique([projectId, id])
   @@index([projectId])
   @@index([parentId])
 }
@@ -387,7 +394,7 @@ model Decision {
   projectId      String
   title          String
   room           String // display fallback / legacy; the node path is authoritative when nodeId is set
-  node           ProjectNode?     @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  node           ProjectNode?     @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   nodeId         String?
   status         DecisionStatus   @default(pending)
   ageDays        Int?
@@ -483,10 +490,11 @@ model Activity {
   gateInspection GateState @default(na)
   decision       Decision?      @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   decisionId     String?
-  phase          Phase?         @relation(fields: [phaseId], references: [id])
+  phase          Phase?         @relation(fields: [projectId, phaseId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   phaseId        String?
-  // Location spine: where this work happens (zone/room/object). SET NULL on node delete.
-  node           ProjectNode?   @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  // Location spine: where this work happens (zone/room/object). NodesService unlinks
+  // on node delete; the composite FK forbids a cross-project filing at the database.
+  node           ProjectNode?   @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   nodeId         String?
   order          Int            @default(0)
   drawings       Drawing[]
@@ -510,6 +518,8 @@ model Phase {
   plannedEndDate   DateTime? @db.Date
   activities   Activity[]
 
+  // composite identity for the (projectId, phaseId) FK on Activity
+  @@unique([projectId, id])
   @@index([projectId])
 }
 
@@ -525,8 +535,9 @@ model Inspection {
   inspectionDate DateTime? @db.Date // real civil date (Phase 0 Task 6)
   submitted Boolean          @default(false)
   decided   Boolean          @default(false)
-  // Location spine: where this quality check happens. SET NULL on node delete.
-  node      ProjectNode?     @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  // Location spine: where this quality check happens. NodesService unlinks on node
+  // delete; the composite FK forbids a cross-project filing at the database.
+  node      ProjectNode?     @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   nodeId    String?
   items     InspectionItem[]
 
@@ -581,9 +592,14 @@ model CrewRow {
 
 model SiteMaterial {
   id         String    @id @default(cuid())
-  dailyLog   DailyLog  @relation(fields: [dailyLogId], references: [id])
+  // Canonical project ownership (Codex gate finding 4): a material belongs to ONE
+  // project directly — the composite FKs below then make every reference (its log,
+  // the approving decision, the staging place) provably same-project in PostgreSQL.
+  project    Project   @relation(fields: [projectId], references: [id])
+  projectId  String
+  dailyLog   DailyLog  @relation(fields: [projectId, dailyLogId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   dailyLogId String
-  decision   Decision? @relation(fields: [decisionId], references: [id])
+  decision   Decision? @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   decisionId String?
   name       String
   qty        String
@@ -591,12 +607,14 @@ model SiteMaterial {
   matched    Boolean   @default(true)
   swatch     String
   photo      Boolean   @default(false)
-  // Location spine: where this material was delivered / is staged. SET NULL on node delete.
-  node       ProjectNode? @relation(fields: [nodeId], references: [id], onDelete: SetNull)
+  // Location spine: where this material was delivered / is staged. NodesService
+  // unlinks on node delete; the composite FK forbids a cross-project filing.
+  node       ProjectNode? @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   nodeId     String?
   order      Int       @default(0)
 
   @@index([nodeId])
+  @@index([projectId])
 }
 
 model Notification {

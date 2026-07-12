@@ -73,7 +73,7 @@ export class DailyLogService {
     const order = log.materials.reduce((m, x) => Math.max(m, x.order), 0) + 1;
     await this.prisma.$transaction([
       this.prisma.siteMaterial.create({
-        data: { dailyLogId: log.id, name: input.name, qty: input.qty, zone: input.zone, decisionId: input.decisionId ?? null, swatch: input.swatch, matched: true, nodeId, order },
+        data: { projectId, dailyLogId: log.id, name: input.name, qty: input.qty, zone: input.zone, decisionId: input.decisionId ?? null, swatch: input.swatch, matched: true, nodeId, order },
       }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'material.add', entity: 'DailyLog', entityId: log.id } }),
     ]);

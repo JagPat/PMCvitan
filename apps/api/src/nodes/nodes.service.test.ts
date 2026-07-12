@@ -44,6 +44,13 @@ function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
       }),
     },
     decision: { count: vi.fn(async ({ where }: { where: { nodeId: { in: string[] } } }) => where.nodeId.in.reduce((s, id) => s + (decisionsByNode[id] ?? 0), 0)) },
+    // remove() unlinks every referrer in the doomed subtree in-transaction (finding 4)
+    activity: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    inspection: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    media: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    drawing: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    siteMaterial: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    $transaction: vi.fn(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[])),
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
   const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
