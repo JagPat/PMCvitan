@@ -99,6 +99,24 @@ An Org `owner`/`admin` can operate **every project in their org as PMC** even wi
 membership — but still **one project at a time**: `switchProject` issues a PMC token scoped to the
 chosen project, so the tenancy guard above is unchanged. See [`ORGS.md`](./ORGS.md).
 
+### Live authorization on every request (Phase 0 Task 4 — implemented)
+A token is **identity, not continuing authority**. On every `/projects/:projectId/*` request,
+after the cheap token↔route tenancy match, `ProjectAccessService.authorize()`
+(`apps/api/src/common/project-access.service.ts`) re-checks against the database that the caller
+**still** holds access: an active `Membership` on the project, or org `owner`/`admin` of the
+project's org, and that the project is not archived. Removing a membership therefore revokes
+access **immediately** — the member's still-unexpired JWT starts returning 403 on the next
+request, proven end-to-end by the `removed membership revokes token` acceptance scenario and the
+PostgreSQL integration suite.
+
+### Stale-response generation guard (Phase 0 Tasks 2–3 — implemented)
+Every snapshot fetch captures the `(projectId, generation)` scope it was issued FOR
+(`captureProjectScope()`); a switch or re-auth bumps the generation, and `applySnapshot` rejects
+any reply whose captured scope no longer matches — a slow response from the previous project can
+never paint over the new one. Org-level loaders are guarded by session token instead (they are
+not project-scoped). `RouteBridge` treats only an actual URL **change** as a navigation request;
+a stale URL right after a store-initiated switch is rewritten, never obeyed (no switch ping-pong).
+
 ---
 
 ## Invariants (deliberate scope decisions)

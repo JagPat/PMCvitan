@@ -44,6 +44,54 @@ jobs:
       - name: End-to-end tests
         run: pnpm --filter web test:e2e
 
+  # Phase 0 acceptance gate: the two-project Playwright suite over the REAL
+  # stack (NestJS + seeded PostgreSQL + the web app in API mode). Phase 0 is
+  # complete only when this job is green — unit tests or the seeded demo alone
+  # are insufficient evidence (docs/ROADMAP.md).
+  api-e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pmcvitan_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # a disposable database — scripts/test-api-e2e.sh wipes and reseeds it
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pmcvitan_e2e?schema=public
+      JWT_SECRET: ci-api-e2e-secret-not-used-in-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Prisma generate
+        run: pnpm --filter api prisma:generate
+      - name: Install Playwright Chromium
+        run: pnpm --filter web exec playwright install --with-deps chromium
+      - name: Two-project acceptance suite (migrate + seed + Playwright over the real API)
+        run: pnpm test:e2e:api
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-e2e-traces
+          path: apps/web/test-results/
+          retention-days: 7
+
   api:
     runs-on: ubuntu-latest
     services:

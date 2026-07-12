@@ -55,6 +55,34 @@ The app ships with dev-stubs for SMS OTP, media storage, and web push; each flip
 
 > **Private file delivery (media & drawings).** Files are never public: `GET /media/:id` and `GET /drawings/rev/:id` require a short-lived `?t=` token that the API mints only inside the RBAC-filtered snapshot / on upload. When you cut over to S3/R2, **make the bucket private (disable public read)** — the API presigns a short-lived GET per request, so a public bucket would defeat the point. Optional: `FILE_URL_TTL_SEC` (default `3600`) tunes how long a signed file link stays valid; lower is more secure, but if it's shorter than how long a user views a page without a snapshot refetch, images may need a reload. `S3_PUBLIC_BASE` is no longer used for serving.
 
+### Phase 0 release runbook (migration order · diagnostics · rollback · smoke)
+
+The Phase 0 migrations (`20260902000000_phase0_project_integrity`,
+`20260903000000_phase0_real_dates`) are **additive** and carry their own refusal diagnostics.
+The rules for taking them (and any future release) to production:
+
+1. **Order** — schema migrations deploy BEFORE the API code that depends on their columns or
+   constraints (`scripts/migrate.sh` runs `prisma migrate deploy` on container start, before the
+   app listens — the ordering is automatic per deploy, but never point new code at a database
+   whose migrations haven't run).
+2. **Backup first** — take and verify a database backup before deploying constraint or backfill
+   migrations (Tasks 5/6 class changes).
+3. **Pre-deploy diagnostics on a staging copy** — both Phase 0 migrations begin with diagnostic
+   queries and **abort loudly** instead of guessing: `project_integrity` refuses when any
+   cross-project or dangling reference exists; `real_dates` refuses when any non-empty display
+   date is unparseable. Run `prisma migrate deploy` against a copy of production data first; a
+   refusal **blocks the deploy** and requires explicit, operator-reviewed data repair — the
+   migration must not be edited to guess.
+4. **Rollback limits** — database constraints are NOT rolled back automatically once writes have
+   depended on them. Rolling back means: restore the **prior application build**, keep the
+   additive schema in place, and prepare an operator-reviewed *forward* migration for any repair.
+   The frontend project-scope work (Tasks 2, 3, 7) rolls back as one compatible group while the
+   additive columns remain.
+5. **Post-deploy smoke** — sign in and check: one populated project renders its records; one
+   empty project renders honest empty states (no sample content); a project switch swaps cleanly;
+   a deep-link refresh restores project + screen; a removed membership 403s on the next request;
+   one same-project record creation succeeds. (`GET /health` confirms process liveness.)
+
 ### Migrations & the existing (db-push) database
 
 The schema is now tracked by a baseline Prisma migration at `apps/api/prisma/migrations/0_init`. Going forward, schema changes are new migrations applied by `prisma migrate deploy` on deploy.

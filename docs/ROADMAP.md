@@ -6,16 +6,16 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 
 The active gate — [`docs/superpowers/plans/2026-07-12-phase-0-trust-foundation.md`](./superpowers/plans/2026-07-12-phase-0-trust-foundation.md) (canonical spec: [`docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`](./superpowers/specs/2026-07-12-modular-construction-control-platform-design.md)). Tasks land in order, one PR per task:
 
-- [x] Task 1 — Vision and baseline gate (`CLAUDE.md`, `pnpm check`, this section)
-- [x] Task 2 — Project switching as an atomic state transition
-- [x] Task 3 — Stop route, snapshot and loader races
-- [x] Task 4 — Real PostgreSQL integration gate + live access check
-- [x] Task 5 — Same-project references enforced in services and PostgreSQL
-- [x] Task 6 — Replace prototype day offsets with real civil dates
-- [x] Task 7 — Remove seeded claims from API mode
-- [ ] Task 8 — Prove the foundation end to end + review packet
+- [x] Task 1 — Vision and baseline gate (`CLAUDE.md`, `pnpm check`, this section) — [PR #81](https://github.com/JagPat/PMCvitan/pull/81) (`ab7969a`)
+- [x] Task 2 — Project switching as an atomic state transition — [PR #82](https://github.com/JagPat/PMCvitan/pull/82) (`8a0fa6b`)
+- [x] Task 3 — Stop route, snapshot and loader races — [PR #83](https://github.com/JagPat/PMCvitan/pull/83) (`96133a9`)
+- [x] Task 4 — Real PostgreSQL integration gate + live access check — [PR #84](https://github.com/JagPat/PMCvitan/pull/84) (`bf721a2`)
+- [x] Task 5 — Same-project references enforced in services and PostgreSQL — [PR #85](https://github.com/JagPat/PMCvitan/pull/85) (`f445995`)
+- [x] Task 6 — Replace prototype day offsets with real civil dates — [PR #86](https://github.com/JagPat/PMCvitan/pull/86) (`5be3cdb`)
+- [x] Task 7 — Remove seeded claims from API mode — [PR #87](https://github.com/JagPat/PMCvitan/pull/87) (`25406a3`)
+- [x] Task 8 — Prove the foundation end to end + review packet — this branch (`test: prove phase zero project isolation`); evidence in [`docs/reviews/phase-0-review-packet.md`](./reviews/phase-0-review-packet.md)
 
-Phase 0 is complete only when the API-mode two-project Playwright suite and PostgreSQL integration suite pass in CI. Unit tests or the seeded local demo alone are insufficient evidence.
+Phase 0 is complete only when the API-mode two-project Playwright suite (CI job `api-e2e`, 8 scenarios) and the PostgreSQL integration suite (CI job `api`) pass in CI. Unit tests or the seeded local demo alone are insufficient evidence. Pending: the green `api-e2e` run on this branch's PR and the independent Codex review gate.
 
 | Phase | Scope | Status |
 |---|---|---|

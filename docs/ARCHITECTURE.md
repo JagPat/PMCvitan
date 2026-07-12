@@ -62,6 +62,15 @@ _Note: the styling layer uses CSS Modules + design-token CSS variables rather th
 - **Offline-first** — daily-log mutations apply locally and queue when offline; reconnect flushes with idempotency keys.
 - **Permission-filtered data** — contractor & engineer never see pending decisions; each role sees only its screens.
 
+## Phase 0 trust foundation (implemented)
+
+The contract behind the [Phase 0 plan](./superpowers/plans/2026-07-12-phase-0-trust-foundation.md) — current behavior, not aspiration:
+
+- **Modular monolith.** One NestJS application (`apps/api`) with feature modules behind one `AppModule`; one PostgreSQL database; no microservices. `configureApp()` (`src/app-setup.ts`) is shared by the production bootstrap and the integration harness so tests exercise the shipped proxy/CORS/body-limit behavior. `GET /health` is a public process-health probe (no auth, no database).
+- **Frontend project-scope lifecycle.** All project data lives behind an explicit state machine — `idle → switching → loading → ready | error` (`apps/web/src/store/projectScope.ts`). A switch **clears project data before** the `/auth/switch` request, adopts the **server-returned** project verbatim, and stamps every snapshot request with a `(projectId, generation)` scope; a response whose scope no longer matches is discarded. `RouteBridge` treats an actual URL change as a navigation request (deep link / back-forward) and a store change as authority for the URL — never the reverse, so a completed switch is not "corrected" back by its own stale path. `ProjectLoadBoundary` renders screens only when their data is trustworthy.
+- **PostgreSQL integration gate.** CI's `api` job runs the integration suite (`apps/api/test/integration`) against a real PostgreSQL 16 service — live membership authorization, composite-FK reference integrity and real-date behavior are proven on the real engine, never mocked.
+- **Two-project acceptance gate.** CI's `api-e2e` job seeds a deterministic two-project fixture and drives the browser through the eight Phase 0 scenarios (`apps/web/tests/e2e-api/project-scope.spec.ts`) against the compiled API — auth landing, atomic switch, deep links, history, non-member 403, live revocation, cross-project reference rejection, and empty-project truthfulness. Run locally with `DATABASE_URL=<disposable> pnpm test:e2e:api`.
+
 ## Deployment (target)
 
 Web → Cloudflare Pages / Vercel · API → Fly.io / Render · DB → Neon / Supabase · storage → Cloudflare R2 · CI → GitHub Actions.

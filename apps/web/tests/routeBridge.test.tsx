@@ -62,4 +62,31 @@ describe('RouteBridge — deep links survive a pending project switch (Phase 0 T
     expect(gw.switchProject).not.toHaveBeenCalled();
     expect(currentPath).toMatch(/^\/projects\/ambli\//);
   });
+
+  it('a store-initiated switch does NOT ping-pong back to the stale URL project (Task 8)', async () => {
+    // signed in on ambli, a member of both projects, sitting on an ambli path
+    const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'JWT-b', role: 'pmc', projectId: 'project-b' }) };
+    useStore.getState()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'ambli', name: 'Residence at Ambli', short: 'Residence at Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+    });
+    renderAt('/projects/ambli/dashboard');
+    await flush();
+
+    // the user switches via the PROJECT SWITCHER (store-initiated, not a URL change)
+    await act(async () => {
+      await useStore.getState().switchProject('project-b');
+    });
+    useStore.setState((s) => { s.projectLoadState = 'ready'; }); // snapshot landed
+    await flush();
+
+    // the moment the switch lands, the URL still names ambli — that stale path must
+    // NOT be treated as a deep link back (ping-pong); it gets rewritten to B instead
+    expect(useStore.getState().activeProjectId).toBe('project-b');
+    expect(gw.switchProject).toHaveBeenCalledTimes(1);
+    expect(currentPath).toMatch(/^\/projects\/project-b\//);
+  });
 });

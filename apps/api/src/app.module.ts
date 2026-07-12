@@ -9,6 +9,7 @@ import { RolesGuard } from './common/roles';
 import { ThrottleGuard } from './common/throttle';
 import { AuthService } from './auth/auth.service';
 import { AuthController } from './auth/auth.controller';
+import { HealthController } from './health.controller';
 import { SmsService } from './auth/sms.service';
 import { EmailService } from './auth/email.service';
 import { GoogleAuthService } from './auth/google.service';
@@ -54,6 +55,7 @@ import { CompaniesController } from './orgs/companies.controller';
     }),
   ],
   controllers: [
+    HealthController,
     AuthController,
     ProjectController,
     DecisionsController,
