@@ -381,6 +381,12 @@ export const useStore = create<Store>()(
       generation: get().projectScopeGeneration,
     });
 
+    /** Is a scope captured at request time still the live one? Guards EVERY
+     *  post-await project mutation — including raw-DTO paths that don't go
+     *  through applySnapshot (companies, photo upload). Codex gate finding 3. */
+    const scopeStillCurrent = (scope: ProjectScope): boolean =>
+      isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope);
+
     const applySnapshot = (snap: ApiSnapshot, capturedScope?: ProjectScope): boolean => {
       // Default to the CURRENT scope for direct/local callers; network callers pass
       // the scope captured when their request was issued.
@@ -520,13 +526,17 @@ export const useStore = create<Store>()(
         s.sessionToken = res.token;
         s.userName = res.name ?? null;
         s.access = freshAccess();
+        // EVERY auth result is a new session identity, so it always starts a new
+        // scope generation — a reply issued FOR the previous identity (even on the
+        // SAME project: a different user/role sees different records) can never
+        // satisfy the current scope guard. Codex gate finding 6.
+        s.projectScopeGeneration += 1;
         if (res.projectId && changedProject) {
           s.activeProjectId = res.projectId; // the SERVER-returned scope, verbatim
           // If a switch already emptied the data for THIS project, don't clear twice.
-          // Otherwise (sign-in adoption, or the server re-scoped us elsewhere): new
-          // scope generation + empty data + blank identity until the snapshot lands.
+          // Otherwise (sign-in adoption, or the server re-scoped us elsewhere):
+          // empty data + blank identity until the snapshot lands.
           if (s.pendingProjectId !== res.projectId) {
-            s.projectScopeGeneration += 1;
             s.name = '';
             s.short = '';
             s.descriptor = '';
@@ -534,11 +544,14 @@ export const useStore = create<Store>()(
             s.siteCode = '';
             Object.assign(s, emptyProjectData());
           }
+        } else if (!wasPending) {
+          // same-project re-authentication: the previous identity's records are not
+          // this identity's truth — clear and let the post-auth refresh refetch them
+          Object.assign(s, emptyProjectData());
         }
-        if (changedProject || wasPending) {
-          s.projectLoadState = 'loading'; // authenticated; awaiting this project's snapshot
-          s.projectLoadError = null;
-        }
+        // in every branch the project data is now empty — awaiting this identity's snapshot
+        s.projectLoadState = 'loading';
+        s.projectLoadError = null;
         s.pendingProjectId = null;
       });
       get().flash(opts?.msg ?? 'Signed in as ' + (res.name ?? res.role) + '.');
@@ -621,6 +634,14 @@ export const useStore = create<Store>()(
         // scope key and resumes on their next sign-in; the next user never replays it.
         s.outbox = [];
         s.syncQueue = [];
+        // Ending the session ends the scope (Codex gate finding 6): the signed-out
+        // user's records leave memory, and the generation bump refuses any of their
+        // replies still in flight — nothing survives for the next identity to see.
+        s.projectScopeGeneration += 1;
+        Object.assign(s, emptyProjectData());
+        s.projectLoadState = 'idle';
+        s.projectLoadError = null;
+        s.pendingProjectId = null;
       }),
     setScreen: (k) =>
       set((s) => {
@@ -1089,16 +1110,23 @@ export const useStore = create<Store>()(
     },
     loadArchivedProjects: (orgId) => {
       if (!gateway) return;
-      gateway.listArchivedProjects(orgId).then((rows: ArchivedProject[]) => set((s) => { s.archivedProjects = rows; })).catch(() => {});
+      // session-scoped: a reply from a previous sign-in never lands in this one
+      const tok = get().sessionToken;
+      gateway.listArchivedProjects(orgId).then((rows: ArchivedProject[]) => set((s) => { if (s.sessionToken === tok) s.archivedProjects = rows; })).catch(() => {});
     },
+    // Company mutations reconcile from raw DTOs (no snapshot), so each captures the
+    // scope its request was issued FOR and drops the reply if the scope moved on —
+    // a late reply from project A must never surface under project B (finding 3).
     addCompany: (input) => {
       if (!gateway) {
         get().flash('Managing companies needs the server.');
         return;
       }
+      const scope = currentScope();
       gateway
         .addCompany(input)
         .then((c) => {
+          if (!scopeStillCurrent(scope)) return;
           set((s) => { s.companies.push(c); });
           get().flash(`Added ${c.name}.`);
         })
@@ -1109,9 +1137,11 @@ export const useStore = create<Store>()(
         get().flash('Managing companies needs the server.');
         return;
       }
+      const scope = currentScope();
       gateway
         .updateCompany(companyId, input)
         .then((c) => {
+          if (!scopeStillCurrent(scope)) return;
           set((s) => { const i = s.companies.findIndex((x) => x.id === companyId); if (i >= 0) s.companies[i] = c; });
           get().flash(`Updated ${c.name}.`);
         })
@@ -1122,9 +1152,11 @@ export const useStore = create<Store>()(
         get().flash('Managing companies needs the server.');
         return;
       }
+      const scope = currentScope();
       gateway
         .removeCompany(companyId)
         .then(() => {
+          if (!scopeStillCurrent(scope)) return;
           set((s) => { s.companies = s.companies.filter((x) => x.id !== companyId); });
           get().flash('Company removed.');
         })
@@ -1481,9 +1513,13 @@ export const useStore = create<Store>()(
           get().flash('Photo saved offline — will upload when signal returns.');
           return;
         }
+        // raw-DTO reconcile: pin the reply to the scope that uploaded it — a late
+        // reply must never land on ANOTHER project's daily log (finding 3)
+        const scope = currentScope();
         gateway
           .uploadMedia(input)
           .then((res) => {
+            if (!scopeStillCurrent(scope)) return;
             set((s) => {
               if (!s.dailyLog) return;
               s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
@@ -1566,9 +1602,15 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       const ops = get().outbox.slice();
       if (ops.length === 0) return;
-      // the scope this flush replays FOR — a project switch mid-flush must not let
-      // the reconcile snapshot land under the new project
+      // Pin EVERYTHING this flush uses to the moment it started (Codex gate
+      // finding 1): the gateway instance, the (project, generation) scope, the
+      // session, and the storage key the queue belongs to. The module-level
+      // `gateway` is swapped on a project switch — reading it live mid-loop
+      // would replay project A's remaining operations INTO project B.
+      const flushGateway = gateway;
       const flushScope = currentScope();
+      const flushToken = get().sessionToken;
+      const flushKey = outboxKey();
 
       // Replay in order, one at a time, committing progress as we go so a later failure
       // never re-runs an op that already succeeded. A permanently-rejected op (terminal
@@ -1578,9 +1620,18 @@ export const useStore = create<Store>()(
       let synced = 0;
       let dropped = 0;
       let stoppedAt = -1;
+      let scopeMoved = false;
       for (let i = 0; i < ops.length; i++) {
+        // live check BEFORE each replay: if the project or session changed while a
+        // previous op was in flight, the rest of this queue belongs to the OLD
+        // scope — stop, and leave it persisted there for that scope's next flush.
+        if (!scopeStillCurrent(flushScope) || get().sessionToken !== flushToken) {
+          stoppedAt = i;
+          scopeMoved = true;
+          break;
+        }
         try {
-          lastSnap = await replayOutboxOp(gateway, ops[i]);
+          lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
         } catch (err) {
           if (isTerminalOutboxError(err)) {
@@ -1593,6 +1644,27 @@ export const useStore = create<Store>()(
       }
 
       const remaining = stoppedAt >= 0 ? ops.slice(stoppedAt) : [];
+      if (scopeMoved) {
+        // The in-memory outbox now belongs to the NEW scope (hydrateOutbox swapped
+        // it) — don't touch it. Persist the un-replayed remainder (plus anything the
+        // old scope queued during the flush) under the ORIGINAL key so it replays
+        // there on that scope's next reconnect, and skip the reconcile snapshot.
+        try {
+          const storage = globalThis.localStorage;
+          if (storage) {
+            const stored: unknown = JSON.parse(storage.getItem(flushKey) ?? '[]');
+            // the flushed ops were the stored queue's prefix — drop the replayed part
+            const leftover = Array.isArray(stored) && stored.length >= ops.length
+              ? [...remaining, ...stored.slice(ops.length)]
+              : remaining;
+            storage.setItem(flushKey, JSON.stringify(leftover));
+          }
+        } catch {
+          /* storage unavailable — the persisted queue simply keeps its pre-flush state */
+        }
+        return;
+      }
+
       // Preserve anything queued while we were awaiting (shouldn't happen once online, but
       // never drop a write): the original ops were the outbox prefix, so slice past them.
       const appended = get().outbox.slice(ops.length);
