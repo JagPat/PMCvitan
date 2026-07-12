@@ -502,3 +502,40 @@ describe('Phase 0 Task 2 — atomic project-scope transitions', () => {
     expect(s().projectLoadState).toBe('ready');
   });
 });
+
+describe('Phase 0 Task 3 — every project-scoped response is generation-guarded', () => {
+  it('drops a team reply whose scope generation is stale even when the project id matches again (A→B→A)', async () => {
+    let resolveOld!: (m: unknown) => void;
+    const gw = {
+      listMembers: vi.fn().mockReturnValue(new Promise((r) => { resolveOld = r; })),
+      switchProject: vi.fn().mockImplementation((id: string) => Promise.resolve({ token: 'J-' + id, role: 'pmc' as const, projectId: id })),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.memberships = [
+        { projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' },
+        { projectId: 'ambli', name: 'Ambli', short: 'Ambli', role: 'pmc', orgId: 'o', orgName: 'V' },
+      ];
+    });
+
+    const load = s().loadTeam(); // reply belongs to ambli @ generation g0
+    await s().switchProject('project-b'); // g+1
+    await s().switchProject('ambli'); // g+2 — same project id as the old reply's pin!
+    resolveOld([{ userId: 'u1', name: 'Stale Member', role: 'pmc' }]);
+    await load;
+
+    // an id-only pin would wrongly apply this reply; the scope GENERATION must reject it
+    expect(s().members).toEqual([]);
+  });
+
+  it('shows a project load error without rendering records from the prior project (plan contract)', async () => {
+    const gw = { switchProject: vi.fn().mockRejectedValue(new Error('Forbidden')) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.memberships = [{ projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' }]; });
+
+    await s().switchProject('project-b');
+
+    expect(s().projectLoadState).toBe('error');
+    expect(s().decisions).toEqual([]);
+  });
+});

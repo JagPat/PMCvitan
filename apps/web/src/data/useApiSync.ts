@@ -36,7 +36,13 @@ export function useApiSync(): void {
       // capture the scope this request is FOR — a reply landing after a switch or
       // sign-in (generation bumped) is rejected by applySnapshot, never applied.
       const st = useStore.getState();
-      const scope = { projectId: st.activeProjectId, generation: st.projectScopeGeneration };
+      const scope = st.captureProjectScope();
+      // initial load: surface the loading state BEFORE the request (Task 3). A
+      // background refresh (already 'ready') stays 'ready' — stale-while-revalidate,
+      // no loading flash on every socket ping.
+      if (st.projectLoadState !== 'ready') {
+        useStore.setState((s) => { s.projectLoadState = 'loading'; });
+      }
       gw.snapshot()
         .then((snap) => {
           if (!cancelled) useStore.getState().applySnapshot(snap, scope);

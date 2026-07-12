@@ -227,7 +227,7 @@ export interface AppActions {
   issueChecklist: (input: { title: string; zone: string; items: string[]; nodeId?: string }) => void;
   startDailyLog: () => void;
   addSiteMaterial: (input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }) => void;
-  loadTeam: () => void;
+  loadTeam: () => Promise<void>;
   addMember: (input: AddMemberInput) => void;
   updateMemberRole: (userId: string, role: Role, discipline?: string) => void;
   removeMember: (userId: string) => void;
@@ -280,6 +280,11 @@ export interface AppActions {
   speakJob: () => void;
   workerDone: () => void;
   // API bridge (Phase 7b) — injected by useApiSync when VITE_API_URL is set
+  /** The scope a project-scoped request is issued FOR (Task 3): capture before
+   *  awaiting, apply the response only while the scope is still current. */
+  captureProjectScope: () => ProjectScope;
+  /** Refetch the active project's snapshot after a load error (the boundary's Retry). */
+  retryProjectLoad: () => void;
   _setGateway: (g: ApiGateway | null) => void;
   /** Apply a snapshot only if it belongs to the CURRENT scope (project id + generation
    *  captured when the request was issued). Returns true only when applied, so callers
@@ -556,6 +561,23 @@ export const useStore = create<Store>()(
 
     return {
     ...getInitialState(),
+    captureProjectScope: currentScope,
+    retryProjectLoad: () => {
+      if (!gateway) return;
+      const scope = currentScope();
+      set((s) => {
+        s.projectLoadState = 'loading';
+        s.projectLoadError = null;
+      });
+      gateway
+        .snapshot()
+        .then((snap) => { applySnapshot(snap, scope); })
+        .catch(() => set((s) => {
+          if (!isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) return;
+          s.projectLoadState = 'error';
+          s.projectLoadError = 'Could not load this project — check your connection and access, then retry.';
+        }));
+    },
     _setGateway: (g) => {
       gateway = g;
     },
@@ -937,12 +959,15 @@ export const useStore = create<Store>()(
     // ---- multi-project + team (Orgs Slice 2) ----
     loadOrgData: () => {
       if (!gateway) return;
-      gateway.listMemberships().then((ms) => set((s) => { s.memberships = ms; })).catch(() => {});
-      gateway.myOrgs().then((os) => set((s) => { s.myOrgs = os; })).catch(() => {});
+      // session-scoped (not project-scoped): ignore replies after sign-out / re-auth
+      const tok = get().sessionToken;
+      gateway.listMemberships().then((ms) => set((s) => { if (s.sessionToken === tok) s.memberships = ms; })).catch(() => {});
+      gateway.myOrgs().then((os) => set((s) => { if (s.sessionToken === tok) s.myOrgs = os; })).catch(() => {});
     },
     loadPortfolio: () => {
       if (!gateway) return;
-      gateway.getPortfolio().then((p) => set((s) => { s.portfolio = p; })).catch(() => {});
+      const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
+      gateway.getPortfolio().then((p) => set((s) => { if (s.sessionToken === tok) s.portfolio = p; })).catch(() => {});
     },
     switchProject: (projectId, targetScreen) => {
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);
@@ -1254,14 +1279,14 @@ export const useStore = create<Store>()(
       runRemote(() => gateway!.addSiteMaterial(input), `Material recorded: ${input.name}.`);
     },
     loadTeam: () => {
-      if (!gateway) return;
-      // pin the project this request is FOR — a reply that lands after a project
-      // switch must not repopulate the new project's team with the old one's
-      const pid = get().activeProjectId;
-      gateway
+      if (!gateway) return Promise.resolve();
+      // capture the SCOPE this request is FOR — an id-only pin would wrongly apply
+      // an A-scoped reply after switching A→B→A; the generation catches that too
+      const scope = currentScope();
+      return gateway
         .listMembers()
         .then((m) => set((s) => {
-          if (s.activeProjectId !== pid) return; // late reply from a previous project
+          if (!isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) return;
           s.members = m;
         }))
         .catch(() => {});
@@ -1286,15 +1311,18 @@ export const useStore = create<Store>()(
     },
     loadOrgMembers: (orgId) => {
       if (!gateway) return;
-      gateway.listOrgMembers(orgId).then((m) => set((s) => { s.orgMembers = m; })).catch(() => set((s) => { s.orgMembers = []; }));
+      const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
+      gateway.listOrgMembers(orgId).then((m) => set((s) => { if (s.sessionToken === tok) s.orgMembers = m; })).catch(() => set((s) => { s.orgMembers = []; }));
     },
     loadOrgModules: (orgId) => {
       if (!gateway) return;
-      gateway.listModules(orgId).then((m) => set((s) => { s.orgModules = m; })).catch(() => set((s) => { s.orgModules = []; }));
+      const tok = get().sessionToken;
+      gateway.listModules(orgId).then((m) => set((s) => { if (s.sessionToken === tok) s.orgModules = m; })).catch(() => set((s) => { s.orgModules = []; }));
     },
     loadOrgTemplates: (orgId) => {
       if (!gateway) return;
-      gateway.listTemplates(orgId).then((t) => set((s) => { s.orgTemplates = t; })).catch(() => set((s) => { s.orgTemplates = []; }));
+      const tok = get().sessionToken;
+      gateway.listTemplates(orgId).then((t) => set((s) => { if (s.sessionToken === tok) s.orgTemplates = t; })).catch(() => set((s) => { s.orgTemplates = []; }));
     },
     saveProjectAsTemplate: (name) => {
       const orgId = get().memberships.find((m) => m.projectId === get().activeProjectId)?.orgId ?? get().myOrgs[0]?.id;

@@ -54,15 +54,21 @@ export function RouteBridge() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState]);
 
-  // store -> URL (canonical project-scoped path)
+  // store -> URL (canonical project-scoped path). ONE-WAY during a transition: while
+  // a switch is pending or the target project is loading, the deep link's URL is the
+  // authority — navigating now would rewrite it back to the OLD active project.
+  // Read the LIVE store state: the URL->store effect above may have STARTED the switch
+  // in this very commit, and the subscribed values here would still be pre-switch.
   useEffect(() => {
-    const target = pathForScreen(screen, activeProjectId);
+    const live = useStore.getState();
+    if (live.pendingProjectId !== null || live.projectLoadState === 'switching' || live.projectLoadState === 'loading') return;
+    const target = pathForScreen(live.screen, live.activeProjectId);
     if (location.pathname !== target) {
       navigate(target, { replace: !didInit.current });
     }
     didInit.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, activeProjectId]);
+  }, [screen, activeProjectId, pendingProjectId, projectLoadState]);
 
   return null;
 }
