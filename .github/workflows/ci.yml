@@ -46,9 +46,25 @@ jobs:
 
   api:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pmcvitan_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
-      # dummy URL: prisma generate / typecheck / unit tests need no live DB
-      DATABASE_URL: postgresql://user:pass@localhost:5432/vitan_pmc?schema=public
+      # a REAL disposable PostgreSQL (service above): migrations, constraints and
+      # live-access behavior are exercised, not mocked
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pmcvitan_test?schema=public
+      JWT_SECRET: ci-integration-secret-not-used-in-production
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -61,9 +77,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Prisma generate
         run: pnpm --filter api prisma:generate
-      - name: Typecheck
-        run: pnpm --filter api typecheck
+      - name: Apply migrations to the test database
+        run: pnpm --filter api prisma:migrate
       - name: Unit tests
         run: pnpm --filter api test
+      - name: Integration tests (real app over real PostgreSQL)
+        run: pnpm --filter api test:integration
+      - name: Typecheck
+        run: pnpm --filter api typecheck
       - name: Build
         run: pnpm --filter api build
