@@ -4,7 +4,6 @@ import { useNavItems } from './useNavItems';
 import { RolePicker } from './RolePicker';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { Bell, Power } from '@/lib/icons';
-import { PROJECT } from '@vitan/shared';
 import { DEV_AUTH } from '@/data/apiGateway';
 import { ROLE_LABEL } from '@/lib/screens';
 import logo from '@/assets/vitan-logo.jpeg';
@@ -21,7 +20,12 @@ export function LeftRail() {
   const signOut = useStore((s) => s.signOut);
   const memberships = useStore(useShallow((s) => s.memberships));
   const activeProjectId = useStore((s) => s.activeProjectId);
-  const activeName = memberships.find((m) => m.projectId === activeProjectId)?.short ?? PROJECT.short;
+  // live project identity from the snapshot; the membership short is a fast label during a switch
+  const short = useStore((s) => s.short);
+  const descriptor = useStore((s) => s.descriptor);
+  const stage = useStore((s) => s.stage);
+  const activeName = memberships.find((m) => m.projectId === activeProjectId)?.short ?? short;
+  const projMeta = [descriptor, stage].filter(Boolean).join(' · ') || '—';
 
   return (
     <aside className={styles.rail}>
@@ -73,7 +77,7 @@ export function LeftRail() {
       <div className={styles.footer}>
         <div>
           <div className={styles.projName}>{activeName}</div>
-          <div className={styles.projMeta}>G+2 · FINISHING STAGE</div>
+          <div className={styles.projMeta}>{projMeta}</div>
         </div>
         <button className={styles.bell} onClick={toggleNotif} aria-label="Notifications">
           <Bell size={16} />

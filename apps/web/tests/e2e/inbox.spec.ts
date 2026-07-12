@@ -3,9 +3,10 @@ import { test, expect } from '@playwright/test';
 test('For You: the client lands on their action queue and a card jumps straight to the decisions', async ({ page }) => {
   await page.goto('/');
 
-  // switch to the Client persona — every role now lands on the "For You" home
+  // switch to the Client persona — every role now lands on the "For You" home,
+  // scoped to (and naming) the active project
   await page.getByRole('button', { name: 'Client', exact: true }).click();
-  await expect(page.getByText('Everything waiting on you across the project')).toBeVisible();
+  await expect(page.getByText(/Everything waiting on you in/)).toBeVisible();
 
   // their pending-decisions action is listed, with a one-tap CTA
   const card = page.getByTestId('inbox-item-client-pending');

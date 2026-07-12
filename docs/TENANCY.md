@@ -69,12 +69,43 @@ opening a card switches you into that project.
    cross-project 403).
 
 4. **Frontend store** — `activeProjectId` names the current project; the store holds **that
-   project's snapshot only**. `switchProject` gets the new token, sets `activeProjectId`, and
-   refetches + **fully replaces** the store (decisions, activities, drawings, inspections,
-   nodes…). So the Site Schedule / Decision Log / Site Map always render exactly one project —
-   never a merge across projects.
+   project's snapshot only**, and its live **project identity** (`name`/`short`/`descriptor`/
+   `stage`/`siteCode`/`milestonePct`) comes from the snapshot too — screens read the store, never
+   the `PROJECT` seed constant, so every surface (Dashboard, client screens, the rail footer)
+   re-labels on a switch. `switchProject` **atomically** adopts the new token, **drops every
+   project-scoped collection** (so the previous project's records can't linger under the new
+   selection), and sets `projectSwitching` to show a loading state until the new snapshot lands.
+   `applySnapshot` **ignores any snapshot whose `project.id` ≠ `activeProjectId`** (a late reply or
+   a socket refetch that raced the switch), so a stale snapshot can never overwrite the active one.
+   The Site Schedule / Decision Log / Site Map therefore always render exactly one project — never
+   a merge, never a flash of the previous one.
 
 ### Super-admin nuance
 An Org `owner`/`admin` can operate **every project in their org as PMC** even without an explicit
 membership — but still **one project at a time**: `switchProject` issues a PMC token scoped to the
 chosen project, so the tenancy guard above is unchanged. See [`ORGS.md`](./ORGS.md).
+
+---
+
+## Invariants (deliberate scope decisions)
+
+These are conscious choices, documented so an absent value is never read as an accident:
+
+- **`projectId` is mandatory; `nodeId` (a Site Map location) is optional — and an absent `nodeId`
+  means _project-wide_, never _global_.** A drawing, activity, inspection, material or photo with
+  no location applies across the whole project (a site plan, general notes, a project-level
+  activity) — it is still owned by exactly one project. There is no cross-project record. The
+  filing pickers place records on the location tree when a place is known; leaving one unfiled is
+  a valid "applies to the whole project" state, surfaced in the Site Map's whole-project view.
+
+- **One PMCvitan project = one construction site / job.** `Project.location` is free text and the
+  Site Map's location tree starts at `zone`; there is no `Site`/`Building` layer above `zone`. If a
+  single project must ever span multiple physical sites/campuses, introduce a first-class `Site`
+  layer **before** building further on the spine — don't overload `zone`.
+
+- **Reusable standards are a future Org-scoped concept, not a per-project or global one.** Today
+  "templates" means only messaging-provider templates. Method statements, inspection checklists and
+  schedule templates — when built — will belong to the **Org**, be **versioned**, and be **copied
+  or referenced** when instantiated into a project. A created inspection/activity always carries a
+  `projectId` (and preferably a `nodeId`) even when spawned from an `Org` template; the template is
+  the *method*, the instance is the *work*. Until then, each project authors its own inspections.

@@ -3,7 +3,7 @@ import { useStore } from '@/store/store';
 import { selectPending, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers } from '@/store/selectors';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
-import { PROJECT, SEED_MILESTONES, swatch as swatchGradient } from '@vitan/shared';
+import { swatch as swatchGradient } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function DashboardScreen() {
@@ -19,6 +19,15 @@ export function DashboardScreen() {
   const setScreen = useStore((s) => s.setScreen);
   const setRole = useStore((s) => s.setRole);
   const flash = useStore((s) => s.flash);
+  // live project identity — never the PROJECT seed, so switching projects re-labels this screen
+  const name = useStore((s) => s.name);
+  const descriptor = useStore((s) => s.descriptor);
+  const stage = useStore((s) => s.stage);
+  const siteCode = useStore((s) => s.siteCode);
+  const milestonePct = useStore((s) => s.milestonePct);
+  const phases = useStore(useShallow((s) => s.phases));
+  // the milestone strip is the project's own phases (done = fully complete); empty projects show none
+  const milestones = phases.map((p) => ({ label: p.name, done: p.donePct === 100 }));
 
   const siteStatus = submitted ? 'Daily log submitted' : checkedIn ? 'Engineer on site · logging' : 'Awaiting check-in';
   const siteDot = checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)';
@@ -42,13 +51,13 @@ export function DashboardScreen() {
       <div className={styles.headRule} style={{ marginBottom: 24 }}>
         <div>
           <Eyebrow>PROJECT DASHBOARD</Eyebrow>
-          <div style={{ fontSize: 30, fontWeight: 700, marginTop: 5, letterSpacing: '-.01em' }}>{PROJECT.name}</div>
+          <div style={{ fontSize: 30, fontWeight: 700, marginTop: 5, letterSpacing: '-.01em' }}>{name}</div>
           <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 12.5, color: 'var(--muted)', flexWrap: 'wrap' }}>
-            <span>{PROJECT.descriptor}</span>
-            <span>·</span>
-            <span>{PROJECT.stage}</span>
-            <span>·</span>
-            <span>Site Code {PROJECT.siteCode}</span>
+            {descriptor && <span>{descriptor}</span>}
+            {descriptor && stage && <span>·</span>}
+            {stage && <span>{stage}</span>}
+            {siteCode && <span>·</span>}
+            {siteCode && <span>Site Code {siteCode}</span>}
           </div>
         </div>
         <Button variant="ink" onClick={() => flash('Weekly report generated (PDF) — sent to client & contractor.')}>
@@ -60,11 +69,11 @@ export function DashboardScreen() {
       <div style={{ background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 12, padding: '20px 24px', marginBottom: 22 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
           <span style={{ fontWeight: 600, fontSize: 14 }}>Milestone Progress</span>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{PROJECT.milestonePct}% complete</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--accent)', fontWeight: 600 }}>{milestonePct}% complete</span>
         </div>
-        <ProgressBar pct={PROJECT.milestonePct} />
+        <ProgressBar pct={milestonePct} />
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
-          {SEED_MILESTONES.map((m) => (
+          {milestones.map((m) => (
             <div key={m.label} style={{ textAlign: 'center', flex: 1 }}>
               <div
                 style={{
@@ -87,7 +96,7 @@ export function DashboardScreen() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, paddingRight: 22, borderRight: '1px solid rgba(237,231,218,.14)' }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: siteDot }} />
           <div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.18em', color: 'rgba(237,231,218,.45)' }}>LIVE FROM SITE · {PROJECT.short === 'Residence at Ambli' ? '03 Jul 2026' : ''}</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8.5, letterSpacing: '.18em', color: 'rgba(237,231,218,.45)' }}>LIVE FROM SITE</div>
             <div style={{ fontWeight: 600, fontSize: 14, marginTop: 2 }}>{siteStatus}</div>
           </div>
         </div>

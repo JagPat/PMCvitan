@@ -144,13 +144,16 @@ WS     /projects/:id/stream   (notifications, live-from-site)
 ```
 Contracts are authored with Zod in `packages/shared` and shared by both the NestJS handlers and the typed client.
 
-## Auth (Phase 7c-auth — implemented)
+## Auth (Phase 7c-auth + multi-tenant — implemented)
 
-The single-project MVP collapses `User`/`Membership` above into one `User` table (role held directly on the row) and models on-site identity as `WorkerDevice` (a no-account, token-only record). Both are additive; the rest of the schema is unchanged.
+> **Multi-tenant now.** An earlier slice collapsed `User`/`Membership` into a single project-bound `User` row; that is **superseded**. The live schema is multi-tenant: an **`Org`** (account) owns projects, an **`OrgMembership`** (`owner\|admin\|member`) is a person's standing in the org, and a **`Membership`** (`user × project × role`, with a nullable consultant `discipline`) is the per-project grant a session token scopes to. On-site identity is still `WorkerDevice` — a no-account, token-only record. A token is always scoped to **one project**; `POST /auth/switch` re-mints it for another project the user is a member of (an org owner/admin can operate every project in their org). See [`TENANCY.md`](./TENANCY.md) and [`ORGS.md`](./ORGS.md).
 
 ```
-User          id, projectId, role (pmc|client|engineer|contractor), name, email?, phone?, passwordHash?
-WorkerDevice  id, projectId, name?, trade?, token, createdAt, lastSeen
+Org            id, name, slug
+OrgMembership  id, orgId, userId, role (owner|admin|member)
+User           id, name, email?, phone?, passwordHash?           -- account identity, NOT project-bound
+Membership     id, userId, projectId, role (pmc|client|engineer|contractor|consultant), discipline?
+WorkerDevice   id, projectId, name?, trade?, token, createdAt, lastSeen
 ```
 
 Three ways in (all issue a role-scoped JWT):
