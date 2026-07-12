@@ -8,7 +8,7 @@ All commands were run on 2026-07-12 against this branch; timestamps are UTC.
 ## Revisions
 
 - Base revision (`git merge-base origin/main HEAD`): `75101583428da2da60a9b2840875e02f1d0bb557` (merge of PR #87)
-- Head revision: the commit `test: prove phase zero project isolation` on branch `claude/vitan-pmc-design-epa2rp` — it is the head SHA of the Task 8 PR (a file cannot embed its own commit hash; take it from `git rev-parse HEAD` / the PR page)
+- Head revision (Task 8): `bc90390f4490844211c856d669e86abc3c85ef59` — merged into `main` as `aa7b12c` ([PR #88](https://github.com/JagPat/PMCvitan/pull/88))
 - PRs/commits by task:
   1. Task 1 — [PR #81](https://github.com/JagPat/PMCvitan/pull/81) · `ab7969a` docs: install phase zero execution guardrails
   2. Task 2 — [PR #82](https://github.com/JagPat/PMCvitan/pull/82) · `8a0fa6b` fix: make project scope transitions atomic
@@ -17,7 +17,7 @@ All commands were run on 2026-07-12 against this branch; timestamps are UTC.
   5. Task 5 — [PR #85](https://github.com/JagPat/PMCvitan/pull/85) · `f445995` security: enforce project-owned references
   6. Task 6 — [PR #86](https://github.com/JagPat/PMCvitan/pull/86) · `5be3cdb` refactor: establish real project dates
   7. Task 7 — [PR #87](https://github.com/JagPat/PMCvitan/pull/87) · `25406a3` fix: make api mode reflect only live project data
-  8. Task 8 — this PR · `test: prove phase zero project isolation`
+  8. Task 8 — [PR #88](https://github.com/JagPat/PMCvitan/pull/88) · `bc90390` test: prove phase zero project isolation
 
 ## Vision Alignment
 
@@ -33,8 +33,9 @@ All commands were run on 2026-07-12 against this branch; timestamps are UTC.
 ## Schema and Migration Evidence
 
 - Migrations (Phase 0):
-  - `20260902000000_phase0_project_integrity/migration.sql` — sha256 `bf2b7b9362442892…`
-  - `20260903000000_phase0_real_dates/migration.sql` — sha256 `da19c04b8305d91a…`
+  - `20260902000000_phase0_project_integrity/migration.sql` — sha256 `bf2b7b9362442892946173516d92880b551bbd705b58ef8d6b9d8819ffc1ab09`
+  - `20260903000000_phase0_real_dates/migration.sql` — sha256 `da19c04b8305d91ac97f0586bc5303d5bb0f860b210aa3808d0e618a4030fb45`
+  - `20260905000000_phase0_tenant_constraints/migration.sql` (remediation round 1) — sha256 `eee06929c7776873eef4324ad0a11b1313b1d223efce99118fa85bb3ca193e74`
 - Diagnostic query output (seeded acceptance DB `pmcvitan_e2e`, 2026-07-12T22:13Z):
 
   ```text
@@ -63,7 +64,23 @@ All commands were run on 2026-07-12 against this branch; timestamps are UTC.
 - `pnpm --filter api test:integration` — 2026-07-12T22:13:13Z, exit 0: **13/13** on PostgreSQL 16 (`pmcvitan_test`).
 - `pnpm test:e2e:api` — 2026-07-12T22:13:34Z, exit 0: **8/8** scenarios (`project-scope.spec.ts`) against the compiled API + seeded PostgreSQL (`pmcvitan_e2e`), 17.1s.
 - `git diff --check` — clean (no whitespace errors).
-- CI run URL: the `web`, `e2e`, `api` and new `api-e2e` checks on the Task 8 PR (link on the PR page once CI completes; all four are required evidence for the Phase 0 gate).
+- CI run URL (Task 8, head `bc90390`, all jobs incl. `api-e2e` green): <https://github.com/JagPat/PMCvitan/actions/runs/29211240865> (pull_request) and <https://github.com/JagPat/PMCvitan/actions/runs/29211218437> (push).
+
+## Independent Review — Round 1 (Codex) and Remediation
+
+The independent Codex review of PR #88 did **not** clear the gate (7 findings; full
+review attached to [PR #88](https://github.com/JagPat/PMCvitan/pull/88#issuecomment-4953051607)).
+Every finding was verified against the code and remediated in four focused PRs on
+branch `claude/vitan-pmc-design-epa2rp`:
+
+| Findings | Remediation | Proof |
+|---|---|---|
+| 1 (outbox replay), 3 (unguarded raw-DTO replies), 6 (session identity not in scope) | `fix: pin server replies to their scope and session` | `apps/web/tests/scope-identity.test.ts` (6 scenarios, failing-first) |
+| 2 (removed member kept global-delete access) | `security: live-authorize global-scoped routes` | `test/integration/global-route-authz.test.ts` (reproduced 200 → fixed 403) |
+| 4 (node/phase/material single-column FKs) | `security: complete database tenant constraints` + migration `20260905000000_phase0_tenant_constraints` | `test/integration/tenant-constraints.test.ts` (raw-SQL forgeries rejected; controls pass); corrupt-copy refusal proven |
+| 5 (date validation/writes), 7 (evidence gaps) | `fix: validate canonical dates end to end` + this packet update | contract tests (impossible dates, reversed windows, junk time zones → 400); phases now write real dates |
+
+The full independent gate must re-run on the merged remediation head.
 
 ## Known Residual Risks
 

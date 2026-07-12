@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseCivilDate } from './common/civil-date';
 
 export const sessionSchema = z.object({
   role: z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant']),
@@ -297,8 +298,35 @@ export const createTemplateSchema = z
   .refine((v) => Boolean(v.items) !== Boolean(v.fromProject), { message: 'Provide exactly one of items or fromProject' });
 export type CreateTemplateInput = z.infer<typeof createTemplateSchema>;
 
-/** An ISO civil date — YYYY-MM-DD, the only date form the API accepts (Task 6). */
-export const isoCivilDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected an ISO civil date (YYYY-MM-DD)');
+/** An ISO civil date — YYYY-MM-DD AND a real calendar day (Task 6 / Codex gate
+ *  finding 5): '2026-02-31' matches the shape but must be a 400 at the boundary,
+ *  never a 500 (or a silently rolled-over date) deeper in. */
+export const isoCivilDateSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected an ISO civil date (YYYY-MM-DD)')
+  .refine((v) => {
+    try {
+      parseCivilDate(v);
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'Not a real calendar date');
+
+/** A real IANA time zone — validated against the runtime's zone database, so a
+ *  typo can't silently corrupt every "today on site" the Clock stamps. */
+export const timeZoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((tz) => {
+    try {
+      new Intl.DateTimeFormat('en-CA', { timeZone: tz });
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'Unknown IANA time zone');
 
 export const createProjectSchema = z.object({
   name: z.string().min(1),
@@ -312,7 +340,7 @@ export const createProjectSchema = z.object({
   /** Task 6: the schedule anchor — the calendar day offset 0 refers to. Defaults to
    *  TODAY in the project's time zone at creation. */
   scheduleStartDate: isoCivilDateSchema.optional(),
-  timeZone: z.string().trim().min(1).optional(),
+  timeZone: timeZoneSchema.optional(),
   /** Templates Slice 1: copy another project's STRUCTURE into the new one — the location
    *  tree (as drafts), phases, planned activities and inspection checklist definitions.
    *  Actuals (approvals, dates, statuses, photos, people) are never copied. */
@@ -426,7 +454,12 @@ export const createActivitySchema = z
     gateTeam: gateState.default('na'),
     gateInspection: gateState.default('na'),
   })
-  .refine((v) => v.plannedEnd >= v.plannedStart, { message: 'plannedEnd must be on or after plannedStart' });
+  .refine((v) => v.plannedEnd >= v.plannedStart, { message: 'plannedEnd must be on or after plannedStart' })
+  // ISO civil dates compare lexicographically = chronologically (finding 5: a
+  // reversed window must be a 400 whether it arrives as offsets OR as dates)
+  .refine((v) => !v.plannedStartDate || !v.plannedEndDate || v.plannedStartDate <= v.plannedEndDate, {
+    message: 'plannedEndDate must be on or after plannedStartDate',
+  });
 export type CreateActivityInput = z.infer<typeof createActivitySchema>;
 
 export const updateActivitySchema = z
@@ -445,14 +478,28 @@ export const updateActivitySchema = z
     gateTeam: gateState.optional(),
     gateInspection: gateState.optional(),
   })
-  .refine((v) => Object.keys(v).length > 0, { message: 'Provide at least one field to update' });
+  .refine((v) => Object.keys(v).length > 0, { message: 'Provide at least one field to update' })
+  .refine((v) => v.plannedStart === undefined || v.plannedEnd === undefined || v.plannedEnd >= v.plannedStart, {
+    message: 'plannedEnd must be on or after plannedStart',
+  })
+  .refine((v) => !v.plannedStartDate || !v.plannedEndDate || v.plannedStartDate <= v.plannedEndDate, {
+    message: 'plannedEndDate must be on or after plannedStartDate',
+  });
 export type UpdateActivityInput = z.infer<typeof updateActivitySchema>;
 
-export const createPhaseSchema = z.object({
-  name: z.string().trim().min(1),
-  plannedStart: z.number().int().min(0).default(0),
-  plannedEnd: z.number().int().min(0).default(0),
-});
+export const createPhaseSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    plannedStart: z.number().int().min(0).default(0),
+    plannedEnd: z.number().int().min(0).default(0),
+    // real civil dates (preferred); legacy offsets derived from the schedule anchor
+    plannedStartDate: isoCivilDateSchema.optional(),
+    plannedEndDate: isoCivilDateSchema.optional(),
+  })
+  .refine((v) => v.plannedEnd >= v.plannedStart, { message: 'plannedEnd must be on or after plannedStart' })
+  .refine((v) => !v.plannedStartDate || !v.plannedEndDate || v.plannedStartDate <= v.plannedEndDate, {
+    message: 'plannedEndDate must be on or after plannedStartDate',
+  });
 export type CreatePhaseInput = z.infer<typeof createPhaseSchema>;
 
 // Issue an inspection checklist (PMC) — the engineer fills it in the field.
