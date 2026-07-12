@@ -3,14 +3,19 @@ import { OrgsService } from './orgs.service';
 import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { addOrgMemberSchema, createModuleSchema, createOrgSchema, createProjectSchema, createTemplateSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
-import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
+import { CurrentUser, IdentityScoped, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, Roles, RolesGuard } from '../common/roles';
 
 /** Org owner/admin authority is enforced per-route inside OrgsService (these are org-role
  *  checks, not project-role checks, so they can't be a simple @Roles allowlist). */
 const ORG_AUTHZ = 'OrgsService enforces org owner/admin authority for this route';
 
+/** IdentityScoped: these routes authorize by IDENTITY (live org-membership checks in
+ *  OrgsService) and by design must survive the token's project being revoked or
+ *  archived — /me discovery is how a re-scoped user finds where they still belong,
+ *  and an org owner must be able to restore the very project their token points at. */
 @Controller()
+@IdentityScoped()
 @UseGuards(JwtGuard, RolesGuard)
 export class OrgsController {
   constructor(

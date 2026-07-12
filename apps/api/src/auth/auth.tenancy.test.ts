@@ -181,9 +181,11 @@ describe('JwtGuard tenancy', () => {
     };
     return { fake: fake as unknown as import('../common/project-access.service').ProjectAccessService, calls };
   };
-  const guardWith = (access = makeAccess()) => ({ guard: new JwtGuard(jwt, access.fake), calls: access.calls });
+  const reflector = { getAllAndOverride: () => undefined } as unknown as import('@nestjs/core').Reflector;
+  const identityReflector = { getAllAndOverride: () => true } as unknown as import('@nestjs/core').Reflector;
+  const guardWith = (access = makeAccess(), refl = reflector) => ({ guard: new JwtGuard(jwt, access.fake, refl), calls: access.calls });
   const ctxFor = (token: string, params: Record<string, string>): ExecutionContext =>
-    ({ switchToHttp: () => ({ getRequest: () => ({ headers: { authorization: `Bearer ${token}` }, params }) }) }) as unknown as ExecutionContext;
+    ({ switchToHttp: () => ({ getRequest: () => ({ headers: { authorization: `Bearer ${token}` }, params }) }), getHandler: () => undefined, getClass: () => undefined }) as unknown as ExecutionContext;
 
   it('rejects a token whose project does not match the route (before any live lookup)', async () => {
     const { guard, calls } = guardWith();
@@ -206,19 +208,28 @@ describe('JwtGuard tenancy', () => {
     await expect(guard.canActivate(ctxFor(token, { projectId: 'ambli' }))).rejects.toThrow(ForbiddenException);
   });
 
-  it('accepts routes with no project param — and never runs the live project lookup', async () => {
+  it('a route with NO project param is live-authorized against the token project (Codex finding 2)', async () => {
+    // global-scoped routes (DELETE /media/:id, /drawings/:id) must not let a
+    // removed member's unexpired token retain destructive access
     const { guard, calls } = guardWith();
     const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
     await expect(guard.canActivate(ctxFor(token, {}))).resolves.toBe(true);
-    expect(calls).toEqual([]);
+    expect(calls).toEqual([{ sub: 'u1', projectId: 'ambli' }]); // live check against the token's own project
   });
 
-  it('ignores a :pid param — org-scoped admin routes (delete/restore project) are authorized by org role, not the project token', async () => {
-    const { guard, calls } = guardWith();
+  it('a revoked member is denied on a global-scoped route too', async () => {
+    const denied = makeAccess(async () => { throw new ForbiddenException('Project access has been removed'); });
+    const { guard } = guardWith(denied);
+    const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
+    await expect(guard.canActivate(ctxFor(token, {}))).rejects.toThrow(ForbiddenException);
+  });
+
+  it('identity-scoped routes (/me discovery, org admin with :pid) skip the project lookup — their services check live org rows', async () => {
+    const { guard, calls } = guardWith(makeAccess(), identityReflector);
     const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
     // an org admin scoped to 'ambli' deleting a different project 'villa' must not be tenancy-blocked
     await expect(guard.canActivate(ctxFor(token, { orgId: 'org1', pid: 'villa' }))).resolves.toBe(true);
-    expect(calls).toEqual([]); // org routes keep their own authorization path
+    expect(calls).toEqual([]); // org routes keep their own (live) authorization path
   });
 
   it('rejects a missing/invalid token', async () => {
