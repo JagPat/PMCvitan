@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
-import type { AddOrgMemberInput, CreateOrgInput, CreateProjectInput, UpdateOrgMemberInput, UpdateProjectInput } from '../contracts';
+import { modulePayloadSchema, type AddOrgMemberInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 
 /** A member of an org's admin roster (owner/admin/member). */
 export interface OrgMemberDto {
@@ -42,6 +42,17 @@ function slugify(s: string): string {
       .replace(/^-+|-+$/g, '')
       .slice(0, 24) || 'project'
   );
+}
+
+/** Where a module payload's ROOT nodes graft (docs/TEMPLATES.md "anchor kind"): zone roots
+ *  → top level (null), room roots → 'zone', element roots → 'room'. No nodes → null
+ *  (a project-wide/schedule module). Mixed roots anchor at the deepest requirement. */
+function anchorKindOf(payload: ModulePayload): string | null {
+  const keys = new Set(payload.nodes.map((n) => n.key));
+  const roots = payload.nodes.filter((n) => !n.parentKey || !keys.has(n.parentKey));
+  if (roots.some((r) => r.kind === 'element')) return 'room';
+  if (roots.some((r) => r.kind === 'room')) return 'zone';
+  return null;
 }
 
 /**
@@ -192,7 +203,262 @@ export class OrgsService {
     await this.prisma.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
     // Templates Slice 1: optionally start from another project's structure instead of a blank slate
     if (input.structureFrom) await this.copyStructure(orgId, input.structureFrom, id, userId);
+    // Templates Slice 2: compose from org modules (unions with structureFrom when both given)
+    if (input.modules?.length) await this.instantiateModules(orgId, id, userId, input.modules);
     return { id: project.id, name: project.name, short: project.short };
+  }
+
+  // ── Templates Slice 2 — the org module menu (docs/TEMPLATES.md) ─────────────
+
+  /** Shape a module row for the menu: identity + content counts, never the raw payload. */
+  private moduleSummary(m: { id: string; name: string; category: string; anchorKind: string | null; version: number; description: string; payload: unknown }) {
+    const p = modulePayloadSchema.parse(m.payload ?? {});
+    return {
+      id: m.id,
+      name: m.name,
+      category: m.category,
+      anchorKind: m.anchorKind,
+      version: m.version,
+      description: m.description,
+      counts: { nodes: p.nodes.length, phases: p.phases.length, activities: p.activities.length, inspections: p.inspections.length },
+    };
+  }
+
+  /** The org's module menu (any org member; archived modules hidden). */
+  async listModules(orgId: string, userId: string) {
+    if (!(await this.orgRole(orgId, userId))) throw new ForbiddenException('Not a member of this org');
+    const rows = await this.prisma.templateModule.findMany({ where: { orgId, archivedAt: null }, orderBy: [{ category: 'asc' }, { name: 'asc' }] });
+    return rows.map((m) => this.moduleSummary(m));
+  }
+
+  /**
+   * Create a module (org owner/admin) — with an explicit payload, or EXTRACTED from a
+   * same-org project: `fromNodeId` captures that node's subtree (+ the checklist
+   * definitions filed within it); no `fromNodeId` captures the whole project's structure
+   * (tree + phases + planned activities + checklists). Extraction is the same
+   * structure-not-actuals rule as Slice 1 — item names travel, states/photos/people don't.
+   */
+  async createModule(orgId: string, userId: string, input: CreateModuleInput) {
+    const role = await this.orgRole(orgId, userId);
+    if (role !== 'owner' && role !== 'admin') throw new ForbiddenException('Only an org owner or admin can manage modules');
+
+    let payload: ModulePayload;
+    let anchorKind: string | null = null;
+    if (input.payload) {
+      payload = input.payload;
+      anchorKind = anchorKindOf(payload);
+    } else {
+      const extracted = await this.extractPayload(orgId, input.fromProject!, input.fromNodeId);
+      payload = extracted;
+      anchorKind = anchorKindOf(extracted);
+    }
+
+    const created = await this.prisma.templateModule.create({
+      data: { orgId, name: input.name, category: input.category, anchorKind, description: input.description, payload },
+    });
+    return this.moduleSummary(created);
+  }
+
+  /** Archive a module — it leaves the menu; existing projects are untouched (owner/admin). */
+  async archiveModule(orgId: string, userId: string, moduleId: string): Promise<{ ok: boolean }> {
+    const role = await this.orgRole(orgId, userId);
+    if (role !== 'owner' && role !== 'admin') throw new ForbiddenException('Only an org owner or admin can manage modules');
+    const m = await this.prisma.templateModule.findUnique({ where: { id: moduleId }, select: { orgId: true } });
+    if (!m || m.orgId !== orgId) throw new NotFoundException('Module not found in this org');
+    await this.prisma.templateModule.update({ where: { id: moduleId }, data: { archivedAt: new Date() } });
+    return { ok: true };
+  }
+
+  /** Build a module payload from a live project (same-org, unarchived) — see createModule. */
+  private async extractPayload(orgId: string, sourceId: string, fromNodeId?: string): Promise<ModulePayload> {
+    const source = await this.prisma.project.findUnique({ where: { id: sourceId }, select: { orgId: true, archivedAt: true } });
+    if (!source || source.orgId !== orgId || source.archivedAt) throw new NotFoundException('Source project not found in this org');
+
+    const allNodes = await this.prisma.projectNode.findMany({ where: { projectId: sourceId }, orderBy: { createdAt: 'asc' } });
+    let nodes = allNodes;
+    if (fromNodeId) {
+      const inSubtree = new Set<string>([fromNodeId]);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const n of allNodes) {
+          if (n.parentId && inSubtree.has(n.parentId) && !inSubtree.has(n.id)) {
+            inSubtree.add(n.id);
+            grew = true;
+          }
+        }
+      }
+      if (!inSubtree.has(fromNodeId) || !allNodes.some((n) => n.id === fromNodeId)) throw new NotFoundException('Node not found in the source project');
+      nodes = allNodes.filter((n) => inSubtree.has(n.id));
+    }
+    const nodeIds = new Set(nodes.map((n) => n.id));
+
+    const inspections = await this.prisma.inspection.findMany({
+      where: fromNodeId ? { projectId: sourceId, kind: 'checklist', nodeId: { in: [...nodeIds] } } : { projectId: sourceId, kind: 'checklist' },
+      include: { items: { orderBy: { order: 'asc' } } },
+    });
+    // phases + planned activities only travel for a whole-project extraction — a space
+    // module is spatial; the schedule shape belongs to schedule/whole-project modules
+    const [phases, activities] = fromNodeId
+      ? [[], []]
+      : await Promise.all([
+          this.prisma.phase.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
+          this.prisma.activity.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
+        ]);
+    const phaseName = new Map(phases.map((p) => [p.id, p.name]));
+
+    return modulePayloadSchema.parse({
+      nodes: nodes.map((n) => ({
+        key: n.id, // payload-internal keys; instantiation mints fresh ids
+        parentKey: n.parentId && nodeIds.has(n.parentId) ? n.parentId : null,
+        name: n.name,
+        kind: n.kind,
+        order: n.order,
+      })),
+      phases: phases.map((p) => ({ name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd })),
+      activities: activities.map((a) => ({
+        name: a.name,
+        zone: a.zone,
+        plannedStart: a.plannedStart,
+        plannedEnd: a.plannedEnd,
+        nodeKey: a.nodeId && nodeIds.has(a.nodeId) ? a.nodeId : undefined,
+        phaseName: a.phaseId ? phaseName.get(a.phaseId) : undefined,
+        order: a.order,
+      })),
+      inspections: inspections.map((i) => ({
+        title: i.title,
+        zone: i.zone,
+        nodeKey: i.nodeId && nodeIds.has(i.nodeId) ? i.nodeId : undefined,
+        items: i.items.map((it) => it.name),
+      })),
+    });
+  }
+
+  /**
+   * Stamp the chosen modules into a freshly created project — the à-la-carte composition
+   * (docs/TEMPLATES.md "How you modulate"). Per selection: `count` repeats the module with
+   * the root names suffixed ("Bedroom 1/2/3"); a room-anchored module grafts under the
+   * `underZone` zone (found by name among the project's zones, created as a draft if new).
+   * Everything lands as drafts authored by the creator, same as Slice 1.
+   */
+  private async instantiateModules(
+    orgId: string,
+    targetId: string,
+    userId: string,
+    selections: { moduleId: string; count: number; underZone?: string }[],
+  ): Promise<void> {
+    const [allActIds, allInspIds] = await Promise.all([
+      this.prisma.activity.findMany({ select: { id: true } }),
+      this.prisma.inspection.findMany({ select: { id: true } }),
+    ]);
+    const actIds = allActIds.map((a) => a.id);
+    const newActId = (): string => { const id = nextSeqId('ACT-', actIds); actIds.push(id); return id; };
+    const inspIds = allInspIds.map((i) => i.id);
+    const newInspId = (): string => { const id = nextSeqId('INSP-', inspIds); inspIds.push(id); return id; };
+    const today = ddMmmYyyy(new Date());
+
+    await this.prisma.$transaction(async (tx) => {
+      // zones already created into the target (by structureFrom, or a prior selection) — by name
+      const zoneIdByName = new Map<string, string>();
+      for (const z of await tx.projectNode.findMany({ where: { projectId: targetId, kind: 'zone' } })) {
+        zoneIdByName.set(z.name, z.id);
+      }
+      const zoneFor = async (name: string): Promise<string> => {
+        const existing = zoneIdByName.get(name);
+        if (existing) return existing;
+        const created = await tx.projectNode.create({
+          data: { projectId: targetId, parentId: null, name, kind: 'zone', order: zoneIdByName.size, publishedAt: null, authorId: userId },
+        });
+        zoneIdByName.set(name, created.id);
+        return created.id;
+      };
+      const phaseIdByName = new Map<string, string>();
+
+      for (const sel of selections) {
+        const row = await this.prisma.templateModule.findUnique({ where: { id: sel.moduleId } });
+        if (!row || row.orgId !== orgId || row.archivedAt) throw new NotFoundException('Module not found in this org');
+        const payload = modulePayloadSchema.parse(row.payload ?? {});
+        if (row.anchorKind === 'room') {
+          throw new BadRequestException(`"${row.name}" anchors to a room — element modules can't be placed at project creation yet`);
+        }
+
+        for (let copy = 1; copy <= sel.count; copy++) {
+          const suffix = sel.count > 1 ? ` ${copy}` : '';
+          // root nodes graft to the top level (zone roots) or under the chosen zone (room roots)
+          const rootParentId = row.anchorKind === 'zone' ? await zoneFor(sel.underZone ?? 'Ground Floor') : null;
+
+          const keyToId = new Map<string, string>();
+          let remaining = [...payload.nodes];
+          while (remaining.length) {
+            const batch = remaining.filter((n) => !n.parentKey || keyToId.has(n.parentKey));
+            if (batch.length === 0) break; // malformed payload parentage — skip rather than loop
+            for (const n of batch) {
+              const created = await tx.projectNode.create({
+                data: {
+                  projectId: targetId,
+                  parentId: n.parentKey ? (keyToId.get(n.parentKey) ?? null) : rootParentId,
+                  name: n.parentKey ? n.name : `${n.name}${suffix}`,
+                  kind: n.kind,
+                  order: n.order,
+                  publishedAt: null,
+                  authorId: userId,
+                },
+              });
+              keyToId.set(n.key, created.id);
+              if (n.kind === 'zone' && !n.parentKey) zoneIdByName.set(`${n.name}${suffix}`, created.id);
+            }
+            remaining = remaining.filter((n) => !keyToId.has(n.key));
+          }
+
+          for (const p of payload.phases) {
+            if (phaseIdByName.has(p.name)) continue; // phases merge by name across modules/copies
+            const created = await tx.phase.create({
+              data: { projectId: targetId, name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd },
+            });
+            phaseIdByName.set(p.name, created.id);
+          }
+
+          for (const a of payload.activities) {
+            await tx.activity.create({
+              data: {
+                id: newActId(),
+                projectId: targetId,
+                name: `${a.name}${suffix}`,
+                zone: a.zone,
+                status: 'not_started',
+                plannedStart: a.plannedStart,
+                plannedEnd: a.plannedEnd,
+                gateMaterial: 'wait',
+                gateTeam: 'wait',
+                gateInspection: 'wait',
+                decisionId: null,
+                phaseId: a.phaseName ? (phaseIdByName.get(a.phaseName) ?? null) : null,
+                nodeId: a.nodeKey ? (keyToId.get(a.nodeKey) ?? null) : null,
+                order: a.order,
+              },
+            });
+          }
+
+          for (const i of payload.inspections) {
+            await tx.inspection.create({
+              data: {
+                id: newInspId(),
+                projectId: targetId,
+                kind: 'checklist',
+                title: `${i.title}${suffix}`,
+                zone: i.zone,
+                by: null,
+                date: today,
+                submitted: false,
+                decided: false,
+                nodeId: i.nodeKey ? (keyToId.get(i.nodeKey) ?? null) : null,
+                items: { create: i.items.map((name, idx) => ({ name, order: idx })) },
+              },
+            });
+          }
+        }
+      }
+    });
   }
 
   /**

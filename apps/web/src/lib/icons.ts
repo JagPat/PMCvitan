@@ -43,5 +43,6 @@ export {
   Hammer,
   LayoutGrid,
   Blocks,
+  BookmarkPlus,
   type LucideIcon,
 } from 'lucide-react';

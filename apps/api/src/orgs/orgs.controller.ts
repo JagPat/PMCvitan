@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@n
 import { OrgsService } from './orgs.service';
 import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { addOrgMemberSchema, createOrgSchema, createProjectSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CreateOrgInput, type CreateProjectInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
+import { addOrgMemberSchema, createModuleSchema, createOrgSchema, createProjectSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, Roles, RolesGuard } from '../common/roles';
 
@@ -133,5 +133,31 @@ export class OrgsController {
   @AllowAnyRole(ORG_AUTHZ)
   restoreProject(@Param('orgId') orgId: string, @Param('pid') pid: string, @CurrentUser() user: AuthUser) {
     return this.orgs.restoreProject(orgId, user.sub, pid);
+  }
+
+  // ── Templates Slice 2: the org module menu (docs/TEMPLATES.md) ──
+
+  /** The org's reusable structure modules (any org member). */
+  @Get('orgs/:orgId/modules')
+  listModules(@Param('orgId') orgId: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.listModules(orgId, user.sub);
+  }
+
+  /** Create a module — explicit payload, or extracted from a same-org project (owner/admin). */
+  @Post('orgs/:orgId/modules')
+  @AllowAnyRole(ORG_AUTHZ)
+  createModule(
+    @Param('orgId') orgId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(createModuleSchema)) body: CreateModuleInput,
+  ) {
+    return this.orgs.createModule(orgId, user.sub, body);
+  }
+
+  /** Archive a module — leaves the menu; existing projects untouched (owner/admin). */
+  @Delete('orgs/:orgId/modules/:moduleId')
+  @AllowAnyRole(ORG_AUTHZ)
+  archiveModule(@Param('orgId') orgId: string, @Param('moduleId') moduleId: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.archiveModule(orgId, user.sub, moduleId);
   }
 }

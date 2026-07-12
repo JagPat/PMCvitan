@@ -1,9 +1,9 @@
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Modal } from '@/components';
 import { ChevronRight, Plus, Check } from '@/lib/icons';
-import type { NewProjectInput } from '@/data/apiGateway';
+import type { ModuleSelection, NewProjectInput } from '@/data/apiGateway';
 
 /** Active-project display + switcher for the left rail. Real data arrives from
  *  the API (`/me/memberships`); with no API it's just the seeded project name. */
@@ -65,12 +65,39 @@ export function ProjectSwitcher() {
 function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => void }) {
   const createProject = useStore((s) => s.createProject);
   const memberships = useStore(useShallow((s) => s.memberships));
+  const orgModules = useStore(useShallow((s) => s.orgModules));
+  const loadOrgModules = useStore((s) => s.loadOrgModules);
   const [name, setName] = useState('');
   const [short, setShort] = useState('');
   const [structureFrom, setStructureFrom] = useState(''); // '' = blank slate
+  // the à-la-carte module picks: moduleId → {count, underZone} (Templates Slice 2)
+  const [picked, setPicked] = useState<Record<string, { count: number; underZone: string }>>({});
+  useEffect(() => { loadOrgModules(orgId); }, [orgId, loadOrgModules]);
+
+  const togglePick = (id: string) =>
+    setPicked((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = { count: 1, underZone: '' };
+      return next;
+    });
+  const setPick = (id: string, patch: Partial<{ count: number; underZone: string }>) =>
+    setPicked((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+
   const submit = () => {
     if (!name.trim() || !short.trim()) return;
-    const input: NewProjectInput = { name: name.trim(), short: short.trim(), stage: 'Planning', ...(structureFrom ? { structureFrom } : {}) };
+    const modules: ModuleSelection[] = Object.entries(picked).map(([moduleId, p]) => ({
+      moduleId,
+      count: p.count,
+      ...(p.underZone.trim() ? { underZone: p.underZone.trim() } : {}),
+    }));
+    const input: NewProjectInput = {
+      name: name.trim(),
+      short: short.trim(),
+      stage: 'Planning',
+      ...(structureFrom ? { structureFrom } : {}),
+      ...(modules.length ? { modules } : {}),
+    };
     createProject(orgId, input);
     onClose();
   };
@@ -95,6 +122,42 @@ function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => 
                 Copies the location tree (as drafts), phases, planned activities and checklist templates — never that project&apos;s approvals, dates, photos or people.
               </div>
             )}
+          </>
+        )}
+        {orgModules.length > 0 && (
+          <>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--muted)', margin: '14px 2px 6px' }}>ADD MODULES</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
+              {orgModules.map((m) => {
+                const sel = picked[m.id];
+                return (
+                  <div key={m.id} style={{ border: '1px solid rgba(35,33,28,.14)', borderRadius: 10, padding: '8px 10px', background: sel ? 'rgba(35,33,28,.04)' : '#fff' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+                      <input type="checkbox" checked={Boolean(sel)} onChange={() => togglePick(m.id)} data-testid={`np-module-${m.id}`} />
+                      <span style={{ fontWeight: 600, flex: 1 }}>{m.name}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.08em', color: 'var(--muted)', textTransform: 'uppercase' }}>{m.category}</span>
+                    </label>
+                    <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2, paddingLeft: 24 }}>
+                      {[m.counts.nodes && `${m.counts.nodes} places`, m.counts.inspections && `${m.counts.inspections} checklists`, m.counts.phases && `${m.counts.phases} phases`, m.counts.activities && `${m.counts.activities} activities`].filter(Boolean).join(' · ') || 'empty'}
+                    </div>
+                    {sel && (
+                      <div style={{ display: 'flex', gap: 8, marginTop: 7, paddingLeft: 24, alignItems: 'center' }}>
+                        <label style={{ fontSize: 11.5, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                          ×
+                          <input type="number" min={1} max={20} value={sel.count} onChange={(e) => setPick(m.id, { count: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} style={{ width: 52, height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 13 }} />
+                        </label>
+                        {m.anchorKind === 'zone' && (
+                          <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Under zone (Ground Floor)" style={{ flex: 1, minWidth: 0, height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>
+              Modules land as drafts — refine, then publish as the project firms up.
+            </div>
           </>
         )}
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>

@@ -220,6 +220,69 @@ export type PresignDrawingInput = z.infer<typeof presignDrawingSchema>;
 export const createOrgSchema = z.object({ name: z.string().min(1) });
 export type CreateOrgInput = z.infer<typeof createOrgSchema>;
 
+// ── Templates (docs/TEMPLATES.md) ─────────────────────────────────────────────
+
+/** A module's self-contained structure payload. Node `key`s are payload-internal —
+ *  instantiation mints fresh ids; activities/inspections reference nodes by key and
+ *  activities reference phases by name, so a payload never leaks real row ids. */
+export const modulePayloadSchema = z.object({
+  nodes: z
+    .array(
+      z.object({
+        key: z.string().min(1),
+        parentKey: z.string().nullable().default(null),
+        name: z.string().min(1),
+        kind: z.enum(['zone', 'room', 'element']),
+        order: z.number().int().default(0),
+      }),
+    )
+    .max(500)
+    .default([]),
+  phases: z.array(z.object({ name: z.string().min(1), order: z.number().int().default(0), plannedStart: z.number().int().default(0), plannedEnd: z.number().int().default(0) })).max(50).default([]),
+  activities: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        zone: z.string().default(''),
+        plannedStart: z.number().int().default(0),
+        plannedEnd: z.number().int().default(0),
+        nodeKey: z.string().optional(),
+        phaseName: z.string().optional(),
+        order: z.number().int().default(0),
+      }),
+    )
+    .max(500)
+    .default([]),
+  inspections: z
+    .array(z.object({ title: z.string().min(1), zone: z.string().default(''), nodeKey: z.string().optional(), items: z.array(z.string().min(1)).min(1).max(50) }))
+    .max(100)
+    .default([]),
+});
+export type ModulePayload = z.infer<typeof modulePayloadSchema>;
+
+/** Create a module: either with an explicit payload, or extracted server-side from a
+ *  same-org project (`fromProject`, optionally one node's subtree via `fromNodeId`). */
+export const createModuleSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    category: z.enum(['space', 'zone', 'element', 'discipline', 'schedule']),
+    description: z.string().default(''),
+    payload: modulePayloadSchema.optional(),
+    fromProject: z.string().trim().min(1).optional(),
+    fromNodeId: z.string().trim().min(1).optional(),
+  })
+  .refine((v) => Boolean(v.payload) !== Boolean(v.fromProject), { message: 'Provide exactly one of payload or fromProject' })
+  .refine((v) => !v.fromNodeId || v.fromProject, { message: 'fromNodeId requires fromProject' });
+export type CreateModuleInput = z.infer<typeof createModuleSchema>;
+
+/** One menu pick at Create Project: which module, how many, and (for a room-anchored
+ *  module) which zone name to graft under — created if it doesn't exist yet. */
+export const moduleSelectionSchema = z.object({
+  moduleId: z.string().min(1),
+  count: z.number().int().min(1).max(20).default(1),
+  underZone: z.string().trim().min(1).optional(),
+});
+
 export const createProjectSchema = z.object({
   name: z.string().min(1),
   short: z.string().min(1),
@@ -233,6 +296,9 @@ export const createProjectSchema = z.object({
    *  tree (as drafts), phases, planned activities and inspection checklist definitions.
    *  Actuals (approvals, dates, statuses, photos, people) are never copied. */
   structureFrom: z.string().trim().min(1).optional(),
+  /** Templates Slice 2: compose the new project from org modules (may combine with
+   *  structureFrom — the result is the union). */
+  modules: z.array(moduleSelectionSchema).max(50).optional(),
 });
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 

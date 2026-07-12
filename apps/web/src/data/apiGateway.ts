@@ -102,6 +102,36 @@ export interface NewProjectInput {
   /** Templates Slice 1: start from another project's STRUCTURE (location tree as drafts,
    *  phases, planned activities, checklist definitions) instead of a blank slate. */
   structureFrom?: string;
+  /** Templates Slice 2: compose the new project from org modules (unions with structureFrom). */
+  modules?: ModuleSelection[];
+}
+
+/** An org-owned reusable structure module (Templates Slice 2) — the menu row shape. */
+export interface OrgTemplateModule {
+  id: string;
+  name: string;
+  category: string; // space | zone | element | discipline | schedule
+  /** where its roots graft: null = top level (zones), 'zone' = rooms, 'room' = elements */
+  anchorKind: string | null;
+  version: number;
+  description: string;
+  counts: { nodes: number; phases: number; activities: number; inspections: number };
+}
+
+/** One menu pick at Create Project: which module, how many, where room modules graft. */
+export interface ModuleSelection {
+  moduleId: string;
+  count?: number;
+  underZone?: string;
+}
+
+/** Create a module: from a live project (a zone's subtree, or the whole project). */
+export interface NewModuleInput {
+  name: string;
+  category: 'space' | 'zone' | 'element' | 'discipline' | 'schedule';
+  description?: string;
+  fromProject: string;
+  fromNodeId?: string;
 }
 
 /** Create/update payload for a project company/consultant. */
@@ -329,6 +359,18 @@ export class ApiGateway {
   /** Archived (soft-deleted) projects in an org — owner/admin only, for the restore UI. */
   listArchivedProjects(orgId: string): Promise<ArchivedProject[]> {
     return this.req(`/orgs/${orgId}/projects/archived`);
+  }
+  /** The org's reusable structure modules — the template menu (Templates Slice 2). */
+  listModules(orgId: string): Promise<OrgTemplateModule[]> {
+    return this.req(`/orgs/${orgId}/modules`);
+  }
+  /** Save a module from a live project — a zone's subtree, or the whole project (owner/admin). */
+  createModule(orgId: string, input: NewModuleInput): Promise<OrgTemplateModule> {
+    return this.req(`/orgs/${orgId}/modules`, { method: 'POST', body: JSON.stringify(input) });
+  }
+  /** Archive a module — removes it from the menu; existing projects untouched (owner/admin). */
+  archiveModule(orgId: string, moduleId: string): Promise<{ ok: boolean }> {
+    return this.req(`/orgs/${orgId}/modules/${moduleId}`, { method: 'DELETE' });
   }
   /** The org's admin roster (owner/admin only). */
   listOrgMembers(orgId: string): Promise<OrgMember[]> {

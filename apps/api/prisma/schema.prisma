@@ -101,6 +101,31 @@ model Org {
   createdAt DateTime        @default(now())
   projects  Project[]
   members   OrgMembership[]
+  modules   TemplateModule[]
+}
+
+// Templates Slice 2 (docs/TEMPLATES.md): a reusable menu item — a slice of project
+// STRUCTURE (a location subtree, phases + planned activities, checklist definitions)
+// scoped to one space/area/discipline, composed in any mix at Create Project. Org-owned:
+// templates are "methods" and live on the Org; instances always belong to a project
+// (see TENANCY.md). Content is a Zod-validated JSON payload with payload-internal node
+// keys — instantiation mints fresh ids, so a module is fully self-contained.
+model TemplateModule {
+  id          String    @id @default(cuid())
+  org         Org       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId       String
+  name        String
+  category    String // space | zone | element | discipline | schedule
+  // where the module's ROOT nodes graft: null = top level (roots are zones / project-wide),
+  // 'zone' = roots are rooms (need a zone), 'room' = roots are elements (need a room)
+  anchorKind  String?
+  version     Int       @default(1) // informational in v1 (design decision #5)
+  description String    @default("")
+  payload     Json // { nodes?, phases?, activities?, inspections? } — see contracts.modulePayloadSchema
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([orgId, category])
 }
 
 // Who can administer an org: owner/admin create projects + manage teams; member
