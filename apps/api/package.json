@@ -14,7 +14,8 @@
     "seed": "tsx prisma/seed.ts",
     "ensure-accounts": "tsx prisma/ensure-accounts.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -39,12 +40,15 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@nestjs/testing": "^11.1.28",
     "@types/bcryptjs": "^3.0.0",
     "@types/express": "^5.0.0",
     "@types/node": "^24.0.0",
     "@types/nodemailer": "^8.0.1",
+    "@types/supertest": "^7.2.0",
     "@types/web-push": "^3.6.4",
     "prisma": "^6.3.0",
+    "supertest": "^7.2.2",
     "tsx": "^4.19.2",
     "typescript": "~5.7.3",
     "vitest": "^4.0.0"

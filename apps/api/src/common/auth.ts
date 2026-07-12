@@ -7,6 +7,7 @@ import {
   createParamDecorator,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ProjectAccessService } from './project-access.service';
 
 export type Role = 'pmc' | 'client' | 'engineer' | 'contractor' | 'consultant' | 'worker';
 
@@ -18,17 +19,23 @@ export interface AuthUser {
 }
 
 /**
- * Verifies the Bearer token and attaches the decoded user to the request.
+ * Verifies the Bearer token, then enforces LIVE project access (Phase 0 Task 4).
  * Tenancy: a token is scoped to one project — a route carrying a `:projectId`
  * param that doesn't match the token's project is rejected, so a valid token for
- * project A can't touch project B. Switching projects requires a fresh token
- * from `POST /auth/switch` (only granted for a project you're a member of).
+ * project A can't touch project B. Beyond the signature, `:projectId` routes
+ * re-check the Membership/Org tables on EVERY request, so removing a member,
+ * changing their role, or archiving the project revokes access immediately —
+ * an unexpired token alone is not continuing authority. Org routes (`:orgId` /
+ * `:pid`) keep their existing org-authorization path in OrgsService.
  */
 @Injectable()
 export class JwtGuard implements CanActivate {
-  constructor(private readonly jwt: JwtService) {}
+  constructor(
+    private readonly jwt: JwtService,
+    private readonly projectAccess: ProjectAccessService,
+  ) {}
 
-  canActivate(ctx: ExecutionContext): boolean {
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest();
     const header: string | undefined = req.headers.authorization;
     if (!header?.startsWith('Bearer ')) {
@@ -44,7 +51,7 @@ export class JwtGuard implements CanActivate {
     if (routeProject && routeProject !== user.projectId) {
       throw new ForbiddenException('Token is not scoped to this project');
     }
-    req.user = user;
+    req.user = routeProject ? await this.projectAccess.authorize(user, routeProject) : user;
     return true;
   }
 }

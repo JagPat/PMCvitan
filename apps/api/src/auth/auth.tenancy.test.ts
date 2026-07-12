@@ -170,33 +170,60 @@ describe('AuthService.listMemberships', () => {
 });
 
 describe('JwtGuard tenancy', () => {
-  const guard = new JwtGuard(jwt);
+  // typed fake: records live-authorization calls; pass-through unless told otherwise
+  const makeAccess = (behavior?: (user: AuthUser, projectId: string) => Promise<AuthUser>) => {
+    const calls: Array<{ sub: string; projectId: string }> = [];
+    const fake = {
+      authorize: async (user: AuthUser, projectId: string): Promise<AuthUser> => {
+        calls.push({ sub: user.sub, projectId });
+        return behavior ? behavior(user, projectId) : user;
+      },
+    };
+    return { fake: fake as unknown as import('../common/project-access.service').ProjectAccessService, calls };
+  };
+  const guardWith = (access = makeAccess()) => ({ guard: new JwtGuard(jwt, access.fake), calls: access.calls });
   const ctxFor = (token: string, params: Record<string, string>): ExecutionContext =>
     ({ switchToHttp: () => ({ getRequest: () => ({ headers: { authorization: `Bearer ${token}` }, params }) }) }) as unknown as ExecutionContext;
 
-  it('rejects a token whose project does not match the route', () => {
+  it('rejects a token whose project does not match the route (before any live lookup)', async () => {
+    const { guard, calls } = guardWith();
     const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
-    expect(() => guard.canActivate(ctxFor(token, { projectId: 'other' }))).toThrow(ForbiddenException);
+    await expect(guard.canActivate(ctxFor(token, { projectId: 'other' }))).rejects.toThrow(ForbiddenException);
+    expect(calls).toEqual([]); // the cheap tenancy check fires first
   });
 
-  it('accepts a token that matches the route project', () => {
+  it('accepts a matching token AND re-checks live access for :projectId routes', async () => {
+    const { guard, calls } = guardWith();
     const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
-    expect(guard.canActivate(ctxFor(token, { projectId: 'ambli' }))).toBe(true);
+    await expect(guard.canActivate(ctxFor(token, { projectId: 'ambli' }))).resolves.toBe(true);
+    expect(calls).toEqual([{ sub: 'u1', projectId: 'ambli' }]); // live authorization ran
   });
 
-  it('accepts routes with no project param', () => {
+  it('propagates a live-access denial (removed member / archived project)', async () => {
+    const denied = makeAccess(async () => { throw new ForbiddenException('Project access has been removed'); });
+    const { guard } = guardWith(denied);
     const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
-    expect(guard.canActivate(ctxFor(token, {}))).toBe(true);
+    await expect(guard.canActivate(ctxFor(token, { projectId: 'ambli' }))).rejects.toThrow(ForbiddenException);
   });
 
-  it('ignores a :pid param — org-scoped admin routes (delete/restore project) are authorized by org role, not the project token', () => {
+  it('accepts routes with no project param — and never runs the live project lookup', async () => {
+    const { guard, calls } = guardWith();
+    const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
+    await expect(guard.canActivate(ctxFor(token, {}))).resolves.toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  it('ignores a :pid param — org-scoped admin routes (delete/restore project) are authorized by org role, not the project token', async () => {
+    const { guard, calls } = guardWith();
     const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
     // an org admin scoped to 'ambli' deleting a different project 'villa' must not be tenancy-blocked
-    expect(guard.canActivate(ctxFor(token, { orgId: 'org1', pid: 'villa' }))).toBe(true);
+    await expect(guard.canActivate(ctxFor(token, { orgId: 'org1', pid: 'villa' }))).resolves.toBe(true);
+    expect(calls).toEqual([]); // org routes keep their own authorization path
   });
 
-  it('rejects a missing/invalid token', () => {
+  it('rejects a missing/invalid token', async () => {
+    const { guard } = guardWith();
     const ctx = { switchToHttp: () => ({ getRequest: () => ({ headers: {}, params: {} }) }) } as unknown as ExecutionContext;
-    expect(() => guard.canActivate(ctx)).toThrow(UnauthorizedException);
+    await expect(guard.canActivate(ctx)).rejects.toThrow(UnauthorizedException);
   });
 });

@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { resolveJwtSecret } from './config';
 import { PrismaModule } from './prisma.module';
 import { JwtGuard } from './common/auth';
+import { ProjectAccessService } from './common/project-access.service';
 import { RolesGuard } from './common/roles';
 import { ThrottleGuard } from './common/throttle';
 import { AuthService } from './auth/auth.service';
@@ -69,6 +70,7 @@ import { CompaniesController } from './orgs/companies.controller';
   ],
   providers: [
     JwtGuard,
+    ProjectAccessService,
     RolesGuard,
     ThrottleGuard,
     AuthService,
