@@ -10,7 +10,10 @@
     "typecheck": "pnpm --filter web typecheck",
     "lint": "pnpm --filter web lint",
     "test": "pnpm --filter web test",
-    "test:e2e": "pnpm --filter web test:e2e"
+    "test:e2e": "pnpm --filter web test:e2e",
+    "check:web": "pnpm --filter web lint && pnpm --filter web typecheck && pnpm --filter web test && pnpm --filter web build",
+    "check:api": "pnpm --filter api prisma:generate && pnpm --filter api typecheck && pnpm --filter api test && pnpm --filter api build",
+    "check": "pnpm check:web && pnpm check:api"
   },
   "engines": { "node": ">=20" }
 }
