@@ -17,7 +17,6 @@ export function DashboardScreen() {
   const checkedIn = useStore((s) => s.dailyLog.checkedIn);
   const submitted = useStore((s) => s.dailyLog.submitted);
   const setScreen = useStore((s) => s.setScreen);
-  const setRole = useStore((s) => s.setRole);
   const flash = useStore((s) => s.flash);
   // live project identity — never the PROJECT seed, so switching projects re-labels this screen
   const name = useStore((s) => s.name);
@@ -33,7 +32,7 @@ export function DashboardScreen() {
   const siteDot = checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)';
 
   const tiles = [
-    { key: 'pending', label: 'DECISIONS PENDING WITH CLIENT', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setRole('client') },
+    { key: 'pending', label: 'DECISIONS PENDING WITH CLIENT', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setScreen('decision-log') },
     { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => setScreen('inspect-review') },
     { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? 'Drain slope · Terrace' : 'None', onClick: () => setScreen('inspect-review') },
     { key: 'photos', label: 'PROGRESS PHOTOS THIS WEEK', value: 24, accent: 'var(--green-solid)', sub: 'Across 6 zones', onClick: () => {} },

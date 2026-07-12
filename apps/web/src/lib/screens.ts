@@ -52,7 +52,9 @@ export function screensFor(role: Role): ScreenMeta[] {
   const keys: Record<Role, ScreenKey[]> = {
     pmc: ['inbox', 'dashboard', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'places', 'team', 'portfolio'],
     client: ['inbox', 'client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
-    engineer: ['inbox', 'daily-log', 'engineer-check', 'drawings', 'places', 'team-access', 'decision-log'],
+    // engineers hold activity.start/complete, so they get the Schedule (its authoring
+    // controls stay behind activity.manage — pmc only)
+    engineer: ['inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'places', 'team-access', 'decision-log'],
     contractor: ['inbox', 'drawings', 'places', 'team-access', 'decision-log'],
     // a discipline consultant: read-mostly reviewer — drawings, the register, the Site Map, project health
     consultant: ['inbox', 'drawings', 'decision-log', 'places', 'client-health'],

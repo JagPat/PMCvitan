@@ -518,6 +518,9 @@ model DailyLog {
   project     Project        @relation(fields: [projectId], references: [id])
   projectId   String
   date        String
+  // real creation instant — "latest log" orders by THIS, never by the display-string
+  // `date` (lexical "03 Jul 2026" < "28 Jun 2026" picks the wrong day across months)
+  createdAt   DateTime       @default(now())
   checkedIn   Boolean        @default(false)
   checkinTime String?
   submitted   Boolean        @default(false)

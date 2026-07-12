@@ -85,6 +85,15 @@ opening a card switches you into that project.
    The Site Schedule / Decision Log / Site Map therefore always render exactly one project — never
    a merge, never a flash of the previous one.
 
+   **At sign-in, the TOKEN is the source of truth** (the one exception to URL-first): every auth
+   result carries the project the new token is scoped to (the member's home project), and the
+   store **adopts it** — `activeProjectId` follows the token, project-scoped state (including the
+   engineer's checklist and the daily log, which the snapshot only carries when the project has
+   one) is dropped, and the URL is rewritten. Without this, a token for project B against a URL
+   still on A would 403 every call and strand stale data on screen. Deep-linking to a *different*
+   accessible project across a signed-out → signed-in boundary remains a follow-up (the link's
+   project is adopted only after sign-in via the normal URL→store switch when memberships allow).
+
 ### Super-admin nuance
 An Org `owner`/`admin` can operate **every project in their org as PMC** even without an explicit
 membership — but still **one project at a time**: `switchProject` issues a PMC token scoped to the

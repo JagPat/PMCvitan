@@ -18,7 +18,7 @@ export class DailyLogService {
 
   /** Flag a material as not matching its locked decision → block the linked activity. */
   async flagMismatch(projectId: string, input: FlagMismatchInput, user: AuthUser): Promise<SnapshotDto> {
-    const log = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: { date: 'desc' }, include: { materials: true } });
+    const log = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], include: { materials: true } });
     if (!log) throw new NotFoundException('No daily log for this project');
     const mat = log.materials.find((m) => m.decisionId === input.decisionId);
     if (!mat) throw new NotFoundException(`No material linked to ${input.decisionId}`);
@@ -40,7 +40,7 @@ export class DailyLogService {
   /** Engineer starts a fresh day's log once the previous one is submitted. Crew trades
    *  are carried over at count 0 so the steppers appear pre-populated. */
   async start(projectId: string, user: AuthUser): Promise<SnapshotDto> {
-    const latest = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: { date: 'desc' }, include: { crew: { orderBy: { order: 'asc' } } } });
+    const latest = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], include: { crew: { orderBy: { order: 'asc' } } } });
     if (latest && !latest.submitted) throw new ConflictException('The current daily log is still open — submit it before starting a new day');
     const log = await this.prisma.dailyLog.create({ data: { projectId, date: ddMmmYyyy(new Date()) } });
     if (latest?.crew.length) {
@@ -54,7 +54,7 @@ export class DailyLogService {
   /** Engineer records a material delivery on the open log (optionally linked to the
    *  decision that approved it, which is what mismatch-flagging keys off). */
   async addMaterial(projectId: string, input: AddMaterialInput, user: AuthUser): Promise<SnapshotDto> {
-    const log = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: { date: 'desc' }, include: { materials: true } });
+    const log = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], include: { materials: true } });
     if (!log) throw new NotFoundException('No daily log for this project — start one first');
     if (log.submitted) throw new ConflictException('This log is already submitted — start a new day first');
     if (input.decisionId) {
@@ -76,7 +76,7 @@ export class DailyLogService {
 
   /** Submit the daily log to PMC (must be checked in first). */
   async submit(projectId: string, input: SubmitDailyLogInput, user: AuthUser): Promise<SnapshotDto> {
-    const log = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: { date: 'desc' } });
+    const log = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
     if (!log) throw new NotFoundException('No daily log for this project');
     if (!input.checkedIn) throw new BadRequestException('Please check in at site before submitting the daily log.');
 

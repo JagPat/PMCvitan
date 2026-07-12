@@ -321,7 +321,10 @@ describe('Phase 7b write-cutover — API mode routes mutations through the gatew
     await flush();
     expect(startGw.startActivity).toHaveBeenCalledWith('ACT-31');
 
-    // flagMismatch resolves the material index to its decisionId (DL-014)
+    // flagMismatch resolves the material index to its decisionId (DL-014).
+    // Fresh seeded state: the startActivity snapshot above carried dailyLog:null,
+    // which (correctly) replaced the seeded daily log with an empty one.
+    useStore.setState(getInitialState());
     const flagGw = { flagMismatch: vi.fn().mockResolvedValue(makeSnapshot()) };
     s()._setGateway(flagGw as unknown as ApiGateway);
     s().flagMismatch(0);
@@ -333,5 +336,94 @@ describe('Phase 7b write-cutover — API mode routes mutations through the gatew
     s().openApprove('DL-014', 1);
     s().confirmApprove();
     expect(s().decisions.find((d) => d.id === 'DL-014')?.status).toBe('approved');
+  });
+});
+
+describe('P0 session correctness (architecture audit)', () => {
+  it('login adopts the token’s project — activeProjectId follows the auth result, stale data dropped', async () => {
+    const gw = { login: vi.fn().mockResolvedValue({ token: 'JWT-b', role: 'pmc', projectId: 'proj-b', name: 'Ar. Vitan' }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    expect(s().activeProjectId).toBe('ambli'); // the URL/seed default
+    expect(s().decisions.length).toBeGreaterThan(0); // seeded demo data on screen
+
+    s().login('pmc@vitan.in', 'secret');
+    await flush();
+
+    expect(s().activeProjectId).toBe('proj-b'); // token project adopted → gateway re-inits for proj-b
+    expect(s().projectSwitching).toBe(true); // loading until proj-b's snapshot lands
+    expect(s().decisions).toEqual([]); // the seeded ambli data never shows under proj-b
+    expect(s().name).toBe(''); // no stale identity either
+  });
+
+  it('phone-OTP sign-in adopts the token’s project too', async () => {
+    const gw = {
+      requestOtp: vi.fn().mockResolvedValue({ sent: true, live: false }),
+      verifyOtp: vi.fn().mockResolvedValue({ token: 'JWT-eng', role: 'engineer', projectId: 'proj-b', name: 'Ramesh' }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().accWho('team');
+    s().accSetPhone('9876543210');
+    s().requestOtp();
+    await flush();
+    useStore.setState((st) => { st.access.otp = '4242'; });
+    s().otpVerify();
+    await flush();
+
+    expect(s().sessionToken).toBe('JWT-eng');
+    expect(s().activeProjectId).toBe('proj-b');
+    expect(s().projectSwitching).toBe(true);
+  });
+
+  it('signing in to the project already active keeps state (no needless clearing)', async () => {
+    const gw = { login: vi.fn().mockResolvedValue({ token: 'JWT-a', role: 'pmc', projectId: 'ambli' }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    const before = s().decisions.length;
+    s().login('pmc@vitan.in', 'secret');
+    await flush();
+    expect(s().activeProjectId).toBe('ambli');
+    expect(s().projectSwitching).toBe(false);
+    expect(s().decisions.length).toBe(before);
+  });
+
+  it('a project with no checklist / daily log REPLACES the previous one’s (nullable state cannot leak)', () => {
+    // we start on ambli with a seeded checklist + daily log (crew, attendance)
+    expect(s().checklist.items.length).toBeGreaterThan(0);
+    expect(s().dailyLog.crew.length).toBeGreaterThan(0);
+
+    // now we're on p2, and its snapshot carries neither slice
+    useStore.setState((st) => { st.activeProjectId = 'p2'; });
+    s().applySnapshot(makeSnapshot({ project: { ...makeSnapshot().project, id: 'p2' } }));
+
+    expect(s().checklist.id).toBe('');
+    expect(s().checklist.items).toEqual([]); // NOT ambli's checklist
+    expect(s().dailyLog.crew).toEqual([]); // NOT ambli's crew counts
+    expect(s().dailyLog.checkedIn).toBe(false); // NOT ambli's attendance
+    expect(s().dailyLog.photos).toEqual([]);
+  });
+
+  it('switchProject clears checklist + dailyLog immediately, before the new snapshot lands', async () => {
+    const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'J', role: 'pmc', projectId: 'p2' }) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.memberships = [{ projectId: 'p2', name: 'P2', short: 'P2', role: 'pmc', orgId: 'o', orgName: 'V' }]; });
+    expect(s().checklist.items.length).toBeGreaterThan(0);
+
+    s().switchProject('p2');
+    await flush();
+
+    expect(s().checklist.items).toEqual([]);
+    expect(s().dailyLog.crew).toEqual([]);
+  });
+
+  it('a late team reply from the previous project is ignored (loadTeam is project-pinned)', async () => {
+    let resolveMembers!: (m: unknown) => void;
+    const gw = { listMembers: vi.fn().mockReturnValue(new Promise((r) => { resolveMembers = r; })) };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().loadTeam(); // request goes out while ambli is active
+    useStore.setState((st) => { st.activeProjectId = 'p2'; st.members = []; }); // switched before the reply
+    resolveMembers([{ userId: 'u1', name: 'Old Member', role: 'pmc' }]);
+    await flush();
+
+    expect(s().members).toEqual([]); // p2's team list is not repopulated with ambli's
   });
 });
