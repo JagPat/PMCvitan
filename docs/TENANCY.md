@@ -68,13 +68,18 @@ opening a card switches you into that project.
    projects mints a **fresh token** via `POST /auth/switch` (verified on prod: same-project 200,
    cross-project 403).
 
-4. **Frontend store** — `activeProjectId` names the current project; the store holds **that
-   project's snapshot only**, and its live **project identity** (`name`/`short`/`descriptor`/
-   `stage`/`siteCode`/`milestonePct`) comes from the snapshot too — screens read the store, never
-   the `PROJECT` seed constant, so every surface (Dashboard, client screens, the rail footer)
-   re-labels on a switch. `switchProject` **atomically** adopts the new token, **drops every
-   project-scoped collection** (so the previous project's records can't linger under the new
-   selection), and sets `projectSwitching` to show a loading state until the new snapshot lands.
+4. **Frontend store + URL** — the URL is **`/projects/:projectId/<screen>`**, so it is the source
+   of truth for the active project: a refresh, bookmark or shared link restores both which project
+   you're in and where you were (`RouteBridge` seeds `activeProjectId` + `screen` from the URL on a
+   cold load, then keeps them in sync both ways; navigating the URL to a different project you can
+   access switches to it; an unknown/forbidden project or screen redirects to the active project's
+   role-default). `activeProjectId` names the current project; the store holds **that project's
+   snapshot only**, and its live **project identity** (`name`/`short`/`descriptor`/`stage`/
+   `siteCode`/`milestonePct`) comes from the snapshot too — screens read the store, never the
+   `PROJECT` seed constant, so every surface (Dashboard, client screens, the rail footer) re-labels
+   on a switch. `switchProject` **atomically** adopts the new token, **drops every project-scoped
+   collection** (so the previous project's records can't linger under the new selection), sets
+   `projectSwitching` to show a loading state until the new snapshot lands, and updates the URL.
    `applySnapshot` **ignores any snapshot whose `project.id` ≠ `activeProjectId`** (a late reply or
    a socket refetch that raced the switch), so a stale snapshot can never overwrite the active one.
    The Site Schedule / Decision Log / Site Map therefore always render exactly one project — never

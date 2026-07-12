@@ -60,13 +60,29 @@ export function screensFor(role: Role): ScreenMeta[] {
   return keys[role].map((k) => SCREEN_META[k]);
 }
 
-export function pathForScreen(screen: ScreenKey): string {
-  return SCREEN_META[screen].path;
+/** The full, project-scoped URL for a screen: `/projects/:projectId/<screen>`.
+ *  The project id is part of the URL so a refresh, bookmark or shared link restores
+ *  which project you were in (the URL is the source of truth for the active project). */
+export function pathForScreen(screen: ScreenKey, projectId: string): string {
+  return `/projects/${encodeURIComponent(projectId)}${SCREEN_META[screen].path}`;
 }
 
+/** Match a bare screen path (`/decisions`, `/client/decisions`) to its screen key. */
 export function screenForPath(path: string): ScreenKey | null {
   const entry = Object.values(SCREEN_META).find((m) => m.path === path);
   return entry ? entry.key : null;
+}
+
+/** Parse a pathname into its project id (if present) and screen. Accepts the
+ *  project-scoped form `/projects/:id/<screen>` and a legacy bare `/decisions` form
+ *  (projectId null → the caller falls back to the active project). */
+export function parseLocation(pathname: string): { projectId: string | null; screen: ScreenKey | null } {
+  const m = pathname.match(/^\/projects\/([^/]+)(\/.*)?$/);
+  if (m) {
+    const screenPath = m[2] && m[2] !== '/' ? m[2] : null;
+    return { projectId: decodeURIComponent(m[1]), screen: screenPath ? screenForPath(screenPath) : null };
+  }
+  return { projectId: null, screen: screenForPath(pathname) };
 }
 
 /** Which persona owns each screen — for the temporary role switcher / route guard. */

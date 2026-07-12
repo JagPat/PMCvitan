@@ -59,7 +59,29 @@ import {
 import { screensFor } from '@/lib/screens';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID, API_BASE } from '@/data/apiGateway';
+import { parseLocation } from '@/lib/screens';
+
+/**
+ * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
+ * shared deep-link restores it, else the default. Only honoured in API mode — the local demo
+ * has a single seeded project, so an arbitrary URL id would mislabel the seeded data.
+ */
+function initialProjectId(): string {
+  if (!API_BASE) return PROJECT_ID;
+  const fromUrl = typeof window !== 'undefined' ? parseLocation(window.location.pathname).projectId : null;
+  return fromUrl ?? PROJECT_ID;
+}
+
+/**
+ * The screen to open on a cold load: from the URL so a refresh or deep link restores where you
+ * were, before the router effects run (otherwise the store→URL sync clobbers the deep link with
+ * the default). Role-gating still happens in RouteBridge; falls back to the universal home.
+ */
+function initialScreen(): ScreenKey {
+  const fromUrl = typeof window !== 'undefined' ? parseLocation(window.location.pathname).screen : null;
+  return fromUrl ?? 'inbox';
+}
 
 /** Issue-decision payload from the UI: an option may carry a captured photo (base64),
  *  uploaded first so it becomes the created option's photoUrl. */
@@ -259,7 +281,8 @@ export function getInitialState(): AppState {
     // portfolio. The persona switcher graduates to team/individual views.
     role: 'pmc',
     // 'inbox' ("For You") is every role's home — the live cross-cutting action queue.
-    screen: 'inbox',
+    // Seeded from the URL on a cold load so a refresh / deep link restores the screen.
+    screen: initialScreen(),
     lang: 'en',
     notifOpen: false,
     toast: null,
@@ -275,7 +298,7 @@ export function getInitialState(): AppState {
     materials: structuredClone(SEED_MATERIALS), // placed deliveries for the demo Site Map
     placedInspections: structuredClone(SEED_PLACED_INSPECTIONS), // placed inspections for the demo Site Map
     phases: structuredClone(SEED_PHASES),
-    activeProjectId: PROJECT_ID,
+    activeProjectId: initialProjectId(),
     memberships: [],
     myOrgs: [],
     orgMembers: [],
