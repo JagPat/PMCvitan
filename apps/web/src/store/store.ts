@@ -57,6 +57,7 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
+import { emptyProjectData, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID, API_BASE } from '@/data/apiGateway';
@@ -98,7 +99,7 @@ export interface AppState {
   modal: ModalState;
   decisions: Decision[];
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
-  checklist: Checklist;
+  checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   reviews: Review[]; // the PMC review queue (submitted, undecided inspections)
   activeReviewId: string | null; // which queued review the PMC is looking at (null ⇒ first pending)
   reinspectionCreated: boolean;
@@ -121,7 +122,7 @@ export interface AppState {
   outbox: OutboxOp[];
   access: AccessState;
   activities: Activity[];
-  dailyLog: DailyLog;
+  dailyLog: DailyLog | null; // null = no daily log started for this project
   notifications: AppNotification[];
   // real session (set by a phone-OTP sign-in; null = passwordless dev auth)
   sessionToken: string | null;
@@ -139,9 +140,13 @@ export interface AppState {
   elapsedPct: number;
   todayDay: number;
   milestonePct: number;
-  /** true from the moment a project switch is requested until its snapshot lands —
-   *  screens show a loading state instead of the previous project's records. */
-  projectSwitching: boolean;
+  /** The project-scope lifecycle (Phase 0 Task 2). A switch empties project data
+   *  in the same set() that marks it 'switching', so old records can never render
+   *  or arrive under the next project's identity. */
+  pendingProjectId: string | null; // the project a switch is negotiating for (null = none)
+  projectScopeGeneration: number; // bumped on every scope change; stale responses are dropped
+  projectLoadState: ProjectLoadState;
+  projectLoadError: string | null; // user-readable, recoverable (set with loadState 'error')
   // firms & consultants on the active project (client company, contractor, MEP/structural, …)
   companies: ProjectCompany[];
   // archived projects (owner/admin restore UI, lazy-loaded)
@@ -187,7 +192,11 @@ export interface AppActions {
   // multi-project + team
   loadOrgData: () => void;
   loadPortfolio: () => void;
-  switchProject: (projectId: string) => void;
+  /** Atomically re-scope to another project. Empties project data BEFORE the auth
+   *  request; adopts the SERVER-returned project on success. Resolves true only when
+   *  the switch was authenticated. `targetScreen` survives the switch when the new
+   *  role is allowed to see it (deep links). */
+  switchProject: (projectId: string, targetScreen?: ScreenKey) => Promise<boolean>;
   createProject: (orgId: string, input: NewProjectInput) => void;
   updateProjectDetails: (orgId: string, projectId: string, input: Partial<NewProjectInput>) => void;
   deleteProject: (orgId: string, projectId: string) => void;
@@ -272,7 +281,10 @@ export interface AppActions {
   workerDone: () => void;
   // API bridge (Phase 7b) — injected by useApiSync when VITE_API_URL is set
   _setGateway: (g: ApiGateway | null) => void;
-  applySnapshot: (snap: ApiSnapshot) => void;
+  /** Apply a snapshot only if it belongs to the CURRENT scope (project id + generation
+   *  captured when the request was issued). Returns true only when applied, so callers
+   *  can't mark a stale response as ready. */
+  applySnapshot: (snap: ApiSnapshot, capturedScope?: ProjectScope) => boolean;
 }
 
 export type Store = AppState & AppActions;
@@ -336,18 +348,13 @@ export function getInitialState(): AppState {
     elapsedPct: PROJECT.elapsedPct,
     todayDay: PROJECT.todayDay,
     milestonePct: PROJECT.milestonePct,
-    projectSwitching: false,
+    pendingProjectId: null,
+    projectScopeGeneration: 0,
+    projectLoadState: 'idle',
+    projectLoadError: null,
     companies: [],
     archivedProjects: [],
   };
-}
-
-/** What an issued-nothing project shows: no checklist, no open daily log. */
-function emptyChecklist(): Checklist {
-  return { id: '', title: '', zone: '', date: '', submitted: false, items: [] };
-}
-function emptyDailyLog(): DailyLog {
-  return { date: '', checkedIn: false, checkinTime: null, submitted: false, crew: [], materials: [], progress: 0, photos: [] };
 }
 
 export const useStore = create<Store>()(
@@ -357,41 +364,33 @@ export const useStore = create<Store>()(
     // the returned snapshot; when null, they mutate the seeded local store.
     let gateway: ApiGateway | null = null;
 
-    /** Drop EVERY project-scoped record — used when the active project changes
-     *  (switch or sign-in adoption) so the previous project's data can never show
-     *  under the new selection. Includes checklist + dailyLog: the snapshot only
-     *  carries them when the project has one, so they must not linger either. */
-    const clearProjectState = (s: AppState): void => {
-      s.decisions = [];
-      s.activities = [];
-      s.drawings = [];
-      s.nodes = [];
-      s.photos = [];
-      s.materials = [];
-      s.placedInspections = [];
-      s.phases = [];
-      s.reviews = [];
-      s.activeReviewId = null;
-      s.notifications = [];
-      s.companies = [];
-      s.members = [];
-      s.checklist = emptyChecklist();
-      s.dailyLog = emptyDailyLog();
-    };
+    /** The scope a network request is issued FOR — pass to applySnapshot so a reply
+     *  that lands after the scope changed (switch, sign-in) is dropped, not applied. */
+    const currentScope = (): ProjectScope => ({
+      projectId: get().activeProjectId,
+      generation: get().projectScopeGeneration,
+    });
 
-    const applySnapshot = (snap: ApiSnapshot): void => {
+    const applySnapshot = (snap: ApiSnapshot, capturedScope?: ProjectScope): boolean => {
+      // Default to the CURRENT scope for direct/local callers; network callers pass
+      // the scope captured when their request was issued.
+      const scope = capturedScope ?? currentScope();
+      const st = get();
+      // Reject a snapshot for a project we've since left, or one whose request
+      // predates a scope change (generation bumped by a switch/sign-in) — applying
+      // it would show the wrong project's records under the active selection.
+      if (snap.project.id !== st.activeProjectId) return false;
+      if (!isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, scope)) return false;
       set((s) => {
-        // Ignore a snapshot for a project we've since left (a late reply from the
-        // previous project, or a socket refetch that raced a switch) — applying it
-        // would show the wrong project's records under the active selection.
-        if (snap.project.id !== s.activeProjectId) return;
-        s.projectSwitching = false; // the active project's data has landed
+        s.projectLoadState = 'ready'; // the active project's data has landed
+        s.projectLoadError = null;
+        s.pendingProjectId = null;
         s.decisions = snap.decisions;
         s.activities = snap.activities;
-        // The snapshot is the whole truth for its project: a null/missing slice means
-        // "this project has none", so REPLACE with an empty state — keeping the previous
-        // value would show the last project's checklist/log/drawings under this one.
-        s.checklist = snap.checklist ?? emptyChecklist();
+        // The snapshot is the whole truth for its project. checklist/dailyLog are
+        // assigned DIRECTLY, including null — absence means "this project has none",
+        // never "keep the previous project's".
+        s.checklist = snap.checklist ?? null;
         s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         s.reinspectionCreated = snap.reinspectionCreated;
@@ -408,7 +407,7 @@ export const useStore = create<Store>()(
         // hits the API, not the SPA origin. Drawings resolve at render time.
         s.dailyLog = snap.dailyLog
           ? { ...snap.dailyLog, photos: snap.dailyLog.photos.map((p) => ({ ...p, url: resolveMediaUrl(p.url) })) }
-          : emptyDailyLog();
+          : null;
         s.notifications = snap.notifications;
         s.companies = snap.companies ?? [];
         s.name = snap.project.name;
@@ -424,12 +423,14 @@ export const useStore = create<Store>()(
         s.milestonePct = snap.project.milestonePct;
         s.nodes = snap.nodes ?? [];
       });
+      return true;
     };
 
     const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: string): void => {
+      const scope = currentScope(); // the project this mutation belongs to
       call()
         .then((snap) => {
-          applySnapshot(snap);
+          applySnapshot(snap, scope);
           get().flash(okMsg);
         })
         .catch(() => get().flash('Could not reach the server — please try again.'));
@@ -486,33 +487,49 @@ export const useStore = create<Store>()(
       return true;
     };
 
-    /** Adopt a server auth result as the real session (every API sign-in path:
-     *  password, email-OTP, Google, phone-OTP). The token is scoped to ONE project
-     *  (res.projectId — the member's home project), so the store must adopt that
-     *  identity too: leaving `activeProjectId` on the URL's project would send a
-     *  project-B token to /projects/A/... and 403 every call, stranding the seeded
-     *  demo data on screen under the wrong project. */
-    const applyAuthResult = (res: { role: Role; token: string; name?: string; projectId?: string }, msg?: string): void => {
+    /** Adopt a server auth result as the real session — the ONE adoption path for
+     *  every API sign-in (password, email-OTP, Google, phone-OTP) AND the project
+     *  switch. The token is scoped to exactly the project the SERVER returns
+     *  (never the caller's requested/URL project): leaving `activeProjectId`
+     *  elsewhere would send this token to another project's routes and 403 every
+     *  call, stranding stale data on screen under the wrong identity. */
+    const applyAuthResult = (
+      res: { role: Role; token: string; name?: string; projectId?: string },
+      opts?: { msg?: string; targetScreen?: ScreenKey },
+    ): void => {
       set((s) => {
+        const changedProject = !!res.projectId && res.projectId !== s.activeProjectId;
+        const wasPending = s.pendingProjectId !== null;
         s.role = res.role;
-        s.screen = screensFor(res.role)[0].key;
+        const allowed = screensFor(res.role).map((m) => m.key);
+        // a role-allowed target screen survives the transition (deep links); anything
+        // else lands on the role's home
+        s.screen = opts?.targetScreen && allowed.includes(opts.targetScreen) ? opts.targetScreen : allowed[0];
         s.sessionToken = res.token;
         s.userName = res.name ?? null;
         s.access = freshAccess();
-        if (res.projectId && res.projectId !== s.activeProjectId) {
-          s.activeProjectId = res.projectId;
-          s.projectSwitching = true; // loading state until the fresh snapshot lands
-          // blank the identity + drop project-scoped records — the previous (URL/seed)
-          // project's data must never render under the token's project
-          s.name = '';
-          s.short = '';
-          s.descriptor = '';
-          s.stage = '';
-          s.siteCode = '';
-          clearProjectState(s);
+        if (res.projectId && changedProject) {
+          s.activeProjectId = res.projectId; // the SERVER-returned scope, verbatim
+          // If a switch already emptied the data for THIS project, don't clear twice.
+          // Otherwise (sign-in adoption, or the server re-scoped us elsewhere): new
+          // scope generation + empty data + blank identity until the snapshot lands.
+          if (s.pendingProjectId !== res.projectId) {
+            s.projectScopeGeneration += 1;
+            s.name = '';
+            s.short = '';
+            s.descriptor = '';
+            s.stage = '';
+            s.siteCode = '';
+            Object.assign(s, emptyProjectData());
+          }
         }
+        if (changedProject || wasPending) {
+          s.projectLoadState = 'loading'; // authenticated; awaiting this project's snapshot
+          s.projectLoadError = null;
+        }
+        s.pendingProjectId = null;
       });
-      get().flash(msg ?? 'Signed in as ' + (res.name ?? res.role) + '.');
+      get().flash(opts?.msg ?? 'Signed in as ' + (res.name ?? res.role) + '.');
     };
 
     /** Local-demo passwordless sign-in: map an email to a role (else engineer). */
@@ -660,17 +677,18 @@ export const useStore = create<Store>()(
     setChangeCost: (v) => set((s) => { s.modal.changeCost = v; }),
     setChangeTime: (v) => set((s) => { s.modal.changeTime = v; }),
 
-    // ---- engineer checklist ----
+    // ---- engineer checklist (a null checklist = none issued; every action no-ops) ----
     setItem: (idx, val) =>
       set((s) => {
-        const it = s.checklist.items[idx];
+        const it = s.checklist?.items[idx];
+        if (!it) return;
         it.state = it.state === val ? null : val;
       }),
-    addPhoto: (idx) => set((s) => { s.checklist.items[idx].photos += 1; }),
-    setNote: (idx, txt) => set((s) => { s.checklist.items[idx].note = txt; }),
+    addPhoto: (idx) => set((s) => { const it = s.checklist?.items[idx]; if (it) it.photos += 1; }),
+    setNote: (idx, txt) => set((s) => { const it = s.checklist?.items[idx]; if (it) it.note = txt; }),
     submitInspection: () => {
       const c = get().checklist;
-      if (!c.id || !c.items.length) {
+      if (!c || !c.items.length) {
         get().flash('No checklist has been issued for today yet.');
         return;
       }
@@ -686,10 +704,11 @@ export const useStore = create<Store>()(
       }
       if (runRemoteOrQueue({ t: 'submitInspection', inspectionId: c.id, items: c.items }, 'Submit inspection', () => gateway!.submitInspection(c.id, c.items), 'Inspection submitted to the architect for review.')) return;
       set((s) => {
+        if (!s.checklist) return;
         s.checklist.submitted = true;
         // demo (no API): the submitted checklist enters the PMC review queue,
         // mapping each item's pass/fail state to a PASS/FAIL result.
-        if (!s.reviews.some((r) => r.id === s.checklist.id)) {
+        if (!s.reviews.some((r) => r.id === s.checklist!.id)) {
           s.reviews.push({
             id: s.checklist.id,
             title: s.checklist.title,
@@ -757,7 +776,7 @@ export const useStore = create<Store>()(
           .issueDrawing(input)
           .then(() => {
             get().flash(`Drawing issued: ${input.number} Rev ${input.rev} — team notified.`);
-            gateway!.snapshot().then((snap) => applySnapshot(snap)).catch(() => {});
+            ((scope) => gateway!.snapshot().then((snap) => applySnapshot(snap, scope)).catch(() => {}))(currentScope());
           })
           .catch(() => get().flash('Could not issue the drawing — please try again.'));
         return;
@@ -835,11 +854,12 @@ export const useStore = create<Store>()(
       // API mode: publish each in turn, then reconcile once from a fresh snapshot.
       if (gateway) {
         const gw = gateway;
+        const scope = currentScope();
         void (async () => {
           try {
             for (const id of decIds) await gw.publishDecision(id);
             for (const id of dwgIds) await gw.publishDrawing(id);
-            applySnapshot(await gw.snapshot());
+            applySnapshot(await gw.snapshot(), scope);
             done();
           } catch {
             get().flash('Could not publish every draft — some may still be drafts. Please try again.');
@@ -873,7 +893,7 @@ export const useStore = create<Store>()(
           .acknowledgeDrawing(rev.id)
           .then(() => {
             get().flash(`Acknowledged — building to ${drawing.number} Rev ${rev.rev}.`);
-            gateway!.snapshot().then((snap) => applySnapshot(snap)).catch(() => {});
+            ((scope) => gateway!.snapshot().then((snap) => applySnapshot(snap, scope)).catch(() => {}))(currentScope());
           })
           .catch(() => get().flash('Could not record the acknowledgement — please try again.'));
         return;
@@ -924,39 +944,53 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       gateway.getPortfolio().then((p) => set((s) => { s.portfolio = p; })).catch(() => {});
     },
-    switchProject: (projectId) => {
-      if (!gateway || projectId === get().activeProjectId) return;
+    switchProject: (projectId, targetScreen) => {
+      if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);
       const membership = get().memberships.find((m) => m.projectId === projectId);
       const short = membership?.short ?? 'project';
-      gateway
+      // the OLD project's identity, restored if the switch fails (we keep its auth scope)
+      const prev = (({ name, short: sh, descriptor, stage, siteCode }) => ({ name, short: sh, descriptor, stage, siteCode }))(get());
+      // ATOMIC ENTRY — before the auth request goes out: bump the scope generation
+      // (in-flight replies for the old scope will be dropped), mark the transition,
+      // and EMPTY every project-owned field. Old records can neither render nor
+      // arrive while authorization is pending.
+      set((s) => {
+        s.projectScopeGeneration += 1;
+        s.pendingProjectId = projectId;
+        s.projectLoadState = 'switching';
+        s.projectLoadError = null;
+        // optimistic label from the membership; the snapshot supplies the rest
+        s.name = membership?.name ?? short;
+        s.short = short;
+        s.descriptor = '';
+        s.stage = '';
+        s.siteCode = '';
+        Object.assign(s, emptyProjectData());
+      });
+      return gateway
         .switchProject(projectId)
         .then((res) => {
-          // new token + project → useApiSync re-inits the gateway and refetches.
-          // Atomically swap to the new project: adopt the token/role, and DROP every
-          // project-scoped record so the previous project's data can never show under
-          // the new selection. `projectSwitching` gates a loading state until the fresh
-          // snapshot (guarded by project id in applySnapshot) repopulates them.
-          set((s) => {
-            s.sessionToken = res.token;
-            s.activeProjectId = projectId;
-            s.role = res.role;
-            s.screen = screensFor(res.role)[0].key;
-            s.projectSwitching = true;
-            // identity: show the target project's name immediately (from the membership),
-            // blanking the finer metadata until the snapshot fills it in.
-            s.name = membership?.name ?? short;
-            s.short = short;
-            s.descriptor = '';
-            s.stage = '';
-            s.siteCode = '';
-            // project-scoped collections (incl. checklist + daily log) — cleared, not carried over
-            clearProjectState(s);
-          });
-          get().flash('Switched to ' + short + '.');
+          // adopt the SERVER-returned project/role/token (never the requested id);
+          // useApiSync re-inits the gateway for the new scope and refetches.
+          applyAuthResult(res, { msg: 'Switched to ' + short + '.', targetScreen });
+          return true;
         })
         .catch(() => {
-          set((s) => { s.projectSwitching = false; });
+          // authorization failed: keep the OLD authenticated identity (token/project
+          // unchanged), keep project data empty (never resurface half-cleared records),
+          // and surface a recoverable error.
+          set((s) => {
+            s.pendingProjectId = null;
+            s.projectLoadState = 'error';
+            s.projectLoadError = 'Could not switch to ' + short + ' — check your access and try again.';
+            s.name = prev.name;
+            s.short = prev.short;
+            s.descriptor = prev.descriptor;
+            s.stage = prev.stage;
+            s.siteCode = prev.siteCode;
+          });
           get().flash('Could not switch project — please try again.');
+          return false;
         });
     },
     createProject: (orgId, input) => {
@@ -969,7 +1003,7 @@ export const useStore = create<Store>()(
         .then((p) => {
           get().flash('Project created: ' + p.short + '.');
           get().loadOrgData();
-          get().switchProject(p.id);
+          void get().switchProject(p.id);
         })
         .catch(() => get().flash('Could not create the project — check your access.'));
     },
@@ -1070,6 +1104,7 @@ export const useStore = create<Store>()(
         return;
       }
       const gw = gateway;
+      const scope = currentScope();
       // Upload any captured option photos first, then create with their urls.
       void (async () => {
         try {
@@ -1081,7 +1116,7 @@ export const useStore = create<Store>()(
             }),
           );
           const snap = await gw.createDecision({ title: input.title, nodeId: input.nodeId, room: input.room, options, publish: input.publish });
-          applySnapshot(snap);
+          applySnapshot(snap, scope);
           get().flash(
             input.publish
               ? `Decision issued: ${input.title} — the client has been asked to choose.`
@@ -1116,9 +1151,10 @@ export const useStore = create<Store>()(
         return null;
       }
       const before = new Set(get().nodes.map((n) => n.id));
+      const scope = currentScope();
       try {
         const snap = await gateway.createNode(input);
-        applySnapshot(snap);
+        applySnapshot(snap, scope);
         get().flash(`Added ${input.kind}: ${input.name}.`);
         // the newly-created node is the one whose id wasn't present before
         const created = get().nodes.find((n) => !before.has(n.id) && n.name === input.name && n.kind === input.kind);
@@ -1342,7 +1378,12 @@ export const useStore = create<Store>()(
 
     // ---- daily log (phone = attendance device) ----
     checkIn: () => {
+      if (!get().dailyLog) {
+        get().flash('No daily log yet — start today\u2019s log first.');
+        return;
+      }
       set((s) => {
+        if (!s.dailyLog) return;
         s.dailyLog.checkedIn = true;
         s.dailyLog.checkinTime = '8:12 AM';
       });
@@ -1351,6 +1392,7 @@ export const useStore = create<Store>()(
     },
     checkOut: () => {
       set((s) => {
+        if (!s.dailyLog) return;
         s.dailyLog.checkedIn = false;
         s.dailyLog.checkinTime = null;
       });
@@ -1358,23 +1400,23 @@ export const useStore = create<Store>()(
     },
     scanWorker: () => {
       // demo action tied to the seeded Helper row — a project with an empty crew has no row 4
-      const helper = get().dailyLog.crew[4];
+      const helper = get().dailyLog?.crew[4];
       if (!helper) {
         get().flash('No crew rows on this log yet — add trades on the daily log first.');
         return;
       }
-      set((s) => { s.dailyLog.crew[4].count += 1; });
+      set((s) => { const c = s.dailyLog?.crew[4]; if (c) c.count += 1; });
       get().record('QR check-in · Helper');
       get().flash('Worker checked in via QR · Helper · 9:03 AM · face verified.');
     },
     crewStep: (idx, delta) =>
       set((s) => {
-        const c = s.dailyLog.crew[idx];
-        if (!c) return; // stale index against an empty/replaced crew list
+        const c = s.dailyLog?.crew[idx];
+        if (!c) return; // no log, or a stale index against a replaced crew list
         c.count = Math.max(0, c.count + delta);
       }),
     addProgress: () => {
-      set((s) => { s.dailyLog.progress += 1; });
+      set((s) => { if (s.dailyLog) s.dailyLog.progress += 1; });
       get().record('Progress photo');
     },
     addProgressPhoto: (dataUrl, nodeId) => {
@@ -1394,8 +1436,10 @@ export const useStore = create<Store>()(
           set((s) => {
             s.outbox.push({ t: 'uploadMedia', input });
             s.syncQueue.push('Progress photo');
-            s.dailyLog.photos.unshift({ url: dataUrl });
-            s.dailyLog.progress += 1;
+            if (s.dailyLog) {
+              s.dailyLog.photos.unshift({ url: dataUrl });
+              s.dailyLog.progress += 1;
+            }
           });
           persistOutbox();
           get().flash('Photo saved offline — will upload when signal returns.');
@@ -1405,6 +1449,7 @@ export const useStore = create<Store>()(
           .uploadMedia(input)
           .then((res) => {
             set((s) => {
+              if (!s.dailyLog) return;
               s.dailyLog.photos.unshift({ id: res.id, url: resolveMediaUrl(res.url) });
               s.dailyLog.progress += 1;
             });
@@ -1416,31 +1461,38 @@ export const useStore = create<Store>()(
       // local demo: keep the data URL as the image source; also place it on the tree
       // (with the chosen node) so the Place view reflects it without a server.
       set((s) => {
-        s.dailyLog.photos.unshift({ url: dataUrl });
-        s.dailyLog.progress += 1;
+        if (s.dailyLog) {
+          s.dailyLog.photos.unshift({ url: dataUrl });
+          s.dailyLog.progress += 1;
+        }
         s.photos.unshift({ id: `demo-photo-${s.photos.length + 1}`, url: dataUrl, nodeId: nodeId ?? undefined, kind: 'progress' });
       });
       get().record('Progress photo');
       get().flash(get().online ? 'Progress photo added — geo + time stamped.' : 'Photo saved offline — will upload when signal returns.');
     },
     submitDailyLog: () => {
-      if (!get().dailyLog.checkedIn) {
+      const dl = get().dailyLog;
+      if (!dl) {
+        get().flash('No daily log yet — start today\u2019s log first.');
+        return;
+      }
+      if (!dl.checkedIn) {
         get().flash('Please check in at site before submitting the daily log.');
         return;
       }
-      const dl = get().dailyLog;
       const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew };
       if (runRemoteOrQueue({ t: 'submitDailyLog', log: logPayload }, 'Submit daily log', () => gateway!.submitDailyLog(logPayload), 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
-      set((s) => { s.dailyLog.submitted = true; });
+      set((s) => { if (s.dailyLog) s.dailyLog.submitted = true; });
       get().record('Daily log submit');
       get().flash(get().online ? 'Daily site log sent to PMC — attendance, materials & photos attached.' : 'Saved offline — log will upload to PMC when signal returns.');
     },
     flagMismatch: (idx) => {
-      const mat = get().dailyLog.materials[idx];
-      if (!mat) return; // stale index against an empty/replaced materials list
+      const mat = get().dailyLog?.materials[idx];
+      if (!mat) return; // no log, or a stale index against a replaced materials list
       if (runRemoteOrQueue({ t: 'flagMismatch', decisionId: mat.decisionId }, 'Flag ' + mat.decisionId, () => gateway!.flagMismatch(mat.decisionId), 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
       set((s) => {
-        s.dailyLog.materials[idx].matched = false;
+        const m = s.dailyLog?.materials[idx];
+        if (m) m.matched = false;
         s.activities.forEach((a) => {
           if (a.decisionId === mat.decisionId) {
             a.gm = 'fail';
@@ -1478,6 +1530,9 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       const ops = get().outbox.slice();
       if (ops.length === 0) return;
+      // the scope this flush replays FOR — a project switch mid-flush must not let
+      // the reconcile snapshot land under the new project
+      const flushScope = currentScope();
 
       // Replay in order, one at a time, committing progress as we go so a later failure
       // never re-runs an op that already succeeded. A permanently-rejected op (terminal
@@ -1510,7 +1565,7 @@ export const useStore = create<Store>()(
         s.syncQueue = []; // local-only labels (check-in, QR) are considered synced on reconnect
       });
       persistOutbox();
-      if (lastSnap) applySnapshot(lastSnap);
+      if (lastSnap) applySnapshot(lastSnap, flushScope);
 
       const parts: string[] = [];
       if (synced > 0) parts.push(`${synced} offline update${synced > 1 ? 's' : ''} synced`);
@@ -1720,7 +1775,7 @@ export const useStore = create<Store>()(
         if (a.who === 'team') {
           if (token) {
             // real session: adopt token + role + the token's project identity
-            applyAuthResult({ role, token, name: name ?? undefined, projectId }, 'Verified ✓ — signed in as ' + (name ?? role) + '.');
+            applyAuthResult({ role, token, name: name ?? undefined, projectId }, { msg: 'Verified ✓ — signed in as ' + (name ?? role) + '.' });
             return;
           }
           // local demo: persona sign-in, no token/project change

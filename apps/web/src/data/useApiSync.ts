@@ -33,14 +33,24 @@ export function useApiSync(): void {
     const gw = new ApiGateway(API_BASE, activeProjectId);
 
     const refresh = () => {
+      // capture the scope this request is FOR — a reply landing after a switch or
+      // sign-in (generation bumped) is rejected by applySnapshot, never applied.
+      const st = useStore.getState();
+      const scope = { projectId: st.activeProjectId, generation: st.projectScopeGeneration };
       gw.snapshot()
         .then((snap) => {
-          if (!cancelled) useStore.getState().applySnapshot(snap);
+          if (!cancelled) useStore.getState().applySnapshot(snap, scope);
         })
         .catch(() => {
-          // the snapshot didn't arrive — don't strand the app in the project-switch
-          // loading state (the records were already cleared, so nothing stale shows).
-          if (!cancelled) useStore.setState((s) => { s.projectSwitching = false; });
+          // the snapshot didn't arrive — surface a RECOVERABLE error state instead of
+          // stranding the transition (records were already cleared; nothing stale shows).
+          if (cancelled) return;
+          useStore.setState((s) => {
+            if (s.projectLoadState === 'switching' || s.projectLoadState === 'loading') {
+              s.projectLoadState = 'error';
+              s.projectLoadError = 'Could not load this project — check your connection and access, then retry.';
+            }
+          });
         });
     };
 

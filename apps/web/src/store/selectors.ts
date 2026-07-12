@@ -169,7 +169,7 @@ export function activitiesInPhase(activities: Activity[], phases: Phase[], phase
 // ---- daily log ----
 
 export function selectTotalWorkers(s: AppState): number {
-  return s.dailyLog.crew.reduce((a, c) => a + c.count, 0);
+  return s.dailyLog?.crew.reduce((a, c) => a + c.count, 0) ?? 0;
 }
 
 // ---- "Needs you" action queue ----
@@ -210,7 +210,7 @@ export function selectActionItems(s: AppState): ActionItem[] {
 
   if (s.role === 'engineer') {
     if (s.checklist && !s.checklist.submitted) items.push({ key: 'eng-checklist', title: `Checklist to complete: ${s.checklist.title}`, detail: `${s.checklist.items.length} items · ${s.checklist.zone}`, screen: 'engineer-check', cta: 'Fill & submit', tone: 'amber' });
-    if (!s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', screen: 'daily-log', cta: 'Open daily log', tone: 'ink' });
+    if (s.dailyLog && !s.dailyLog.submitted) items.push({ key: 'eng-log', title: `Today's site log isn't submitted`, detail: s.dailyLog.checkedIn ? 'Checked in — submit when the day is logged' : 'Check in at site, then submit', screen: 'daily-log', cta: 'Open daily log', tone: 'ink' });
     if (unacked.length) items.push({ key: 'eng-ack', title: `${unacked.length} drawing${plural(unacked.length)} to acknowledge`, detail: names(unacked), screen: 'drawings', cta: 'Acknowledge current set', tone: 'amber' });
   }
 

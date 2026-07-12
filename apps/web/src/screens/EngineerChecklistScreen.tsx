@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 import { useStore } from '@/store/store';
-import { Eyebrow, StatTile } from '@/components';
+import { EmptyState, Eyebrow, StatTile } from '@/components';
 import { Camera } from '@/lib/icons';
 import type { ItemState } from '@vitan/shared';
 import styles from './responsive.module.css';
@@ -27,6 +27,16 @@ export function EngineerChecklistScreen() {
   const addPhoto = useStore((s) => s.addPhoto);
   const setNote = useStore((s) => s.setNote);
   const submitInspection = useStore((s) => s.submitInspection);
+
+  // honest absence: no fabricated blank checklist — the PMC simply hasn't issued one
+  if (!checklist) {
+    return (
+      <EmptyState
+        title="No checklist issued"
+        detail="The PMC has not issued an inspection checklist for this project yet. It will appear here the moment one is assigned to you."
+      />
+    );
+  }
 
   const doneCount = checklist.items.filter((it) => it.state).length;
   const photoCount = checklist.items.reduce((a, it) => a + it.photos, 0);

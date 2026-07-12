@@ -64,22 +64,22 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     expect(s().nodes).toEqual([]);
     expect(s().notifications).toEqual([]);
     // and we're in the loading state, re-labelled to the new project, until its snapshot lands
-    expect(s().projectSwitching).toBe(true);
+    expect(s().projectLoadState).toBe('loading'); // auth done; awaiting p2's snapshot
     expect(s().short).toBe('Villa 2');
     expect(s().name).toBe('Villa Shah');
   });
 
   it('applySnapshot ignores a snapshot for a project we’ve since left (no cross-project overwrite)', () => {
     // pretend we've switched to p2 and are awaiting its snapshot
-    useStore.setState((st) => { st.activeProjectId = 'p2'; st.projectSwitching = true; st.decisions = []; });
+    useStore.setState((st) => { st.activeProjectId = 'p2'; st.projectLoadState = 'loading'; st.decisions = []; });
     // a late snapshot from the OLD project (ambli) arrives — it must be dropped
     s().applySnapshot(makeSnapshot({ decisions: [{ id: 'DL-OLD', title: 'stale', room: '', status: 'pending', photoSwatch: 'marble', options: [] }] }));
     expect(s().decisions).toEqual([]); // not applied
-    expect(s().projectSwitching).toBe(true); // still waiting for p2
+    expect(s().projectLoadState).toBe('loading'); // still waiting for p2
 
     // the matching p2 snapshot lands → applied, loading cleared, identity live
     s().applySnapshot(makeSnapshot({ project: { ...makeSnapshot().project, id: 'p2', name: 'Villa Shah', short: 'Villa 2' } }));
-    expect(s().projectSwitching).toBe(false);
+    expect(s().projectLoadState).toBe('ready');
     expect(s().short).toBe('Villa 2');
     expect(s().name).toBe('Villa Shah');
   });
@@ -350,7 +350,7 @@ describe('P0 session correctness (architecture audit)', () => {
     await flush();
 
     expect(s().activeProjectId).toBe('proj-b'); // token project adopted → gateway re-inits for proj-b
-    expect(s().projectSwitching).toBe(true); // loading until proj-b's snapshot lands
+    expect(s().projectLoadState).toBe('loading'); // until proj-b's snapshot lands
     expect(s().decisions).toEqual([]); // the seeded ambli data never shows under proj-b
     expect(s().name).toBe(''); // no stale identity either
   });
@@ -371,7 +371,7 @@ describe('P0 session correctness (architecture audit)', () => {
 
     expect(s().sessionToken).toBe('JWT-eng');
     expect(s().activeProjectId).toBe('proj-b');
-    expect(s().projectSwitching).toBe(true);
+    expect(s().projectLoadState).toBe('loading');
   });
 
   it('signing in to the project already active keeps state (no needless clearing)', async () => {
@@ -381,37 +381,35 @@ describe('P0 session correctness (architecture audit)', () => {
     s().login('pmc@vitan.in', 'secret');
     await flush();
     expect(s().activeProjectId).toBe('ambli');
-    expect(s().projectSwitching).toBe(false);
+    expect(s().projectLoadState).toBe('idle'); // no transition — nothing was cleared
     expect(s().decisions.length).toBe(before);
   });
 
   it('a project with no checklist / daily log REPLACES the previous one’s (nullable state cannot leak)', () => {
     // we start on ambli with a seeded checklist + daily log (crew, attendance)
-    expect(s().checklist.items.length).toBeGreaterThan(0);
-    expect(s().dailyLog.crew.length).toBeGreaterThan(0);
+    expect(s().checklist?.items.length).toBeGreaterThan(0);
+    expect(s().dailyLog?.crew.length).toBeGreaterThan(0);
 
-    // now we're on p2, and its snapshot carries neither slice
+    // now we're on p2, and its snapshot carries neither slice — explicit absence,
+    // never a fabricated blank record
     useStore.setState((st) => { st.activeProjectId = 'p2'; });
     s().applySnapshot(makeSnapshot({ project: { ...makeSnapshot().project, id: 'p2' } }));
 
-    expect(s().checklist.id).toBe('');
-    expect(s().checklist.items).toEqual([]); // NOT ambli's checklist
-    expect(s().dailyLog.crew).toEqual([]); // NOT ambli's crew counts
-    expect(s().dailyLog.checkedIn).toBe(false); // NOT ambli's attendance
-    expect(s().dailyLog.photos).toEqual([]);
+    expect(s().checklist).toBeNull(); // NOT ambli's checklist
+    expect(s().dailyLog).toBeNull(); // NOT ambli's crew/attendance/photos
   });
 
   it('switchProject clears checklist + dailyLog immediately, before the new snapshot lands', async () => {
     const gw = { switchProject: vi.fn().mockResolvedValue({ token: 'J', role: 'pmc', projectId: 'p2' }) };
     s()._setGateway(gw as unknown as ApiGateway);
     useStore.setState((st) => { st.memberships = [{ projectId: 'p2', name: 'P2', short: 'P2', role: 'pmc', orgId: 'o', orgName: 'V' }]; });
-    expect(s().checklist.items.length).toBeGreaterThan(0);
+    expect(s().checklist?.items.length).toBeGreaterThan(0);
 
-    s().switchProject('p2');
+    void s().switchProject('p2');
     await flush();
 
-    expect(s().checklist.items).toEqual([]);
-    expect(s().dailyLog.crew).toEqual([]);
+    expect(s().checklist).toBeNull();
+    expect(s().dailyLog).toBeNull();
   });
 
   it('a late team reply from the previous project is ignored (loadTeam is project-pinned)', async () => {
@@ -425,5 +423,82 @@ describe('P0 session correctness (architecture audit)', () => {
     await flush();
 
     expect(s().members).toEqual([]); // p2's team list is not repopulated with ambli's
+  });
+});
+
+describe('Phase 0 Task 2 — atomic project-scope transitions', () => {
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    let reject!: (e?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+  const authResultFor = (projectId: string) => ({ token: `JWT-${projectId}`, role: 'pmc' as const, projectId, name: 'PMC' });
+
+  it('clears every project-owned field BEFORE the switch request resolves (not after)', async () => {
+    const pending = deferred<ReturnType<typeof authResultFor>>();
+    const gw = { switchProject: vi.fn().mockReturnValue(pending.promise) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.memberships = [{ projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' }]; });
+    expect(s().decisions.length).toBeGreaterThan(0); // seeded project A data
+
+    const switching = s().switchProject('project-b');
+
+    // the auth request is still in flight — old-project data must ALREADY be gone
+    const state = s();
+    expect(state.pendingProjectId).toBe('project-b');
+    expect(state.projectLoadState).toBe('switching');
+    expect(state.decisions).toEqual([]);
+    expect(state.activities).toEqual([]);
+    expect(state.drawings).toEqual([]);
+    expect(state.checklist).toBeNull();
+    expect(state.dailyLog).toBeNull();
+
+    pending.resolve(authResultFor('project-b'));
+    await expect(switching).resolves.toBe(true);
+    expect(s().activeProjectId).toBe('project-b');
+    expect(s().pendingProjectId).toBeNull();
+  });
+
+  it('adopts the project the SERVER returns, never the caller-requested id', async () => {
+    const gw = { switchProject: vi.fn().mockResolvedValue(authResultFor('server-project')) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.memberships = [{ projectId: 'requested', name: 'R', short: 'R', role: 'pmc', orgId: 'o', orgName: 'V' }]; });
+    await s().switchProject('requested');
+    expect(s().activeProjectId).toBe('server-project');
+  });
+
+  it('a failed switch keeps the old authenticated identity, empties data, and reports a recoverable error', async () => {
+    const gw = { switchProject: vi.fn().mockRejectedValue(new Error('403')) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.memberships = [{ projectId: 'project-b', name: 'B', short: 'B', role: 'pmc', orgId: 'o', orgName: 'V' }]; });
+
+    await expect(s().switchProject('project-b')).resolves.toBe(false);
+
+    expect(s().activeProjectId).toBe('ambli'); // old authenticated scope retained
+    expect(s().pendingProjectId).toBeNull();
+    expect(s().projectLoadState).toBe('error');
+    expect(s().projectLoadError).toBeTruthy();
+    expect(s().decisions).toEqual([]); // no stale project A records resurface
+  });
+
+  it('assigns nullable snapshot records directly so absence cannot retain old-project data', () => {
+    // project A (seeded) has a checklist + daily log
+    expect(s().checklist).not.toBeNull();
+    expect(s().dailyLog).not.toBeNull();
+    useStore.setState((st) => { st.activeProjectId = 'project-b'; });
+    s().applySnapshot(makeSnapshot({ project: { ...makeSnapshot().project, id: 'project-b' }, checklist: null, dailyLog: null }));
+    expect(s().checklist).toBeNull();
+    expect(s().dailyLog).toBeNull();
+  });
+
+  it('applySnapshot rejects a stale scope generation and returns false; a current scope applies and returns true', () => {
+    const stale = { projectId: s().activeProjectId, generation: s().projectScopeGeneration };
+    useStore.setState((st) => { st.projectScopeGeneration += 1; }); // e.g. a switch began since
+    expect(s().applySnapshot(makeSnapshot(), stale)).toBe(false);
+
+    const current = { projectId: s().activeProjectId, generation: s().projectScopeGeneration };
+    expect(s().applySnapshot(makeSnapshot(), current)).toBe(true);
+    expect(s().projectLoadState).toBe('ready');
   });
 });

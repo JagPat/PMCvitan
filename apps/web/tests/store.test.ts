@@ -100,13 +100,13 @@ describe('checklist → review queue wiring', () => {
     const seededReviewId = s().reviews[0].id;
 
     // engineer marks every item pass, then submits the checklist
-    s().checklist.items.forEach((_, i) => s().setItem(i, 'pass'));
+    s().checklist!.items.forEach((_, i) => s().setItem(i, 'pass'));
     s().submitInspection();
-    expect(s().checklist.submitted).toBe(true);
+    expect(s().checklist!.submitted).toBe(true);
 
     // it now appears as a second pending review, its pass/fail mapped to PASS/FAIL
     expect(selectReviewPending(s())).toBe(2);
-    const checklistId = s().checklist.id;
+    const checklistId = s().checklist!.id;
     const queued = s().reviews.find((r) => r.id === checklistId)!;
     expect(queued).toBeTruthy();
     expect(queued.items.every((it) => it.result === 'PASS')).toBe(true);
@@ -123,11 +123,11 @@ describe('checklist → review queue wiring', () => {
   });
 
   it('a failed checklist item maps to a FAIL result in the queued review', () => {
-    s().checklist.items.forEach((_, i) => s().setItem(i, 'pass'));
+    s().checklist!.items.forEach((_, i) => s().setItem(i, 'pass'));
     s().setItem(1, 'fail');
     s().addPhoto(1); // a failed item needs a photo to submit
     s().submitInspection();
-    const queued = s().reviews.find((r) => r.id === s().checklist.id)!;
+    const queued = s().reviews.find((r) => r.id === s().checklist!.id)!;
     expect(queued.items[1].result).toBe('FAIL');
   });
 });
@@ -170,18 +170,18 @@ describe('drawings register', () => {
 describe('guarded inspection submit', () => {
   it('does not submit until all items are marked', () => {
     s().submitInspection();
-    expect(s().checklist.submitted).toBe(false);
+    expect(s().checklist!.submitted).toBe(false);
     expect(s().toast).toContain('mark all');
   });
   it('a failed item requires a photo before submit', () => {
-    s().checklist.items.forEach((_, i) => s().setItem(i, 'pass'));
+    s().checklist!.items.forEach((_, i) => s().setItem(i, 'pass'));
     s().setItem(2, 'fail');
     s().submitInspection();
-    expect(s().checklist.submitted).toBe(false);
+    expect(s().checklist!.submitted).toBe(false);
     expect(s().toast).toContain('photo');
     s().addPhoto(2);
     s().submitInspection();
-    expect(s().checklist.submitted).toBe(true);
+    expect(s().checklist!.submitted).toBe(true);
   });
 });
 
