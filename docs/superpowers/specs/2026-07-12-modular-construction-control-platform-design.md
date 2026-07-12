@@ -22,6 +22,34 @@ The product must answer, from one traceable information chain:
 
 The initial success target is reliable daily use on one or two Vitan sites. The architecture must then support external contractors and architectural practices without a rewrite.
 
+### Implementation North Star
+
+The current application began as a high-fidelity single-site prototype and has grown into a multi-project product. The next stage is not about adding the largest number of screens. It is about making PMCvitan trustworthy enough to become the default operating system for a real architectural practice and its construction sites.
+
+Construction delays and disputes rarely come from one missing list. They come from disconnected facts: a client decision does not reach procurement, a drawing revision does not reach the person building, material arrives without being tied to planned work, labour waits for unavailable material, rejected work appears complete, and a vendor bill cannot be traced to accepted supply or measured work. PMCvitan exists to keep those facts connected.
+
+The product vision is therefore:
+
+> Record a fact once, at its responsible source; let it travel through every authorized process; add evidence and decisions as work progresses; derive readiness, time, cost and accountability from the same chain.
+
+The system should reduce clerical work while preserving human authority. It automates copying, matching, calculation, forecasting, reminders and draft preparation. It does not automate client consent, technical judgment, physical acceptance, certification or payment authority.
+
+Field usability is a primary architectural constraint. A site engineer or storekeeper must be able to record the real event quickly on a phone, including during unreliable connectivity. The office should receive structured information without asking the field to re-enter it in a spreadsheet or message.
+
+### Decision Test for Claude Code
+
+Before proposing or implementing any change, Claude Code must answer:
+
+1. Which real construction user and site decision does this help?
+2. What is the canonical fact, and which module owns it?
+3. Is the fact project/site scoped and protected from another tenant?
+4. Which existing and future modules consume it, preferably through a versioned event?
+5. Which duplicate human entry, spreadsheet or message does this eliminate?
+6. Which approval must remain human, attributable and auditable?
+7. Can the workflow recover from offline use, retries, partial failure and later scale?
+
+A change that adds UI without establishing a canonical record and downstream information flow is incomplete. A change that copies a fact into several modules instead of referencing its owner is architectural regression. A change that makes the field workflow slower requires explicit product approval.
+
 ## 2. Decisions
 
 1. Keep the existing React, NestJS, Prisma and PostgreSQL product. Do not rewrite it.
@@ -530,15 +558,16 @@ Claude Code must not implement this specification as one PR.
 For each phase:
 
 1. Read this specification, `docs/ARCHITECTURE.md`, `docs/DATA_MODEL.md`, `docs/TENANCY.md`, `docs/TEMPLATES.md`, `docs/ROADMAP.md` and relevant current code/tests.
-2. Revalidate every cited current-state problem against current `main`; report drift before planning.
-3. Produce a phase plan with invariants, schema changes, migrations, APIs/events, UI changes, tests, rollback and explicit out-of-scope items.
-4. Split the phase into small vertical PRs. Prefer one invariant or end-to-end capability per PR.
-5. Add characterization tests before modifying existing behavior.
-6. Use additive migrations first; backfill and enforce constraints only after verification.
-7. Never mix unrelated cleanup with a phase PR.
-8. Update this spec or create an ADR when implementation changes an approved decision.
-9. Do not mark a phase complete until PostgreSQL integration, permission, tenant-isolation and browser tests pass.
-10. Preserve a review packet for independent verification.
+2. Write a short vision-alignment statement naming the real user problem, canonical fact owner, downstream information flow, human action removed and trust invariant protected.
+3. Revalidate every cited current-state problem against current `main`; report drift before planning.
+4. Produce a phase plan with business outcome, invariants, schema changes, migrations, APIs/events, UI changes, tests, rollback and explicit out-of-scope items.
+5. Split the phase into small vertical PRs. Prefer one invariant or end-to-end capability per PR.
+6. Add characterization tests before modifying existing behavior.
+7. Use additive migrations first; backfill and enforce constraints only after verification.
+8. Never mix unrelated cleanup with a phase PR.
+9. Update this spec or create an ADR when implementation changes an approved decision.
+10. Do not mark a phase complete until PostgreSQL integration, permission, tenant-isolation and browser tests pass.
+11. Preserve a review packet for independent verification.
 
 Required first deliverable: a Phase 0 implementation plan only. No feature implementation begins until that plan is reviewed.
 
