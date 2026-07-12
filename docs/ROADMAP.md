@@ -2,6 +2,21 @@
 
 Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). Status reflects the current branch.
 
+## Phase 0 trust foundation
+
+The active gate — [`docs/superpowers/plans/2026-07-12-phase-0-trust-foundation.md`](./superpowers/plans/2026-07-12-phase-0-trust-foundation.md) (canonical spec: [`docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`](./superpowers/specs/2026-07-12-modular-construction-control-platform-design.md)). Tasks land in order, one PR per task:
+
+- [x] Task 1 — Vision and baseline gate (`CLAUDE.md`, `pnpm check`, this section)
+- [ ] Task 2 — Project switching as an atomic state transition
+- [ ] Task 3 — Stop route, snapshot and loader races
+- [ ] Task 4 — Real PostgreSQL integration gate + live access check
+- [ ] Task 5 — Same-project references enforced in services and PostgreSQL
+- [ ] Task 6 — Replace prototype day offsets with real civil dates
+- [ ] Task 7 — Remove seeded claims from API mode
+- [ ] Task 8 — Prove the foundation end to end + review packet
+
+Phase 0 is complete only when the API-mode two-project Playwright suite and PostgreSQL integration suite pass in CI. Unit tests or the seeded local demo alone are insufficient evidence.
+
 | Phase | Scope | Status |
 |---|---|---|
 | **0 — Foundations** | Monorepo (pnpm workspaces), `packages/shared` (types, tokens, i18n, helpers, seed), tsconfig/lint, docs | ✅ Done |
