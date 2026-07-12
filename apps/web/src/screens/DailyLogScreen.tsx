@@ -26,6 +26,10 @@ export function DailyLogScreen() {
   const submitDailyLog = useStore((s) => s.submitDailyLog);
   const role = useStore((s) => s.role);
   const startDailyLog = useStore((s) => s.startDailyLog);
+  // live project identity — never the seeded Ambli copy (Phase 0 Task 7)
+  const short = useStore((s) => s.short);
+  const location = useStore((s) => s.location);
+  const siteLabel = location || short;
 
   const fileRef = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState<string | null>(null);
@@ -74,7 +78,7 @@ export function DailyLogScreen() {
         <div style={{ padding: '10px 0 12px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <Eyebrow size={9}>DAILY SITE LOG</Eyebrow>
-            <div style={{ fontWeight: 700, fontSize: 22, marginTop: 4 }}>Residence at Ambli</div>
+            <div style={{ fontWeight: 700, fontSize: 22, marginTop: 4 }}>{short}</div>
             <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{dailyLog.date}</div>
           </div>
           {dailyLog.submitted && can('dailyLog.start', role) && (
@@ -103,7 +107,7 @@ export function DailyLogScreen() {
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: 14 }}>Checked in · {dailyLog.checkinTime}</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'rgba(237,231,218,.55)', marginTop: 2 }}>Ambli site · within 60 m · GPS + selfie</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'rgba(237,231,218,.55)', marginTop: 2 }}>{siteLabel} · within 60 m · GPS + selfie</div>
             </div>
             <button onClick={checkOut} style={{ background: 'transparent', border: '1px solid rgba(237,231,218,.3)', color: 'var(--sidebar-text)', padding: '8px 11px', borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
               Check out

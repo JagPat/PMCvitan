@@ -1,7 +1,8 @@
 import { useEffect, useMemo, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { Eyebrow, Button } from '@/components';
+import { API_BASE } from '@/data/apiGateway';
+import { Eyebrow, Button, EmptyState } from '@/components';
 import { ArrowRight } from '@/lib/icons';
 import type { PortfolioProject } from '@vitan/shared';
 import styles from './responsive.module.css';
@@ -39,6 +40,9 @@ export function PortfolioScreen() {
 
   const rows: PortfolioProject[] = useMemo(() => {
     if (portfolio.length > 0) return portfolio;
+    // live: the server's portfolio is the truth — an empty one renders honestly
+    // empty below, never a fabricated current-project row (Phase 0 Task 7)
+    if (API_BASE) return portfolio;
     const done = activities.filter((a) => a.status === 'done').length;
     const inProgress = activities.filter((a) => a.status === 'in-progress').length;
     const blocked = activities.filter((a) => a.status === 'blocked').length;
@@ -76,6 +80,13 @@ export function PortfolioScreen() {
       <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 22, maxWidth: 620 }}>
         Progress, what&apos;s blocked, and what&apos;s waiting on you — across all the projects you run. Open one to work in it.
       </div>
+
+      {rows.length === 0 && (
+        <EmptyState
+          title="No portfolio data available"
+          detail="Projects you can access appear here once the server reports them. Create a project or ask your organisation admin for access."
+        />
+      )}
 
       <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
         {rows.map((p) => {

@@ -1423,7 +1423,8 @@ export const useStore = create<Store>()(
         s.dailyLog.checkinTime = '8:12 AM';
       });
       get().record('Check-in 8:12 AM');
-      get().flash(get().online ? 'Checked in at Ambli site · within 60 m · selfie + time stamped.' : 'Checked in offline — will sync when signal returns.');
+      // the site named in the toast is the LIVE project's, never seeded copy (Phase 0 Task 7)
+      get().flash(get().online ? `Checked in at ${get().location || get().short} · within 60 m · selfie + time stamped.` : 'Checked in offline — will sync when signal returns.');
     },
     checkOut: () => {
       set((s) => {

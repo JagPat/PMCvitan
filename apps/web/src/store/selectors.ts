@@ -172,6 +172,20 @@ export function selectTotalWorkers(s: AppState): number {
   return s.dailyLog?.crew.reduce((a, c) => a + c.count, 0) ?? 0;
 }
 
+// ---- site photos ----
+
+export interface PhotoStats {
+  count: number;
+  zones: number; // distinct location nodes the photos are placed on
+}
+
+/** Photo totals COMPUTED from the snapshot's placed photos — never a fixed claim.
+ *  (Phase 0 Task 7: API mode shows only recorded facts.) */
+export function selectPhotoStats(s: AppState): PhotoStats {
+  const zones = new Set(s.photos.map((p) => p.nodeId).filter(Boolean));
+  return { count: s.photos.length, zones: zones.size };
+}
+
 // ---- "Needs you" action queue ----
 
 /** One thing awaiting the current user, with where to go and do it. */
