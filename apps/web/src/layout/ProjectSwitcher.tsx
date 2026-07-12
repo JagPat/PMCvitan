@@ -64,11 +64,13 @@ export function ProjectSwitcher() {
 
 function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => void }) {
   const createProject = useStore((s) => s.createProject);
+  const memberships = useStore(useShallow((s) => s.memberships));
   const [name, setName] = useState('');
   const [short, setShort] = useState('');
+  const [structureFrom, setStructureFrom] = useState(''); // '' = blank slate
   const submit = () => {
     if (!name.trim() || !short.trim()) return;
-    const input: NewProjectInput = { name: name.trim(), short: short.trim(), stage: 'Planning' };
+    const input: NewProjectInput = { name: name.trim(), short: short.trim(), stage: 'Planning', ...(structureFrom ? { structureFrom } : {}) };
     createProject(orgId, input);
     onClose();
   };
@@ -79,6 +81,22 @@ function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => 
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>You'll be added as its PMC.</div>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name (Residence at Bodakdev)" style={fld} />
         <input value={short} onChange={(e) => setShort(e.target.value)} placeholder="Short name (Bodakdev Residence)" style={{ ...fld, marginTop: 10 }} />
+        {memberships.length > 0 && (
+          <>
+            <label htmlFor="np-structure" style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--muted)', margin: '14px 2px 0' }}>START FROM</label>
+            <select id="np-structure" value={structureFrom} onChange={(e) => setStructureFrom(e.target.value)} data-testid="np-structure-from" style={{ ...fld, marginTop: 6 }}>
+              <option value="">Blank slate</option>
+              {memberships.map((m) => (
+                <option key={m.projectId} value={m.projectId}>Copy structure from {m.short}</option>
+              ))}
+            </select>
+            {structureFrom && (
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>
+                Copies the location tree (as drafts), phases, planned activities and checklist templates — never that project&apos;s approvals, dates, photos or people.
+              </div>
+            )}
+          </>
+        )}
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <button onClick={onClose} style={{ ...btn, background: '#fff', color: 'var(--ink)', border: '1px solid rgba(35,33,28,.2)' }}>Cancel</button>
           <button onClick={submit} disabled={!name.trim() || !short.trim()} style={{ ...btn, background: 'var(--ink)', color: '#fff', border: 'none', opacity: name.trim() && short.trim() ? 1 : 0.5 }}>Create</button>

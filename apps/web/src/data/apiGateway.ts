@@ -99,6 +99,9 @@ export interface NewProjectInput {
   location?: string;
   projStart?: string;
   projEnd?: string;
+  /** Templates Slice 1: start from another project's STRUCTURE (location tree as drafts,
+   *  phases, planned activities, checklist definitions) instead of a blank slate. */
+  structureFrom?: string;
 }
 
 /** Create/update payload for a project company/consultant. */

@@ -1,6 +1,8 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
+import { nextSeqId } from '../domain/ids';
+import { ddMmmYyyy } from '../domain/dates';
 import type { AddOrgMemberInput, CreateOrgInput, CreateProjectInput, UpdateOrgMemberInput, UpdateProjectInput } from '../contracts';
 
 /** A member of an org's admin roster (owner/admin/member). */
@@ -188,7 +190,127 @@ export class OrgsService {
     });
     // the creator runs the project as its PMC
     await this.prisma.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
+    // Templates Slice 1: optionally start from another project's structure instead of a blank slate
+    if (input.structureFrom) await this.copyStructure(orgId, input.structureFrom, id, userId);
     return { id: project.id, name: project.name, short: project.short };
+  }
+
+  /**
+   * Copy a source project's STRUCTURE — never its actuals — into a freshly created target
+   * (Templates Slice 1, see docs/TEMPLATES.md). What travels:
+   *   • the location tree (zones → rooms → objects), re-created as private DRAFTS authored by
+   *     the creator, so the skeleton is refined then published per project;
+   *   • phases (name/order/planned window);
+   *   • activities as their PLANNED shape only — name/zone/planned offsets/phase/place; status
+   *     reset to not_started, actual dates/decision link/block cleared, and stored gates
+   *     stripped of outcomes (ok|fail → wait) while `na` stays (it's structural: "gate not
+   *     applicable" is part of the shape, "gate passed" is an actual);
+   *   • inspection CHECKLIST definitions (title/zone/place + item names) — unsubmitted,
+   *     undecided, item states/photos/notes cleared. Reviews (incl. auto-created closing
+   *     inspections) are results, not structure, and are never copied.
+   * Decisions, drawings, media, daily logs, notifications, and people are never copied.
+   * The source must be an unarchived project in the SAME org (the caller already proved
+   * org owner/admin authority, and org admins can operate every org project).
+   */
+  private async copyStructure(orgId: string, sourceId: string, targetId: string, userId: string): Promise<void> {
+    const source = await this.prisma.project.findUnique({ where: { id: sourceId }, select: { orgId: true, archivedAt: true } });
+    if (!source || source.orgId !== orgId || source.archivedAt) {
+      throw new NotFoundException('Source project not found in this org');
+    }
+
+    const [nodes, phases, activities, inspections, allActIds, allInspIds] = await Promise.all([
+      this.prisma.projectNode.findMany({ where: { projectId: sourceId }, orderBy: { createdAt: 'asc' } }),
+      this.prisma.phase.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
+      this.prisma.activity.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
+      this.prisma.inspection.findMany({ where: { projectId: sourceId, kind: 'checklist' }, include: { items: { orderBy: { order: 'asc' } } } }),
+      this.prisma.activity.findMany({ select: { id: true } }), // display ids are global (DATA-01) — allocate against ALL rows
+      this.prisma.inspection.findMany({ select: { id: true } }),
+    ]);
+
+    // Display ids (ACT-###/INSP-###) allocated up-front against the global sequence.
+    const actIds = allActIds.map((a) => a.id);
+    const newActId = (): string => { const id = nextSeqId('ACT-', actIds); actIds.push(id); return id; };
+    const inspIds = allInspIds.map((i) => i.id);
+    const newInspId = (): string => { const id = nextSeqId('INSP-', inspIds); inspIds.push(id); return id; };
+    const stripGate = (g: string): string => (g === 'na' ? 'na' : 'wait');
+    const today = ddMmmYyyy(new Date());
+
+    const nodeIdMap = new Map<string, string>();
+    const phaseIdMap = new Map<string, string>();
+
+    await this.prisma.$transaction(async (tx) => {
+      // Nodes parents-first so the parent FK always resolves; the copy lands as one draft
+      // branch (publish cascades reveal it zone-by-zone as the PMC firms it up).
+      let remaining = [...nodes];
+      while (remaining.length) {
+        const batch = remaining.filter((n) => !n.parentId || nodeIdMap.has(n.parentId));
+        if (batch.length === 0) break; // orphaned rows (shouldn't happen) — skip, never loop forever
+        for (const n of batch) {
+          const created = await tx.projectNode.create({
+            data: {
+              projectId: targetId,
+              parentId: n.parentId ? (nodeIdMap.get(n.parentId) ?? null) : null,
+              name: n.name,
+              kind: n.kind,
+              order: n.order,
+              publishedAt: null, // the skeleton arrives as a private draft
+              authorId: userId,
+            },
+          });
+          nodeIdMap.set(n.id, created.id);
+        }
+        remaining = remaining.filter((n) => !nodeIdMap.has(n.id));
+      }
+
+      for (const p of phases) {
+        const created = await tx.phase.create({
+          data: { projectId: targetId, name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd },
+        });
+        phaseIdMap.set(p.id, created.id);
+      }
+
+      for (const a of activities) {
+        await tx.activity.create({
+          data: {
+            id: newActId(),
+            projectId: targetId,
+            name: a.name,
+            zone: a.zone,
+            status: 'not_started',
+            plannedStart: a.plannedStart,
+            plannedEnd: a.plannedEnd,
+            actualStart: null,
+            actualEnd: null,
+            block: null,
+            gateMaterial: stripGate(a.gateMaterial) as never,
+            gateTeam: stripGate(a.gateTeam) as never,
+            gateInspection: stripGate(a.gateInspection) as never,
+            decisionId: null, // decisions aren't copied in Slice 1 — the D-gate derives as 'na'
+            phaseId: a.phaseId ? (phaseIdMap.get(a.phaseId) ?? null) : null,
+            nodeId: a.nodeId ? (nodeIdMap.get(a.nodeId) ?? null) : null,
+            order: a.order,
+          },
+        });
+      }
+
+      for (const i of inspections) {
+        await tx.inspection.create({
+          data: {
+            id: newInspId(),
+            projectId: targetId,
+            kind: 'checklist',
+            title: i.title,
+            zone: i.zone,
+            by: null,
+            date: today,
+            submitted: false,
+            decided: false,
+            nodeId: i.nodeId ? (nodeIdMap.get(i.nodeId) ?? null) : null,
+            items: { create: i.items.map((it, idx) => ({ name: it.name, order: idx })) },
+          },
+        });
+      }
+    });
   }
 
   /** Edit a project's details (name/stage/dates…). The project's PMC or an org

@@ -90,6 +90,23 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     expect(s().short).toBe('Bodakdev');
   });
 
+  it('createProject passes structureFrom through (Templates Slice 1) then switches to the new project', async () => {
+    const gw = {
+      createProject: vi.fn().mockResolvedValue({ id: 'samb-1', name: 'SamBunglow', short: 'SamBunglow' }),
+      listMemberships: vi.fn().mockResolvedValue([]),
+      myOrgs: vi.fn().mockResolvedValue([]),
+      switchProject: vi.fn().mockResolvedValue({ token: 'JWT-samb', role: 'pmc', projectId: 'samb-1' }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().createProject('org1', { name: 'SamBunglow', short: 'SamBunglow', stage: 'Planning', structureFrom: 'ambli' });
+    await flush();
+    await flush();
+
+    expect(gw.createProject).toHaveBeenCalledWith('org1', expect.objectContaining({ structureFrom: 'ambli' }));
+    expect(gw.switchProject).toHaveBeenCalledWith('samb-1'); // lands in the new project
+  });
+
   it('addMember posts then reloads the team', async () => {
     const gw = {
       addMember: vi.fn().mockResolvedValue({}),

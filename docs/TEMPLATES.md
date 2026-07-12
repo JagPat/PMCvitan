@@ -1,7 +1,7 @@
 # Vitan PMC — Project Templates (design proposal)
 
-> **Status: proposal for review — no code yet.** This is a design doc to align on the model
-> before implementation. It supersedes the "org-scoped templates" line item deferred in the
+> **Status: design agreed (v1 defaults adopted — see Decisions below); Slice 1 is
+> implemented.** Supersedes the "org-scoped templates" line item deferred in the
 > multi-project review (ROADMAP follow-up #6).
 
 ## The problem
@@ -201,8 +201,8 @@ Notes:
 
 | # | Slice | Value | Cost |
 |---|---|---|---|
-| **0** | **This design doc** + your review | alignment | — |
-| **1** | **Duplicate structure from an existing project** into a new one (tree + phases + inspections, as drafts, actuals stripped). No module model — validates the instantiate/strip engine. | fixes the empty Site Map **now** | small (project→project copy service) |
+| **0** | ✅ **This design doc** + review | alignment | — |
+| **1** | ✅ **Duplicate structure from an existing project** into a new one — `createProject` takes `structureFrom`; the copy engine clones the tree (as drafts), phases, planned activities (actuals stripped, `ok\|fail` gates → `wait`, `na` kept as structural) and checklist definitions (item names only), remapping every id; the New-project modal gains a **"Start from"** picker. Same-org, unarchived sources only. | fixes the empty Site Map **now** | small (project→project copy service) |
 | **2** | **TemplateModule** model + a **module menu** + à-la-carte composition at Create Project | the modular menu | medium (model + migration + UI) |
 | **3** | **ProjectTemplate** presets + "save this project's structure as a template" + "save selection as a module" | the reusable library | medium |
 | **4** | **Seed Vitan's real modules** (residence spaces, standard QA, standard decisions) so new projects start rich | never-blank projects; also closes the API-seed gap from the data-flow audit | small |
@@ -212,19 +212,20 @@ commit to the module schema.
 
 ---
 
-## Open questions for you
+## Decisions (v1)
 
-1. **Module granularity** — how fine should space modules go? Room-level ("Kitchen" as one module)
-   is probably the sweet spot; per-object modules may be too granular. Agree?
-2. **Auto-attach vs manual** — should a space module's inspections/decisions attach *automatically*
-   to that space on instantiate, or should the PMC opt in per space?
-3. **Instantiated = drafts?** — recommended (refine then publish). Or should some parts (the tree)
-   go live immediately and only decisions be drafts?
-4. **"Template from any project" vs "marked reusable"** — can any existing project be saved as a
-   template/module, or only ones a PMC explicitly promotes?
-5. **Versioning in v1** — informational only (names/notes), or do you want pinned reproducible
-   versions from the start?
-6. **Cross-project defaults** — one shared library per org, or per-org-and-project-type folders in
-   the menu?
+Recorded when the design was adopted; each can be revisited when the module slices land.
 
-Answer these and I'll turn this into an implementation plan starting with Slice 1.
+1. **Module granularity** — **room-level** ("Kitchen" as one module) is the default grain; objects
+   ride inside their room's module rather than being modules themselves.
+2. **Auto-attach vs manual** — **opt-in**: a space module's inspections/decisions are offered at
+   instantiate, not silently attached, so the PMC composes deliberately.
+3. **Instantiated content = drafts** — yes. The skeleton arrives private (the existing draft
+   lifecycle) and is published progressively as the project firms up.
+4. **Template source** — templates/modules come from projects a PMC **explicitly promotes**
+   ("save as template"), not implicitly from every project. (Slice 1's `structureFrom` copy is the
+   one exception by design: any same-org project can be a one-off starting point.)
+5. **Versioning in v1** — **informational** (a version number + notes); pinned reproducible
+   versions can come later if presets need them.
+6. **Library shape** — **one shared org library**, with the menu grouped by module category;
+   project-type folders only if the library outgrows a single list.
