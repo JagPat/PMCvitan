@@ -20,7 +20,7 @@ function make(insp: Insp) {
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
   const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-  const svc = new InspectionsService(prisma, snapshot, realtime);
+  const svc = new InspectionsService(prisma, snapshot, realtime, { today: () => '2026-07-03' });
   const user = { sub: 'u1', role: 'engineer', projectId: 'ambli' } as never;
   return { svc, prisma, user };
 }
@@ -59,11 +59,12 @@ describe('InspectionsService.create — location spine (nodeId)', () => {
       notification: { create: vi.fn(async () => ({})) },
       auditLog: { create: vi.fn(async () => ({})) },
       projectNode: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null) },
+      project: { findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })), },
       $transaction: vi.fn(async (ops: unknown[]) => ops),
     } as unknown as PrismaService;
     const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
     const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-    const svc = new InspectionsService(prisma, snapshot, realtime);
+    const svc = new InspectionsService(prisma, snapshot, realtime, { today: () => '2026-07-03' });
     const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
     return { svc, user, created };
   }

@@ -4,6 +4,7 @@ import { resolveJwtSecret } from './config';
 import { PrismaModule } from './prisma.module';
 import { JwtGuard } from './common/auth';
 import { ProjectAccessService } from './common/project-access.service';
+import { CLOCK, SystemClock } from './common/clock';
 import { RolesGuard } from './common/roles';
 import { ThrottleGuard } from './common/throttle';
 import { AuthService } from './auth/auth.service';
@@ -71,6 +72,7 @@ import { CompaniesController } from './orgs/companies.controller';
   providers: [
     JwtGuard,
     ProjectAccessService,
+    { provide: CLOCK, useClass: SystemClock },
     RolesGuard,
     ThrottleGuard,
     AuthService,

@@ -1,6 +1,8 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
+import { CLOCK, type Clock } from '../common/clock';
+import { addCivilDays, fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
@@ -63,7 +65,10 @@ function anchorKindOf(payload: ModulePayload): string | null {
  */
 @Injectable()
 export class OrgsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(CLOCK) private readonly clock: Clock,
+  ) {}
 
   /** Org role of a user, or null if not a member. */
   private async orgRole(orgId: string, userId: string): Promise<string | null> {
@@ -194,6 +199,10 @@ export class OrgsService {
     if (input.structureFrom) await this.assertSourceProject(orgId, input.structureFrom);
 
     const id = `${slugify(input.short)}-${randomUUID().slice(0, 4)}`;
+    // Real civil dates (Task 6): a new project's schedule anchor defaults to TODAY in
+    // its time zone; templates/copies convert their relative offsets against it.
+    const timeZone = input.timeZone ?? 'Asia/Kolkata';
+    const scheduleStartDate = input.scheduleStartDate ?? this.clock.today(timeZone);
     const project = await this.prisma.project.create({
       data: {
         id,
@@ -205,6 +214,8 @@ export class OrgsService {
         siteCode: input.siteCode,
         projStart: input.projStart,
         projEnd: input.projEnd,
+        scheduleStartDate: fromIsoCivilDate(scheduleStartDate),
+        timeZone,
         elapsedPct: 0,
         todayDay: 0,
         milestonePct: 0,
@@ -505,6 +516,13 @@ export class OrgsService {
     userId: string,
     selections: { moduleId: string; count: number; underZone?: string }[],
   ): Promise<void> {
+    // Task 6: same offset->date conversion as copyStructure (module payload ints are relative)
+    const target = await this.prisma.project.findUniqueOrThrow({ where: { id: targetId }, select: { scheduleStartDate: true } });
+    const targetAnchor = toIsoCivilDate(target.scheduleStartDate);
+    const datesFor = (start: number, end: number) =>
+      targetAnchor
+        ? { plannedStartDate: fromIsoCivilDate(addCivilDays(targetAnchor, start)), plannedEndDate: fromIsoCivilDate(addCivilDays(targetAnchor, end)) }
+        : {};
     const [allActIds, allInspIds] = await Promise.all([
       this.prisma.activity.findMany({ select: { id: true } }),
       this.prisma.inspection.findMany({ select: { id: true } }),
@@ -571,7 +589,7 @@ export class OrgsService {
           for (const p of payload.phases) {
             if (phaseIdByName.has(p.name)) continue; // phases merge by name across modules/copies
             const created = await tx.phase.create({
-              data: { projectId: targetId, name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd },
+              data: { projectId: targetId, name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd, ...datesFor(p.plannedStart, p.plannedEnd) },
             });
             phaseIdByName.set(p.name, created.id);
           }
@@ -586,6 +604,7 @@ export class OrgsService {
                 status: 'not_started',
                 plannedStart: a.plannedStart,
                 plannedEnd: a.plannedEnd,
+                ...datesFor(a.plannedStart, a.plannedEnd),
                 gateMaterial: 'wait',
                 gateTeam: 'wait',
                 gateInspection: 'wait',
@@ -638,6 +657,14 @@ export class OrgsService {
    */
   private async copyStructure(orgId: string, sourceId: string, targetId: string, userId: string): Promise<void> {
     await this.assertSourceProject(orgId, sourceId);
+    // Task 6: legacy ints ARE relative offsets; the target's real dates come from ITS
+    // schedule anchor + offset — absolute source dates are never copied across projects.
+    const target = await this.prisma.project.findUniqueOrThrow({ where: { id: targetId }, select: { scheduleStartDate: true } });
+    const targetAnchor = toIsoCivilDate(target.scheduleStartDate);
+    const datesFor = (start: number, end: number) =>
+      targetAnchor
+        ? { plannedStartDate: fromIsoCivilDate(addCivilDays(targetAnchor, start)), plannedEndDate: fromIsoCivilDate(addCivilDays(targetAnchor, end)) }
+        : {};
 
     const [nodes, phases, activities, inspections, allActIds, allInspIds] = await Promise.all([
       this.prisma.projectNode.findMany({ where: { projectId: sourceId }, orderBy: { createdAt: 'asc' } }),
@@ -685,7 +712,7 @@ export class OrgsService {
 
       for (const p of phases) {
         const created = await tx.phase.create({
-          data: { projectId: targetId, name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd },
+          data: { projectId: targetId, name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd, ...datesFor(p.plannedStart, p.plannedEnd) },
         });
         phaseIdMap.set(p.id, created.id);
       }
@@ -700,6 +727,7 @@ export class OrgsService {
             status: 'not_started',
             plannedStart: a.plannedStart,
             plannedEnd: a.plannedEnd,
+            ...datesFor(a.plannedStart, a.plannedEnd),
             actualStart: null,
             actualEnd: null,
             block: null,

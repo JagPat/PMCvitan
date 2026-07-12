@@ -151,12 +151,17 @@ export interface Activity {
   phaseId: string | null;
   /** location-tree node where this work happens (undefined = unplaced) */
   nodeId?: string;
-  /** planned start / end — day-offsets from 1 Jun 2026 */
+  /** planned start / end — LEGACY day-offsets from the schedule anchor (compat) */
   ps: number;
   pe: number;
-  /** actual start / end — null until started / finished */
+  /** actual start / end — null until started / finished (legacy offsets) */
   as: number | null;
   ae: number | null;
+  /** real civil dates (ISO YYYY-MM-DD) — canonical when present (Phase 0 Task 6) */
+  plannedStartDate?: string | null;
+  plannedEndDate?: string | null;
+  actualStartDate?: string | null;
+  actualEndDate?: string | null;
   status: ActivityStatus;
   /** gate states: material / team / inspection (decision gate is derived live) */
   gm: Gate;
@@ -172,7 +177,10 @@ export interface Phase {
   order: number;
   /** planned window — day-offsets from 1 Jun 2026 */
   plannedStart: number;
+  /** real civil dates (ISO) — canonical when present */
+  plannedStartDate?: string | null;
   plannedEnd: number;
+  plannedEndDate?: string | null;
   activityTotal: number;
   done: number;
   inProgress: number;
@@ -400,6 +408,8 @@ export interface MediaRef {
 
 export interface DailyLog {
   date: string;
+  /** the civil day the site work belongs to (ISO YYYY-MM-DD) — Phase 0 Task 6 */
+  logDate?: string | null;
   checkedIn: boolean;
   checkinTime: string | null;
   submitted: boolean;

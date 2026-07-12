@@ -297,6 +297,9 @@ export const createTemplateSchema = z
   .refine((v) => Boolean(v.items) !== Boolean(v.fromProject), { message: 'Provide exactly one of items or fromProject' });
 export type CreateTemplateInput = z.infer<typeof createTemplateSchema>;
 
+/** An ISO civil date — YYYY-MM-DD, the only date form the API accepts (Task 6). */
+export const isoCivilDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected an ISO civil date (YYYY-MM-DD)');
+
 export const createProjectSchema = z.object({
   name: z.string().min(1),
   short: z.string().min(1),
@@ -306,6 +309,10 @@ export const createProjectSchema = z.object({
   location: z.string().default(''),
   projStart: z.string().default(''),
   projEnd: z.string().default(''),
+  /** Task 6: the schedule anchor — the calendar day offset 0 refers to. Defaults to
+   *  TODAY in the project's time zone at creation. */
+  scheduleStartDate: isoCivilDateSchema.optional(),
+  timeZone: z.string().trim().min(1).optional(),
   /** Templates Slice 1: copy another project's STRUCTURE into the new one — the location
    *  tree (as drafts), phases, planned activities and inspection checklist definitions.
    *  Actuals (approvals, dates, statuses, photos, people) are never copied. */
@@ -407,6 +414,10 @@ export const createActivitySchema = z
     zone: z.string().trim().default(''),
     plannedStart: z.number().int().min(0),
     plannedEnd: z.number().int().min(0),
+    // Task 6: real civil dates (preferred); when given they drive the write and the
+    // legacy offsets are derived from the project's schedule anchor
+    plannedStartDate: isoCivilDateSchema.optional(),
+    plannedEndDate: isoCivilDateSchema.optional(),
     phaseId: z.string().optional(),
     decisionId: z.string().optional(),
     // Location spine: the place this work happens (a location-tree node).
@@ -424,6 +435,8 @@ export const updateActivitySchema = z
     zone: z.string().trim().optional(),
     plannedStart: z.number().int().min(0).optional(),
     plannedEnd: z.number().int().min(0).optional(),
+    plannedStartDate: isoCivilDateSchema.optional(),
+    plannedEndDate: isoCivilDateSchema.optional(),
     // null clears the link / phase / location
     phaseId: z.string().nullable().optional(),
     decisionId: z.string().nullable().optional(),

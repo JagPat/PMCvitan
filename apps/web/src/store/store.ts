@@ -137,6 +137,9 @@ export interface AppState {
   location: string;
   projStart: string;
   projEnd: string;
+  /** Task 6: the schedule anchor (the civil day offset 0 refers to) + real window end */
+  scheduleStartDate: string | null;
+  scheduleEndDate: string | null;
   elapsedPct: number;
   todayDay: number;
   milestonePct: number;
@@ -350,6 +353,8 @@ export function getInitialState(): AppState {
     location: '',
     projStart: PROJECT.projStart,
     projEnd: PROJECT.projEnd,
+    scheduleStartDate: PROJECT.scheduleStartDate,
+    scheduleEndDate: PROJECT.scheduleEndDate,
     elapsedPct: PROJECT.elapsedPct,
     todayDay: PROJECT.todayDay,
     milestonePct: PROJECT.milestonePct,
@@ -423,6 +428,8 @@ export const useStore = create<Store>()(
         s.location = snap.project.location ?? '';
         s.projStart = snap.project.projStart;
         s.projEnd = snap.project.projEnd;
+        s.scheduleStartDate = snap.project.scheduleStartDate ?? null;
+        s.scheduleEndDate = snap.project.scheduleEndDate ?? null;
         s.elapsedPct = snap.project.elapsedPct;
         s.todayDay = snap.project.todayDay;
         s.milestonePct = snap.project.milestonePct;

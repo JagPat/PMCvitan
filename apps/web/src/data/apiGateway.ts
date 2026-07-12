@@ -42,6 +42,10 @@ export interface ApiSnapshot {
     name: string;
     short: string;
     descriptor: string;
+    /** Task 6: the schedule anchor + real window end (ISO civil dates) */
+    scheduleStartDate?: string | null;
+    scheduleEndDate?: string | null;
+    timeZone?: string;
     stage: string;
     siteCode: string;
     location: string;
@@ -99,6 +103,9 @@ export interface NewProjectInput {
   location?: string;
   projStart?: string;
   projEnd?: string;
+  /** Task 6: the schedule anchor (ISO civil date; defaults to today in the project zone). */
+  scheduleStartDate?: string;
+  timeZone?: string;
   /** Templates Slice 1: start from another project's STRUCTURE (location tree as drafts,
    *  phases, planned activities, checklist definitions) instead of a blank slate. */
   structureFrom?: string;
