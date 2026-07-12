@@ -1,6 +1,7 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectApprovedDecisions, selectPending, selectTotalWorkers } from '@/store/selectors';
+import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, ProgressBar, Swatch } from '@/components';
 import { ArrowRight } from '@/lib/icons';
 import { signed, swatch as swatchGradient } from '@vitan/shared';
@@ -13,11 +14,16 @@ export function ClientHealthScreen() {
   const checkedIn = useStore((s) => s.dailyLog?.checkedIn ?? false);
   const setScreen = useStore((s) => s.setScreen);
   const short = useStore((s) => s.short); // live project identity, not the seed
+  const stage = useStore((s) => s.stage);
   const milestonePct = useStore((s) => s.milestonePct);
+  const sitePhotos = useStore(useShallow((s) => s.photos));
 
   const healthLine = checkedIn ? `Site active today · ${workers} workers` : 'Site opens shortly today';
   const countLabel = `${pending.length} ${pending.length === 1 ? 'decision waiting' : 'decisions waiting'} for you`;
+  // live: the recorded stage with no fabricated health verdict; demo keeps the prototype copy
+  const stageLine = API_BASE ? stage : 'Finishing stage · On track';
 
+  // demo-only prototype cards; API mode shows the project's own photos (or an honest absence)
   const photos = [
     { label: 'Living Room · flooring', date: '02 Jul 2026', swatch: 'marble' },
     { label: 'Master Bath', date: '01 Jul 2026', swatch: 'chrome' },
@@ -29,24 +35,43 @@ export function ClientHealthScreen() {
       <div style={{ padding: '8px 0 12px' }}>
         <Eyebrow size={9}>PROJECT HEALTH</Eyebrow>
         <div style={{ fontFamily: 'var(--font-serif)', fontSize: 26, fontWeight: 500, marginTop: 4, lineHeight: 1.15 }}>{short}</div>
-        <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>Finishing stage · On track</div>
+        <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>{stageLine}</div>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 10, background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 20, padding: '6px 12px' }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: checkedIn ? 'var(--green-solid)' : 'var(--amber-solid)' }} />
           <span style={{ fontSize: 12, fontWeight: 600 }}>{healthLine}</span>
         </div>
       </div>
 
-      {/* photo carousel */}
-      <div className={`${styles.carousel} vscroll`} style={{ margin: '6px 0 14px' }}>
-        {photos.map((p) => (
-          <div key={p.label} style={{ width: 250, borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(35,33,28,.12)' }}>
-            <div style={{ height: 170, background: swatchGradient(p.swatch), position: 'relative' }}>
-              <span style={{ position: 'absolute', left: 9, bottom: 9, fontFamily: 'var(--font-mono)', fontSize: 8.5, color: '#fff', background: 'rgba(0,0,0,.4)', padding: '2px 7px', borderRadius: 4 }}>{p.label}</span>
-            </div>
-            <div style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{p.date}</div>
+      {/* photo carousel — live projects show their own recorded photos, honestly empty otherwise */}
+      {API_BASE ? (
+        sitePhotos.length === 0 ? (
+          <div style={{ margin: '6px 0 14px', fontSize: 13, color: 'var(--muted)', border: '1px dashed rgba(35,33,28,.2)', borderRadius: 16, padding: '26px 16px', textAlign: 'center' }}>
+            No progress photos recorded
           </div>
-        ))}
-      </div>
+        ) : (
+          <div className={`${styles.carousel} vscroll`} style={{ margin: '6px 0 14px' }}>
+            {sitePhotos.slice(-6).reverse().map((p, i) => (
+              <div key={p.id} style={{ width: 250, borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(35,33,28,.12)' }}>
+                <div style={{ height: 170, position: 'relative', background: '#000' }}>
+                  <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                </div>
+                <div style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{p.takenAt ? p.takenAt.slice(0, 10) : ''}</div>
+              </div>
+            ))}
+          </div>
+        )
+      ) : (
+        <div className={`${styles.carousel} vscroll`} style={{ margin: '6px 0 14px' }}>
+          {photos.map((p) => (
+            <div key={p.label} style={{ width: 250, borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(35,33,28,.12)' }}>
+              <div style={{ height: 170, background: swatchGradient(p.swatch), position: 'relative' }}>
+                <span style={{ position: 'absolute', left: 9, bottom: 9, fontFamily: 'var(--font-mono)', fontSize: 8.5, color: '#fff', background: 'rgba(0,0,0,.4)', padding: '2px 7px', borderRadius: 4 }}>{p.label}</span>
+              </div>
+              <div style={{ padding: '9px 12px', background: '#fff', fontSize: 12, color: 'var(--muted)' }}>{p.date}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* overall progress */}
       <div style={{ background: '#fff', border: '1px solid rgba(35,33,28,.12)', borderRadius: 16, padding: 16 }}>

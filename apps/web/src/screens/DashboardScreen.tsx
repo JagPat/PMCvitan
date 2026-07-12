@@ -1,6 +1,7 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectPending, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers } from '@/store/selectors';
+import { selectPending, selectReviewPending, selectActiveReview, selectFailedCount, selectTotalWorkers, selectPhotoStats } from '@/store/selectors';
+import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, Button, ProgressBar } from '@/components';
 import { ArrowUpRight, ArrowRight } from '@/lib/icons';
 import { swatch as swatchGradient } from '@vitan/shared';
@@ -25,6 +26,8 @@ export function DashboardScreen() {
   const siteCode = useStore((s) => s.siteCode);
   const milestonePct = useStore((s) => s.milestonePct);
   const phases = useStore(useShallow((s) => s.phases));
+  const photoStats = useStore(useShallow(selectPhotoStats));
+  const sitePhotos = useStore(useShallow((s) => s.photos));
   // the milestone strip is the project's own phases (done = fully complete); empty projects show none
   const milestones = phases.map((p) => ({ label: p.name, done: p.donePct === 100 }));
 
@@ -34,10 +37,16 @@ export function DashboardScreen() {
   const tiles = [
     { key: 'pending', label: 'DECISIONS PENDING WITH CLIENT', value: pending.length, accent: 'var(--amber-solid)', sub: pending.length ? `Oldest ageing ${Math.max(...pending.map((d) => d.ageDays ?? 0))} days` : 'All cleared', onClick: () => setScreen('decision-log') },
     { key: 'review', label: 'INSPECTIONS AWAITING REVIEW', value: reviewPending, accent: 'var(--accent)', sub: reviewPending > 1 ? `${reviewPending} in the queue` : reviewPending === 1 ? (activeReview?.title ?? '1 pending') : 'Nothing pending', onClick: () => setScreen('inspect-review') },
-    { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? 'Drain slope · Terrace' : 'None', onClick: () => setScreen('inspect-review') },
-    { key: 'photos', label: 'PROGRESS PHOTOS THIS WEEK', value: 24, accent: 'var(--green-solid)', sub: 'Across 6 zones', onClick: () => {} },
+    // API mode never claims WHICH items failed beyond the recorded count — the seeded
+    // "Drain slope · Terrace" copy is demo-only prototype fidelity
+    { key: 'failed', label: 'FAILED ITEMS AWAITING RE-INSPECTION', value: failedCount, accent: 'var(--red-solid)', sub: failedCount ? (API_BASE ? `${failedCount} to re-inspect` : 'Drain slope · Terrace') : 'None', onClick: () => setScreen('inspect-review') },
+    // live: COMPUTED from the snapshot's placed photos; demo keeps the prototype's fixed claim
+    API_BASE
+      ? { key: 'photos', label: 'PROGRESS PHOTOS ON RECORD', value: photoStats.count, accent: 'var(--green-solid)', sub: photoStats.zones > 0 ? `Across ${photoStats.zones} zone${photoStats.zones === 1 ? '' : 's'}` : photoStats.count > 0 ? 'Not placed on the site map yet' : 'None recorded yet', onClick: () => setScreen('places') }
+      : { key: 'photos', label: 'PROGRESS PHOTOS THIS WEEK', value: 24, accent: 'var(--green-solid)', sub: 'Across 6 zones', onClick: () => {} },
   ];
 
+  // demo-only prototype highlights; API mode renders the project's own photos (or an honest absence)
   const highlights = [
     { title: 'Living — marble laid', date: '02 JUL 2026', swatch: 'marble' },
     { title: 'Master bath — CP fitted', date: '01 JUL 2026', swatch: 'chrome' },
@@ -59,9 +68,16 @@ export function DashboardScreen() {
             {siteCode && <span>Site Code {siteCode}</span>}
           </div>
         </div>
-        <Button variant="ink" onClick={() => flash('Weekly report generated (PDF) — sent to client & contractor.')}>
-          Generate Weekly Report <ArrowUpRight size={15} />
-        </Button>
+        {API_BASE ? (
+          // no server export exists yet — never simulate a generated report
+          <Button variant="ink" disabled title="Report export is not available yet" style={{ opacity: 0.55 }}>
+            Generate Weekly Report <ArrowUpRight size={15} />
+          </Button>
+        ) : (
+          <Button variant="ink" onClick={() => flash('Weekly report generated (PDF) — sent to client & contractor.')}>
+            Generate Weekly Report <ArrowUpRight size={15} />
+          </Button>
+        )}
       </div>
 
       {/* milestone progress */}
@@ -135,22 +151,46 @@ export function DashboardScreen() {
         ))}
       </div>
 
-      {/* photo highlights */}
+      {/* photo highlights — live projects show their own recorded photos, honestly empty otherwise */}
       <div style={{ marginTop: 24 }}>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.2em', color: 'var(--muted)', marginBottom: 12 }}>THIS WEEK · PHOTO HIGHLIGHTS</div>
-        <div className={styles.photos}>
-          {highlights.map((p) => (
-            <div key={p.title} style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--hairline)' }}>
-              <div style={{ height: 120, background: swatchGradient(p.swatch), position: 'relative' }}>
-                <span style={{ position: 'absolute', left: 8, top: 8, fontFamily: 'var(--font-mono)', fontSize: 8, letterSpacing: '.15em', color: 'rgba(255,255,255,.85)', background: 'rgba(0,0,0,.35)', padding: '2px 6px', borderRadius: 3 }}>PHOTO</span>
-              </div>
-              <div style={{ padding: '9px 11px', background: 'var(--panel)' }}>
-                <div style={{ fontSize: 11.5, fontWeight: 600 }}>{p.title}</div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{p.date}</div>
-              </div>
-            </div>
-          ))}
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.2em', color: 'var(--muted)', marginBottom: 12 }}>
+          {API_BASE ? 'LATEST · SITE PHOTOS' : 'THIS WEEK · PHOTO HIGHLIGHTS'}
         </div>
+        {API_BASE ? (
+          sitePhotos.length === 0 ? (
+            <div style={{ fontSize: 13, color: 'var(--muted)', border: '1px dashed var(--hairline)', borderRadius: 10, padding: '22px 16px', textAlign: 'center' }}>
+              No progress photos recorded
+            </div>
+          ) : (
+            <div className={styles.photos}>
+              {sitePhotos.slice(-4).reverse().map((p, i) => (
+                <div key={p.id} style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--hairline)' }}>
+                  <div style={{ height: 120, position: 'relative', background: '#000' }}>
+                    <img src={p.url} alt={`Site photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  </div>
+                  <div style={{ padding: '9px 11px', background: 'var(--panel)' }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, textTransform: 'capitalize' }}>{p.kind}</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{p.takenAt ? p.takenAt.slice(0, 10) : ''}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : (
+          <div className={styles.photos}>
+            {highlights.map((p) => (
+              <div key={p.title} style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--hairline)' }}>
+                <div style={{ height: 120, background: swatchGradient(p.swatch), position: 'relative' }}>
+                  <span style={{ position: 'absolute', left: 8, top: 8, fontFamily: 'var(--font-mono)', fontSize: 8, letterSpacing: '.15em', color: 'rgba(255,255,255,.85)', background: 'rgba(0,0,0,.35)', padding: '2px 6px', borderRadius: 3 }}>PHOTO</span>
+                </div>
+                <div style={{ padding: '9px 11px', background: 'var(--panel)' }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 600 }}>{p.title}</div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--faint)', marginTop: 2 }}>{p.date}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
