@@ -86,6 +86,47 @@ async function main(): Promise<void> {
     await prisma.orgMembership.create({ data: { orgId: org.id, userId: user.id, role: a.role === 'pmc' ? 'owner' : 'member' } });
   }
 
+  // ── Phase 0 Task 8: deterministic two-project acceptance fixtures ──────────
+  // Stable `test-` ids so the API-backed Playwright suite (tests/e2e-api) can
+  // authenticate and assert without depending on generated ids or seed order.
+  // Project B is DELIBERATELY empty of operational records: it proves that a
+  // live project shows only its own facts (never Ambli sample content).
+  const PROJECT_B = 'test-empty-site';
+  await prisma.project.create({
+    data: {
+      id: PROJECT_B,
+      orgId: org.id,
+      name: 'Test Empty Site, Bodakdev',
+      short: 'Test Empty Site',
+      descriptor: 'Acceptance fixture — no records',
+      stage: 'Mobilisation',
+      siteCode: 'TES-01',
+      location: 'Bodakdev, Ahmedabad',
+      projStart: '',
+      projEnd: '',
+      elapsedPct: 0,
+      todayDay: 0,
+      milestonePct: 0,
+    },
+  });
+  const testUsers: Array<{ id: string; home: string; role: string; name: string; email: string; grants: Array<[string, string]> }> = [
+    // home = Project B: login must land on the SERVER-resolved project even when the URL claims A
+    { id: 'test-user-pmc-both', home: PROJECT_B, role: 'pmc', name: 'Test PMC (Both Sites)', email: 'test-pmc@vitan.in', grants: [[PROJECT_ID, 'pmc'], [PROJECT_B, 'pmc']] },
+    { id: 'test-user-client-b', home: PROJECT_B, role: 'client', name: 'Test Client (Empty Site)', email: 'test-client-b@vitan.in', grants: [[PROJECT_B, 'client']] },
+    { id: 'test-user-eng-a', home: PROJECT_ID, role: 'engineer', name: 'Test Engineer (Ambli Only)', email: 'test-eng@vitan.in', grants: [[PROJECT_ID, 'engineer']] },
+    // starts as an ACTIVE member of A; the acceptance suite removes the membership live
+    { id: 'test-user-removed', home: PROJECT_ID, role: 'engineer', name: 'Test Former Member', email: 'test-removed@vitan.in', grants: [[PROJECT_ID, 'engineer']] },
+  ];
+  for (const u of testUsers) {
+    await prisma.user.create({ data: { id: u.id, projectId: u.home, role: u.role, name: u.name, email: u.email, passwordHash: hash } });
+    for (const [projectId, role] of u.grants) {
+      await prisma.membership.create({ data: { projectId, userId: u.id, role, status: 'active' } });
+    }
+    // plain org members — NEVER owner/admin, so the org super-admin path can't
+    // mask a missing membership in the non-member/removed-member scenarios
+    await prisma.orgMembership.create({ data: { orgId: org.id, userId: u.id, role: 'member' } });
+  }
+
   const publishedAt = new Date();
 
   // The location spine (zones → rooms → objects), mirroring the demo's tree — including
@@ -148,6 +189,47 @@ async function main(): Promise<void> {
         ],
       },
       materials: { create: SEED_LOG_MATERIALS },
+    },
+  });
+
+  // Project A carries at least one record of every kind the acceptance suite
+  // checks (decision/activity/checklist/daily log above; drawing + photo here),
+  // so "populated A vs empty B" is meaningful on every surface.
+  await prisma.drawing.create({
+    data: {
+      id: 'test-drawing-a',
+      projectId: PROJECT_ID,
+      number: 'A-201',
+      title: 'Ground Floor Plan',
+      discipline: 'architectural',
+      zone: 'Ground Floor',
+      publishedAt,
+      revisions: {
+        create: {
+          id: 'test-drawing-a-rev1',
+          rev: 'A',
+          status: 'for_construction',
+          mime: 'application/pdf',
+          data: Buffer.from('%PDF-1.4 seed fixture'),
+          sizeBytes: 21,
+          issuedBy: 'pmc',
+          issuedAt: '03 Jul 2026',
+        },
+      },
+    },
+  });
+  await prisma.media.create({
+    data: {
+      id: 'test-photo-a',
+      projectId: PROJECT_ID,
+      kind: 'progress',
+      mime: 'image/png',
+      // 1×1 transparent PNG — a real decodable image for the dev-stub serve path
+      data: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'),
+      sizeBytes: 68,
+      takenAt: '03 Jul 2026 · 9:12 AM',
+      uploadedBy: 'engineer',
+      nodeId: 'r-living',
     },
   });
 

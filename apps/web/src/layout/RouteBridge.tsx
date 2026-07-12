@@ -29,20 +29,36 @@ export function RouteBridge() {
   const navigate = useNavigate();
   const location = useLocation();
   const didInit = useRef(false);
+  const lastPath = useRef<string | null>(null);
 
   // URL -> store (project + screen reconciliation, role-guarded)
   useEffect(() => {
     // While a project transition is pending, the store is authoritatively navigating —
     // the URL->store direction stands down so it can't fight (or restart) the switch.
     if (pendingProjectId !== null || projectLoadState === 'switching') return;
+    // Only an actual URL CHANGE is a navigation request (deep link, back/forward).
+    // This effect also re-runs on store changes (load state, memberships) while the
+    // URL is momentarily stale — right after a switcher-initiated switch lands, the
+    // path still names the OLD project until the store->URL effect rewrites it.
+    const pathChanged = location.pathname !== lastPath.current;
+    lastPath.current = location.pathname;
     const { projectId, screen: fromPath } = parseLocation(location.pathname);
 
-    // a deep-link / back-forward to a DIFFERENT project you can access → switch to it,
-    // carrying the deep link's screen through the transition (adopted if the new role
-    // is allowed to see it). The store->URL effect then rewrites the canonical path.
-    if (projectId && projectId !== activeProjectId && memberships.some((m) => m.projectId === projectId)) {
-      void switchProject(projectId, fromPath ?? undefined);
-      return;
+    if (projectId && projectId !== activeProjectId) {
+      // a deep-link / back-forward to a DIFFERENT project you can access → switch to it,
+      // carrying the deep link's screen through the transition (adopted if the new role
+      // is allowed to see it). The store->URL effect then rewrites the canonical path.
+      if (pathChanged && memberships.some((m) => m.projectId === projectId)) {
+        void switchProject(projectId, fromPath ?? undefined);
+        return;
+      }
+      // an UNCHANGED path mismatching the active project is a stale URL awaiting
+      // reconciliation — switching to it here would ping-pong the projects forever
+      // (switch to A completes → stale B URL switches back to B → …). Stand down;
+      // the store->URL effect below rewrites the canonical path.
+      if (!pathChanged) return;
+      // pathChanged but not a member: fall through — the screen logic below redirects
+      // the forged/unknown-project path under the ACTIVE project's role-default.
     }
 
     const allowed = screensFor(role).map((m) => m.key);

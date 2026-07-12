@@ -31,7 +31,11 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 ## Conventions
 
 - **Money** stored as integer **paise** (`costPaise`, `deltaPaise`) — formatted with Indian digit grouping (`₹1,40,000`) on the client via `inr()`/`signed()`.
-- **Dates** as `timestamptz`; UI dates render `DD MMM YYYY`.
+- **Canonical project ownership** — every operational record carries a `projectId` and belongs to exactly ONE project (one project = one site). A fact is recorded once at its source and referenced, never copied into another module as independently editable data.
+- **Composite same-project references (Phase 0 Task 5)** — cross-record links (`Media.decisionId/dailyLogId`, `Drawing.activityId/decisionId`, `Activity.decisionId`) are composite `(projectId, ref)` foreign keys, so PostgreSQL itself rejects a link to another project's record even on a direct write; services validate first via `resolveProjectRef()` for a clean 400.
+- **Civil dates (Phase 0 Task 6)** — domain dates are `DATE` columns (`Project.scheduleStartDate/scheduleEndDate`, `Activity`/`Phase` planned+actual dates, `DailyLog.logDate`, `Inspection.inspectionDate`) carried as ISO `YYYY-MM-DD` at every boundary and computed with UTC-only arithmetic (`packages/shared/src/lib/dates.ts`, pinned copy in `apps/api/src/common/civil-date.ts`). The server stamps "today" via an injected `Clock` in the **project's** time zone (`Project.timeZone`). `Project.scheduleStartDate` is THE SCHEDULE ANCHOR — the calendar day legacy offset 0 refers to.
+- **Legacy display/offset columns are deprecated derivatives** — `projStart/projEnd`, `Activity.plannedStart/…` int offsets, `DailyLog.date`, `Inspection.date` strings remain for compatibility and are DERIVED from the civil dates; they are never sorted, compared or used as a write source ("latest daily log" orders by `logDate`, `createdAt` and `id` as tie-breakers only).
+- **Timestamps** (`createdAt`, `publishedAt`, audit instants) stay `timestamptz` — the immutable machine instant, distinct from the civil day a fact belongs to.
 - **Enums** match the frontend string unions exactly (`packages/shared/src/domain/types.ts`) so the API contract and UI stay aligned.
 - **Locked decisions** are immutable; state transitions only via `DecisionEvent` + `ChangeRequest` (never in-place edits).
 - **Gates** — the `decision` gate is derived live from the linked decision's status; `material/team/inspection` are stored and mutated by site events (e.g. a flagged material mismatch sets the `material` gate to `fail` and blocks the activity).
