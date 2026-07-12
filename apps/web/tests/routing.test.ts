@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { pathForScreen, parseLocation, screenForPath } from '@/lib/screens';
+import { pathForScreen, parseLocation, screenForPath, screensFor } from '@/lib/screens';
+
+describe('role navigation matches policy', () => {
+  it('engineers get the Site Schedule (they hold activity.start/complete)', () => {
+    expect(screensFor('engineer').map((m) => m.key)).toContain('site-schedule');
+  });
+});
 
 describe('project-scoped routing helpers', () => {
   it('pathForScreen builds a /projects/:id/<screen> URL', () => {

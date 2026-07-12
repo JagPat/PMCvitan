@@ -38,7 +38,7 @@ export class SnapshotService {
       this.prisma.dailyLog.findFirst({
         where: { projectId },
         include: { crew: { orderBy: { order: 'asc' } }, materials: { orderBy: { order: 'asc' } } },
-        orderBy: { date: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       }),
       this.prisma.notification.findMany({ where: { projectId }, orderBy: { at: 'desc' } }),
       // Site-reality photos for the daily-log gallery AND the Place view. One query,

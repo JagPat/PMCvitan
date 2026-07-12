@@ -342,12 +342,42 @@ export function getInitialState(): AppState {
   };
 }
 
+/** What an issued-nothing project shows: no checklist, no open daily log. */
+function emptyChecklist(): Checklist {
+  return { id: '', title: '', zone: '', date: '', submitted: false, items: [] };
+}
+function emptyDailyLog(): DailyLog {
+  return { date: '', checkedIn: false, checkinTime: null, submitted: false, crew: [], materials: [], progress: 0, photos: [] };
+}
+
 export const useStore = create<Store>()(
   immer((set, get) => {
     // API bridge (Phase 7b): injected by useApiSync when VITE_API_URL is set.
     // When present, mutating actions persist through the API and reconcile from
     // the returned snapshot; when null, they mutate the seeded local store.
     let gateway: ApiGateway | null = null;
+
+    /** Drop EVERY project-scoped record — used when the active project changes
+     *  (switch or sign-in adoption) so the previous project's data can never show
+     *  under the new selection. Includes checklist + dailyLog: the snapshot only
+     *  carries them when the project has one, so they must not linger either. */
+    const clearProjectState = (s: AppState): void => {
+      s.decisions = [];
+      s.activities = [];
+      s.drawings = [];
+      s.nodes = [];
+      s.photos = [];
+      s.materials = [];
+      s.placedInspections = [];
+      s.phases = [];
+      s.reviews = [];
+      s.activeReviewId = null;
+      s.notifications = [];
+      s.companies = [];
+      s.members = [];
+      s.checklist = emptyChecklist();
+      s.dailyLog = emptyDailyLog();
+    };
 
     const applySnapshot = (snap: ApiSnapshot): void => {
       set((s) => {
@@ -358,28 +388,29 @@ export const useStore = create<Store>()(
         s.projectSwitching = false; // the active project's data has landed
         s.decisions = snap.decisions;
         s.activities = snap.activities;
-        if (snap.checklist) s.checklist = snap.checklist;
+        // The snapshot is the whole truth for its project: a null/missing slice means
+        // "this project has none", so REPLACE with an empty state — keeping the previous
+        // value would show the last project's checklist/log/drawings under this one.
+        s.checklist = snap.checklist ?? emptyChecklist();
         s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         s.reinspectionCreated = snap.reinspectionCreated;
-        if (snap.drawings) s.drawings = snap.drawings;
+        s.drawings = snap.drawings ?? [];
         // Placed site photos come back as signed API-relative serve paths — resolve
         // them against the API base so the Place view's <img src> hits the API.
-        if (snap.photos) s.photos = snap.photos.map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
-        if (snap.materials) s.materials = snap.materials;
+        s.photos = (snap.photos ?? []).map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
+        s.materials = snap.materials ?? [];
         // pmc/engineer get the placed inspections; other roles get [] from the server
         s.placedInspections = snap.placedInspections ?? [];
-        if (snap.phases) s.phases = snap.phases;
-        if (snap.dailyLog) {
-          // Progress photos come back as signed, API-relative serve paths
-          // (/media/:id?t=…); resolve them against the API base so the <img src>
-          // hits the API, not the SPA origin. Drawings resolve at render time.
-          s.dailyLog = {
-            ...snap.dailyLog,
-            photos: snap.dailyLog.photos.map((p) => ({ ...p, url: resolveMediaUrl(p.url) })),
-          };
-        }
+        s.phases = snap.phases ?? [];
+        // Progress photos come back as signed, API-relative serve paths
+        // (/media/:id?t=…); resolve them against the API base so the <img src>
+        // hits the API, not the SPA origin. Drawings resolve at render time.
+        s.dailyLog = snap.dailyLog
+          ? { ...snap.dailyLog, photos: snap.dailyLog.photos.map((p) => ({ ...p, url: resolveMediaUrl(p.url) })) }
+          : emptyDailyLog();
         s.notifications = snap.notifications;
+        s.companies = snap.companies ?? [];
         s.name = snap.project.name;
         s.short = snap.project.short;
         s.descriptor = snap.project.descriptor;
@@ -391,7 +422,6 @@ export const useStore = create<Store>()(
         s.elapsedPct = snap.project.elapsedPct;
         s.todayDay = snap.project.todayDay;
         s.milestonePct = snap.project.milestonePct;
-        if (snap.companies) s.companies = snap.companies;
         s.nodes = snap.nodes ?? [];
       });
     };
@@ -456,16 +486,33 @@ export const useStore = create<Store>()(
       return true;
     };
 
-    /** Adopt a server auth result as the real session (used by email-OTP + Google). */
-    const applyAuthResult = (res: { role: Role; token: string; name?: string }): void => {
+    /** Adopt a server auth result as the real session (every API sign-in path:
+     *  password, email-OTP, Google, phone-OTP). The token is scoped to ONE project
+     *  (res.projectId — the member's home project), so the store must adopt that
+     *  identity too: leaving `activeProjectId` on the URL's project would send a
+     *  project-B token to /projects/A/... and 403 every call, stranding the seeded
+     *  demo data on screen under the wrong project. */
+    const applyAuthResult = (res: { role: Role; token: string; name?: string; projectId?: string }, msg?: string): void => {
       set((s) => {
         s.role = res.role;
         s.screen = screensFor(res.role)[0].key;
         s.sessionToken = res.token;
         s.userName = res.name ?? null;
         s.access = freshAccess();
+        if (res.projectId && res.projectId !== s.activeProjectId) {
+          s.activeProjectId = res.projectId;
+          s.projectSwitching = true; // loading state until the fresh snapshot lands
+          // blank the identity + drop project-scoped records — the previous (URL/seed)
+          // project's data must never render under the token's project
+          s.name = '';
+          s.short = '';
+          s.descriptor = '';
+          s.stage = '';
+          s.siteCode = '';
+          clearProjectState(s);
+        }
       });
-      get().flash('Signed in as ' + (res.name ?? res.role) + '.');
+      get().flash(msg ?? 'Signed in as ' + (res.name ?? res.role) + '.');
     };
 
     /** Local-demo passwordless sign-in: map an email to a role (else engineer). */
@@ -623,6 +670,10 @@ export const useStore = create<Store>()(
     setNote: (idx, txt) => set((s) => { s.checklist.items[idx].note = txt; }),
     submitInspection: () => {
       const c = get().checklist;
+      if (!c.id || !c.items.length) {
+        get().flash('No checklist has been issued for today yet.');
+        return;
+      }
       const undone = c.items.filter((it) => !it.state).length;
       const failNoPhoto = c.items.filter((it) => it.state === 'fail' && it.photos === 0).length;
       if (undone > 0) {
@@ -898,20 +949,8 @@ export const useStore = create<Store>()(
             s.descriptor = '';
             s.stage = '';
             s.siteCode = '';
-            // project-scoped collections — cleared, not carried over
-            s.decisions = [];
-            s.activities = [];
-            s.drawings = [];
-            s.nodes = [];
-            s.photos = [];
-            s.materials = [];
-            s.placedInspections = [];
-            s.phases = [];
-            s.reviews = [];
-            s.activeReviewId = null;
-            s.notifications = [];
-            s.companies = [];
-            s.members = [];
+            // project-scoped collections (incl. checklist + daily log) — cleared, not carried over
+            clearProjectState(s);
           });
           get().flash('Switched to ' + short + '.');
         })
@@ -1180,7 +1219,16 @@ export const useStore = create<Store>()(
     },
     loadTeam: () => {
       if (!gateway) return;
-      gateway.listMembers().then((m) => set((s) => { s.members = m; })).catch(() => {});
+      // pin the project this request is FOR — a reply that lands after a project
+      // switch must not repopulate the new project's team with the old one's
+      const pid = get().activeProjectId;
+      gateway
+        .listMembers()
+        .then((m) => set((s) => {
+          if (s.activeProjectId !== pid) return; // late reply from a previous project
+          s.members = m;
+        }))
+        .catch(() => {});
     },
     addMember: (input) => {
       if (!gateway) {
@@ -1309,6 +1357,12 @@ export const useStore = create<Store>()(
       get().flash('Checked out. Shift hours logged.');
     },
     scanWorker: () => {
+      // demo action tied to the seeded Helper row — a project with an empty crew has no row 4
+      const helper = get().dailyLog.crew[4];
+      if (!helper) {
+        get().flash('No crew rows on this log yet — add trades on the daily log first.');
+        return;
+      }
       set((s) => { s.dailyLog.crew[4].count += 1; });
       get().record('QR check-in · Helper');
       get().flash('Worker checked in via QR · Helper · 9:03 AM · face verified.');
@@ -1316,6 +1370,7 @@ export const useStore = create<Store>()(
     crewStep: (idx, delta) =>
       set((s) => {
         const c = s.dailyLog.crew[idx];
+        if (!c) return; // stale index against an empty/replaced crew list
         c.count = Math.max(0, c.count + delta);
       }),
     addProgress: () => {
@@ -1382,6 +1437,7 @@ export const useStore = create<Store>()(
     },
     flagMismatch: (idx) => {
       const mat = get().dailyLog.materials[idx];
+      if (!mat) return; // stale index against an empty/replaced materials list
       if (runRemoteOrQueue({ t: 'flagMismatch', decisionId: mat.decisionId }, 'Flag ' + mat.decisionId, () => gateway!.flagMismatch(mat.decisionId), 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
       set((s) => {
         s.dailyLog.materials[idx].matched = false;
@@ -1522,16 +1578,7 @@ export const useStore = create<Store>()(
         set((s) => { s.access.sending = true; s.access.error = null; });
         gateway
           .login(em, password)
-          .then((res) => {
-            set((s) => {
-              s.role = res.role;
-              s.screen = screensFor(res.role)[0].key;
-              s.sessionToken = res.token;
-              s.userName = res.name ?? null;
-              s.access = freshAccess();
-            });
-            get().flash('Signed in as ' + (res.name ?? res.role) + '.');
-          })
+          .then((res) => applyAuthResult(res))
           .catch(() => set((s) => { s.access.sending = false; s.access.error = 'Wrong email or password.'; }));
         return;
       }
@@ -1669,12 +1716,18 @@ export const useStore = create<Store>()(
       // any provisioned member — client / contractor / pmc / engineer), not always
       // engineer; trade → local scoped mistri view. The demo (no server) defaults to
       // engineer, the on-site onboarding persona.
-      const signIn = (name: string | null, token: string | null, role: Role): void => {
+      const signIn = (name: string | null, token: string | null, role: Role, projectId?: string): void => {
         if (a.who === 'team') {
+          if (token) {
+            // real session: adopt token + role + the token's project identity
+            applyAuthResult({ role, token, name: name ?? undefined, projectId }, 'Verified ✓ — signed in as ' + (name ?? role) + '.');
+            return;
+          }
+          // local demo: persona sign-in, no token/project change
           set((s) => {
             s.role = role;
             s.screen = screensFor(role)[0].key;
-            s.sessionToken = token;
+            s.sessionToken = null;
             s.userName = name;
             s.access = freshAccess();
           });
@@ -1694,7 +1747,7 @@ export const useStore = create<Store>()(
       set((s) => { s.access.sending = true; s.access.error = null; });
       gateway
         .verifyOtp(a.phone, a.otp)
-        .then((res) => signIn(res.name ?? null, res.token, res.role))
+        .then((res) => signIn(res.name ?? null, res.token, res.role, res.projectId))
         .catch(() => {
           set((s) => {
             s.access.sending = false;
