@@ -229,6 +229,10 @@ export const createProjectSchema = z.object({
   location: z.string().default(''),
   projStart: z.string().default(''),
   projEnd: z.string().default(''),
+  /** Templates Slice 1: copy another project's STRUCTURE into the new one — the location
+   *  tree (as drafts), phases, planned activities and inspection checklist definitions.
+   *  Actuals (approvals, dates, statuses, photos, people) are never copied. */
+  structureFrom: z.string().trim().min(1).optional(),
 });
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 

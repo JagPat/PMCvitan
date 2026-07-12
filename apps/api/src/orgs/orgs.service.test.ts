@@ -316,3 +316,119 @@ describe('OrgsService.portfolio', () => {
     expect(prisma.decision.count).not.toHaveBeenCalled(); // never even reached a project rollup
   });
 });
+
+// ── Templates Slice 1 — copy a source project's structure into a new project ──
+
+interface CopyRow { id: string; projectId: string; [k: string]: unknown }
+
+function makeCopy(source: {
+  nodes?: CopyRow[];
+  phases?: CopyRow[];
+  activities?: CopyRow[];
+  inspections?: CopyRow[];
+  sourceProject?: { orgId: string; archivedAt: Date | null } | null;
+}) {
+  const created = { nodes: [] as Record<string, unknown>[], phases: [] as Record<string, unknown>[], activities: [] as Record<string, unknown>[], inspections: [] as Record<string, unknown>[] };
+  let cuid = 0;
+  const tx = {
+    projectNode: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-n${++cuid}`, ...data }; created.nodes.push(row); return row; }) },
+    phase: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-p${++cuid}`, ...data }; created.phases.push(row); return row; }) },
+    activity: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.activities.push(data); return data; }) },
+    inspection: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.inspections.push(data); return data; }) },
+  };
+  const prisma = {
+    orgMembership: { findUnique: vi.fn(async () => ({ role: 'owner' })) },
+    project: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
+      findUnique: vi.fn(async () => (source.sourceProject === undefined ? { orgId: 'org1', archivedAt: null } : source.sourceProject)),
+    },
+    membership: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+    projectNode: { findMany: vi.fn(async () => source.nodes ?? []) },
+    phase: { findMany: vi.fn(async () => source.phases ?? []) },
+    // 1st call: the source's activities; 2nd call: ALL ids (global display-id sequence)
+    activity: { findMany: vi.fn().mockResolvedValueOnce(source.activities ?? []).mockResolvedValueOnce([{ id: 'ACT-31' }, { id: 'ACT-40' }]) },
+    inspection: { findMany: vi.fn().mockResolvedValueOnce(source.inspections ?? []).mockResolvedValueOnce([{ id: 'INSP-22' }]) },
+    $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)),
+  };
+  const svc = new OrgsService(prisma as unknown as PrismaService);
+  return { svc, prisma, created };
+}
+
+const CREATE_INPUT = { name: 'SamBunglow', short: 'SamBunglow', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '', structureFrom: 'ambli' };
+
+describe('OrgsService.createProject — structureFrom (Templates Slice 1)', () => {
+  it('copies the location tree as DRAFTS with parent links remapped', async () => {
+    const { svc, created } = makeCopy({
+      nodes: [
+        { id: 'z1', projectId: 'ambli', parentId: null, name: 'Ground Floor', kind: 'zone', order: 0 },
+        { id: 'r1', projectId: 'ambli', parentId: 'z1', name: 'Living Room', kind: 'room', order: 0 },
+        { id: 'e1', projectId: 'ambli', parentId: 'r1', name: 'Main Door', kind: 'element', order: 0 },
+      ],
+    });
+    await svc.createProject('org1', 'u1', CREATE_INPUT);
+
+    expect(created.nodes).toHaveLength(3);
+    const zone = created.nodes.find((n) => n.name === 'Ground Floor')!;
+    const room = created.nodes.find((n) => n.name === 'Living Room')!;
+    const door = created.nodes.find((n) => n.name === 'Main Door')!;
+    // every copied node is a private draft authored by the creator
+    for (const n of created.nodes) {
+      expect(n.publishedAt).toBeNull();
+      expect(n.authorId).toBe('u1');
+    }
+    // the hierarchy is preserved through NEW ids (never the source's)
+    expect(zone.parentId).toBeNull();
+    expect(room.parentId).toBe(zone.id);
+    expect(door.parentId).toBe(room.id);
+    expect([zone.id, room.id, door.id]).not.toContain('z1');
+  });
+
+  it('copies activities as their planned shape only — actuals stripped, gates de-scored, fresh global ids', async () => {
+    const { svc, created } = makeCopy({
+      nodes: [{ id: 'r1', projectId: 'ambli', parentId: null, name: 'GF', kind: 'zone', order: 0 }],
+      phases: [{ id: 'ph1', projectId: 'ambli', name: 'Finishing', order: 0, plannedStart: 34, plannedEnd: 47 }],
+      activities: [
+        { id: 'ACT-31', projectId: 'ambli', name: 'Marble laying', zone: 'Living', status: 'in_progress', plannedStart: 28, plannedEnd: 41, actualStart: 29, actualEnd: null, block: 'Material ≠ approved', gateMaterial: 'fail', gateTeam: 'ok', gateInspection: 'na', decisionId: 'DL-014', phaseId: 'ph1', nodeId: 'r1', order: 0 },
+      ],
+    });
+    await svc.createProject('org1', 'u1', CREATE_INPUT);
+
+    const a = created.activities[0];
+    expect(a.id).toBe('ACT-041'); // allocated after the global max (ACT-40), not the source id
+    expect(a).toMatchObject({ name: 'Marble laying', status: 'not_started', plannedStart: 28, plannedEnd: 41, actualStart: null, actualEnd: null, block: null, decisionId: null });
+    // outcomes stripped, structure kept: ok/fail → wait; na stays na
+    expect(a.gateMaterial).toBe('wait');
+    expect(a.gateTeam).toBe('wait');
+    expect(a.gateInspection).toBe('na');
+    // phase + place remapped onto the NEW rows
+    expect(a.phaseId).toBe(created.phases[0].id);
+    expect(a.nodeId).toBe(created.nodes[0].id);
+  });
+
+  it('copies checklist definitions reset to unsubmitted with item names only', async () => {
+    const { svc, created } = makeCopy({
+      inspections: [
+        { id: 'INSP-22', projectId: 'ambli', kind: 'checklist', title: 'Waterproofing QA', zone: 'Terrace', by: 'Ramesh', date: '01 Jul 2026', submitted: true, decided: true, nodeId: null, items: [{ name: 'Ponding test', order: 0, state: 'fail', photos: 3, note: 'leak', result: 'FAIL', rejected: true }] },
+      ],
+    });
+    await svc.createProject('org1', 'u1', CREATE_INPUT);
+
+    const i = created.inspections[0];
+    expect(i.id).toBe('INSP-023');
+    expect(i).toMatchObject({ kind: 'checklist', title: 'Waterproofing QA', submitted: false, decided: false, by: null });
+    const items = (i.items as { create: { name: string; order: number; state?: unknown }[] }).create;
+    expect(items).toEqual([{ name: 'Ponding test', order: 0 }]); // names only — no state/photos/notes travel
+  });
+
+  it('rejects a source outside the org (or archived) without creating structure', async () => {
+    const { svc, created } = makeCopy({ sourceProject: { orgId: 'OTHER-org', archivedAt: null } });
+    await expect(svc.createProject('org1', 'u1', CREATE_INPUT)).rejects.toBeInstanceOf(NotFoundException);
+    expect(created.nodes).toHaveLength(0);
+  });
+
+  it('without structureFrom, createProject never touches the copy path', async () => {
+    const { svc, prisma } = makeCopy({});
+    await svc.createProject('org1', 'u1', { ...CREATE_INPUT, structureFrom: undefined });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
