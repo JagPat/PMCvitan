@@ -8,6 +8,31 @@
 
 **Tech Stack:** pnpm workspace, React 19, Zustand 5, React Router 7, Vitest 4, Playwright 1.61, NestJS 11, Prisma 6, PostgreSQL, TypeScript.
 
+## Post-Merge Revalidation
+
+This plan was revalidated after PRs [#78](https://github.com/JagPat/PMCvitan/pull/78) and [#79](https://github.com/JagPat/PMCvitan/pull/79) merged. The execution baseline is now `b0fb310114ad074500ec01497f05532cd2c01d2c`.
+
+PR #78 completed a useful first slice and its tests must be retained:
+
+- all API sign-in paths now share `applyAuthResult` and adopt a returned `projectId` when it differs;
+- project switching and snapshot replacement clear checklist, daily-log and other project collections through empty sentinel records;
+- `loadTeam` ignores a reply after the active project ID changes;
+- engineers can reach the Schedule without receiving PMC authoring controls;
+- `DailyLog.createdAt` and migration `20260901000000_daily_log_created_at` prevent lexical sorting of the display date.
+
+It did not close the full Phase 0 contract:
+
+- `applyAuthResult.projectId` remains optional and `switchProject` adopts the requested ID instead of the authenticated response ID;
+- switching state begins only after `/auth/switch` returns, leaving the old project visible while authorization is pending;
+- `RouteBridge` does not preserve the target screen through the asynchronous project switch and its store-to-URL effect is not suppressed by a pending target;
+- only `loadTeam` is request-scoped; snapshots, other project loaders, mutations and outbox flushes have no generation guard;
+- the frontend still has only a boolean switching flag and silently exits it on snapshot failure instead of exposing a recoverable load error;
+- empty sentinel records use invalid IDs such as `''`; Phase 0 replaces them with explicit nullable absence so actions cannot mutate fabricated records;
+- `DailyLog.createdAt` is an audit/order fallback, not the civil date on which site work occurred; schedules and activities still use prototype offsets and display strings;
+- PostgreSQL integration CI, live membership enforcement, same-project database references, truthful API-mode screens and the two-project browser gate remain open.
+
+Claude must begin from this post-merge state, preserve the valid PR #78 behavior, and implement only the remaining contract. A test already supplied by PR #78 is a characterization test to keep, not work to delete and recreate.
+
 ## Global Constraints
 
 - Read `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md` before changing code; it is the canonical product and architecture specification for this phase.
@@ -72,8 +97,8 @@ This plan intentionally implements only Phase 0 of the canonical specification. 
 | `apps/api/test/integration/test-app.ts` | Starts and tears down a real Nest application backed by the test PostgreSQL database. |
 | `apps/api/test/integration/fixtures.ts` | Creates two isolated organizations/projects/users with deterministic memberships. |
 | `apps/api/test/integration/*.test.ts` | Proves live access, tenant isolation, date behavior and relational constraints against PostgreSQL. |
-| `apps/api/prisma/migrations/20260826000000_phase0_project_integrity/migration.sql` | Additive composite tenant constraints and supporting unique keys. |
-| `apps/api/prisma/migrations/20260827000000_phase0_real_dates/migration.sql` | Additive real date columns and deterministic backfill from legacy values. |
+| `apps/api/prisma/migrations/20260902000000_phase0_project_integrity/migration.sql` | Additive composite tenant constraints and supporting unique keys. |
+| `apps/api/prisma/migrations/20260903000000_phase0_real_dates/migration.sql` | Additive real date columns and deterministic backfill from legacy values. |
 | `packages/shared/src/lib/dates.ts` | ISO civil-date parsing, formatting and date arithmetic for shared web-domain contracts. |
 | `apps/api/src/common/civil-date.ts` | API-side ISO civil-date validation while the source-only shared package remains a web dependency. |
 | `apps/web/playwright.api.config.ts` | Runs API-backed browser tests with both web and API servers. |
@@ -166,7 +191,7 @@ git commit -m "docs: install phase zero execution guardrails"
 
 ## Task 2: Make Project Switching an Atomic State Transition
 
-**Business outcome:** A user can never see Project A's decisions, checklist, daily log or site identity under Project B's name.
+**Business outcome:** A user can never see Project A's decisions, checklist, daily log or site identity under Project B's name. This task hardens and completes the first slice merged in PR #78.
 
 **Canonical fact owner:** `AuthResult.projectId` establishes the authenticated scope; the matching `ApiSnapshot.project.id` supplies project identity and operational records.
 
@@ -319,7 +344,7 @@ export function isCurrentProjectScope(
 
 - [ ] **Step 4: Implement one atomic adoption path in the store**
 
-Add these fields to `AppState`:
+Add these fields to `AppState`, replacing PR #78's `projectSwitching` boolean and empty checklist/daily-log sentinel records:
 
 ```ts
 pendingProjectId: string | null;
@@ -337,7 +362,7 @@ switchProject: (projectId: string, targetScreen?: ScreenKey) => Promise<boolean>
 applySnapshot: (snapshot: ApiSnapshot, capturedScope?: ProjectScope) => boolean;
 ```
 
-At the beginning of a switch, in one Zustand `set` call: increment `projectScopeGeneration`, set `pendingProjectId`, set `projectLoadState = 'switching'`, clear `projectLoadError`, and assign `emptyProjectData()`. After `/auth/switch` succeeds, adopt `result.projectId`, `result.role`, `result.token`, `result.name`, and a role-allowed `targetScreen`; never adopt the caller's `projectId` as the authenticated scope. On failure, retain the old authenticated project identity but keep project data empty, clear `pendingProjectId`, set `projectLoadState = 'error'`, set a user-readable error and return `false`.
+At the beginning of a switch, in one Zustand `set` call: increment `projectScopeGeneration`, set `pendingProjectId`, set `projectLoadState = 'switching'`, clear `projectLoadError`, and assign `emptyProjectData()`. This deliberately moves the loading boundary earlier than PR #78, which currently clears only after `/auth/switch` resolves. After `/auth/switch` succeeds, adopt `result.projectId`, `result.role`, `result.token`, `result.name`, and a role-allowed `targetScreen`; never adopt the caller's `projectId` as the authenticated scope. On failure, retain the old authenticated project identity but keep project data empty, clear `pendingProjectId`, set `projectLoadState = 'error'`, set a user-readable error and return `false`.
 
 Route passwordless login, phone OTP, email OTP, Google login and project switching through one internal `applyAuthResult(result: AuthResult, targetScreen?: ScreenKey)` helper. Remove the separate field-by-field auth adoption blocks.
 
@@ -674,7 +699,7 @@ git commit -m "security: enforce live project access"
 
 **Files:**
 - Create: `apps/api/src/common/project-ref.ts`
-- Create: `apps/api/prisma/migrations/20260826000000_phase0_project_integrity/migration.sql`
+- Create: `apps/api/prisma/migrations/20260902000000_phase0_project_integrity/migration.sql`
 - Create: `apps/api/test/integration/project-reference-integrity.test.ts`
 - Modify: `apps/api/prisma/schema.prisma`
 - Modify: `apps/api/src/drawings/drawings.service.ts`
@@ -805,7 +830,7 @@ git commit -m "security: enforce project-owned references"
 **Canonical fact owner:** Each project owns `scheduleStartDate`; activities/phases own planned and actual civil dates; daily logs own `logDate`. Display strings are derived and never sorted or compared.
 
 **Files:**
-- Create: `apps/api/prisma/migrations/20260827000000_phase0_real_dates/migration.sql`
+- Create: `apps/api/prisma/migrations/20260903000000_phase0_real_dates/migration.sql`
 - Create: `apps/api/test/integration/real-dates.test.ts`
 - Create: `apps/api/src/common/clock.ts`
 - Create: `apps/api/src/common/civil-date.ts`
@@ -832,7 +857,7 @@ git commit -m "security: enforce project-owned references"
 
 - [ ] **Step 1: Write failing date tests**
 
-Add tests for leap years, month/year sorting and project-specific starts:
+Retain PR #78's `createdAt` ordering test and add tests for leap years, month/year sorting and project-specific starts:
 
 ```ts
 expect(addCivilDays('2026-12-31', 1)).toBe('2027-01-01');
@@ -852,7 +877,7 @@ pnpm --filter web test -- tests/format.test.ts
 pnpm --filter api test:integration -- real-dates.test.ts
 ```
 
-Expected: ISO helpers/columns are absent and the current daily-log service orders a display string.
+Expected: ISO helpers/columns are absent. PR #78 means latest-log lookup no longer orders the display string, so the new failure must be the absence of `logDate` and the inability to represent a log's civil work date independently of its creation instant.
 
 - [ ] **Step 3: Add deterministic civil-date helpers**
 
@@ -907,13 +932,13 @@ DailyLog.logDate          DateTime? @db.Date
 Inspection.inspectionDate DateTime? @db.Date
 ```
 
-Backfill `scheduleStartDate` by parsing `projStart`; for the current seeded project, verify it resolves to `2026-01-12`. Backfill activity/phase date columns as `scheduleStartDate + legacy offset`, preserving the existing offset convention after a characterization test determines whether offset `0` is the start date or the following day. Backfill `logDate` and `inspectionDate` with explicit `to_date(date, 'DD Mon YYYY')` guarded by a matching regular expression. Abort the migration on unparseable non-empty values; do not substitute today's date.
+Backfill `scheduleStartDate` by parsing `projStart`; for the current seeded project, verify it resolves to `2026-01-12`. Backfill activity/phase date columns as `scheduleStartDate + legacy offset`, preserving the existing offset convention after a characterization test determines whether offset `0` is the start date or the following day. Backfill `logDate` and `inspectionDate` with explicit `to_date(date, 'DD Mon YYYY')` guarded by a matching regular expression. Preserve `DailyLog.createdAt` from PR #78 as the immutable creation instant and use it only as a tie-breaker after `logDate`. Abort the migration on unparseable non-empty values; do not substitute today's date.
 
 Keep legacy fields for compatibility during this task. Make new date columns non-null only for records whose domain requires dates after the backfill diagnostics pass.
 
 - [ ] **Step 5: Cut services and contracts over to ISO dates**
 
-Change shared/API DTO fields to `plannedStartDate`, `plannedEndDate`, `actualStartDate`, `actualEndDate`, `logDate`, `inspectionDate`, `scheduleStartDate`, and `scheduleEndDate`, all serialized as `YYYY-MM-DD`. Add `timeZone` to project create/update/snapshot contracts, defaulting to `Asia/Kolkata` for current projects. Daily-log queries order by `logDate`; starting/completing an activity writes the server's current civil date in the project's configured time zone through one injected clock helper. Do not derive actual dates from `Project.todayDay`.
+Change shared/API DTO fields to `plannedStartDate`, `plannedEndDate`, `actualStartDate`, `actualEndDate`, `logDate`, `inspectionDate`, `scheduleStartDate`, and `scheduleEndDate`, all serialized as `YYYY-MM-DD`. Add `timeZone` to project create/update/snapshot contracts, defaulting to `Asia/Kolkata` for current projects. Daily-log queries order by `[{ logDate: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }]`; starting/completing an activity writes the server's current civil date in the project's configured time zone through one injected clock helper. Do not derive actual dates from `Project.todayDay`.
 
 Create the injectable clock contract in `apps/api/src/common/clock.ts`:
 
