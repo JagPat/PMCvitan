@@ -9,10 +9,24 @@ import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { CreateMediaInput } from '../contracts';
 
 interface NodeRow { id: string; projectId: string }
+interface RefRow { id: string; projectId: string }
 
-function make(storagePutUrl: string | null, presignedGet: string | null = null, nodes: NodeRow[] = []) {
+function make(
+  storagePutUrl: string | null,
+  presignedGet: string | null = null,
+  nodes: NodeRow[] = [],
+  refs: { decisions?: RefRow[]; dailyLogs?: RefRow[] } = {},
+) {
   const created: Record<string, unknown>[] = [];
   const prisma = {
+    decision: {
+      findFirst: vi.fn(async ({ where }: { where: { id: string; projectId: string } }) =>
+        (refs.decisions ?? []).find((r) => r.id === where.id && r.projectId === where.projectId) ?? null),
+    },
+    dailyLog: {
+      findFirst: vi.fn(async ({ where }: { where: { id: string; projectId: string } }) =>
+        (refs.dailyLogs ?? []).find((r) => r.id === where.id && r.projectId === where.projectId) ?? null),
+    },
     media: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const row = { id: 'med1', ...data };
@@ -158,5 +172,28 @@ describe('MediaService — location spine (nodeId)', () => {
     const { svc, prisma } = make(null);
     prisma.media.findUnique.mockResolvedValueOnce({ id: 'med1', projectId: 'other' });
     await expect(svc.setNode('med1', 'ambli', null, user)).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('MediaService — project-owned references (Phase 0 Task 5)', () => {
+  it('rejects a forged decisionId from another project', async () => {
+    const { svc } = make(null, null, [], { decisions: [{ id: 'DL-9', projectId: 'other' }] });
+    await expect(svc.create('ambli', 'user-1', { ...input, decisionId: 'DL-9' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects a forged dailyLogId from another project', async () => {
+    const { svc } = make(null, null, [], { dailyLogs: [{ id: 'log-9', projectId: 'other' }] });
+    await expect(svc.create('ambli', 'user-1', { ...input, dailyLogId: 'log-9' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('accepts same-project decision + daily-log references', async () => {
+    const { svc, prisma } = make(null, null, [], {
+      decisions: [{ id: 'DL-1', projectId: 'ambli' }],
+      dailyLogs: [{ id: 'log-1', projectId: 'ambli' }],
+    });
+    await svc.create('ambli', 'user-1', { ...input, decisionId: 'DL-1', dailyLogId: 'log-1' });
+    const row = prisma.media.create.mock.calls[0][0].data;
+    expect(row.decisionId).toBe('DL-1');
+    expect(row.dailyLogId).toBe('log-1');
   });
 });

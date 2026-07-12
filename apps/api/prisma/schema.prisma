@@ -215,7 +215,13 @@ model Media {
   geoLng     Float?
   takenAt    String? // display timestamp, e.g. "03 Jul 2026 · 9:12 AM"
   uploadedBy String
+  // Project-owned references: composite (projectId, x) FKs — PostgreSQL rejects a
+  // link to another project's record even on a direct write. NoAction because the
+  // owning projectId is non-null (SET NULL would null it too); deletion behavior
+  // is service-owned. Phase 0 Task 5.
+  decision   Decision? @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   decisionId String?
+  dailyLog   DailyLog? @relation(fields: [projectId, dailyLogId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   dailyLogId String?
   // The place this photo shows the reality of (zone/room/object). The location tree is
   // the shared spatial spine: a photo here + a drawing on the same node = intent vs reality
@@ -240,7 +246,11 @@ model Drawing {
   title      String
   discipline String // architectural | structural | mep | other
   zone       String?
+  // Project-owned references (composite FKs, same rationale as Media). The activity
+  // link is severed by ActivitiesService.remove BEFORE the activity row is deleted.
+  activity   Activity? @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   activityId String? // the work this drawing governs (Slice 2 linkage)
+  decision   Decision? @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   decisionId String?
   // The place this drawing governs (zone/room/object). Filed at its natural level — a
   // floor plan on the zone, a joinery detail on the element — and inherited DOWN: a room
@@ -395,6 +405,15 @@ model Decision {
   changeRequests ChangeRequest[]
   activities     Activity[]
   materials      SiteMaterial[]
+  media          Media[]
+  drawings       Drawing[]
+
+  // composite identity so referencing models can carry (projectId, decisionId)
+  // foreign keys — the DB itself rejects a cross-project link (Phase 0 Task 5)
+  @@unique([projectId, id])
+  // pre-existing in the DB since 20260715000000_add_location_tree; declared here so
+  // the schema matches the database exactly (drift found by `prisma migrate diff`)
+  @@index([nodeId])
 }
 
 model DecisionOption {
@@ -450,7 +469,7 @@ model Activity {
   gateMaterial   GateState @default(na)
   gateTeam       GateState @default(na)
   gateInspection GateState @default(na)
-  decision       Decision?      @relation(fields: [decisionId], references: [id])
+  decision       Decision?      @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   decisionId     String?
   phase          Phase?         @relation(fields: [phaseId], references: [id])
   phaseId        String?
@@ -458,6 +477,7 @@ model Activity {
   node           ProjectNode?   @relation(fields: [nodeId], references: [id], onDelete: SetNull)
   nodeId         String?
   order          Int            @default(0)
+  drawings       Drawing[]
 
   @@unique([projectId, id])
   @@index([nodeId])
@@ -527,6 +547,10 @@ model DailyLog {
   progress    Int            @default(0)
   crew        CrewRow[]
   materials   SiteMaterial[]
+  media       Media[]
+
+  // composite identity for (projectId, dailyLogId) FKs — see Media
+  @@unique([projectId, id])
 }
 
 model CrewRow {

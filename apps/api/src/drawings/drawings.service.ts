@@ -4,6 +4,7 @@ import { StorageService } from '../media/storage.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { resolveProjectNode } from '../nodes/node-scope';
+import { resolveProjectRef } from '../common/project-ref';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
@@ -45,6 +46,10 @@ export class DrawingsService {
   async issue(projectId: string, issuedBy: string, input: IssueDrawingInput): Promise<IssuedDrawing> {
     // Location spine: validate the place this drawing governs belongs to this project.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
+    // Project-owned references: the linked activity/decision must be THIS project's
+    // (the composite DB foreign keys are the backstop; this gives a readable error).
+    const activityId = await resolveProjectRef(this.prisma, 'activity', projectId, input.activityId, 'activityId');
+    const decisionId = await resolveProjectRef(this.prisma, 'decision', projectId, input.decisionId, 'decisionId');
     let key: string;
     let data: Buffer | null;
     let sizeBytes: number;
@@ -105,7 +110,7 @@ export class DrawingsService {
         this.prisma.drawingRevision.create({ data: { ...revData, drawingId: existing.id } }),
         this.prisma.drawing.update({
           where: { id: existing.id },
-          data: { title: input.title, discipline: input.discipline, zone: input.zone, activityId: input.activityId, decisionId: input.decisionId, nodeId, publishedAt },
+          data: { title: input.title, discipline: input.discipline, zone: input.zone, activityId, decisionId, nodeId, publishedAt },
         }),
       ]);
       drawingId = existing.id;
@@ -119,8 +124,8 @@ export class DrawingsService {
           title: input.title,
           discipline: input.discipline,
           zone: input.zone,
-          activityId: input.activityId,
-          decisionId: input.decisionId,
+          activityId,
+          decisionId,
           nodeId,
           authorId: issuedBy,
           publishedAt: published ? new Date() : null,
