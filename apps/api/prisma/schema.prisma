@@ -102,6 +102,25 @@ model Org {
   projects  Project[]
   members   OrgMembership[]
   modules   TemplateModule[]
+  templates ProjectTemplate[]
+}
+
+// Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
+// ("G+2 Residence" = Ground Floor + Second Floor + Terrace + Standard QA). Picking a preset
+// at Create Project expands its items through the same module instantiation as an
+// à-la-carte pick. Editing a preset never touches already-created projects.
+model ProjectTemplate {
+  id          String    @id @default(cuid())
+  org         Org       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId       String
+  name        String
+  version     Int       @default(1) // informational in v1 (design decision #5)
+  description String    @default("")
+  items       Json // [{ moduleId, count?, underZone? }] — validated against org modules on save
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([orgId])
 }
 
 // Templates Slice 2 (docs/TEMPLATES.md): a reusable menu item — a slice of project

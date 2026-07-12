@@ -420,10 +420,11 @@ describe('OrgsService.createProject — structureFrom (Templates Slice 1)', () =
     expect(items).toEqual([{ name: 'Ponding test', order: 0 }]); // names only — no state/photos/notes travel
   });
 
-  it('rejects a source outside the org (or archived) without creating structure', async () => {
-    const { svc, created } = makeCopy({ sourceProject: { orgId: 'OTHER-org', archivedAt: null } });
+  it('rejects a source outside the org (or archived) BEFORE the project exists — no orphan (review F1)', async () => {
+    const { svc, prisma, created } = makeCopy({ sourceProject: { orgId: 'OTHER-org', archivedAt: null } });
     await expect(svc.createProject('org1', 'u1', CREATE_INPUT)).rejects.toBeInstanceOf(NotFoundException);
     expect(created.nodes).toHaveLength(0);
+    expect(prisma.project.create).not.toHaveBeenCalled();
   });
 
   it('without structureFrom, createProject never touches the copy path', async () => {
@@ -472,7 +473,7 @@ function makeModules(opts: {
     $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)),
   };
   const svc = new OrgsService(prisma as unknown as PrismaService);
-  return { svc, prisma, created };
+  return { svc, prisma, created, tx };
 }
 
 const KITCHEN_MODULE = {
@@ -559,11 +560,118 @@ describe('OrgsService — module menu (Templates Slice 2)', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('a module from another org (or archived) is rejected', async () => {
+  it('a module from another org (or archived) is rejected BEFORE the project exists (review F1)', async () => {
     const foreign = { ...KITCHEN_MODULE, id: 'mod-x', orgId: 'OTHER' };
-    const { svc } = makeModules({ modules: [foreign] });
+    const { svc, prisma } = makeModules({ modules: [foreign] });
     await expect(
       svc.createProject('org1', 'u1', { ...CREATE_INPUT, structureFrom: undefined, modules: [{ moduleId: 'mod-x', count: 1 }] } as never),
     ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.project.create).not.toHaveBeenCalled();
+  });
+});
+
+// ── Templates Slice 3 — named presets ──
+
+function makeTemplates(opts: {
+  orgRole?: string | null;
+  modules?: Record<string, unknown>[];
+  templates?: Record<string, unknown>[];
+  sourceNodes?: CopyRow[];
+}) {
+  const base = makeModules({ orgRole: opts.orgRole, modules: opts.modules, sourceNodes: opts.sourceNodes });
+  const created = { ...((base as unknown as { created: Record<string, Record<string, unknown>[]> }).created ?? {}), templates: [] as Record<string, unknown>[] };
+  let seq = 0;
+  const projectTemplate = {
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `tpl-${++seq}`, version: 1, ...data }; created.templates.push(row); return row; }),
+    findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (opts.templates ?? []).find((t) => t.id === where.id) ?? null),
+    findMany: vi.fn(async () => opts.templates ?? []),
+    update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
+  };
+  (base.prisma as unknown as Record<string, unknown>).projectTemplate = projectTemplate;
+  // the fromProject capture runs in a $transaction — its tx needs the same delegates
+  Object.assign(base.tx as unknown as Record<string, unknown>, {
+    templateModule: (base.prisma as unknown as Record<string, unknown>).templateModule,
+    projectTemplate,
+  });
+  return { svc: base.svc, prisma: base.prisma, created, modCreated: base.created };
+}
+
+describe('OrgsService — named presets (Templates Slice 3)', () => {
+  it('createTemplate with explicit items validates every module is the org’s own', async () => {
+    const { svc, created } = makeTemplates({ modules: [KITCHEN_MODULE] });
+    const res = await svc.createTemplate('org1', 'u1', { name: 'G+2 Residence', description: '', items: [{ moduleId: 'mod-kitchen', count: 2, underZone: 'GF' }] } as never);
+    expect(created.templates[0]).toMatchObject({ orgId: 'org1', name: 'G+2 Residence' });
+    expect(res.items).toEqual([{ moduleId: 'mod-kitchen', count: 2, underZone: 'GF' }]);
+    expect(res.moduleNames).toEqual(['Kitchen ×2']); // the response is picker-ready (review F6)
+
+    // a foreign module is refused before anything is stored
+    const foreign = makeTemplates({ modules: [{ ...KITCHEN_MODULE, id: 'mod-x', orgId: 'OTHER' }] });
+    await expect(foreign.svc.createTemplate('org1', 'u1', { name: 'X', description: '', items: [{ moduleId: 'mod-x', count: 1 }] } as never)).rejects.toBeInstanceOf(NotFoundException);
+    expect(foreign.created.templates).toHaveLength(0);
+  });
+
+  it('createTemplate fromProject captures the whole structure as ONE module wrapped in the preset', async () => {
+    const { svc, created, modCreated } = makeTemplates({
+      sourceNodes: [
+        { id: 'z1', projectId: 'ambli', parentId: null, name: 'GF', kind: 'zone', order: 0 },
+        { id: 'r1', projectId: 'ambli', parentId: 'z1', name: 'Living', kind: 'room', order: 0 },
+      ],
+    });
+    const res = await svc.createTemplate('org1', 'u1', { name: 'G+2 Residence', description: '', fromProject: 'ambli' } as never);
+
+    expect(modCreated.modules).toHaveLength(1); // the captured full-structure module
+    expect(modCreated.modules[0]).toMatchObject({ name: 'G+2 Residence — full structure', category: 'zone', anchorKind: null });
+    const payload = modCreated.modules[0].payload as { nodes: { name: string }[] };
+    expect(payload.nodes.map((n) => n.name).sort()).toEqual(['GF', 'Living']);
+    // the preset wraps exactly that module, once — and the response is picker-ready (review F6)
+    expect(res.items).toEqual([{ moduleId: modCreated.modules[0].id, count: 1 }]);
+    expect(res.moduleNames).toEqual(['G+2 Residence — full structure']);
+    expect(created.templates).toHaveLength(1);
+  });
+
+  it('createTemplate refuses a room-anchored (element-root) module — a preset must stay usable (review F3)', async () => {
+    const doorModule = { ...KITCHEN_MODULE, id: 'mod-door', anchorKind: 'room', name: 'Main Door' };
+    const { svc, created } = makeTemplates({ modules: [doorModule] });
+    await expect(
+      svc.createTemplate('org1', 'u1', { name: 'X', description: '', items: [{ moduleId: 'mod-door', count: 1 }] } as never),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(created.templates).toHaveLength(0);
+  });
+
+  it('archiveModule refuses while a live preset references the module (review F2)', async () => {
+    const { svc } = makeTemplates({
+      modules: [KITCHEN_MODULE],
+      templates: [{ id: 'tpl-g2', orgId: 'org1', archivedAt: null, name: 'G+2 Residence', items: [{ moduleId: 'mod-kitchen', count: 1 }] }],
+    });
+    await expect(svc.archiveModule('org1', 'u1', 'mod-kitchen')).rejects.toBeInstanceOf(BadRequestException);
+
+    // with no live preset referencing it, archiving goes through
+    const free = makeTemplates({ modules: [KITCHEN_MODULE], templates: [] });
+    await expect(free.svc.archiveModule('org1', 'u1', 'mod-kitchen')).resolves.toEqual({ ok: true });
+  });
+
+  it('createProject with templateId expands the preset through the module instantiation path', async () => {
+    const { svc, modCreated } = makeTemplates({
+      modules: [KITCHEN_MODULE],
+      templates: [{ id: 'tpl-g2', orgId: 'org1', archivedAt: null, items: [{ moduleId: 'mod-kitchen', count: 2, underZone: 'Second Floor' }] }],
+    });
+    await svc.createProject('org1', 'u1', { ...CREATE_INPUT, structureFrom: undefined, templateId: 'tpl-g2' } as never);
+
+    const rooms = modCreated.nodes.filter((n) => n.kind === 'room');
+    expect(rooms.map((r) => r.name).sort()).toEqual(['Kitchen 1', 'Kitchen 2']); // the preset's ×2 ran
+    expect(modCreated.nodes.filter((n) => n.kind === 'zone')).toHaveLength(1); // one Second Floor
+  });
+
+  it('a foreign or archived template is rejected BEFORE the project exists — no orphan (review F1)', async () => {
+    const { svc, prisma } = makeTemplates({ templates: [{ id: 'tpl-x', orgId: 'OTHER', archivedAt: null, items: [] }] });
+    await expect(svc.createProject('org1', 'u1', { ...CREATE_INPUT, structureFrom: undefined, templateId: 'tpl-x' } as never)).rejects.toBeInstanceOf(NotFoundException);
+    expect((prisma as unknown as { project: { create: ReturnType<typeof vi.fn> } }).project.create).not.toHaveBeenCalled();
+    expect((prisma as unknown as { membership: { create: ReturnType<typeof vi.fn> } }).membership.create).not.toHaveBeenCalled();
+  });
+
+  it('a plain member can read the preset list but not create one', async () => {
+    const { svc } = makeTemplates({ orgRole: 'member', templates: [{ id: 't1', orgId: 'org1', archivedAt: null, items: [], name: 'X', description: '', version: 1 }] });
+    await expect(svc.listTemplates('org1', 'u2')).resolves.toHaveLength(1);
+    await expect(svc.createTemplate('org1', 'u2', { name: 'X', description: '', items: [{ moduleId: 'm', count: 1 }] } as never)).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

@@ -19,7 +19,10 @@ export function ProjectSwitcher() {
   const liveShort = useStore((s) => s.short);
   const active = memberships.find((m) => m.projectId === activeProjectId);
   const label = active?.short ?? liveShort;
-  const adminOrg = myOrgs.find((o) => o.role === 'owner' || o.role === 'admin');
+  // Prefer the ACTIVE project's org so "save as template → pick it at New project" holds
+  // for multi-org admins; fall back to the first org they administer (review F5).
+  const adminOrgs = myOrgs.filter((o) => o.role === 'owner' || o.role === 'admin');
+  const adminOrg = adminOrgs.find((o) => o.id === active?.orgId) ?? adminOrgs[0];
   const canSwitch = memberships.length > 1 || Boolean(adminOrg);
 
   return (
@@ -66,13 +69,16 @@ function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => 
   const createProject = useStore((s) => s.createProject);
   const memberships = useStore(useShallow((s) => s.memberships));
   const orgModules = useStore(useShallow((s) => s.orgModules));
+  const orgTemplates = useStore(useShallow((s) => s.orgTemplates));
   const loadOrgModules = useStore((s) => s.loadOrgModules);
+  const loadOrgTemplates = useStore((s) => s.loadOrgTemplates);
   const [name, setName] = useState('');
   const [short, setShort] = useState('');
-  const [structureFrom, setStructureFrom] = useState(''); // '' = blank slate
+  // '' = blank slate · 'tpl:<id>' = a named preset · 'proj:<id>' = copy a project's structure
+  const [startFrom, setStartFrom] = useState('');
   // the à-la-carte module picks: moduleId → {count, underZone} (Templates Slice 2)
   const [picked, setPicked] = useState<Record<string, { count: number; underZone: string }>>({});
-  useEffect(() => { loadOrgModules(orgId); }, [orgId, loadOrgModules]);
+  useEffect(() => { loadOrgModules(orgId); loadOrgTemplates(orgId); }, [orgId, loadOrgModules, loadOrgTemplates]);
 
   const togglePick = (id: string) =>
     setPicked((prev) => {
@@ -95,7 +101,8 @@ function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => 
       name: name.trim(),
       short: short.trim(),
       stage: 'Planning',
-      ...(structureFrom ? { structureFrom } : {}),
+      ...(startFrom.startsWith('tpl:') ? { templateId: startFrom.slice(4) } : {}),
+      ...(startFrom.startsWith('proj:') ? { structureFrom: startFrom.slice(5) } : {}),
       ...(modules.length ? { modules } : {}),
     };
     createProject(orgId, input);
@@ -108,16 +115,32 @@ function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => 
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>You'll be added as its PMC.</div>
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name (Residence at Bodakdev)" style={fld} />
         <input value={short} onChange={(e) => setShort(e.target.value)} placeholder="Short name (Bodakdev Residence)" style={{ ...fld, marginTop: 10 }} />
-        {memberships.length > 0 && (
+        {(memberships.length > 0 || orgTemplates.length > 0) && (
           <>
             <label htmlFor="np-structure" style={{ display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--muted)', margin: '14px 2px 0' }}>START FROM</label>
-            <select id="np-structure" value={structureFrom} onChange={(e) => setStructureFrom(e.target.value)} data-testid="np-structure-from" style={{ ...fld, marginTop: 6 }}>
+            <select id="np-structure" value={startFrom} onChange={(e) => setStartFrom(e.target.value)} data-testid="np-structure-from" style={{ ...fld, marginTop: 6 }}>
               <option value="">Blank slate</option>
-              {memberships.map((m) => (
-                <option key={m.projectId} value={m.projectId}>Copy structure from {m.short}</option>
-              ))}
+              {orgTemplates.length > 0 && (
+                <optgroup label="Templates">
+                  {orgTemplates.map((t) => (
+                    <option key={t.id} value={`tpl:${t.id}`}>{t.name}</option>
+                  ))}
+                </optgroup>
+              )}
+              {memberships.length > 0 && (
+                <optgroup label="Copy structure from a project">
+                  {memberships.map((m) => (
+                    <option key={m.projectId} value={`proj:${m.projectId}`}>{m.short}</option>
+                  ))}
+                </optgroup>
+              )}
             </select>
-            {structureFrom && (
+            {startFrom.startsWith('tpl:') && (
+              <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>
+                {(orgTemplates.find((t) => `tpl:${t.id}` === startFrom)?.moduleNames ?? []).join(' · ') || 'This template'} — lands as drafts you refine and publish.
+              </div>
+            )}
+            {startFrom.startsWith('proj:') && (
               <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>
                 Copies the location tree (as drafts), phases, planned activities and checklist templates — never that project&apos;s approvals, dates, photos or people.
               </div>

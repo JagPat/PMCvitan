@@ -135,6 +135,34 @@ describe('multi-project + team (Orgs Slice 2)', () => {
     expect(gw.createProject).toHaveBeenCalledWith('org1', expect.objectContaining({ modules: [{ moduleId: 'mod-k', count: 2, underZone: 'Second Floor' }] }));
   });
 
+  it('named presets (Templates Slice 3): loads, saves the project as a template, and starts from one', async () => {
+    const g2 = { id: 'tpl-g2', name: 'G+2 Residence', description: '', version: 1, items: [{ moduleId: 'mod-k', count: 1 }], moduleNames: ['G+2 Residence — full structure'] };
+    const gw = {
+      listTemplates: vi.fn().mockResolvedValue([g2]),
+      createTemplate: vi.fn().mockResolvedValue(g2),
+      createProject: vi.fn().mockResolvedValue({ id: 'p9', name: 'X', short: 'X' }),
+      listMemberships: vi.fn().mockResolvedValue([]),
+      myOrgs: vi.fn().mockResolvedValue([]),
+      switchProject: vi.fn().mockResolvedValue({ token: 'J', role: 'pmc', projectId: 'p9' }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.memberships = [{ projectId: 'ambli', name: 'Ambli', short: 'Ambli', role: 'pmc', orgId: 'org1', orgName: 'Vitan' }]; });
+
+    s().loadOrgTemplates('org1');
+    await flush();
+    expect(s().orgTemplates).toEqual([g2]);
+
+    // saving captures the ACTIVE project's whole structure server-side
+    s().saveProjectAsTemplate('G+2 Residence');
+    await flush();
+    expect(gw.createTemplate).toHaveBeenCalledWith('org1', { name: 'G+2 Residence', fromProject: 'ambli' });
+
+    // starting from a preset passes templateId through
+    s().createProject('org1', { name: 'X', short: 'X', stage: 'Planning', templateId: 'tpl-g2' });
+    await flush();
+    expect(gw.createProject).toHaveBeenCalledWith('org1', expect.objectContaining({ templateId: 'tpl-g2' }));
+  });
+
   it('addMember posts then reloads the team', async () => {
     const gw = {
       addMember: vi.fn().mockResolvedValue({}),

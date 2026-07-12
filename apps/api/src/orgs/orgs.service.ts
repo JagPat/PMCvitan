@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
-import { modulePayloadSchema, type AddOrgMemberInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
+import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
+import { z } from 'zod';
 
 /** A member of an org's admin roster (owner/admin/member). */
 export interface OrgMemberDto {
@@ -182,6 +183,16 @@ export class OrgsService {
     if (role !== 'owner' && role !== 'admin') {
       throw new ForbiddenException('Only an org owner or admin can create projects');
     }
+    // Resolve + validate EVERY starting-structure source before persisting anything — a
+    // rejected template, stale module pick, or foreign source must fail the whole request,
+    // never strand an orphaned blank project + membership (adversarial review, F1).
+    const selections = [
+      ...(input.templateId ? await this.templateSelections(orgId, input.templateId) : []),
+      ...(input.modules ?? []),
+    ];
+    if (selections.length) await this.assertPlaceable(orgId, selections);
+    if (input.structureFrom) await this.assertSourceProject(orgId, input.structureFrom);
+
     const id = `${slugify(input.short)}-${randomUUID().slice(0, 4)}`;
     const project = await this.prisma.project.create({
       data: {
@@ -203,9 +214,147 @@ export class OrgsService {
     await this.prisma.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
     // Templates Slice 1: optionally start from another project's structure instead of a blank slate
     if (input.structureFrom) await this.copyStructure(orgId, input.structureFrom, id, userId);
-    // Templates Slice 2: compose from org modules (unions with structureFrom when both given)
-    if (input.modules?.length) await this.instantiateModules(orgId, id, userId, input.modules);
+    // Templates Slice 2+3: compose from org modules — a named preset expands first, then any
+    // à-la-carte picks; all sources union (structureFrom included).
+    if (selections.length) await this.instantiateModules(orgId, id, userId, selections);
     return { id: project.id, name: project.name, short: project.short };
+  }
+
+  /** The Slice-1 source guard: a structure source must be an unarchived project in this org. */
+  private async assertSourceProject(orgId: string, sourceId: string): Promise<void> {
+    const source = await this.prisma.project.findUnique({ where: { id: sourceId }, select: { orgId: true, archivedAt: true } });
+    if (!source || source.orgId !== orgId || source.archivedAt) throw new NotFoundException('Source project not found in this org');
+  }
+
+  /** Every selection's module must be this org's, unarchived, and placeable at create time —
+   *  checked BEFORE the project row exists, so a stale pick can never strand an orphan. */
+  private async assertPlaceable(orgId: string, selections: { moduleId: string }[]): Promise<void> {
+    const rows = await this.prisma.templateModule.findMany({
+      where: { id: { in: selections.map((s) => s.moduleId) } },
+      select: { id: true, orgId: true, archivedAt: true, anchorKind: true, name: true },
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    for (const s of selections) {
+      const m = byId.get(s.moduleId);
+      if (!m || m.orgId !== orgId || m.archivedAt) throw new NotFoundException('Module not found in this org');
+      if (m.anchorKind === 'room') {
+        throw new BadRequestException(`"${m.name}" anchors to a room — element modules can't be placed at project creation yet`);
+      }
+    }
+  }
+
+  // ── Templates Slice 3 — named presets (docs/TEMPLATES.md) ───────────────────
+
+  /** A preset's module selection, ready for instantiation (org-checked, defaults filled). */
+  private async templateSelections(orgId: string, templateId: string) {
+    const t = await this.prisma.projectTemplate.findUnique({ where: { id: templateId } });
+    if (!t || t.orgId !== orgId || t.archivedAt) throw new NotFoundException('Template not found in this org');
+    return z.array(moduleSelectionSchema).parse(t.items ?? []);
+  }
+
+  /** The org's named presets, with module names resolved for display (any org member). */
+  async listTemplates(orgId: string, userId: string) {
+    if (!(await this.orgRole(orgId, userId))) throw new ForbiddenException('Not a member of this org');
+    const [rows, modules] = await Promise.all([
+      this.prisma.projectTemplate.findMany({ where: { orgId, archivedAt: null }, orderBy: { name: 'asc' } }),
+      this.prisma.templateModule.findMany({ where: { orgId }, select: { id: true, name: true, archivedAt: true } }),
+    ]);
+    const moduleOf = new Map(modules.map((m) => [m.id, m]));
+    return rows.map((t) => {
+      const items = z.array(moduleSelectionSchema).parse(t.items ?? []);
+      return {
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        version: t.version,
+        items,
+        // an archived/missing module is surfaced honestly rather than listing as healthy (review F2)
+        moduleNames: items.map((i) => {
+          const m = moduleOf.get(i.moduleId);
+          const label = m ? `${m.name}${m.archivedAt ? ' (archived)' : ''}` : 'missing module';
+          return `${label}${i.count > 1 ? ` ×${i.count}` : ''}`;
+        }),
+      };
+    });
+  }
+
+  /**
+   * Create a named preset (org owner/admin). Two paths:
+   *   • explicit `items` — every module must be this org's and unarchived;
+   *   • `fromProject` — capture the project's FULL structure as one new module (a single
+   *     coherent module keeps activity/checklist place references intact) and wrap it in
+   *     a preset. Richer multi-module presets are hand-composed from the menu.
+   */
+  async createTemplate(orgId: string, userId: string, input: CreateTemplateInput) {
+    const role = await this.orgRole(orgId, userId);
+    if (role !== 'owner' && role !== 'admin') throw new ForbiddenException('Only an org owner or admin can manage templates');
+
+    if (input.items) {
+      const modules = await this.prisma.templateModule.findMany({
+        where: { id: { in: input.items.map((i) => i.moduleId) } },
+        select: { id: true, orgId: true, archivedAt: true, anchorKind: true, name: true },
+      });
+      const ok = new Map(modules.map((m) => [m.id, m]));
+      for (const i of input.items) {
+        const m = ok.get(i.moduleId);
+        if (!m || m.orgId !== orgId || m.archivedAt) throw new NotFoundException('Module not found in this org');
+        // a preset exists only to be expanded at create-project, which can't place element
+        // modules yet — refuse at save time rather than minting an unusable preset (review F3)
+        if (m.anchorKind === 'room') {
+          throw new BadRequestException(`"${m.name}" anchors to a room — element modules can't join a preset yet`);
+        }
+      }
+      const created = await this.prisma.projectTemplate.create({
+        data: { orgId, name: input.name, description: input.description, items: input.items },
+      });
+      return {
+        id: created.id,
+        name: created.name,
+        description: created.description,
+        version: created.version,
+        items: input.items,
+        moduleNames: input.items.map((i) => `${ok.get(i.moduleId)!.name}${i.count > 1 ? ` ×${i.count}` : ''}`),
+      };
+    }
+
+    const payload = await this.extractPayload(orgId, input.fromProject!);
+    const modName = `${input.name} — full structure`;
+    // The captured module and its wrapping preset commit together — a failed save must
+    // never strand an orphan module in the menu (review F4).
+    const { tpl, moduleId } = await this.prisma.$transaction(async (tx) => {
+      const mod = await tx.templateModule.create({
+        data: {
+          orgId,
+          name: modName,
+          category: payload.nodes.length ? 'zone' : 'schedule',
+          anchorKind: anchorKindOf(payload),
+          description: `Captured from a project for the "${input.name}" template`,
+          payload,
+        },
+      });
+      const created = await tx.projectTemplate.create({
+        data: { orgId, name: input.name, description: input.description, items: [{ moduleId: mod.id, count: 1 }] },
+      });
+      return { tpl: created, moduleId: mod.id };
+    });
+    return {
+      id: tpl.id,
+      name: tpl.name,
+      description: tpl.description,
+      version: tpl.version,
+      items: [{ moduleId, count: 1 }],
+      moduleNames: [modName],
+    };
+  }
+
+  /** Archive a preset — leaves the picker; its modules and existing projects are untouched. */
+  async archiveTemplate(orgId: string, userId: string, templateId: string): Promise<{ ok: boolean }> {
+    const role = await this.orgRole(orgId, userId);
+    if (role !== 'owner' && role !== 'admin') throw new ForbiddenException('Only an org owner or admin can manage templates');
+    const t = await this.prisma.projectTemplate.findUnique({ where: { id: templateId }, select: { orgId: true } });
+    if (!t || t.orgId !== orgId) throw new NotFoundException('Template not found in this org');
+    await this.prisma.projectTemplate.update({ where: { id: templateId }, data: { archivedAt: new Date() } });
+    return { ok: true };
   }
 
   // ── Templates Slice 2 — the org module menu (docs/TEMPLATES.md) ─────────────
@@ -259,20 +408,29 @@ export class OrgsService {
     return this.moduleSummary(created);
   }
 
-  /** Archive a module — it leaves the menu; existing projects are untouched (owner/admin). */
+  /** Archive a module — it leaves the menu; existing projects are untouched (owner/admin).
+   *  Refused while a live preset references it: the preset would keep listing as healthy
+   *  and then hard-fail at create-project (adversarial review, F2). */
   async archiveModule(orgId: string, userId: string, moduleId: string): Promise<{ ok: boolean }> {
     const role = await this.orgRole(orgId, userId);
     if (role !== 'owner' && role !== 'admin') throw new ForbiddenException('Only an org owner or admin can manage modules');
     const m = await this.prisma.templateModule.findUnique({ where: { id: moduleId }, select: { orgId: true } });
     if (!m || m.orgId !== orgId) throw new NotFoundException('Module not found in this org');
+    const presets = await this.prisma.projectTemplate.findMany({ where: { orgId, archivedAt: null }, select: { name: true, items: true } });
+    const referencing = presets.filter((t) => {
+      const parsed = z.array(moduleSelectionSchema).safeParse(t.items ?? []);
+      return parsed.success && parsed.data.some((i) => i.moduleId === moduleId);
+    });
+    if (referencing.length) {
+      throw new BadRequestException(`This module is used by ${referencing.map((t) => `"${t.name}"`).join(', ')} — archive those templates first`);
+    }
     await this.prisma.templateModule.update({ where: { id: moduleId }, data: { archivedAt: new Date() } });
     return { ok: true };
   }
 
   /** Build a module payload from a live project (same-org, unarchived) — see createModule. */
   private async extractPayload(orgId: string, sourceId: string, fromNodeId?: string): Promise<ModulePayload> {
-    const source = await this.prisma.project.findUnique({ where: { id: sourceId }, select: { orgId: true, archivedAt: true } });
-    if (!source || source.orgId !== orgId || source.archivedAt) throw new NotFoundException('Source project not found in this org');
+    await this.assertSourceProject(orgId, sourceId);
 
     const allNodes = await this.prisma.projectNode.findMany({ where: { projectId: sourceId }, orderBy: { createdAt: 'asc' } });
     let nodes = allNodes;
@@ -479,10 +637,7 @@ export class OrgsService {
    * org owner/admin authority, and org admins can operate every org project).
    */
   private async copyStructure(orgId: string, sourceId: string, targetId: string, userId: string): Promise<void> {
-    const source = await this.prisma.project.findUnique({ where: { id: sourceId }, select: { orgId: true, archivedAt: true } });
-    if (!source || source.orgId !== orgId || source.archivedAt) {
-      throw new NotFoundException('Source project not found in this org');
-    }
+    await this.assertSourceProject(orgId, sourceId);
 
     const [nodes, phases, activities, inspections, allActIds, allInspIds] = await Promise.all([
       this.prisma.projectNode.findMany({ where: { projectId: sourceId }, orderBy: { createdAt: 'asc' } }),

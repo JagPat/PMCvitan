@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@n
 import { OrgsService } from './orgs.service';
 import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { addOrgMemberSchema, createModuleSchema, createOrgSchema, createProjectSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
+import { addOrgMemberSchema, createModuleSchema, createOrgSchema, createProjectSchema, createTemplateSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, Roles, RolesGuard } from '../common/roles';
 
@@ -159,5 +159,31 @@ export class OrgsController {
   @AllowAnyRole(ORG_AUTHZ)
   archiveModule(@Param('orgId') orgId: string, @Param('moduleId') moduleId: string, @CurrentUser() user: AuthUser) {
     return this.orgs.archiveModule(orgId, user.sub, moduleId);
+  }
+
+  // ── Templates Slice 3: named presets (docs/TEMPLATES.md) ──
+
+  /** The org's named presets, module names resolved for display (any org member). */
+  @Get('orgs/:orgId/templates')
+  listTemplates(@Param('orgId') orgId: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.listTemplates(orgId, user.sub);
+  }
+
+  /** Create a preset — explicit module items, or a whole project's structure (owner/admin). */
+  @Post('orgs/:orgId/templates')
+  @AllowAnyRole(ORG_AUTHZ)
+  createTemplate(
+    @Param('orgId') orgId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(createTemplateSchema)) body: CreateTemplateInput,
+  ) {
+    return this.orgs.createTemplate(orgId, user.sub, body);
+  }
+
+  /** Archive a preset — leaves the picker; modules and existing projects untouched (owner/admin). */
+  @Delete('orgs/:orgId/templates/:templateId')
+  @AllowAnyRole(ORG_AUTHZ)
+  archiveTemplate(@Param('orgId') orgId: string, @Param('templateId') templateId: string, @CurrentUser() user: AuthUser) {
+    return this.orgs.archiveTemplate(orgId, user.sub, templateId);
   }
 }
