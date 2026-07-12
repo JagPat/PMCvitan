@@ -29,11 +29,12 @@ async function main(): Promise<void> {
   await prisma.inspection.deleteMany();
   await prisma.crewRow.deleteMany();
   await prisma.siteMaterial.deleteMany();
+  // media references dailyLog/decision through NO ACTION composite FKs — delete it first
+  await prisma.media.deleteMany();
   await prisma.dailyLog.deleteMany();
   await prisma.drawingAck.deleteMany();
   await prisma.drawingRevision.deleteMany();
   await prisma.drawing.deleteMany();
-  await prisma.media.deleteMany();
   await prisma.decisionOption.deleteMany();
   await prisma.activity.deleteMany();
   await prisma.phase.deleteMany();

@@ -13,12 +13,20 @@ interface NodeRow { id: string; projectId: string }
 
 /** In-memory Prisma stand-in for the drawings tables. Methods mutate synchronously
  *  (before any await) so $transaction preserves supersede-then-create ordering. */
-function make(storagePutUrl: string | null = null, nodes: NodeRow[] = []) {
+function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: { activities?: NodeRow[]; decisions?: NodeRow[] } = {}) {
   const draws: Draw[] = [];
   const acks: Array<{ revisionId: string; userId: string; userName?: string; role?: string }> = [];
   let dseq = 0;
   let rseq = 0;
   const prisma = {
+    activity: {
+      findFirst: vi.fn(async ({ where }: { where: { id: string; projectId: string } }) =>
+        (refs.activities ?? []).find((r) => r.id === where.id && r.projectId === where.projectId) ?? null),
+    },
+    decision: {
+      findFirst: vi.fn(async ({ where }: { where: { id: string; projectId: string } }) =>
+        (refs.decisions ?? []).find((r) => r.id === where.id && r.projectId === where.projectId) ?? null),
+    },
     drawing: {
       findUnique: vi.fn(async ({ where, include }: { where: { id?: string; projectId_number?: { projectId: string; number: string } }; include?: unknown }) => {
         const d = where.id
@@ -268,5 +276,30 @@ describe('DrawingsService — location spine (nodeId)', () => {
     await svc.setNode(id, 'ambli', null, drawUser);
     expect(draws[0].nodeId).toBeNull();
     await expect(svc.setNode(id, 'other', null, drawUser)).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('DrawingsService — project-owned references (Phase 0 Task 5)', () => {
+  const base: IssueDrawingInput = { number: 'A-201', title: 'Plan', discipline: 'Architecture', rev: 'P1', status: 'for_review', mime: 'application/pdf', data: Buffer.from('pdf').toString('base64'), publish: true };
+
+  it('rejects a forged activityId from another project', async () => {
+    const { svc } = make(null, [], { activities: [{ id: 'ACT-9', projectId: 'other' }] });
+    await expect(svc.issue('ambli', 'u1', { ...base, activityId: 'ACT-9' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects a forged decisionId from another project', async () => {
+    const { svc } = make(null, [], { decisions: [{ id: 'DL-9', projectId: 'other' }] });
+    await expect(svc.issue('ambli', 'u1', { ...base, decisionId: 'DL-9' })).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('accepts same-project activity + decision links', async () => {
+    const { svc, prisma } = make(null, [], {
+      activities: [{ id: 'ACT-1', projectId: 'ambli' }],
+      decisions: [{ id: 'DL-1', projectId: 'ambli' }],
+    });
+    await svc.issue('ambli', 'u1', { ...base, activityId: 'ACT-1', decisionId: 'DL-1' });
+    const row = prisma.drawing.create.mock.calls[0][0].data;
+    expect(row.activityId).toBe('ACT-1');
+    expect(row.decisionId).toBe('DL-1');
   });
 });

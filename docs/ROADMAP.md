@@ -10,7 +10,7 @@ The active gate — [`docs/superpowers/plans/2026-07-12-phase-0-trust-foundation
 - [x] Task 2 — Project switching as an atomic state transition
 - [x] Task 3 — Stop route, snapshot and loader races
 - [x] Task 4 — Real PostgreSQL integration gate + live access check
-- [ ] Task 5 — Same-project references enforced in services and PostgreSQL
+- [x] Task 5 — Same-project references enforced in services and PostgreSQL
 - [ ] Task 6 — Replace prototype day offsets with real civil dates
 - [ ] Task 7 — Remove seeded claims from API mode
 - [ ] Task 8 — Prove the foundation end to end + review packet

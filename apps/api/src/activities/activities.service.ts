@@ -88,7 +88,12 @@ export class ActivitiesService {
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
     try {
-      await this.prisma.activity.delete({ where: { id: activityId } });
+      // drawings reference activities through a NO ACTION composite FK — unlink
+      // first (a drawing outlives its planned activity), then delete atomically
+      await this.prisma.$transaction([
+        this.prisma.drawing.updateMany({ where: { projectId, activityId }, data: { activityId: null } }),
+        this.prisma.activity.delete({ where: { id: activityId } }),
+      ]);
     } catch {
       throw new ConflictException('This activity has linked records (inspections/materials) — it can no longer be deleted');
     }

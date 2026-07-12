@@ -5,6 +5,7 @@ import { SignedUrlService } from './signed-url.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { resolveProjectNode } from '../nodes/node-scope';
+import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import type { CreateMediaInput } from '../contracts';
@@ -32,6 +33,9 @@ export class MediaService {
   async create(projectId: string, uploadedBy: string, input: CreateMediaInput): Promise<UploadedMedia> {
     // Location spine: validate the place tag belongs to this project before storing.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
+    // Project-owned references: a photo may only point at THIS project's decision/log.
+    const decisionId = await resolveProjectRef(this.prisma, 'decision', projectId, input.decisionId, 'decisionId');
+    const dailyLogId = await resolveProjectRef(this.prisma, 'dailyLog', projectId, input.dailyLogId, 'dailyLogId');
     const bytes = Buffer.from(input.data, 'base64');
     const key = this.storage.keyFor(projectId, input.kind, input.mime);
     // S3 mode PUTs the bytes to the (private) bucket and returns its url; we DON'T persist
@@ -52,8 +56,8 @@ export class MediaService {
         geoLat: input.geoLat,
         geoLng: input.geoLng,
         takenAt: input.takenAt,
-        decisionId: input.decisionId,
-        dailyLogId: input.dailyLogId,
+        decisionId,
+        dailyLogId,
         nodeId,
       },
     });
