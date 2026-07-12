@@ -3,6 +3,7 @@
 **Status:** Proposed for implementation review  
 **Date:** 12 July 2026  
 **Repository baseline:** `b2ff3dc581c72bb17198b890a2e3783a41fb74c9`  
+**Post-merge revalidation:** `b0fb310114ad074500ec01497f05532cd2c01d2c` after PRs #78 and #79
 **Canonical scope:** Stage 1 PMCvitan architecture and migration. RedBracket integration is Stage 2.
 
 ## 1. Purpose
