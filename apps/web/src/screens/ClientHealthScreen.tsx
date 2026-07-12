@@ -10,7 +10,7 @@ export function ClientHealthScreen() {
   const approved = useStore(useShallow(selectApprovedDecisions));
   const pending = useStore(useShallow(selectPending));
   const workers = useStore(selectTotalWorkers);
-  const checkedIn = useStore((s) => s.dailyLog.checkedIn);
+  const checkedIn = useStore((s) => s.dailyLog?.checkedIn ?? false);
   const setScreen = useStore((s) => s.setScreen);
   const short = useStore((s) => s.short); // live project identity, not the seed
   const milestonePct = useStore((s) => s.milestonePct);

@@ -163,14 +163,14 @@ describe('Phase 8 offline outbox', () => {
     s()._setGateway(gw as unknown as ApiGateway);
     useStore.setState((st) => { st.online = false; });
 
-    const before = s().dailyLog.photos.length;
+    const before = s().dailyLog!.photos.length;
     s().addProgressPhoto('data:image/jpeg;base64,AAAA');
 
     expect(gw.uploadMedia).not.toHaveBeenCalled(); // not uploaded while offline
     expect(s().outbox).toEqual([{ t: 'uploadMedia', input: { kind: 'progress', mime: 'image/jpeg', data: 'AAAA' } }]);
-    expect(s().dailyLog.photos.length).toBe(before + 1); // shown right away
-    expect(s().dailyLog.photos[0].url).toBe('data:image/jpeg;base64,AAAA');
-    expect(s().dailyLog.photos[0].id).toBeUndefined(); // no server id yet
+    expect(s().dailyLog!.photos.length).toBe(before + 1); // shown right away
+    expect(s().dailyLog!.photos[0].url).toBe('data:image/jpeg;base64,AAAA');
+    expect(s().dailyLog!.photos[0].id).toBeUndefined(); // no server id yet
     expect(s().syncQueue.length).toBe(1);
   });
 

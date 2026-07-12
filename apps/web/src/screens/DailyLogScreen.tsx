@@ -2,7 +2,7 @@ import { useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { selectTotalWorkers } from '@/store/selectors';
-import { Eyebrow, Swatch, PhotoViewer, Modal, Button } from '@/components';
+import { EmptyState, Eyebrow, Swatch, PhotoViewer, Modal, Button } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin } from '@/lib/icons';
@@ -11,7 +11,7 @@ import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
   const dailyLog = useStore((s) => s.dailyLog);
-  const photos = useStore(useShallow((s) => s.dailyLog.photos));
+  const photos = useStore(useShallow((s) => s.dailyLog?.photos ?? []));
   const nodes = useStore(useShallow((s) => s.nodes));
   const online = useStore((s) => s.online);
   const queueCount = useStore((s) => s.syncQueue.length + s.outbox.length);
@@ -49,6 +49,24 @@ export function DailyLogScreen() {
     : { bg: 'var(--amber-chip)', border: 'var(--amber-border)', dot: 'var(--amber-solid)', color: 'var(--amber-text)', text: `Offline · ${queueCount} update${queueCount === 1 ? '' : 's'} queued`, toggle: 'Back online' };
 
   const sectionLabel: React.CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.2em', color: 'var(--faint)', margin: '22px 0 10px' };
+
+  // honest absence: no daily log exists for this project — offer to start one instead
+  // of rendering a fabricated blank log
+  if (!dailyLog) {
+    return (
+      <EmptyState
+        title="No daily log started"
+        detail="Start today's log when site work begins — attendance, crew, materials and progress photos all record onto it."
+        action={
+          can('dailyLog.start', role) ? (
+            <Button variant="ink" onClick={startDailyLog} data-testid="start-new-day">
+              <Plus size={15} /> Start today's log
+            </Button>
+          ) : undefined
+        }
+      />
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>

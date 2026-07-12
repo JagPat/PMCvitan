@@ -21,7 +21,8 @@ export function RouteBridge() {
   const screen = useStore((s) => s.screen);
   const role = useStore((s) => s.role);
   const activeProjectId = useStore((s) => s.activeProjectId);
-  const projectSwitching = useStore((s) => s.projectSwitching);
+  const pendingProjectId = useStore((s) => s.pendingProjectId);
+  const projectLoadState = useStore((s) => s.projectLoadState);
   const memberships = useStore(useShallow((s) => s.memberships));
   const setScreen = useStore((s) => s.setScreen);
   const switchProject = useStore((s) => s.switchProject);
@@ -31,14 +32,16 @@ export function RouteBridge() {
 
   // URL -> store (project + screen reconciliation, role-guarded)
   useEffect(() => {
-    if (projectSwitching) return; // the store is navigating to a freshly-switched project
+    // While a project transition is pending, the store is authoritatively navigating —
+    // the URL->store direction stands down so it can't fight (or restart) the switch.
+    if (pendingProjectId !== null || projectLoadState === 'switching') return;
     const { projectId, screen: fromPath } = parseLocation(location.pathname);
 
-    // a deep-link / back-forward to a DIFFERENT project you can access → switch to it.
-    // The store->URL effect then rewrites the canonical path once it's active. An unknown
-    // or missing project id is left for store->URL to redirect to the active project.
+    // a deep-link / back-forward to a DIFFERENT project you can access → switch to it,
+    // carrying the deep link's screen through the transition (adopted if the new role
+    // is allowed to see it). The store->URL effect then rewrites the canonical path.
     if (projectId && projectId !== activeProjectId && memberships.some((m) => m.projectId === projectId)) {
-      switchProject(projectId);
+      void switchProject(projectId, fromPath ?? undefined);
       return;
     }
 
@@ -49,7 +52,7 @@ export function RouteBridge() {
     }
     if (fromPath !== screen) setScreen(fromPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, role, activeProjectId, memberships, projectSwitching]);
+  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState]);
 
   // store -> URL (canonical project-scoped path)
   useEffect(() => {

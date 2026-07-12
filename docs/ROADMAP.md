@@ -7,7 +7,7 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 The active gate — [`docs/superpowers/plans/2026-07-12-phase-0-trust-foundation.md`](./superpowers/plans/2026-07-12-phase-0-trust-foundation.md) (canonical spec: [`docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`](./superpowers/specs/2026-07-12-modular-construction-control-platform-design.md)). Tasks land in order, one PR per task:
 
 - [x] Task 1 — Vision and baseline gate (`CLAUDE.md`, `pnpm check`, this section)
-- [ ] Task 2 — Project switching as an atomic state transition
+- [x] Task 2 — Project switching as an atomic state transition
 - [ ] Task 3 — Stop route, snapshot and loader races
 - [ ] Task 4 — Real PostgreSQL integration gate + live access check
 - [ ] Task 5 — Same-project references enforced in services and PostgreSQL

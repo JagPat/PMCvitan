@@ -12,10 +12,10 @@ export function DashboardScreen() {
   const activeReview = useStore(selectActiveReview);
   const failedCount = useStore(selectFailedCount);
   const workers = useStore(selectTotalWorkers);
-  const materialsCount = useStore((s) => s.dailyLog.materials.length);
-  const progress = useStore((s) => s.dailyLog.progress);
-  const checkedIn = useStore((s) => s.dailyLog.checkedIn);
-  const submitted = useStore((s) => s.dailyLog.submitted);
+  const materialsCount = useStore((s) => s.dailyLog?.materials.length ?? 0);
+  const progress = useStore((s) => s.dailyLog?.progress ?? 0);
+  const checkedIn = useStore((s) => s.dailyLog?.checkedIn ?? false);
+  const submitted = useStore((s) => s.dailyLog?.submitted ?? false);
   const setScreen = useStore((s) => s.setScreen);
   const flash = useStore((s) => s.flash);
   // live project identity — never the PROJECT seed, so switching projects re-labels this screen

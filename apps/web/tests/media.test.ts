@@ -13,16 +13,16 @@ beforeEach(() => {
 
 describe('addProgressPhoto — local demo (no API)', () => {
   it('keeps the data URL as the photo and bumps the count', () => {
-    const before = s().dailyLog.progress;
+    const before = s().dailyLog!.progress;
     s().addProgressPhoto(PNG);
-    expect(s().dailyLog.photos[0].url).toBe(PNG);
-    expect(s().dailyLog.photos[0].id).toBeUndefined();
-    expect(s().dailyLog.progress).toBe(before + 1);
+    expect(s().dailyLog!.photos[0].url).toBe(PNG);
+    expect(s().dailyLog!.photos[0].id).toBeUndefined();
+    expect(s().dailyLog!.progress).toBe(before + 1);
   });
 
   it('ignores a non-data-URL string (no photo added)', () => {
     s().addProgressPhoto('not-a-data-url');
-    expect(s().dailyLog.photos).toHaveLength(0);
+    expect(s().dailyLog!.photos).toHaveLength(0);
   });
 });
 
@@ -35,8 +35,8 @@ describe('addProgressPhoto — API mode', () => {
     expect(gw.uploadMedia).toHaveBeenCalledWith({ kind: 'progress', mime: 'image/png', data: 'iVBORw0KGgo=' });
 
     await flush();
-    expect(s().dailyLog.photos[0]).toEqual({ id: 'm1', url: '/media/m1' });
-    expect(s().dailyLog.progress).toBe(3); // seed 2 + 1
+    expect(s().dailyLog!.photos[0]).toEqual({ id: 'm1', url: '/media/m1' });
+    expect(s().dailyLog!.progress).toBe(3); // seed 2 + 1
   });
 
   it('surfaces a failure without adding a photo', async () => {
@@ -45,7 +45,7 @@ describe('addProgressPhoto — API mode', () => {
 
     s().addProgressPhoto(PNG);
     await flush();
-    expect(s().dailyLog.photos).toHaveLength(0);
+    expect(s().dailyLog!.photos).toHaveLength(0);
     expect(s().toast).toMatch(/could not upload/i);
   });
 });
