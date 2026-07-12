@@ -176,7 +176,7 @@ async function main(): Promise<void> {
     await prisma.inspection.create({ data: { ...rest, projectId: PROJECT_ID, items: { create: items } } });
   }
 
-  await prisma.dailyLog.create({
+  const seededLog = await prisma.dailyLog.create({
     data: {
       projectId: PROJECT_ID, date: '03 Jul 2026', checkedIn: false, checkinTime: null, submitted: false, progress: 2,
       crew: {
@@ -188,8 +188,11 @@ async function main(): Promise<void> {
           { trade: 'Helper / Beldar', count: 5, order: 4 },
         ],
       },
-      materials: { create: SEED_LOG_MATERIALS },
     },
+  });
+  // materials carry canonical project ownership (composite same-project FKs)
+  await prisma.siteMaterial.createMany({
+    data: SEED_LOG_MATERIALS.map((m) => ({ ...m, projectId: PROJECT_ID, dailyLogId: seededLog.id })),
   });
 
   // Project A carries at least one record of every kind the acceptance suite
