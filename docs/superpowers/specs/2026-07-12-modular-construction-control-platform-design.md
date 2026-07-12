@@ -534,6 +534,23 @@ Add supplier/contractor portals and promotion of guest Companies to their own Or
 
 Implement reviewed adapters after each external contract and ownership model is separately approved.
 
+### Phase Intent Map
+
+The phases extend the current product; none replaces the existing development. Each phase must leave a usable product and create dependable facts for the next phase.
+
+| Phase | Why it exists | Operational outcome | Why this order matters |
+|---|---|---|---|
+| 0 - Safety baseline | A multi-project system is unsafe if identity, records, dates or late responses can cross project boundaries. New modules would multiply unreliable data. | Users can trust that every visible and stored operational fact belongs to the selected, authorized project; PostgreSQL and browser tests prove it. | Every later workflow depends on project identity, reference integrity and real dates. |
+| 1 - Complete existing pillars | Decisions, drawings, inspections and activities already exist but their change, evidence and completion loops are incomplete. | Design intent, client consent, field execution, rejection, corrective work and final sign-off form one auditable loop. | Procurement and payment must rely on approved specification and accepted work, not incomplete status flags. |
+| 2 - Platform modularization | Continued growth inside one store/snapshot and direct cross-module calls will make every new capability harder to add safely. | Existing modules gain explicit ownership, commands, events, outbox delivery, projections and independently testable boundaries while remaining one deployable application. | Materials, labour and commercial modules need stable connectors to existing facts without restructuring the application each time. |
+| 3 - Material readiness | Work currently cannot answer what is required, compared, ordered, promised, received, stored, reserved, issued, consumed or short. | A requirement flows through vendor comparison and purchase order to delivery, stock and Activity readiness; one entry updates schedule, store and forecast views. | Labour and commercial control need trustworthy material demand, commitments, receipts and consumption. |
+| 4 - Labour readiness | Material availability alone does not make work executable; crew demand, commitment and attendance must align with the same Activity and date. | Planned crew demand, contractor commitment, allocation, attendance and productivity determine labour readiness and expose material-labour mismatches before work is lost. | Cost and payment evaluation require actual labour and progress evidence, not only plans. |
+| 5 - Commercial control | Vendor bills and payments cannot be trusted without approved orders, accepted delivery, measured work and certification. | Budget, commitment, measurement, bill verification, certification, payment approval, payment status and cash forecast trace to operational evidence. | External parties should not receive self-service commercial access until internal controls and authority are proven. |
+| 6 - External collaboration | Pilot workflows initially use Vitan-owned projects and invited guests; broader adoption requires controlled supplier and contractor participation. | Suppliers and contractors update only their authorized commitments, deliveries, documents and claims; a guest company can later become an owning organization without data migration. | Stable internal workflows, permissions and audit trails are prerequisites for exposing the product to other companies. |
+| 7 - Accounting and RedBracket | PMCvitan should exchange approved operational/commercial facts without becoming a tax ledger or coupling databases. | Versioned adapters synchronize explicitly owned entities and published facts with reconciliation, idempotency and audit history. | Integration contracts can only be correct after PMCvitan's canonical records and RedBracket's reviewed ownership/API model are stable. |
+
+At the start of every phase, Claude Code must restate the applicable row in concrete project terms and identify which facts produced by earlier phases it consumes. At phase completion, it must identify the canonical facts and events unlocked for the following phase.
+
 ## 25. Pilot Acceptance Criteria
 
 The pilot is successful when:
