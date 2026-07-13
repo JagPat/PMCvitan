@@ -10,18 +10,22 @@ Baseline commands were run on 2026-07-12; the remediation re-runs on 2026-07-13
 
 - Base revision (`git merge-base origin/main HEAD`): `75101583428da2da60a9b2840875e02f1d0bb557` (merge of PR #87)
 - Task 8 head: `bc90390f4490844211c856d669e86abc3c85ef59` — merged into `main` as `aa7b12c` ([PR #88](https://github.com/JagPat/PMCvitan/pull/88))
-- **Effective head after remediation**: `main` at `bea314c` (merge of PR #94) plus the
-  round-2 PR iii branch this packet ships on (seed canonical dates + this update) —
-  the round-3 gate should run against `main` once PR iii merges.
-- Round-1 remediation, merged into `main` (immutable merge SHAs):
-  - [PR #89](https://github.com/JagPat/PMCvitan/pull/89) `80fe22d` — scope/session pinning (findings 1, 3, 6)
-  - [PR #90](https://github.com/JagPat/PMCvitan/pull/90) `8b8e47a` — live authorization on global routes (finding 2)
-  - [PR #91](https://github.com/JagPat/PMCvitan/pull/91) `f103925` — database tenant constraints (finding 4)
-  - [PR #92](https://github.com/JagPat/PMCvitan/pull/92) `a1a8296` — canonical dates + evidence (findings 5, 7)
-- Round-2 remediation, merged into `main`:
-  - [PR #93](https://github.com/JagPat/PMCvitan/pull/93) `aefe9b0` — outbox final-replay scope guard (R2 finding 1)
-  - [PR #94](https://github.com/JagPat/PMCvitan/pull/94) `bea314c` — merged-window validation (R2 finding 2)
-  - PR iii (this branch) — seed canonical dates + packet refresh (R2 findings 3, 4)
+- **Reviewed / effective head**: `main` at `e4d879d7275b505894013f1642a1e38f96c154cc`
+  (merge of [PR #95](https://github.com/JagPat/PMCvitan/pull/95)) — the immutable tree
+  the round-3 gate reviewed. The one remaining round-3 finding is documentation-only
+  and is fixed by the docs-only correction PR this packet revision ships in.
+- Remediation PRs — heads and merges recorded separately (a **head** is the reviewed
+  branch tip; a **merge** is the immutable merge commit on `main`):
+
+  | PR | Round | Scope | Head | Merge |
+  |---|---|---|---|---|
+  | [#89](https://github.com/JagPat/PMCvitan/pull/89) | 1 | scope/session pinning (findings 1, 3, 6) | `80fe22d69f448d28cd23bf7fea53aac72ffe7f85` | `988007e85793cd6f1105c984ca984b0d100406c7` |
+  | [#90](https://github.com/JagPat/PMCvitan/pull/90) | 1 | live authorization on global routes (finding 2) | `8b8e47ae57615d1b69b6bf69c826389cb66a0c9d` | `4d8fc00f6fa48dd9c5be80a4612940867e816cdc` |
+  | [#91](https://github.com/JagPat/PMCvitan/pull/91) | 1 | database tenant constraints (finding 4) | `f1039258face5f821a858783eb6407a897522301` | `8510579f91f1f19a08133e5d4fa0db30a18816f9` |
+  | [#92](https://github.com/JagPat/PMCvitan/pull/92) | 1 | canonical dates + evidence (findings 5, 7) | `a1a82961fc91e08515096cdc4c0e95c436719deb` | `5e3b827bf39bf48ce81fb8049fc408c65b8be629` |
+  | [#93](https://github.com/JagPat/PMCvitan/pull/93) | 2 | outbox final-replay scope guard (R2 finding 1) | `9c99770dc6bca2f60510d18951e446b039a3a551` | `aefe9b09068b175eee4218a3e1914c6d54cf4ffd` |
+  | [#94](https://github.com/JagPat/PMCvitan/pull/94) | 2 | merged-window validation (R2 finding 2) | `9378dc7febcf20ad0134d9cce67d1c51c812f1ef` | `bea314c9fe51467a92c53cc3217974ed6b87e2f5` |
+  | [#95](https://github.com/JagPat/PMCvitan/pull/95) | 2 | seed canonical dates + packet refresh (R2 findings 3, 4) | `3dc2ed6408eb8f90231d174f236b969530698693` | `e4d879d7275b505894013f1642a1e38f96c154cc` |
 - PRs/commits by task:
   1. Task 1 — [PR #81](https://github.com/JagPat/PMCvitan/pull/81) · `ab7969a` docs: install phase zero execution guardrails
   2. Task 2 — [PR #82](https://github.com/JagPat/PMCvitan/pull/82) · `8a0fa6b` fix: make project scope transitions atomic
@@ -88,6 +92,7 @@ Post-remediation re-run (2026-07-13, round-2 branch):
   - round 1 head `a1a8296` (PR #92): <https://github.com/JagPat/PMCvitan/actions/runs/29213398781>
   - PR #93 head `9c99770`: <https://github.com/JagPat/PMCvitan/actions/runs/29219617947>; merge `aefe9b0`: <https://github.com/JagPat/PMCvitan/actions/runs/29219971930>
   - PR #94 head `9378dc7`: <https://github.com/JagPat/PMCvitan/actions/runs/29220714291>; merge `bea314c`: <https://github.com/JagPat/PMCvitan/actions/runs/29220773372>
+  - PR #95 head `3dc2ed6`: <https://github.com/JagPat/PMCvitan/actions/runs/29221000340>; merge `e4d879d` — the reviewed final `main`: <https://github.com/JagPat/PMCvitan/actions/runs/29221303631>
 
 ## Independent Review — Round 1 (Codex) and Remediation
 
@@ -98,10 +103,10 @@ branch `claude/vitan-pmc-design-epa2rp`:
 
 | Findings | Remediation | Proof |
 |---|---|---|
-| 1 (outbox replay), 3 (unguarded raw-DTO replies), 6 (session identity not in scope) | [PR #89](https://github.com/JagPat/PMCvitan/pull/89), merged `80fe22d` | `apps/web/tests/scope-identity.test.ts` (6 scenarios, failing-first) |
-| 2 (removed member kept global-delete access) | [PR #90](https://github.com/JagPat/PMCvitan/pull/90), merged `8b8e47a` | `test/integration/global-route-authz.test.ts` (reproduced 200 → fixed 403) |
-| 4 (node/phase/material single-column FKs) | [PR #91](https://github.com/JagPat/PMCvitan/pull/91), merged `f103925` + migration `20260905000000_phase0_tenant_constraints` | `test/integration/tenant-constraints.test.ts` (raw-SQL forgeries rejected; controls pass); corrupt-copy refusal proven |
-| 5 (date validation/writes), 7 (evidence gaps) | [PR #92](https://github.com/JagPat/PMCvitan/pull/92), merged `a1a8296` + this packet | contract tests (impossible dates, reversed windows, junk time zones → 400); phases now write real dates |
+| 1 (outbox replay), 3 (unguarded raw-DTO replies), 6 (session identity not in scope) | [PR #89](https://github.com/JagPat/PMCvitan/pull/89), head `80fe22d`, merged `988007e` | `apps/web/tests/scope-identity.test.ts` (6 scenarios, failing-first) |
+| 2 (removed member kept global-delete access) | [PR #90](https://github.com/JagPat/PMCvitan/pull/90), head `8b8e47a`, merged `4d8fc00` | `test/integration/global-route-authz.test.ts` (reproduced 200 → fixed 403) |
+| 4 (node/phase/material single-column FKs) | [PR #91](https://github.com/JagPat/PMCvitan/pull/91), head `f103925`, merged `8510579` + migration `20260905000000_phase0_tenant_constraints` | `test/integration/tenant-constraints.test.ts` (raw-SQL forgeries rejected; controls pass); corrupt-copy refusal proven |
+| 5 (date validation/writes), 7 (evidence gaps) | [PR #92](https://github.com/JagPat/PMCvitan/pull/92), head `a1a8296`, merged `5e3b827` + this packet | contract tests (impossible dates, reversed windows, junk time zones → 400); phases now write real dates |
 
 ## Independent Review — Round 2 (Codex) and Remediation
 
@@ -113,10 +118,31 @@ findings. Each was reproduced first with the review's own probes, then fixed:
 |---|---|---|
 | 1 (P1) — a project switch during the FINAL queued outbox op bypassed the pre-iteration scope check; normal reconciliation replaced and persisted the new project's queue as empty | [PR #93](https://github.com/JagPat/PMCvitan/pull/93), merged `aefe9b0`: `flushOutbox` re-checks (scope, session token) after the loop; any movement persists the remainder under the ORIGINAL scope key and leaves the new scope untouched | `scope-identity.test.ts` › "a switch during the FINAL queued op never clobbers the new scope queue" — red before (B's queue replaced/persisted empty), green after |
 | 2 (P1) — mixed ISO/offset creates and partial updates validated each representation separately; the merged window could persist reversed (phase `2026-08-01→2026-06-01` 201; activity same; partial update `2026-08-01→2026-01-01` 200) | [PR #94](https://github.com/JagPat/PMCvitan/pull/94), merged `bea314c`: phase/activity create assert the RESOLVED window, activity update asserts the MERGED result; also fixed a start-only PATCH silently clearing the stored end date (per-edge spreads) | `test/integration/merged-window.test.ts` — the three review probes verbatim vs live PostgreSQL, all red before (reversed windows persisted) and 400-not-persisted after, + an end-date-not-cleared regression |
-| 3 (P2) — the seed bypassed canonical dates: fresh migrate+seed left null anchors on both projects, null phase/activity dates, null `logDate` | PR iii (this branch): the seed derives civil dates the way the services do (ambli anchor `2026-06-01`, window to `2026-09-30`, phase/activity planned+actual dates, `logDate 2026-07-03`, `inspectionDate` with derived display, anchor on the empty fixture); `ensure-accounts`' demo backfill fills a null anchor create-only and its phase upsert carries dates | `tests/e2e-api/canonical-dates.spec.ts` — reads the seeded snapshots over the real stack; red against the old seed (all fields null, matching the review), green now. Harness note: the suite's 15 real sign-ins hit the login limiter exactly; the harness sets `THROTTLE_DISABLED`, honored only outside production (unit-tested both ways) |
-| 4 (P3) — this packet was stale (old head, 20 vs 21 migrations, pre-remediation totals, no immutable remediation SHAs/CI evidence) | This update (Revisions, migration count, Verification re-run, both remediation tables) | — |
+| 3 (P2) — the seed bypassed canonical dates: fresh migrate+seed left null anchors on both projects, null phase/activity dates, null `logDate` | [PR #95](https://github.com/JagPat/PMCvitan/pull/95), head `3dc2ed6`, merged `e4d879d`: the seed derives civil dates the way the services do (ambli anchor `2026-06-01`, window to `2026-09-30`, phase/activity planned+actual dates, `logDate 2026-07-03`, `inspectionDate` with derived display, anchor on the empty fixture); `ensure-accounts`' demo backfill fills a null anchor create-only and its phase upsert carries dates | `tests/e2e-api/canonical-dates.spec.ts` — reads the seeded snapshots over the real stack; red against the old seed (all fields null, matching the review), green now. Harness note: the suite's 15 real sign-ins hit the login limiter exactly; the harness sets `THROTTLE_DISABLED`, honored only outside production (unit-tested both ways) |
+| 4 (P3) — this packet was stale (old head, 20 vs 21 migrations, pre-remediation totals, no immutable remediation SHAs/CI evidence) | [PR #95](https://github.com/JagPat/PMCvitan/pull/95) refreshed the packet; the round-3 review found that refresh still described the pre-merge branch state, so the docs-only correction PR this revision ships in completes it | — |
 
-The full independent gate (round 3) must re-run on `main` once PR iii merges.
+## Independent Review — Round 3 (Codex)
+
+Round 3 reviewed remote `main` at `e4d879d7275b505894013f1642a1e38f96c154cc` (the
+merge of PR #95) in a clean detached worktree — full result recorded on
+[PR #95](https://github.com/JagPat/PMCvitan/pull/95#issuecomment-4954456632).
+**Verdict: not cleared, documentation-only.** All three round-2 runtime findings
+are closed and no P0/P1/P2 code, security, tenancy, date, migration or correctness
+defect remains. Independent verification on that head: `pnpm check` (web 170/170,
+api 286/286), PostgreSQL integration 20/20, API-backed Playwright 9/9,
+final-merge CI all four jobs green; live probes confirmed the outbox final-op
+guard, the reversed/partial merged-window rejections (with the valid start-only
+PATCH preserving its end date), the canonical seed dates, immediate token
+invalidation on membership removal, raw-SQL cross-project forgery rejection, and
+the legacy-copy backfill + corrupt-date migration refusal.
+
+The single remaining finding is THIS PACKET: it still described the pre-merge
+branch state ("PR iii"), named `bea314c` instead of the reviewed head, labelled
+PR head SHAs as merge SHAs, and omitted PR #95/final-`main` CI evidence. The
+docs-only correction PR carrying this revision fixes exactly that — no runtime
+changes — and per the round-3 result, packet/history verification plus green CI
+on that correction is sufficient to clear the gate; no further runtime
+remediation round is required.
 
 ## Known Residual Risks
 
