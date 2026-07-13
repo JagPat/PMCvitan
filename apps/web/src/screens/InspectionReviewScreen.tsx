@@ -6,6 +6,7 @@ import { Eyebrow, ResultChip, Button, Modal } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { X, Plus, Minus } from '@/lib/icons';
 import { swatch as swatchGradient, can, type Review } from '@vitan/shared';
+import { resolveMediaUrl } from '@/data/apiGateway';
 import styles from './responsive.module.css';
 
 export function InspectionReviewScreen() {
@@ -98,8 +99,14 @@ export function InspectionReviewScreen() {
             const border = it.rejected ? '#D9B4B0' : it.result === 'FAIL' ? '#E7CBC7' : 'var(--hairline)';
             return (
               <div key={it.name} className={styles.reviewRow} style={{ background: 'var(--panel)', border: `1px solid ${border}`, borderRadius: 12, padding: '16px 18px' }}>
+                {/* the ACTUAL evidence photo when one is linked (Task 4); swatch = legacy placeholder */}
                 <div style={{ width: 130, height: 100, flex: 'none', borderRadius: 8, background: swatchGradient(it.swatch), position: 'relative', overflow: 'hidden' }}>
-                  <span style={{ position: 'absolute', left: 6, bottom: 6, fontFamily: 'var(--font-mono)', fontSize: 8, color: 'rgba(255,255,255,.9)', background: 'rgba(0,0,0,.4)', padding: '1px 5px', borderRadius: 3 }}>PHOTO</span>
+                  {(it.evidence?.length ?? 0) > 0 && (
+                    <img src={resolveMediaUrl(it.evidence![0])} alt={`Evidence — ${it.name}`} data-testid={`review-evidence-${i}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+                  )}
+                  <span style={{ position: 'absolute', left: 6, bottom: 6, fontFamily: 'var(--font-mono)', fontSize: 8, color: 'rgba(255,255,255,.9)', background: 'rgba(0,0,0,.4)', padding: '1px 5px', borderRadius: 3 }}>
+                    {(it.evidence?.length ?? 0) > 1 ? `${it.evidence!.length} PHOTOS` : 'PHOTO'}
+                  </span>
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>

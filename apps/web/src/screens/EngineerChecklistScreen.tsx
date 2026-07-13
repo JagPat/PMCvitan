@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import { useRef, type CSSProperties } from 'react';
 import { useStore } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile } from '@/components';
 import { Camera } from '@/lib/icons';
@@ -24,9 +24,27 @@ function toggleStyle(active: boolean, solid: string, text: string): CSSPropertie
 export function EngineerChecklistScreen() {
   const checklist = useStore((s) => s.checklist);
   const setItem = useStore((s) => s.setItem);
-  const addPhoto = useStore((s) => s.addPhoto);
   const setNote = useStore((s) => s.setNote);
   const submitInspection = useStore((s) => s.submitInspection);
+  const addChecklistEvidence = useStore((s) => s.addChecklistEvidence);
+  const failedEvidence = useStore((s) => s.failedEvidence);
+  const pendingEvidenceCount = useStore((s) => s.pendingEvidenceCount);
+  const retryFailedEvidence = useStore((s) => s.retryFailedEvidence);
+  const deleteFailedEvidence = useStore((s) => s.deleteFailedEvidence);
+  // one hidden file input, re-targeted per item (Task 4: photos are REAL evidence rows)
+  const fileRef = useRef<HTMLInputElement>(null);
+  const targetIdx = useRef(0);
+  const pickEvidence = (i: number) => {
+    targetIdx.current = i;
+    fileRef.current?.click();
+  };
+  const onPicked = (file: File | null) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { void addChecklistEvidence(targetIdx.current, String(reader.result)); };
+    reader.readAsDataURL(file);
+    if (fileRef.current) fileRef.current.value = '';
+  };
 
   // honest absence: no fabricated blank checklist — the PMC simply hasn't issued one
   if (!checklist) {
@@ -67,7 +85,8 @@ export function EngineerChecklistScreen() {
                   <button onClick={set(i, 'fail')} style={toggleStyle(it.state === 'fail', 'var(--red-solid)', 'var(--red-solid)')}>Fail</button>
                   <button onClick={set(i, 'na')} style={toggleStyle(it.state === 'na', '#6b665c', '#6b665c')}>N.A.</button>
                   <button
-                    onClick={() => addPhoto(i)}
+                    onClick={() => pickEvidence(i)}
+                    data-testid={`evidence-${i}`}
                     aria-label="Add photo"
                     style={{
                       flex: 1,
@@ -87,9 +106,16 @@ export function EngineerChecklistScreen() {
                     {it.photos > 0 && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{it.photos}</span>}
                   </button>
                 </div>
+                {(it.evidence?.length ?? 0) > 0 && (
+                  <div style={{ display: 'flex', gap: 6, marginTop: 9, flexWrap: 'wrap' }}>
+                    {it.evidence!.map((url, k) => (
+                      <img key={k} src={url} alt={`Evidence ${k + 1} — ${it.name}`} style={{ width: 52, height: 52, objectFit: 'cover', borderRadius: 8, border: '1px solid rgba(35,33,28,.15)' }} />
+                    ))}
+                  </div>
+                )}
                 {it.state === 'fail' && (
                   <div style={{ marginTop: 10, background: '#FBF0EF', border: '1px solid #E7CBC7', borderRadius: 9, padding: '9px 11px' }}>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--red-solid)', letterSpacing: '.1em' }}>FAIL REQUIRES NOTE + PHOTO</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--red-solid)', letterSpacing: '.1em' }}>FAIL REQUIRES NOTE + PHOTO EVIDENCE</div>
                     <input
                       value={it.note}
                       onChange={(e) => setNote(i, e.target.value)}
@@ -102,6 +128,25 @@ export function EngineerChecklistScreen() {
             );
           })}
         </div>
+
+        {pendingEvidenceCount > 0 && (
+          <div style={{ marginTop: 12, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--amber-text)' }} data-testid="evidence-pending">
+            {pendingEvidenceCount} photo{pendingEvidenceCount === 1 ? '' : 's'} saved offline — will upload when signal returns
+          </div>
+        )}
+        {failedEvidence.length > 0 && (
+          <div style={{ marginTop: 12, background: '#FBF0EF', border: '1px solid #E7CBC7', borderRadius: 12, padding: '11px 13px' }} data-testid="evidence-failed">
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, color: 'var(--red-solid)', letterSpacing: '.1em' }}>PHOTOS THE SERVER REFUSED — CHOOSE FOR EACH</div>
+            {failedEvidence.map((f) => (
+              <div key={f.clientKey} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                <span style={{ flex: 1, fontSize: 12.5 }}>{f.reason}</span>
+                <button onClick={() => void retryFailedEvidence(f.clientKey)} data-testid={`evidence-retry-${f.clientKey}`} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--ink)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Retry</button>
+                <button onClick={() => void deleteFailedEvidence(f.clientKey)} data-testid={`evidence-delete-${f.clientKey}`} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--red-solid)', color: 'var(--red-solid)', background: '#fff', cursor: 'pointer', fontSize: 12 }}>Delete</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={(e) => onPicked(e.target.files?.[0] ?? null)} data-testid="evidence-file-input" />
       </div>
 
       <div className={styles.stickyFoot} style={{ padding: '12px 16px 20px', borderTop: '1px solid rgba(35,33,28,.1)', background: 'var(--panel)' }}>

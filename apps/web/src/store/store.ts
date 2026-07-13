@@ -61,6 +61,7 @@ import { emptyProjectData, isCurrentProjectScope, type ProjectLoadState, type Pr
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID, API_BASE } from '@/data/apiGateway';
+import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 
 /**
@@ -120,6 +121,10 @@ export interface AppState {
   online: boolean;
   syncQueue: string[];
   outbox: OutboxOp[];
+  /** FAILED evidence (terminal non-dedupe rejection) awaiting the user's Retry/Delete (Task 4) */
+  failedEvidence: { clientKey: string; reason: string; mime: string }[];
+  /** evidence photos durably saved offline, awaiting upload (Task 4) */
+  pendingEvidenceCount: number;
   access: AccessState;
   activities: Activity[];
   dailyLog: DailyLog | null; // null = no daily log started for this project
@@ -179,6 +184,15 @@ export interface AppActions {
   // inspection (engineer checklist)
   setItem: (idx: number, val: Exclude<ItemState, null>) => void;
   addPhoto: (idx: number) => void;
+  /** Capture REAL evidence for a checklist item (Task 4): durably stored (IndexedDB)
+   *  BEFORE any success message, uploaded now or on reconnect, exactly once. */
+  addChecklistEvidence: (idx: number, dataUrl: string) => Promise<void>;
+  /** The user's Retry on a failed evidence photo — re-queues with the SAME clientKey. */
+  retryFailedEvidence: (clientKey: string) => Promise<void>;
+  /** The user's explicit Delete of a failed evidence photo — the ONLY non-server path that drops bytes. */
+  deleteFailedEvidence: (clientKey: string) => Promise<void>;
+  /** Refresh the pending/failed evidence mirrors from IndexedDB (reload/scope change). */
+  hydrateEvidence: () => Promise<void>;
   setNote: (idx: number, txt: string) => void;
   submitInspection: () => void;
   // inspection (pmc review)
@@ -341,6 +355,8 @@ export function getInitialState(): AppState {
     online: true,
     syncQueue: [],
     outbox: [],
+    failedEvidence: [],
+    pendingEvidenceCount: 0,
     access: freshAccess(),
     activities: structuredClone(SEED_ACTIVITIES),
     dailyLog: structuredClone(SEED_DAILY_LOG),
@@ -479,6 +495,30 @@ export const useStore = create<Store>()(
         globalThis.localStorage?.setItem(outboxKey(), JSON.stringify(get().outbox));
       } catch {
         /* storage unavailable — the in-session outbox still works */
+      }
+    };
+
+    // Evidence bytes share the outbox's user scope (WEB-02): the IndexedDB entries are
+    // keyed (sub, projectId, clientKey), so a user/project switch neither loses nor leaks.
+    const evidenceScope = (): string => {
+      let sub = 'anon';
+      const token = get().sessionToken;
+      if (token) {
+        try {
+          sub = (JSON.parse(atob(token.split('.')[1])) as { sub?: string }).sub ?? 'anon';
+        } catch { /* anonymous scope */ }
+      }
+      return sub;
+    };
+    /** Refresh the FAILED-evidence mirror the UI renders (Retry/Delete surface). */
+    const refreshFailedEvidence = async (): Promise<void> => {
+      try {
+        const entries = await listEvidence(evidenceScope(), get().activeProjectId);
+        const failed = entries.filter((e) => e.status === 'failed').map((e) => ({ clientKey: e.clientKey, reason: e.failReason ?? 'upload rejected', mime: e.mime }));
+        const pending = entries.filter((e) => e.status === 'pending').length;
+        set((s) => { s.failedEvidence = failed; s.pendingEvidenceCount = pending; });
+      } catch {
+        /* evidence store unavailable — the mirrors stay empty */
       }
     };
 
@@ -752,6 +792,94 @@ export const useStore = create<Store>()(
         it.state = it.state === val ? null : val;
       }),
     addPhoto: (idx) => set((s) => { const it = s.checklist?.items[idx]; if (it) it.photos += 1; }),
+    addChecklistEvidence: async (idx, dataUrl) => {
+      const c = get().checklist;
+      const item = c?.items[idx];
+      if (!c || !item) return;
+      const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
+      if (!m) {
+        get().flash('Could not read that photo — please try again.');
+        return;
+      }
+      const [, mime, base64] = m;
+      // hard size cap (the capture flow should downscale before calling this;
+      // an oversize photo is REFUSED explicitly, never silently truncated)
+      if (base64.length > 5_600_000) { // ~4 MB decoded
+        get().flash('That photo is too large (over 4 MB) — retake at a lower resolution.');
+        return;
+      }
+      // demo (no gateway): the counter + a local thumbnail are the whole story
+      if (!gateway) {
+        set((s) => {
+          const it = s.checklist?.items[idx];
+          if (it) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
+        });
+        get().flash('Photo attached (demo).');
+        return;
+      }
+      if (!item.id) {
+        get().flash('This checklist predates evidence capture — reload the project and retry.');
+        return;
+      }
+      const clientKey = (globalThis.crypto?.randomUUID?.() ?? `ev-${Math.random().toString(36).slice(2)}`);
+      const meta = { inspectionId: c.id, inspectionItemId: item.id };
+
+      if (!get().online) {
+        // OFFLINE: durability is part of the command result — "saved offline" is
+        // shown ONLY after the IndexedDB write commits; a quota/write failure (or
+        // no IndexedDB at all) surfaces as an explicit failure and queues NOTHING.
+        if (!evidenceAvailable()) {
+          get().flash('Could not save this photo on the device (offline storage unavailable) — retake when you have signal.');
+          return;
+        }
+        try {
+          await putEvidence({ userScope: evidenceScope(), projectId: get().activeProjectId, clientKey, mime, data: base64, ...meta });
+        } catch {
+          get().flash('Could not save this photo on the device — free space and retake.');
+          return;
+        }
+        set((s) => {
+          s.outbox.push({ t: 'uploadEvidence', scope: evidenceScope(), clientKey });
+          s.syncQueue.push('Evidence photo');
+          const it = s.checklist?.items[idx];
+          if (it) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
+          s.pendingEvidenceCount += 1;
+        });
+        persistOutbox();
+        get().flash('Photo saved offline — will upload when signal returns.');
+        return;
+      }
+      // ONLINE: upload now with the idempotency key; reconcile from the snapshot
+      const scope = currentScope();
+      try {
+        await gateway.uploadMedia({ kind: 'inspection', mime, data: base64, clientKey, ...meta });
+        if (!scopeStillCurrent(scope)) return;
+        const snap = await gateway.snapshot();
+        applySnapshot(snap, scope);
+        get().flash('Evidence photo uploaded and linked to the item.');
+      } catch {
+        get().flash('Could not upload the photo — check your signal and try again.');
+      }
+    },
+    retryFailedEvidence: async (clientKey) => {
+      const revived = await retryEvidence(evidenceScope(), get().activeProjectId, clientKey).catch(() => null);
+      if (!revived) return;
+      set((s) => {
+        s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey);
+        s.outbox.push({ t: 'uploadEvidence', scope: evidenceScope(), clientKey }); // SAME key — the server dedupes
+        s.syncQueue.push('Evidence photo (retry)');
+        s.pendingEvidenceCount += 1;
+      });
+      persistOutbox();
+      if (get().online) get().flushOutbox();
+    },
+    deleteFailedEvidence: async (clientKey) => {
+      // the user's explicit decision — the only non-server path that drops bytes
+      await deleteEvidence(evidenceScope(), get().activeProjectId, clientKey).catch(() => {});
+      set((s) => { s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey); });
+      get().flash('Photo deleted.');
+    },
+    hydrateEvidence: async () => refreshFailedEvidence(),
     setNote: (idx, txt) => set((s) => { const it = s.checklist?.items[idx]; if (it) it.note = txt; }),
     submitInspection: () => {
       const c = get().checklist;
@@ -1719,6 +1847,8 @@ export const useStore = create<Store>()(
       if (dropped > 0) parts.push(`${dropped} could not be applied and ${dropped > 1 ? 'were' : 'was'} discarded`);
       if (remaining.length > 0) parts.push(`${remaining.length} still pending — will retry when you reconnect`);
       if (parts.length) get().flash(parts.join('; ') + '.');
+      // evidence mirrors: uploaded bytes were cleaned up; terminal rejections moved to FAILED
+      void refreshFailedEvidence();
     },
     hydrateOutbox: () => {
       try {

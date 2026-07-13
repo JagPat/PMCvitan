@@ -86,6 +86,10 @@ export type SubmitInspectionInput = z.infer<typeof submitInspectionSchema>;
 export const decideReviewSchema = z.object({
   approve: z.boolean(),
   rejectedItemNames: z.array(z.string()).default([]),
+  // Phase 1 Task 4 (reject only): who corrects the work (defaults to the submitter —
+  // must resolve to an ACTIVE engineer/contractor member) and when it's due.
+  assigneeId: z.string().trim().min(1).optional(),
+  dueInDays: z.number().int().min(1).max(60).optional(),
 });
 export type DecideReviewInput = z.infer<typeof decideReviewSchema>;
 
@@ -113,6 +117,12 @@ export const createMediaSchema = z.object({
   data: z.string().min(1).max(MAX_MEDIA_BASE64, 'image too large'),
   decisionId: z.string().optional(),
   dailyLogId: z.string().optional(),
+  // Evidence linkage (Phase 1 Task 4): the inspection item this photo proves.
+  // An item requires its inspection (service + DB CHECK enforce it).
+  inspectionId: z.string().trim().min(1).optional(),
+  inspectionItemId: z.string().trim().min(1).optional(),
+  // PROJECT-scoped idempotency key for offline replays — same key, same photo, one row.
+  clientKey: z.string().trim().min(1).max(120).optional(),
   // Location spine: the place this photo shows (a location-tree node). Optional — an
   // unplaced photo still uploads; a placed one appears in that location's Place view.
   nodeId: z.string().trim().min(1).optional(),
@@ -509,6 +519,8 @@ export const createInspectionSchema = z.object({
   items: z.array(z.string().trim().min(1)).min(1).max(20),
   // Location spine: the place this quality check happens (a location-tree node).
   nodeId: z.string().trim().min(1).optional(),
+  // The REQUIREMENT EDGE (Phase 1 Task 4): the Activity this inspection accepts.
+  activityId: z.string().trim().min(1).optional(),
 });
 export type CreateInspectionInput = z.infer<typeof createInspectionSchema>;
 

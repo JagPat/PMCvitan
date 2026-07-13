@@ -214,10 +214,15 @@ export interface PortfolioProject {
 }
 
 export interface ChecklistItem {
+  /** server row id — the capture flow links evidence uploads to THIS item (Task 4) */
+  id?: string;
   name: string;
   state: ItemState;
+  /** DEPRECATED display counter — linked evidence rows are the proof (Task 4) */
   photos: number;
   note: string;
+  /** the item's linked photo evidence as resolvable URLs (Task 4) */
+  evidence?: string[];
 }
 
 export interface Checklist {
@@ -234,6 +239,8 @@ export interface Checklist {
 export interface ReviewItem {
   name: string;
   result: InspectionResult;
+  /** the item's linked photo evidence as resolvable URLs (Task 4) */
+  evidence?: string[];
   swatch: SwatchKey;
   note: string;
   rejected: boolean;
@@ -248,6 +255,8 @@ export interface Review {
   by: string;
   date: string;
   decided: boolean;
+  /** set when this review IS a reinspection — the predecessor it re-checks (Task 4) */
+  reinspectionOfId?: string;
   items: ReviewItem[];
 }
 

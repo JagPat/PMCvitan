@@ -187,6 +187,8 @@ model Membership {
 
   // drawing distributions frozen against this membership (Phase 1 Task 3)
   drawingRecipients DrawingRecipient[]
+  // corrective/reinspection work assigned to this membership (Phase 1 Task 4)
+  inspectionAssignments Inspection[]
 
   @@unique([projectId, userId])
   @@index([userId])
@@ -238,10 +240,26 @@ model Media {
   // for one object. SET NULL so removing a node never deletes the photo. Location spine.
   node       ProjectNode? @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   nodeId     String?
+  // The evidence containment CHAIN (Phase 1 Task 4): (projectId, inspectionId) proves
+  // the inspection belongs to this project; (inspectionId, inspectionItemId) proves the
+  // item belongs to THAT inspection. Raw SQL cannot pair inspection A with an item of
+  // inspection B, and the CHECK "Media_item_requires_inspection" (raw SQL — Prisma can't
+  // express CHECKs) closes the MATCH SIMPLE escape: a non-null item with a NULL
+  // inspection would bypass the composite FK entirely, so it is forbidden outright.
+  inspection       Inspection?     @relation(fields: [projectId, inspectionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  inspectionId     String?
+  inspectionItem   InspectionItem? @relation(fields: [inspectionId, inspectionItemId], references: [inspectionId, id], onDelete: NoAction, onUpdate: NoAction)
+  inspectionItemId String?
+  // PROJECT-SCOPED idempotency for offline replays — the same (projectId, clientKey)
+  // is the same photo, uploaded exactly once. Never a global unique.
+  clientKey  String?
   createdAt  DateTime @default(now())
 
+  @@unique([projectId, id]) // referenced identity (Task 6 override evidence)
+  @@unique([projectId, clientKey])
   @@index([projectId, kind])
   @@index([nodeId])
+  @@index([inspectionId])
 }
 
 // A controlled drawing in the project's register (the source of truth the team
@@ -556,6 +574,8 @@ model Activity {
   nodeId         String?
   order          Int            @default(0)
   drawings       Drawing[]
+  // inspections whose requirement edge names this activity (Phase 1 Task 4)
+  inspections    Inspection[]
 
   @@unique([projectId, id])
   @@index([nodeId])
@@ -593,12 +613,35 @@ model Inspection {
   inspectionDate DateTime? @db.Date // real civil date (Phase 0 Task 6)
   submitted Boolean          @default(false)
   decided   Boolean          @default(false)
+  // The REQUIREMENT EDGE (Phase 1 Task 4): the Activity this inspection accepts.
+  // Composite FK — a cross-project edge is impossible even on a direct write.
+  activity   Activity? @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId String?
+  // A reinspection names its predecessor and inherits its activityId. AT MOST ONE
+  // direct child per rejected inspection — partial unique index
+  // "Inspection_one_reinspection_child" ON ("reinspectionOfId") WHERE NOT NULL
+  // (raw SQL in 20260930000000_phase1_inspection_evidence).
+  reinspectionOf   Inspection?  @relation("Reinspection", fields: [projectId, reinspectionOfId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  reinspectionOfId String?
+  reinspections    Inspection[] @relation("Reinspection")
+  // WHO must correct the work: an ACTIVE engineer/contractor member (service-validated;
+  // the Membership FK is the backstop — memberships are soft-removed, never deleted).
+  assignee   Membership? @relation(fields: [projectId, assigneeId], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  assigneeId String?
+  dueDate    DateTime? @db.Date // real civil due date (decide-day + N days, PMC-overridable)
+  // attribution (Phase 1 global rule): who submitted / decided
+  submittedById   String?
+  submittedByName String?
+  decidedById     String?
+  decidedByName   String?
   // Location spine: where this quality check happens. NodesService unlinks on node
   // delete; the composite FK forbids a cross-project filing at the database.
   node      ProjectNode?     @relation(fields: [projectId, nodeId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   nodeId    String?
   items     InspectionItem[]
+  media     Media[]
 
+  @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 4)
   @@index([nodeId])
 }
 
@@ -610,12 +653,17 @@ model InspectionItem {
   order        Int               @default(0)
   // checklist fields
   state        String? // pass | fail | na
+  // DEPRECATED display derivative (Task 4): real evidence is the LINKED Media rows;
+  // this counter is never proof and never validated against.
   photos       Int               @default(0)
   note         String            @default("")
   // review fields
   result       InspectionResult?
   swatch       String?
   rejected     Boolean           @default(false)
+  media        Media[]
+
+  @@unique([inspectionId, id]) // containment identity for the Media chain (Task 4)
 }
 
 model DailyLog {

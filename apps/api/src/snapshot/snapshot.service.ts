@@ -36,7 +36,14 @@ export class SnapshotService {
         orderBy: { id: 'desc' },
       }),
       this.prisma.activity.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
-      this.prisma.inspection.findMany({ where: { projectId }, include: { items: { orderBy: { order: 'asc' } } } }),
+      this.prisma.inspection.findMany({
+        where: { projectId },
+        include: {
+          items: { orderBy: { order: 'asc' } },
+          // linked evidence rows (Task 4) — serialized as signed serve paths per item
+          media: { select: { id: true, inspectionItemId: true }, orderBy: { createdAt: 'asc' } },
+        },
+      }),
       this.prisma.dailyLog.findFirst({
         where: { projectId },
         include: { crew: { orderBy: { order: 'asc' } }, materials: { orderBy: { order: 'asc' } } },
@@ -179,12 +186,16 @@ export class SnapshotService {
         by: i.by ?? '',
         date: i.date,
         decided: i.decided,
+        // Task 4: a reinspection is labeled by its predecessor in the review queue
+        reinspectionOfId: i.reinspectionOfId ?? undefined,
         items: i.items.map((it) => ({
           name: it.name,
           result: (it.result ?? (it.state === 'fail' ? 'FAIL' : 'PASS')) as 'PASS' | 'FAIL',
           swatch: it.swatch ?? 'concrete',
           note: it.note,
           rejected: it.rejected,
+          // the ACTUAL evidence photos for this item (signed serve paths, Task 4)
+          evidence: i.media.filter((m) => m.inspectionItemId === it.id).map((m) => this.signed.mediaPath(m.id)),
         })),
       }));
     // any inspection already decided with a rejected/failed item ⇒ re-inspection exists
@@ -322,7 +333,14 @@ export class SnapshotService {
             nodeId: checklistRow.nodeId ?? undefined, // location spine
             date: checklistRow.date,
             submitted: checklistRow.submitted,
-            items: checklistRow.items.map((it) => ({ name: it.name, state: it.state, photos: it.photos, note: it.note })),
+            items: checklistRow.items.map((it) => ({
+              id: it.id, // the capture flow links evidence uploads to THIS item (Task 4)
+              name: it.name,
+              state: it.state,
+              photos: it.photos,
+              note: it.note,
+              evidence: checklistRow.media.filter((m) => m.inspectionItemId === it.id).map((m) => this.signed.mediaPath(m.id)),
+            })),
           }
         : null,
       drawings: drawingDtos,
