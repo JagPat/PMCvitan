@@ -401,7 +401,9 @@ model Decision {
   photoSwatch    String
   approvedOption String?
   material       String?
-  approver       String?
+  approver       String? // human-readable approver line (the caller's REAL name since Phase 1 Task 2)
+  approvedById   String? // the approving user's id — real attribution (Phase 1 Task 2)
+  onBehalfOf     String? // 'client' when a PMC approves on the client's behalf — never disguised
   date           String? // display date, e.g. "12 Jun 2026"
   cost           Int? // rupees
   createdAt      DateTime         @default(now())
@@ -448,21 +450,34 @@ model DecisionEvent {
   id         String   @id @default(cuid())
   decision   Decision @relation(fields: [decisionId], references: [id])
   decisionId String
-  type       String // issued | approved | locked | change_requested
-  actor      String
+  type       String // drafted | issued | approved | reapproved | change_requested | change_withdrawn
+  actor      String // legacy display label; actorName is authoritative on new rows
+  actorId    String? // real user identity (Phase 1 Task 2); null on pre-Phase-1 rows
+  actorName  String?
   at         DateTime @default(now())
   payload    Json?
 }
 
+// One reopening of a locked decision. Status machine: 'open' -> 'resolved' (by
+// client re-approval) | 'withdrawn' (by the requester or PMC). EXACTLY ONE open
+// request per decision is enforced by a partial unique index —
+// "ChangeRequest_one_open_per_decision" ON ("decisionId") WHERE status = 'open'
+// (raw SQL in 20260910000000_phase1_change_control; not expressible in Prisma).
+// Legacy rows were backfilled: 'pending' -> 'open' only while their decision was
+// still reopened, else 'resolved' with a null resolution.
 model ChangeRequest {
-  id             String   @id @default(cuid())
-  decision       Decision @relation(fields: [decisionId], references: [id])
+  id             String    @id @default(cuid())
+  decision       Decision  @relation(fields: [decisionId], references: [id])
   decisionId     String
   reason         String
   costImpact     Int // rupees
   timeImpactDays Int
-  status         String   @default("pending")
-  createdAt      DateTime @default(now())
+  status         String    @default("open")
+  requestedById  String? // real requester identity; null on pre-Phase-1 rows
+  resolvedById   String?
+  resolvedAt     DateTime?
+  resolution     String? // 'reapproved' | 'withdrawn'; null on backfilled legacy rows
+  createdAt      DateTime  @default(now())
 }
 
 model Activity {
@@ -630,7 +645,8 @@ model Notification {
 model AuditLog {
   id        String   @id @default(cuid())
   projectId String?
-  actor     String
+  actor     String // legacy display label (role string on pre-Phase-1 rows)
+  actorId   String? // real user identity (Phase 1 Task 2); populated going forward
   action    String
   entity    String
   entityId  String

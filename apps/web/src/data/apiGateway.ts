@@ -547,6 +547,10 @@ export class ApiGateway {
   requestChange(decisionId: string, reason: string, costImpact: number, timeImpactDays: number): Promise<ApiSnapshot> {
     return this.p(`/decisions/${decisionId}/change`, { reason, costImpact, timeImpactDays });
   }
+  /** Withdraw the open change request — the decision re-locks (requester or PMC only). */
+  withdrawChange(decisionId: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/change/withdraw`);
+  }
   startActivity(activityId: string): Promise<ApiSnapshot> {
     return this.p(`/activities/${activityId}/start`);
   }
@@ -655,6 +659,7 @@ export class ApiGateway {
 export type OutboxOp =
   | { t: 'approve'; decisionId: string; optionIndex: number }
   | { t: 'change'; decisionId: string; reason: string; costImpact: number; timeImpactDays: number }
+  | { t: 'changeWithdraw'; decisionId: string }
   | { t: 'submitInspection'; inspectionId: string; items: Checklist['items'] }
   | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemNames: string[] }
   | { t: 'startActivity'; activityId: string }
@@ -688,6 +693,8 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.approveDecision(op.decisionId, op.optionIndex);
     case 'change':
       return gw.requestChange(op.decisionId, op.reason, op.costImpact, op.timeImpactDays);
+    case 'changeWithdraw':
+      return gw.withdrawChange(op.decisionId);
     case 'submitInspection':
       return gw.submitInspection(op.inspectionId, op.items);
     case 'decideReview':

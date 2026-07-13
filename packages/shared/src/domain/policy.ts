@@ -23,6 +23,9 @@ export const ROLE_POLICY = {
   'decision.approve': ['client', 'pmc'],
   // consultants raise change requests to flag a conflict in their discipline (read-mostly otherwise)
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  // withdraw an open change request — endpoint allowlist; the SERVICE narrows it to the
+  // actual requester or the PMC, so the UI must also check requestedById (Phase 1 Task 2)
+  'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

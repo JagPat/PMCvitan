@@ -22,6 +22,12 @@ export function selectPending(s: AppState): Decision[] {
   return s.decisions.filter((d) => d.status === 'pending' && !d.draft);
 }
 
+/** Decisions reopened by a change request — awaiting the client's MANDATORY re-approval
+ *  (Phase 1 Task 2). Work driven by them is gated until the client re-approves. */
+export function selectReapproval(s: AppState): Decision[] {
+  return s.decisions.filter((d) => d.status === 'change' && !d.draft);
+}
+
 /** Decision log is permission-filtered: contractor & engineer never see pending rows.
  *  Private drafts are excluded for everyone — they live only in the Drafts workspace. */
 export function selectLogDecisions(s: AppState): Decision[] {
@@ -220,6 +226,10 @@ export function selectActionItems(s: AppState): ActionItem[] {
 
   if (s.role === 'client' && pending.length) {
     items.push({ key: 'client-pending', title: `${pending.length} decision${plural(pending.length)} awaiting your approval`, detail: names(pending), screen: 'client-decisions', cta: 'Review & approve', tone: 'amber' });
+  }
+  if (s.role === 'client' && changes.length) {
+    // a reopened decision BLOCKS the work driven by it until the client re-approves
+    items.push({ key: 'client-reapprove', title: `${changes.length} change request${plural(changes.length)} need${changes.length === 1 ? 's' : ''} your re-approval`, detail: names(changes), screen: 'client-decisions', cta: 'Re-approve', tone: 'red' });
   }
 
   if (s.role === 'engineer') {

@@ -31,7 +31,8 @@ export class SnapshotService {
     const [decisions, activities, inspections, dailyLog, notifications, siteMedia, drawings, phases, companies, nodes, allMaterials] = await Promise.all([
       this.prisma.decision.findMany({
         where: { projectId },
-        include: { options: { orderBy: { order: 'asc' } } },
+        // the OPEN change request travels with a reopened decision (Phase 1 Task 2)
+        include: { options: { orderBy: { order: 'asc' } }, changeRequests: { where: { status: 'open' }, take: 1 } },
         orderBy: { id: 'desc' },
       }),
       this.prisma.activity.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
@@ -103,8 +104,14 @@ export class SnapshotService {
         approvedOption: d.approvedOption ?? undefined,
         material: d.material ?? undefined,
         approver: d.approver ?? undefined,
+        onBehalfOf: d.onBehalfOf ?? undefined,
         date: d.date ?? undefined,
         cost: d.cost ?? undefined,
+        // a reopened decision carries its open request so every surface can show
+        // WHY it awaits re-approval (reason + impacts) without a second query
+        changeRequest: d.status === 'change' && d.changeRequests[0]
+          ? { reason: d.changeRequests[0].reason, costImpact: d.changeRequests[0].costImpact, timeImpactDays: d.changeRequests[0].timeImpactDays, requestedById: d.changeRequests[0].requestedById ?? undefined }
+          : undefined,
         options: d.options.map((o) => ({
           label: o.label,
           key: o.optionKey,

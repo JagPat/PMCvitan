@@ -128,6 +128,8 @@ export const SEED_DECISIONS: Decision[] = [
     cost: 118000,
     photoSwatch: 'quartz',
     options: [],
+    // the OPEN change request that reopened this lock (Phase 1 Task 2) — awaiting re-approval
+    changeRequest: { reason: 'Quartz slab size unavailable — vendor proposes 2-piece joint', costImpact: 0, timeImpactDays: 4 },
   },
 ];
 

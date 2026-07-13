@@ -4,18 +4,17 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
 /**
- * Phase 1 Task 1 — INTEGRATION CHARACTERIZATION against live PostgreSQL.
- * One flow per pillar, exactly as the server behaves at the Phase 1 baseline
- * (main @ 5b101d6). Several of these pin behavior Phase 1 deliberately changes
- * (Tasks 2, 4, 5 must update the matching test in the same PR that changes it):
- *   - approve → lock (409) but the change flow REOPENS the lock;
- *   - the ChangeRequest row is written once and never resolved;
- *   - two CONCURRENT change requests both succeed (no DB-level invariant yet;
- *     the race is made deterministic by a test-only pre-read barrier);
- *   - reject decides the same row and creates NO reinspection;
- *   - complete writes done immediately; the closing inspection has zero items;
+ * Phase 1 — INTEGRATION CHARACTERIZATION against live PostgreSQL. One flow per
+ * pillar, exactly as the server behaves. Task 1 wrote these at the baseline
+ * (main @ 5b101d6); each later task updates ITS pillar in the same PR that
+ * changes the behavior. Decision rows reflect Task 2 (change control): approval
+ * locks with real identity, exactly one OPEN change request may exist (CAS +
+ * partial unique index), and re-approval resolves it. Still pinned as baseline
+ * for Tasks 3/4/5:
+ *   - reject decides the same row and creates NO reinspection (Task 4);
+ *   - complete writes done immediately; the closing inspection has zero items (Task 5);
  *   - a published for_review revision supersedes the for_construction set and
- *     the snapshot serves it as `current`.
+ *     the snapshot serves it as `current` (Task 3).
  */
 describe('phase 1 baseline characterization (integration)', () => {
   let t: TestApp;
@@ -59,30 +58,39 @@ describe('phase 1 baseline characterization (integration)', () => {
     publish: true,
   });
 
-  it('decision pillar: approve locks (409) — but a change request reopens the lock and is never resolved', async () => {
+  it('decision pillar: approve locks (409) with real identity — a change request reopens, re-approval RESOLVES it (Task 2)', async () => {
     expect((await post(`/projects/${f.projectA.id}/decisions`, decisionInput('Counter top'))).status).toBe(201);
     const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId: f.projectA.id, title: 'Counter top' } });
 
     expect((await post(`/projects/${f.projectA.id}/decisions/${d.id}/approve`, { optionIndex: 0 })).status).toBe(201);
     // locked: a second approval conflicts
     expect((await post(`/projects/${f.projectA.id}/decisions/${d.id}/approve`, { optionIndex: 1 })).status).toBe(409);
-    // the recorded approver is the hardcoded role label, not the caller (replaced by Task 2)
-    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } })).approver).toBe('PMC');
+    // the recorded approver is the caller's REAL name (fixture user is named 'member'),
+    // with id + on-behalf marker — a PMC approving records the client's consent openly
+    const locked = await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } });
+    expect(locked.approver).toBe('member');
+    expect(locked.approvedById).toBe(f.memberUser.id);
+    expect(locked.onBehalfOf).toBe('client');
 
     // the change flow reopens the lock…
     expect((await post(`/projects/${f.projectA.id}/decisions/${d.id}/change`, { reason: 'Out of stock', costImpact: 0, timeImpactDays: 2 })).status).toBe(201);
     const reopened = await t.prisma.decision.findUniqueOrThrow({ where: { id: d.id } });
     expect(reopened.status).toBe('change');
-    // …and the ChangeRequest row is born 'pending' with no resolution model at all
+    // …through an OPEN, attributed ChangeRequest
     const cr = await t.prisma.changeRequest.findFirstOrThrow({ where: { decisionId: d.id } });
-    expect(cr.status).toBe('pending');
+    expect(cr.status).toBe('open');
+    expect(cr.requestedById).toBe(f.memberUser.id);
 
-    // re-approval succeeds and leaves the ChangeRequest untouched (never resolved)
+    // mandatory re-approval closes the reopening, attributably
     expect((await post(`/projects/${f.projectA.id}/decisions/${d.id}/approve`, { optionIndex: 1 })).status).toBe(201);
-    expect((await t.prisma.changeRequest.findUniqueOrThrow({ where: { id: cr.id } })).status).toBe('pending');
+    const resolved = await t.prisma.changeRequest.findUniqueOrThrow({ where: { id: cr.id } });
+    expect(resolved.status).toBe('resolved');
+    expect(resolved.resolution).toBe('reapproved');
+    expect(resolved.resolvedById).toBe(f.memberUser.id);
+    expect(resolved.resolvedAt).toBeInstanceOf(Date);
   });
 
-  it('CONCURRENCY characterization: two simultaneous change requests BOTH succeed — no one-open invariant exists (closed by Task 2)', async () => {
+  it('CONCURRENCY: two simultaneous change requests have exactly ONE winner — CAS + partial unique index (Task 2)', async () => {
     expect((await post(`/projects/${f.projectA.id}/decisions`, decisionInput('Bath tiles'))).status).toBe(201);
     const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId: f.projectA.id, title: 'Bath tiles' } });
     expect((await post(`/projects/${f.projectA.id}/decisions/${d.id}/approve`, { optionIndex: 0 })).status).toBe(201);
@@ -115,28 +123,30 @@ describe('phase 1 baseline characterization (integration)', () => {
         post(`/projects/${f.projectA.id}/decisions/${d.id}/change`, { reason: 'racer two', costImpact: 0, timeImpactDays: 0 }),
       ]);
 
-      // both requests passed the pre-read status guard on the same approved row:
-      // the service has no CAS and the database has no partial-unique index, so
-      // DUPLICATE open requests persist
+      // both requests passed the pre-read status guard on the same approved row,
+      // but the CAS transition admits exactly one into the changeRequest.create —
+      // the loser gets a deterministic 409 and exactly ONE open request persists
       expect(reads).toBe(2); // the barrier really coordinated both pre-reads
-      expect(r1.status).toBe(201);
-      expect(r2.status).toBe(201);
-      expect(await t.prisma.changeRequest.count({ where: { decisionId: d.id } })).toBe(2);
+      expect([r1.status, r2.status].sort()).toEqual([201, 409]);
+      expect(await t.prisma.changeRequest.count({ where: { decisionId: d.id } })).toBe(1);
+      expect(await t.prisma.decisionEvent.count({ where: { decisionId: d.id, type: 'change_requested' } })).toBe(1);
     } finally {
       delegate.findUnique = original;
     }
   });
 
-  it('SUPPLEMENT: the database itself permits duplicate pending change requests (no partial-unique index yet)', async () => {
-    // deterministic direct-SQL proof of the missing invariant, independent of any
-    // request scheduling — Task 2's partial unique index makes this second insert throw
+  it('SUPPLEMENT: the DATABASE itself refuses a second open change request (partial unique index, Task 2)', async () => {
+    // deterministic direct-insert proof of the invariant, independent of any request
+    // scheduling or service code — the index is the backstop even for raw writes
     expect((await post(`/projects/${f.projectA.id}/decisions`, decisionInput('Veneer finish'))).status).toBe(201);
     const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId: f.projectA.id, title: 'Veneer finish' } });
-    await t.prisma.changeRequest.create({ data: { decisionId: d.id, reason: 'dup one', costImpact: 0, timeImpactDays: 0 } });
-    await t.prisma.changeRequest.create({ data: { decisionId: d.id, reason: 'dup two', costImpact: 0, timeImpactDays: 0 } });
+    await t.prisma.changeRequest.create({ data: { decisionId: d.id, reason: 'first open', costImpact: 0, timeImpactDays: 0 } });
+    await expect(
+      t.prisma.changeRequest.create({ data: { decisionId: d.id, reason: 'second open', costImpact: 0, timeImpactDays: 0 } }),
+    ).rejects.toMatchObject({ code: 'P2002' });
     const rows = await t.prisma.changeRequest.findMany({ where: { decisionId: d.id } });
-    expect(rows).toHaveLength(2);
-    expect(rows.every((r) => r.status === 'pending')).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('open'); // the new default — a request is born open
   });
 
   it('drawing pillar: a published for_review issue supersedes the for_construction set and the snapshot serves it as current (changed by Task 3)', async () => {
