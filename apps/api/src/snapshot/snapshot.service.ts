@@ -10,6 +10,8 @@ import type { ActivityDto, DecisionDto, PhaseDto, SnapshotDto } from './types';
 const ACTIVITY_STATUS_OUT: Record<string, ActivityDto['status']> = {
   not_started: 'not-started',
   in_progress: 'in-progress',
+  // a completion CLAIM awaiting the PMC's closing sign-off (Phase 1 Task 5)
+  awaiting_signoff: 'awaiting-signoff',
   done: 'done',
   blocked: 'blocked',
 };
@@ -42,6 +44,8 @@ export class SnapshotService {
           items: { orderBy: { order: 'asc' } },
           // linked evidence rows (Task 4) — serialized as signed serve paths per item
           media: { select: { id: true, inspectionItemId: true }, orderBy: { createdAt: 'asc' } },
+          // the activity a CLOSING inspection signs off (Task 5) — labels the review queue
+          activity: { select: { name: true } },
         },
       }),
       this.prisma.dailyLog.findFirst({
@@ -188,6 +192,9 @@ export class SnapshotService {
         decided: i.decided,
         // Task 4: a reinspection is labeled by its predecessor in the review queue
         reinspectionOfId: i.reinspectionOfId ?? undefined,
+        // Task 5: a CLOSING inspection is labeled with the activity it signs off —
+        // approving it is what completes that activity
+        ...(i.closing ? { closing: true, activityId: i.activityId ?? undefined, activityName: i.activity?.name } : {}),
         items: i.items.map((it) => ({
           name: it.name,
           result: (it.result ?? (it.state === 'fail' ? 'FAIL' : 'PASS')) as 'PASS' | 'FAIL',

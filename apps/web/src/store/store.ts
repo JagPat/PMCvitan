@@ -936,13 +936,21 @@ export const useStore = create<Store>()(
       const i = activeReviewIdx();
       if (i < 0) return;
       const review = get().reviews[i];
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemNames: [] }, 'Approve inspection', () => gateway!.decideReview(review.id, true, []), 'Inspection approved. Contractor and client notified.')) return;
+      // Task 5: approving a CLOSING review is the sign-off that completes its activity
+      const msg = review.closing
+        ? `Signed off: ${review.activityName ?? review.title} is complete.`
+        : 'Inspection approved. Contractor and client notified.';
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemNames: [] }, 'Approve inspection', () => gateway!.decideReview(review.id, true, []), msg)) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) s.reviews[j].decided = true;
+        if (review.closing && review.activityId) {
+          const a = s.activities.find((x) => x.id === review.activityId);
+          if (a) a.status = 'done'; // the PMC's acceptance IS the completion
+        }
         s.activeReviewId = review.id; // keep the just-decided review on screen (REVIEWED)
       });
-      get().flash('Inspection approved. Contractor and client notified.');
+      get().flash(msg);
     },
     sendReinspection: () => {
       const i = activeReviewIdx();
@@ -959,6 +967,11 @@ export const useStore = create<Store>()(
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) s.reviews[j].decided = true;
+        if (review.closing && review.activityId) {
+          // Task 5: rejecting the closing sign-off returns the activity to execution
+          const a = s.activities.find((x) => x.id === review.activityId);
+          if (a) a.status = 'in-progress';
+        }
         s.activeReviewId = review.id;
       });
       get().flash(n + ' re-inspection task(s) created with due dates.');
@@ -1589,17 +1602,35 @@ export const useStore = create<Store>()(
       get().flash('Activity started — planned dates now tracking against actual.');
     },
     completeActivity: (id) => {
-      if (runRemoteOrQueue({ t: 'completeActivity', activityId: id }, 'Complete ' + id, () => gateway!.completeActivity(id), 'Marked complete — a closing inspection was auto-created for sign-off.')) return;
+      // Task 5: completion is a CLAIM — the activity parks in awaiting-signoff and
+      // only the PMC's approval of the linked closing inspection makes it done
+      if (runRemoteOrQueue({ t: 'completeActivity', activityId: id }, 'Complete ' + id, () => gateway!.completeActivity(id), 'Completion claimed — the PMC’s closing sign-off will mark it done.')) return;
       const act = get().activities.find((a) => a.id === id);
       set((s) => {
         const a = s.activities.find((x) => x.id === id);
         if (a) {
-          a.status = 'done';
+          a.status = 'awaiting-signoff';
           a.ae = s.todayDay;
         }
-        s.notifications.unshift({ text: 'Closing inspection auto-created: ' + (act ? act.name : ''), time: 'just now', color: '#C08A2D' });
+        // demo parity with the server: a LINKED, item-bearing closing review appears
+        // in the PMC queue; approving it (below) is what completes the activity
+        const nums = s.reviews.map((r) => Number(/^INSP-(\d+)$/.exec(r.id)?.[1] ?? NaN)).filter((n) => !Number.isNaN(n));
+        const closingId = `INSP-${(nums.length ? Math.max(...nums) : 21) + 1}`;
+        s.reviews.push({
+          id: closingId,
+          title: 'Closing inspection: ' + (act ? act.name : id),
+          zone: act?.zone ?? '',
+          by: 'You (demo)',
+          date: 'today',
+          decided: false,
+          closing: true,
+          activityId: id,
+          activityName: act?.name,
+          items: [{ name: 'Work complete and acceptable', result: 'PASS', swatch: 'concrete', note: '', rejected: false }],
+        });
+        s.notifications.unshift({ text: 'Sign-off requested: ' + (act ? act.name : id), time: 'just now', color: '#C08A2D' });
       });
-      get().flash('Marked complete — a closing inspection was auto-created for sign-off.');
+      get().flash('Completion claimed — the PMC’s closing sign-off will mark it done.');
     },
 
     // ---- daily log (phone = attendance device) ----

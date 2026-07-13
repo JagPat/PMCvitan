@@ -143,6 +143,8 @@ export interface PhaseRollup {
   activityTotal: number;
   done: number;
   inProgress: number;
+  /** completion claims still awaiting the PMC's closing sign-off (Task 5) — NOT done */
+  awaitingSignoff: number;
   blocked: number;
   notStarted: number;
   donePct: number;
@@ -152,15 +154,17 @@ export interface PhaseRollup {
  * A phase's activity rollup, recomputed LIVE from the activities (so starting or
  * completing an activity moves the phase's progress immediately — the stored
  * snapshot counts are only the initial server value). Same discipline as the
- * schedule gates: derive, never trust a stale stored count.
+ * schedule gates: derive, never trust a stale stored count. An activity awaiting
+ * sign-off counts as NOT done — only the PMC's acceptance moves donePct.
  */
 export function phaseRollup(activities: Activity[], phaseId: string): PhaseRollup {
   const acts = activities.filter((a) => a.phaseId === phaseId);
   const done = acts.filter((a) => a.status === 'done').length;
   const inProgress = acts.filter((a) => a.status === 'in-progress').length;
+  const awaitingSignoff = acts.filter((a) => a.status === 'awaiting-signoff').length;
   const blocked = acts.filter((a) => a.status === 'blocked').length;
   const notStarted = acts.filter((a) => a.status === 'not-started').length;
-  return { activityTotal: acts.length, done, inProgress, blocked, notStarted, donePct: acts.length ? Math.round((done / acts.length) * 100) : 0 };
+  return { activityTotal: acts.length, done, inProgress, awaitingSignoff, blocked, notStarted, donePct: acts.length ? Math.round((done / acts.length) * 100) : 0 };
 }
 
 /** Activities for a phase, or the "unphased" remainder when `phaseId` is null. */

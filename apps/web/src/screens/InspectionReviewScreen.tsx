@@ -75,6 +75,13 @@ export function InspectionReviewScreen() {
 
       <div className={styles.headRule} style={{ margin: '6px 0 22px' }}>
         <div>
+          {review.closing && (
+            // Task 5: a closing review is the activity's SIGN-OFF — approving it is
+            // what marks the named activity done, so say so up front
+            <div data-testid="closing-signoff-label" style={{ display: 'inline-block', marginBottom: 7, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.08em', padding: '4px 10px', borderRadius: 14, background: '#E6ECF3', color: '#31567F', border: '1px solid #C4D3E4' }}>
+              CLOSING SIGN-OFF · {review.activityName ?? review.activityId ?? 'ACTIVITY'} — APPROVAL MARKS IT DONE
+            </div>
+          )}
           <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.01em' }}>{review.title}</div>
           <div style={{ display: 'flex', gap: 12, marginTop: 7, fontSize: 12.5, color: 'var(--muted)', flexWrap: 'wrap' }}>
             <span>{review.zone}</span>

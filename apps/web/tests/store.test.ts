@@ -67,14 +67,36 @@ describe('activity gates gate the Start action', () => {
     // seeded: gm/gt/gi all "wait" → not ready even ignoring decision
     expect(activityReady(s(), act('ACT-31'))).toBe(false);
   });
-  it('completing an in-progress activity records the actual end and a closing-inspection notice', () => {
+  it('completing is a CLAIM (Task 5): awaiting-signoff + a linked closing review — only the PMC approval marks it done', () => {
     s().startActivity('ACT-31');
     expect(act('ACT-31').status).toBe('in-progress');
     expect(act('ACT-31').as).toBe(s().todayDay);
     s().completeActivity('ACT-31');
-    expect(act('ACT-31').status).toBe('done');
+    // the claim parks the activity; nothing here writes done
+    expect(act('ACT-31').status).toBe('awaiting-signoff');
     expect(act('ACT-31').ae).toBe(s().todayDay);
-    expect(s().notifications[0].text).toContain('Closing inspection auto-created');
+    expect(s().notifications[0].text).toContain('Sign-off requested');
+
+    // the linked, item-bearing closing review is in the PMC queue
+    const closing = s().reviews.find((r) => r.closing && r.activityId === 'ACT-31')!;
+    expect(closing.decided).toBe(false);
+    expect(closing.items.map((it) => it.name)).toEqual(['Work complete and acceptable']);
+
+    // the PMC's approval of the closing review IS the completion
+    s().setActiveReview(closing.id);
+    s().approveInspection();
+    expect(act('ACT-31').status).toBe('done');
+  });
+
+  it('rejecting the closing sign-off returns the activity to execution (Task 5)', () => {
+    s().startActivity('ACT-33');
+    s().completeActivity('ACT-33');
+    expect(act('ACT-33').status).toBe('awaiting-signoff');
+    const closing = s().reviews.find((r) => r.closing && r.activityId === 'ACT-33')!;
+    s().setActiveReview(closing.id);
+    s().toggleReject(0); // reject the default sign-off item
+    s().sendReinspection();
+    expect(act('ACT-33').status).toBe('in-progress'); // back to execution, not done
   });
 });
 
@@ -218,14 +240,20 @@ describe('phase monitoring (Orgs Slice 3)', () => {
     expect(finishing).toMatchObject({ activityTotal: 3, done: 0, notStarted: 3, donePct: 0 });
   });
 
-  it('the rollup moves live when an activity is started/completed', () => {
+  it('the rollup moves live — and a completion CLAIM counts as NOT done until the sign-off (Task 5, pinned)', () => {
     // approve DL-014 so ACT-31 (Finishing) can start, then complete it
     s().openApprove('DL-014', 1);
     s().confirmApprove();
     s().startActivity('ACT-31');
     expect(phaseRollup(s().activities, 'PH-finishing')).toMatchObject({ inProgress: 1, done: 0 });
     s().completeActivity('ACT-31');
-    expect(phaseRollup(s().activities, 'PH-finishing')).toMatchObject({ done: 1, donePct: 33 });
+    // awaiting_signoff is NOT done: the claim moves nothing on donePct
+    expect(phaseRollup(s().activities, 'PH-finishing')).toMatchObject({ awaitingSignoff: 1, done: 0, donePct: 0 });
+    // only the PMC's closing approval moves the phase forward
+    const closing = s().reviews.find((r) => r.closing && r.activityId === 'ACT-31')!;
+    s().setActiveReview(closing.id);
+    s().approveInspection();
+    expect(phaseRollup(s().activities, 'PH-finishing')).toMatchObject({ awaitingSignoff: 0, done: 1, donePct: 33 });
   });
 
   it('groups activities by phase and gathers the unphased remainder', () => {

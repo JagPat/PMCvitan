@@ -11,10 +11,10 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
  * locks with real identity, exactly one OPEN change request may exist (CAS +
  * partial unique index), and re-approval resolves it. Drawing rows reflect
  * Task 3 (controlled lifecycle): a review copy never displaces the construction
- * set and `current` is for_construction-or-null. Still pinned as baseline for
- * Tasks 4/5:
- *   - reject decides the same row and creates NO reinspection (Task 4);
- *   - complete writes done immediately; the closing inspection has zero items (Task 5).
+ * set and `current` is for_construction-or-null. Inspection rows reflect Task 4
+ * (evidence + linked reinspections). Activity rows reflect Task 5 (closing
+ * sign-off): complete is a CLAIM to awaiting_signoff; only approving the linked,
+ * item-bearing closing inspection writes done.
  */
 describe('phase 1 baseline characterization (integration)', () => {
   let t: TestApp;
@@ -204,21 +204,31 @@ describe('phase 1 baseline characterization (integration)', () => {
     await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id, clientKey: 'baseline-ev-1' } });
   });
 
-  it('activity pillar: complete writes done IMMEDIATELY and the zero-item closing inspection is merely queued', async () => {
+  it('activity pillar: complete is a CLAIM (awaiting_signoff) — only approving the linked closing inspection writes done (Task 5)', async () => {
     expect((await post(`/projects/${f.projectA.id}/activities`, { name: 'Skirting', plannedStart: 0, plannedEnd: 5 })).status).toBe(201);
     const a = await t.prisma.activity.findFirstOrThrow({ where: { projectId: f.projectA.id, name: 'Skirting' } });
 
     expect((await post(`/projects/${f.projectA.id}/activities/${a.id}/start`, {})).status).toBe(201);
     expect((await post(`/projects/${f.projectA.id}/activities/${a.id}/complete`, {})).status).toBe(201);
 
-    // done is unconditional — no sign-off state exists between claim and acceptance
-    expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: a.id } })).status).toBe('done');
-    const closing = await t.prisma.inspection.findUniqueOrThrow({ where: { id: `INSP-${a.id}-close` }, include: { items: true } });
+    // the claim is recorded and attributable — done is NOT written here
+    const claimed = await t.prisma.activity.findUniqueOrThrow({ where: { id: a.id } });
+    expect(claimed.status).toBe('awaiting_signoff');
+    expect(claimed.completionRequestedById).toBe(f.memberUser.id);
+    expect(claimed.doneAt).toBeNull();
+
+    // the closing inspection is LINKED (closing flag + activityId — the id pattern is
+    // retired) and carries ONE default item, so the PMC can reject it
+    const closing = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: f.projectA.id, activityId: a.id, closing: true }, include: { items: true } });
     expect(closing.kind).toBe('review');
     expect(closing.submitted).toBe(true);
-    expect(closing.decided).toBe(false); // the activity is already done while this waits
-    expect(closing.items).toHaveLength(0); // zero items → it can only ever be approved
-    // rejecting the zero-item closing is impossible (the Task 5 trap this pins)
-    expect((await post(`/projects/${f.projectA.id}/inspections/${closing.id}/decide`, { approve: false, rejectedItemNames: [] })).status).toBe(400);
+    expect(closing.decided).toBe(false);
+    expect(closing.items.map((i) => i.name)).toEqual(['Work complete and acceptable']);
+
+    // the PMC's approval IS the completion: done + the sign-off day
+    expect((await post(`/projects/${f.projectA.id}/inspections/${closing.id}/decide`, { approve: true })).status).toBe(201);
+    const done = await t.prisma.activity.findUniqueOrThrow({ where: { id: a.id } });
+    expect(done.status).toBe('done');
+    expect(done.doneAt).toBeInstanceOf(Date);
   });
 });

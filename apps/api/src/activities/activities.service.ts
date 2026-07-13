@@ -1,9 +1,11 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { deriveDecisionGate, isActivityReady } from '../domain/transitions';
 import { resolveProjectNode } from '../nodes/node-scope';
+import { resolveActor } from '../common/actor';
 import { ddMmmYyyy } from '../domain/dates';
 import { CLOCK, type Clock } from '../common/clock';
 import { addCivilDays, diffCivilDays, fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
@@ -192,33 +194,81 @@ export class ActivitiesService {
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
-  /** Mark complete — records the actual end and auto-creates a closing inspection. */
+  /** CLAIM completion (Phase 1 Task 5). "Done" means accepted: this parks the
+   *  activity in `awaiting_signoff`, records WHO claimed the work finished (an
+   *  attributable, membership-validated fact) and creates the LINKED closing
+   *  inspection — with a default sign-off item, so it CAN be rejected. Only the
+   *  PMC's approval of that closing inspection (inspections.decide) writes `done`. */
   async complete(projectId: string, activityId: string, user: AuthUser): Promise<SnapshotDto> {
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
     if (a.status !== 'in_progress') throw new ConflictException('Only a running activity can be marked complete');
 
+    const actor = await resolveActor(this.prisma, user);
+    // the claim must be attributable to an ACTIVE member of THIS project — the
+    // composite (projectId, completionRequestedById) FK is the database backstop
+    const membership = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId: user.sub } } });
+    if (membership?.status !== 'active') {
+      throw new BadRequestException('Completion must be claimed by an ACTIVE member of this project — your account holds no active membership here.');
+    }
+
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     const today = this.clock.today(project.timeZone);
     const anchor = toIsoCivilDate(project.scheduleStartDate);
-    await this.prisma.$transaction([
-      this.prisma.activity.update({
-        where: { id: activityId },
-        data: {
-          status: 'done',
-          actualEndDate: fromIsoCivilDate(today),
-          actualEnd: anchor ? diffCivilDays(anchor, today) : null,
-        },
-      }),
-      this.prisma.inspection.create({
-        // the closing inspection happens at the same place as the work it closes
-        data: { id: `INSP-${activityId}-close`, projectId, kind: 'review', title: `Closing inspection: ${a.name}`, zone: a.zone, nodeId: a.nodeId, date: ddMmmYyyy(fromIsoCivilDate(today)!), inspectionDate: fromIsoCivilDate(today), submitted: true, decided: false },
-      }),
-      this.prisma.notification.create({ data: { projectId, text: `Closing inspection auto-created: ${a.name}`, color: '#C08A2D', time: 'just now' } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.complete', entity: 'Activity', entityId: activityId } }),
-    ]);
-    // a closing inspection needs the PMC to review and sign off
-    this.realtime.notifyChanged(projectId, `Closing inspection auto-created: ${a.name}`, ['pmc']);
+    // DATA-01: inspection ids are globally unique — the id-pattern linkage
+    // (INSP-<activityId>-close) is RETIRED; `closing` + `activityId` are the facts
+    const existingIds = await this.prisma.inspection.findMany({ select: { id: true } });
+    const closingId = nextSeqId('INSP-', existingIds.map((i) => i.id));
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        // CAS: exactly one completion claim wins (in_progress → awaiting_signoff)
+        const { count } = await tx.activity.updateMany({
+          where: { id: activityId, projectId, status: 'in_progress' },
+          data: {
+            status: 'awaiting_signoff',
+            // the CLAIMED work-end day; the sign-off day (doneAt) is written only on approval
+            actualEndDate: fromIsoCivilDate(today),
+            actualEnd: anchor ? diffCivilDays(anchor, today) : null,
+            completionRequestedById: actor.actorId,
+            completionRequestedByName: actor.actorName,
+            completionRequestedAt: new Date(),
+          },
+        });
+        if (count === 0) throw new ConflictException('The activity changed while completing — reload and retry');
+        await tx.inspection.create({
+          // the closing inspection happens at the same place as the work it closes;
+          // ONE default item makes rejection possible (a zero-item review could only ever be approved)
+          data: {
+            id: closingId,
+            projectId,
+            kind: 'review',
+            closing: true,
+            activityId,
+            title: `Closing inspection: ${a.name}`,
+            zone: a.zone,
+            nodeId: a.nodeId,
+            date: ddMmmYyyy(fromIsoCivilDate(today)!),
+            inspectionDate: fromIsoCivilDate(today),
+            submitted: true,
+            decided: false,
+            by: actor.actorName,
+            submittedById: actor.actorId,
+            submittedByName: actor.actorName,
+            items: { create: [{ name: 'Work complete and acceptable', order: 0, photos: 0, note: '' }] },
+          },
+        });
+        await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${a.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now' } });
+        await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.complete_requested', entity: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } } });
+      });
+    } catch (e) {
+      // a concurrent inspection create took the sequential id — a plain retry resolves it
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new ConflictException('A concurrent update took this inspection id — retry the completion');
+      }
+      throw e;
+    }
+    // the sign-off is the PMC's decision to make
+    this.realtime.notifyChanged(projectId, `Sign-off requested: ${a.name}`, ['pmc']);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

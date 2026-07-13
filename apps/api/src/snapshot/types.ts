@@ -61,7 +61,9 @@ export interface ActivityDto {
   plannedEndDate: string | null;
   actualStartDate: string | null;
   actualEndDate: string | null;
-  status: 'not-started' | 'in-progress' | 'done' | 'blocked';
+  /** `awaiting-signoff` = a completion CLAIM parked until the PMC approves the
+   *  linked closing inspection (Phase 1 Task 5) — counted as NOT done everywhere */
+  status: 'not-started' | 'in-progress' | 'awaiting-signoff' | 'done' | 'blocked';
   gm: 'ok' | 'wait' | 'fail' | 'na';
   gt: 'ok' | 'wait' | 'fail' | 'na';
   gi: 'ok' | 'wait' | 'fail' | 'na';
@@ -124,6 +126,11 @@ export interface ReviewDto {
   decided: boolean;
   /** set when this review IS a reinspection — the predecessor it re-checks (Task 4) */
   reinspectionOfId?: string;
+  /** set when this review is a CLOSING sign-off (Task 5): approving it completes
+   *  the named activity; rejecting it returns that activity to execution */
+  closing?: boolean;
+  activityId?: string;
+  activityName?: string;
   /** `evidence` = the item's linked photo proof as signed serve paths (Task 4) */
   items: { name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean; evidence: string[] }[];
 }

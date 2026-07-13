@@ -114,7 +114,13 @@ export class InspectionsService {
 
   /** PMC approves the inspection, or REJECTS it — creating exactly ONE linked
    *  reinspection (fresh items, inherited activityId, eligible assignee, real due
-   *  date) in the same transaction. Both paths are CAS transitions with attribution. */
+   *  date) in the same transaction. Both paths are CAS transitions with attribution.
+   *
+   *  Phase 1 Task 5 — a CLOSING inspection (closing=true) additionally owns its
+   *  activity's completion: approval writes `done` + `doneAt` (the PMC's
+   *  attributable technical acceptance, same transaction); rejection returns the
+   *  activity to execution and assigns the corrective work to the RECORDED
+   *  completer — only while that identity is still active and role-eligible. */
   async decide(projectId: string, inspectionId: string, input: DecideReviewInput, user: AuthUser): Promise<SnapshotDto> {
     const insp = await this.prisma.inspection.findUnique({ where: { id: inspectionId }, include: { items: true } });
     if (!insp || insp.projectId !== projectId) throw new NotFoundException(`Inspection ${inspectionId} not found`);
@@ -123,35 +129,74 @@ export class InspectionsService {
     if (insp.decided) throw new BadRequestException('This inspection has already been decided.');
 
     const actor = await resolveActor(this.prisma, user);
+    // the activity a CLOSING inspection signs off (null for ordinary inspections)
+    const activity = insp.closing && insp.activityId
+      ? await this.prisma.activity.findUnique({ where: { id: insp.activityId } })
+      : null;
     let pushBody: string;
     let pushRoles: string[];
 
     if (input.approve) {
-      pushBody = 'Inspection approved. Contractor and client notified.';
+      pushBody = activity
+        ? `Signed off: ${activity.name} is complete.`
+        : 'Inspection approved. Contractor and client notified.';
       pushRoles = ['contractor', 'client'];
+      const project = activity ? await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } }) : null;
       await this.prisma.$transaction(async (tx) => {
         const { count } = await tx.inspection.updateMany({
           where: { id: inspectionId, projectId, submitted: true, decided: false },
           data: { decided: true, decidedById: actor.actorId, decidedByName: actor.actorName },
         });
         if (count === 0) throw new ConflictException('The inspection changed while deciding — reload and retry');
+        if (activity) {
+          // approving the closing inspection IS the completion: awaiting_signoff → done,
+          // stamping the sign-off civil day. CAS — a concurrent reject cannot half-win.
+          const today = this.clock.today(project!.timeZone);
+          const done = await tx.activity.updateMany({
+            where: { id: activity.id, projectId, status: 'awaiting_signoff' },
+            data: { status: 'done', doneAt: fromIsoCivilDate(today) },
+          });
+          if (done.count === 0) {
+            // the one legitimate non-awaiting state: a LEGACY activity that was already
+            // done before sign-off control existed — record the sign-off day, never re-transition
+            const row = await tx.activity.findUnique({ where: { id: activity.id }, select: { status: true, doneAt: true } });
+            if (row?.status !== 'done') throw new ConflictException('The activity changed while signing off — reload and retry');
+            if (!row.doneAt) await tx.activity.update({ where: { id: activity.id }, data: { doneAt: fromIsoCivilDate(today) } });
+          }
+          await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.signoff', entity: 'Activity', entityId: activity.id, payload: { closingInspectionId: inspectionId } } });
+        }
         await tx.notification.create({ data: { projectId, text: pushBody, color: '#3F7A54', time: 'just now' } });
         await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'inspection.approve', entity: 'Inspection', entityId: inspectionId } });
       });
     } else {
       const rejectedItems = insp.items.filter((it) => input.rejectedItemNames.includes(it.name) || it.rejected || it.result === 'FAIL');
-      if (rejectedItems.length === 0) throw new BadRequestException('No items rejected. Use approve instead.');
+      // a LEGACY zero-item closing may still be rejected (special-cased on the closing
+      // flag) — every ordinary rejection must name real items
+      if (rejectedItems.length === 0 && !insp.closing) throw new BadRequestException('No items rejected. Use approve instead.');
 
-      // WHO corrects the work: the explicit assignee, else the recorded submitter.
-      // Either way they must hold an ACTIVE corrective-role membership — a PMC may
-      // only take the work by naming themselves EXPLICITLY.
-      const assigneeId = input.assigneeId ?? insp.submittedById;
-      if (!assigneeId) throw new BadRequestException('No assignee could be derived — name an eligible assignee (an active engineer or contractor).');
+      // WHO corrects the work: the explicit assignee, else the RECORDED completion
+      // claimant (closing) / the recorded submitter (ordinary). Either way they must
+      // hold an ACTIVE corrective-role membership — removal or a role change since
+      // the claim voids the default, and a PMC may only take the work by naming
+      // themselves EXPLICITLY.
+      const defaultAssignee = insp.closing ? activity?.completionRequestedById : insp.submittedById;
+      const assigneeId = input.assigneeId ?? defaultAssignee;
+      if (!assigneeId) {
+        throw new BadRequestException(
+          insp.closing
+            ? 'This closing inspection has no recorded completer to assign — name an eligible assignee (an active engineer or contractor).'
+            : 'No assignee could be derived — name an eligible assignee (an active engineer or contractor).',
+        );
+      }
       const membership = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId: assigneeId } } });
       const pmcSelfExplicit = input.assigneeId === user.sub && user.role === 'pmc' && membership?.role === 'pmc';
       const eligible = membership?.status === 'active' && (CORRECTIVE_ROLES.includes(membership.role) || pmcSelfExplicit);
       if (!eligible) {
-        throw new BadRequestException('The assignee must hold an ACTIVE engineer or contractor membership on this project (a PMC may assign themselves explicitly).');
+        throw new BadRequestException(
+          input.assigneeId === undefined
+            ? 'The recorded completer no longer holds an ACTIVE engineer or contractor membership on this project — name an explicit eligible assignee.'
+            : 'The assignee must hold an ACTIVE engineer or contractor membership on this project (a PMC may assign themselves explicitly).',
+        );
       }
 
       const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
@@ -160,8 +205,11 @@ export class InspectionsService {
       const dueDate = fromIsoCivilDate(dueIso)!;
       const existingIds = await this.prisma.inspection.findMany({ select: { id: true } });
       const childId = nextSeqId('INSP-', existingIds.map((i) => i.id));
+      // a zero-item legacy closing still yields WORKABLE corrective items — the child
+      // gets the default sign-off item (an inspection without items cannot be submitted)
+      const childItems = rejectedItems.length > 0 ? rejectedItems.map((it) => it.name) : ['Work complete and acceptable'];
 
-      pushBody = `Re-inspection ${childId} created for ${rejectedItems.length} item(s) — due ${ddMmmYyyy(dueDate)}.`;
+      pushBody = `Re-inspection ${childId} created for ${childItems.length} item(s) — due ${ddMmmYyyy(dueDate)}.`;
       pushRoles = ['engineer']; // the assignee performs the re-inspection
 
       try {
@@ -176,7 +224,8 @@ export class InspectionsService {
             await tx.inspectionItem.updateMany({ where: { inspectionId, name }, data: { rejected: true } });
           }
           // the LINKED reinspection: only the rejected work returns, fresh and unfilled;
-          // the requirement edge is INHERITED — it accepts the same work
+          // the requirement edge is INHERITED — it accepts the same work. NOT itself a
+          // closing (closing=false): sign-off is re-claimed via complete() once corrected.
           await tx.inspection.create({
             data: {
               id: childId,
@@ -193,9 +242,20 @@ export class InspectionsService {
               inspectionDate: fromIsoCivilDate(today),
               submitted: false,
               decided: false,
-              items: { create: rejectedItems.map((it, i) => ({ name: it.name, order: i, photos: 0, note: '' })) },
+              items: { create: childItems.map((name, i) => ({ name, order: i, photos: 0, note: '' })) },
             },
           });
+          if (activity) {
+            // rejecting the sign-off returns the activity to EXECUTION. `done` is included
+            // for legacy closings: reopening a pre-Task-5 done activity here is the PMC's
+            // attributable decision, never a migration guess.
+            const revert = await tx.activity.updateMany({
+              where: { id: activity.id, projectId, status: { in: ['awaiting_signoff', 'done'] } },
+              data: { status: 'in_progress', doneAt: null },
+            });
+            if (revert.count === 0) throw new ConflictException('The activity changed while rejecting the sign-off — reload and retry');
+            await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.signoff_rejected', entity: 'Activity', entityId: activity.id, payload: { closingInspectionId: inspectionId, reinspectionId: childId, assigneeId } } });
+          }
           await tx.notification.create({ data: { projectId, text: pushBody, color: '#B23A34', time: 'just now' } });
           await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'inspection.reject', entity: 'Inspection', entityId: inspectionId, payload: { reinspectionId: childId, assigneeId, dueDate: dueIso } } });
         });
