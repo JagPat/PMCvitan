@@ -2,9 +2,23 @@
 
 Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). Status reflects the current branch.
 
-## Phase 0 trust foundation
+## Phase 1 — complete the existing product pillars (ACTIVE)
 
-The active gate — [`docs/superpowers/plans/2026-07-12-phase-0-trust-foundation.md`](./superpowers/plans/2026-07-12-phase-0-trust-foundation.md) (canonical spec: [`docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`](./superpowers/specs/2026-07-12-modular-construction-control-platform-design.md)). Tasks land in order, one PR per task:
+The active gate — [`docs/superpowers/plans/2026-07-13-phase-1-existing-pillars.md`](./superpowers/plans/2026-07-13-phase-1-existing-pillars.md) (canonical spec: [`docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`](./superpowers/specs/2026-07-12-modular-construction-control-platform-design.md), Phase 1 row). Design intent, client consent, controlled drawings, field inspection, rejection, corrective work, reinspection and final sign-off become one attributable information chain. Tasks land in order, one PR per task; review stops after Tasks 1, 3, 5 and 7; **implementation begins only after the plan's independent review clears**:
+
+- [ ] Task 1 — Baseline and characterization tests (incl. the missing `activities.service.test.ts`)
+- [ ] Task 2 — Decision change-control and mandatory client re-approval (real attribution, resolvable ChangeRequests, complete DecisionEvent history)
+- [ ] Task 3 — Controlled drawing lifecycle (governing = latest `for_construction`; persisted transmittals; offline-queueable acks; issue audited)
+- [ ] Task 4 — Inspection evidence, correction and reinspection (linked Media evidence, idempotent uploads, real linked/assigned/dated reinspections)
+- [ ] Task 5 — Closing sign-off controls Activity completion (`awaiting_signoff` → PMC sign-off → `done`)
+- [ ] Task 6 — Readiness derived from canonical decision/drawing/inspection facts + evidenced, expiring overrides
+- [ ] Task 7 — End-to-end pillar-chain acceptance suite + Phase 1 review packet
+
+Out of scope for Phase 1: procurement/inventory, labour, commercial/billing/payment, portals, RedBracket, microservices, broad UI redesign.
+
+## Phase 0 trust foundation (complete — historical)
+
+The Phase 0 gate is **cleared**: the independent (Codex) review passed the full runtime gate and, after a docs-only evidence correction ([PR #96](https://github.com/JagPat/PMCvitan/pull/96)), recorded the [final verdict](https://github.com/JagPat/PMCvitan/pull/96#issuecomment-4954752823) at closure commit `5d6f08b4c39737972b115dcfabf1bebbb25e0e10`. Plan: [`docs/superpowers/plans/2026-07-12-phase-0-trust-foundation.md`](./superpowers/plans/2026-07-12-phase-0-trust-foundation.md); evidence: [`docs/reviews/phase-0-review-packet.md`](./reviews/phase-0-review-packet.md). Tasks landed in order, one PR per task:
 
 - [x] Task 1 — Vision and baseline gate (`CLAUDE.md`, `pnpm check`, this section) — [PR #81](https://github.com/JagPat/PMCvitan/pull/81) (`ab7969a`)
 - [x] Task 2 — Project switching as an atomic state transition — [PR #82](https://github.com/JagPat/PMCvitan/pull/82) (`8a0fa6b`)
@@ -15,7 +29,7 @@ The active gate — [`docs/superpowers/plans/2026-07-12-phase-0-trust-foundation
 - [x] Task 7 — Remove seeded claims from API mode — [PR #87](https://github.com/JagPat/PMCvitan/pull/87) (`25406a3`)
 - [x] Task 8 — Prove the foundation end to end + review packet — [PR #88](https://github.com/JagPat/PMCvitan/pull/88) (`bc90390`); evidence in [`docs/reviews/phase-0-review-packet.md`](./reviews/phase-0-review-packet.md); [green CI run incl. `api-e2e`](https://github.com/JagPat/PMCvitan/actions/runs/29211240865)
 
-Phase 0 is complete only when the API-mode two-project Playwright suite (CI job `api-e2e`, now 9 scenarios) and the PostgreSQL integration suite (CI job `api`) pass in CI — AND the independent review gate clears. **Round 1 (Codex) did NOT clear the gate** ([7 findings](https://github.com/JagPat/PMCvitan/pull/88#issuecomment-4953051607)); all were remediated in PRs #89–#92 (merged `988007e`/`4d8fc00`/`8510579`/`5e3b827`). **Round 2 kept the gate blocked on four findings** (recorded on [PR #92](https://github.com/JagPat/PMCvitan/pull/92)); remediated in [PR #93](https://github.com/JagPat/PMCvitan/pull/93) (outbox final-replay race, merged `aefe9b0`), [PR #94](https://github.com/JagPat/PMCvitan/pull/94) (merged-window validation, merged `bea314c`) and [PR #95](https://github.com/JagPat/PMCvitan/pull/95) (seed canonical dates + packet refresh, merged `e4d879d`). **Round 3 reviewed `main` at `e4d879d` and passed the entire runtime gate** — no P0/P1/P2 code, security, tenancy, date, migration or correctness defect remains ([result](https://github.com/JagPat/PMCvitan/pull/95#issuecomment-4954456632)) — but held one documentation-only P3: the packet still described the pre-merge branch state. That correction ships in a docs-only PR (see the packet's "Independent Review — Round 3" section); the gate clears after packet/history verification of that PR.
+Phase 0 is complete only when the API-mode two-project Playwright suite (CI job `api-e2e`, now 9 scenarios) and the PostgreSQL integration suite (CI job `api`) pass in CI — AND the independent review gate clears. **Round 1 (Codex) did NOT clear the gate** ([7 findings](https://github.com/JagPat/PMCvitan/pull/88#issuecomment-4953051607)); all were remediated in PRs #89–#92 (merged `988007e`/`4d8fc00`/`8510579`/`5e3b827`). **Round 2 kept the gate blocked on four findings** (recorded on [PR #92](https://github.com/JagPat/PMCvitan/pull/92)); remediated in [PR #93](https://github.com/JagPat/PMCvitan/pull/93) (outbox final-replay race, merged `aefe9b0`), [PR #94](https://github.com/JagPat/PMCvitan/pull/94) (merged-window validation, merged `bea314c`) and [PR #95](https://github.com/JagPat/PMCvitan/pull/95) (seed canonical dates + packet refresh, merged `e4d879d`). **Round 3 reviewed `main` at `e4d879d` and passed the entire runtime gate** — no P0/P1/P2 code, security, tenancy, date, migration or correctness defect remains ([result](https://github.com/JagPat/PMCvitan/pull/95#issuecomment-4954456632)) — holding one documentation-only P3 (the packet described the pre-merge state), corrected in [PR #96](https://github.com/JagPat/PMCvitan/pull/96). **The gate is cleared** ([final verdict](https://github.com/JagPat/PMCvitan/pull/96#issuecomment-4954752823)) at closure commit `5d6f08b`.
 
 | Phase | Scope | Status |
 |---|---|---|
