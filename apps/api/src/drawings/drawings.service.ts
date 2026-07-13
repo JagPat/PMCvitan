@@ -153,7 +153,18 @@ export class DrawingsService {
           const rev = await tx.drawingRevision.create({ data: { ...revData, projectId, drawingId: locked.id } });
           await tx.drawing.update({
             where: { id: locked.id },
-            data: { title: input.title, discipline: input.discipline, zone: input.zone, activityId, decisionId, nodeId, publishedAt },
+            data: {
+              title: input.title,
+              discipline: input.discipline,
+              zone: input.zone,
+              // a new REVISION keeps the drawing's recorded linkage unless the issue
+              // explicitly names one — omission must never silently unlink governed
+              // work (Task 7 acceptance finding: unlinking flips readiness to na)
+              ...(input.activityId !== undefined ? { activityId } : {}),
+              ...(input.decisionId !== undefined ? { decisionId } : {}),
+              ...(input.nodeId !== undefined ? { nodeId } : {}),
+              publishedAt,
+            },
           });
           drawingId = locked.id;
           revisionId = rev.id;
