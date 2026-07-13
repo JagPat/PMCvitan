@@ -65,6 +65,8 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
         return { count: matches ? 1 : 0 };
       }),
     },
+    // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
+    $executeRaw: vi.fn(async () => 1),
     // the IN-TRANSACTION locked membership read (SELECT ... FOR UPDATE, Codex gate P1):
     // bind values are [projectId, userId] — resolve against the fixture members
     $queryRaw: vi.fn(async (q: { values: unknown[] }) => {

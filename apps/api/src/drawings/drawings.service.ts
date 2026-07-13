@@ -8,6 +8,7 @@ import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import { ddMmmYyyy } from '../domain/dates';
 import { resolveActor } from '../common/actor';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import type { IssueDrawingInput } from '../contracts';
@@ -128,6 +129,9 @@ export class DrawingsService {
     let isRevise = false;
     try {
       await this.prisma.$transaction(async (tx) => {
+        // a new revision/publication moves the drawing gate (gate finding 1) —
+        // the readiness lock comes FIRST, before the row lock below (uniform order)
+        await lockProjectReadiness(tx, projectId);
         // SERIALIZE on the parent drawing (gate finding 2): lock the register row so a
         // concurrent issue/publish of the same number waits, then sees THIS issue's
         // committed state — the supersede/create pair executes strictly one-at-a-time
@@ -246,6 +250,8 @@ export class DrawingsService {
     if (d.publishedAt) throw new ConflictException('Drawing is already published');
 
     await this.prisma.$transaction(async (tx) => {
+      // publication activates the frozen distribution — a readiness write (finding 1)
+      await lockProjectReadiness(tx, projectId);
       // lock the drawing row, then CAS on publishedAt STILL null — the loser of a
       // concurrent publish (or a racing one-step issue) gets a clean 409, not a
       // second publication with duplicate audit/notification
@@ -303,6 +309,8 @@ export class DrawingsService {
     let firstAck = false;
     try {
       await this.prisma.$transaction(async (tx) => {
+        // an acknowledgement can complete the frozen set — a readiness write (finding 1)
+        await lockProjectReadiness(tx, projectId);
         const existing = await tx.drawingAck.findUnique({ where: { revisionId_userId: { revisionId, userId: user.sub } } });
         if (existing) return; // replay — the fact is already recorded and audited
         await tx.drawingAck.create({ data: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role } });
@@ -345,12 +353,14 @@ export class DrawingsService {
     if (!drawing || drawing.projectId !== projectId) return false;
     const actor = await resolveActor(this.prisma, user);
     await Promise.all(drawing.revisions.map((r) => (r.storageKey ? this.storage.remove(r.storageKey).catch(() => {}) : Promise.resolve())));
-    await this.prisma.$transaction([
-      this.prisma.drawing.delete({ where: { id } }), // revisions + recipients cascade
-      this.prisma.auditLog.create({
+    await this.prisma.$transaction(async (tx) => {
+      // deleting a linked drawing changes the aggregated gate (finding 1)
+      await lockProjectReadiness(tx, projectId);
+      await tx.drawing.delete({ where: { id } }); // revisions + recipients cascade
+      await tx.auditLog.create({
         data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } },
-      }),
-    ]);
+      });
+    });
     this.realtime.notifyChanged(projectId);
     return true;
   }

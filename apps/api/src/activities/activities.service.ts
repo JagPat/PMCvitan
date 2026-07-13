@@ -6,6 +6,7 @@ import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { deriveReadiness, gateReady, readinessReady, type ActivityReadiness, type DecisionStatus, type GateState } from '../domain/transitions';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import { resolveActor } from '../common/actor';
 import { ddMmmYyyy } from '../domain/dates';
 import { CLOCK, type Clock } from '../common/clock';
@@ -137,10 +138,12 @@ export class ActivitiesService {
       'plannedStartDate' in data ? (data.plannedStartDate as Date | null) : a.plannedStartDate,
       'plannedEndDate' in data ? (data.plannedEndDate as Date | null) : a.plannedEndDate,
     );
-    await this.prisma.$transaction([
-      this.prisma.activity.update({ where: { id: activityId }, data }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.update', entity: 'Activity', entityId: activityId } }),
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      // stored material/team flags and the decision link move readiness (finding 1)
+      await lockProjectReadiness(tx, projectId);
+      await tx.activity.update({ where: { id: activityId }, data });
+      await tx.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.update', entity: 'Activity', entityId: activityId } });
+    });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -166,22 +169,25 @@ export class ActivitiesService {
 
   /** The five-gate readiness derivation's inputs for ONE activity — the same
    *  explicit edges the snapshot serializes (Task 6): linked inspections, linked
-   *  drawings with their frozen recipients and acks, active members, overrides. */
+   *  drawings with their frozen recipients and acks, active members, overrides.
+   *  start() passes its transaction client so the evaluation happens INSIDE the
+   *  readiness-lock protocol (gate finding 1) — the default reads live data. */
   async loadReadiness(
     projectId: string,
     activity: { id: string; gateMaterial: GateState; gateTeam: GateState; decision: { status: string } | null },
+    db: Prisma.TransactionClient = this.prisma,
   ): Promise<ActivityReadiness> {
     const [inspections, drawings, activeMembers, overrides] = await Promise.all([
-      this.prisma.inspection.findMany({
+      db.inspection.findMany({
         where: { projectId, activityId: activity.id },
         include: { items: { select: { rejected: true, result: true } } },
       }),
-      this.prisma.drawing.findMany({
+      db.drawing.findMany({
         where: { projectId, activityId: activity.id },
         include: { revisions: { include: { recipients: { select: { userId: true } }, acks: { select: { userId: true } } } } },
       }),
-      this.prisma.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
-      this.prisma.gateOverride.findMany({ where: { projectId, activityId: activity.id }, orderBy: { createdAt: 'asc' } }),
+      db.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
+      db.gateOverride.findMany({ where: { projectId, activityId: activity.id }, orderBy: { createdAt: 'asc' } }),
     ]);
     return deriveReadiness(activity.id, {
       decisionStatus: activity.decision ? (activity.decision.status as DecisionStatus) : null,
@@ -202,38 +208,48 @@ export class ActivitiesService {
 
   /** Start an activity — the server derives all FIVE readiness gates from the
    *  explicit recorded relationships (overrides considered) and refuses unless
-   *  every one aligns. Stored gateInspection is never consulted (Task 6). */
+   *  every one aligns. Stored gateInspection is never consulted (Task 6).
+   *
+   *  Gate finding 1 (P1): the WHOLE command — state check, readiness
+   *  evaluation, CAS transition and audit — runs inside one transaction under
+   *  the per-project readiness lock, which every readiness-affecting write also
+   *  takes (see common/readiness-lock.ts). A concurrent start loses the CAS
+   *  (409, no duplicate audit); a concurrent gate flip lands strictly before
+   *  (this start refuses it) or strictly after (it waits for this commit). */
   async start(projectId: string, activityId: string, user: AuthUser): Promise<SnapshotDto> {
-    const a = await this.prisma.activity.findUnique({ where: { id: activityId }, include: { decision: true } });
-    if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
-    if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
-
-    const readiness = await this.loadReadiness(projectId, a);
-    if (!readinessReady(readiness)) {
-      const blocking = (Object.entries(readiness) as Array<[string, { v: GateState; reason: string }]>)
-        .filter(([, g]) => !gateReady(g.v))
-        .map(([gate, g]) => `${gate}: ${g.reason}`)
-        .join('; ');
-      throw new ConflictException(`Readiness gates are not aligned — cannot start this activity (${blocking})`);
-    }
-
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     // the actual start is TODAY in the project's time zone — a real civil date,
     // never the prototype's todayDay counter
     const today = this.clock.today(project.timeZone);
     const anchor = toIsoCivilDate(project.scheduleStartDate);
-    await this.prisma.$transaction([
-      this.prisma.activity.update({
-        where: { id: activityId },
+    await this.prisma.$transaction(async (tx) => {
+      await lockProjectReadiness(tx, projectId);
+      const a = await tx.activity.findUnique({ where: { id: activityId }, include: { decision: true } });
+      if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
+      if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
+
+      const readiness = await this.loadReadiness(projectId, a, tx);
+      if (!readinessReady(readiness)) {
+        const blocking = (Object.entries(readiness) as Array<[string, { v: GateState; reason: string }]>)
+          .filter(([, g]) => !gateReady(g.v))
+          .map(([gate, g]) => `${gate}: ${g.reason}`)
+          .join('; ');
+        throw new ConflictException(`Readiness gates are not aligned — cannot start this activity (${blocking})`);
+      }
+
+      // CAS belt on top of the lock: exactly one start can move the status
+      const { count } = await tx.activity.updateMany({
+        where: { id: activityId, projectId, status: 'not_started' },
         data: {
           status: 'in_progress',
           actualStartDate: fromIsoCivilDate(today),
           // legacy offset kept coherent for the compat timeline (derived from real dates)
           actualStart: anchor ? diffCivilDays(anchor, today) : null,
         },
-      }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.start', entity: 'Activity', entityId: activityId } }),
-    ]);
+      });
+      if (count === 0) throw new ConflictException('Activity is not in a startable state');
+      await tx.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.start', entity: 'Activity', entityId: activityId } });
+    });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -333,14 +349,16 @@ export class ActivitiesService {
     // supporting evidence must be THIS project's photo (composite FK is the backstop)
     const evidenceMediaId = await resolveProjectRef(this.prisma, 'media', projectId, input.evidenceMediaId, 'evidenceMediaId');
     const actor = await resolveActor(this.prisma, user);
-    await this.prisma.$transaction([
-      this.prisma.gateOverride.create({
+    await this.prisma.$transaction(async (tx) => {
+      // an override moves a gate the moment it exists (finding 1)
+      await lockProjectReadiness(tx, projectId);
+      await tx.gateOverride.create({
         data: { projectId, activityId, gate: input.gate, state: input.state, reason: input.reason, actorId: actor.actorId, actorName: actor.actorName, evidenceMediaId, expiresAt },
-      }),
-      this.prisma.auditLog.create({
+      });
+      await tx.auditLog.create({
         data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.override', entity: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state, reason: input.reason, expiresAt: expiresAt.toISOString(), evidenceMediaId } },
-      }),
-    ]);
+      });
+    });
     this.realtime.notifyChanged(projectId, `Gate override on ${a.name}: ${input.gate} → ${input.state} (expires ${ddMmmYyyy(expiresAt)})`, ['engineer', 'contractor']);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -353,12 +371,14 @@ export class ActivitiesService {
       throw new NotFoundException(`Override ${overrideId} not found`);
     }
     const actor = await resolveActor(this.prisma, user);
-    await this.prisma.$transaction([
-      this.prisma.gateOverride.delete({ where: { id: overrideId } }),
-      this.prisma.auditLog.create({
+    await this.prisma.$transaction(async (tx) => {
+      // revoking restores the derivation instantly — a readiness write (finding 1)
+      await lockProjectReadiness(tx, projectId);
+      await tx.gateOverride.delete({ where: { id: overrideId } });
+      await tx.auditLog.create({
         data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.override_revoke', entity: 'Activity', entityId: activityId, payload: { overrideId, gate: row.gate, state: row.state, reason: row.reason } },
-      }),
-    ]);
+      });
+    });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }

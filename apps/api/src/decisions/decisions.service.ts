@@ -6,6 +6,7 @@ import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
 import { resolveActor, ROLE_LABEL } from '../common/actor';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
 import { pendingDecisionNotice } from '../domain/notifications';
 import type { ApproveInput, ChangeInput, CreateDecisionInput } from '../contracts';
@@ -122,6 +123,8 @@ export class DecisionsService {
       : `Client approved ${d.title} — ${o.material}`;
 
     await this.prisma.$transaction(async (tx) => {
+      // a lock-state transition moves the decision gate (gate finding 1)
+      await lockProjectReadiness(tx, projectId);
       // CAS: commit only if the decision is STILL in the state we read — a concurrent
       // transition makes count 0 and this caller loses with a deterministic 409
       const { count } = await tx.decision.updateMany({
@@ -183,6 +186,8 @@ export class DecisionsService {
 
     try {
       await this.prisma.$transaction(async (tx) => {
+        // reopening reverts readiness — a readiness write (gate finding 1)
+        await lockProjectReadiness(tx, projectId);
         const { count } = await tx.decision.updateMany({
           where: { id: decisionId, projectId, status: 'approved' },
           data: { status: 'change' },
@@ -220,6 +225,8 @@ export class DecisionsService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      // restoring the lock flips the decision gate back (gate finding 1)
+      await lockProjectReadiness(tx, projectId);
       const { count } = await tx.decision.updateMany({
         where: { id: decisionId, projectId, status: 'change' },
         data: { status: 'approved' },
