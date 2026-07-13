@@ -3,7 +3,7 @@ import type { PrismaService } from '../prisma.service';
 
 /** The project-owned models an optional reference may point at (exhaustive —
  *  never accept arbitrary model names from a caller). */
-export type ProjectRefModel = 'activity' | 'dailyLog' | 'decision' | 'inspection' | 'node';
+export type ProjectRefModel = 'activity' | 'dailyLog' | 'decision' | 'inspection' | 'media' | 'node';
 
 /**
  * Resolve an OPTIONAL project-owned reference (Phase 0 Task 5): null/undefined
@@ -33,6 +33,9 @@ export async function resolveProjectRef(
       break;
     case 'inspection':
       row = await prisma.inspection.findFirst({ where: { id, projectId }, select: { id: true } });
+      break;
+    case 'media':
+      row = await prisma.media.findFirst({ where: { id, projectId }, select: { id: true } });
       break;
     case 'node':
       row = await prisma.projectNode.findFirst({ where: { id, projectId }, select: { id: true } });

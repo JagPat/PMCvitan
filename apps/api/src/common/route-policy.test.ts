@@ -165,6 +165,8 @@ const EXPECTED_ROLES: Record<string, string[]> = {
   'ActivitiesController.remove': ['pmc'],
   'ActivitiesController.start': ['engineer', 'pmc'],
   'ActivitiesController.complete': ['engineer', 'pmc'], // Phase 1 Task 5: becomes "request sign-off" (awaiting_signoff)
+  'ActivitiesController.override': ['pmc'], // Phase 1 Task 6: manual readiness exception — attributable, evidenced, expiring
+  'ActivitiesController.revokeOverride': ['pmc'], // Phase 1 Task 6: early revocation — the derivation rules again
   'PhasesController.create': ['pmc'],
   'PhasesController.remove': ['pmc'],
   'InspectionsController.create': ['pmc'],

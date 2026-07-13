@@ -1,40 +1,22 @@
 /**
- * Pure domain logic — no Nest, no Prisma, no I/O. This is the testable heart of
- * the backend: the same rules the frontend enforces, applied server-side as the
- * source of truth. Unit-tested in transitions.test.ts (no database needed).
+ * Derived readiness (Phase 1 Task 6) — a gate dot is a CONCLUSION drawn from
+ * explicit recorded relationships, never a stored flag (material/team excepted —
+ * stored until Phases 3/4, and labeled so). Both truth tables are evaluated
+ * TOP-DOWN, FIRST MATCH WINS: states are mutually exclusive by construction.
+ *
+ * PINNED COPY NOTE: apps/api/src/domain/transitions.ts carries the SAME
+ * derivation server-side (the API cannot import this source-only ESM package —
+ * same pattern as the civil-date lib). Both sides run the same row-by-row table
+ * tests (apps/api/src/domain/readiness.test.ts · apps/web/tests/readiness.test.ts)
+ * — change them TOGETHER.
  */
 
-export type GateState = 'ok' | 'wait' | 'fail' | 'na';
-export type DecisionStatus = 'pending' | 'approved' | 'change';
-
-/** The Decision gate is derived live from the linked decision's status. */
-export function deriveDecisionGate(decisionStatus: DecisionStatus | null): GateState {
-  if (decisionStatus == null) return 'na';
-  return decisionStatus === 'approved' ? 'ok' : 'wait';
-}
-
-export function gateReady(g: GateState): boolean {
-  return g === 'ok' || g === 'na';
-}
-
-/** An activity can Start only when all four gates align (ok or n/a). */
-export function isActivityReady(gates: { d: GateState; m: GateState; t: GateState; i: GateState }): boolean {
-  return gateReady(gates.d) && gateReady(gates.m) && gateReady(gates.t) && gateReady(gates.i);
-}
-
-// ── Derived readiness (Phase 1 Task 6) ──────────────────────────────────────
-// A gate dot is a CONCLUSION drawn from explicit recorded relationships, never
-// a stored flag (material/team excepted — stored until Phases 3/4, and labeled
-// so). Both truth tables are evaluated TOP-DOWN, FIRST MATCH WINS: states are
-// mutually exclusive by construction, no outcome depends on unstated ordering.
-// PINNED COPY NOTE: packages/shared/src/domain/readiness.ts carries the same
-// derivation for the web (demo parity); both sides run the same row-by-row
-// table tests — change them TOGETHER.
+import type { DecisionStatus, Gate } from './types';
 
 export type GateSource = 'derived' | 'stored' | 'override';
 
 export interface GateReading {
-  v: GateState;
+  v: Gate;
   source: GateSource;
   reason: string;
 }
@@ -46,6 +28,8 @@ export interface ActivityReadiness {
   inspection: GateReading;
   drawing: GateReading;
 }
+
+export type OverridableGate = 'decision' | 'material' | 'team' | 'inspection' | 'drawing';
 
 export interface ReadinessInspection {
   id: string;
@@ -74,8 +58,8 @@ export interface ReadinessDrawing {
 }
 
 export interface ReadinessOverride {
-  gate: 'decision' | 'material' | 'team' | 'inspection' | 'drawing';
-  state: GateState;
+  gate: OverridableGate;
+  state: Gate;
   reason: string;
   expiresAt: Date | string;
   actorName?: string;
@@ -83,14 +67,18 @@ export interface ReadinessOverride {
 
 export interface ReadinessInput {
   decisionStatus: DecisionStatus | null;
-  gateMaterial: GateState;
-  gateTeam: GateState;
+  gateMaterial: Gate;
+  gateTeam: Gate;
   inspections: ReadinessInspection[];
   drawings: ReadinessDrawing[];
   activeMemberIds: string[];
   /** rows for THIS activity, oldest first (the latest unexpired one wins its gate) */
   overrides: ReadinessOverride[];
   now: Date;
+}
+
+export function gateReady(g: Gate): boolean {
+  return g === 'ok' || g === 'na';
 }
 
 /** a decided inspection whose outcome REJECTED work — the root/link of a correction chain */
@@ -100,16 +88,9 @@ const wasRejected = (i: ReadinessInspection): boolean =>
 /**
  * Inspection-gate truth table. Input set R = NON-closing inspections whose
  * requirement edge names THIS activity — co-located inspections with a
- * different or null activityId are INVISIBLE. A chain is a decided-rejected
- * member of R plus its transitive reinspection children (they inherit the
- * edge, so they belong to R). First match wins:
- *   1. R empty                              → na
- *   2. any chain OPEN (most recent child unsubmitted, undecided, or itself
- *      rejected without a child yet)        → fail
- *   3. any member outside an open chain not yet submitted or decided → wait
- *   4. otherwise                            → ok
- * Row 2 precedes row 3, so an open reinspection child reads FAIL — the
- * requirement was failed and its correction is not yet accepted.
+ * different or null activityId are INVISIBLE. First match wins:
+ *   1. R empty → na · 2. any chain OPEN → fail · 3. open requirement → wait · 4. ok
+ * Row 2 precedes row 3, so an open reinspection child reads FAIL.
  */
 export function deriveInspectionGate(activityId: string, inspections: ReadinessInspection[]): GateReading {
   const R = inspections.filter((i) => i.activityId === activityId && !i.closing);
@@ -119,7 +100,6 @@ export function deriveInspectionGate(activityId: string, inspections: ReadinessI
   for (const i of R) if (i.reinspectionOfId) childOf.set(i.reinspectionOfId, i);
 
   for (const root of R.filter(wasRejected)) {
-    // walk to the MOST RECENT child of this chain
     let tip = root;
     while (childOf.has(tip.id)) tip = childOf.get(tip.id)!;
     const open = !tip.submitted || !tip.decided || wasRejected(tip);
@@ -133,27 +113,22 @@ export function deriveInspectionGate(activityId: string, inspections: ReadinessI
 }
 
 /** worst-wins precedence for the multi-drawing aggregate */
-const GATE_SEVERITY: Record<GateState, number> = { fail: 3, wait: 2, ok: 1, na: 0 };
+const GATE_SEVERITY: Record<Gate, number> = { fail: 3, wait: 2, ok: 1, na: 0 };
 
 /**
  * Drawing-gate truth table, computed PER LINKED, PUBLISHED drawing then
  * aggregated worst-wins (fail > wait > ok); no linked drawings → na.
- * Per drawing, G = the (single) live for_construction revision:
- *   1. no G (review-only or superseded-out)                     → fail
- *   2. G.recipientsFrozenAt null (LEGACY — predates snapshots)  → ok if ≥1 ack, else wait
- *   3. snapshot ran and active(P) is empty                      → wait
- *   4. some member of active(P) has not acknowledged G          → wait
- *   5. every member of active(P) has acknowledged G             → ok
- * Rows 2 and 3 are distinguished ONLY by recipientsFrozenAt — the migration
- * never invented recipients, so a legacy revision follows the documented
- * legacy rule while a frozen-empty snapshot demands re-issue or override.
+ *   1. no governing for_construction revision → fail
+ *   2. legacy (recipientsFrozenAt null) → ok with ≥1 ack, else wait
+ *   3. snapshot ran and active(P) empty → wait
+ *   4. some member of active(P) unacked → wait · 5. all acked → ok
  */
 export function deriveDrawingGate(activityId: string, drawings: ReadinessDrawing[], activeMemberIds: string[]): GateReading {
   const linked = drawings.filter((d) => d.activityId === activityId && !d.draft);
   if (linked.length === 0) return { v: 'na', source: 'derived', reason: 'No linked drawing' };
 
   const active = new Set(activeMemberIds);
-  const per = (d: ReadinessDrawing): { v: GateState; why: string } => {
+  const per = (d: ReadinessDrawing): { v: Gate; why: string } => {
     const label = d.number ?? 'drawing';
     const G = d.revisions.find((r) => r.status === 'for_construction');
     if (!G) return { v: 'fail', why: `${label}: no construction revision governs (review-only or superseded out)` }; // row 1
@@ -175,19 +150,24 @@ export function deriveDrawingGate(activityId: string, drawings: ReadinessDrawing
   return { v: worst.v, source: 'derived', reason: worst.why };
 }
 
-/** The five-gate readiness derivation — an unexpired override supersedes ITS gate. */
-export function deriveReadiness(activityId: string, input: ReadinessInput): ActivityReadiness {
-  const decisionReason =
-    input.decisionStatus == null
+/** The Decision gate — derived live from the linked decision's lock state. */
+export function deriveDecisionReading(decisionStatus: DecisionStatus | null): GateReading {
+  const v: Gate = decisionStatus == null ? 'na' : decisionStatus === 'approved' ? 'ok' : 'wait';
+  const reason =
+    decisionStatus == null
       ? 'No linked decision'
-      : input.decisionStatus === 'approved'
+      : decisionStatus === 'approved'
         ? 'Decision approved and locked'
-        : input.decisionStatus === 'change'
+        : decisionStatus === 'change'
           ? 'Change requested — awaiting the client’s re-approval'
           : 'Awaiting the client’s approval';
+  return { v, source: 'derived', reason };
+}
 
+/** The five-gate readiness derivation — an unexpired override supersedes ITS gate. */
+export function deriveReadiness(activityId: string, input: ReadinessInput): ActivityReadiness {
   const derived: ActivityReadiness = {
-    decision: { v: deriveDecisionGate(input.decisionStatus), source: 'derived', reason: decisionReason },
+    decision: deriveDecisionReading(input.decisionStatus),
     material: { v: input.gateMaterial, source: 'stored', reason: 'Stored site flag — material on site' },
     team: { v: input.gateTeam, source: 'stored', reason: 'Stored site flag — team present' },
     inspection: deriveInspectionGate(activityId, input.inspections),
@@ -204,18 +184,4 @@ export function deriveReadiness(activityId: string, input: ReadinessInput): Acti
 /** The START guard (Task 6): all FIVE readiness values must align, overrides considered. */
 export function readinessReady(r: ActivityReadiness): boolean {
   return ([r.decision, r.material, r.team, r.inspection, r.drawing] as GateReading[]).every((g) => gateReady(g.v));
-}
-
-/** Returns a guard message if the engineer checklist may not be submitted yet, else null. */
-export function checklistSubmitError(items: { state: string | null; photos: number }[]): string | null {
-  const undone = items.filter((it) => !it.state).length;
-  if (undone > 0) return `Please mark all ${items.length} items before submitting.`;
-  const failNoPhoto = items.filter((it) => it.state === 'fail' && it.photos === 0).length;
-  if (failNoPhoto > 0) return 'A failed item needs a photo before you can submit.';
-  return null;
-}
-
-/** How many re-inspection tasks sending rejections would create (FAIL or explicitly rejected). */
-export function reinspectionCount(items: { rejected: boolean; result: string | null }[]): number {
-  return items.filter((it) => it.rejected || it.result === 'FAIL').length;
 }

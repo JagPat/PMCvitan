@@ -59,7 +59,7 @@ import {
 import { screensFor } from '@/lib/screens';
 import { emptyProjectData, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID, API_BASE } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
@@ -240,6 +240,9 @@ export interface AppActions {
   deleteNode: (nodeId: string) => void;
   createActivity: (input: NewActivityInput) => void;
   updateActivity: (activityId: string, input: Partial<NewActivityInput>) => void;
+  /** Task 6: record / revoke a manual readiness exception (PMC, server-recorded) */
+  overrideGate: (activityId: string, input: OverrideGateInput) => void;
+  revokeOverride: (activityId: string, overrideId: string) => void;
   deleteActivity: (activityId: string) => void;
   createPhase: (name: string) => void;
   deletePhase: (phaseId: string) => void;
@@ -1453,6 +1456,21 @@ export const useStore = create<Store>()(
         return;
       }
       runRemote(() => gateway!.deleteActivity(activityId), 'Activity removed from the plan.');
+    },
+    // Task 6: a manual readiness exception — attributable, reasoned, expiring (server records it)
+    overrideGate: (activityId, input) => {
+      if (!gateway) {
+        get().flash('Gate overrides need the server.');
+        return;
+      }
+      runRemote(() => gateway!.overrideGate(activityId, input), 'Override recorded — it expires automatically.');
+    },
+    revokeOverride: (activityId, overrideId) => {
+      if (!gateway) {
+        get().flash('Gate overrides need the server.');
+        return;
+      }
+      runRemote(() => gateway!.revokeOverride(activityId, overrideId), 'Override revoked — derived readiness applies again.');
     },
     createPhase: (name) => {
       if (!gateway) {

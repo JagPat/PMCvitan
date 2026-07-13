@@ -44,6 +44,35 @@ export interface DecisionDto {
   draft?: boolean;
 }
 
+/** One derived gate value with its provenance (Phase 1 Task 6). */
+export interface GateReadingDto {
+  v: 'ok' | 'wait' | 'fail' | 'na';
+  /** derived = concluded from explicit links; stored = legacy site flag
+   *  (material/team until Phases 3/4); override = an unexpired manual exception */
+  source: 'derived' | 'stored' | 'override';
+  reason: string;
+}
+
+/** The five-gate readiness conclusion the schedule renders (Phase 1 Task 6). */
+export interface ActivityReadinessDto {
+  decision: GateReadingDto;
+  material: GateReadingDto;
+  team: GateReadingDto;
+  inspection: GateReadingDto;
+  drawing: GateReadingDto;
+}
+
+/** An ACTIVE manual readiness exception — attributable, reasoned, expiring. */
+export interface GateOverrideDto {
+  id: string;
+  gate: 'decision' | 'material' | 'team' | 'inspection' | 'drawing';
+  state: 'ok' | 'wait' | 'fail' | 'na';
+  reason: string;
+  actorName: string;
+  expiresAt: string; // ISO instant
+  evidenceMediaId?: string;
+}
+
 export interface ActivityDto {
   id: string;
   name: string;
@@ -64,10 +93,15 @@ export interface ActivityDto {
   /** `awaiting-signoff` = a completion CLAIM parked until the PMC approves the
    *  linked closing inspection (Phase 1 Task 5) — counted as NOT done everywhere */
   status: 'not-started' | 'in-progress' | 'awaiting-signoff' | 'done' | 'blocked';
+  /** DEPRECATED stored flags (display compat) — `readiness` is the truth (Task 6) */
   gm: 'ok' | 'wait' | 'fail' | 'na';
   gt: 'ok' | 'wait' | 'fail' | 'na';
   gi: 'ok' | 'wait' | 'fail' | 'na';
   block?: string;
+  /** the five-gate derivation with named sources and reasons (Task 6) */
+  readiness: ActivityReadinessDto;
+  /** ACTIVE manual exceptions on this activity (revocable, expiring) */
+  overrides: GateOverrideDto[];
 }
 
 /** An inspection placed on the location tree — the Site Map's "inspections here".

@@ -109,6 +109,24 @@ The `closing` column, the completion-claim columns, the `awaiting_signoff` enum 
 `Activity_projectId_completionRequestedById_fkey` constraint all stay in place on rollback
 (additive schema is never auto-reverted — rule 4 above).
 
+### Phase 1 Task 6 release notes (derived readiness)
+
+`20261010000000_phase1_derived_readiness` is additive (the `GateOverride` table + composite
+FKs); rule 2 above applies — verified backup first, staging run first. **Product-visible
+behavior change:** `start()` now derives all FIVE gates from explicit links — activities that
+were startable under manually stored flags may become blocked (this is the point; the
+override mechanism is the controlled path). Before deploying, run the stored-vs-derived
+delta report against a copy of production and review every class it prints:
+
+```
+DATABASE_URL=postgres://… pnpm --filter api exec tsx scripts/readiness-delta-report.ts
+```
+
+A discrepancy class the truth tables do not explain is the plan's STOP condition — review it
+before deploying, never improvise a new rule. **Rollback:** restore the prior application
+build; derivations are read-time so stored columns still hold their legacy values; the
+`GateOverride` table stays (additive schema is never auto-reverted).
+
 ### Migrations & the existing (db-push) database
 
 The schema is now tracked by a baseline Prisma migration at `apps/api/prisma/migrations/0_init`. Going forward, schema changes are new migrations applied by `prisma migrate deploy` on deploy.

@@ -7,13 +7,12 @@ import type { RealtimeGateway } from '../realtime/realtime.gateway';
 import type { AuthUser } from '../common/auth';
 
 /**
- * Phase 1 — start/complete contract. The `start` tests remain the Task 1
- * characterization. The `complete` tests are the Task 5 CONTRACT (updated in
- * the same PR that changed the behavior, as the Task 1 header demanded):
- * completion is a CLAIM — a CAS to `awaiting_signoff` recording the completer's
- * real identity and creating the LINKED, item-bearing closing inspection.
- * Nothing here writes `done`; only closing-inspection approval does
- * (inspections.service.test.ts pins that side).
+ * Phase 1 — start/complete contract. The `complete` tests are the Task 5
+ * CONTRACT. The `start` tests are the Task 6 CONTRACT (updated in the same PR
+ * that changed the behavior, as the Task 1 characterization demanded): start
+ * derives ALL FIVE readiness gates from explicit links — the stored
+ * gateInspection column is never consulted again; material/team stay stored
+ * flags; an unexpired override supersedes its gate.
  */
 
 interface ActRow {
@@ -34,7 +33,15 @@ interface Member { projectId: string; userId: string; role: string; status: stri
 /** Real display names behind the test users — attribution must surface THESE. */
 const NAMES: Record<string, string> = { 'u-eng': 'Ravi Iyer', 'u-pmc': 'Ar. Meghna' };
 
-function make(activity: ActRow, opts: { members?: Member[] } = {}) {
+interface MakeOpts {
+  members?: Member[];
+  /** rows the readiness loader sees for THIS activity (Task 6) */
+  linkedInspections?: Array<Record<string, unknown>>;
+  linkedDrawings?: Array<Record<string, unknown>>;
+  overrides?: Array<Record<string, unknown>>;
+}
+
+function make(activity: ActRow, opts: MakeOpts = {}) {
   const inspectionCreates: Array<Record<string, unknown>> = [];
   const activityUpdates: Array<Record<string, unknown>> = [];
   const audits: Array<{ action: string; actorId?: string; actorRole?: string; payload?: Record<string, unknown> }> = [];
@@ -69,11 +76,18 @@ function make(activity: ActRow, opts: { members?: Member[] } = {}) {
       findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
     },
     inspection: {
-      findMany: vi.fn(async () => [{ id: 'INSP-21' }]),
+      // the readiness loader queries by activityId (Task 6); the id scan has no where
+      findMany: vi.fn(async (args?: { where?: { activityId?: string } }) =>
+        (args?.where?.activityId !== undefined ? (opts.linkedInspections ?? []) : [{ id: 'INSP-21' }])),
       create: vi.fn((args: { data: Record<string, unknown> }) => {
         inspectionCreates.push(args.data);
         return Promise.resolve({ id: args.data.id });
       }),
+    },
+    drawing: { findMany: vi.fn(async () => opts.linkedDrawings ?? []) },
+    gateOverride: { findMany: vi.fn(async () => opts.overrides ?? []) },
+    membership: {
+      findMany: vi.fn(async () => members.filter((m) => m.status === 'active').map((m) => ({ userId: m.userId }))),
     },
     notification: { create: vi.fn(async () => ({})) },
     auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
@@ -101,20 +115,52 @@ const act = (over: Partial<ActRow> = {}): ActRow => ({
   ...over,
 });
 
-describe('ActivitiesService.start — characterization', () => {
+describe('ActivitiesService.start — the five-gate readiness guard (Phase 1 Task 6)', () => {
   it('refuses to start an activity that is not in not_started (409)', async () => {
     const { svc, user } = make(act({ status: 'in_progress' }));
     await expect(svc.start('ambli', 'ACT-31', user)).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('refuses to start when a stored gate is unready (409) — gateInspection is a stored flag, not a derived fact', async () => {
-    const { svc, user } = make(act({ gateInspection: 'wait' }));
+  it('the STORED gateInspection column is never consulted: a legacy "fail" with no linked inspection derives na and starts', async () => {
+    const { svc, user, activityUpdates } = make(act({ gateInspection: 'fail' }));
+    await svc.start('ambli', 'ACT-31', user);
+    expect(activityUpdates[0].status).toBe('in_progress');
+  });
+
+  it('a LINKED rejected inspection blocks start (derived fail — the open correction chain)', async () => {
+    const { svc, user } = make(act(), {
+      linkedInspections: [{ id: 'INSP-9', activityId: 'ACT-31', closing: false, submitted: true, decided: true, reinspectionOfId: null, items: [{ rejected: true, result: 'FAIL' }] }],
+    });
+    await expect(svc.start('ambli', 'ACT-31', user)).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('a LINKED unacknowledged construction drawing blocks start (derived wait on the frozen set)', async () => {
+    const { svc, user } = make(act(), {
+      linkedDrawings: [{ number: 'A-1', activityId: 'ACT-31', publishedAt: new Date(), revisions: [{ status: 'for_construction', recipientsFrozenAt: new Date(), recipients: [{ userId: 'u-eng' }], acks: [] }] }],
+    });
+    await expect(svc.start('ambli', 'ACT-31', user)).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('material/team remain STORED flags and still block start', async () => {
+    const { svc, user } = make(act({ gateMaterial: 'fail' }));
     await expect(svc.start('ambli', 'ACT-31', user)).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('derives the Decision gate LIVE from the linked decision status — a change-requested decision blocks start', async () => {
     const { svc, user } = make(act({ decision: { status: 'change' } }));
     await expect(svc.start('ambli', 'ACT-31', user)).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('an UNEXPIRED override admits the start the derivation blocks; an expired one does not', async () => {
+    const blocked = {
+      linkedDrawings: [{ number: 'A-1', activityId: 'ACT-31', publishedAt: new Date(), revisions: [{ status: 'for_review', recipientsFrozenAt: null, recipients: [], acks: [] }] }],
+    };
+    const a = make(act(), { ...blocked, overrides: [{ gate: 'drawing', state: 'ok', reason: 'paper set on site', expiresAt: new Date(Date.now() + 3600_000) }] });
+    await a.svc.start('ambli', 'ACT-31', a.user);
+    expect(a.activityUpdates[0].status).toBe('in_progress');
+
+    const b = make(act(), { ...blocked, overrides: [{ gate: 'drawing', state: 'ok', reason: 'lapsed', expiresAt: new Date(Date.now() - 3600_000) }] });
+    await expect(b.svc.start('ambli', 'ACT-31', b.user)).rejects.toBeInstanceOf(ConflictException);
   });
 
   it('starts a ready activity: in_progress + the real civil start date from the injected clock', async () => {

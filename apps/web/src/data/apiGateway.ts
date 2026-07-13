@@ -204,9 +204,19 @@ export interface NewActivityInput {
   phaseId?: string | null;
   decisionId?: string | null;
   nodeId?: string | null; // location spine: where this work happens
+  // material/team stay STORED site flags; the inspection + drawing gates are
+  // DERIVED from explicit links (Task 6) — gateInspection left the contract
   gateMaterial?: GateInput;
   gateTeam?: GateInput;
-  gateInspection?: GateInput;
+}
+
+/** A manual readiness exception (Task 6): pmc-only, reasoned, always expiring. */
+export interface OverrideGateInput {
+  gate: 'decision' | 'material' | 'team' | 'inspection' | 'drawing';
+  state: GateInput;
+  reason: string;
+  evidenceMediaId?: string;
+  expiresAt: string; // ISO instant, must be in the future
 }
 
 /** Issue a drawing revision (new register entry, or a new rev that supersedes). */
@@ -501,6 +511,14 @@ export class ApiGateway {
   /** Remove a planned activity (PMC). */
   deleteActivity(activityId: string): Promise<ApiSnapshot> {
     return this.req(`/projects/${this.projectId}/activities/${activityId}`, { method: 'DELETE' });
+  }
+  /** Record a manual readiness exception on one gate (PMC, Task 6). */
+  overrideGate(activityId: string, input: OverrideGateInput): Promise<ApiSnapshot> {
+    return this.p(`/activities/${activityId}/override`, input);
+  }
+  /** Revoke an override early (PMC) — the derivation rules again. */
+  revokeOverride(activityId: string, overrideId: string): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/activities/${activityId}/override/${overrideId}`, { method: 'DELETE' });
   }
   /** Add a schedule phase (PMC). */
   createPhase(input: { name: string; plannedStart?: number; plannedEnd?: number }): Promise<ApiSnapshot> {
