@@ -44,8 +44,9 @@ describe('derived readiness + gate overrides (integration)', () => {
 
   afterAll(async () => {
     const projectId = f.projectA.id;
-    await t.prisma.media.deleteMany({ where: { projectId: { in: [projectId, f.projectB.id] } } });
+    // overrides FIRST: an override may cite a media row as evidence (composite FK)
     await t.prisma.gateOverride.deleteMany({ where: { projectId } });
+    await t.prisma.media.deleteMany({ where: { projectId: { in: [projectId, f.projectB.id] } } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId } } });
     await t.prisma.inspection.deleteMany({ where: { projectId } });
     await t.prisma.drawingAck.deleteMany({ where: { revision: { drawing: { projectId } } } });
