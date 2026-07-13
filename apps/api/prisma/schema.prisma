@@ -76,6 +76,7 @@ model Project {
   pushSubs      PushSubscription[]
   drawings      Drawing[]
   phases        Phase[]
+  gateOverrides GateOverride[]
   org           Org?           @relation(fields: [orgId], references: [id])
   orgId         String?
   memberships   Membership[]
@@ -259,6 +260,8 @@ model Media {
   // is the same photo, uploaded exactly once. Never a global unique.
   clientKey  String?
   createdAt  DateTime @default(now())
+  // overrides citing this photo as supporting evidence (Phase 1 Task 6)
+  gateOverrides GateOverride[]
 
   @@unique([projectId, id]) // referenced identity (Task 6 override evidence)
   @@unique([projectId, clientKey])
@@ -592,9 +595,36 @@ model Activity {
   drawings       Drawing[]
   // inspections whose requirement edge names this activity (Phase 1 Task 4)
   inspections    Inspection[]
+  // manual readiness exceptions — attributable, evidenced, EXPIRING (Phase 1 Task 6)
+  gateOverrides  GateOverride[]
 
   @@unique([projectId, id])
   @@index([nodeId])
+}
+
+// A manual readiness exception (Phase 1 Task 6): the PMC overrides ONE gate's
+// derived value with an attributable, reasoned, optionally evidenced record that
+// ALWAYS expires — expiry (or early revocation) restores the derivation. No
+// silent flag-flips: every override is audited and serialized in the snapshot.
+model GateOverride {
+  id         String    @id @default(cuid())
+  project    Project   @relation(fields: [projectId], references: [id])
+  projectId  String
+  // composite FK — an override can only name THIS project's activity
+  activity   Activity  @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId String
+  gate       String // decision | material | team | inspection | drawing
+  state      GateState
+  reason     String
+  actorId    String
+  actorName  String
+  // optional supporting photo — composite FK, same-project by construction (Task 4 key)
+  evidence        Media?  @relation(fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  evidenceMediaId String?
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+
+  @@index([projectId, activityId])
 }
 
 // A project phase (Foundation → Structure → MEP → Finishing…). Groups activities

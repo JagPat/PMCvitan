@@ -169,11 +169,42 @@ export interface Activity {
   actualStartDate?: string | null;
   actualEndDate?: string | null;
   status: ActivityStatus;
-  /** gate states: material / team / inspection (decision gate is derived live) */
+  /** DEPRECATED stored flags (demo/display compat) — `readiness` is the truth (Task 6) */
   gm: Gate;
   gt: Gate;
   gi: Gate;
   block?: string;
+  /** the five-gate derivation with named sources + reasons (Task 6) — present in
+   *  API mode; the demo derives an equivalent locally via the shared truth tables */
+  readiness?: ActivityReadinessShape;
+  /** ACTIVE manual readiness exceptions — attributable, reasoned, expiring (Task 6) */
+  overrides?: ActivityOverride[];
+}
+
+/** structural mirror of readiness.ts's ActivityReadiness (kept here so the type
+ *  graph stays acyclic; the derivation module is the behavioral owner) */
+export interface GateReadingShape {
+  v: Gate;
+  source: 'derived' | 'stored' | 'override';
+  reason: string;
+}
+export interface ActivityReadinessShape {
+  decision: GateReadingShape;
+  material: GateReadingShape;
+  team: GateReadingShape;
+  inspection: GateReadingShape;
+  drawing: GateReadingShape;
+}
+
+/** An ACTIVE manual readiness exception on an activity (Task 6). */
+export interface ActivityOverride {
+  id: string;
+  gate: 'decision' | 'material' | 'team' | 'inspection' | 'drawing';
+  state: Gate;
+  reason: string;
+  actorName: string;
+  expiresAt: string; // ISO instant
+  evidenceMediaId?: string;
 }
 
 /** A project phase with a live rollup of its activities (phase-level monitoring). */

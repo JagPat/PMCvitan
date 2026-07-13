@@ -3,15 +3,16 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
-import { deriveDecisionGate, isActivityReady } from '../domain/transitions';
+import { deriveReadiness, gateReady, readinessReady, type ActivityReadiness, type DecisionStatus, type GateState } from '../domain/transitions';
 import { resolveProjectNode } from '../nodes/node-scope';
+import { resolveProjectRef } from '../common/project-ref';
 import { resolveActor } from '../common/actor';
 import { ddMmmYyyy } from '../domain/dates';
 import { CLOCK, type Clock } from '../common/clock';
 import { addCivilDays, diffCivilDays, fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
-import type { CreateActivityInput, UpdateActivityInput } from '../contracts';
+import type { CreateActivityInput, OverrideGateInput, UpdateActivityInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 
 @Injectable()
@@ -90,7 +91,8 @@ export class ActivitiesService {
           nodeId: input.nodeId ?? null,
           gateMaterial: input.gateMaterial,
           gateTeam: input.gateTeam,
-          gateInspection: input.gateInspection,
+          // gateInspection left the write contracts (Task 6): the inspection gate
+          // is DERIVED from linked inspections; the column stays at its default
           order,
         },
       }),
@@ -162,15 +164,57 @@ export class ActivitiesService {
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
-  /** Start an activity — server enforces that all four readiness gates align. */
+  /** The five-gate readiness derivation's inputs for ONE activity — the same
+   *  explicit edges the snapshot serializes (Task 6): linked inspections, linked
+   *  drawings with their frozen recipients and acks, active members, overrides. */
+  async loadReadiness(
+    projectId: string,
+    activity: { id: string; gateMaterial: GateState; gateTeam: GateState; decision: { status: string } | null },
+  ): Promise<ActivityReadiness> {
+    const [inspections, drawings, activeMembers, overrides] = await Promise.all([
+      this.prisma.inspection.findMany({
+        where: { projectId, activityId: activity.id },
+        include: { items: { select: { rejected: true, result: true } } },
+      }),
+      this.prisma.drawing.findMany({
+        where: { projectId, activityId: activity.id },
+        include: { revisions: { include: { recipients: { select: { userId: true } }, acks: { select: { userId: true } } } } },
+      }),
+      this.prisma.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
+      this.prisma.gateOverride.findMany({ where: { projectId, activityId: activity.id }, orderBy: { createdAt: 'asc' } }),
+    ]);
+    return deriveReadiness(activity.id, {
+      decisionStatus: activity.decision ? (activity.decision.status as DecisionStatus) : null,
+      gateMaterial: activity.gateMaterial,
+      gateTeam: activity.gateTeam,
+      inspections: inspections.map((i) => ({ id: i.id, activityId: i.activityId, closing: i.closing, submitted: i.submitted, decided: i.decided, reinspectionOfId: i.reinspectionOfId, items: i.items })),
+      drawings: drawings.map((d) => ({
+        number: d.number,
+        activityId: d.activityId,
+        draft: d.publishedAt === null,
+        revisions: d.revisions.map((r) => ({ status: r.status, recipientsFrozenAt: r.recipientsFrozenAt, recipientIds: r.recipients.map((x) => x.userId), ackedIds: r.acks.map((x) => x.userId) })),
+      })),
+      activeMemberIds: activeMembers.map((m) => m.userId),
+      overrides: overrides.map((o) => ({ gate: o.gate as OverrideGateInput['gate'], state: o.state, reason: o.reason, expiresAt: o.expiresAt })),
+      now: new Date(),
+    });
+  }
+
+  /** Start an activity — the server derives all FIVE readiness gates from the
+   *  explicit recorded relationships (overrides considered) and refuses unless
+   *  every one aligns. Stored gateInspection is never consulted (Task 6). */
   async start(projectId: string, activityId: string, user: AuthUser): Promise<SnapshotDto> {
     const a = await this.prisma.activity.findUnique({ where: { id: activityId }, include: { decision: true } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
     if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
 
-    const gd = deriveDecisionGate(a.decision ? a.decision.status : null);
-    if (!isActivityReady({ d: gd, m: a.gateMaterial, t: a.gateTeam, i: a.gateInspection })) {
-      throw new ConflictException('Readiness gates are not aligned — cannot start this activity');
+    const readiness = await this.loadReadiness(projectId, a);
+    if (!readinessReady(readiness)) {
+      const blocking = (Object.entries(readiness) as Array<[string, { v: GateState; reason: string }]>)
+        .filter(([, g]) => !gateReady(g.v))
+        .map(([gate, g]) => `${gate}: ${g.reason}`)
+        .join('; ');
+      throw new ConflictException(`Readiness gates are not aligned — cannot start this activity (${blocking})`);
     }
 
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
@@ -273,6 +317,49 @@ export class ActivitiesService {
     }
     // the sign-off is the PMC's decision to make
     this.realtime.notifyChanged(projectId, `Sign-off requested: ${a.name}`, ['pmc']);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /** PMC records a MANUAL readiness exception (Task 6): one gate, one reason,
+   *  optional same-project photo evidence, and an expiry that is ALWAYS in the
+   *  future — expiry (or early revocation) restores the derivation. Audited. */
+  async override(projectId: string, activityId: string, input: OverrideGateInput, user: AuthUser): Promise<SnapshotDto> {
+    const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
+    if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
+    const expiresAt = new Date(input.expiresAt);
+    if (expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestException('An override must expire in the future — it is a temporary exception, never a permanent flag');
+    }
+    // supporting evidence must be THIS project's photo (composite FK is the backstop)
+    const evidenceMediaId = await resolveProjectRef(this.prisma, 'media', projectId, input.evidenceMediaId, 'evidenceMediaId');
+    const actor = await resolveActor(this.prisma, user);
+    await this.prisma.$transaction([
+      this.prisma.gateOverride.create({
+        data: { projectId, activityId, gate: input.gate, state: input.state, reason: input.reason, actorId: actor.actorId, actorName: actor.actorName, evidenceMediaId, expiresAt },
+      }),
+      this.prisma.auditLog.create({
+        data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.override', entity: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state, reason: input.reason, expiresAt: expiresAt.toISOString(), evidenceMediaId } },
+      }),
+    ]);
+    this.realtime.notifyChanged(projectId, `Gate override on ${a.name}: ${input.gate} → ${input.state} (expires ${ddMmmYyyy(expiresAt)})`, ['engineer', 'contractor']);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /** PMC revokes an override EARLY — the derivation rules again immediately.
+   *  The audit trail keeps the full record of both the override and its end. */
+  async revokeOverride(projectId: string, activityId: string, overrideId: string, user: AuthUser): Promise<SnapshotDto> {
+    const row = await this.prisma.gateOverride.findUnique({ where: { id: overrideId } });
+    if (!row || row.projectId !== projectId || row.activityId !== activityId) {
+      throw new NotFoundException(`Override ${overrideId} not found`);
+    }
+    const actor = await resolveActor(this.prisma, user);
+    await this.prisma.$transaction([
+      this.prisma.gateOverride.delete({ where: { id: overrideId } }),
+      this.prisma.auditLog.create({
+        data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.override_revoke', entity: 'Activity', entityId: activityId, payload: { overrideId, gate: row.gate, state: row.state, reason: row.reason } },
+      }),
+    ]);
+    this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

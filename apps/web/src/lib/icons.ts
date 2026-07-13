@@ -44,5 +44,6 @@ export {
   LayoutGrid,
   Blocks,
   BookmarkPlus,
+  ShieldCheck,
   type LucideIcon,
 } from 'lucide-react';

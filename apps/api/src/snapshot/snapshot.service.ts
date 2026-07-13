@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { deriveReadiness, type DecisionStatus, type ReadinessOverride } from '../domain/transitions';
 import { toIsoCivilDate } from '../common/civil-date';
 import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice } from '../domain/notifications';
@@ -30,7 +31,7 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisions, activities, inspections, dailyLog, notifications, siteMedia, drawings, phases, companies, nodes, allMaterials] = await Promise.all([
+    const [decisions, activities, inspections, dailyLog, notifications, siteMedia, drawings, phases, companies, nodes, allMaterials, activeMembers, gateOverrides] = await Promise.all([
       this.prisma.decision.findMany({
         where: { projectId },
         // the OPEN change request travels with a reopened decision (Phase 1 Task 2)
@@ -83,6 +84,10 @@ export class SnapshotService {
       // All materials across the project's daily logs (for the Site Map's "materials here"),
       // not just the current day. Same visibility as the daily-log materials.
       this.prisma.siteMaterial.findMany({ where: { dailyLog: { projectId } }, orderBy: { order: 'asc' } }),
+      // Readiness inputs (Task 6): who is CURRENTLY active (drawing-gate active(P))
+      // and every manual override (oldest first — the latest unexpired wins its gate)
+      this.prisma.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
+      this.prisma.gateOverride.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
     ]);
 
     // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
@@ -143,6 +148,26 @@ export class SnapshotService {
         })),
       }));
 
+    // Readiness (Task 6): a gate dot is a CONCLUSION from explicit recorded
+    // relationships — derived per activity from the rows already loaded above,
+    // never from a stored flag (material/team excepted and labeled 'stored').
+    const now = new Date();
+    const activeMemberIds = activeMembers.map((m) => m.userId);
+    const readinessInspections = inspections.map((i) => ({
+      id: i.id, activityId: i.activityId, closing: i.closing, submitted: i.submitted, decided: i.decided, reinspectionOfId: i.reinspectionOfId,
+      items: i.items.map((it) => ({ rejected: it.rejected, result: it.result })),
+    }));
+    const readinessDrawings = drawings.map((d) => ({
+      number: d.number, activityId: d.activityId, draft: d.publishedAt === null,
+      revisions: d.revisions.map((r) => ({ status: r.status, recipientsFrozenAt: r.recipientsFrozenAt, recipientIds: r.recipients.map((x) => x.userId), ackedIds: r.acks.map((x) => x.userId) })),
+    }));
+    const overridesByActivity = new Map<string, typeof gateOverrides>();
+    for (const o of gateOverrides) {
+      const list = overridesByActivity.get(o.activityId) ?? [];
+      list.push(o);
+      overridesByActivity.set(o.activityId, list);
+    }
+
     const activityDtos: ActivityDto[] = activities.map((a) => ({
       id: a.id,
       name: a.name,
@@ -161,10 +186,25 @@ export class SnapshotService {
       actualStartDate: toIsoCivilDate(a.actualStartDate),
       actualEndDate: toIsoCivilDate(a.actualEndDate),
       status: ACTIVITY_STATUS_OUT[a.status],
+      // legacy stored flags (deprecated display fields; `readiness` is the truth)
       gm: a.gateMaterial,
       gt: a.gateTeam,
       gi: a.gateInspection,
       block: a.block ?? undefined,
+      readiness: deriveReadiness(a.id, {
+        decisionStatus: a.decisionId ? ((decisions.find((d) => d.id === a.decisionId)?.status as DecisionStatus) ?? null) : null,
+        gateMaterial: a.gateMaterial,
+        gateTeam: a.gateTeam,
+        inspections: readinessInspections,
+        drawings: readinessDrawings,
+        activeMemberIds,
+        overrides: (overridesByActivity.get(a.id) ?? []).map((o) => ({ gate: o.gate as ReadinessOverride['gate'], state: o.state, reason: o.reason, expiresAt: o.expiresAt, actorName: o.actorName })),
+        now,
+      }),
+      // the ACTIVE manual exceptions, surfaced for the override UI (revoke + expiry)
+      overrides: (overridesByActivity.get(a.id) ?? [])
+        .filter((o) => o.expiresAt.getTime() > now.getTime())
+        .map((o) => ({ id: o.id, gate: o.gate as ReadinessOverride['gate'], state: o.state, reason: o.reason, actorName: o.actorName, expiresAt: o.expiresAt.toISOString(), evidenceMediaId: o.evidenceMediaId ?? undefined })),
     }));
 
     // The engineer keeps seeing their checklist (as "submitted ✓") after they send

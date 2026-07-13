@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import { drawingDisciplineFor, type Activity, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
+import { deriveReadiness, drawingDisciplineFor, readinessReady, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -103,26 +103,59 @@ export function gateDStateFor(s: AppState, a: Activity): Gate {
   return st === 'approved' ? 'ok' : 'wait';
 }
 
+/**
+ * The activity's FIVE-gate readiness (Task 6). API mode serializes it on the
+ * activity (derived server-side, overrides included). Demo mode derives an
+ * equivalent from the local state through the SAME shared truth tables — the
+ * decision gate live, the drawing gate from the register's linked drawings
+ * (legacy ack rule — the demo has no frozen recipient rows), material/team/
+ * inspection from the stored prototype flags, honestly labeled 'stored'.
+ */
+export function readinessFor(s: AppState, a: Activity): ActivityReadiness {
+  if (a.readiness) return a.readiness;
+  const r = deriveReadiness(a.id, {
+    decisionStatus: a.decisionId ? decStatusOf(s, a.decisionId) : null,
+    gateMaterial: a.gm,
+    gateTeam: a.gt,
+    inspections: [], // demo checklists carry no requirement edges — the stored flag stands in below
+    drawings: s.drawings.map((d) => ({
+      number: d.number,
+      activityId: d.activityId ?? null,
+      draft: d.draft,
+      revisions: d.revisions.map((rev) => ({ status: rev.status, recipientsFrozenAt: null, recipientIds: [], ackedIds: rev.acks.map((_, i) => `ack-${i}`) })),
+    })),
+    activeMemberIds: [],
+    overrides: [],
+    now: new Date(),
+  });
+  r.inspection = { v: a.gi, source: 'stored', reason: 'Stored site flag (demo)' };
+  return r;
+}
+
 export interface GateVM {
-  k: 'D' | 'M' | 'T' | 'I';
+  k: 'D' | 'M' | 'T' | 'I' | 'DRW';
   label: string;
   v: Gate;
+  /** where this value came from: derived | stored | override (Task 6) */
+  source: 'derived' | 'stored' | 'override';
+  /** the human-readable conclusion behind the dot */
+  reason: string;
 }
 
 export function gatesFor(s: AppState, a: Activity): GateVM[] {
+  const r = readinessFor(s, a);
   return [
-    { k: 'D', label: 'Decision locked', v: gateDStateFor(s, a) },
-    { k: 'M', label: 'Material on site', v: a.gm },
-    { k: 'T', label: 'Team present', v: a.gt },
-    { k: 'I', label: 'Inspection passed', v: a.gi },
+    { k: 'D', label: 'Decision locked', v: r.decision.v, source: r.decision.source, reason: r.decision.reason },
+    { k: 'M', label: 'Material on site', v: r.material.v, source: r.material.source, reason: r.material.reason },
+    { k: 'T', label: 'Team present', v: r.team.v, source: r.team.source, reason: r.team.reason },
+    { k: 'I', label: 'Inspection passed', v: r.inspection.v, source: r.inspection.source, reason: r.inspection.reason },
+    { k: 'DRW', label: 'Drawings acknowledged', v: r.drawing.v, source: r.drawing.source, reason: r.drawing.reason },
   ];
 }
 
-const gateReady = (g: Gate) => g === 'ok' || g === 'na';
-
-/** An activity can Start only when all four gates align (ok or n/a). */
+/** An activity can Start only when all FIVE gates align (ok or n/a), overrides considered. */
 export function activityReady(s: AppState, a: Activity): boolean {
-  return gatesFor(s, a).every((g) => gateReady(g.v));
+  return readinessReady(readinessFor(s, a));
 }
 
 export function selectSchToday(s: AppState): { inProgress: number; doneWeek: number; blocked: number } {
@@ -256,6 +289,20 @@ export function selectActionItems(s: AppState): ActionItem[] {
     if (changes.length) items.push({ key: 'pmc-change', title: `${changes.length} change request${plural(changes.length)} to resolve`, detail: names(changes), screen: 'decision-log', cta: 'Open', tone: 'red' });
     if (blocked.length) items.push({ key: 'pmc-blocked', title: `${blocked.length} activit${blocked.length === 1 ? 'y' : 'ies'} blocked`, detail: names(blocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'red' });
     if (pending.length) items.push({ key: 'pmc-pending', title: `${pending.length} decision${plural(pending.length)} awaiting the client`, detail: 'Issued — waiting on client approval', screen: 'decision-log', cta: 'View', tone: 'ink' });
+    // Task 6: unstarted work whose DRAWING gate blocks it — the derived conclusion, surfaced
+    const drawingBlocked = s.activities.filter((a) => {
+      if (a.status !== 'not-started') return false;
+      const dr = readinessFor(s, a).drawing;
+      return dr.v === 'wait' || dr.v === 'fail';
+    });
+    if (drawingBlocked.length) items.push({ key: 'pmc-drawing-gate', title: `Blocked: drawing unacknowledged on ${drawingBlocked.length} activit${drawingBlocked.length === 1 ? 'y' : 'ies'}`, detail: names(drawingBlocked), screen: 'site-schedule', cta: 'Open schedule', tone: 'amber' });
+    // Task 6: overrides lapsing within a week — the exception is about to end
+    const soon = Date.now() + 7 * 24 * 3600 * 1000;
+    const expiring = s.activities.flatMap((a) => (a.overrides ?? []).filter((o) => new Date(o.expiresAt).getTime() <= soon).map((o) => ({ a, o })));
+    if (expiring.length) {
+      const first = expiring[0];
+      items.push({ key: 'pmc-override-expiry', title: `Override expiring ${new Date(first.o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} — ${first.a.name}`, detail: expiring.length > 1 ? `${expiring.length} overrides lapse within a week` : first.o.reason, screen: 'site-schedule', cta: 'Review overrides', tone: 'amber' });
+    }
   }
 
   if (s.role === 'consultant') {

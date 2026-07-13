@@ -461,9 +461,11 @@ export const createActivitySchema = z
     decisionId: z.string().optional(),
     // Location spine: the place this work happens (a location-tree node).
     nodeId: z.string().trim().min(1).optional(),
+    // material/team stay STORED site flags (Phases 3/4 derive them); the
+    // inspection and drawing gates are DERIVED from explicit links (Task 6) —
+    // gateInspection left the write contracts entirely (deprecated column)
     gateMaterial: gateState.default('na'),
     gateTeam: gateState.default('na'),
-    gateInspection: gateState.default('na'),
   })
   .refine((v) => v.plannedEnd >= v.plannedStart, { message: 'plannedEnd must be on or after plannedStart' })
   // ISO civil dates compare lexicographically = chronologically (finding 5: a
@@ -485,9 +487,9 @@ export const updateActivitySchema = z
     phaseId: z.string().nullable().optional(),
     decisionId: z.string().nullable().optional(),
     nodeId: z.string().nullable().optional(),
+    // no route can set gateInspection any more (Task 6) — readiness derives it
     gateMaterial: gateState.optional(),
     gateTeam: gateState.optional(),
-    gateInspection: gateState.optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'Provide at least one field to update' })
   .refine((v) => v.plannedStart === undefined || v.plannedEnd === undefined || v.plannedEnd >= v.plannedStart, {
@@ -497,6 +499,17 @@ export const updateActivitySchema = z
     message: 'plannedEndDate must be on or after plannedStartDate',
   });
 export type UpdateActivityInput = z.infer<typeof updateActivitySchema>;
+
+// A manual readiness exception (Phase 1 Task 6): pmc-only, always with a reason
+// and an EXPIRY in the future; optionally backed by a same-project photo.
+export const overrideGateSchema = z.object({
+  gate: z.enum(['decision', 'material', 'team', 'inspection', 'drawing']),
+  state: gateState,
+  reason: z.string().trim().min(1).max(500),
+  evidenceMediaId: z.string().trim().min(1).optional(),
+  expiresAt: z.string().datetime({ offset: true }),
+});
+export type OverrideGateInput = z.infer<typeof overrideGateSchema>;
 
 export const createPhaseSchema = z
   .object({

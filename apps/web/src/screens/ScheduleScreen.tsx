@@ -4,7 +4,7 @@ import { useStore } from '@/store/store';
 import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase } from '@/store/selectors';
 import { Eyebrow, GateDot, ActivityChip, Button, Modal } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
-import { PencilRuler, Pencil, Plus, X } from '@/lib/icons';
+import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
 import { dayLabel, gateColor, can, diffCivilDays, formatCivilDate, type Activity, type Phase, type Gate } from '@vitan/shared';
 import type { AppState } from '@/store/store';
 import type { NewActivityInput } from '@/data/apiGateway';
@@ -44,9 +44,10 @@ function labelOf(iso: string | null | undefined, legacy: number | null): string 
   return legacy == null ? '' : dayLabel(legacy);
 }
 
-function ScheduleRow({ a, todayPct, onEdit }: { a: Activity; todayPct: number; onEdit?: (a: Activity) => void }) {
+function ScheduleRow({ a, todayPct, onEdit, onOverride }: { a: Activity; todayPct: number; onEdit?: (a: Activity) => void; onOverride?: (a: Activity) => void }) {
   const state = useStore((s) => s) as AppState;
   const setScreen = useStore((s) => s.setScreen);
+  const revokeOverride = useStore((s) => s.revokeOverride);
   const gates = gatesFor(state, a);
   const ready = activityReady(state, a);
   // the controlled drawing this activity builds from (Drawings Slice 2 linkage)
@@ -103,24 +104,101 @@ function ScheduleRow({ a, todayPct, onEdit }: { a: Activity; todayPct: number; o
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)', marginTop: 2 }}>{actualLine}</div>
         </div>
 
-        <div style={{ display: 'flex', gap: 9, width: 104, flex: 'none' }}>
+        <div style={{ display: 'flex', gap: 9, width: 136, flex: 'none', alignItems: 'flex-start' }}>
           {gates.map((g) => (
-            <div key={g.k} title={`${g.label} — ${{ ok: 'ready', wait: 'waiting', fail: 'failed', na: 'n/a' }[g.v]}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+            // Task 6: the tooltip carries the derived CONCLUSION and its source —
+            // a dot is never an unexplained flag any more
+            <div key={g.k} title={`${g.label} — ${g.reason}${g.source === 'override' ? ' (OVERRIDE)' : g.source === 'stored' ? ' (stored flag)' : ''}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
               <GateDot v={g.v} />
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--muted)' }}>{g.k}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: g.source === 'override' ? '#31567F' : 'var(--muted)', fontWeight: g.source === 'override' ? 700 : 400 }}>{g.k}</span>
             </div>
           ))}
+          {onOverride && (
+            <button onClick={() => onOverride(a)} title="Record a gate override (expires automatically)" aria-label={`Override a gate on ${a.name}`} data-testid={`override-${a.id}`} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2, marginTop: 1 }}>
+              <ShieldCheck size={13} />
+            </button>
+          )}
         </div>
 
         <ActionButton a={a} ready={ready} />
       </div>
+      {(a.overrides?.length ?? 0) > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 9 }}>
+          {a.overrides!.map((o) => (
+            <span key={o.id} data-testid={`override-chip-${o.id}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 9.5, padding: '3px 8px', borderRadius: 8, background: '#E6ECF3', color: '#31567F', border: '1px solid #C4D3E4' }}>
+              OVERRIDE · {o.gate} → {o.state} · {o.actorName} · expires {new Date(o.expiresAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })} · {o.reason}
+              {onOverride && (
+                <button onClick={() => revokeOverride(a.id, o.id)} title="Revoke this override now" aria-label="Revoke override" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#31567F', display: 'flex', padding: 0 }}>
+                  <X size={11} />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
+  );
+}
+
+const OVERRIDE_GATES = ['decision', 'material', 'team', 'inspection', 'drawing'] as const;
+
+/** PMC records a manual readiness exception: one gate, a reason, an expiry —
+ *  never a silent flag-flip. The server stores it attributably (Task 6). */
+function OverrideModal({ activity, onClose }: { activity: Activity; onClose: () => void }) {
+  const overrideGate = useStore((s) => s.overrideGate);
+  const [gate, setGate] = useState<(typeof OVERRIDE_GATES)[number]>('drawing');
+  const [state, setState] = useState<Gate>('ok');
+  const [reason, setReason] = useState('');
+  const [days, setDays] = useState('7');
+  const daysN = parseInt(days, 10);
+  const ready = reason.trim().length > 0 && Number.isFinite(daysN) && daysN >= 1 && daysN <= 90;
+
+  const save = () => {
+    if (!ready) return;
+    overrideGate(activity.id, {
+      gate,
+      state,
+      reason: reason.trim(),
+      expiresAt: new Date(Date.now() + daysN * 24 * 3600 * 1000).toISOString(),
+    });
+    onClose();
+  };
+
+  return (
+    <Modal onClose={onClose} maxWidth={440} labelledBy="override-title">
+      <div style={{ padding: '18px 20px' }}>
+        <div id="override-title" style={{ fontWeight: 700, fontSize: 17 }}>Override a gate — {activity.name}</div>
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
+          An override is a recorded exception in your name: it needs a reason, it always expires, and the derived value returns when it does.
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+          <label style={lblS}>Gate
+            <select value={gate} onChange={(e) => setGate(e.target.value as (typeof OVERRIDE_GATES)[number])} style={{ ...fldS, width: '100%' }} data-testid="override-gate">
+              {OVERRIDE_GATES.map((g) => <option key={g} value={g}>{g}</option>)}
+            </select>
+          </label>
+          <label style={lblS}>Set to
+            <select value={state} onChange={(e) => setState(e.target.value as Gate)} style={{ ...fldS, width: '100%' }} data-testid="override-state">
+              {GATE_VALUES.map((g) => <option key={g} value={g}>{g}</option>)}
+            </select>
+          </label>
+          <label style={lblS}>Expires in (days)
+            <input value={days} onChange={(e) => setDays(e.target.value)} inputMode="numeric" style={{ ...fldS, width: '100%' }} data-testid="override-days" />
+          </label>
+        </div>
+        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason (required — e.g. construction set carried on site in print)" style={{ ...fldS, marginTop: 10, width: '100%' }} data-testid="override-reason" />
+        <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+          <Button variant="outline" onClick={onClose} style={{ flex: 1, padding: 12 }}>Cancel</Button>
+          <Button variant="ink" onClick={save} disabled={!ready} data-testid="save-override" style={{ flex: 1, padding: 12 }}>Record override</Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
 /** A phase header + its activities. Rollup counts are recomputed live from the
  *  activities so Start / Mark-complete move the phase's progress immediately. */
-function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase }: { phase: Phase; activities: Activity[]; todayPct: number; onEdit?: (a: Activity) => void; onDeletePhase?: (phaseId: string) => void }) {
+function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase, onOverride }: { phase: Phase; activities: Activity[]; todayPct: number; onEdit?: (a: Activity) => void; onDeletePhase?: (phaseId: string) => void; onOverride?: (a: Activity) => void }) {
   const acts = activitiesInPhase(activities, [phase], phase.id);
   if (acts.length === 0 && !onDeletePhase) return null;
   const r = phaseRollup(activities, phase.id);
@@ -162,7 +240,7 @@ function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase }: { ph
         </div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {acts.map((a) => <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} />)}
+        {acts.map((a) => <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} onOverride={onOverride} />)}
       </div>
     </div>
   );
@@ -182,8 +260,11 @@ export function ScheduleScreen() {
   const canPlan = can('activity.manage', role);
   const [plan, setPlan] = useState<'new' | Activity | null>(null);
   const [addingPhase, setAddingPhase] = useState(false);
+  const [overrideFor, setOverrideFor] = useState<Activity | null>(null);
   const onEdit = canPlan ? (a: Activity) => setPlan(a) : undefined;
   const onDeletePhase = canPlan ? (id: string) => deletePhase(id) : undefined;
+  // Task 6: only the PMC records readiness exceptions
+  const onOverride = canPlan ? (a: Activity) => setOverrideFor(a) : undefined;
 
   const legend: { c: string; label: string }[] = [
     { c: gateColor.ok, label: 'Ready' },
@@ -247,11 +328,12 @@ export function ScheduleScreen() {
       )}
       {plan && <PlanActivityModal activity={plan === 'new' ? null : plan} onClose={() => setPlan(null)} />}
       {addingPhase && <AddPhaseModal onClose={() => setAddingPhase(false)} />}
+      {overrideFor && <OverrideModal activity={overrideFor} onClose={() => setOverrideFor(null)} />}
 
       {phases.length > 0 ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
           {phases.map((ph) => (
-            <PhaseGroup key={ph.id} phase={ph} activities={activities} todayPct={todayPct} onEdit={onEdit} onDeletePhase={onDeletePhase} />
+            <PhaseGroup key={ph.id} phase={ph} activities={activities} todayPct={todayPct} onEdit={onEdit} onDeletePhase={onDeletePhase} onOverride={onOverride} />
           ))}
           {/* unphased activities (if any) render under their own group */}
           {activitiesInPhase(activities, phases, null).length > 0 && (
@@ -259,7 +341,7 @@ export function ScheduleScreen() {
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.1em', color: 'var(--faint)', marginBottom: 10 }}>UNPHASED</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {activitiesInPhase(activities, phases, null).map((a) => (
-                  <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} />
+                  <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} onOverride={onOverride} />
                 ))}
               </div>
             </div>
@@ -268,7 +350,7 @@ export function ScheduleScreen() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {activities.map((a) => (
-            <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} />
+            <ScheduleRow key={a.id} a={a} todayPct={todayPct} onEdit={onEdit} onOverride={onOverride} />
           ))}
         </div>
       )}
@@ -302,7 +384,6 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
   const [nodeId, setNodeId] = useState<string | null>(activity?.nodeId ?? null);
   const [gm, setGm] = useState<Gate>(activity?.gm ?? 'na');
   const [gt, setGt] = useState<Gate>(activity?.gt ?? 'na');
-  const [gi, setGi] = useState<Gate>(activity?.gi ?? 'na');
 
   const psN = parseInt(ps, 10);
   const peN = parseInt(pe, 10);
@@ -318,9 +399,10 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
       phaseId: phaseId || null,
       decisionId: decisionId || null,
       nodeId: nodeId,
+      // material/team stay stored site flags; the inspection + drawing gates are
+      // DERIVED from linked records (Task 6) — no manual value to set here
       gateMaterial: gm,
       gateTeam: gt,
-      gateInspection: gi,
     };
     if (activity) updateActivity(activity.id, input);
     else createActivity(input);
@@ -357,13 +439,16 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
           </label>
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
-          {([['Material', gm, setGm], ['Team', gt, setGt], ['Inspection', gi, setGi]] as const).map(([label, v, set]) => (
+          {([['Material', gm, setGm], ['Team', gt, setGt]] as const).map(([label, v, set]) => (
             <label key={label} style={lblS}>{label} gate
               <select value={v} onChange={(e) => set(e.target.value as Gate)} style={{ ...fldS, width: '100%' }}>
                 {GATE_VALUES.map((g) => <option key={g} value={g}>{g}</option>)}
               </select>
             </label>
           ))}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>
+          The Decision, Inspection and Drawing gates are derived from the linked records — they cannot be set by hand (a PMC can record an expiring override from the schedule row).
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           {activity && (
