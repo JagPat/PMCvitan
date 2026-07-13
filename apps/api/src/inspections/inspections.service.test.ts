@@ -9,18 +9,20 @@ type Item = { id: string; name: string; state: string | null; photos: number; re
 type Insp = {
   id: string; projectId: string; submitted: boolean; decided: boolean;
   title?: string; zone?: string; nodeId?: string | null; activityId?: string | null;
-  submittedById?: string | null; items: Item[];
+  closing?: boolean; submittedById?: string | null; items: Item[];
 };
 type Member = { projectId: string; userId: string; role: string; status: string };
+/** The activity a CLOSING inspection signs off (Phase 1 Task 5). */
+type Act = { id: string; projectId: string; name: string; status: string; doneAt?: Date | null; completionRequestedById?: string | null };
 
 /** Real display names behind the test users — attribution must surface THESE. */
 const NAMES: Record<string, string> = { u1: 'Ravi Iyer', 'u-pmc': 'Ar. Meghna', 'u-con': 'Suresh & Co' };
 
 /** In-memory Prisma stand-in. `evidence` = linked Media rows per inspectionItemId.
  *  Supports both $transaction forms; the interactive form passes the stub itself. */
-function make(insp: Insp, opts: { members?: Member[]; evidence?: string[] } = {}) {
+function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activity?: Act } = {}) {
   const created: Array<Record<string, unknown>> = [];
-  const audits: Array<{ action: string; actor: string; actorId?: string; actorRole?: string }> = [];
+  const audits: Array<{ action: string; entityId?: string; actor: string; actorId?: string; actorRole?: string; payload?: Record<string, unknown> }> = [];
   const members = opts.members ?? [{ projectId: insp.projectId, userId: 'u1', role: 'engineer', status: 'active' }];
   const prisma = {
     user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (NAMES[where.id] ? { name: NAMES[where.id] } : null)) },
@@ -35,6 +37,21 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[] } = {}
         if (matches) Object.assign(insp, data);
         return { count: matches ? 1 : 0 };
       }),
+    },
+    activity: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        (opts.activity && opts.activity.id === where.id ? { doneAt: null, completionRequestedById: null, ...opts.activity } : null)),
+      // CAS transitions on the signed-off activity (status may be exact or an { in } set)
+      updateMany: vi.fn(async ({ where, data }: { where: { id: string; projectId: string; status?: string | { in: string[] } }; data: Record<string, unknown> }) => {
+        const a = opts.activity;
+        if (!a || a.id !== where.id || a.projectId !== where.projectId) return { count: 0 };
+        const statusOk = where.status === undefined
+          || (typeof where.status === 'string' ? a.status === where.status : where.status.in.includes(a.status));
+        if (!statusOk) return { count: 0 };
+        Object.assign(a, data);
+        return { count: 1 };
+      }),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => Object.assign(opts.activity ?? {}, data)),
     },
     inspectionItem: { updateMany: vi.fn(async () => ({ count: 1 })) },
     media: {
@@ -210,5 +227,118 @@ describe('InspectionsService — evidence + linked reinspections (Phase 1 Task 4
     const { svc, prisma, pmc } = make({ id: 'INSP-21', projectId: 'ambli', submitted: true, decided: false, items: [item('i1', 'X', { state: 'pass' })] });
     (prisma.inspection.updateMany as Mock).mockResolvedValueOnce({ count: 0 });
     await expect(svc.decide('ambli', 'INSP-21', { approve: true, rejectedItemNames: [] } as never, pmc)).rejects.toBeInstanceOf(ConflictException);
+  });
+});
+
+/**
+ * Phase 1 Task 5 — a CLOSING inspection owns its activity's completion. These
+ * tests pin the sign-off contract: approval writes done + doneAt via CAS;
+ * rejection reverts to execution and assigns the corrective chain to the
+ * RECORDED completer only while that identity stays active AND role-eligible;
+ * legacy zero-item closings stay decidable through the `closing` flag.
+ */
+describe('InspectionsService — closing sign-off controls the activity (Phase 1 Task 5)', () => {
+  const signItem = item('i1', 'Work complete and acceptable');
+  const closingInsp = (over: Partial<Insp> = {}): Insp => ({
+    id: 'INSP-40', projectId: 'ambli', submitted: true, decided: false, closing: true,
+    activityId: 'ACT-31', submittedById: 'u1', title: 'Closing inspection: Flooring',
+    items: [{ ...signItem }], ...over,
+  });
+  const claimedAct = (over: Partial<Act> = {}): Act => ({
+    id: 'ACT-31', projectId: 'ambli', name: 'Flooring', status: 'awaiting_signoff',
+    doneAt: null, completionRequestedById: 'u1', ...over,
+  });
+
+  it('APPROVING a closing inspection completes the activity: awaiting_signoff → done + doneAt, audited as activity.signoff', async () => {
+    const activity = claimedAct();
+    const { svc, pmc, audits, insp } = make(closingInsp(), { activity });
+    await svc.decide('ambli', 'INSP-40', { approve: true, rejectedItemNames: [] } as never, pmc);
+
+    expect(insp.decided).toBe(true);
+    expect(activity.status).toBe('done'); // the PMC's acceptance IS the completion
+    expect((activity.doneAt as Date).toISOString().slice(0, 10)).toBe('2026-07-03'); // the sign-off civil day
+    const audit = audits.find((a) => a.action === 'activity.signoff');
+    expect(audit?.entityId).toBe('ACT-31');
+    expect(audit?.actorId).toBe('u-pmc');
+    expect(audit?.actorRole).toBe('pmc');
+  });
+
+  it('approving when the activity is in an UNEXPECTED state (neither awaiting_signoff nor done) is a 409, not a guess', async () => {
+    const { svc, pmc } = make(closingInsp(), { activity: claimedAct({ status: 'in_progress' }) });
+    await expect(svc.decide('ambli', 'INSP-40', { approve: true, rejectedItemNames: [] } as never, pmc)).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('approving a LEGACY closing (activity already done) is tolerated: the sign-off day is recorded, nothing re-transitions', async () => {
+    const activity = claimedAct({ status: 'done', doneAt: null, completionRequestedById: null });
+    const { svc, pmc, insp } = make(closingInsp({ id: 'INSP-ACT-31-close', items: [], submittedById: null }), { activity });
+    await svc.decide('ambli', 'INSP-ACT-31-close', { approve: true, rejectedItemNames: [] } as never, pmc);
+    expect(insp.decided).toBe(true);
+    expect(activity.status).toBe('done'); // legacy done STAYS done
+    expect(activity.doneAt).toBeInstanceOf(Date); // but the acceptance day is now a fact
+  });
+
+  it('REJECTING a closing returns the activity to execution and assigns the chain to the RECORDED completer — not the submitter', async () => {
+    // the claim (u1) and the inspection submitter deliberately differ — the CLAIM wins
+    const activity = claimedAct({ completionRequestedById: 'u1' });
+    const { svc, pmc, created, audits } = make(closingInsp({ submittedById: 'u-someone-else' }), { activity });
+    await svc.decide('ambli', 'INSP-40', { approve: false, rejectedItemNames: ['Work complete and acceptable'] } as never, pmc);
+
+    expect(activity.status).toBe('in_progress'); // back to execution
+    expect(activity.doneAt).toBeNull();
+    const child = created[0] as Record<string, unknown> & { items: { create: Array<{ name: string }> } };
+    expect(child.assigneeId).toBe('u1'); // the recorded completer corrects the work
+    expect(child.closing).toBeUndefined(); // corrective checklist — NOT itself a sign-off
+    expect(child.activityId).toBe('ACT-31'); // requirement edge inherited
+    expect(child.items.create.map((i) => i.name)).toEqual(['Work complete and acceptable']);
+    const audit = audits.find((a) => a.action === 'activity.signoff_rejected');
+    expect(audit?.entityId).toBe('ACT-31');
+    expect(audit?.actorId).toBe('u-pmc');
+  });
+
+  it('completer role changed to an INELIGIBLE one since the claim: the default is refused (400); an eligible explicit assignee succeeds; an ineligible explicit one does not', async () => {
+    const members: Member[] = [
+      { projectId: 'ambli', userId: 'u1', role: 'client', status: 'active' }, // engineer → client since the claim
+      { projectId: 'ambli', userId: 'u-con', role: 'contractor', status: 'active' },
+    ];
+    // default (no explicit assignee) → refused with the completer-specific message
+    const a = make(closingInsp(), { activity: claimedAct(), members: [...members] });
+    await expect(a.svc.decide('ambli', 'INSP-40', { approve: false, rejectedItemNames: ['Work complete and acceptable'] } as never, a.pmc)).rejects.toThrow(/recorded completer/i);
+    // naming the now-client completer explicitly is still refused
+    const b = make(closingInsp(), { activity: claimedAct(), members: [...members] });
+    await expect(b.svc.decide('ambli', 'INSP-40', { approve: false, rejectedItemNames: ['Work complete and acceptable'], assigneeId: 'u1' } as never, b.pmc)).rejects.toThrow(/active engineer or contractor/i);
+    // an ACTIVE contractor named explicitly resolves it
+    const c = make(closingInsp(), { activity: claimedAct(), members: [...members] });
+    await c.svc.decide('ambli', 'INSP-40', { approve: false, rejectedItemNames: ['Work complete and acceptable'], assigneeId: 'u-con' } as never, c.pmc);
+    expect((c.created[0] as Record<string, unknown>).assigneeId).toBe('u-con');
+    expect(c.insp.decided).toBe(true);
+  });
+
+  it('completer membership REMOVED since the claim: the default is refused (400) and nothing changes', async () => {
+    const activity = claimedAct();
+    const { svc, pmc, insp } = make(closingInsp(), { activity, members: [{ projectId: 'ambli', userId: 'u1', role: 'engineer', status: 'removed' }] });
+    await expect(svc.decide('ambli', 'INSP-40', { approve: false, rejectedItemNames: ['Work complete and acceptable'] } as never, pmc)).rejects.toThrow(/recorded completer/i);
+    expect(insp.decided).toBe(false);
+    expect(activity.status).toBe('awaiting_signoff');
+  });
+
+  it('a LEGACY zero-item closing may be REJECTED: no recorded completer → an explicit assignee is required; the child gets the default sign-off item', async () => {
+    const activity = claimedAct({ status: 'done', completionRequestedById: null });
+    const members: Member[] = [{ projectId: 'ambli', userId: 'u-con', role: 'contractor', status: 'active' }];
+    // zero items + no completer + no explicit assignee → 400 naming the gap
+    const a = make(closingInsp({ id: 'INSP-ACT-31-close', items: [], submittedById: null }), { activity: { ...activity }, members: [...members] });
+    await expect(a.svc.decide('ambli', 'INSP-ACT-31-close', { approve: false, rejectedItemNames: [] } as never, a.pmc)).rejects.toThrow(/no recorded completer/i);
+    // with an explicit eligible assignee the rejection reopens the DONE activity — an
+    // attributable PMC decision (never a migration guess) — and yields workable items
+    const b = make(closingInsp({ id: 'INSP-ACT-31-close', items: [], submittedById: null }), { activity, members });
+    await b.svc.decide('ambli', 'INSP-ACT-31-close', { approve: false, rejectedItemNames: [], assigneeId: 'u-con' } as never, b.pmc);
+    expect(activity.status).toBe('in_progress');
+    const child = b.created[0] as Record<string, unknown> & { items: { create: Array<{ name: string }> } };
+    expect(child.items.create.map((i) => i.name)).toEqual(['Work complete and acceptable']);
+    expect(child.assigneeId).toBe('u-con');
+  });
+
+  it('an ORDINARY zero-rejected reject stays a 400 — the closing escape hatch never leaks to normal inspections', async () => {
+    const { svc, pmc } = make({ id: 'INSP-21', projectId: 'ambli', submitted: true, decided: false, items: [] });
+    await expect(svc.decide('ambli', 'INSP-21', { approve: false, rejectedItemNames: [] } as never, pmc)).rejects.toBeInstanceOf(BadRequestException);
   });
 });

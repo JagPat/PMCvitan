@@ -20,6 +20,10 @@ function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
   if (a.status === 'blocked') {
     return <Button variant="dangerOutline" disabled style={{ background: '#fff', fontSize: 12.5, padding: '9px 14px' }}>Blocked</Button>;
   }
+  if (a.status === 'awaiting-signoff') {
+    // the claim is with the PMC — only their closing-inspection approval makes it done
+    return <Button variant="light" disabled style={{ background: '#E6ECF3', color: '#31567F', border: '1px solid #C4D3E4', fontSize: 12.5, padding: '9px 14px' }}>Awaiting sign-off</Button>;
+  }
   if (a.status === 'in-progress') {
     return <Button variant="success" onClick={() => completeActivity(a.id)} style={{ fontSize: 12.5, padding: '9px 14px' }}>Mark complete</Button>;
   }
@@ -147,6 +151,7 @@ function PhaseGroup({ phase, activities, todayPct, onEdit, onDeletePhase }: { ph
         <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
           {[
             { v: r.inProgress, l: 'running', c: 'var(--amber-text)' },
+            { v: r.awaitingSignoff, l: 'awaiting sign-off', c: '#31567F' },
             { v: r.blocked, l: 'blocked', c: 'var(--red-solid)' },
             { v: r.notStarted, l: 'to start', c: 'var(--muted)' },
           ].filter((x) => x.v > 0).map((x) => (

@@ -86,8 +86,9 @@ export type SubmitInspectionInput = z.infer<typeof submitInspectionSchema>;
 export const decideReviewSchema = z.object({
   approve: z.boolean(),
   rejectedItemNames: z.array(z.string()).default([]),
-  // Phase 1 Task 4 (reject only): who corrects the work (defaults to the submitter —
-  // must resolve to an ACTIVE engineer/contractor member) and when it's due.
+  // Phase 1 Tasks 4/5 (reject only): who corrects the work — defaults to the recorded
+  // submitter (ordinary) / the recorded COMPLETER (closing sign-off); must resolve to
+  // an ACTIVE engineer/contractor member — and when it's due.
   assigneeId: z.string().trim().min(1).optional(),
   dueInDays: z.number().int().min(1).max(60).optional(),
 });

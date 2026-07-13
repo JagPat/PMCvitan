@@ -24,6 +24,9 @@ enum DecisionStatus {
 enum ActivityStatus {
   not_started
   in_progress
+  // Phase 1 Task 5: an engineer's completion CLAIM parks the activity here;
+  // only the PMC's approval of the linked closing inspection writes `done`
+  awaiting_signoff
   done
   blocked
 }
@@ -189,6 +192,8 @@ model Membership {
   drawingRecipients DrawingRecipient[]
   // corrective/reinspection work assigned to this membership (Phase 1 Task 4)
   inspectionAssignments Inspection[]
+  // completion claims recorded against this membership (Phase 1 Task 5)
+  completionClaims Activity[] @relation("CompletionClaims")
 
   @@unique([projectId, userId])
   @@index([userId])
@@ -559,6 +564,17 @@ model Activity {
   plannedEndDate   DateTime? @db.Date
   actualStartDate  DateTime? @db.Date
   actualEndDate    DateTime? @db.Date
+  // Phase 1 Task 5 — the sign-off civil day (set ONLY by closing-inspection
+  // approval); actualEndDate above remains the CLAIMED work-end day
+  doneAt           DateTime? @db.Date
+  // The completion CLAIM: who said the work was finished (an attributable,
+  // membership-validated fact — the reject path assigns corrective work from it).
+  // Composite FK to Membership — a claimant without a membership on THIS
+  // project is impossible even on a direct write (memberships are soft-removed).
+  completionRequestedBy     Membership? @relation("CompletionClaims", fields: [projectId, completionRequestedById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  completionRequestedById   String?
+  completionRequestedByName String?
+  completionRequestedAt     DateTime?
   block          String?
   // stored readiness gates; the Decision gate is derived live from the decision
   gateMaterial   GateState @default(na)
@@ -613,6 +629,9 @@ model Inspection {
   inspectionDate DateTime? @db.Date // real civil date (Phase 0 Task 6)
   submitted Boolean          @default(false)
   decided   Boolean          @default(false)
+  // Phase 1 Task 5: the UNAMBIGUOUS closing-sign-off marker (id-pattern matching
+  // retired). Approving a closing inspection is what completes its activity.
+  closing   Boolean          @default(false)
   // The REQUIREMENT EDGE (Phase 1 Task 4): the Activity this inspection accepts.
   // Composite FK — a cross-project edge is impossible even on a direct write.
   activity   Activity? @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)

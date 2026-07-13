@@ -59,6 +59,9 @@ export const gateColor = {
 export const activityChip = {
   done: { bg: '#E1EEE4', color: '#2F6B44', border: '#C3DDCB' },
   'in-progress': { bg: '#EFE7D6', color: '#8A6216', border: '#E0CFA6' },
+  // a completion CLAIM awaiting the PMC's closing sign-off (Phase 1 Task 5) —
+  // ink-blue, like a reopened decision: something is with the reviewer
+  'awaiting-signoff': { bg: '#E6ECF3', color: '#31567F', border: '#C4D3E4' },
   'not-started': { bg: '#EAE5DA', color: '#6B665C', border: 'rgba(35,33,28,0.15)' },
   blocked: { bg: '#F7E1DF', color: '#B23A34', border: '#E7C4C0' },
 } as const;
@@ -66,6 +69,7 @@ export const activityChip = {
 export const activityLabel = {
   done: 'DONE',
   'in-progress': 'IN PROGRESS',
+  'awaiting-signoff': 'AWAITING SIGN-OFF',
   'not-started': 'NOT STARTED',
   blocked: 'BLOCKED',
 } as const;

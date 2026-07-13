@@ -91,7 +91,9 @@ export type ScreenKey =
 export type Lang = 'en' | 'hi' | 'gu';
 
 export type DecisionStatus = 'pending' | 'approved' | 'change';
-export type ActivityStatus = 'not-started' | 'in-progress' | 'done' | 'blocked';
+/** `awaiting-signoff` = a completion CLAIM parked until the PMC approves the
+ *  linked closing inspection (Phase 1 Task 5) — counted as NOT done everywhere. */
+export type ActivityStatus = 'not-started' | 'in-progress' | 'awaiting-signoff' | 'done' | 'blocked';
 export type Gate = 'ok' | 'wait' | 'fail' | 'na';
 export type ItemState = 'pass' | 'fail' | 'na' | null;
 export type InspectionResult = 'PASS' | 'FAIL';
@@ -257,6 +259,11 @@ export interface Review {
   decided: boolean;
   /** set when this review IS a reinspection — the predecessor it re-checks (Task 4) */
   reinspectionOfId?: string;
+  /** set when this review is a CLOSING sign-off (Task 5): approving it completes
+   *  the named activity; rejecting it returns that activity to execution */
+  closing?: boolean;
+  activityId?: string;
+  activityName?: string;
   items: ReviewItem[];
 }
 

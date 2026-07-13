@@ -83,6 +83,32 @@ The rules for taking them (and any future release) to production:
    a deep-link refresh restores project + screen; a removed membership 403s on the next request;
    one same-project record creation succeeds. (`GET /health` confirms process liveness.)
 
+### Phase 1 Task 5 release notes (closing sign-off)
+
+`20261005000000_phase1_closing_signoff` is additive and diagnostic-first (it ABORTS on any
+`INSP-*-close` id that names an activity in another project, or that conflicts with an existing
+Task 4 `activityId`). Take a verified backup first (rule 2 above applies — this is a Tasks 5/6
+class change), and run it against a staging copy of production before deploying.
+
+**Product-visible behavior change:** completing an activity no longer writes `done`. The claim
+parks it in `awaiting_signoff` and only the PMC's approval of the linked closing inspection
+completes it. Legacy `done` activities stay `done` — the migration never touches `Activity.status`.
+
+**Rollback (operator-reviewed, forward-only):** restoring the prior application build leaves any
+rows the NEW code parked in `awaiting_signoff` unreachable (the old build has no sign-off flow).
+Rollback therefore includes this operator-reviewed *forward* migration mapping them back to
+execution — run it ONLY as part of a deliberate rollback, never speculatively:
+
+```sql
+-- Task 5 rollback mapping: return in-flight sign-off claims to execution so the
+-- prior build can operate them. Closing inspections stay (additive rows keep).
+UPDATE "Activity" SET "status" = 'in_progress' WHERE "status" = 'awaiting_signoff';
+```
+
+The `closing` column, the completion-claim columns, the `awaiting_signoff` enum value and the
+`Activity_projectId_completionRequestedById_fkey` constraint all stay in place on rollback
+(additive schema is never auto-reverted — rule 4 above).
+
 ### Migrations & the existing (db-push) database
 
 The schema is now tracked by a baseline Prisma migration at `apps/api/prisma/migrations/0_init`. Going forward, schema changes are new migrations applied by `prisma migrate deploy` on deploy.
