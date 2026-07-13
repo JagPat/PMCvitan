@@ -132,6 +132,35 @@ describe('session identity is part of the project scope (finding 6)', () => {
 });
 
 describe('outbox replay is pinned to the scope that queued it (finding 1)', () => {
+  it('a switch during the FINAL queued op never clobbers the new scope queue (round 2)', async () => {
+    // Round-2 reproduce: the pre-iteration guard never runs after the LAST op, so
+    // the normal reconcile path replaced and persisted Project B's queue as empty.
+    let resolveLast!: (v: ApiSnapshot) => void;
+    const gw = { approveDecision: vi.fn().mockReturnValue(new Promise<ApiSnapshot>((r) => { resolveLast = r; })) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; st.sessionToken = null; });
+
+    // ONE op queued on ambli — the switch will land while it is in flight
+    s().openApprove('DL-014', 1);
+    s().confirmApprove();
+    expect(s().outbox.length).toBe(1);
+
+    useStore.setState((st) => { st.online = true; });
+    const flushing = s().flushOutbox();
+
+    // mid-flight: the user switches to B, whose scope has its OWN queued work
+    bumpScope('project-b');
+    const bOps = [{ t: 'startActivity', activityId: 'B-ACT-1' }];
+    useStore.setState((st) => { st.outbox = bOps as never; });
+    globalThis.localStorage.setItem('vitan.outbox.anon.project-b', JSON.stringify(bOps));
+    resolveLast(makeSnapshot());
+    await flushing;
+
+    // B's queue survives in memory AND in storage — never replaced with A's empty result
+    expect(s().outbox).toEqual(bOps);
+    expect(JSON.parse(globalThis.localStorage.getItem('vitan.outbox.anon.project-b') ?? '[]')).toEqual(bOps);
+  });
+
   it('stops replaying when the project changes mid-flush and leaves the rest under the ORIGINAL scope key', async () => {
     let resolveFirst!: (v: ApiSnapshot) => void;
     const gw = {
