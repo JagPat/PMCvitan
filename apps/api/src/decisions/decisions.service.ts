@@ -1,9 +1,11 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
+import { resolveActor } from '../common/actor';
 import { nextSeqId } from '../domain/ids';
 import { pendingDecisionNotice } from '../domain/notifications';
 import type { ApproveInput, ChangeInput, CreateDecisionInput } from '../contracts';
@@ -20,6 +22,7 @@ export class DecisionsService {
   /** PMC issues a new decision (title/room + 2–4 options) → shows as pending on the
    *  client's Decisions Waiting screen. Labels/keys derive from order when omitted. */
   async create(projectId: string, input: CreateDecisionInput, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     // DATA-01: `Decision.id` is the table's GLOBAL primary key, so the sequence must
     // scan every project — a per-project scan would mint e.g. DL-003 twice (the demo
     // project already owns it) and crash the second project's create with P2002.
@@ -62,8 +65,8 @@ export class DecisionsService {
           order: i,
         })),
       }),
-      this.prisma.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: user.role, payload: { title: input.title } } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id } }),
+      this.prisma.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, payload: { title: input.title } } }),
+      this.prisma.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id } }),
     ]);
     // Only a PUBLISHED decision reaches the client (a draft is private to its author, and
     // must not notify anyone). When published in one step, fire the same side-effects publish() does.
@@ -78,25 +81,28 @@ export class DecisionsService {
    *  to choose, and it starts driving the app (pending count, linked gate). Idempotent-ish:
    *  publishing an already-published decision is a no-op conflict. Author/PMC authority. */
   async publish(projectId: string, decisionId: string, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
     if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
     if (d.publishedAt) throw new ConflictException('Decision is already published');
 
     await this.prisma.$transaction([
       this.prisma.decision.update({ where: { id: decisionId }, data: { publishedAt: new Date() } }),
-      this.prisma.decisionEvent.create({ data: { decisionId, type: 'issued', actor: user.role, payload: { title: d.title } } }),
+      this.prisma.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, payload: { title: d.title } } }),
       this.prisma.notification.create({ data: { projectId, text: pendingDecisionNotice(d.title), color: '#C08A2D', time: 'just now' } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'decision.publish', entity: 'Decision', entityId: decisionId } }),
+      this.prisma.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'decision.publish', entity: 'Decision', entityId: decisionId } }),
     ]);
     // now it's live — surface it on the client's side, exactly like a one-step issue
     this.realtime.notifyChanged(projectId, `New decision awaiting your approval: ${d.title}`, ['client']);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
-  /** Client approves an option → the decision is locked (server-authoritative),
-   *  audited, a notification is raised, and any linked activity's Decision gate
-   *  recomputes to green on the next snapshot read. */
+  /** Client approves an option → the decision is locked (server-authoritative) with the
+   *  caller's REAL identity; when the decision was reopened, approval also RESOLVES the
+   *  open change request ('reapproved'). The transition is a compare-and-set committed
+   *  with its events, so a concurrent approve/change/withdraw has exactly one winner. */
   async approve(projectId: string, decisionId: string, input: ApproveInput, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const d = await this.prisma.decision.findUnique({
       where: { id: decisionId },
       include: { options: { orderBy: { order: 'asc' } } },
@@ -106,36 +112,115 @@ export class DecisionsService {
     const o = d.options[input.optionIndex];
     if (!o) throw new BadRequestException('Invalid option index');
 
-    const approver = user.role === 'client' ? 'Mr. Shah' : 'PMC';
+    const prior = d.status; // 'pending' (first approval) or 'change' (re-approval)
     const today = ddMmmYyyy(new Date());
+    // a PMC approving records the client's consent ON BEHALF — the fact is never disguised
+    const onBehalfOf = user.role === 'client' ? null : 'client';
 
-    await this.prisma.$transaction([
-      this.prisma.decision.update({
-        where: { id: decisionId },
-        data: { status: 'approved', approvedOption: o.label, material: o.material, cost: o.delta, approver, date: today, photoSwatch: o.swatch },
-      }),
-      this.prisma.decisionEvent.create({ data: { decisionId, type: 'approved', actor: approver, payload: { option: o.label, material: o.material } } }),
-      this.prisma.notification.create({ data: { projectId, text: `Client approved ${d.title} — ${o.material}`, color: '#3F7A54', time: 'just now' } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: approver, action: 'decision.approve', entity: 'Decision', entityId: decisionId } }),
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      // CAS: commit only if the decision is STILL in the state we read — a concurrent
+      // transition makes count 0 and this caller loses with a deterministic 409
+      const { count } = await tx.decision.updateMany({
+        where: { id: decisionId, projectId, status: prior },
+        data: {
+          status: 'approved',
+          approvedOption: o.label,
+          material: o.material,
+          cost: o.delta,
+          approver: actor.actorName,
+          approvedById: actor.actorId,
+          onBehalfOf,
+          date: today,
+          photoSwatch: o.swatch,
+        },
+      });
+      if (count === 0) throw new ConflictException('The decision changed while approving — reload and retry');
+      if (prior === 'change') {
+        // mandatory re-approval CLOSES the reopening, attributably
+        await tx.changeRequest.updateMany({
+          where: { decisionId, status: 'open' },
+          data: { status: 'resolved', resolution: 'reapproved', resolvedById: actor.actorId, resolvedAt: new Date() },
+        });
+      }
+      await tx.decisionEvent.create({
+        data: {
+          decisionId,
+          type: prior === 'change' ? 'reapproved' : 'approved',
+          actor: actor.actorName,
+          actorId: actor.actorId,
+          actorName: actor.actorName,
+          payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) },
+        },
+      });
+      await tx.notification.create({ data: { projectId, text: `Client approved ${d.title} — ${o.material}`, color: '#3F7A54', time: 'just now' } });
+      await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'decision.approve', entity: 'Decision', entityId: decisionId } });
+    });
 
     // the client approved; PMC/contractor/engineer act on the now-locked decision
     this.realtime.notifyChanged(projectId, `Client approved ${d.title} — ${o.material}`, ['pmc', 'contractor', 'engineer']);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
-  /** Raise a Change Request against a locked decision (re-approval required). */
+  /** Raise a Change Request against a locked decision — the ONE formal reopening.
+   *  Exactly one open request per decision: the CAS refuses a decision that moved,
+   *  and the partial unique index is the database backstop (P2002 → 409). */
   async requestChange(projectId: string, decisionId: string, input: ChangeInput, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
     if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
     if (d.status !== 'approved') throw new ConflictException('Only a locked decision can have a change request');
 
-    await this.prisma.$transaction([
-      this.prisma.changeRequest.create({ data: { decisionId, reason: input.reason, costImpact: input.costImpact, timeImpactDays: input.timeImpactDays } }),
-      this.prisma.decision.update({ where: { id: decisionId }, data: { status: 'change' } }),
-      this.prisma.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: user.role, payload: input } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'decision.change', entity: 'Decision', entityId: decisionId } }),
-    ]);
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const { count } = await tx.decision.updateMany({
+          where: { id: decisionId, projectId, status: 'approved' },
+          data: { status: 'change' },
+        });
+        if (count === 0) throw new ConflictException('The decision changed while requesting — reload and retry');
+        await tx.changeRequest.create({
+          data: { decisionId, reason: input.reason, costImpact: input.costImpact, timeImpactDays: input.timeImpactDays, status: 'open', requestedById: actor.actorId },
+        });
+        await tx.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, payload: input } });
+        await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'decision.change', entity: 'Decision', entityId: decisionId } });
+      });
+    } catch (e) {
+      // the one-open-per-decision partial unique index fired — a concurrent request won
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new ConflictException('A change request is already open for this decision');
+      }
+      throw e;
+    }
+
+    this.realtime.notifyChanged(projectId);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /** Withdraw the open change request — only its requester or the PMC. The decision
+   *  returns to approved/locked and the request records how and by whom it closed. */
+  async withdrawChange(projectId: string, decisionId: string, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
+    if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
+    if (d.status !== 'change') throw new ConflictException('No open change request to withdraw');
+    const open = await this.prisma.changeRequest.findFirst({ where: { decisionId, status: 'open' } });
+    if (!open) throw new ConflictException('No open change request to withdraw');
+    if (user.role !== 'pmc' && open.requestedById !== user.sub) {
+      throw new ForbiddenException('Only the requester or the PMC can withdraw a change request');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.decision.updateMany({
+        where: { id: decisionId, projectId, status: 'change' },
+        data: { status: 'approved' },
+      });
+      if (count === 0) throw new ConflictException('The decision changed while withdrawing — reload and retry');
+      await tx.changeRequest.updateMany({
+        where: { id: open.id, status: 'open' },
+        data: { status: 'withdrawn', resolution: 'withdrawn', resolvedById: actor.actorId, resolvedAt: new Date() },
+      });
+      await tx.decisionEvent.create({ data: { decisionId, type: 'change_withdrawn', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName } });
+      await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'decision.change_withdraw', entity: 'Decision', entityId: decisionId } });
+    });
 
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);

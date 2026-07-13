@@ -36,6 +36,10 @@ export interface DecisionDto {
   approver?: string;
   date?: string;
   cost?: number;
+  /** 'client' when someone other than the client locked the decision on their behalf (Phase 1 Task 2) */
+  onBehalfOf?: string;
+  /** the OPEN change request while status='change' — why the lock is being revisited (Phase 1 Task 2) */
+  changeRequest?: { reason: string; costImpact: number; timeImpactDays: number; requestedById?: string };
   /** a private, unpublished DRAFT — only ever present in its own author's snapshot */
   draft?: boolean;
 }

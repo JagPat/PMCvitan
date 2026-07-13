@@ -13,6 +13,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'decision.publish': ['pmc'],
   'decision.approve': ['client', 'pmc'],
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],
@@ -71,5 +72,10 @@ describe('authorization policy (shared source of truth)', () => {
 
   it('lets the site engineer raise a change request (the #44 regression fix)', () => {
     expect(can('decision.change', 'engineer')).toBe(true);
+  });
+
+  it('withdraw shares the change allowlist — the SERVICE narrows it to requester-or-PMC (Phase 1 Task 2)', () => {
+    expect([...rolesFor('decision.withdrawChange')].sort()).toEqual([...rolesFor('decision.change')].sort());
+    expect(can('decision.withdrawChange', 'worker')).toBe(false);
   });
 });

@@ -26,7 +26,22 @@ export function DecisionLogScreen() {
   const rows = useStore(useShallow(selectLogDecisions));
   const nodes = useStore(useShallow((s) => s.nodes));
   const openChange = useStore((s) => s.openChange);
+  const withdrawChange = useStore((s) => s.withdrawChange);
   const role = useStore((s) => s.role);
+  const sessionToken = useStore((s) => s.sessionToken);
+  // who am I? — the JWT sub, for the requester-may-withdraw rule (null in demo mode)
+  const mySub = useMemo(() => {
+    if (!sessionToken) return null;
+    try {
+      return (JSON.parse(atob(sessionToken.split('.')[1])) as { sub?: string }).sub ?? null;
+    } catch {
+      return null;
+    }
+  }, [sessionToken]);
+  // the SERVICE narrows withdraw to the requester or the PMC — mirror it so the
+  // button only appears where the server would accept the call
+  const mayWithdraw = (d: Decision): boolean =>
+    can('decision.withdrawChange', role) && (role === 'pmc' || (!!mySub && d.changeRequest?.requestedById === mySub));
   const [issuing, setIssuing] = useState(false);
   const [managing, setManaging] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupBy>('location');
@@ -137,7 +152,13 @@ export function DecisionLogScreen() {
               {!isCollapsed && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   {g.rows.map(({ decision, subLabel }) => (
-                    <DecisionRowCard key={decision.id} d={decision} subLabel={subLabel} onChange={() => openChange(decision.id)} />
+                    <DecisionRowCard
+                      key={decision.id}
+                      d={decision}
+                      subLabel={subLabel}
+                      onChange={() => openChange(decision.id)}
+                      onWithdraw={mayWithdraw(decision) ? () => withdrawChange(decision.id) : undefined}
+                    />
                   ))}
                 </div>
               )}
@@ -159,9 +180,11 @@ function RollupChip({ n, color, label }: { n: number; color: string; label: stri
 }
 
 /** One decision card — the register row, with its finer location shown as a caption. */
-function DecisionRowCard({ d, subLabel, onChange }: { d: Decision; subLabel: string; onChange: () => void }) {
+function DecisionRowCard({ d, subLabel, onChange, onWithdraw }: { d: Decision; subLabel: string; onChange: () => void; onWithdraw?: () => void }) {
   const locked = d.status === 'approved';
-  const attribution = d.approver ? `Approved by ${d.approver} · ${d.date}` : `Ageing ${d.ageDays} days · awaiting client`;
+  const attribution = d.approver
+    ? `Approved by ${d.approver}${d.onBehalfOf ? ` (on behalf of the ${d.onBehalfOf})` : ''} · ${d.date}`
+    : `Ageing ${d.ageDays} days · awaiting client`;
   const approvedLine = d.status === 'pending' ? `${d.options.length} options presented` : `${d.approvedOption} — ${d.material}`;
   const costStr = d.status === 'pending' ? 'up to ' + signed(Math.max(...d.options.map((o) => o.delta))) : signed(d.cost ?? 0);
   const photoLabel = d.status === 'pending' ? 'OPTIONS' : 'APPROVED';
@@ -187,6 +210,17 @@ function DecisionRowCard({ d, subLabel, onChange }: { d: Decision; subLabel: str
             </div>
             <DecisionChip status={d.status} />
           </div>
+          {d.status === 'change' && d.changeRequest && (
+            <div style={{ marginTop: 12, padding: '9px 12px', borderRadius: 10, background: 'rgba(180,70,46,.07)', border: '1px solid rgba(180,70,46,.2)' }} data-testid={`cr-detail-${d.id}`}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--red-text)' }}>Change requested: {d.changeRequest.reason}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
+                {d.changeRequest.costImpact === 0 ? 'No cost change' : signed(d.changeRequest.costImpact)}
+                {' · '}
+                {d.changeRequest.timeImpactDays === 0 ? 'no schedule impact' : `${d.changeRequest.timeImpactDays} day${d.changeRequest.timeImpactDays === 1 ? '' : 's'}`}
+                {' · awaiting the client’s re-approval'}
+              </div>
+            </div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(35,33,28,.1)', gap: 12, flexWrap: 'wrap' }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 600 }}>{approvedLine}</div>
@@ -197,6 +231,11 @@ function DecisionRowCard({ d, subLabel, onChange }: { d: Decision; subLabel: str
               {locked && (
                 <Button variant="outline" onClick={onChange} style={{ marginTop: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 500 }}>
                   Request Change
+                </Button>
+              )}
+              {d.status === 'change' && onWithdraw && (
+                <Button variant="outline" onClick={onWithdraw} data-testid={`withdraw-${d.id}`} style={{ marginTop: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 500 }}>
+                  Withdraw request
                 </Button>
               )}
             </div>

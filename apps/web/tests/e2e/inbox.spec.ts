@@ -31,7 +31,24 @@ test('For You: acting on everything empties the queue (the item disappears once 
     await expect(page.getByText(/Approved & locked/)).toBeVisible();
   }
 
-  // back on For You: the client is all caught up
+  // back on For You: the seeded reopened decision (DL-003) still needs the client —
+  // mandatory re-approval IS their work now (Phase 1 Task 2)
+  await page.getByRole('button', { name: 'For You' }).click();
+  const reapprove = page.getByTestId('inbox-item-client-reapprove');
+  await expect(reapprove).toBeVisible();
+  await expect(reapprove).toContainText('re-approval');
+
+  // its CTA lands on Decisions Waiting, where the change-request context is shown…
+  await page.getByTestId('inbox-cta-client-reapprove').click();
+  await expect(page.getByText('Needs your re-approval')).toBeVisible();
+  await expect(page.getByTestId('cr-context-DL-003')).toContainText('Change requested');
+
+  // …and re-approving closes the reopening
+  await page.getByTestId('approve-DL-003-A').click();
+  await page.getByTestId('approve-lock').click();
+  await expect(page.getByText(/Approved & locked/)).toBeVisible();
+
+  // NOW the client is all caught up
   await page.getByRole('button', { name: 'For You' }).click();
   await expect(page.getByTestId('inbox-empty')).toBeVisible();
   await expect(page.getByText('Nothing needs you right now')).toBeVisible();

@@ -37,6 +37,8 @@ export interface DataGateway {
   approveDecision(decisionId: string, optionIndex: number): Promise<Decision>;
   /** Raise a change request against a locked decision. */
   requestChange(decisionId: string, reason: string, costImpact: number, timeImpactDays: number): Promise<Decision>;
+  /** Withdraw the open change request (requester or PMC) — the decision re-locks. */
+  withdrawChange(decisionId: string): Promise<Decision>;
 
   /** Engineer submits a guarded inspection checklist. */
   submitInspection(checklist: Checklist): Promise<void>;

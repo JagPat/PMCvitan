@@ -158,7 +158,8 @@ const EXPECTED_ROLES: Record<string, string[]> = {
   'DecisionsController.create': ['pmc'],
   'DecisionsController.publish': ['pmc'],
   'DecisionsController.approve': ['client', 'pmc'], // Phase 1 Task 2: also RESOLVES the open ChangeRequest (reapproval)
-  'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'], // Phase 1 Task 2: refuses when one is already open; adds a `withdraw` route
+  'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'], // Phase 1 Task 2: refuses when one is already open
+  'DecisionsController.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'], // service narrows to requester-or-pmc (Phase 1 Task 2)
   'ActivitiesController.create': ['pmc'],
   'ActivitiesController.update': ['pmc'], // Phase 1 Task 6: gateInspection leaves the updatable contract; adds `override` routes (pmc)
   'ActivitiesController.remove': ['pmc'],

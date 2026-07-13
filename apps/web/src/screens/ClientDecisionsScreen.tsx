@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { selectPending } from '@/store/selectors';
+import { selectPending, selectReapproval } from '@/store/selectors';
 import { Eyebrow, Swatch, Button } from '@/components';
 import { Check } from '@/lib/icons';
 import { signed, type Decision } from '@vitan/shared';
@@ -9,11 +9,13 @@ import styles from './responsive.module.css';
 
 export function ClientDecisionsScreen() {
   const pending = useStore(useShallow(selectPending));
+  const reapprovals = useStore(useShallow(selectReapproval));
   const nodes = useStore(useShallow((s) => s.nodes));
   const openApprove = useStore((s) => s.openApprove);
   const short = useStore((s) => s.short); // live project identity, not the seed
 
-  const countLabel = `${pending.length} ${pending.length === 1 ? 'decision waiting' : 'decisions waiting'}`;
+  const waiting = pending.length + reapprovals.length;
+  const countLabel = `${waiting} ${waiting === 1 ? 'decision waiting' : 'decisions waiting'}`;
   // group by location so the client can work through a zone/room at a time
   const groups = groupDecisions(pending, nodes, 'location');
 
@@ -28,6 +30,20 @@ export function ClientDecisionsScreen() {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        {reapprovals.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, borderBottom: '1px solid rgba(180,70,46,.35)', paddingBottom: 6 }}>
+              <span style={{ fontFamily: 'var(--font-serif)', fontSize: 18, fontWeight: 500, color: 'var(--red-text)' }}>Needs your re-approval</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--faint)' }}>
+                {reapprovals.length} reopened — work is on hold until you decide again
+              </span>
+            </div>
+            {reapprovals.map((d) => (
+              <PendingCard key={d.id} d={d} subLabel={d.room} onApprove={(i) => openApprove(d.id, i)} />
+            ))}
+          </div>
+        )}
+
         {groups.map((g) => (
           <div key={g.key} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             {groups.length > 1 && (
@@ -42,7 +58,7 @@ export function ClientDecisionsScreen() {
           </div>
         ))}
 
-        {pending.length === 0 && (
+        {waiting === 0 && (
           <div style={{ textAlign: 'center', padding: '48px 20px', color: 'var(--muted)' }}>
             <div style={{ width: 60, height: 60, margin: '0 auto', borderRadius: '50%', background: 'var(--green-chip)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <Check size={30} color="var(--green-solid)" strokeWidth={2.5} />
@@ -65,6 +81,16 @@ function PendingCard({ d, subLabel, onApprove }: { d: Decision; subLabel: string
           {d.id} · {subLabel || d.room}
         </div>
         <div style={{ fontWeight: 700, fontSize: 18, marginTop: 3 }}>{d.title}</div>
+        {d.status === 'change' && d.changeRequest && (
+          <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 10, background: 'var(--red-chip, rgba(180,70,46,.08))', fontSize: 12.5 }} data-testid={`cr-context-${d.id}`}>
+            <div style={{ fontWeight: 600, color: 'var(--red-text)' }}>Change requested: {d.changeRequest.reason}</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+              {d.changeRequest.costImpact === 0 ? 'No cost change' : signed(d.changeRequest.costImpact)}
+              {' · '}
+              {d.changeRequest.timeImpactDays === 0 ? 'no schedule impact' : `${d.changeRequest.timeImpactDays} day${d.changeRequest.timeImpactDays === 1 ? '' : 's'}`}
+            </div>
+          </div>
+        )}
       </div>
       <div style={{ padding: '12px 16px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {d.options.map((o, i) => {

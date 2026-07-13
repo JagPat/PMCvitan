@@ -57,4 +57,16 @@ export class DecisionsController {
   ) {
     return this.decisions.requestChange(projectId, decisionId, body, user);
   }
+
+  /** Withdraw the open change request — same roles that may raise one; the service
+   *  narrows the authority to the actual REQUESTER or the PMC (Phase 1 Task 2). */
+  @Post(':decisionId/change/withdraw')
+  @Roles('pmc', 'client', 'contractor', 'engineer', 'consultant')
+  withdrawChange(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.decisions.withdrawChange(projectId, decisionId, user);
+  }
 }

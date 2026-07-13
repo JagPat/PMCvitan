@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { ConflictException } from '@nestjs/common';
+import { describe, it, expect, vi, type Mock } from 'vitest';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { DecisionsService } from './decisions.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
@@ -9,13 +10,17 @@ import type { CreateDecisionInput } from '../contracts';
 
 interface DecisionRow { id: string; projectId: string; title: string; publishedAt: Date | null; authorId: string | null }
 
-/** Minimal in-memory Prisma stand-in for the decision tables. $transaction just awaits the
- *  array (the service builds no cross-op ordering that a synchronous stub would break). */
+/** Real display names behind the test users — attribution must surface THESE, not role labels. */
+const NAMES: Record<string, string> = { 'u-client': 'Asha Shah', 'u-arch': 'Ar. Meghna', 'u-eng': 'Ravi Iyer' };
+
+/** Minimal in-memory Prisma stand-in for the decision tables. $transaction supports both the
+ *  array form and the interactive callback form (the callback receives this same stub). */
 function make() {
   const decisions: DecisionRow[] = [];
   const notifications: Array<{ text: string }> = [];
   const events: Array<{ type: string }> = [];
   const prisma = {
+    user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (NAMES[where.id] ? { name: NAMES[where.id] } : null)) },
     decision: {
       findMany: vi.fn(async () => decisions.map((d) => ({ id: d.id }))),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => decisions.find((d) => d.id === where.id) ?? null),
@@ -30,7 +35,8 @@ function make() {
     decisionEvent: { create: vi.fn((args: { data: { type: string } }) => { events.push(args.data); return Promise.resolve(args.data); }) },
     notification: { create: vi.fn((args: { data: { text: string } }) => { notifications.push(args.data); return Promise.resolve(args.data); }) },
     auditLog: { create: vi.fn(async () => ({})) },
-    $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
+    $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
+      typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   } as unknown as PrismaService;
   return { prisma, decisions, notifications, events };
 }
@@ -95,81 +101,168 @@ describe('DecisionsService — draft → publish lifecycle', () => {
 });
 
 /**
- * Phase 1 Task 1 — CHARACTERIZATION of the approve-lock and change flow as it
- * exists today. Task 2 deliberately replaces several of these behaviors (real
- * attribution, resolvable ChangeRequests, CAS transitions, withdraw) and MUST
- * update these tests in the same PR. Until then, this is the contract.
+ * Phase 1 Task 2 — the change-control contract. Approval locks with the caller's
+ * REAL identity (and an explicit on-behalf marker when it isn't the client), a
+ * locked decision reopens through exactly ONE open ChangeRequest, re-approval
+ * RESOLVES it, withdraw re-locks, and every transition is a CAS with one winner.
+ * (Replaces the Task 1 characterization of the pre-change-control behavior.)
  */
-interface LifecycleRow { id: string; projectId: string; title: string; status: string; approver?: string }
+interface LifecycleRow {
+  id: string; projectId: string; title: string; status: string;
+  approver?: string; approvedById?: string | null; onBehalfOf?: string | null;
+}
+interface CrRow {
+  id: string; decisionId: string; status: string; reason?: string;
+  requestedById?: string | null; resolvedById?: string | null; resolvedAt?: Date | null; resolution?: string | null;
+}
 
 function makeLifecycle(status: string) {
   const row: LifecycleRow = { id: 'DL-1', projectId: 'proj-1', title: 'Kitchen counter top', status };
   const options = [{ label: 'Option A', material: 'Granite', delta: 0, swatch: 'sw1', order: 0 }];
-  const changeRequests: Array<Record<string, unknown>> = [];
-  const events: Array<{ type: string; actor: string }> = [];
-  const audits: Array<{ actor: string; action: string }> = [];
+  const changeRequests: CrRow[] = [];
+  const events: Array<{ type: string; actor: string; actorId?: string; actorName?: string; payload?: Record<string, unknown> }> = [];
+  const audits: Array<{ actor: string; actorId?: string; action: string }> = [];
   const prisma = {
+    user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (NAMES[where.id] ? { name: NAMES[where.id] } : null)) },
     decision: {
       findUnique: vi.fn(async () => ({ ...row, options })),
-      update: vi.fn((args: { data: Partial<LifecycleRow> }) => { Object.assign(row, args.data); return Promise.resolve(row); }),
+      // CAS: honor the status precondition exactly like the SQL UPDATE ... WHERE does
+      updateMany: vi.fn(async ({ where, data }: { where: { id: string; projectId: string; status: string }; data: Partial<LifecycleRow> }) => {
+        if (row.id !== where.id || row.projectId !== where.projectId || row.status !== where.status) return { count: 0 };
+        Object.assign(row, data);
+        return { count: 1 };
+      }),
     },
-    changeRequest: { create: vi.fn((args: { data: Record<string, unknown> }) => { changeRequests.push(args.data); return Promise.resolve(args.data); }) },
-    decisionEvent: { create: vi.fn((args: { data: { type: string; actor: string } }) => { events.push(args.data); return Promise.resolve(args.data); }) },
+    changeRequest: {
+      create: vi.fn(async ({ data }: { data: CrRow }) => {
+        // the ChangeRequest_one_open_per_decision partial unique index, in miniature
+        if (data.status === 'open' && changeRequests.some((c) => c.decisionId === data.decisionId && c.status === 'open')) {
+          throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: 'test' });
+        }
+        const rec = { id: `cr-${changeRequests.length + 1}`, ...data };
+        changeRequests.push(rec);
+        return rec;
+      }),
+      findFirst: vi.fn(async ({ where }: { where: { decisionId: string; status: string } }) =>
+        changeRequests.find((c) => c.decisionId === where.decisionId && c.status === where.status) ?? null),
+      updateMany: vi.fn(async ({ where, data }: { where: { id?: string; decisionId?: string; status: string }; data: Partial<CrRow> }) => {
+        const hit = changeRequests.filter((c) => (where.id ? c.id === where.id : c.decisionId === where.decisionId) && c.status === where.status);
+        hit.forEach((c) => Object.assign(c, data));
+        return { count: hit.length };
+      }),
+    },
+    decisionEvent: { create: vi.fn((args: { data: (typeof events)[number] }) => { events.push(args.data); return Promise.resolve(args.data); }) },
     notification: { create: vi.fn(async () => ({})) },
-    auditLog: { create: vi.fn((args: { data: { actor: string; action: string } }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
-    $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
+    auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
+    $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
+      typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   } as unknown as PrismaService;
   const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
   const svc = new DecisionsService(prisma, snapshot, realtime);
-  return { svc, row, changeRequests, events, audits };
+  return { svc, prisma, row, changeRequests, events, audits };
 }
 
-describe('DecisionsService — approve lock + change flow (Phase 1 Task 1 characterization)', () => {
+describe('DecisionsService — change control & mandatory re-approval (Phase 1 Task 2)', () => {
   const client = { sub: 'u-client', role: 'client' } as AuthUser;
+  const engineer = { sub: 'u-eng', role: 'engineer' } as AuthUser;
+  const changeInput = { reason: 'Marble out of stock', costImpact: -5000, timeImpactDays: 3 };
 
   it('an approved decision is LOCKED against re-approval (409)', async () => {
     const { svc } = makeLifecycle('approved');
     await expect(svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, client)).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('approve stamps the HARDCODED demo approver, not the real user identity (replaced by Task 2)', async () => {
+  it('approve records the caller REAL identity — name + id; a client approving carries no on-behalf marker', async () => {
     const { svc, row, events, audits } = makeLifecycle('pending');
     await svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, client);
-    // 'Mr. Shah' is a literal in the service — the caller's sub/name is recorded nowhere
-    expect(row.approver).toBe('Mr. Shah');
-    expect(events.find((e) => e.type === 'approved')?.actor).toBe('Mr. Shah');
-    expect(audits.find((a) => a.action === 'decision.approve')?.actor).toBe('Mr. Shah');
+    expect(row.approver).toBe('Asha Shah'); // the real display name, not a hardcoded demo literal
+    expect(row.approvedById).toBe('u-client');
+    expect(row.onBehalfOf).toBeNull();
+    const ev = events.find((e) => e.type === 'approved');
+    expect(ev?.actorId).toBe('u-client');
+    expect(ev?.actorName).toBe('Asha Shah');
+    expect(audits.find((a) => a.action === 'decision.approve')?.actorId).toBe('u-client');
   });
 
-  it('approve as pmc stamps the literal role label PMC', async () => {
-    const { svc, row } = makeLifecycle('pending');
+  it('a PMC approval is recorded ON BEHALF of the client — attributed, never disguised', async () => {
+    const { svc, row, events } = makeLifecycle('pending');
     await svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, user);
+    expect(row.approver).toBe('Ar. Meghna');
+    expect(row.approvedById).toBe('u-arch');
+    expect(row.onBehalfOf).toBe('client');
+    expect(events.find((e) => e.type === 'approved')?.payload).toMatchObject({ onBehalfOf: 'client' });
+  });
+
+  it('an actor with no User row falls back to the role label for display, but the id is still recorded', async () => {
+    const { svc, row } = makeLifecycle('pending');
+    await svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, { sub: 'u-ghost', role: 'pmc' } as AuthUser);
     expect(row.approver).toBe('PMC');
+    expect(row.approvedById).toBe('u-ghost');
   });
 
   it('a change request is refused unless the decision is locked (409)', async () => {
     const { svc } = makeLifecycle('pending');
-    await expect(svc.requestChange('proj-1', 'DL-1', { reason: 'r', costImpact: 0, timeImpactDays: 0 }, user)).rejects.toBeInstanceOf(ConflictException);
+    await expect(svc.requestChange('proj-1', 'DL-1', changeInput, user)).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('a change request reopens the decision and writes a ChangeRequest row the service NEVER reads back', async () => {
+  it('a change request reopens the decision and opens ONE attributable ChangeRequest', async () => {
     const { svc, row, changeRequests, events } = makeLifecycle('approved');
-    await svc.requestChange('proj-1', 'DL-1', { reason: 'Marble out of stock', costImpact: -5000, timeImpactDays: 3 }, user);
+    await svc.requestChange('proj-1', 'DL-1', changeInput, engineer);
     expect(row.status).toBe('change');
     expect(changeRequests).toHaveLength(1);
-    // the service supplies NO status/resolution fields — the row is born on the DB
-    // default ('pending') and nothing in the codebase transitions or reads it
-    expect('status' in changeRequests[0]).toBe(false);
-    expect(events.map((e) => e.type)).toContain('change_requested');
+    expect(changeRequests[0]).toMatchObject({ status: 'open', requestedById: 'u-eng', reason: 'Marble out of stock' });
+    expect(events.find((e) => e.type === 'change_requested')?.actorId).toBe('u-eng');
   });
 
-  it('a change-requested decision IS re-approvable — the lock is reopenable (mandatory re-approval is not enforced)', async () => {
-    const { svc, row, changeRequests } = makeLifecycle('approved');
-    await svc.requestChange('proj-1', 'DL-1', { reason: 'r', costImpact: 0, timeImpactDays: 0 }, user);
+  it('a second change request while one is open is refused (409)', async () => {
+    const { svc } = makeLifecycle('approved');
+    await svc.requestChange('proj-1', 'DL-1', changeInput, engineer);
+    await expect(svc.requestChange('proj-1', 'DL-1', changeInput, client)).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('the DB one-open-per-decision backstop (P2002) surfaces as 409, not 500', async () => {
+    const { svc, changeRequests } = makeLifecycle('approved');
+    // the race the pre-read can't see: an open request already exists on disk
+    changeRequests.push({ id: 'cr-race', decisionId: 'DL-1', status: 'open' });
+    await expect(svc.requestChange('proj-1', 'DL-1', changeInput, engineer)).rejects.toThrow(/already open/);
+  });
+
+  it('re-approval RESOLVES the open change request and logs a distinct reapproved event', async () => {
+    const { svc, row, changeRequests, events } = makeLifecycle('approved');
+    await svc.requestChange('proj-1', 'DL-1', changeInput, engineer);
     await svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, client);
     expect(row.status).toBe('approved');
-    // the ChangeRequest row is untouched by the re-approval: written once, never resolved
-    expect(changeRequests).toHaveLength(1);
-    expect('resolvedAt' in changeRequests[0]).toBe(false);
+    expect(changeRequests[0]).toMatchObject({ status: 'resolved', resolution: 'reapproved', resolvedById: 'u-client' });
+    expect(changeRequests[0].resolvedAt).toBeInstanceOf(Date);
+    expect(events.map((e) => e.type)).toContain('reapproved');
+    expect(events.filter((e) => e.type === 'approved')).toHaveLength(0); // reapproval is its own event
+  });
+
+  it('the requester can withdraw — the decision re-locks and the request closes as withdrawn', async () => {
+    const { svc, row, changeRequests, events } = makeLifecycle('approved');
+    await svc.requestChange('proj-1', 'DL-1', changeInput, engineer);
+    await svc.withdrawChange('proj-1', 'DL-1', engineer);
+    expect(row.status).toBe('approved');
+    expect(changeRequests[0]).toMatchObject({ status: 'withdrawn', resolution: 'withdrawn', resolvedById: 'u-eng' });
+    expect(events.find((e) => e.type === 'change_withdrawn')?.actorId).toBe('u-eng');
+  });
+
+  it('the PMC can withdraw anyone’s request; another non-requester cannot (403)', async () => {
+    const { svc, row } = makeLifecycle('approved');
+    await svc.requestChange('proj-1', 'DL-1', changeInput, engineer);
+    await expect(svc.withdrawChange('proj-1', 'DL-1', client)).rejects.toBeInstanceOf(ForbiddenException);
+    await svc.withdrawChange('proj-1', 'DL-1', user); // pmc authority
+    expect(row.status).toBe('approved');
+  });
+
+  it('withdraw with no open change request is a 409', async () => {
+    const { svc } = makeLifecycle('approved');
+    await expect(svc.withdrawChange('proj-1', 'DL-1', user)).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('a CAS loser gets a deterministic 409 (the transition raced and lost)', async () => {
+    const { svc, prisma } = makeLifecycle('pending');
+    (prisma.decision.updateMany as Mock).mockResolvedValueOnce({ count: 0 }); // someone else transitioned first
+    await expect(svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, client)).rejects.toThrow(/changed while approving/);
   });
 });

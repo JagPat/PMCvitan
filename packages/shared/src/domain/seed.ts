@@ -127,7 +127,13 @@ export const SEED_DECISIONS: Decision[] = [
     date: '28 May 2026',
     cost: 118000,
     photoSwatch: 'quartz',
-    options: [],
+    // options present so the client can RE-APPROVE the reopened decision in demo mode
+    options: [
+      { label: 'Option A', key: 'A', material: 'Quartz (Statuario)', delta: 0, swatch: 'quartz', recommended: true },
+      { label: 'Option B', key: 'B', material: 'Italian Marble', delta: 40000, swatch: 'marble', recommended: false },
+    ],
+    // the OPEN change request that reopened this lock (Phase 1 Task 2) — awaiting re-approval
+    changeRequest: { reason: 'Quartz slab size unavailable — vendor proposes 2-piece joint', costImpact: 0, timeImpactDays: 4 },
   },
 ];
 

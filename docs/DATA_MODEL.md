@@ -11,10 +11,10 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 | `User` | An account-holding member (PMC/client/contractor) | name, email, phone |
 | `Membership` | A user's role on a project | userId, projectId, **role** (`pmc\|client\|engineer\|contractor\|consultant`), **discipline** (label for a consultant, e.g. lighting/plumbing) |
 | `Worker` | On-site identity **without an account** (recognised by QR/face) | name, tradeKey, projectId |
-| `Decision` | A client decision | code (DL-014), title, room, **nodeId** (location-tree link), **status** (`pending\|approved\|change`), approvedOptionId, approver, approvedAt, costPaise |
+| `Decision` | A client decision | code (DL-014), title, room, **nodeId** (location-tree link), **status** (`pending\|approved\|change`), approvedOptionId, approver, **approvedById**, **onBehalfOf** (`client` when a PMC approved for them), approvedAt, costPaise |
 | `DecisionOption` | An option presented for a decision | label, material, deltaPaise, swatch, recommended |
-| `DecisionEvent` | **Append-only** lifecycle/audit log | type (`issued\|approved\|locked\|change_requested`), actor, at, payload |
-| `ChangeRequest` | A change against a locked decision | reason, costImpactPaise, timeImpactDays, status |
+| `DecisionEvent` | **Append-only** lifecycle/audit log | type (`drafted\|issued\|approved\|reapproved\|change_requested\|change_withdrawn`), actor, **actorId/actorName** (real identity), at, payload |
+| `ChangeRequest` | The ONE formal reopening of a locked decision | reason, costImpactPaise, timeImpactDays, **status** (`open\|resolved\|withdrawn`), requestedById, resolvedById, resolvedAt, **resolution** (`reapproved\|withdrawn`; null = legacy). At most one `open` per decision — DB-enforced by the partial unique index `ChangeRequest_one_open_per_decision` |
 | `Activity` | A unit of site work (the spine) | code (ACT-31), name, zone, decisionId, **nodeId** (location), plannedStart/End, actualStart/End, **status** (`not-started\|in-progress\|done\|blocked`) |
 | `ActivityGate` | The four readiness gates | activityId, kind (`decision\|material\|team\|inspection`), state (`ok\|wait\|fail\|na`) |
 | `Inspection` | A checklist / review | code (INSP-22), title, zone, **nodeId** (location), submittedBy, submittedAt, decidedAt |
@@ -37,7 +37,7 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 - **Legacy display/offset columns are deprecated derivatives** — `projStart/projEnd`, `Activity.plannedStart/…` int offsets, `DailyLog.date`, `Inspection.date` strings remain for compatibility and are DERIVED from the civil dates; they are never sorted, compared or used as a write source ("latest daily log" orders by `logDate`, `createdAt` and `id` as tie-breakers only).
 - **Timestamps** (`createdAt`, `publishedAt`, audit instants) stay `timestamptz` — the immutable machine instant, distinct from the civil day a fact belongs to.
 - **Enums** match the frontend string unions exactly (`packages/shared/src/domain/types.ts`) so the API contract and UI stay aligned.
-- **Locked decisions** are immutable; state transitions only via `DecisionEvent` + `ChangeRequest` (never in-place edits).
+- **Locked decisions** are immutable; state transitions only via `DecisionEvent` + `ChangeRequest` (never in-place edits). Every transition is an atomic **compare-and-set** (`UPDATE … WHERE status = <expected>`) committed with its events — a concurrent approve/change/withdraw has exactly one winner (loser: 409) — and re-approval RESOLVES the open change request with the resolver's identity (Phase 1 Task 2).
 - **Gates** — the `decision` gate is derived live from the linked decision's status; `material/team/inspection` are stored and mutated by site events (e.g. a flagged material mismatch sets the `material` gate to `fail` and blocks the activity).
 
 ## Core flows (server responsibilities)
@@ -137,7 +137,8 @@ The **Zone › Room › Object picker** is now in the plan-activity, issue-check
 
 ```
 POST   /projects/:id/decisions/:decisionId/approve   { optionIndex }        -> Decision
-POST   /projects/:id/decisions/:decisionId/change     { reason, cost, days } -> ChangeRequest
+POST   /projects/:id/decisions/:decisionId/change     { reason, cost, days } -> ChangeRequest (409 when one is already open)
+POST   /projects/:id/decisions/:decisionId/change/withdraw                   -> Decision re-locked (requester or PMC only)
 POST   /projects/:id/inspections/:id/submit           { items }              -> Inspection
 POST   /projects/:id/inspections/:id/decide           { rejectedItemIds }    -> Inspection
 POST   /projects/:id/activities/:id/start | /complete                        -> Activity

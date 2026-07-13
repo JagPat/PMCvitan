@@ -171,6 +171,8 @@ export interface AppActions {
   confirmApprove: () => void;
   openChange: (decId: string) => void;
   submitChange: () => void;
+  /** Withdraw the open change request — the decision re-locks (requester or PMC only). */
+  withdrawChange: (decId: string) => void;
   setChangeText: (v: string) => void;
   setChangeCost: (v: string) => void;
   setChangeTime: (v: string) => void;
@@ -695,6 +697,7 @@ export const useStore = create<Store>()(
           d.approver = 'Mr. Shah';
           d.date = '03 Jul 2026';
           d.photoSwatch = o.swatch;
+          delete d.changeRequest; // a re-approval RESOLVES the open change request
         }
         s.notifications.unshift({ text: 'Client approved ' + title + ' — ' + material, time: 'just now', color: '#3F7A54' });
         s.modal = { type: null };
@@ -718,10 +721,24 @@ export const useStore = create<Store>()(
       if (runRemoteOrQueue({ t: 'change', decisionId: decId, reason, costImpact, timeImpactDays }, 'Change ' + decId, () => gateway!.requestChange(decId, reason, costImpact, timeImpactDays), 'Change Request submitted for client re-approval.')) return;
       set((s) => {
         const d = s.decisions.find((x) => x.id === decId);
-        if (d) d.status = 'change';
+        if (d) {
+          d.status = 'change';
+          d.changeRequest = { reason, costImpact, timeImpactDays };
+        }
         s.modal = { type: null };
       });
       get().flash('Change Request submitted for client re-approval.');
+    },
+    withdrawChange: (decId) => {
+      if (runRemoteOrQueue({ t: 'changeWithdraw', decisionId: decId }, 'Withdraw change ' + decId, () => gateway!.withdrawChange(decId), 'Change request withdrawn — the decision is locked again.')) return;
+      set((s) => {
+        const d = s.decisions.find((x) => x.id === decId);
+        if (d && d.status === 'change') {
+          d.status = 'approved';
+          delete d.changeRequest;
+        }
+      });
+      get().flash('Change request withdrawn — the decision is locked again.');
     },
     setChangeText: (v) => set((s) => { s.modal.changeText = v; }),
     setChangeCost: (v) => set((s) => { s.modal.changeCost = v; }),

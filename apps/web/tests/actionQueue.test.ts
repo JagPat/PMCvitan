@@ -25,10 +25,12 @@ describe('selectActionItems — the per-role "For You" action queue', () => {
     s().confirmApprove();
     expect(selectActionItems(s()).find((i) => i.key === 'client-pending')!.title).toContain('1 decision');
 
-    // …approving the last one empties the client's queue entirely (nothing else is theirs)
+    // …approving the last pending one clears the approval item. What remains is the
+    // seeded reopened decision (DL-003): mandatory re-approval IS the client's work
+    // now (Phase 1 Task 2), so the queue holds exactly that item.
     s().openApprove('DL-011', 0);
     s().confirmApprove();
-    expect(selectActionItems(s())).toHaveLength(0);
+    expect(keys()).toEqual(['client-reapprove']);
   });
 
   it('pmc: surfaces the inspection to review, the change request, blocked work and client-pending', () => {
