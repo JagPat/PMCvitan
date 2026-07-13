@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
@@ -24,6 +24,11 @@ export class PhasesService {
     const anchor = toIsoCivilDate(project.scheduleStartDate);
     const startIso = input.plannedStartDate ?? (anchor ? addCivilDays(anchor, input.plannedStart) : null);
     const endIso = input.plannedEndDate ?? (anchor ? addCivilDays(anchor, input.plannedEnd) : null);
+    // the MERGED window (ISO input over anchor-derived offsets) must be ordered —
+    // ISO civil dates compare lexicographically = chronologically (Codex round 2)
+    if (startIso && endIso && startIso > endIso) {
+      throw new BadRequestException('The planned window is reversed: the resolved end date is before the start date');
+    }
     const maxOrder = await this.prisma.phase.aggregate({ where: { projectId }, _max: { order: true } });
     await this.prisma.$transaction([
       this.prisma.phase.create({

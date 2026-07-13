@@ -35,6 +35,15 @@ export class ActivitiesService {
     };
   }
 
+  /** The FINAL resolved window must be ordered (Codex round 2): the schema refines
+   *  compare ISO-vs-ISO and offset-vs-offset, but a MIXED payload (ISO start +
+   *  offset-derived end) or a partial update can still merge to a reversed window. */
+  private assertOrderedWindow(startDate: Date | null | undefined, endDate: Date | null | undefined): void {
+    if (startDate && endDate && startDate.getTime() > endDate.getTime()) {
+      throw new BadRequestException('The planned window is reversed: the resolved end date is before the start date');
+    }
+  }
+
   /** Referenced phase/decision/location-node must exist on THIS project (cross-tenant links refused). */
   private async assertRefs(projectId: string, phaseId?: string | null, decisionId?: string | null, nodeId?: string | null): Promise<void> {
     if (phaseId) {
@@ -62,6 +71,8 @@ export class ActivitiesService {
     ]);
     const id = nextSeqId('ACT-', allIds.map((a) => a.id));
     const order = existing.reduce((m, a) => Math.max(m, a.order), 0) + 1;
+    const dates = this.plannedDates(anchor, { start: input.plannedStartDate, end: input.plannedEndDate }, { start: input.plannedStart, end: input.plannedEnd });
+    this.assertOrderedWindow(dates.plannedStartDate, dates.plannedEndDate);
     await this.prisma.$transaction([
       this.prisma.activity.create({
         data: {
@@ -71,7 +82,7 @@ export class ActivitiesService {
           zone: input.zone,
           plannedStart: input.plannedStart,
           plannedEnd: input.plannedEnd,
-          ...this.plannedDates(anchor, { start: input.plannedStartDate, end: input.plannedEndDate }, { start: input.plannedStart, end: input.plannedEnd }),
+          ...dates,
           phaseId: input.phaseId ?? null,
           decisionId: input.decisionId ?? null,
           nodeId: input.nodeId ?? null,
@@ -100,9 +111,14 @@ export class ActivitiesService {
     const { plannedStartDate: inputStartDate, plannedEndDate: inputEndDate, ...rest } = input;
     const data = {
       ...rest,
-      // whichever representation the caller sent, both stay coherent
+      // whichever representation the caller sent, both stay coherent — and each
+      // spread picks ONLY its own edge (plannedDates returns null for the edge it
+      // wasn't given; leaking that null would clear the other edge on a partial
+      // update and dodge the merged-window check below)
       ...(inputStartDate || input.plannedStart !== undefined
-        ? this.plannedDates(anchor, { start: inputStartDate }, { start: input.plannedStart })
+        ? (({ plannedStartDate, plannedStart }) => ({ plannedStartDate, ...(plannedStart !== undefined ? { plannedStart } : {}) }))(
+            this.plannedDates(anchor, { start: inputStartDate }, { start: input.plannedStart }),
+          )
         : {}),
       ...(inputEndDate || input.plannedEnd !== undefined
         ? (({ plannedEndDate, plannedEnd }) => ({ plannedEndDate, ...(plannedEnd !== undefined ? { plannedEnd } : {}) }))(
@@ -110,6 +126,13 @@ export class ActivitiesService {
           )
         : {}),
     };
+    // The MERGED result (changed fields over the existing row) must stay an ordered
+    // window — a partial update that only moves one edge can otherwise persist a
+    // reversed plan with 200 (Codex round 2).
+    this.assertOrderedWindow(
+      'plannedStartDate' in data ? (data.plannedStartDate as Date | null) : a.plannedStartDate,
+      'plannedEndDate' in data ? (data.plannedEndDate as Date | null) : a.plannedEndDate,
+    );
     await this.prisma.$transaction([
       this.prisma.activity.update({ where: { id: activityId }, data }),
       this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.update', entity: 'Activity', entityId: activityId } }),
