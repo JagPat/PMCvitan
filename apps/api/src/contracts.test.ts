@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createMediaSchema, issueDrawingSchema, pushSubscribeSchema, isSafeExternalHttpsUrl, MAX_MEDIA_BASE64 } from './contracts';
+import { createActivitySchema, createMediaSchema, createPhaseSchema, createProjectSchema, isoCivilDateSchema, issueDrawingSchema, pushSubscribeSchema, isSafeExternalHttpsUrl, MAX_MEDIA_BASE64, timeZoneSchema } from './contracts';
 
 describe('createMediaSchema — P2-5 raster allowlist + size cap', () => {
   const base = { kind: 'progress' as const, data: 'AAAA' };
@@ -71,5 +71,31 @@ describe('isSafeExternalHttpsUrl — P2-1 push SSRF guard', () => {
     expect(pushSubscribeSchema.safeParse(bad).success).toBe(false);
     const ok = { subscription: { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', keys: { p256dh: 'k', auth: 'a' } } };
     expect(pushSubscribeSchema.safeParse(ok).success).toBe(true);
+  });
+});
+
+describe('canonical date validation (Codex gate finding 5)', () => {
+  it('isoCivilDateSchema rejects impossible calendar dates, not just bad shapes', () => {
+    expect(isoCivilDateSchema.safeParse('2026-02-28').success).toBe(true);
+    expect(isoCivilDateSchema.safeParse('2028-02-29').success).toBe(true); // leap day
+    expect(isoCivilDateSchema.safeParse('2026-02-31').success).toBe(false); // no Feb 31
+    expect(isoCivilDateSchema.safeParse('2026-13-01').success).toBe(false); // no month 13
+    expect(isoCivilDateSchema.safeParse('2026-00-10').success).toBe(false);
+  });
+
+  it('timeZoneSchema accepts real IANA zones and rejects junk', () => {
+    expect(timeZoneSchema.safeParse('Asia/Kolkata').success).toBe(true);
+    expect(timeZoneSchema.safeParse('UTC').success).toBe(true);
+    expect(timeZoneSchema.safeParse('Mars/Olympus_Mons').success).toBe(false);
+    expect(createProjectSchema.safeParse({ name: 'X', short: 'X', timeZone: 'Not/AZone' }).success).toBe(false);
+  });
+
+  it('a reversed ISO window is a 400 at the boundary — for activities AND phases', () => {
+    const base = { name: 'A', plannedStart: 0, plannedEnd: 5 };
+    expect(createActivitySchema.safeParse({ ...base, plannedStartDate: '2026-07-10', plannedEndDate: '2026-07-01' }).success).toBe(false);
+    expect(createActivitySchema.safeParse({ ...base, plannedStartDate: '2026-07-01', plannedEndDate: '2026-07-10' }).success).toBe(true);
+    expect(createPhaseSchema.safeParse({ name: 'P', plannedStartDate: '2026-07-10', plannedEndDate: '2026-07-01' }).success).toBe(false);
+    expect(createPhaseSchema.safeParse({ name: 'P', plannedStart: 9, plannedEnd: 2 }).success).toBe(false); // reversed offsets too
+    expect(createPhaseSchema.safeParse({ name: 'P', plannedStartDate: '2026-07-01', plannedEndDate: '2026-07-10' }).success).toBe(true);
   });
 });

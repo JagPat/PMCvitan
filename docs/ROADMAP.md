@@ -13,9 +13,9 @@ The active gate — [`docs/superpowers/plans/2026-07-12-phase-0-trust-foundation
 - [x] Task 5 — Same-project references enforced in services and PostgreSQL — [PR #85](https://github.com/JagPat/PMCvitan/pull/85) (`f445995`)
 - [x] Task 6 — Replace prototype day offsets with real civil dates — [PR #86](https://github.com/JagPat/PMCvitan/pull/86) (`5be3cdb`)
 - [x] Task 7 — Remove seeded claims from API mode — [PR #87](https://github.com/JagPat/PMCvitan/pull/87) (`25406a3`)
-- [x] Task 8 — Prove the foundation end to end + review packet — this branch (`test: prove phase zero project isolation`); evidence in [`docs/reviews/phase-0-review-packet.md`](./reviews/phase-0-review-packet.md)
+- [x] Task 8 — Prove the foundation end to end + review packet — [PR #88](https://github.com/JagPat/PMCvitan/pull/88) (`bc90390`); evidence in [`docs/reviews/phase-0-review-packet.md`](./reviews/phase-0-review-packet.md); [green CI run incl. `api-e2e`](https://github.com/JagPat/PMCvitan/actions/runs/29211240865)
 
-Phase 0 is complete only when the API-mode two-project Playwright suite (CI job `api-e2e`, 8 scenarios) and the PostgreSQL integration suite (CI job `api`) pass in CI. Unit tests or the seeded local demo alone are insufficient evidence. Pending: the green `api-e2e` run on this branch's PR and the independent Codex review gate.
+Phase 0 is complete only when the API-mode two-project Playwright suite (CI job `api-e2e`, 8 scenarios) and the PostgreSQL integration suite (CI job `api`) pass in CI — both are green on the Task 8 head — AND the independent review gate clears. **Round 1 (Codex) did NOT clear the gate** ([7 findings](https://github.com/JagPat/PMCvitan/pull/88#issuecomment-4953051607)); all were remediated in four focused PRs (scope/session pinning · live authorization on global routes · database tenant constraints · canonical date validation + evidence — see the packet's "Independent Review — Round 1" section). Pending: the gate re-run on the merged remediation head.
 
 | Phase | Scope | Status |
 |---|---|---|
