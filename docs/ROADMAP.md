@@ -4,14 +4,14 @@ Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). St
 
 ## Phase 1 — complete the existing product pillars (ACTIVE)
 
-The active gate — [`docs/superpowers/plans/2026-07-13-phase-1-existing-pillars.md`](./superpowers/plans/2026-07-13-phase-1-existing-pillars.md) (canonical spec: [`docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`](./superpowers/specs/2026-07-12-modular-construction-control-platform-design.md), Phase 1 row). Design intent, client consent, controlled drawings, field inspection, rejection, corrective work, reinspection and final sign-off become one attributable information chain. Tasks land in order, one PR per task; review stops after Tasks 1, 3, 5 and 7; **implementation begins only after the plan's independent review clears**:
+The active gate — [`docs/superpowers/plans/2026-07-13-phase-1-existing-pillars.md`](./superpowers/plans/2026-07-13-phase-1-existing-pillars.md) (canonical spec: [`docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`](./superpowers/specs/2026-07-12-modular-construction-control-platform-design.md), Phase 1 row). Design intent, client consent, controlled drawings, field inspection, rejection, corrective work, reinspection and final sign-off become one attributable information chain. The plan was **corrected per the [independent plan review](https://github.com/JagPat/PMCvitan/pull/97#issuecomment-4955048088)** (explicit requirement/recipient edges, database-level transition concurrency, durable offline evidence, complete containment constraints, modeled completion attribution; Tasks 2–6 are ordered checklists with verification commands and STOP conditions). Tasks land in order, one PR per task; review stops after Tasks 1, 3, 5 and 7; **implementation begins only after the plan's independent review clears**:
 
-- [ ] Task 1 — Baseline and characterization tests (incl. the missing `activities.service.test.ts`)
-- [ ] Task 2 — Decision change-control and mandatory client re-approval (real attribution, resolvable ChangeRequests, complete DecisionEvent history)
-- [ ] Task 3 — Controlled drawing lifecycle (governing = latest `for_construction`; persisted transmittals; offline-queueable acks; issue audited)
-- [ ] Task 4 — Inspection evidence, correction and reinspection (linked Media evidence, idempotent uploads, real linked/assigned/dated reinspections)
-- [ ] Task 5 — Closing sign-off controls Activity completion (`awaiting_signoff` → PMC sign-off → `done`)
-- [ ] Task 6 — Readiness derived from canonical decision/drawing/inspection facts + evidenced, expiring overrides
+- [ ] Task 1 — Baseline and characterization tests (incl. the missing `activities.service.test.ts` and a concurrency characterization)
+- [ ] Task 2 — Decision change-control and mandatory client re-approval (CAS transitions; DB-enforced one-open-request; real attribution; complete DecisionEvent history)
+- [ ] Task 3 — Controlled drawing lifecycle (governing = latest `for_construction`; `DrawingRevision.projectId` + recipients frozen at issue as constrained rows; offline-queueable acks; issue audited)
+- [ ] Task 4 — Inspection evidence, requirement link, correction and reinspection (explicit `Inspection.activityId` edge; containment-constrained Media evidence; durable IndexedDB offline capture; project-scoped idempotency; exactly one linked/assigned/dated reinspection under concurrency)
+- [ ] Task 5 — Closing sign-off controls Activity completion (`awaiting_signoff` → PMC sign-off → `done`; recorded completion claim drives the corrective assignee)
+- [ ] Task 6 — Readiness derived from explicit decision/drawing/inspection edges via truth tables + evidenced, expiring overrides
 - [ ] Task 7 — End-to-end pillar-chain acceptance suite + Phase 1 review packet
 
 Out of scope for Phase 1: procurement/inventory, labour, commercial/billing/payment, portals, RedBracket, microservices, broad UI redesign.
