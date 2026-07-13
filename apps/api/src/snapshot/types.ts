@@ -108,7 +108,9 @@ export interface ChecklistDto {
   nodeId?: string;
   date: string;
   submitted: boolean;
-  items: { name: string; state: string | null; photos: number; note: string }[];
+  /** `id` links evidence uploads to the item; `evidence` = signed serve paths (Task 4).
+   *  `photos` is a DEPRECATED display counter — linked evidence rows are the proof. */
+  items: { id: string; name: string; state: string | null; photos: number; note: string; evidence: string[] }[];
 }
 
 export interface ReviewDto {
@@ -120,7 +122,10 @@ export interface ReviewDto {
   by: string;
   date: string;
   decided: boolean;
-  items: { name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean }[];
+  /** set when this review IS a reinspection — the predecessor it re-checks (Task 4) */
+  reinspectionOfId?: string;
+  /** `evidence` = the item's linked photo proof as signed serve paths (Task 4) */
+  items: { name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean; evidence: string[] }[];
 }
 
 /** A material delivery placed on the location spine — the Site Map's "materials here". */

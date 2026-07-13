@@ -177,20 +177,31 @@ describe('phase 1 baseline characterization (integration)', () => {
     expect(dto?.current?.status).toBe('for_construction');
   });
 
-  it('inspection pillar: reject decides the SAME row — no reinspection row, no due date, no assignee', async () => {
+  it('inspection pillar: a fail needs LINKED evidence; reject creates the linked, assigned, dated reinspection (Task 4)', async () => {
     expect((await post(`/projects/${f.projectA.id}/inspections`, { title: 'Ponding test', zone: 'Terrace', items: ['Drain slope'] })).status).toBe(201);
-    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: f.projectA.id, title: 'Ponding test' } });
+    const insp = await t.prisma.inspection.findFirstOrThrow({ where: { projectId: f.projectA.id, title: 'Ponding test' }, include: { items: true } });
     const countBefore = await t.prisma.inspection.count({ where: { projectId: f.projectA.id } });
 
+    // a fail without a LINKED evidence row is refused — the counter alone is not proof
+    expect((await post(`/projects/${f.projectA.id}/inspections/${insp.id}/submit`, { items: [{ name: 'Drain slope', state: 'fail', photos: 1, note: 'pooling NE corner' }] })).status).toBe(400);
+    const px = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64');
+    expect((await post(`/projects/${f.projectA.id}/media`, { kind: 'inspection', mime: 'image/png', data: px, inspectionId: insp.id, inspectionItemId: insp.items[0].id, clientKey: 'baseline-ev-1' })).status).toBe(201);
     expect((await post(`/projects/${f.projectA.id}/inspections/${insp.id}/submit`, { items: [{ name: 'Drain slope', state: 'fail', photos: 1, note: 'pooling NE corner' }] })).status).toBe(201);
-    expect((await post(`/projects/${f.projectA.id}/inspections/${insp.id}/decide`, { approve: false, rejectedItemNames: ['Drain slope'] })).status).toBe(201);
 
-    // the "re-inspection task(s) created with due dates" notice has no backing row:
-    expect(await t.prisma.inspection.count({ where: { projectId: f.projectA.id } })).toBe(countBefore);
+    // the PMC rejects, explicitly taking the corrective work themselves (self-assign)
+    expect((await post(`/projects/${f.projectA.id}/inspections/${insp.id}/decide`, { approve: false, rejectedItemNames: ['Drain slope'], assigneeId: f.memberUser.id })).status).toBe(201);
+
+    // the "re-inspection created" notice now HAS a backing row: linked, assigned, dated
+    expect(await t.prisma.inspection.count({ where: { projectId: f.projectA.id } })).toBe(countBefore + 1);
     const after = await t.prisma.inspection.findUniqueOrThrow({ where: { id: insp.id }, include: { items: true } });
-    expect(after.decided).toBe(true); // terminal — the rejection lives and dies on this row
+    expect(after.decided).toBe(true);
     expect(after.items[0].rejected).toBe(true);
-    expect(after.by).toBeNull(); // submit recorded no submitter identity
+    expect(after.submittedById).toBe(f.memberUser.id); // submit records real identity now
+    const child = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: insp.id }, include: { items: true } });
+    expect(child.assigneeId).toBe(f.memberUser.id);
+    expect(child.dueDate).toBeInstanceOf(Date);
+    expect(child.items.map((i) => i.name)).toEqual(['Drain slope']);
+    await t.prisma.media.deleteMany({ where: { projectId: f.projectA.id, clientKey: 'baseline-ev-1' } });
   });
 
   it('activity pillar: complete writes done IMMEDIATELY and the zero-item closing inspection is merely queued', async () => {

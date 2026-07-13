@@ -17,13 +17,13 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 | `ChangeRequest` | The ONE formal reopening of a locked decision | reason, costImpactPaise, timeImpactDays, **status** (`open\|resolved\|withdrawn`), requestedById, resolvedById, resolvedAt, **resolution** (`reapproved\|withdrawn`; null = legacy). At most one `open` per decision — DB-enforced by the partial unique index `ChangeRequest_one_open_per_decision` |
 | `Activity` | A unit of site work (the spine) | code (ACT-31), name, zone, decisionId, **nodeId** (location), plannedStart/End, actualStart/End, **status** (`not-started\|in-progress\|done\|blocked`) |
 | `ActivityGate` | The four readiness gates | activityId, kind (`decision\|material\|team\|inspection`), state (`ok\|wait\|fail\|na`) |
-| `Inspection` | A checklist / review | code (INSP-22), title, zone, **nodeId** (location), submittedBy, submittedAt, decidedAt |
-| `InspectionItem` | A line item | name, state/result, note, reinspectionOfId |
+| `Inspection` | A checklist / review | code (INSP-22), title, zone, **nodeId** (location), **activityId** (the REQUIREMENT EDGE — composite FK, Task 4), **reinspectionOfId** (the predecessor a reinspection re-checks; at most ONE direct child — partial unique `Inspection_one_reinspection_child`), **assigneeId** (active engineer/contractor member — Membership FK) + **dueDate**, **submittedById/Name + decidedById/Name** (attribution) |
+| `InspectionItem` | A line item | name, state/result, note, rejected; `photos` is a DEPRECATED display counter — linked Media rows are the evidence (Task 4) |
 | `DailyLog` | One site-day | projectId, date, checkedInAt, submittedAt |
 | `AttendanceEvent` | Check-in / QR / face | dailyLogId, workerId, kind, at, geo, selfieMediaId |
 | `CrewCount` | Crew present per trade | dailyLogId, trade, count |
 | `SiteMaterial` | Material delivered on site | name, decisionId, qty, zone, matched, **nodeId** (location), mediaId |
-| `Media` | An uploaded photo | url, geo, takenAt, activityId?, decisionId? |
+| `Media` | An uploaded photo | url, geo, takenAt, decisionId?, **inspectionId?/inspectionItemId?** (evidence containment CHAIN: `(projectId, inspectionId)` + `(inspectionId, inspectionItemId)` composite FKs + CHECK `Media_item_requires_inspection` closing the MATCH SIMPLE escape), **clientKey** (PROJECT-scoped upload idempotency — `@@unique([projectId, clientKey])`, Task 4) |
 | `DrawingRevision` | One issued revision (Rev A/B/C…) | **projectId** (containment FK with drawingId → Drawing), rev, **status** (`for_review\|for_construction\|superseded`), **recipientsFrozenAt** (null = legacy, predates snapshots), issuedBy. `@@unique(drawingId, rev)` — one label per drawing. **Scoped supersession** (Phase 1 Task 3): `for_construction` supersedes only `for_construction`; a review copy supersedes nothing and can never govern (`current` = governing `for_construction` or null) |
 | `DrawingRecipient` | WHO a revision was issued to — **frozen at issue** | projectId, revisionId, userId, roleAtIssue. Snapshot of active engineer/contractor members at issue (stamped even when empty); churn never rewrites rows. Composite FKs `(projectId, revisionId)` → DrawingRevision and `(projectId, userId)` → Membership make forged rows impossible (Phase 1 Task 3) |
 | `Notification` | Feed item | projectId, text, kind/color, at |

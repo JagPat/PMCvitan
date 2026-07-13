@@ -11,6 +11,7 @@
  * end-to-end in CI (the sandbox has no Postgres). Validate it once the API is
  * deployed and `VITE_API_URL` points at it.
  */
+import { deleteEvidence, getEvidence, markEvidenceFailed } from './evidenceStore';
 import type {
   Activity,
   AppNotification,
@@ -260,6 +261,11 @@ export interface UploadMediaInput {
   data: string; // base64, no data: prefix
   decisionId?: string;
   nodeId?: string; // location spine: the place this photo shows
+  // Evidence linkage (Phase 1 Task 4): the inspection item this photo proves,
+  // and the PROJECT-scoped idempotency key (same key ⇒ same photo, uploaded once).
+  inspectionId?: string;
+  inspectionItemId?: string;
+  clientKey?: string;
   geoLat?: number;
   geoLng?: number;
   takenAt?: string;
@@ -279,6 +285,11 @@ export function resolveDrawingUrl(url: string): string {
 }
 
 export class ApiGateway {
+  /** the project this gateway is scoped to (evidence replay keys off it) */
+  get project(): string {
+    return this.projectId;
+  }
+
   private token: string | null = null;
   private readonly base: string;
   private readonly projectId: string;
@@ -667,7 +678,10 @@ export type OutboxOp =
   | { t: 'completeActivity'; activityId: string }
   | { t: 'flagMismatch'; decisionId: string }
   | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'> }
-  | { t: 'uploadMedia'; input: UploadMediaInput };
+  | { t: 'uploadMedia'; input: UploadMediaInput }
+  // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
+  // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
+  | { t: 'uploadEvidence'; scope: string; clientKey: string };
 
 /**
  * Classify an outbox replay failure. A *terminal* failure is one the server will keep
@@ -717,5 +731,32 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       // reconciles dailyLog.photos (the real, server-stored photo replaces the
       // optimistic local data-URL one).
       return gw.uploadMedia(op.input).then(() => gw.snapshot());
+    case 'uploadEvidence': {
+      // Task 4 durability lifecycle: bytes come from the IndexedDB evidenceStore;
+      // they are deleted ONLY on confirmed server persistence (the 2xx — the server
+      // dedupes per (projectId, clientKey), so a replayed 2xx is the same proof).
+      // A terminal 4xx flags the entry FAILED (kept for the user's Retry/Delete)
+      // and rethrows so the flush drops the op — the bytes never silently vanish.
+      return getEvidence(op.scope, gw.project, op.clientKey).then(async (entry) => {
+        if (!entry) return gw.snapshot(); // user already deleted the bytes — nothing to upload
+        try {
+          await gw.uploadMedia({
+            kind: 'inspection',
+            mime: entry.mime,
+            data: entry.data,
+            inspectionId: entry.inspectionId,
+            inspectionItemId: entry.inspectionItemId,
+            clientKey: op.clientKey,
+          });
+        } catch (err) {
+          if (isTerminalOutboxError(err)) {
+            await markEvidenceFailed(op.scope, gw.project, op.clientKey, `upload rejected (${(err as { status?: number }).status ?? 'error'})`).catch(() => {});
+          }
+          throw err;
+        }
+        await deleteEvidence(op.scope, gw.project, op.clientKey).catch(() => {}); // confirmed — exactly-once cleanup
+        return gw.snapshot();
+      });
+    }
   }
 }
