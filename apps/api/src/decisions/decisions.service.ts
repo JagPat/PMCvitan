@@ -5,7 +5,7 @@ import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
-import { resolveActor } from '../common/actor';
+import { resolveActor, ROLE_LABEL } from '../common/actor';
 import { nextSeqId } from '../domain/ids';
 import { pendingDecisionNotice } from '../domain/notifications';
 import type { ApproveInput, ChangeInput, CreateDecisionInput } from '../contracts';
@@ -65,8 +65,8 @@ export class DecisionsService {
           order: i,
         })),
       }),
-      this.prisma.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, payload: { title: input.title } } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id } }),
+      this.prisma.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: input.title } } }),
+      this.prisma.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id } }),
     ]);
     // Only a PUBLISHED decision reaches the client (a draft is private to its author, and
     // must not notify anyone). When published in one step, fire the same side-effects publish() does.
@@ -88,9 +88,9 @@ export class DecisionsService {
 
     await this.prisma.$transaction([
       this.prisma.decision.update({ where: { id: decisionId }, data: { publishedAt: new Date() } }),
-      this.prisma.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, payload: { title: d.title } } }),
+      this.prisma.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } }),
       this.prisma.notification.create({ data: { projectId, text: pendingDecisionNotice(d.title), color: '#C08A2D', time: 'just now' } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'decision.publish', entity: 'Decision', entityId: decisionId } }),
+      this.prisma.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'decision.publish', entity: 'Decision', entityId: decisionId } }),
     ]);
     // now it's live — surface it on the client's side, exactly like a one-step issue
     this.realtime.notifyChanged(projectId, `New decision awaiting your approval: ${d.title}`, ['client']);
@@ -116,6 +116,10 @@ export class DecisionsService {
     const today = ddMmmYyyy(new Date());
     // a PMC approving records the client's consent ON BEHALF — the fact is never disguised
     const onBehalfOf = user.role === 'client' ? null : 'client';
+    // ...and the ANNOUNCEMENT says so too (gate finding 7): who exercised the authority
+    const announce = onBehalfOf
+      ? `${actor.actorName} (${ROLE_LABEL[actor.actorRole] ?? actor.actorRole}) approved ${d.title} on behalf of the client — ${o.material}`
+      : `Client approved ${d.title} — ${o.material}`;
 
     await this.prisma.$transaction(async (tx) => {
       // CAS: commit only if the decision is STILL in the state we read — a concurrent
@@ -136,11 +140,17 @@ export class DecisionsService {
       });
       if (count === 0) throw new ConflictException('The decision changed while approving — reload and retry');
       if (prior === 'change') {
-        // mandatory re-approval CLOSES the reopening, attributably
-        await tx.changeRequest.updateMany({
+        // mandatory re-approval CLOSES the reopening — EXACTLY ONE open request must
+        // resolve, or 'reapproved' would lie about what happened (gate finding 1):
+        // zero means inconsistent legacy state, more than one is impossible under the
+        // partial unique index. Anything but 1 rolls the whole transition back.
+        const resolved = await tx.changeRequest.updateMany({
           where: { decisionId, status: 'open' },
           data: { status: 'resolved', resolution: 'reapproved', resolvedById: actor.actorId, resolvedAt: new Date() },
         });
+        if (resolved.count !== 1) {
+          throw new ConflictException('This decision has no open change request to resolve — its state is inconsistent; ask the PMC to re-raise or withdraw the change');
+        }
       }
       await tx.decisionEvent.create({
         data: {
@@ -149,15 +159,16 @@ export class DecisionsService {
           actor: actor.actorName,
           actorId: actor.actorId,
           actorName: actor.actorName,
+          actorRole: actor.actorRole,
           payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) },
         },
       });
-      await tx.notification.create({ data: { projectId, text: `Client approved ${d.title} — ${o.material}`, color: '#3F7A54', time: 'just now' } });
-      await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'decision.approve', entity: 'Decision', entityId: decisionId } });
+      await tx.notification.create({ data: { projectId, text: announce, color: '#3F7A54', time: 'just now' } });
+      await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'decision.approve', entity: 'Decision', entityId: decisionId } });
     });
 
-    // the client approved; PMC/contractor/engineer act on the now-locked decision
-    this.realtime.notifyChanged(projectId, `Client approved ${d.title} — ${o.material}`, ['pmc', 'contractor', 'engineer']);
+    // the decision is locked; PMC/contractor/engineer act on it — told truthfully by whom
+    this.realtime.notifyChanged(projectId, announce, ['pmc', 'contractor', 'engineer']);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -180,8 +191,8 @@ export class DecisionsService {
         await tx.changeRequest.create({
           data: { decisionId, reason: input.reason, costImpact: input.costImpact, timeImpactDays: input.timeImpactDays, status: 'open', requestedById: actor.actorId },
         });
-        await tx.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, payload: input } });
-        await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'decision.change', entity: 'Decision', entityId: decisionId } });
+        await tx.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: input } });
+        await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'decision.change', entity: 'Decision', entityId: decisionId } });
       });
     } catch (e) {
       // the one-open-per-decision partial unique index fired — a concurrent request won
@@ -214,12 +225,16 @@ export class DecisionsService {
         data: { status: 'approved' },
       });
       if (count === 0) throw new ConflictException('The decision changed while withdrawing — reload and retry');
-      await tx.changeRequest.updateMany({
+      // EXACTLY ONE request must close (gate finding 1's twin): the pre-read saw an
+      // open request, but if it vanished concurrently the withdrawal would record
+      // nothing — roll the whole transition back instead of restoring a false lock.
+      const closed = await tx.changeRequest.updateMany({
         where: { id: open.id, status: 'open' },
         data: { status: 'withdrawn', resolution: 'withdrawn', resolvedById: actor.actorId, resolvedAt: new Date() },
       });
-      await tx.decisionEvent.create({ data: { decisionId, type: 'change_withdrawn', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName } });
-      await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'decision.change_withdraw', entity: 'Decision', entityId: decisionId } });
+      if (closed.count !== 1) throw new ConflictException('The change request changed while withdrawing — reload and retry');
+      await tx.decisionEvent.create({ data: { decisionId, type: 'change_withdrawn', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole } });
+      await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'decision.change_withdraw', entity: 'Decision', entityId: decisionId } });
     });
 
     this.realtime.notifyChanged(projectId);

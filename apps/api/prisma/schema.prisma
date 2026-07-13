@@ -490,6 +490,7 @@ model DecisionEvent {
   actor      String // legacy display label; actorName is authoritative on new rows
   actorId    String? // real user identity (Phase 1 Task 2); null on pre-Phase-1 rows
   actorName  String?
+  actorRole  String? // the role HELD AT ACTION TIME (gate finding 6) — a later role change never rewrites history
   at         DateTime @default(now())
   payload    Json?
 }
@@ -683,6 +684,7 @@ model AuditLog {
   projectId String?
   actor     String // legacy display label (role string on pre-Phase-1 rows)
   actorId   String? // real user identity (Phase 1 Task 2); populated going forward
+  actorRole String? // the role HELD AT ACTION TIME (gate finding 6)
   action    String
   entity    String
   entityId  String
