@@ -24,7 +24,7 @@ export class DrawingsController {
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(issueDrawingSchema)) body: IssueDrawingInput,
   ) {
-    return this.drawings.issue(projectId, user.sub, body);
+    return this.drawings.issue(projectId, user, body);
   }
 
   /** Publish a private draft drawing → issue it to the build team (PMC only). */
@@ -105,7 +105,7 @@ export class DrawingsController {
   @UseGuards(JwtGuard, RolesGuard)
   @Roles('pmc')
   async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean }> {
-    const ok = await this.drawings.remove(id, user.projectId);
+    const ok = await this.drawings.remove(id, user.projectId, user);
     if (!ok) throw new NotFoundException('Drawing not found');
     return { ok: true };
   }

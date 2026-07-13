@@ -219,7 +219,10 @@ export function selectActionItems(s: AppState): ActionItem[] {
   const changes = s.decisions.filter((d) => d.status === 'change' && !d.draft);
   // private work-in-progress across entity types (decisions + drawings) — the Drafts workspace
   const drafts = [...s.decisions.filter((d) => d.draft), ...s.drawings.filter((d) => d.draft)];
-  const unacked = s.drawings.filter((d) => !d.draft && d.current && d.current.status === 'for_construction' && !d.ackedByMe);
+  // The unacked nudge is RECIPIENT-aware (Phase 1 Task 3): only someone on the
+  // governing revision's frozen distribution is asked to acknowledge. Absent
+  // recipientOfCurrent (legacy/demo data) keeps the old everyone-builds behavior.
+  const unacked = s.drawings.filter((d) => !d.draft && d.current && d.current.status === 'for_construction' && !d.ackedByMe && (d.recipientOfCurrent ?? true));
   const blocked = s.activities.filter((a) => a.status === 'blocked');
   const names = (xs: { title?: string; name?: string; number?: string }[], n = 3) =>
     xs.slice(0, n).map((x) => x.title ?? x.name ?? x.number ?? '').filter(Boolean).join(', ');

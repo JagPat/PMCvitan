@@ -54,7 +54,16 @@ export class SnapshotService {
       }),
       this.prisma.drawing.findMany({
         where: { projectId },
-        include: { revisions: { orderBy: { createdAt: 'desc' }, include: { acks: { orderBy: { at: 'asc' } } } } },
+        include: {
+          revisions: {
+            orderBy: { createdAt: 'desc' },
+            include: {
+              acks: { orderBy: { at: 'asc' } },
+              // the frozen distribution (Phase 1 Task 3) + each recipient's display name
+              recipients: { include: { membership: { include: { user: { select: { name: true } } } } } },
+            },
+          },
+        },
         orderBy: [{ discipline: 'asc' }, { number: 'asc' }],
       }),
       this.prisma.phase.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
@@ -202,7 +211,9 @@ export class SnapshotService {
       : [];
 
     // Drawings register: each entry with its full revision history (newest first)
-    // and the current (latest non-superseded) revision the field builds from.
+    // and the GOVERNING revision the field builds from — the latest non-superseded
+    // for_construction, or null (a drawing whose only revisions are review copies
+    // never governs; the register labels it "In review — not for construction").
     // Draft → Publish: an unpublished drawing is author-private — delivered ONLY to its
     // creator, never to the build team or anyone else (server-enforced, like decisions).
     const drawingDtos = drawings
@@ -220,9 +231,17 @@ export class SnapshotService {
         issuedBy: r.issuedBy,
         issuedAt: r.issuedAt,
         acks: r.acks.map((a) => ({ userName: a.userName, role: a.role, at: ddMmmYyyy(a.at) })),
+        // the frozen distribution: WHO this revision was issued to + whether they acked.
+        // null recipientsFrozenAt = legacy (predates snapshots), [] = frozen empty.
+        recipientsFrozenAt: r.recipientsFrozenAt ? r.recipientsFrozenAt.toISOString() : null,
+        recipients: r.recipients.map((rc) => ({
+          userName: rc.membership.user.name,
+          role: rc.roleAtIssue,
+          acked: r.acks.some((a) => a.userId === rc.userId),
+        })),
       }));
-      const current = revs.find((r) => r.status !== 'superseded') ?? null;
-      const currentAckRow = current ? d.revisions.find((r) => r.id === current.id)?.acks ?? [] : [];
+      const current = revs.find((r) => r.status === 'for_construction') ?? null;
+      const currentRow = current ? d.revisions.find((r) => r.id === current.id) : undefined;
       return {
         id: d.id,
         number: d.number,
@@ -234,7 +253,9 @@ export class SnapshotService {
         nodeId: d.nodeId ?? undefined, // location spine: the place this drawing governs
         draft: d.publishedAt === null, // private, unpublished — only in its author's snapshot
         current,
-        ackedByMe: Boolean(userId) && currentAckRow.some((a) => a.userId === userId),
+        ackedByMe: Boolean(userId) && (currentRow?.acks ?? []).some((a) => a.userId === userId),
+        // is the VIEWER on the governing revision's frozen distribution?
+        recipientOfCurrent: Boolean(userId) && (currentRow?.recipients ?? []).some((rc) => rc.userId === userId),
         revisions: revs,
       };
     });

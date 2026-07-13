@@ -317,6 +317,13 @@ export interface DrawingAck {
   at: string; // display date
 }
 
+/** One name on a revision's FROZEN distribution — issued-to + ack state (Phase 1 Task 3). */
+export interface DrawingRecipient {
+  userName: string;
+  role: string; // roleAtIssue: engineer | contractor
+  acked: boolean;
+}
+
 export interface DrawingRevision {
   id: string;
   rev: string;
@@ -328,6 +335,10 @@ export interface DrawingRevision {
   issuedBy: string;
   issuedAt: string;
   acks: DrawingAck[]; // who has acknowledged building to this revision
+  /** when the distribution was frozen (ISO); null/absent = legacy, predates snapshots */
+  recipientsFrozenAt?: string | null;
+  /** WHO this revision was issued to, frozen at issue time (Phase 1 Task 3) */
+  recipients?: DrawingRecipient[];
 }
 
 export interface Drawing {
@@ -342,8 +353,13 @@ export interface Drawing {
   nodeId?: string;
   /** a private, unpublished DRAFT — only its author sees it; issued to the team on publish */
   draft?: boolean;
-  current: DrawingRevision | null; // latest non-superseded
+  /** the GOVERNING revision: latest non-superseded for_construction, or null — a
+   *  drawing with only review copies never governs the field (Phase 1 Task 3) */
+  current: DrawingRevision | null;
   ackedByMe: boolean; // has the current user acknowledged the current revision?
+  /** is the current user on the governing revision's frozen distribution?
+   *  (absent = legacy/demo data — treat as "everyone builds from it") */
+  recipientOfCurrent?: boolean;
   revisions: DrawingRevision[]; // newest first
 }
 

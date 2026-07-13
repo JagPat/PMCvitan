@@ -24,9 +24,11 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 | `CrewCount` | Crew present per trade | dailyLogId, trade, count |
 | `SiteMaterial` | Material delivered on site | name, decisionId, qty, zone, matched, **nodeId** (location), mediaId |
 | `Media` | An uploaded photo | url, geo, takenAt, activityId?, decisionId? |
+| `DrawingRevision` | One issued revision (Rev A/B/C…) | **projectId** (containment FK with drawingId → Drawing), rev, **status** (`for_review\|for_construction\|superseded`), **recipientsFrozenAt** (null = legacy, predates snapshots), issuedBy. `@@unique(drawingId, rev)` — one label per drawing. **Scoped supersession** (Phase 1 Task 3): `for_construction` supersedes only `for_construction`; a review copy supersedes nothing and can never govern (`current` = governing `for_construction` or null) |
+| `DrawingRecipient` | WHO a revision was issued to — **frozen at issue** | projectId, revisionId, userId, roleAtIssue. Snapshot of active engineer/contractor members at issue (stamped even when empty); churn never rewrites rows. Composite FKs `(projectId, revisionId)` → DrawingRevision and `(projectId, userId)` → Membership make forged rows impossible (Phase 1 Task 3) |
 | `Notification` | Feed item | projectId, text, kind/color, at |
 | `SyncOutboxEntry` | Offline mutation queue (idempotency) | clientId, opType, payload, appliedAt |
-| `AuditLog` | Global attribution trail | actor, action, entity, entityId, at |
+| `AuditLog` | Global attribution trail | actor, **actorId**, action, entity, entityId, at. Drawing actions: `drawing.issue\|revise\|publish\|ack\|remove\|refile` (Phase 1 Task 3) |
 
 ## Conventions
 

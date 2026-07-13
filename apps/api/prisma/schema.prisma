@@ -185,6 +185,9 @@ model Membership {
   status    String   @default("active") // invited | active | removed
   createdAt DateTime @default(now())
 
+  // drawing distributions frozen against this membership (Phase 1 Task 3)
+  drawingRecipients DrawingRecipient[]
+
   @@unique([projectId, userId])
   @@index([userId])
 }
@@ -276,16 +279,22 @@ model Drawing {
   revisions  DrawingRevision[]
 
   @@unique([projectId, number])
+  @@unique([projectId, id]) // composite identity — tenant-safe containment target (Phase 1 Task 3)
   @@index([projectId])
   @@index([nodeId])
 }
 
-// One issued revision of a drawing (Rev A, B, C…). Issuing a new rev supersedes
-// the prior ones so the field only ever builds from `for_construction` current.
+// One issued revision of a drawing (Rev A, B, C…). Supersession is SCOPED
+// (Phase 1 Task 3): a for_construction issue supersedes only the prior
+// for_construction set; a for_review issue supersedes NOTHING — it coexists
+// as a review copy and can never govern the field.
 model DrawingRevision {
   id         String   @id @default(cuid())
-  drawing    Drawing  @relation(fields: [drawingId], references: [id], onDelete: Cascade)
+  // Containment: the revision's project IS its parent drawing's project — the
+  // composite FK makes a cross-project revision row impossible even on a direct write.
+  drawing    Drawing  @relation(fields: [projectId, drawingId], references: [projectId, id], onDelete: Cascade)
   drawingId  String
+  projectId  String
   rev        String // "A" | "B" | "C" …
   status     String // for_review | for_construction | superseded
   mime       String
@@ -296,10 +305,37 @@ model DrawingRevision {
   note       String   @default("")
   issuedBy   String
   issuedAt   String // display timestamp, e.g. "08 Jul 2026"
+  // Stamped when the recipient snapshot executed — EVEN when it froze an empty set.
+  // null = the revision predates recipient snapshots (legacy); the migration never
+  // invents snapshots, and Task 6's readiness truth table treats the two differently.
+  recipientsFrozenAt DateTime?
   createdAt  DateTime @default(now())
   acks       DrawingAck[]
+  recipients DrawingRecipient[]
 
+  @@unique([projectId, id]) // composite identity — tenant-safe reference target (Task 3)
+  @@unique([drawingId, rev]) // one Rev B per drawing — a duplicate label is a 409
   @@index([drawingId])
+}
+
+// WHO a revision was issued to — frozen at issue time (Phase 1 Task 3). The rows
+// snapshot the project's ACTIVE engineer/contractor members at the moment of issue;
+// membership churn never rewrites them (readiness derives recipients ∩ currently-
+// active members in Task 6). Both FKs are composite so PostgreSQL itself refuses a
+// recipient naming another project's revision or a user with no membership here.
+// Memberships are soft-removed (status='removed'), never deleted, so NO ACTION is safe.
+model DrawingRecipient {
+  id          String          @id @default(cuid())
+  projectId   String
+  revision    DrawingRevision @relation(fields: [projectId, revisionId], references: [projectId, id], onDelete: Cascade)
+  revisionId  String
+  membership  Membership      @relation(fields: [projectId, userId], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  userId      String
+  roleAtIssue String // engineer | contractor — the role held when the set was frozen
+  createdAt   DateTime        @default(now())
+
+  @@unique([revisionId, userId])
+  @@index([projectId, userId])
 }
 
 // A build-acknowledgement: a contractor / engineer confirming they are building
