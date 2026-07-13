@@ -150,6 +150,33 @@ describe('DrawingsService.issue', () => {
     expect(revs.find((r) => r.rev === 'B')!.status).toBe('for_construction');
   });
 
+  /**
+   * Phase 1 Task 1 — CHARACTERIZATION: today a for_review issue supersedes the
+   * for_construction set and becomes the latest non-superseded (i.e. governing)
+   * revision, and revision rows carry no projectId. Task 3 deliberately changes
+   * both (review copies never supersede; projectId + composite identities) and
+   * MUST update these tests in the same PR. Until then, this is the contract.
+   */
+  it('a for_review issue supersedes the for_construction revision and becomes current (replaced by Task 3)', async () => {
+    const { svc, draws } = make();
+    await svc.issue('ambli', 'u1', base); // Rev A, for_construction
+    await svc.issue('ambli', 'u1', { ...base, rev: 'B', status: 'for_review' });
+
+    const revs = draws[0].revisions;
+    expect(revs.find((r) => r.rev === 'A')!.status).toBe('superseded'); // the construction set was displaced
+    expect(revs.find((r) => r.rev === 'B')!.status).toBe('for_review'); // ...by a review copy
+    // `current` derivation = latest non-superseded regardless of status, so the
+    // review copy now governs — the invariant Task 3 introduces does not exist yet
+    expect(revs.filter((r) => r.status !== 'superseded')).toHaveLength(1);
+    expect(revs.find((r) => r.status !== 'superseded')!.rev).toBe('B');
+  });
+
+  it('revision rows carry NO projectId — no composite tenant identity exists on DrawingRevision (replaced by Task 3)', async () => {
+    const { svc, draws } = make();
+    await svc.issue('ambli', 'u1', base);
+    expect('projectId' in draws[0].revisions[0]).toBe(false);
+  });
+
   it('accepts a presigned storageKey (skips put, records the bucket pointer, stores no public url)', async () => {
     const { svc, draws, storage } = make();
     await svc.issue('ambli', 'pmc-1', { ...base, data: undefined as never, storageKey: 'ambli/drawings/big.pdf', sizeBytes: 9_000_000 });
