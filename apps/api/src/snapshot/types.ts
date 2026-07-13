@@ -183,7 +183,10 @@ export interface DrawingDto {
   current: DrawingRevisionDto | null;
   ackedByMe: boolean; // has the caller acknowledged the current revision?
   /** is the CALLER on the governing revision's frozen distribution? (Phase 1 Task 3) */
-  recipientOfCurrent: boolean;
+  /** is the viewer on the governing revision's FROZEN distribution? ABSENT (not false)
+   *  when the governing revision predates recipient snapshots (recipientsFrozenAt null)
+   *  or there is no governing revision — the client falls back to everyone-builds. */
+  recipientOfCurrent?: boolean;
   revisions: DrawingRevisionDto[]; // full history, newest first
 }
 

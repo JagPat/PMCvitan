@@ -62,6 +62,121 @@ describe('drawing change control (integration)', () => {
     return res.body as { drawings: Array<{ number: string; current: { rev: string; status: string } | null; revisions: Array<{ rev: string; status: string }> }> };
   };
 
+  /** Test-only barrier on the ACTOR pre-read (user.findUnique) — a rendezvous both
+   *  requests pass through before the racing section, effective before AND after the
+   *  fix (the fix removes the drawing pre-read, so the barrier lives upstream of it). */
+  function actorBarrier(userId: string) {
+    const delegate = t.prisma.user as unknown as { findUnique: (args: { where: { id?: string } }) => Promise<unknown> };
+    const original = delegate.findUnique.bind(t.prisma.user);
+    let release!: () => void;
+    const both = new Promise<void>((resolve) => { release = resolve; });
+    let reads = 0;
+    delegate.findUnique = async (args: { where: { id?: string } }) => {
+      const row = await original(args);
+      if (args?.where?.id === userId) {
+        reads += 1;
+        if (reads === 2) release();
+        await both;
+      }
+      return row;
+    };
+    return { restore: () => { delegate.findUnique = original; }, reads: () => reads };
+  }
+
+  it('GATE FINDING 2: concurrent construction issues leave exactly ONE governing revision', async () => {
+    expect((await post(`/projects/${f.projectA.id}/drawings`, issueBody('A-310', 'A', 'for_construction'))).status).toBe(201);
+
+    // both racers rendezvous on the actor pre-read, then hit the same drawing together
+    const b = actorBarrier(f.memberUser.id);
+    let r1, r2;
+    try {
+      [r1, r2] = await Promise.all([
+        post(`/projects/${f.projectA.id}/drawings`, issueBody('A-310', 'B', 'for_construction')),
+        post(`/projects/${f.projectA.id}/drawings`, issueBody('A-310', 'C', 'for_construction')),
+      ]);
+    } finally {
+      b.restore();
+    }
+    expect(b.reads()).toBe(2); // the race really was simultaneous
+    for (const r of [r1, r2]) expect([201, 409]).toContain(r.status);
+
+    // the invariant: whatever the interleaving, ONE live for_construction revision
+    const d = await t.prisma.drawing.findUniqueOrThrow({
+      where: { projectId_number: { projectId: f.projectA.id, number: 'A-310' } },
+      include: { revisions: true },
+    });
+    const live = d.revisions.filter((r) => r.status === 'for_construction');
+    expect(live).toHaveLength(1);
+  });
+
+  it('GATE FINDING 2b: concurrent publishes of one draft have exactly one winner (no duplicate publication)', async () => {
+    expect((await post(`/projects/${f.projectA.id}/drawings`, issueBody('A-314', 'A', 'for_construction', { publish: false }))).status).toBe(201);
+    const d = await t.prisma.drawing.findUniqueOrThrow({ where: { projectId_number: { projectId: f.projectA.id, number: 'A-314' } } });
+
+    const b = actorBarrier(f.memberUser.id);
+    let r1, r2;
+    try {
+      [r1, r2] = await Promise.all([
+        post(`/projects/${f.projectA.id}/drawings/${d.id}/publish`, {}),
+        post(`/projects/${f.projectA.id}/drawings/${d.id}/publish`, {}),
+      ]);
+    } finally {
+      b.restore();
+    }
+    expect([r1.status, r2.status].sort()).toEqual([201, 409]); // one publication, not two
+    expect(await t.prisma.auditLog.count({ where: { action: 'drawing.publish', entityId: d.id } })).toBe(1);
+  });
+
+  it('GATE FINDING 3: replaying an ack is a command no-op — one ack row AND one audit row', async () => {
+    expect((await post(`/projects/${f.projectA.id}/drawings`, issueBody('A-311', 'A', 'for_construction'))).status).toBe(201);
+    const rev = await t.prisma.drawingRevision.findFirstOrThrow({ where: { drawing: { projectId: f.projectA.id, number: 'A-311' } } });
+    const engToken = t.issueProjectToken(f.ownerUser.id, f.projectA.id, 'engineer');
+
+    const first = await http().post(`/projects/${f.projectA.id}/drawings/rev/${rev.id}/ack`).set('Authorization', `Bearer ${engToken}`).send();
+    expect(first.status).toBe(201);
+    const replay = await http().post(`/projects/${f.projectA.id}/drawings/rev/${rev.id}/ack`).set('Authorization', `Bearer ${engToken}`).send();
+    expect(replay.status).toBe(201); // replay-safe: same result shape
+    expect(replay.body).toMatchObject({ ok: true, ackCount: 1 });
+
+    expect(await t.prisma.drawingAck.count({ where: { revisionId: rev.id } })).toBe(1);
+    // the audit is written WITH the ack, exactly once — a replay records nothing new
+    expect(await t.prisma.auditLog.count({ where: { action: 'drawing.ack', entityId: rev.id } })).toBe(1);
+  });
+
+  it('GATE FINDING 4: a legacy revision (recipientsFrozenAt null) OMITS recipientOfCurrent — the client fallback engages', async () => {
+    expect((await post(`/projects/${f.projectA.id}/drawings`, issueBody('A-312', 'A', 'for_construction'))).status).toBe(201);
+    const rev = await t.prisma.drawingRevision.findFirstOrThrow({ where: { drawing: { projectId: f.projectA.id, number: 'A-312' } } });
+    // devolve it to the migrated-legacy state: no snapshot ever ran
+    await t.prisma.drawingRecipient.deleteMany({ where: { revisionId: rev.id } });
+    await t.prisma.drawingRevision.update({ where: { id: rev.id }, data: { recipientsFrozenAt: null } });
+
+    const engToken = t.issueProjectToken(f.ownerUser.id, f.projectA.id, 'engineer');
+    const snap = await http().get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${engToken}`);
+    expect(snap.status).toBe(200);
+    const dto = (snap.body.drawings as Array<Record<string, unknown> & { number: string }>).find((x) => x.number === 'A-312');
+    expect(dto).toBeDefined();
+    // ABSENT, not false — false would silently drop every pre-Task-3 drawing from ack nudges
+    expect('recipientOfCurrent' in dto!).toBe(false);
+  });
+
+  it('GATE FINDING 5: one-step publish of an existing multi-revision draft freezes EVERY live revision', async () => {
+    // a private draft accumulates revisions before it reaches the team
+    expect((await post(`/projects/${f.projectA.id}/drawings`, issueBody('A-313', 'A', 'for_construction', { publish: false }))).status).toBe(201);
+    expect((await post(`/projects/${f.projectA.id}/drawings`, issueBody('A-313', 'B', 'for_review', { publish: false }))).status).toBe(201);
+    // ...then a third issue publishes in ONE step through issue(..., publish: true)
+    expect((await post(`/projects/${f.projectA.id}/drawings`, issueBody('A-313', 'C', 'for_review', { publish: true }))).status).toBe(201);
+
+    const d = await t.prisma.drawing.findUniqueOrThrow({
+      where: { projectId_number: { projectId: f.projectA.id, number: 'A-313' } },
+      include: { revisions: true },
+    });
+    expect(d.publishedAt).not.toBeNull();
+    // published intent has COMPLETE distribution facts: every live revision is frozen
+    for (const r of d.revisions.filter((x) => x.status !== 'superseded')) {
+      expect(r.recipientsFrozenAt, `rev ${r.rev} must be frozen`).toBeInstanceOf(Date);
+    }
+  });
+
   it('a for_review issue supersedes NOTHING; for_construction supersedes only the construction set', async () => {
     expect((await post(`/projects/${f.projectA.id}/drawings`, issueBody('A-301', 'A', 'for_construction'))).status).toBe(201);
     // a review copy arrives — the construction set must NOT be displaced
@@ -201,6 +316,10 @@ describe('drawing change control (integration)', () => {
     expect(revise?.actorId).toBe(f.memberUser.id);
     expect(ack?.actorId).toBe(f.ownerUser.id);
     expect(ack?.actor).toBe('owner');
+    // GATE FINDING 6 (drawing side): the role held at action time is persisted too
+    expect(issue?.actorRole).toBe('pmc');
+    expect(revise?.actorRole).toBe('pmc');
+    expect(ack?.actorRole).toBe('engineer');
   });
 
   it('the snapshot tells the viewer whether THEY are a recipient of the governing revision', async () => {

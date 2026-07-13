@@ -254,8 +254,13 @@ export class SnapshotService {
         draft: d.publishedAt === null, // private, unpublished — only in its author's snapshot
         current,
         ackedByMe: Boolean(userId) && (currentRow?.acks ?? []).some((a) => a.userId === userId),
-        // is the VIEWER on the governing revision's frozen distribution?
-        recipientOfCurrent: Boolean(userId) && (currentRow?.recipients ?? []).some((rc) => rc.userId === userId),
+        // Is the VIEWER on the governing revision's frozen distribution? Emitted ONLY
+        // when a snapshot actually ran (recipientsFrozenAt set) — a LEGACY revision
+        // (null) OMITS the field entirely so the client's everyone-builds fallback
+        // engages, and Task 6's truth table keeps its legacy discriminator (finding 4).
+        ...(currentRow && currentRow.recipientsFrozenAt !== null
+          ? { recipientOfCurrent: Boolean(userId) && currentRow.recipients.some((rc) => rc.userId === userId) }
+          : {}),
         revisions: revs,
       };
     });

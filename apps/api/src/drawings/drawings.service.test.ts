@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, type Mock } from 'vitest';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { DrawingsService } from './drawings.service';
@@ -23,7 +23,7 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
   const draws: Draw[] = [];
   const acks: Array<{ revisionId: string; userId: string; userName?: string; role?: string }> = [];
   const recipients: Array<{ projectId: string; revisionId: string; userId: string; roleAtIssue: string }> = [];
-  const audits: Array<{ actor: string; actorId?: string; action: string; payload?: Record<string, unknown> }> = [];
+  const audits: Array<{ actor: string; actorId?: string; actorRole?: string; action: string; payload?: Record<string, unknown> }> = [];
   let dseq = 0;
   let rseq = 0;
   const prisma = {
@@ -62,6 +62,12 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
         Object.assign(d, data);
         return d;
       }),
+      // CAS used by publish(): honors the publishedAt-null precondition
+      updateMany: vi.fn(async ({ where, data }: { where: { id: string; projectId: string; publishedAt?: Date | null }; data: Record<string, unknown> }) => {
+        const hit = draws.filter((d) => d.id === where.id && d.projectId === where.projectId && (where.publishedAt === undefined || (d.publishedAt ?? null) === where.publishedAt));
+        hit.forEach((d) => Object.assign(d, data));
+        return { count: hit.length };
+      }),
       delete: vi.fn(async ({ where }: { where: { id: string } }) => {
         const i = draws.findIndex((x) => x.id === where.id);
         return draws.splice(i, 1)[0];
@@ -91,6 +97,12 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
         }
         throw new Error('rev not found');
       }),
+      findMany: vi.fn(async ({ where }: { where: { drawingId: string; status?: { not: string }; recipientsFrozenAt?: null } }) => {
+        const d = draws.find((x) => x.id === where.drawingId);
+        return (d?.revisions ?? []).filter((r) =>
+          (where.status?.not === undefined || r.status !== where.status.not) &&
+          (where.recipientsFrozenAt !== null || (r.recipientsFrozenAt ?? null) === null));
+      }),
       findUnique: vi.fn(async ({ where, include }: { where: { id: string }; include?: { drawing?: boolean } }) => {
         for (const d of draws) {
           const r = d.revisions.find((x) => x.id === where.id);
@@ -108,13 +120,14 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
       }),
     },
     drawingAck: {
-      upsert: vi.fn(async ({ where, create }: { where: { revisionId_userId: { revisionId: string; userId: string } }; update: Record<string, unknown>; create: Record<string, unknown> }) => {
-        const key = where.revisionId_userId;
-        const i = acks.findIndex((a) => a.revisionId === key.revisionId && a.userId === key.userId);
-        if (i >= 0) { Object.assign(acks[i], create); return acks[i]; }
-        const row = { ...create } as { revisionId: string; userId: string };
-        acks.push(row);
-        return row;
+      findUnique: vi.fn(async ({ where }: { where: { revisionId_userId: { revisionId: string; userId: string } } }) =>
+        acks.find((a) => a.revisionId === where.revisionId_userId.revisionId && a.userId === where.revisionId_userId.userId) ?? null),
+      create: vi.fn(async ({ data }: { data: { revisionId: string; userId: string; userName: string; role: string } }) => {
+        if (acks.some((a) => a.revisionId === data.revisionId && a.userId === data.userId)) {
+          throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', { code: 'P2002', clientVersion: 'test' });
+        }
+        acks.push({ ...data });
+        return data;
       }),
       count: vi.fn(async ({ where }: { where: { revisionId: string } }) => acks.filter((a) => a.revisionId === where.revisionId).length),
     },
@@ -122,6 +135,18 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
     projectNode: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null),
     },
+    // the SELECT ... FOR UPDATE row locks, in miniature: 2 bind values = the issue()
+    // lock on (projectId, number); 1 bind value = the publish() lock on id. Locking
+    // semantics don't exist in-memory — tests assert the CAS/unique outcomes instead.
+    $queryRaw: vi.fn(async (q: { values?: unknown[] }) => {
+      const vals = q?.values ?? [];
+      if (vals.length === 2) {
+        const d = draws.find((x) => x.projectId === vals[0] && x.number === vals[1]);
+        return d ? [{ id: d.id, publishedAt: d.publishedAt ?? null }] : [];
+      }
+      const d = draws.find((x) => x.id === vals[0]);
+      return d ? [{ id: d.id }] : [];
+    }),
     $transaction: (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg),
   };
@@ -435,5 +460,62 @@ describe('DrawingsService — project-owned references (Phase 0 Task 5)', () => 
     const row = prisma.drawing.create.mock.calls[0][0].data;
     expect(row.activityId).toBe('ACT-1');
     expect(row.decisionId).toBe('DL-1');
+  });
+});
+
+/**
+ * Gate remediation (findings 2, 3, 5 + role-at-action) — the corrected contract:
+ * publish is CAS-guarded, acks are idempotent AS A COMMAND (ack + audit atomic,
+ * announced once), a one-step publish freezes every live revision, and every
+ * drawing audit snapshots the role held at action time.
+ */
+describe('DrawingsService — gate remediation (findings 2, 3, 5)', () => {
+  const eng = { sub: 'u-eng', role: 'engineer', projectId: 'ambli' } as never;
+
+  it('publish CAS: the loser of a concurrent publish gets a 409 and audits nothing', async () => {
+    const { svc, prisma, draws, audits } = make();
+    await svc.issue('ambli', drawUser, base); // a draft
+    (prisma.drawing.updateMany as Mock).mockResolvedValueOnce({ count: 0 }); // the race was lost
+    await expect(svc.publish('ambli', draws[0].id, drawUser)).rejects.toBeInstanceOf(ConflictException);
+    expect(audits.filter((a) => a.action === 'drawing.publish')).toHaveLength(0); // no duplicate publication trail
+  });
+
+  it('GATE FINDING 3: an ack replay records nothing new — one row, ONE audit, announced once', async () => {
+    const { svc, draws, acks, audits, realtime } = make();
+    await svc.issue('ambli', drawUser, { ...base, publish: true });
+    const revId = draws[0].revisions[0].id;
+
+    const first = await svc.acknowledge('ambli', revId, eng);
+    const announced = (realtime.notifyChanged as Mock).mock.calls.length;
+    const replay = await svc.acknowledge('ambli', revId, eng);
+
+    expect(first).toEqual({ ok: true, ackCount: 1 });
+    expect(replay).toEqual({ ok: true, ackCount: 1 }); // replay-safe result shape
+    expect(acks).toHaveLength(1);
+    expect(audits.filter((a) => a.action === 'drawing.ack')).toHaveLength(1); // audit written WITH the ack, once
+    expect((realtime.notifyChanged as Mock).mock.calls.length).toBe(announced); // the replay announced nothing
+  });
+
+  it('GATE FINDING 5: a one-step publish of an existing draft freezes EVERY live revision', async () => {
+    const members = [{ projectId: 'ambli', userId: 'u-eng', role: 'engineer', status: 'active' }];
+    const { svc, draws } = make(null, [], {}, members);
+    await svc.issue('ambli', drawUser, base); // draft Rev A (construction)
+    await svc.issue('ambli', drawUser, { ...base, rev: 'B', status: 'for_review' }); // still a draft
+    await svc.issue('ambli', drawUser, { ...base, rev: 'C', status: 'for_review', publish: true }); // ONE-STEP publish
+
+    for (const r of draws[0].revisions.filter((x) => x.status !== 'superseded')) {
+      expect(r.recipientsFrozenAt, `rev ${r.rev}`).toBeInstanceOf(Date);
+    }
+  });
+
+  it('drawing audits carry the role held at action time', async () => {
+    const { svc, draws, audits } = make();
+    await svc.issue('ambli', drawUser, { ...base, publish: true });
+    await svc.issue('ambli', drawUser, { ...base, rev: 'B' });
+    const revB = draws[0].revisions.find((r) => r.rev === 'B')!;
+    await svc.acknowledge('ambli', revB.id, eng);
+    expect(audits.find((a) => a.action === 'drawing.issue')?.actorRole).toBe('pmc');
+    expect(audits.find((a) => a.action === 'drawing.revise')?.actorRole).toBe('pmc');
+    expect(audits.find((a) => a.action === 'drawing.ack')?.actorRole).toBe('engineer');
   });
 });
