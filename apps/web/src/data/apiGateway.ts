@@ -660,6 +660,7 @@ export type OutboxOp =
   | { t: 'approve'; decisionId: string; optionIndex: number }
   | { t: 'change'; decisionId: string; reason: string; costImpact: number; timeImpactDays: number }
   | { t: 'changeWithdraw'; decisionId: string }
+  | { t: 'ackDrawing'; revisionId: string }
   | { t: 'submitInspection'; inspectionId: string; items: Checklist['items'] }
   | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemNames: string[] }
   | { t: 'startActivity'; activityId: string }
@@ -695,6 +696,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.requestChange(op.decisionId, op.reason, op.costImpact, op.timeImpactDays);
     case 'changeWithdraw':
       return gw.withdrawChange(op.decisionId);
+    case 'ackDrawing':
+      // the server ack is an idempotent upsert on (revisionId, userId) — the model
+      // replayable op; it returns {ok,ackCount}, so refetch to reconcile the register
+      return gw.acknowledgeDrawing(op.revisionId).then(() => gw.snapshot());
     case 'submitInspection':
       return gw.submitInspection(op.inspectionId, op.items);
     case 'decideReview':

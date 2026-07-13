@@ -956,6 +956,20 @@ export const useStore = create<Store>()(
       if (!drawing?.current || drawing.ackedByMe) return;
       const rev = drawing.current;
       if (gateway) {
+        // Offline-queueable (Phase 1 Task 3): the server ack is an idempotent upsert
+        // on (revisionId, userId), so replaying the queued op is safe. Mark ackedByMe
+        // optimistically so the register reflects the field's intent immediately.
+        if (!get().online) {
+          set((s) => {
+            s.outbox.push({ t: 'ackDrawing', revisionId: rev.id });
+            s.syncQueue.push('Acknowledge ' + drawing.number);
+            const d = s.drawings.find((x) => x.id === drawingId);
+            if (d) d.ackedByMe = true;
+          });
+          persistOutbox();
+          get().flash(`Acknowledge ${drawing.number} — saved offline, will sync when you reconnect.`);
+          return;
+        }
         gateway
           .acknowledgeDrawing(rev.id)
           .then(() => {

@@ -101,7 +101,12 @@ export function DrawingsScreen() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {g.items.map((d) => {
               const cur = d.current;
-              const sm = statusMeta(cur?.status ?? 'superseded');
+              // No governing construction set (Phase 1 Task 3): a drawing whose only
+              // live revisions are review copies is labeled, never built from.
+              const inReviewOnly = !cur && d.revisions.some((r) => r.status === 'for_review');
+              const sm = inReviewOnly
+                ? { ...statusMeta('for_review'), label: 'IN REVIEW — NOT FOR CONSTRUCTION' }
+                : statusMeta(cur?.status ?? 'superseded');
               const place = pathOf(nodes, d.nodeId).join(' › ');
               return (
                 <button key={d.id} onClick={() => setOpenId(d.id)} data-testid={`drawing-${d.number}`} style={cardStyle}>
@@ -172,6 +177,18 @@ function AckBlock({ drawing }: { drawing: Drawing }) {
         </div>
       ) : (
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: canAck ? 12 : 0 }}>No one has acknowledged this revision yet.</div>
+      )}
+      {/* the frozen distribution (Phase 1 Task 3): who this revision was ISSUED to and hasn't confirmed yet */}
+      {(rev.recipients ?? []).some((r) => !r.acked) && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: canAck ? 12 : 0 }} data-testid="ack-outstanding">
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.14em', color: 'var(--faint)' }}>ISSUED TO — NOT YET CONFIRMED</div>
+          {(rev.recipients ?? []).filter((r) => !r.acked).map((r, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--muted)' }}>
+              <span style={{ fontWeight: 600 }}>{r.userName}</span>
+              <span style={{ ...chip, background: 'var(--panel)', color: 'var(--muted)', borderColor: 'var(--hairline)' }}>{ROLE_SHORT[r.role] ?? r.role}</span>
+            </div>
+          ))}
+        </div>
       )}
       {canAck && (
         drawing.ackedByMe ? (

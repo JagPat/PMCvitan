@@ -9,12 +9,12 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
  * (main @ 5b101d6); each later task updates ITS pillar in the same PR that
  * changes the behavior. Decision rows reflect Task 2 (change control): approval
  * locks with real identity, exactly one OPEN change request may exist (CAS +
- * partial unique index), and re-approval resolves it. Still pinned as baseline
- * for Tasks 3/4/5:
+ * partial unique index), and re-approval resolves it. Drawing rows reflect
+ * Task 3 (controlled lifecycle): a review copy never displaces the construction
+ * set and `current` is for_construction-or-null. Still pinned as baseline for
+ * Tasks 4/5:
  *   - reject decides the same row and creates NO reinspection (Task 4);
- *   - complete writes done immediately; the closing inspection has zero items (Task 5);
- *   - a published for_review revision supersedes the for_construction set and
- *     the snapshot serves it as `current` (Task 3).
+ *   - complete writes done immediately; the closing inspection has zero items (Task 5).
  */
 describe('phase 1 baseline characterization (integration)', () => {
   let t: TestApp;
@@ -149,7 +149,7 @@ describe('phase 1 baseline characterization (integration)', () => {
     expect(rows[0].status).toBe('open'); // the new default — a request is born open
   });
 
-  it('drawing pillar: a published for_review issue supersedes the for_construction set and the snapshot serves it as current (changed by Task 3)', async () => {
+  it('drawing pillar: a review copy never displaces the construction set — current stays for_construction (Task 3)', async () => {
     const pdf = Buffer.from('%PDF-1.4 phase1 baseline').toString('base64');
     // Rev A — the construction set the field builds from
     expect((await post(`/projects/${f.projectA.id}/drawings`, {
@@ -160,22 +160,21 @@ describe('phase 1 baseline characterization (integration)', () => {
       number: 'A-901', title: 'Baseline Plan', discipline: 'architectural', rev: 'B', status: 'for_review', mime: 'application/pdf', data: pdf,
     })).status).toBe(201);
 
-    // the DATABASE marks the construction rev superseded by the review copy
+    // the DATABASE keeps the construction rev governing; the review copy coexists
     const drawing = await t.prisma.drawing.findUniqueOrThrow({
       where: { projectId_number: { projectId: f.projectA.id, number: 'A-901' } },
       include: { revisions: true },
     });
-    expect(drawing.revisions.find((r) => r.rev === 'A')!.status).toBe('superseded');
+    expect(drawing.revisions.find((r) => r.rev === 'A')!.status).toBe('for_construction');
     expect(drawing.revisions.find((r) => r.rev === 'B')!.status).toBe('for_review');
 
-    // and the API snapshot serializes the review copy as the CURRENT revision —
-    // today `current` is latest-non-superseded regardless of status, so a review
-    // copy governs the field (Task 3 makes `current` for_construction-or-null)
+    // and the API snapshot serializes the CONSTRUCTION set as `current` — a review
+    // copy can never govern the field (current is for_construction-or-null)
     const snap = await http().get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${token}`);
     expect(snap.status).toBe(200);
     const dto = (snap.body.drawings as Array<{ number: string; current: { rev: string; status: string } | null }>).find((x) => x.number === 'A-901');
-    expect(dto?.current?.rev).toBe('B');
-    expect(dto?.current?.status).toBe('for_review');
+    expect(dto?.current?.rev).toBe('A');
+    expect(dto?.current?.status).toBe('for_construction');
   });
 
   it('inspection pillar: reject decides the SAME row — no reinspection row, no due date, no assignee', async () => {

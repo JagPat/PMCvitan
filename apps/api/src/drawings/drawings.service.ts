@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from '../media/storage.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
@@ -6,6 +7,7 @@ import { SnapshotService } from '../snapshot/snapshot.service';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import { ddMmmYyyy } from '../domain/dates';
+import { resolveActor } from '../common/actor';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import type { IssueDrawingInput } from '../contracts';
@@ -15,16 +17,20 @@ export interface IssuedDrawing {
   revisionId: string;
 }
 
-const ROLE_LABEL: Record<string, string> = { pmc: 'PMC', client: 'Client', engineer: 'Site Engineer', contractor: 'Contractor', worker: 'Worker' };
-
 export type RevisionBytes = { mime: string; bytes: Buffer };
 export type RevisionRedirect = { redirect: string };
 
+/** The Prisma transaction client — what `$transaction(async (tx) => …)` hands the callback. */
+type Tx = Prisma.TransactionClient;
+
 /**
- * The drawings register (Slice 1). Issue a drawing revision — a new `number`
- * creates a register entry; an existing one adds a revision and supersedes the
- * prior ones, so the field always builds from the current `for_construction`
- * drawing. Files are held by StorageService (S3/R2 or the DB dev stub).
+ * The drawings register. Issue a drawing revision — a new `number` creates a
+ * register entry; an existing one adds a revision. Supersession is SCOPED
+ * (Phase 1 Task 3): a for_construction issue supersedes only the prior
+ * for_construction set; a for_review issue supersedes NOTHING (it coexists as
+ * a review copy and can never govern the field). Issuing to the team FREEZES
+ * the distribution: the active engineer/contractor members at that moment
+ * become DrawingRecipient rows. Files are held by StorageService.
  */
 @Injectable()
 export class DrawingsService {
@@ -43,7 +49,29 @@ export class DrawingsService {
     return res ? { uploadUrl: res.uploadUrl, storageKey: key } : { presign: null };
   }
 
-  async issue(projectId: string, issuedBy: string, input: IssueDrawingInput): Promise<IssuedDrawing> {
+  /**
+   * Freeze the distribution for a revision: snapshot the project's ACTIVE
+   * engineer/contractor members as DrawingRecipient rows and stamp
+   * `recipientsFrozenAt` — EVEN when the frozen set is empty ("snapshot ran and
+   * was empty" is a different fact from the legacy null). Runs inside the issue/
+   * publish transaction so the distribution commits with the revision itself.
+   */
+  private async freezeRecipients(tx: Tx, projectId: string, revisionId: string): Promise<void> {
+    const members = await tx.membership.findMany({
+      where: { projectId, status: 'active', role: { in: ['engineer', 'contractor'] } },
+      select: { userId: true, role: true },
+    });
+    if (members.length) {
+      await tx.drawingRecipient.createMany({
+        data: members.map((m) => ({ projectId, revisionId, userId: m.userId, roleAtIssue: m.role })),
+        skipDuplicates: true,
+      });
+    }
+    await tx.drawingRevision.update({ where: { id: revisionId }, data: { recipientsFrozenAt: new Date() } });
+  }
+
+  async issue(projectId: string, user: AuthUser, input: IssueDrawingInput): Promise<IssuedDrawing> {
+    const actor = await resolveActor(this.prisma, user);
     // Location spine: validate the place this drawing governs belongs to this project.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
     // Project-owned references: the linked activity/decision must be THIS project's
@@ -75,6 +103,9 @@ export class DrawingsService {
       sizeBytes = bytes.length;
     }
 
+    // NOTE: no projectId here — the nested create inherits BOTH composite-FK scalars
+    // (projectId, drawingId) from its parent drawing; the standalone revision create
+    // below supplies them explicitly. Containment is the (projectId, drawingId) FK.
     const revData = {
       rev: input.rev,
       status: input.status,
@@ -84,7 +115,7 @@ export class DrawingsService {
       storageKey: key,
       sizeBytes,
       note: input.note ?? '',
-      issuedBy,
+      issuedBy: actor.actorName,
       issuedAt: ddMmmYyyy(new Date()),
     };
 
@@ -92,49 +123,74 @@ export class DrawingsService {
       where: { projectId_number: { projectId, number: input.number } },
     });
 
-    let drawingId: string;
-    let revisionId: string;
+    let drawingId = '';
+    let revisionId = '';
     // Draft → Publish: a brand-new drawing is a private draft unless `publish` is set. An
     // existing drawing that's already published stays published (adding a revision is a normal
     // issue); publishing an existing draft is also honoured. `published` decides the notice.
-    let published: boolean;
-    if (existing) {
-      published = existing.publishedAt !== null || input.publish;
-      const publishedAt = existing.publishedAt ?? (input.publish ? new Date() : null);
-      const [, rev] = await this.prisma.$transaction([
-        // supersede whatever was current before this issue
-        this.prisma.drawingRevision.updateMany({
-          where: { drawingId: existing.id, status: { not: 'superseded' } },
-          data: { status: 'superseded' },
-        }),
-        this.prisma.drawingRevision.create({ data: { ...revData, drawingId: existing.id } }),
-        this.prisma.drawing.update({
-          where: { id: existing.id },
-          data: { title: input.title, discipline: input.discipline, zone: input.zone, activityId, decisionId, nodeId, publishedAt },
-        }),
-      ]);
-      drawingId = existing.id;
-      revisionId = rev.id;
-    } else {
-      published = input.publish;
-      const drawing = await this.prisma.drawing.create({
-        data: {
-          projectId,
-          number: input.number,
-          title: input.title,
-          discipline: input.discipline,
-          zone: input.zone,
-          activityId,
-          decisionId,
-          nodeId,
-          authorId: issuedBy,
-          publishedAt: published ? new Date() : null,
-          revisions: { create: revData },
-        },
-        include: { revisions: true },
+    let published = false;
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        if (existing) {
+          published = existing.publishedAt !== null || input.publish;
+          const publishedAt = existing.publishedAt ?? (input.publish ? new Date() : null);
+          // SCOPED supersession: only a construction issue displaces the construction
+          // set — a review copy coexists and displaces nothing (Phase 1 Task 3).
+          if (input.status === 'for_construction') {
+            await tx.drawingRevision.updateMany({
+              where: { drawingId: existing.id, status: 'for_construction' },
+              data: { status: 'superseded' },
+            });
+          }
+          const rev = await tx.drawingRevision.create({ data: { ...revData, projectId, drawingId: existing.id } });
+          await tx.drawing.update({
+            where: { id: existing.id },
+            data: { title: input.title, discipline: input.discipline, zone: input.zone, activityId, decisionId, nodeId, publishedAt },
+          });
+          drawingId = existing.id;
+          revisionId = rev.id;
+        } else {
+          published = input.publish;
+          const drawing = await tx.drawing.create({
+            data: {
+              projectId,
+              number: input.number,
+              title: input.title,
+              discipline: input.discipline,
+              zone: input.zone,
+              activityId,
+              decisionId,
+              nodeId,
+              authorId: user.sub,
+              publishedAt: published ? new Date() : null,
+              revisions: { create: revData },
+            },
+            include: { revisions: true },
+          });
+          drawingId = drawing.id;
+          revisionId = drawing.revisions[0].id;
+        }
+        // Freeze WHO this revision is issued to — only when it actually reaches the
+        // team. A draft's distribution is frozen later, when publish() issues it.
+        if (published) await this.freezeRecipients(tx, projectId, revisionId);
+        await tx.auditLog.create({
+          data: {
+            projectId,
+            actor: actor.actorName,
+            actorId: actor.actorId,
+            action: existing ? 'drawing.revise' : 'drawing.issue',
+            entity: 'DrawingRevision',
+            entityId: revisionId,
+            payload: { number: input.number, rev: input.rev, status: input.status },
+          },
+        });
       });
-      drawingId = drawing.id;
-      revisionId = drawing.revisions[0].id;
+    } catch (e) {
+      // the one-label-per-drawing unique fired — this rev already exists
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        throw new ConflictException(`Rev ${input.rev} already exists for ${input.number}`);
+      }
+      throw e;
     }
 
     // A draft notifies no one — only a published drawing reaches the people who build from it.
@@ -145,14 +201,23 @@ export class DrawingsService {
   }
 
   /** Publish a private draft drawing → issue it to the build team. PMC authority; the fresh
-   *  snapshot returns it. Re-publishing an already-published drawing conflicts. */
+   *  snapshot returns it. Publishing IS the issue for its revisions, so the distribution is
+   *  frozen now (for every revision that never had a snapshot). Re-publishing conflicts. */
   async publish(projectId: string, drawingId: string, user: AuthUser): Promise<SnapshotDto> {
-    const d = await this.prisma.drawing.findUnique({ where: { id: drawingId } });
+    const actor = await resolveActor(this.prisma, user);
+    const d = await this.prisma.drawing.findUnique({ where: { id: drawingId }, include: { revisions: true } });
     if (!d || d.projectId !== projectId) throw new NotFoundException('Drawing not found');
     if (d.publishedAt) throw new ConflictException('Drawing is already published');
 
-    await this.prisma.drawing.update({ where: { id: drawingId }, data: { publishedAt: new Date() } });
-    await this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId } });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.drawing.update({ where: { id: drawingId }, data: { publishedAt: new Date() } });
+      for (const rev of d.revisions.filter((r) => r.status !== 'superseded' && r.recipientsFrozenAt === null)) {
+        await this.freezeRecipients(tx, projectId, rev.id);
+      }
+      await tx.auditLog.create({
+        data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } },
+      });
+    });
     this.realtime.notifyChanged(projectId, `Drawing issued: ${d.number} — ${d.title}`, ['engineer', 'contractor']);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -163,7 +228,13 @@ export class DrawingsService {
     const drawing = await this.prisma.drawing.findUnique({ where: { id } });
     if (!drawing || drawing.projectId !== projectId) throw new NotFoundException('Drawing not found');
     const resolved = await resolveProjectNode(this.prisma, projectId, nodeId);
-    await this.prisma.drawing.update({ where: { id }, data: { nodeId: resolved } });
+    const actor = await resolveActor(this.prisma, user);
+    await this.prisma.$transaction([
+      this.prisma.drawing.update({ where: { id }, data: { nodeId: resolved } }),
+      this.prisma.auditLog.create({
+        data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } },
+      }),
+    ]);
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -178,20 +249,19 @@ export class DrawingsService {
     const rev = await this.prisma.drawingRevision.findUnique({ where: { id: revisionId }, include: { drawing: true } });
     if (!rev || rev.drawing.projectId !== projectId) throw new NotFoundException('Drawing revision not found');
 
-    const dbUser = await this.prisma.user.findUnique({ where: { id: user.sub } }).catch(() => null);
-    const userName = dbUser?.name ?? ROLE_LABEL[user.role] ?? 'Team member';
+    const actor = await resolveActor(this.prisma, user);
 
     await this.prisma.drawingAck.upsert({
       where: { revisionId_userId: { revisionId, userId: user.sub } },
-      update: { userName, role: user.role },
-      create: { revisionId, userId: user.sub, userName, role: user.role },
+      update: { userName: actor.actorName, role: user.role },
+      create: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role },
     });
     await this.prisma.auditLog.create({
-      data: { projectId, actor: userName, action: 'drawing_ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } },
+      data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } },
     });
 
     const ackCount = await this.prisma.drawingAck.count({ where: { revisionId } });
-    this.realtime.notifyChanged(projectId, `${userName} is building to ${rev.drawing.number} Rev ${rev.rev}`, ['pmc']);
+    this.realtime.notifyChanged(projectId, `${actor.actorName} is building to ${rev.drawing.number} Rev ${rev.rev}`, ['pmc']);
     return { ok: true, ackCount };
   }
 
@@ -208,12 +278,18 @@ export class DrawingsService {
     return null;
   }
 
-  /** Delete a whole drawing (all revisions + files), scoped to the project. */
-  async remove(id: string, projectId: string): Promise<boolean> {
+  /** Delete a whole drawing (all revisions + files), scoped to the project. Audited. */
+  async remove(id: string, projectId: string, user: AuthUser): Promise<boolean> {
     const drawing = await this.prisma.drawing.findUnique({ where: { id }, include: { revisions: true } });
     if (!drawing || drawing.projectId !== projectId) return false;
+    const actor = await resolveActor(this.prisma, user);
     await Promise.all(drawing.revisions.map((r) => (r.storageKey ? this.storage.remove(r.storageKey).catch(() => {}) : Promise.resolve())));
-    await this.prisma.drawing.delete({ where: { id } }); // revisions cascade
+    await this.prisma.$transaction([
+      this.prisma.drawing.delete({ where: { id } }), // revisions + recipients cascade
+      this.prisma.auditLog.create({
+        data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } },
+      }),
+    ]);
     this.realtime.notifyChanged(projectId);
     return true;
   }
