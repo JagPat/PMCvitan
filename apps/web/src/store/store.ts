@@ -975,7 +975,7 @@ export const useStore = create<Store>()(
       const msg = review.closing
         ? `Signed off: ${review.activityName ?? review.title} is complete.`
         : 'Inspection approved. Contractor and client notified.';
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemNames: [] }, 'Approve inspection', () => gateway!.decideReview(review.id, true, []), msg)) return;
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [] }, 'Approve inspection', () => gateway!.decideReview(review.id, true, []), msg)) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) s.reviews[j].decided = true;
@@ -996,8 +996,9 @@ export const useStore = create<Store>()(
         get().flash('No items rejected. Use Approve Inspection instead.');
         return;
       }
-      const rejectedNames = review.items.filter((it) => it.rejected).map((it) => it.name);
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemNames: rejectedNames }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedNames), n + ' re-inspection task(s) created with due dates.')) return;
+      // gate finding 3: rejection names exact ROWS by server id (labels are not unique)
+      const rejectedIds = review.items.filter((it) => it.rejected && it.id).map((it) => it.id!);
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedIds), n + ' re-inspection task(s) created with due dates.')) return;
       set((s) => {
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);

@@ -72,10 +72,13 @@ describe('inspection evidence + linked reinspections (integration)', () => {
       .send({ kind: 'inspection', mime: 'image/png', data: px, inspectionId, inspectionItemId, clientKey });
   }
 
-  const submitBody = (fail: string[], pass: string[]) => ({
+  // gate finding 3: items are addressed by ROW ID — resolve them from the DB
+  const rowIds = async (inspectionId: string, name: string): Promise<string[]> =>
+    (await t.prisma.inspectionItem.findMany({ where: { inspectionId, name }, orderBy: { order: 'asc' } })).map((it) => it.id);
+  const submitBody = async (inspectionId: string, fail: string[], pass: string[]) => ({
     items: [
-      ...fail.map((name) => ({ name, state: 'fail', photos: 1, note: 'defect' })),
-      ...pass.map((name) => ({ name, state: 'pass', photos: 0, note: '' })),
+      ...(await Promise.all(fail.map(async (name) => ({ id: (await rowIds(inspectionId, name))[0], name, state: 'fail', photos: 1, note: 'defect' })))),
+      ...(await Promise.all(pass.map(async (name) => ({ id: (await rowIds(inspectionId, name))[0], name, state: 'pass', photos: 0, note: '' })))),
     ],
   });
 
@@ -93,13 +96,13 @@ describe('inspection evidence + linked reinspections (integration)', () => {
     const { id, itemIds } = await makeInspection('Tile bedding');
 
     // the legacy counter alone is NOT evidence — photos:1 with no linked row refuses
-    const bare = await as(engToken)(`/projects/${f.projectA.id}/inspections/${id}/submit`, submitBody(['Slope check'], ['Seal check']));
+    const bare = await as(engToken)(`/projects/${f.projectA.id}/inspections/${id}/submit`, await submitBody(id, ['Slope check'], ['Seal check']));
     expect(bare.status).toBe(400);
     expect(bare.body.message).toMatch(/photo|evidence/i);
 
     // link a REAL evidence row to the failed item → submit passes, identity stamped
     expect((await linkEvidence(id, itemIds['Slope check'], 'ev-tile-1')).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${id}/submit`, submitBody(['Slope check'], ['Seal check']))).status).toBe(201);
+    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${id}/submit`, await submitBody(id, ['Slope check'], ['Seal check']))).status).toBe(201);
     const after = await t.prisma.inspection.findUniqueOrThrow({ where: { id } });
     expect(after.submittedById).toBe(f.ownerUser.id);
     expect(after.submittedByName).toBe('owner');
@@ -109,10 +112,10 @@ describe('inspection evidence + linked reinspections (integration)', () => {
     const actId = await makeActivity('Screeding');
     const { id, itemIds } = await makeInspection('Screed check', actId);
     expect((await linkEvidence(id, itemIds['Slope check'], 'ev-screed-1')).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${id}/submit`, submitBody(['Slope check'], ['Seal check']))).status).toBe(201);
+    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${id}/submit`, await submitBody(id, ['Slope check'], ['Seal check']))).status).toBe(201);
 
     const before = await t.prisma.inspection.count({ where: { projectId: f.projectA.id } });
-    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${id}/decide`, { approve: false, rejectedItemNames: ['Slope check'] })).status).toBe(201);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${id}/decide`, { approve: false, rejectedItemIds: await rowIds(id, 'Slope check') })).status).toBe(201);
 
     // the decision is attributable
     const decided = await t.prisma.inspection.findUniqueOrThrow({ where: { id } });
@@ -136,12 +139,12 @@ describe('inspection evidence + linked reinspections (integration)', () => {
   it('an explicit assignee must hold an ACTIVE engineer/contractor membership — a client or non-member is a 400', async () => {
     const { id, itemIds } = await makeInspection('Paint check');
     expect((await linkEvidence(id, itemIds['Slope check'], 'ev-paint-1')).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${id}/submit`, submitBody(['Slope check'], ['Seal check']))).status).toBe(201);
+    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${id}/submit`, await submitBody(id, ['Slope check'], ['Seal check']))).status).toBe(201);
 
     // the CLIENT does not execute corrective site work
-    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${id}/decide`, { approve: false, rejectedItemNames: ['Slope check'], assigneeId: f.strangerUser.id })).status).toBe(400);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${id}/decide`, { approve: false, rejectedItemIds: await rowIds(id, 'Slope check'), assigneeId: f.strangerUser.id })).status).toBe(400);
     // nor can a stranger with no membership at all
-    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${id}/decide`, { approve: false, rejectedItemNames: ['Slope check'], assigneeId: f.otherUser.id })).status).toBe(400);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${id}/decide`, { approve: false, rejectedItemIds: await rowIds(id, 'Slope check'), assigneeId: f.otherUser.id })).status).toBe(400);
     // the inspection is still undecided — the refusals changed nothing
     expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id } })).decided).toBe(false);
   });
@@ -223,12 +226,12 @@ describe('inspection evidence + linked reinspections (integration)', () => {
     // race 1: reject vs reject
     const a = await makeInspection('Race reject');
     expect((await linkEvidence(a.id, a.itemIds['Slope check'], 'ev-race-1')).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${a.id}/submit`, submitBody(['Slope check'], ['Seal check']))).status).toBe(201);
+    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${a.id}/submit`, await submitBody(a.id, ['Slope check'], ['Seal check']))).status).toBe(201);
     let b = barrierOn(a.id);
     try {
       const [r1, r2] = await Promise.all([
-        as(pmcToken)(`/projects/${f.projectA.id}/inspections/${a.id}/decide`, { approve: false, rejectedItemNames: ['Slope check'] }),
-        as(pmcToken)(`/projects/${f.projectA.id}/inspections/${a.id}/decide`, { approve: false, rejectedItemNames: ['Slope check'] }),
+        as(pmcToken)(`/projects/${f.projectA.id}/inspections/${a.id}/decide`, { approve: false, rejectedItemIds: [a.itemIds['Slope check']] }),
+        as(pmcToken)(`/projects/${f.projectA.id}/inspections/${a.id}/decide`, { approve: false, rejectedItemIds: [a.itemIds['Slope check']] }),
       ]);
       expect(b.reads()).toBe(2);
       expect([r1.status, r2.status].sort()).toEqual([201, 409]);
@@ -240,11 +243,11 @@ describe('inspection evidence + linked reinspections (integration)', () => {
     // race 2: reject vs approve
     const c = await makeInspection('Race mixed');
     expect((await linkEvidence(c.id, c.itemIds['Slope check'], 'ev-race-2')).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${c.id}/submit`, submitBody(['Slope check'], ['Seal check']))).status).toBe(201);
+    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${c.id}/submit`, await submitBody(c.id, ['Slope check'], ['Seal check']))).status).toBe(201);
     b = barrierOn(c.id);
     try {
       const [r1, r2] = await Promise.all([
-        as(pmcToken)(`/projects/${f.projectA.id}/inspections/${c.id}/decide`, { approve: false, rejectedItemNames: ['Slope check'] }),
+        as(pmcToken)(`/projects/${f.projectA.id}/inspections/${c.id}/decide`, { approve: false, rejectedItemIds: [c.itemIds['Slope check']] }),
         as(pmcToken)(`/projects/${f.projectA.id}/inspections/${c.id}/decide`, { approve: true }),
       ]);
       expect(b.reads()).toBe(2);

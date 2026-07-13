@@ -236,6 +236,7 @@ export class SnapshotService {
         // approving it is what completes that activity
         ...(i.closing ? { closing: true, activityId: i.activityId ?? undefined, activityName: i.activity?.name } : {}),
         items: i.items.map((it) => ({
+          id: it.id, // gate finding 3: rejection addresses THIS row, labels are not unique
           name: it.name,
           result: (it.result ?? (it.state === 'fail' ? 'FAIL' : 'PASS')) as 'PASS' | 'FAIL',
           swatch: it.swatch ?? 'concrete',

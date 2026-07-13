@@ -116,14 +116,14 @@ describe('derived readiness + gate overrides (integration)', () => {
 
     // engineer fails the item WITH evidence; PMC rejects → the chain is OPEN (row 2)
     expect((await as(engToken)(`/projects/${f.projectA.id}/media`, { kind: 'inspection', mime: 'image/png', data: px, inspectionId: insp.id, inspectionItemId: insp.items[0].id, clientKey: 'rd-ev-1' })).status).toBe(201);
-    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${insp.id}/submit`, { items: [{ name: 'Slope', state: 'fail', photos: 1, note: 'ponding' }] })).status).toBe(201);
+    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${insp.id}/submit`, { items: [{ id: insp.items[0].id, name: 'Slope', state: 'fail', photos: 1, note: 'ponding' }] })).status).toBe(201);
     expect((await readiness(actId)).readiness.inspection.v).toBe('wait'); // submitted, undecided — still row 3
-    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${insp.id}/decide`, { approve: false, rejectedItemNames: ['Slope'] })).status).toBe(201);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${insp.id}/decide`, { approve: false, rejectedItemIds: [insp.items[0].id] })).status).toBe(201);
     expect((await readiness(actId)).readiness.inspection.v).toBe('fail');
 
     // the open reinspection child keeps it FAIL (row 2 over row 3), even once submitted
-    const child = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: insp.id } });
-    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${child.id}/submit`, { items: [{ name: 'Slope', state: 'pass', photos: 0, note: '' }] })).status).toBe(201);
+    const child = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: insp.id }, include: { items: true } });
+    expect((await as(engToken)(`/projects/${f.projectA.id}/inspections/${child.id}/submit`, { items: [{ id: child.items[0].id, name: 'Slope', state: 'pass', photos: 0, note: '' }] })).status).toBe(201);
     expect((await readiness(actId)).readiness.inspection.v).toBe('fail');
 
     // acceptance of the correction closes the chain → ok (row 4)

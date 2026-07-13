@@ -183,13 +183,13 @@ describe('phase 1 baseline characterization (integration)', () => {
     const countBefore = await t.prisma.inspection.count({ where: { projectId: f.projectA.id } });
 
     // a fail without a LINKED evidence row is refused — the counter alone is not proof
-    expect((await post(`/projects/${f.projectA.id}/inspections/${insp.id}/submit`, { items: [{ name: 'Drain slope', state: 'fail', photos: 1, note: 'pooling NE corner' }] })).status).toBe(400);
+    expect((await post(`/projects/${f.projectA.id}/inspections/${insp.id}/submit`, { items: [{ id: insp.items[0].id, name: 'Drain slope', state: 'fail', photos: 1, note: 'pooling NE corner' }] })).status).toBe(400);
     const px = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64');
     expect((await post(`/projects/${f.projectA.id}/media`, { kind: 'inspection', mime: 'image/png', data: px, inspectionId: insp.id, inspectionItemId: insp.items[0].id, clientKey: 'baseline-ev-1' })).status).toBe(201);
-    expect((await post(`/projects/${f.projectA.id}/inspections/${insp.id}/submit`, { items: [{ name: 'Drain slope', state: 'fail', photos: 1, note: 'pooling NE corner' }] })).status).toBe(201);
+    expect((await post(`/projects/${f.projectA.id}/inspections/${insp.id}/submit`, { items: [{ id: insp.items[0].id, name: 'Drain slope', state: 'fail', photos: 1, note: 'pooling NE corner' }] })).status).toBe(201);
 
     // the PMC rejects, explicitly taking the corrective work themselves (self-assign)
-    expect((await post(`/projects/${f.projectA.id}/inspections/${insp.id}/decide`, { approve: false, rejectedItemNames: ['Drain slope'], assigneeId: f.memberUser.id })).status).toBe(201);
+    expect((await post(`/projects/${f.projectA.id}/inspections/${insp.id}/decide`, { approve: false, rejectedItemIds: [insp.items[0].id], assigneeId: f.memberUser.id })).status).toBe(201);
 
     // the "re-inspection created" notice now HAS a backing row: linked, assigned, dated
     expect(await t.prisma.inspection.count({ where: { projectId: f.projectA.id } })).toBe(countBefore + 1);

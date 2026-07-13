@@ -592,8 +592,8 @@ export class ApiGateway {
   submitInspection(inspectionId: string, items: Checklist['items']): Promise<ApiSnapshot> {
     return this.p(`/inspections/${inspectionId}/submit`, { items });
   }
-  decideReview(inspectionId: string, approve: boolean, rejectedItemNames: string[]): Promise<ApiSnapshot> {
-    return this.p(`/inspections/${inspectionId}/decide`, { approve, rejectedItemNames });
+  decideReview(inspectionId: string, approve: boolean, rejectedItemIds: string[]): Promise<ApiSnapshot> {
+    return this.p(`/inspections/${inspectionId}/decide`, { approve, rejectedItemIds });
   }
   submitDailyLog(log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'>): Promise<ApiSnapshot> {
     return this.p(`/daily-log/submit`, log);
@@ -691,7 +691,7 @@ export type OutboxOp =
   | { t: 'changeWithdraw'; decisionId: string }
   | { t: 'ackDrawing'; revisionId: string }
   | { t: 'submitInspection'; inspectionId: string; items: Checklist['items'] }
-  | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemNames: string[] }
+  | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemIds: string[] }
   | { t: 'startActivity'; activityId: string }
   | { t: 'completeActivity'; activityId: string }
   | { t: 'flagMismatch'; decisionId: string }
@@ -735,7 +735,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
     case 'submitInspection':
       return gw.submitInspection(op.inspectionId, op.items);
     case 'decideReview':
-      return gw.decideReview(op.inspectionId, op.approve, op.rejectedItemNames);
+      return gw.decideReview(op.inspectionId, op.approve, op.rejectedItemIds);
     case 'startActivity':
       return gw.startActivity(op.activityId);
     case 'completeActivity':
