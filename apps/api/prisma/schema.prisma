@@ -296,7 +296,13 @@ model DrawingRevision {
   drawingId  String
   projectId  String
   rev        String // "A" | "B" | "C" …
-  status     String // for_review | for_construction | superseded
+  // for_review | for_construction | superseded. AT MOST ONE live for_construction
+  // revision may exist per drawing — enforced by the partial unique index
+  // "DrawingRevision_one_construction_per_drawing" ON ("drawingId") WHERE
+  // status = 'for_construction' (raw SQL in 20260925000000_phase1_drawing_governing;
+  // Prisma cannot express partial uniques). The service serializes issues/publishes
+  // on the parent Drawing row (SELECT … FOR UPDATE); this index is the DB backstop.
+  status     String
   mime       String
   data       Bytes? // dev stub: bytes in the DB; null once stored in S3/R2
   url        String? // set in S3/R2 mode; null for the dev stub

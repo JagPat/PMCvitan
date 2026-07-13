@@ -119,36 +119,59 @@ export class DrawingsService {
       issuedAt: ddMmmYyyy(new Date()),
     };
 
-    const existing = await this.prisma.drawing.findUnique({
-      where: { projectId_number: { projectId, number: input.number } },
-    });
-
     let drawingId = '';
     let revisionId = '';
     // Draft → Publish: a brand-new drawing is a private draft unless `publish` is set. An
     // existing drawing that's already published stays published (adding a revision is a normal
     // issue); publishing an existing draft is also honoured. `published` decides the notice.
     let published = false;
+    let isRevise = false;
     try {
       await this.prisma.$transaction(async (tx) => {
-        if (existing) {
-          published = existing.publishedAt !== null || input.publish;
-          const publishedAt = existing.publishedAt ?? (input.publish ? new Date() : null);
+        // SERIALIZE on the parent drawing (gate finding 2): lock the register row so a
+        // concurrent issue/publish of the same number waits, then sees THIS issue's
+        // committed state — the supersede/create pair executes strictly one-at-a-time
+        // and exactly one live for_construction revision can survive (the partial
+        // unique index is the database backstop). Every decision about the drawing is
+        // taken from the LOCKED row, never from a stale pre-transaction read.
+        const [locked] = await tx.$queryRaw<Array<{ id: string; publishedAt: Date | null }>>(
+          Prisma.sql`SELECT "id", "publishedAt" FROM "Drawing" WHERE "projectId" = ${projectId} AND "number" = ${input.number} FOR UPDATE`,
+        );
+        if (locked) {
+          isRevise = true;
+          published = locked.publishedAt !== null || input.publish;
+          const wasDraft = locked.publishedAt === null;
+          const publishedAt = locked.publishedAt ?? (input.publish ? new Date() : null);
           // SCOPED supersession: only a construction issue displaces the construction
           // set — a review copy coexists and displaces nothing (Phase 1 Task 3).
           if (input.status === 'for_construction') {
             await tx.drawingRevision.updateMany({
-              where: { drawingId: existing.id, status: 'for_construction' },
+              where: { drawingId: locked.id, status: 'for_construction' },
               data: { status: 'superseded' },
             });
           }
-          const rev = await tx.drawingRevision.create({ data: { ...revData, projectId, drawingId: existing.id } });
+          const rev = await tx.drawingRevision.create({ data: { ...revData, projectId, drawingId: locked.id } });
           await tx.drawing.update({
-            where: { id: existing.id },
+            where: { id: locked.id },
             data: { title: input.title, discipline: input.discipline, zone: input.zone, activityId, decisionId, nodeId, publishedAt },
           });
-          drawingId = existing.id;
+          drawingId = locked.id;
           revisionId = rev.id;
+          // Freeze WHO the published intent reaches. A one-step publish of an existing
+          // DRAFT is the issue moment for EVERY live revision it accumulated (gate
+          // finding 5) — not just the newest; an already-published drawing freezes
+          // only the new revision. A continuing draft freezes nothing yet.
+          if (published) {
+            if (wasDraft && input.publish) {
+              const unfrozen = await tx.drawingRevision.findMany({
+                where: { drawingId: locked.id, status: { not: 'superseded' }, recipientsFrozenAt: null },
+                select: { id: true },
+              });
+              for (const r of unfrozen) await this.freezeRecipients(tx, projectId, r.id);
+            } else {
+              await this.freezeRecipients(tx, projectId, revisionId);
+            }
+          }
         } else {
           published = input.publish;
           const drawing = await tx.drawing.create({
@@ -169,16 +192,15 @@ export class DrawingsService {
           });
           drawingId = drawing.id;
           revisionId = drawing.revisions[0].id;
+          if (published) await this.freezeRecipients(tx, projectId, revisionId);
         }
-        // Freeze WHO this revision is issued to — only when it actually reaches the
-        // team. A draft's distribution is frozen later, when publish() issues it.
-        if (published) await this.freezeRecipients(tx, projectId, revisionId);
         await tx.auditLog.create({
           data: {
             projectId,
             actor: actor.actorName,
             actorId: actor.actorId,
-            action: existing ? 'drawing.revise' : 'drawing.issue',
+            actorRole: actor.actorRole,
+            action: isRevise ? 'drawing.revise' : 'drawing.issue',
             entity: 'DrawingRevision',
             entityId: revisionId,
             payload: { number: input.number, rev: input.rev, status: input.status },
@@ -186,9 +208,10 @@ export class DrawingsService {
         });
       });
     } catch (e) {
-      // the one-label-per-drawing unique fired — this rev already exists
+      // a unique fired: the (drawingId, rev) label, a concurrent same-number create,
+      // or the one-construction-per-drawing backstop — all mean "someone else won"
       if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-        throw new ConflictException(`Rev ${input.rev} already exists for ${input.number}`);
+        throw new ConflictException(`Rev ${input.rev} of ${input.number} conflicts with a concurrent issue — reload and retry`);
       }
       throw e;
     }
@@ -202,20 +225,32 @@ export class DrawingsService {
 
   /** Publish a private draft drawing → issue it to the build team. PMC authority; the fresh
    *  snapshot returns it. Publishing IS the issue for its revisions, so the distribution is
-   *  frozen now (for every revision that never had a snapshot). Re-publishing conflicts. */
+   *  frozen now (for every revision that never had a snapshot). Re-publishing conflicts —
+   *  and the publish is serialized on the drawing row + CAS-guarded, so a concurrent
+   *  duplicate can never publish (or audit/notify) twice (gate finding 2). */
   async publish(projectId: string, drawingId: string, user: AuthUser): Promise<SnapshotDto> {
     const actor = await resolveActor(this.prisma, user);
-    const d = await this.prisma.drawing.findUnique({ where: { id: drawingId }, include: { revisions: true } });
+    const d = await this.prisma.drawing.findUnique({ where: { id: drawingId } });
     if (!d || d.projectId !== projectId) throw new NotFoundException('Drawing not found');
     if (d.publishedAt) throw new ConflictException('Drawing is already published');
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.drawing.update({ where: { id: drawingId }, data: { publishedAt: new Date() } });
-      for (const rev of d.revisions.filter((r) => r.status !== 'superseded' && r.recipientsFrozenAt === null)) {
-        await this.freezeRecipients(tx, projectId, rev.id);
-      }
+      // lock the drawing row, then CAS on publishedAt STILL null — the loser of a
+      // concurrent publish (or a racing one-step issue) gets a clean 409, not a
+      // second publication with duplicate audit/notification
+      await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Drawing" WHERE "id" = ${drawingId} FOR UPDATE`);
+      const { count } = await tx.drawing.updateMany({
+        where: { id: drawingId, projectId, publishedAt: null },
+        data: { publishedAt: new Date() },
+      });
+      if (count === 0) throw new ConflictException('Drawing is already published');
+      const unfrozen = await tx.drawingRevision.findMany({
+        where: { drawingId, status: { not: 'superseded' }, recipientsFrozenAt: null },
+        select: { id: true },
+      });
+      for (const rev of unfrozen) await this.freezeRecipients(tx, projectId, rev.id);
       await tx.auditLog.create({
-        data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } },
+        data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } },
       });
     });
     this.realtime.notifyChanged(projectId, `Drawing issued: ${d.number} — ${d.title}`, ['engineer', 'contractor']);
@@ -232,7 +267,7 @@ export class DrawingsService {
     await this.prisma.$transaction([
       this.prisma.drawing.update({ where: { id }, data: { nodeId: resolved } }),
       this.prisma.auditLog.create({
-        data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } },
+        data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } },
       }),
     ]);
     this.realtime.notifyChanged(projectId);
@@ -241,8 +276,11 @@ export class DrawingsService {
 
   /**
    * Record a build-acknowledgement: the caller confirms they are building to this
-   * revision. Idempotent per (revision, user). Client can't acknowledge (they don't
-   * build); everyone else on the project can. Audited + the PMC is notified.
+   * revision. IDEMPOTENT AS A COMMAND (gate finding 3): the first call creates the
+   * ack row AND its audit in one transaction and notifies the PMC; a replay (the
+   * offline outbox re-sending, a double-tap, a concurrent duplicate) records
+   * NOTHING new and just returns the current count. Ack and audit are atomic —
+   * neither can exist without the other. Client can't acknowledge (they don't build).
    */
   async acknowledge(projectId: string, revisionId: string, user: AuthUser): Promise<{ ok: boolean; ackCount: number }> {
     if (user.role === 'client') throw new ForbiddenException('Only the build team acknowledges drawings');
@@ -251,17 +289,29 @@ export class DrawingsService {
 
     const actor = await resolveActor(this.prisma, user);
 
-    await this.prisma.drawingAck.upsert({
-      where: { revisionId_userId: { revisionId, userId: user.sub } },
-      update: { userName: actor.actorName, role: user.role },
-      create: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role },
-    });
-    await this.prisma.auditLog.create({
-      data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } },
-    });
+    let firstAck = false;
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const existing = await tx.drawingAck.findUnique({ where: { revisionId_userId: { revisionId, userId: user.sub } } });
+        if (existing) return; // replay — the fact is already recorded and audited
+        await tx.drawingAck.create({ data: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role } });
+        await tx.auditLog.create({
+          data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } },
+        });
+        firstAck = true;
+      });
+    } catch (e) {
+      // a concurrent duplicate slipped past the read — the unique makes it a replay
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        firstAck = false;
+      } else {
+        throw e;
+      }
+    }
 
     const ackCount = await this.prisma.drawingAck.count({ where: { revisionId } });
-    this.realtime.notifyChanged(projectId, `${actor.actorName} is building to ${rev.drawing.number} Rev ${rev.rev}`, ['pmc']);
+    // only the FIRST acknowledgement announces — a replay repeats nothing
+    if (firstAck) this.realtime.notifyChanged(projectId, `${actor.actorName} is building to ${rev.drawing.number} Rev ${rev.rev}`, ['pmc']);
     return { ok: true, ackCount };
   }
 
@@ -287,7 +337,7 @@ export class DrawingsService {
     await this.prisma.$transaction([
       this.prisma.drawing.delete({ where: { id } }), // revisions + recipients cascade
       this.prisma.auditLog.create({
-        data: { projectId, actor: actor.actorName, actorId: actor.actorId, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } },
+        data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } },
       }),
     ]);
     this.realtime.notifyChanged(projectId);
