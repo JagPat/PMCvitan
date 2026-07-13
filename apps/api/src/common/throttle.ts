@@ -7,6 +7,7 @@ import {
   SetMetadata,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { isProduction } from '../config';
 
 export const THROTTLE_KEY = 'throttle';
 
@@ -41,6 +42,12 @@ export class ThrottleGuard implements CanActivate {
       ctx.getClass(),
     ]);
     if (!opts) return true; // not throttled
+
+    // Test-harness escape hatch: the acceptance suite performs a dozen-plus real
+    // sign-ins from one IP inside the login window, which is exactly the traffic
+    // shape the limiter exists to block. THROTTLE_DISABLED honors that ONLY
+    // outside production — a production deploy rate-limits regardless of env.
+    if (process.env.THROTTLE_DISABLED === 'true' && !isProduction()) return true;
 
     // Guard against a clock/store hiccup ever locking users out: fail open on any error.
     try {

@@ -11,6 +11,11 @@ set -euo pipefail
 : "${JWT_SECRET:=api-e2e-test-secret}"
 export JWT_SECRET
 
+# The suite performs 13+ real sign-ins from one IP — over the login limiter's
+# 15-per-10-minutes budget. Disable rate limiting for the harness run; the guard
+# honors this ONLY outside production (see src/common/throttle.ts + its tests).
+export THROTTLE_DISABLED=true
+
 pnpm --filter api prisma:migrate
 pnpm --filter api seed
 # the Playwright config serves the COMPILED api (node dist/main.js) — the same

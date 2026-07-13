@@ -140,7 +140,8 @@ export interface SeedInspection {
   zone: string;
   nodeId: string | null;
   by?: string;
-  date: string;
+  /** Canonical ISO civil date — the display string derives at insert (ddMmmYyyy). */
+  dateIso: string;
   submitted: boolean;
   decided: boolean;
   items: SeedInspectionItem[];
@@ -148,7 +149,7 @@ export interface SeedInspection {
 
 export const SEED_INSPECTIONS: SeedInspection[] = [
   {
-    id: 'INSP-22', kind: 'checklist', title: 'Pre-Tiling Inspection', zone: 'Bathroom 2 · 3rd Floor', nodeId: null, date: '03 Jul 2026', submitted: false, decided: false,
+    id: 'INSP-22', kind: 'checklist', title: 'Pre-Tiling Inspection', zone: 'Bathroom 2 · 3rd Floor', nodeId: null, dateIso: '2026-07-03', submitted: false, decided: false,
     items: [
       { name: 'Surface level & slope checked', order: 0 },
       { name: 'Waterproofing coat cured (7 days)', order: 1 },
@@ -158,7 +159,7 @@ export const SEED_INSPECTIONS: SeedInspection[] = [
     ],
   },
   {
-    id: 'INSP-21', kind: 'review', title: 'Waterproofing Ponding Test', zone: 'Terrace', nodeId: 'z-terrace', by: 'Site Engineer (Ramesh)', date: '02 Jul 2026', submitted: true, decided: false,
+    id: 'INSP-21', kind: 'review', title: 'Waterproofing Ponding Test', zone: 'Terrace', nodeId: 'z-terrace', by: 'Site Engineer (Ramesh)', dateIso: '2026-07-02', submitted: true, decided: false,
     items: [
       { name: 'Ponding water level maintained 48h', result: 'PASS', swatch: 'water', note: 'Level held for 48 hours, no visible drop.', order: 0 },
       { name: 'No seepage at slab soffit below', result: 'PASS', swatch: 'concrete', note: 'Soffit inspected, dry.', order: 1 },
@@ -167,7 +168,7 @@ export const SEED_INSPECTIONS: SeedInspection[] = [
     ],
   },
   {
-    id: 'INSP-18', kind: 'review', title: 'CP Fittings & Pressure Test', zone: 'Second Floor · Master Bath', nodeId: 'r-mbath', by: 'Site Engineer (Ramesh)', date: '26 Jun 2026', submitted: true, decided: true,
+    id: 'INSP-18', kind: 'review', title: 'CP Fittings & Pressure Test', zone: 'Second Floor · Master Bath', nodeId: 'r-mbath', by: 'Site Engineer (Ramesh)', dateIso: '2026-06-26', submitted: true, decided: true,
     items: [
       { name: 'Pressure test held at 7 bar for 30 min', result: 'PASS', swatch: 'chrome', note: 'No drop on the gauge.', order: 0 },
       { name: 'Fittings match approved Kohler set', result: 'PASS', swatch: 'chrome', note: 'Verified against DL-009.', order: 1 },

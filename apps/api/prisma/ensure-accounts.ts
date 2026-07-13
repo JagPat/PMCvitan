@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { SEED_NODES, SEED_DECISIONS, SEED_ACTIVITIES, SEED_INSPECTIONS, SEED_LOG_MATERIALS, createStarterLibrary } from '../src/domain/seed-data';
+import { addCivilDays, fromIsoCivilDate } from '../src/common/civil-date';
 
 /**
  * Non-destructive account provisioning — safe to run against a LIVE database.
@@ -180,16 +181,33 @@ async function main(): Promise<void> {
   // phase yet, so a hand-assigned phase is never clobbered. Other projects define
   // phases through the app, so this is scoped to the seeded demo.
   if (PROJECT_ID === 'ambli') {
+    // Canonical-date backfill (Codex round 2 finding 3): a live ambli DB that
+    // predates real civil dates has a null schedule anchor. Fill it only when
+    // null — a curated schedule window is never clobbered. DAY0 = 2026-06-01
+    // (the demo's offset origin); the end matches the projEnd display.
+    const SCHEDULE_ANCHOR = '2026-06-01';
+    const atDay = (offset: number): Date => fromIsoCivilDate(addCivilDays(SCHEDULE_ANCHOR, offset))!;
+    if (!project.scheduleStartDate) {
+      await prisma.project.update({
+        where: { id: PROJECT_ID },
+        data: { scheduleStartDate: fromIsoCivilDate(SCHEDULE_ANCHOR), scheduleEndDate: project.scheduleEndDate ?? fromIsoCivilDate('2026-09-30') },
+      });
+      // eslint-disable-next-line no-console
+      console.log(`backfilled the schedule anchor (${SCHEDULE_ANCHOR}) on ${PROJECT_ID}`);
+    }
     const phases = [
       { id: 'PH-services', name: 'Services & Waterproofing', order: 0, plannedStart: 9, plannedEnd: 30 },
       { id: 'PH-wetareas', name: 'Wet Areas & Fittings', order: 1, plannedStart: 19, plannedEnd: 27 },
       { id: 'PH-finishing', name: 'Finishing', order: 2, plannedStart: 34, plannedEnd: 47 },
     ];
     for (const p of phases) {
+      // the upsert re-asserts the demo offsets on every boot, so it must carry
+      // the canonical dates with them — offsets and dates never drift apart
+      const dates = { plannedStartDate: atDay(p.plannedStart), plannedEndDate: atDay(p.plannedEnd) };
       await prisma.phase.upsert({
         where: { id: p.id },
-        update: { name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd },
-        create: { ...p, projectId: PROJECT_ID },
+        update: { name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd, ...dates },
+        create: { ...p, ...dates, projectId: PROJECT_ID },
       });
     }
     const actPhase: Record<string, string> = {
