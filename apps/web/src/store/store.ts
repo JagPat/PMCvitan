@@ -1643,6 +1643,14 @@ export const useStore = create<Store>()(
         }
       }
 
+      // Re-check AFTER the loop too (round 2): a switch that lands while the FINAL
+      // op is in flight never hits the pre-iteration guard — without this, the
+      // normal reconcile below would replace and persist the NEW scope's queue
+      // with this flush's (empty) result, silently dropping that scope's work.
+      if (!scopeMoved && (!scopeStillCurrent(flushScope) || get().sessionToken !== flushToken)) {
+        scopeMoved = true;
+      }
+
       const remaining = stoppedAt >= 0 ? ops.slice(stoppedAt) : [];
       if (scopeMoved) {
         // The in-memory outbox now belongs to the NEW scope (hydrateOutbox swapped
