@@ -229,6 +229,61 @@ describe('decision change-control (integration)', () => {
     expect(resolutions).toBe(1);
   });
 
+  it('GATE FINDING 1: a change decision with NO open request cannot be re-approved — 409, state unchanged', async () => {
+    const id = await issueDecision('Pooja unit');
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
+    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'shelf depth', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+
+    // the legacy inconsistency the deployed backfill permits: the open request was
+    // resolved out-of-band while the decision stayed 'change' (zero open requests)
+    await t.prisma.changeRequest.updateMany({ where: { decisionId: id, status: 'open' }, data: { status: 'resolved', resolution: null } });
+
+    // re-approval must REFUSE — there is nothing to resolve, so 'reapproved' would lie
+    const res = await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 });
+    expect(res.status).toBe(409);
+    const d = await t.prisma.decision.findUniqueOrThrow({ where: { id } });
+    expect(d.status).toBe('change'); // the whole transaction rolled back
+    expect(await t.prisma.decisionEvent.count({ where: { decisionId: id, type: 'reapproved' } })).toBe(0);
+  });
+
+  it('GATE FINDING 6: events and audits snapshot the actor ROLE held at action time', async () => {
+    const id = await issueDecision('Loft ladder');
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);
+    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change`, { reason: 'headroom', costImpact: 0, timeImpactDays: 0 })).status).toBe(201);
+    expect((await as(engToken)(`/projects/${f.projectA.id}/decisions/${id}/change/withdraw`)).status).toBe(201);
+
+    const events = await t.prisma.decisionEvent.findMany({ where: { decisionId: id } });
+    const roleOf = (type: string) => events.find((e) => e.type === type)?.actorRole;
+    expect(roleOf('issued')).toBe('pmc');
+    expect(roleOf('approved')).toBe('client');
+    expect(roleOf('change_requested')).toBe('engineer');
+    expect(roleOf('change_withdrawn')).toBe('engineer');
+
+    const audits = await t.prisma.auditLog.findMany({ where: { entity: 'Decision', entityId: id } });
+    expect(audits.find((a) => a.action === 'decision.approve')?.actorRole).toBe('client');
+    expect(audits.find((a) => a.action === 'decision.change')?.actorRole).toBe('engineer');
+    expect(audits.find((a) => a.action === 'decision.change_withdraw')?.actorRole).toBe('engineer');
+  });
+
+  it('GATE FINDING 7: an on-behalf approval is ANNOUNCED as on-behalf; a direct client approval as the client\'s', async () => {
+    // direct client approval → the classic announcement
+    const direct = await issueDecision('Basin mixer');
+    expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${direct}/approve`, { optionIndex: 0 })).status).toBe(201);
+    const directNotice = await t.prisma.notification.findFirstOrThrow({
+      where: { projectId: f.projectA.id, AND: [{ text: { contains: 'Basin mixer' } }, { text: { contains: 'approved' } }] },
+    });
+    expect(directNotice.text).toMatch(/^Client approved Basin mixer/);
+
+    // PMC approving on behalf → the announcement NAMES who exercised the authority
+    const behalf = await issueDecision('Vanity light');
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions/${behalf}/approve`, { optionIndex: 0 })).status).toBe(201);
+    const behalfNotice = await t.prisma.notification.findFirstOrThrow({
+      where: { projectId: f.projectA.id, AND: [{ text: { contains: 'Vanity light' } }, { text: { contains: 'approved' } }] },
+    });
+    expect(behalfNotice.text).toMatch(/^member \(PMC\) approved Vanity light on behalf of the client/);
+    expect(behalfNotice.text).not.toMatch(/^Client approved/); // never disguised
+  });
+
   it('the DATABASE refuses a duplicate open request even on a direct insert', async () => {
     const id = await issueDecision('Gate motor');
     expect((await as(clientToken)(`/projects/${f.projectA.id}/decisions/${id}/approve`, { optionIndex: 0 })).status).toBe(201);

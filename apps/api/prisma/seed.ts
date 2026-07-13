@@ -177,6 +177,20 @@ async function main(): Promise<void> {
     });
   }
 
+  // The reopened decision (DL-003, status 'change') carries its OPEN change request —
+  // a 'change' decision with ZERO open requests is exactly the inconsistent state the
+  // change-control diagnostic aborts on and re-approval now refuses (gate finding 1).
+  await prisma.changeRequest.create({
+    data: {
+      decisionId: 'DL-003',
+      reason: 'Quartz slab size unavailable — vendor proposes 2-piece joint',
+      costImpact: 0,
+      timeImpactDays: 4,
+      status: 'open',
+      requestedById: pmcId,
+    },
+  });
+
   // Project phases group activities for phase-level monitoring. The legacy
   // day-offsets stay for display geometry; the canonical civil dates derive from
   // the anchor exactly as the services derive them. Created before activities so

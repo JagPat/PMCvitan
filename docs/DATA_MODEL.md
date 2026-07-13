@@ -13,7 +13,7 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 | `Worker` | On-site identity **without an account** (recognised by QR/face) | name, tradeKey, projectId |
 | `Decision` | A client decision | code (DL-014), title, room, **nodeId** (location-tree link), **status** (`pending\|approved\|change`), approvedOptionId, approver, **approvedById**, **onBehalfOf** (`client` when a PMC approved for them), approvedAt, costPaise |
 | `DecisionOption` | An option presented for a decision | label, material, deltaPaise, swatch, recommended |
-| `DecisionEvent` | **Append-only** lifecycle/audit log | type (`drafted\|issued\|approved\|reapproved\|change_requested\|change_withdrawn`), actor, **actorId/actorName** (real identity), at, payload |
+| `DecisionEvent` | **Append-only** lifecycle/audit log | type (`drafted\|issued\|approved\|reapproved\|change_requested\|change_withdrawn`), actor, **actorId/actorName/actorRole** (real identity + role held at action time), at, payload |
 | `ChangeRequest` | The ONE formal reopening of a locked decision | reason, costImpactPaise, timeImpactDays, **status** (`open\|resolved\|withdrawn`), requestedById, resolvedById, resolvedAt, **resolution** (`reapproved\|withdrawn`; null = legacy). At most one `open` per decision — DB-enforced by the partial unique index `ChangeRequest_one_open_per_decision` |
 | `Activity` | A unit of site work (the spine) | code (ACT-31), name, zone, decisionId, **nodeId** (location), plannedStart/End, actualStart/End, **status** (`not-started\|in-progress\|done\|blocked`) |
 | `ActivityGate` | The four readiness gates | activityId, kind (`decision\|material\|team\|inspection`), state (`ok\|wait\|fail\|na`) |
@@ -28,7 +28,7 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 | `DrawingRecipient` | WHO a revision was issued to — **frozen at issue** | projectId, revisionId, userId, roleAtIssue. Snapshot of active engineer/contractor members at issue (stamped even when empty); churn never rewrites rows. Composite FKs `(projectId, revisionId)` → DrawingRevision and `(projectId, userId)` → Membership make forged rows impossible (Phase 1 Task 3) |
 | `Notification` | Feed item | projectId, text, kind/color, at |
 | `SyncOutboxEntry` | Offline mutation queue (idempotency) | clientId, opType, payload, appliedAt |
-| `AuditLog` | Global attribution trail | actor, **actorId**, action, entity, entityId, at. Drawing actions: `drawing.issue\|revise\|publish\|ack\|remove\|refile` (Phase 1 Task 3) |
+| `AuditLog` | Global attribution trail | actor, **actorId/actorRole** (real identity + role held at action time), action, entity, entityId, at. Drawing actions: `drawing.issue\|revise\|publish\|ack\|remove\|refile` (Phase 1 Task 3) |
 
 ## Conventions
 

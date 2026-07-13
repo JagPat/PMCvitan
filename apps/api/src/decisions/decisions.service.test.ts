@@ -120,8 +120,9 @@ function makeLifecycle(status: string) {
   const row: LifecycleRow = { id: 'DL-1', projectId: 'proj-1', title: 'Kitchen counter top', status };
   const options = [{ label: 'Option A', material: 'Granite', delta: 0, swatch: 'sw1', order: 0 }];
   const changeRequests: CrRow[] = [];
-  const events: Array<{ type: string; actor: string; actorId?: string; actorName?: string; payload?: Record<string, unknown> }> = [];
-  const audits: Array<{ actor: string; actorId?: string; action: string }> = [];
+  const events: Array<{ type: string; actor: string; actorId?: string; actorName?: string; actorRole?: string; payload?: Record<string, unknown> }> = [];
+  const audits: Array<{ actor: string; actorId?: string; actorRole?: string; action: string }> = [];
+  const notices: string[] = [];
   const prisma = {
     user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (NAMES[where.id] ? { name: NAMES[where.id] } : null)) },
     decision: {
@@ -152,14 +153,34 @@ function makeLifecycle(status: string) {
       }),
     },
     decisionEvent: { create: vi.fn((args: { data: (typeof events)[number] }) => { events.push(args.data); return Promise.resolve(args.data); }) },
-    notification: { create: vi.fn(async () => ({})) },
+    notification: { create: vi.fn((args: { data: { text: string } }) => { notices.push(args.data.text); return Promise.resolve(args.data); }) },
     auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
-    $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
-      typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
+    // interactive form emulates the REAL transaction's rollback: on a thrown error the
+    // decision row and the change requests are restored to their pre-tx state (events/
+    // audits written before the throw are also discarded, matching PostgreSQL).
+    $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) => {
+      if (typeof arg !== 'function') return Promise.all(arg);
+      const rowBackup = { ...row };
+      const crBackup = changeRequests.map((c) => ({ ...c }));
+      const evLen = events.length;
+      const auLen = audits.length;
+      const noLen = notices.length;
+      try {
+        return await arg(prisma);
+      } catch (e) {
+        for (const k of Object.keys(row)) delete (row as Record<string, unknown>)[k];
+        Object.assign(row, rowBackup);
+        changeRequests.splice(0, changeRequests.length, ...crBackup);
+        events.length = evLen;
+        audits.length = auLen;
+        notices.length = noLen;
+        throw e;
+      }
+    }),
   } as unknown as PrismaService;
   const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
   const svc = new DecisionsService(prisma, snapshot, realtime);
-  return { svc, prisma, row, changeRequests, events, audits };
+  return { svc, prisma, row, changeRequests, events, audits, notices, realtime };
 }
 
 describe('DecisionsService — change control & mandatory re-approval (Phase 1 Task 2)', () => {
@@ -264,5 +285,44 @@ describe('DecisionsService — change control & mandatory re-approval (Phase 1 T
     const { svc, prisma } = makeLifecycle('pending');
     (prisma.decision.updateMany as Mock).mockResolvedValueOnce({ count: 0 }); // someone else transitioned first
     await expect(svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, client)).rejects.toThrow(/changed while approving/);
+  });
+
+  it('GATE FINDING 1: re-approving with NO open request is refused and the whole transition rolls back', async () => {
+    // a 'change' decision with ZERO open requests — the inconsistent legacy state
+    const { svc, row, events } = makeLifecycle('change');
+    await expect(svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, client)).rejects.toThrow(/no open change request/i);
+    expect(row.status).toBe('change'); // the CAS applied, then the tx rolled it back
+    expect(events.filter((e) => e.type === 'reapproved')).toHaveLength(0); // 'reapproved' never lies
+  });
+
+  it('GATE FINDING 1 (withdraw twin): a request that vanishes mid-withdraw rolls the lock restore back', async () => {
+    const { svc, prisma, row } = makeLifecycle('approved');
+    await svc.requestChange('proj-1', 'DL-1', changeInput, engineer);
+    (prisma.changeRequest.updateMany as Mock).mockResolvedValueOnce({ count: 0 }); // closed concurrently
+    await expect(svc.withdrawChange('proj-1', 'DL-1', engineer)).rejects.toThrow(/changed while withdrawing/);
+    expect(row.status).toBe('change'); // not falsely re-locked
+  });
+
+  it('GATE FINDING 6: every event and audit snapshots the actor role held at action time', async () => {
+    const { svc, events, audits } = makeLifecycle('pending');
+    await svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, client);
+    await svc.requestChange('proj-1', 'DL-1', changeInput, engineer);
+    expect(events.find((e) => e.type === 'approved')?.actorRole).toBe('client');
+    expect(events.find((e) => e.type === 'change_requested')?.actorRole).toBe('engineer');
+    expect(audits.find((a) => a.action === 'decision.approve')?.actorRole).toBe('client');
+    expect(audits.find((a) => a.action === 'decision.change')?.actorRole).toBe('engineer');
+  });
+
+  it('GATE FINDING 7: announcements are truthful — on-behalf names the approver, direct stays the client\'s', async () => {
+    const direct = makeLifecycle('pending');
+    await direct.svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, client);
+    expect(direct.notices.find((n) => n.includes('approved'))).toMatch(/^Client approved Kitchen counter top/);
+    expect(direct.realtime.notifyChanged).toHaveBeenCalledWith('proj-1', expect.stringMatching(/^Client approved/), ['pmc', 'contractor', 'engineer']);
+
+    const behalf = makeLifecycle('pending');
+    await behalf.svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, user); // the PMC, 'Ar. Meghna'
+    const text = behalf.notices.find((n) => n.includes('approved'));
+    expect(text).toMatch(/^Ar\. Meghna \(PMC\) approved Kitchen counter top on behalf of the client/);
+    expect(behalf.realtime.notifyChanged).toHaveBeenCalledWith('proj-1', expect.stringContaining('on behalf of the client'), ['pmc', 'contractor', 'engineer']);
   });
 });
