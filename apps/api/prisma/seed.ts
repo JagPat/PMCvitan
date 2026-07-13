@@ -9,10 +9,19 @@ import {
   SEED_LOG_MATERIALS,
   createStarterLibrary,
 } from '../src/domain/seed-data';
+import { addCivilDays, fromIsoCivilDate } from '../src/common/civil-date';
+import { ddMmmYyyy } from '../src/domain/dates';
 
 const prisma = new PrismaClient();
 
 const PROJECT_ID = 'ambli';
+
+// Real civil dates are canonical (Phase 0 Task 6 / Codex round 2 finding 3): the
+// seed must write them alongside the legacy day-offsets, never leave them null.
+// SCHEDULE_ANCHOR is ambli's DAY0 — offset 0 IS this day, so todayDay 32 lands on
+// 2026-07-03, the seeded daily log's civil day.
+const SCHEDULE_ANCHOR = '2026-06-01';
+const atDay = (offset: number): Date => fromIsoCivilDate(addCivilDays(SCHEDULE_ANCHOR, offset))!;
 
 async function main(): Promise<void> {
   // wipe (children first) for an idempotent seed
@@ -63,6 +72,9 @@ async function main(): Promise<void> {
       elapsedPct: 58,
       todayDay: 32,
       milestonePct: 72,
+      // the schedule anchor + window (project end matches the projEnd display)
+      scheduleStartDate: fromIsoCivilDate(SCHEDULE_ANCHOR),
+      scheduleEndDate: fromIsoCivilDate('2026-09-30'),
     },
   });
 
@@ -107,6 +119,10 @@ async function main(): Promise<void> {
       elapsedPct: 0,
       todayDay: 0,
       milestonePct: 0,
+      // the anchor is project CONFIG, not an operational record — B stays empty
+      // of records but its date derivations must work; no planned end yet is a
+      // truthful absence for a mobilisation-stage fixture
+      scheduleStartDate: fromIsoCivilDate('2026-07-01'),
     },
   });
   const testUsers: Array<{ id: string; home: string; role: string; name: string; email: string; grants: Array<[string, string]> }> = [
@@ -161,24 +177,46 @@ async function main(): Promise<void> {
     });
   }
 
-  // Project phases group activities for phase-level monitoring (planned windows as
-  // day-offsets from 1 Jun 2026). Created before activities so the FK resolves.
+  // Project phases group activities for phase-level monitoring. The legacy
+  // day-offsets stay for display geometry; the canonical civil dates derive from
+  // the anchor exactly as the services derive them. Created before activities so
+  // the FK resolves.
   for (const p of SEED_PHASES) {
-    await prisma.phase.create({ data: { ...p, projectId: PROJECT_ID } });
+    await prisma.phase.create({
+      data: { ...p, projectId: PROJECT_ID, plannedStartDate: atDay(p.plannedStart), plannedEndDate: atDay(p.plannedEnd) },
+    });
   }
 
   for (const a of SEED_ACTIVITIES) {
-    await prisma.activity.create({ data: { ...a, projectId: PROJECT_ID } });
+    await prisma.activity.create({
+      data: {
+        ...a,
+        projectId: PROJECT_ID,
+        plannedStartDate: atDay(a.plannedStart),
+        plannedEndDate: atDay(a.plannedEnd),
+        actualStartDate: a.actualStart === null ? null : atDay(a.actualStart),
+        actualEndDate: a.actualEnd === null ? null : atDay(a.actualEnd),
+      },
+    });
   }
 
   for (const i of SEED_INSPECTIONS) {
-    const { items, ...rest } = i;
-    await prisma.inspection.create({ data: { ...rest, projectId: PROJECT_ID, items: { create: items } } });
+    const { items, dateIso, ...rest } = i;
+    await prisma.inspection.create({
+      data: {
+        ...rest,
+        projectId: PROJECT_ID,
+        inspectionDate: fromIsoCivilDate(dateIso),
+        date: ddMmmYyyy(fromIsoCivilDate(dateIso)!),
+        items: { create: items },
+      },
+    });
   }
 
   const seededLog = await prisma.dailyLog.create({
     data: {
-      projectId: PROJECT_ID, date: '03 Jul 2026', checkedIn: false, checkinTime: null, submitted: false, progress: 2,
+      // todayDay 32 from the anchor = 2026-07-03; the display string derives
+      projectId: PROJECT_ID, logDate: atDay(32), date: ddMmmYyyy(atDay(32)), checkedIn: false, checkinTime: null, submitted: false, progress: 2,
       crew: {
         create: [
           { trade: 'Flooring mason', count: 2, order: 0 },

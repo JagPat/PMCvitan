@@ -63,4 +63,28 @@ describe('ThrottleGuard', () => {
     expect(guard.canActivate(ctxFor('6.6.6.6', 'login'))).toBe(true); // different handler, own budget
     expect(() => guard.canActivate(ctxFor('6.6.6.6', 'login'))).toThrow(HttpException);
   });
+
+  describe('THROTTLE_DISABLED (acceptance-harness escape hatch)', () => {
+    afterEach(() => {
+      delete process.env.THROTTLE_DISABLED;
+      delete process.env.NODE_ENV;
+    });
+
+    it('disables limiting outside production', () => {
+      process.env.THROTTLE_DISABLED = 'true';
+      const guard = new ThrottleGuard(reflectorReturning({ limit: 1, windowMs: 60_000 }));
+      const ctx = ctxFor('7.7.7.7');
+      expect(guard.canActivate(ctx)).toBe(true);
+      expect(guard.canActivate(ctx)).toBe(true); // over the limit, still allowed
+    });
+
+    it('is IGNORED in production — a prod deploy rate-limits regardless of env', () => {
+      process.env.THROTTLE_DISABLED = 'true';
+      process.env.NODE_ENV = 'production';
+      const guard = new ThrottleGuard(reflectorReturning({ limit: 1, windowMs: 60_000 }));
+      const ctx = ctxFor('8.8.8.8');
+      expect(guard.canActivate(ctx)).toBe(true);
+      expect(() => guard.canActivate(ctx)).toThrow(HttpException);
+    });
+  });
 });
