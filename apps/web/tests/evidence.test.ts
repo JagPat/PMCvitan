@@ -172,6 +172,81 @@ describe('replay lifecycle', () => {
     expect(await getEvidence('anon', 'ambli', key)).toBeNull(); // second attempt confirmed → cleaned up
   });
 
+  it('RECONSTRUCTS the replay op from the durable bytes when localStorage persistence failed (gate finding 2)', async () => {
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm9', url: '/media/m9' }),
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    // the reviewer's probe: the IndexedDB write succeeds, the outbox persistence throws
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('QuotaExceededError'); });
+    await s().addChecklistEvidence(0, PX);
+    setItem.mockRestore();
+
+    // the capture message was truthful — the BYTES are durable...
+    expect(s().toast).toMatch(/saved offline/i);
+    const key = (s().outbox[0] as { clientKey: string }).clientKey;
+    expect((await getEvidence('anon', 'ambli', key))?.status).toBe('pending');
+
+    // ...but the replay op was never persisted. RELOAD: the in-memory store dies.
+    useStore.setState(getInitialState());
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().hydrateOutbox(); // the boot path — must merge the durable pending rows back into replay
+    await flush();
+    await flush();
+    expect(s().outbox.map((o) => (o as { clientKey?: string }).clientKey)).toContain(key);
+    expect(s().pendingEvidenceCount).toBe(1);
+
+    // reconnect uploads it exactly once and cleans up on confirmation
+    await s().flushOutbox();
+    expect(gw.uploadMedia).toHaveBeenCalledTimes(1);
+    expect((gw.uploadMedia.mock.calls[0] as [{ clientKey: string }])[0].clientKey).toBe(key);
+    expect(await getEvidence('anon', 'ambli', key)).toBeNull();
+  });
+
+  it('a failed dead-letter write must NOT let the flush discard the only replay op (gate finding 2)', async () => {
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockRejectedValue(httpError(403)), // terminal, non-dedupe
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    await s().addChecklistEvidence(0, PX);
+    const key = (s().outbox[0] as { clientKey: string }).clientKey;
+
+    const evidenceStore = await import('@/data/evidenceStore');
+    const dead = vi.spyOn(evidenceStore, 'markEvidenceFailed').mockRejectedValueOnce(new Error('QuotaExceededError'));
+    useStore.setState((st) => { st.online = true; });
+    await s().flushOutbox();
+    dead.mockRestore();
+
+    // the entry could not be flagged FAILED — the queued op is the ONLY replay path
+    // left, so the flush must keep it instead of dropping a terminal op
+    expect((await getEvidence('anon', 'ambli', key))?.status).toBe('pending');
+    expect(s().outbox.map((o) => (o as { clientKey?: string }).clientKey)).toContain(key);
+
+    // the next flush dead-letters properly: FAILED bytes + the Retry/Delete surface
+    await s().flushOutbox();
+    expect((await getEvidence('anon', 'ambli', key))?.status).toBe('failed');
+    expect(s().failedEvidence.map((f) => f.clientKey)).toContain(key);
+    expect(s().outbox).toHaveLength(0);
+  });
+
+  it('hydration merges pending rows IDEMPOTENTLY — an op already queued is never duplicated', async () => {
+    s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    await s().addChecklistEvidence(0, PX); // localStorage worked — the op is queued AND persisted
+
+    await s().hydrateEvidence();
+    expect(s().outbox).toHaveLength(1); // merge found the pending row already covered
+  });
+
   it('the user\'s explicit DELETE is the only non-server path that drops bytes', async () => {
     await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'k-del', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
     const evidenceStore = await import('@/data/evidenceStore');
