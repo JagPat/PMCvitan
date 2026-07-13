@@ -92,6 +92,31 @@ jobs:
           path: apps/web/test-results/
           retention-days: 7
 
+  # Phase 1 acceptance evidence (Task 7 Step 2): a legacy pre-Phase-1 database
+  # is rebuilt from the real ledger, planted with representative legacy shapes,
+  # upgraded through ALL Phase 1 migrations the way Prisma applies them, and
+  # asserted to keep every legacy meaning intact. Pure psql — no build needed.
+  upgrade-proof:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upgraded-database proof (legacy fixture through all Phase 1 migrations)
+        run: bash apps/api/scripts/upgrade-proof.sh
+
   api:
     runs-on: ubuntu-latest
     services:

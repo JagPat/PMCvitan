@@ -854,11 +854,22 @@ export const useStore = create<Store>()(
       }
       // ONLINE: upload now with the idempotency key; reconcile from the snapshot
       const scope = currentScope();
+      // the engineer's UNSUBMITTED field marks live only in this store — the snapshot
+      // refresh below must not discard them (Task 7 acceptance finding)
+      const marks = new Map(c.items.map((it) => [it.name, { state: it.state, note: it.note }]));
       try {
         await gateway.uploadMedia({ kind: 'inspection', mime, data: base64, clientKey, ...meta });
         if (!scopeStillCurrent(scope)) return;
         const snap = await gateway.snapshot();
         applySnapshot(snap, scope);
+        set((s) => {
+          const chk = s.checklist;
+          if (chk?.id !== c.id) return;
+          for (const it of chk.items) {
+            const kept = marks.get(it.name);
+            if (kept) { it.state = kept.state; it.note = kept.note; }
+          }
+        });
         get().flash('Evidence photo uploaded and linked to the item.');
       } catch {
         get().flash('Could not upload the photo — check your signal and try again.');
@@ -891,7 +902,10 @@ export const useStore = create<Store>()(
         return;
       }
       const undone = c.items.filter((it) => !it.state).length;
-      const failNoPhoto = c.items.filter((it) => it.state === 'fail' && it.photos === 0).length;
+      // a fail needs EVIDENCE: a linked photo (the server's proof, Task 4) or the
+      // legacy counter (demo). The deprecated counter alone must not block a fail
+      // whose photo is a real linked Media row (Task 7 acceptance finding).
+      const failNoPhoto = c.items.filter((it) => it.state === 'fail' && it.photos === 0 && (it.evidence?.length ?? 0) === 0).length;
       if (undone > 0) {
         get().flash('Please mark all ' + c.items.length + ' items before submitting.');
         return;
