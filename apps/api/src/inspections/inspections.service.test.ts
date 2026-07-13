@@ -58,10 +58,13 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
       groupBy: vi.fn(async ({ where }: { where: { inspectionItemId: { in: string[] } } }) =>
         (opts.evidence ?? []).filter((id) => where.inspectionItemId.in.includes(id)).map((id) => ({ inspectionItemId: id }))),
     },
-    membership: {
-      findUnique: vi.fn(async ({ where }: { where: { projectId_userId: { projectId: string; userId: string } } }) =>
-        members.find((m) => m.projectId === where.projectId_userId.projectId && m.userId === where.projectId_userId.userId) ?? null),
-    },
+    // the IN-TRANSACTION locked assignee read (SELECT ... FOR UPDATE, Codex gate P1):
+    // bind values are [projectId, assigneeId] — resolve against the fixture members
+    $queryRaw: vi.fn(async (q: { values: unknown[] }) => {
+      const [projectId, userId] = q.values as [string, string];
+      const m = members.find((x) => x.projectId === projectId && x.userId === userId);
+      return m ? [{ status: m.status, role: m.role }] : [];
+    }),
     project: { findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata' })) },
     notification: { create: vi.fn(async () => ({})) },
     auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },

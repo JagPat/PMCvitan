@@ -205,13 +205,6 @@ export class ActivitiesService {
     if (a.status !== 'in_progress') throw new ConflictException('Only a running activity can be marked complete');
 
     const actor = await resolveActor(this.prisma, user);
-    // the claim must be attributable to an ACTIVE member of THIS project — the
-    // composite (projectId, completionRequestedById) FK is the database backstop
-    const membership = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId: user.sub } } });
-    if (membership?.status !== 'active') {
-      throw new BadRequestException('Completion must be claimed by an ACTIVE member of this project — your account holds no active membership here.');
-    }
-
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     const today = this.clock.today(project.timeZone);
     const anchor = toIsoCivilDate(project.scheduleStartDate);
@@ -221,6 +214,17 @@ export class ActivitiesService {
     const closingId = nextSeqId('INSP-', existingIds.map((i) => i.id));
     try {
       await this.prisma.$transaction(async (tx) => {
+        // The claim must be attributable to a member who is ACTIVE AT COMMIT TIME
+        // (Codex Task 5 gate P1): the membership row is read LOCKED inside THIS
+        // transaction, so a concurrent removal has a defined order — it either
+        // commits first (this claim refuses with no side effects) or waits behind
+        // this commit. The composite FK proves existence, never validity.
+        const [membership] = await tx.$queryRaw<Array<{ status: string }>>(
+          Prisma.sql`SELECT "status" FROM "Membership" WHERE "projectId" = ${projectId} AND "userId" = ${user.sub} FOR UPDATE`,
+        );
+        if (membership?.status !== 'active') {
+          throw new BadRequestException('Completion must be claimed by an ACTIVE member of this project — your account holds no active membership here.');
+        }
         // CAS: exactly one completion claim wins (in_progress → awaiting_signoff)
         const { count } = await tx.activity.updateMany({
           where: { id: activityId, projectId, status: 'in_progress' },

@@ -178,7 +178,9 @@ export class InspectionsService {
       // claimant (closing) / the recorded submitter (ordinary). Either way they must
       // hold an ACTIVE corrective-role membership — removal or a role change since
       // the claim voids the default, and a PMC may only take the work by naming
-      // themselves EXPLICITLY.
+      // themselves EXPLICITLY. The eligibility CHECK itself runs INSIDE the
+      // transaction below (Codex Task 5 gate P1) — only the candidate's identity
+      // is derived here.
       const defaultAssignee = insp.closing ? activity?.completionRequestedById : insp.submittedById;
       const assigneeId = input.assigneeId ?? defaultAssignee;
       if (!assigneeId) {
@@ -186,16 +188,6 @@ export class InspectionsService {
           insp.closing
             ? 'This closing inspection has no recorded completer to assign — name an eligible assignee (an active engineer or contractor).'
             : 'No assignee could be derived — name an eligible assignee (an active engineer or contractor).',
-        );
-      }
-      const membership = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId: assigneeId } } });
-      const pmcSelfExplicit = input.assigneeId === user.sub && user.role === 'pmc' && membership?.role === 'pmc';
-      const eligible = membership?.status === 'active' && (CORRECTIVE_ROLES.includes(membership.role) || pmcSelfExplicit);
-      if (!eligible) {
-        throw new BadRequestException(
-          input.assigneeId === undefined
-            ? 'The recorded completer no longer holds an ACTIVE engineer or contractor membership on this project — name an explicit eligible assignee.'
-            : 'The assignee must hold an ACTIVE engineer or contractor membership on this project (a PMC may assign themselves explicitly).',
         );
       }
 
@@ -214,6 +206,23 @@ export class InspectionsService {
 
       try {
         await this.prisma.$transaction(async (tx) => {
+          // The assignee must be eligible AT COMMIT TIME (Codex Task 5 gate P1):
+          // the membership row is read LOCKED inside THIS transaction, so a
+          // concurrent removal/role change has a defined order — it either commits
+          // first (this rejection refuses with no side effects) or waits behind
+          // this commit. Validated FIRST, before any write.
+          const [membership] = await tx.$queryRaw<Array<{ status: string; role: string }>>(
+            Prisma.sql`SELECT "status", "role" FROM "Membership" WHERE "projectId" = ${projectId} AND "userId" = ${assigneeId} FOR UPDATE`,
+          );
+          const pmcSelfExplicit = input.assigneeId === user.sub && user.role === 'pmc' && membership?.role === 'pmc';
+          const eligible = membership?.status === 'active' && (CORRECTIVE_ROLES.includes(membership.role) || pmcSelfExplicit);
+          if (!eligible) {
+            throw new BadRequestException(
+              input.assigneeId === undefined
+                ? 'The recorded completer no longer holds an ACTIVE engineer or contractor membership on this project — name an explicit eligible assignee.'
+                : 'The assignee must hold an ACTIVE engineer or contractor membership on this project (a PMC may assign themselves explicitly).',
+            );
+          }
           // CAS: one decision wins; the loser gets a deterministic 409
           const { count } = await tx.inspection.updateMany({
             where: { id: inspectionId, projectId, submitted: true, decided: false },

@@ -306,6 +306,110 @@ describe('closing sign-off controls activity completion (integration)', () => {
     ).toBe(true);
   });
 
+  /**
+   * GATE FINDING P1 (Task 5 review, PR #107): membership status/role was validated
+   * BEFORE the lifecycle transaction — a membership change committing in the window
+   * between validation and commit still landed a 201. These probes hold the request
+   * at the pre-transaction inspection-id scan (AFTER the vulnerable validation read,
+   * BEFORE the transaction), commit the membership mutation inside that window, then
+   * let the request continue. The losing operation must refuse (400) and leave NO
+   * claim, decision, child inspection, audit or notification.
+   */
+  describe('GATE FINDING P1: membership churn INSIDE the validation window', () => {
+    /** Hold the request at its pre-transaction inspection-id scan (first findMany). */
+    function holdAtIdScan() {
+      const delegate = t.prisma.inspection as unknown as { findMany: (args?: unknown) => Promise<unknown> };
+      const original = delegate.findMany.bind(t.prisma.inspection);
+      let releaseHold!: () => void;
+      const held = new Promise<void>((resolve) => { releaseHold = resolve; });
+      let reachedResolve!: () => void;
+      const reached = new Promise<void>((resolve) => { reachedResolve = resolve; });
+      let hits = 0;
+      delegate.findMany = async (args?: unknown) => {
+        hits += 1;
+        if (hits === 1) { reachedResolve(); await held; } // only the pre-tx scan; the snapshot re-query passes through
+        return original(args);
+      };
+      return { reached, release: releaseHold, restore: () => { delegate.findMany = original; } };
+    }
+
+    const audits = (action: string, entityId: string) => t.prisma.auditLog.count({ where: { projectId: f.projectA.id, action, entityId } });
+
+    it('(a) claimant REMOVED in the window: the completion claim refuses with NO side effects', async () => {
+      expect((await as(pmcToken)(`/projects/${f.projectA.id}/activities`, { name: 'Window removal', plannedStart: 0, plannedEnd: 5 })).status).toBe(201);
+      const a = await t.prisma.activity.findFirstOrThrow({ where: { projectId: f.projectA.id, name: 'Window removal' } });
+      expect((await as(engToken)(`/projects/${f.projectA.id}/activities/${a.id}/start`, {})).status).toBe(201);
+      const noticesBefore = await t.prisma.notification.count({ where: { projectId: f.projectA.id } });
+
+      const b = holdAtIdScan();
+      try {
+        // Promise.resolve assimilates the lazy supertest thenable — the request DISPATCHES now
+        const pending = Promise.resolve(as(engToken)(`/projects/${f.projectA.id}/activities/${a.id}/complete`, {}));
+        await b.reached; // the request has passed any pre-transaction validation read
+        // the removal COMMITS inside the window, before the claim transaction
+        await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: f.ownerUser.id } }, data: { status: 'removed' } });
+        b.release();
+        expect((await pending).status).toBe(400); // a removed member cannot be recorded as claimant
+      } finally {
+        b.restore();
+        await restoreEngineer();
+      }
+
+      // NO side effects: no claim, no closing inspection, no audit, no notification
+      const after = await t.prisma.activity.findUniqueOrThrow({ where: { id: a.id } });
+      expect(after.status).toBe('in_progress');
+      expect(after.completionRequestedById).toBeNull();
+      expect(await t.prisma.inspection.count({ where: { projectId: f.projectA.id, activityId: a.id, closing: true } })).toBe(0);
+      expect(await audits('activity.complete_requested', a.id)).toBe(0);
+      expect(await t.prisma.notification.count({ where: { projectId: f.projectA.id } })).toBe(noticesBefore);
+    });
+
+    it('(b) recorded completer role-changed to CLIENT in the window: the default-assignee rejection refuses with NO side effects', async () => {
+      const { activityId, closingId } = await claimedActivity('Window role change');
+      const noticesBefore = await t.prisma.notification.count({ where: { projectId: f.projectA.id } });
+
+      const b = holdAtIdScan();
+      try {
+        const pending = Promise.resolve(as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'] }));
+        await b.reached;
+        // the completer stops being assignment-eligible INSIDE the window
+        await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: f.ownerUser.id } }, data: { role: 'client' } });
+        b.release();
+        const res = await pending;
+        expect(res.status).toBe(400);
+        expect(res.body.message).toMatch(/active|eligible|assignee/i);
+      } finally {
+        b.restore();
+        await restoreEngineer();
+      }
+
+      // NO side effects: undecided, no child, activity still awaiting its sign-off
+      expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: closingId } })).decided).toBe(false);
+      expect(await t.prisma.inspection.count({ where: { reinspectionOfId: closingId } })).toBe(0);
+      expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: activityId } })).status).toBe('awaiting_signoff');
+      expect(await audits('activity.signoff_rejected', activityId)).toBe(0);
+      expect(await audits('inspection.reject', closingId)).toBe(0);
+      expect(await t.prisma.notification.count({ where: { projectId: f.projectA.id } })).toBe(noticesBefore);
+    });
+
+    it('(c) EXPLICITLY named assignee REMOVED in the window: the rejection refuses with NO side effects', async () => {
+      const { closingId } = await claimedActivity('Window explicit removal');
+      const b = holdAtIdScan();
+      try {
+        const pending = Promise.resolve(as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'], assigneeId: f.strangerUser.id }));
+        await b.reached;
+        await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: f.strangerUser.id } }, data: { status: 'removed' } });
+        b.release();
+        expect((await pending).status).toBe(400);
+      } finally {
+        b.restore();
+        await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: f.strangerUser.id } }, data: { role: 'contractor', status: 'active' } });
+      }
+      expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: closingId } })).decided).toBe(false);
+      expect(await t.prisma.inspection.count({ where: { reinspectionOfId: closingId } })).toBe(0);
+    });
+  });
+
   it('FORGERY probe: a completion claim naming a member of ANOTHER project is rejected by PostgreSQL (composite FK)', async () => {
     expect((await as(pmcToken)(`/projects/${f.projectA.id}/activities`, { name: 'Forge claim', plannedStart: 0, plannedEnd: 5 })).status).toBe(201);
     const a = await t.prisma.activity.findFirstOrThrow({ where: { projectId: f.projectA.id, name: 'Forge claim' } });
