@@ -157,18 +157,18 @@ const EXPECTED_ROLES: Record<string, string[]> = {
   'NodesController.remove': ['pmc'],
   'DecisionsController.create': ['pmc'],
   'DecisionsController.publish': ['pmc'],
-  'DecisionsController.approve': ['client', 'pmc'],
-  'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  'DecisionsController.approve': ['client', 'pmc'], // Phase 1 Task 2: also RESOLVES the open ChangeRequest (reapproval)
+  'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'], // Phase 1 Task 2: refuses when one is already open; adds a `withdraw` route
   'ActivitiesController.create': ['pmc'],
-  'ActivitiesController.update': ['pmc'],
+  'ActivitiesController.update': ['pmc'], // Phase 1 Task 6: gateInspection leaves the updatable contract; adds `override` routes (pmc)
   'ActivitiesController.remove': ['pmc'],
   'ActivitiesController.start': ['engineer', 'pmc'],
-  'ActivitiesController.complete': ['engineer', 'pmc'],
+  'ActivitiesController.complete': ['engineer', 'pmc'], // Phase 1 Task 5: becomes "request sign-off" (awaiting_signoff)
   'PhasesController.create': ['pmc'],
   'PhasesController.remove': ['pmc'],
   'InspectionsController.create': ['pmc'],
-  'InspectionsController.submit': ['engineer', 'pmc'],
-  'InspectionsController.decide': ['pmc'],
+  'InspectionsController.submit': ['engineer', 'pmc'], // Phase 1 Task 4: fail items require linked Media evidence
+  'InspectionsController.decide': ['pmc'], // Phase 1 Tasks 4/5: reject creates the linked reinspection; closing approval completes the activity
   'DailyLogController.start': ['engineer', 'pmc'],
   'DailyLogController.addMaterial': ['engineer', 'pmc'],
   'DailyLogController.flag': ['engineer', 'pmc'],
@@ -176,10 +176,10 @@ const EXPECTED_ROLES: Record<string, string[]> = {
   'MediaController.upload': ['pmc', 'engineer'],
   'MediaController.remove': ['pmc', 'engineer'],
   'MediaController.setNode': ['pmc', 'engineer'],
-  'DrawingsController.issue': ['pmc'],
+  'DrawingsController.issue': ['pmc'], // Phase 1 Task 3: freezes recipients, audits issue, scopes supersession
   'DrawingsController.publish': ['pmc'],
   'DrawingsController.presign': ['pmc'],
-  'DrawingsController.acknowledge': ['pmc', 'engineer', 'contractor'],
+  'DrawingsController.acknowledge': ['pmc', 'engineer', 'contractor'], // Phase 1 Task 3: becomes offline-queueable
   'DrawingsController.remove': ['pmc'],
   'DrawingsController.setNode': ['pmc'],
   'OrgsController.createOrg': ['pmc', 'client', 'engineer', 'contractor'],
