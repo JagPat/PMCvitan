@@ -923,15 +923,28 @@ export const useStore = create<Store>()(
       }
       // ONLINE: upload now with the idempotency key; reconcile from the snapshot
       const scope = currentScope();
-      // the engineer's UNSUBMITTED field marks live only in this store — the snapshot
-      // refresh below must not discard them (Task 7 acceptance finding). Keyed by ROW
-      // ID, never by label: two rows may share a name and each keeps its OWN facts
-      // (gate round-2 finding 3 — this path already requires item.id above).
-      const marks = new Map(c.items.filter((it) => it.id).map((it) => [it.id!, { state: it.state, note: it.note }]));
+      // The engineer's UNSUBMITTED field marks live only in this store — the
+      // snapshot refresh below must not discard them (Task 7 acceptance finding).
+      // Keyed by ROW ID, never by label: two rows may share a name and each keeps
+      // its OWN facts (gate round-2 finding 3 — this path already requires item.id).
+      //
+      // Capture at BOTH points and take the union (gate round 5): marks entered
+      // BEFORE the upload can be wiped mid-flight by a concurrent `changed` socket
+      // refresh (useApiSync applies a server snapshot that has no local marks), and
+      // marks entered DURING the (slow) upload only exist in the live checklist. So
+      // snapshot the marks at ENTRY (pre-upload) and again from the LIVE checklist
+      // right before applySnapshot (during-upload), then restore whichever is a
+      // genuine local edit — preferring the live one, falling back to the entry one
+      // when a background refresh already wiped it.
+      const entryMarks = new Map(c.items.filter((it) => it.id).map((it) => [it.id!, { state: it.state, note: it.note }]));
       try {
         await gateway.uploadMedia({ kind: 'inspection', mime, data: base64, clientKey, ...meta });
         if (!scopeStillCurrent(scope)) return;
         const snap = await gateway.snapshot();
+        const liveNow = get().checklist;
+        const liveMarks: Map<string, { state: ItemState; note: string }> = liveNow?.id === c.id
+          ? new Map(liveNow.items.filter((it) => it.id).map((it) => [it.id!, { state: it.state, note: it.note }]))
+          : new Map();
         // gate round-4 finding 3: the SNAPSHOT await crosses the scope too —
         // applySnapshot refuses a response whose (project, generation) moved
         // (a switch OR a same-project re-authentication); when it refused,
@@ -942,8 +955,16 @@ export const useStore = create<Store>()(
           const chk = s.checklist;
           if (chk?.id !== c.id) return;
           for (const it of chk.items) {
-            const kept = it.id ? marks.get(it.id) : undefined;
-            if (kept) { it.state = kept.state; it.note = kept.note; }
+            if (!it.id) continue;
+            const live = liveMarks.get(it.id);
+            const entry = entryMarks.get(it.id);
+            // a genuine local edit differs from what the server just returned; the
+            // most-recent (live/during-upload) wins, then the entry (pre-upload)
+            // capture covers a mark a concurrent refresh wiped from the live copy.
+            const edit = (live && (live.state !== it.state || live.note !== it.note)) ? live
+              : (entry && (entry.state !== it.state || entry.note !== it.note)) ? entry
+                : undefined;
+            if (edit) { it.state = edit.state; it.note = edit.note; }
           }
         });
         get().flash('Evidence photo uploaded and linked to the item.');
