@@ -270,11 +270,14 @@ describe('replay lifecycle', () => {
       st.checklist = {
         id: 'INSP-90', title: 'Dup labels', zone: 'Terrace', date: '03 Jul 2026', submitted: false,
         items: [
-          { id: 'dup-1', name: 'Slope', state: 'pass', photos: 0, note: 'upper bay dry' },
-          { id: 'dup-2', name: 'Slope', state: 'fail', photos: 0, note: 'ponding at drain' },
+          { id: 'dup-1', name: 'Slope', state: null, photos: 0, note: '' },
+          { id: 'dup-2', name: 'Slope', state: null, photos: 0, note: '' },
         ],
       };
     });
+    // the engineer marks each row through the real edit path (setItem/setNote)
+    s().setItem(0, 'pass'); s().setNote(0, 'upper bay dry');
+    s().setItem(1, 'fail'); s().setNote(1, 'ponding at drain');
 
     await s().addChecklistEvidence(1, PX); // evidence onto ROW 2 → upload + snapshot refresh
 
@@ -691,7 +694,9 @@ describe('replay lifecycle', () => {
     };
     s()._setGateway(gw as unknown as ApiGateway);
     useStore.setState((st) => { st.online = true; });
-    seedChecklist(); // item-1 'fail', item-2 null
+    seedChecklist();
+    useStore.setState((st) => { st.checklist!.items[0].state = null; }); // undo the seed shortcut
+    s().setItem(0, 'fail'); // the engineer marks item-1 'fail' BEFORE uploading (real edit path)
 
     const upload = s().addChecklistEvidence(0, PX); // uploads, then PARKS on the held snapshot
     await settles(() => gw.snapshot.mock.calls.length === 1);
@@ -729,19 +734,104 @@ describe('replay lifecycle', () => {
     };
     s()._setGateway(gw as unknown as ApiGateway);
     useStore.setState((st) => { st.online = true; });
-    seedChecklist(); // item-1 'fail'
-    s().setItem(0, 'pass'); // the engineer marks item-1 BEFORE uploading
+    seedChecklist();
+    useStore.setState((st) => { st.checklist!.items[0].state = null; }); // undo the seed shortcut
+    s().setItem(0, 'pass'); // the engineer marks item-1 BEFORE uploading (real edit path)
 
     const upload = s().addChecklistEvidence(0, PX); // parks on the held snapshot
     await settles(() => gw.snapshot.mock.calls.length === 1);
-    // a BACKGROUND socket refresh (useApiSync) lands mid-upload and wipes the mark
+    // a BACKGROUND socket refresh (useApiSync) lands mid-upload with NO local marks —
+    // applySnapshot preserves the unsubmitted mark inline, so it is never wiped
     s().applySnapshot({ ...makeSnapshot(), checklist: serverChecklist });
-    expect(s().checklist!.items[0].state).toBeNull(); // the wipe really happened
+    expect(s().checklist!.items[0].state).toBe('pass'); // survives the concurrent refresh
     releaseSnap(null);
     await upload;
 
-    // the pre-upload mark is restored, not lost to the concurrent refresh
+    // ...and still stands after the upload's own snapshot returns
     expect(s().checklist!.items[0].state).toBe('pass');
+  });
+
+  it('an INTENTIONAL clear during a slow upload is honored, NOT reverted to the pre-upload value (gate round-6)', async () => {
+    // the reviewer's finding: set pass + note, start a slow upload, then during
+    // the upload deliberately toggle pass OFF and clear the note. Value-comparison
+    // cannot tell this intentional clear from a background wipe and wrongly
+    // restores pass + the old note. Per-field edit tracking honors the clear.
+    let releaseSnap!: (v: unknown) => void;
+    const heldSnap = new Promise((r) => (releaseSnap = r));
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      snapshot: vi.fn().mockImplementation(async () => {
+        await heldSnap;
+        return {
+          ...makeSnapshot(),
+          checklist: {
+            id: 'INSP-90', title: 'Test check', zone: 'Terrace', date: '03 Jul 2026', submitted: false,
+            items: [
+              { id: 'item-1', name: 'Slope', state: null, photos: 1, note: '', evidence: ['/media/m1'] },
+              { id: 'item-2', name: 'Seal', state: null, photos: 0, note: '', evidence: [] },
+            ],
+          },
+        };
+      }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    seedChecklist();
+    useStore.setState((st) => { st.checklist!.items[0].state = null; }); // undo the seed shortcut
+    s().setItem(0, 'pass'); s().setNote(0, 'looked fine on first pass'); // pre-upload marks
+
+    const upload = s().addChecklistEvidence(0, PX);
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+    // the engineer changes their mind mid-upload: clears BOTH the state and the note
+    s().setItem(0, 'pass'); // toggles 'pass' → null (an intentional clear)
+    s().setNote(0, '');
+    expect(s().checklist!.items[0].state).toBeNull();
+    releaseSnap(null);
+    await upload;
+
+    // the clear is honored — NOT reverted to the pre-upload pass / old note
+    expect(s().checklist!.items[0].state).toBeNull();
+    expect(s().checklist!.items[0].note).toBe('');
+  });
+
+  it('mixed edits: a per-field clear and a per-field set on the SAME row are each honored across the refresh (gate round-6)', async () => {
+    let releaseSnap!: (v: unknown) => void;
+    const heldSnap = new Promise((r) => (releaseSnap = r));
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      snapshot: vi.fn().mockImplementation(async () => {
+        await heldSnap;
+        return {
+          ...makeSnapshot(),
+          checklist: {
+            id: 'INSP-90', title: 'Test check', zone: 'Terrace', date: '03 Jul 2026', submitted: false,
+            items: [
+              { id: 'item-1', name: 'Slope', state: null, photos: 1, note: '', evidence: ['/media/m1'] },
+              { id: 'item-2', name: 'Seal', state: null, photos: 0, note: '', evidence: [] },
+            ],
+          },
+        };
+      }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    seedChecklist();
+    useStore.setState((st) => { st.checklist!.items[0].state = null; });
+    s().setItem(0, 'pass'); s().setNote(0, 'old text'); // pre-upload: state + note both set
+
+    const upload = s().addChecklistEvidence(0, PX);
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+    // mid-upload: CLEAR the state but KEEP editing the note to a new value
+    s().setItem(0, 'pass'); // → null (cleared)
+    s().setNote(0, 'revised after a closer look');
+    releaseSnap(null);
+    await upload;
+
+    // the state clear is honored AND the newer note is kept — each field independent
+    expect(s().checklist!.items[0].state).toBeNull();
+    expect(s().checklist!.items[0].note).toBe('revised after a closer look');
   });
 
   it('the user\'s explicit DELETE is the only non-server path that drops bytes', async () => {
