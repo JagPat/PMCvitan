@@ -4,16 +4,18 @@ Evidence package for the independent (Codex) review of Phase 1 — completing th
 existing product pillars
 ([plan](../superpowers/plans/2026-07-13-phase-1-existing-pillars.md) ·
 [spec](../superpowers/specs/2026-07-12-modular-construction-control-platform-design.md)).
-Written on 2026-07-13 AFTER every merge it cites; command outputs are fresh runs
-on `main` at `60f69c8` plus the Task 7 changes this packet ships with. Timestamps
-are UTC. Repository `JagPat/PMCvitan`, working branch
+Written on 2026-07-13 AFTER every merge it cites and refreshed on 2026-07-14
+after the gate round-1 remediations (PRs #112–#114) merged; the Verification
+section's command outputs are the Task 7 runs on `main` at `60f69c8` plus the
+Task 7 changes, and each remediation PR body records its own fresh full-battery
+runs. Timestamps are UTC. Repository `JagPat/PMCvitan`, working branch
 `claude/vitan-pmc-design-epa2rp`.
 
 ## Revisions
 
 - Phase base (Phase 0 closure): `5d6f08b4c39737972b115dcfabf1bebbb25e0e10` (merge of the Phase 0 docs correction, [PR #96](https://github.com/JagPat/PMCvitan/pull/96))
-- **Reviewed / effective head before Task 7**: `main` at `60f69c8581330dd663a932da3cea56e8553046d3` (merge of [PR #110](https://github.com/JagPat/PMCvitan/pull/110))
-- Task 7 ships in [PR #111](https://github.com/JagPat/PMCvitan/pull/111) (this packet, the pillar-chain acceptance suite, the upgrade-proof CI job, the three product fixes the suite surfaced, and the durable-docs updates); its head and merge SHAs are visible on the PR itself — the gate reviews `main` after that merge.
+- Gate round 1 reviewed `main` at `95ad1daf60eb84e6c98855ff68904a7a25ae50bb` (merge of [PR #111](https://github.com/JagPat/PMCvitan/pull/111)) and returned **BLOCKED** with four findings — all remediated in PRs #112–#114 (see "Independent Review — Phase 1 gate round 1" below).
+- **Effective reviewed head for the re-review**: `main` at `3380f758a7c544b059ea34f023f34b619535b12d` (merge of [PR #114](https://github.com/JagPat/PMCvitan/pull/114)), plus the docs-only packet-refresh PR this revision ships in (finding 4).
 - Every Phase 1 PR, in landing order. A **head** is the reviewed branch tip; a **merge** is the immutable merge commit on `main`. Bases are the `main` tip each merge was made against (first parent).
 
   | PR | Scope | Base | Head | Merge |
@@ -32,6 +34,10 @@ are UTC. Repository `JagPat/PMCvitan`, working branch
   | [#108](https://github.com/JagPat/PMCvitan/pull/108) | Task 5 gate P1 remediation: membership validated INSIDE the lifecycle transactions — gate CLEARED | `8d4aadb` | `490296626418a4978344dd061e5128c69d6ea2c8` | `9d71868881b2224a4b7014f48d4dc7763c263600` |
   | [#109](https://github.com/JagPat/PMCvitan/pull/109) | Task 6: readiness derived from explicit links + truth tables + expiring overrides | `9d71868` | `3a18224db0d7a308d9947cf5c80e2b8ad9dce49a` | `011f820d0e552e607d357d7cce61ea243d5ba923` |
   | [#110](https://github.com/JagPat/PMCvitan/pull/110) | Task 6 follow-up: fix the readiness suite teardown FK ordering that failed CI on #109 | `011f820` | `dfe475d78d628b0dd2307be9cc321826a1fa5377` | `60f69c8581330dd663a932da3cea56e8553046d3` |
+  | [#111](https://github.com/JagPat/PMCvitan/pull/111) | Task 7: pillar-chain acceptance suite, upgrade proof, this packet (+3 product fixes the suite surfaced) | `60f69c8` | `4f53299e31fe82db11322d22283bcdb15220428e` | `95ad1daf60eb84e6c98855ff68904a7a25ae50bb` |
+  | [#112](https://github.com/JagPat/PMCvitan/pull/112) | Gate round-1 finding 1 (P1): start serialized against every readiness write | `95ad1da` | `96a1746eadb2976935952dc3fd34867daacd2441` | `38efcd9028762569918ca7297d3e287779431fa6` |
+  | [#113](https://github.com/JagPat/PMCvitan/pull/113) | Gate round-1 finding 2 (P1): IndexedDB-canonical offline evidence queue | `38efcd9` | `a932a07cfff363c3c45f55ffd4a57ca5d110cfde` | `7963b207460e706dece9ef3f5a648ddcb1e2360f` |
+  | [#114](https://github.com/JagPat/PMCvitan/pull/114) | Gate round-1 finding 3 (P2): inspection items addressed by row id | `7963b20` | `ce360ae5c7ef55aef96e63c5f685999da1ab986b` | `3380f758a7c544b059ea34f023f34b619535b12d` |
 
 ## Vision Alignment
 
@@ -104,6 +110,10 @@ Fresh runs on the Task 7 working tree (2026-07-13, local; PostgreSQL 16):
   | #108 | [`4902966` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29262808412) | [`9d71868` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29265899141) |
   | #109 | [`3a18224` ✗](https://github.com/JagPat/PMCvitan/actions/runs/29269900470) | [`011f820` ✗](https://github.com/JagPat/PMCvitan/actions/runs/29270010436) |
   | #110 | [`dfe475d` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29270180744) | [`60f69c8` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29270861992) |
+  | #111 | [`4f53299` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29274296167) | [`95ad1da` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29287146256) |
+  | #112 | [`96a1746` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29289457262) | [`38efcd9` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29298920949) |
+  | #113 | [`a932a07` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29299097852) | [`7963b20` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29299207348) |
+  | #114 | [`ce360ae` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29299225140) | [`3380f75` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29299325637) |
 
   **Honest note on #109:** its `api` job failed AFTER all 75 integration tests passed — the new readiness suite's teardown deleted `Media` before dependent `GateOverride` rows and tripped the containment FK (the very constraint Task 6 added). The failure was masked locally by verifying a piped `vitest … | tail` instead of the exit code. [PR #110](https://github.com/JagPat/PMCvitan/pull/110) fixed the teardown ordering the same day; head and merge are green, and no product code changed between `3a18224` and `dfe475d` besides that test file.
 
@@ -113,7 +123,20 @@ Fresh runs on the Task 7 working tree (2026-07-13, local; PostgreSQL 16):
 - **Task 1 stop** — cleared at merge `1407900` after the correction PR #101 (drawing-pillar characterization + a deterministic race barrier).
 - **Task 3 stop (Tasks 2+3 reviewed together)** — 7 findings, remediated in PR #104 (change-control: diagnostic gap, actor role columns, audit attribution) and PR #105 (drawing lifecycle: governing-revision DB backstop, frozen-set semantics, revision tenancy, ack containment); re-review CLEARED.
 - **Task 5 stop** — BLOCKED with one P1: membership eligibility was validated OUTSIDE the lifecycle transaction (TOCTOU) — a member removed or demoted mid-window could still claim completion or receive corrective work ([finding](https://github.com/JagPat/PMCvitan/pull/107#issuecomment-4959531194)). Remediated in PR #108: the membership row is read `FOR UPDATE` and validated FIRST inside both `complete()` and `decide()` transactions, with reproduce-first live-PostgreSQL race probes (red 201 at the pre-fix SHA → 400 with zero side effects after). [Gate cleared](https://github.com/JagPat/PMCvitan/pull/108#issuecomment-4960362431) on merged `main` @ `9d71868`.
-- **Task 7 stop** — THIS packet; the phase-closing gate reviews `main` after PR #111 merges.
+- **Task 7 stop** — the phase-closing gate ran against merged `main` @ `95ad1da` (round 1 below); its four findings are remediated and the narrow re-review runs against the effective reviewed head above.
+
+## Independent Review — Phase 1 gate round 1 (Codex) and Remediation
+
+The gate reviewed `main` at `95ad1daf60eb84e6c98855ff68904a7a25ae50bb` (merge of PR #111) and returned **BLOCKED** with four findings (full verdict on [PR #111](https://github.com/JagPat/PMCvitan/pull/111#issuecomment-4963118843)); it independently verified all suites green at that head (web 218, api 372, integration 75, demo 21, api-browser 18, migrations 28, upgrade assertions 17, checksums matching). Every finding was remediated reproduce-first in a focused PR:
+
+| Finding | Remediation | Reproduce-first proof |
+|---|---|---|
+| 1 (P1) — `start()` evaluated readiness OUTSIDE its write transaction and updated unconditionally: two simultaneous starts both returned 201 (both audited), and a gate flip landing between the evaluation and the commit was silently overrun | [PR #112](https://github.com/JagPat/PMCvitan/pull/112), head `96a1746`, merged `38efcd9`: ONE database-level protocol — a per-project `pg_advisory_xact_lock` (`src/common/readiness-lock.ts`). `start()` takes the lock, re-reads the activity, evaluates the five gates on the transaction client and CAS-commits + audits in the same transaction; every readiness-affecting write (decision approve/change/withdraw; drawing issue/publish/ack/delete; inspection create/submit/decide; membership activation/removal; override grant/revoke; the activity gate/linkage PATCH) takes the same lock first, uniformly ordered before all row locks | `test/integration/start-readiness-race.test.ts` — the reviewer's two probes red at `95ad1da` (double-start both 201; a PATCH and an override revoke both settled inside the held start window) → 4/4 green: `[201,409]` with exactly ONE audit; both write classes wait for start's commit; the committed-flip control shows 409 with zero side effects. 10× stable |
+| 2 (P1) — evidence bytes committed to IndexedDB but the replay op lived only in localStorage; a swallowed `setItem` failure orphaned the photo permanently ("saved offline" shown, reload restores no op, Retry only surfaces FAILED rows) | [PR #113](https://github.com/JagPat/PMCvitan/pull/113), head `a932a07`, merged `7963b20`: IndexedDB is the CANONICAL evidence queue — `reconcileEvidence` merges every pending row back into the replay outbox idempotently per clientKey on every hydration (even with localStorage entirely unavailable); a failed dead-letter write rethrows transient so the flush KEEPS the only replay op | `tests/evidence.test.ts` — the reviewer's `Storage.setItem`-throws probe red (outbox `[]` after reload, row stranded pending) → green (op reconstructed, uploaded exactly once, cleaned up); the dead-letter-write-failure probe red (op dropped) → green (op retained, next flush dead-letters into FAILED + Retry); idempotence probe |
+| 3 (P2) — submit/reject addressed items by non-unique NAMES: duplicate labels collapsed into one payload (a valid mixed-outcome submission 400'd; the exact evidenced row was not addressable; a foreign item id was silently accepted by name-match) | [PR #114](https://github.com/JagPat/PMCvitan/pull/114), head `ce360ae`, merged `3380f75`: the contracts speak in row ids — submit items carry a required `id` validated to belong to THIS inspection and written by `(id, inspectionId)`; `rejectedItemIds` replaces `rejectedItemNames` with the same containment refusal; the review DTO / shared types expose item ids and the web reject flow sends them | `test/integration/item-identity.test.ts` — the reviewer's duplicate-label mixed-outcome probe red (400) → green (201, per-row results, exactly the evidenced row rejected, ONE child with ONE item, passed twin untouched); foreign ids on submit AND reject → 400 with zero writes |
+| 4 (P2) — this packet omitted PR #111's immutable base/head/merge SHAs and CI rows | The docs-only packet-refresh PR this revision ships in: PR #111's row and CI runs recorded above, plus the remediation PRs' rows and this section | — |
+
+Fresh full-battery runs after each remediation (recorded in each PR body): unit 372/372 · integration 79/79 → 81/81 (the new probe suites) on live PostgreSQL 16 · web 218/218 → 221/221 · `pnpm check` exit 0 · demo e2e 21/21 · api-e2e 18/18 · upgrade proof 17/17 · 10× stability on the new race suite.
 
 ## Acceptance Criteria (spec §25 rows this phase covers)
 
