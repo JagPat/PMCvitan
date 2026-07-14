@@ -900,10 +900,16 @@ export const useStore = create<Store>()(
           if (evidenceContextStillCurrent(ctx)) get().flash('Could not save this photo on the device — free space and retake.');
           return;
         }
-        // a NEW pending row exists — reconciliations already in flight read a
-        // world without it and must not overwrite the mirrors it feeds
+        // gate round-4 finding 1: the context check comes FIRST — only a
+        // completion still belonging to the ACTIVE context may invalidate that
+        // context's in-flight reconciliation. A capture whose scope moved
+        // mid-write returns untouched (its row's own scope reconstructs it);
+        // bumping the shared epoch here would cancel the NEW scope's own
+        // hydration and hide its pending/failed evidence.
+        if (!evidenceContextStillCurrent(ctx)) return;
+        // a NEW pending row exists in THIS scope — reconciliations already in
+        // flight read a world without it and must not overwrite its mirrors
         invalidateEvidenceReconciles();
-        if (!evidenceContextStillCurrent(ctx)) return; // moved mid-write: the row's own scope reconstructs it
         set((s) => {
           s.outbox.push({ t: 'uploadEvidence', scope: ctx.scope, clientKey });
           s.syncQueue.push('Evidence photo');
@@ -926,7 +932,12 @@ export const useStore = create<Store>()(
         await gateway.uploadMedia({ kind: 'inspection', mime, data: base64, clientKey, ...meta });
         if (!scopeStillCurrent(scope)) return;
         const snap = await gateway.snapshot();
-        applySnapshot(snap, scope);
+        // gate round-4 finding 3: the SNAPSHOT await crosses the scope too —
+        // applySnapshot refuses a response whose (project, generation) moved
+        // (a switch OR a same-project re-authentication); when it refused,
+        // NOTHING after it may run, or the previous session's marks would be
+        // restored into the new session's checklist under the same row ids.
+        if (!applySnapshot(snap, scope)) return;
         set((s) => {
           const chk = s.checklist;
           if (chk?.id !== c.id) return;
@@ -937,7 +948,9 @@ export const useStore = create<Store>()(
         });
         get().flash('Evidence photo uploaded and linked to the item.');
       } catch {
-        get().flash('Could not upload the photo — check your signal and try again.');
+        // the failure belongs to the scope the capture was made in — a moved
+        // scope (gate round-4 finding 3) hears nothing
+        if (scopeStillCurrent(scope)) get().flash('Could not upload the photo — check your signal and try again.');
       }
     },
     retryFailedEvidence: async (clientKey) => {
@@ -960,7 +973,17 @@ export const useStore = create<Store>()(
       invalidateEvidenceReconciles(); // the row is about to vanish under any in-flight read
       const ctx = captureEvidenceContext();
       // the user's explicit decision — the only non-server path that drops bytes
-      await deleteEvidence(ctx.scope, ctx.projectId, clientKey).catch(() => {});
+      try {
+        await deleteEvidence(ctx.scope, ctx.projectId, clientKey);
+      } catch {
+        // gate round-4 finding 2: the deletion did NOT happen — the bytes are
+        // still on the device, so the Retry/Delete surface must stay and the
+        // UI must never claim success. Surface the failure only to the scope
+        // the user acted in; a moved scope hears nothing.
+        if (!evidenceContextStillCurrent(ctx)) return;
+        get().flash('Could not delete the photo — it is still saved on this device; try again.');
+        return;
+      }
       // gate round-3: the delete honored the user's decision in ITS scope; a
       // switch that landed mid-await leaves the NEW scope's UI untouched
       if (!evidenceContextStillCurrent(ctx)) return;

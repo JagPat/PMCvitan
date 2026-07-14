@@ -505,6 +505,169 @@ describe('replay lifecycle', () => {
     expect(s().toast).toBeNull();
   });
 
+  it('a STALE capture completion must not cancel the new project\'s ACTIVE reconciliation (gate round-4 finding 1)', async () => {
+    s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    // Villa owns a durable FAILED row its user must be able to see
+    const evidenceStore = await import('@/data/evidenceStore');
+    await putEvidence({ userScope: 'anon', projectId: 'villa', clientKey: 'k-villa', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-91', inspectionItemId: 'item-9' });
+    await evidenceStore.markEvidenceFailed('anon', 'villa', 'k-villa', 'upload rejected (400)');
+
+    // hold Ambli's capture write
+    const realPut = evidenceStore.putEvidence;
+    let releasePut!: (v: unknown) => void;
+    const heldPut = new Promise((r) => (releasePut = r));
+    const putSpy = vi.spyOn(evidenceStore, 'putEvidence').mockImplementationOnce(async (entry) => {
+      await heldPut;
+      return realPut(entry);
+    });
+    const capture = s().addChecklistEvidence(0, PX);
+
+    // switch to Villa and start ITS hydration, holding the list read
+    useStore.setState((st) => {
+      st.activeProjectId = 'villa';
+      st.projectScopeGeneration += 1;
+      st.checklist = null;
+      st.outbox = []; st.syncQueue = []; st.pendingEvidenceCount = 0; st.failedEvidence = [];
+      st.toast = null;
+    });
+    const realList = evidenceStore.listEvidence;
+    let releaseList!: (v: unknown) => void;
+    const heldList = new Promise((r) => (releaseList = r));
+    const listSpy = vi.spyOn(evidenceStore, 'listEvidence').mockImplementationOnce(async (scope, project) => {
+      await heldList;
+      return realList(scope, project);
+    });
+    const hydration = s().hydrateEvidence(); // Villa's reconciliation parks on its read
+
+    releasePut(null); // the OLD project's capture completes FIRST...
+    await capture;
+    releaseList(null); // ...then Villa's own read arrives
+    await hydration;
+    putSpy.mockRestore();
+    listSpy.mockRestore();
+
+    // Villa's reconciliation is the NEWEST truth — the stale capture must not
+    // have cancelled it: the failed row is visible for Retry/Delete
+    expect(s().failedEvidence.map((f) => f.clientKey)).toContain('k-villa');
+  });
+
+  it('a FAILED durable delete keeps the bytes, keeps Retry/Delete and never reports success (gate round-4 finding 2)', async () => {
+    s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
+    await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'k-del2', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
+    const evidenceStore = await import('@/data/evidenceStore');
+    await evidenceStore.markEvidenceFailed('anon', 'ambli', 'k-del2', 'upload rejected (400)');
+    await s().hydrateEvidence();
+    expect(s().failedEvidence.map((f) => f.clientKey)).toContain('k-del2');
+
+    const spy = vi.spyOn(evidenceStore, 'deleteEvidence').mockRejectedValueOnce(new Error('transaction aborted'));
+    useStore.setState((st) => { st.toast = null; });
+    await s().deleteFailedEvidence('k-del2');
+    spy.mockRestore();
+
+    expect((await getEvidence('anon', 'ambli', 'k-del2'))?.status).toBe('failed'); // the bytes remain
+    expect(s().failedEvidence.map((f) => f.clientKey)).toContain('k-del2'); // Retry/Delete stays
+    expect(s().toast).toMatch(/could not delete/i); // an explicit failure — never "Photo deleted."
+  });
+
+  it('a FAILED durable delete across a project switch mutates NOTHING in the new scope (gate round-4 finding 2)', async () => {
+    s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
+    await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'k-del3', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
+    const evidenceStore = await import('@/data/evidenceStore');
+    await evidenceStore.markEvidenceFailed('anon', 'ambli', 'k-del3', 'upload rejected (400)');
+    await s().hydrateEvidence();
+
+    let release!: (v: unknown) => void;
+    const held = new Promise((r) => (release = r));
+    const spy = vi.spyOn(evidenceStore, 'deleteEvidence').mockImplementationOnce(async () => {
+      await held;
+      throw new Error('transaction aborted');
+    });
+    const del = s().deleteFailedEvidence('k-del3');
+    useStore.setState((st) => {
+      st.activeProjectId = 'villa';
+      st.projectScopeGeneration += 1;
+      st.outbox = []; st.syncQueue = []; st.pendingEvidenceCount = 0;
+      st.failedEvidence = [{ clientKey: 'k-villa-own', reason: 'upload rejected (400)', mime: 'image/png' }];
+      st.toast = null;
+    });
+    release(null);
+    await del;
+    spy.mockRestore();
+
+    // Villa's surface and toast are untouched; Ambli's row is still there for retry
+    expect(s().failedEvidence.map((f) => f.clientKey)).toEqual(['k-villa-own']);
+    expect(s().toast).toBeNull();
+    expect((await getEvidence('anon', 'ambli', 'k-del3'))?.status).toBe('failed');
+  });
+
+  it('an ONLINE upload\'s snapshot refresh must not restore the PREVIOUS session\'s marks after a re-authentication (gate round-4 finding 3)', async () => {
+    let releaseSnap!: (v: unknown) => void;
+    const heldSnap = new Promise((r) => (releaseSnap = r));
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      snapshot: vi.fn().mockImplementation(async () => {
+        await heldSnap;
+        return makeSnapshot();
+      }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    seedChecklist();
+    useStore.setState((st) => {
+      st.checklist!.items[0].state = 'fail';
+      st.checklist!.items[0].note = 'OLD session note';
+    });
+
+    const upload = s().addChecklistEvidence(0, PX); // upload 2xx, parks on the held snapshot
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+    // same-project RE-AUTHENTICATION: the generation moves and the NEW session
+    // installs its own checklist carrying the SAME row ids with its OWN facts
+    useStore.setState((st) => {
+      st.projectScopeGeneration += 1;
+      st.checklist = {
+        id: 'INSP-90', title: 'Test check', zone: 'Terrace', date: '03 Jul 2026', submitted: false,
+        items: [
+          { id: 'item-1', name: 'Slope', state: 'pass', photos: 0, note: 'NEW session note' },
+          { id: 'item-2', name: 'Seal', state: null, photos: 0, note: '' },
+        ],
+      };
+      st.toast = null;
+    });
+    releaseSnap(null);
+    await upload;
+
+    // the stale response must change NOTHING in the new session
+    expect(s().checklist!.items[0]).toMatchObject({ state: 'pass', note: 'NEW session note' });
+    expect(s().toast).toBeNull();
+  });
+
+  it('an ONLINE upload failure must not toast into the project the user switched to (gate round-4 finding 3)', async () => {
+    let rejectUpload!: (e: unknown) => void;
+    const heldUpload = new Promise((_, rej) => (rejectUpload = rej));
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockImplementation(() => heldUpload),
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    seedChecklist();
+
+    const upload = s().addChecklistEvidence(0, PX); // parks on the held upload
+    useStore.setState((st) => {
+      st.activeProjectId = 'villa';
+      st.projectScopeGeneration += 1;
+      st.toast = null;
+    });
+    rejectUpload(Object.assign(new Error('HTTP 500'), { status: 500 }));
+    await upload;
+
+    expect(s().toast).toBeNull(); // the failure belongs to Ambli's context, not Villa's screen
+  });
+
   it('the user\'s explicit DELETE is the only non-server path that drops bytes', async () => {
     await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'k-del', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
     const evidenceStore = await import('@/data/evidenceStore');
