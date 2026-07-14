@@ -1168,6 +1168,112 @@ describe('replay lifecycle', () => {
     expect(s().checklist!.items[0].state).toBe('fail');
   });
 
+  // ---- gate round 10: the SAME-session event-ordering matrix (attempt identity) ----
+  // Rows: a delayed OLD response arriving AFTER a newer submit / a socket refresh has
+  // taken over. The (project, generation) scope is identical, so ONLY the attempt id
+  // separates them. Each row: the retired OLD response must be a no-op.
+  const checklistWithId = (id: string, submitted: boolean, items: Checklist['items']): Checklist =>
+    ({ id, title: 'Test check', zone: 'Terrace', date: '03 Jul 2026', submitted, items });
+  const passItemsFor = (): Checklist['items'] => [
+    { id: 'a', name: 'Slope', state: 'pass', photos: 0, note: 'ok', evidence: [] },
+    { id: 'b', name: 'Seal', state: 'pass', photos: 0, note: '', evidence: [] },
+  ];
+
+  it('a delayed OLD submit SUCCESS does not overwrite a NEWER submit a socket refresh started (gate round-10)', async () => {
+    let resolveOld!: (v: unknown) => void;
+    const pOld = new Promise((res) => { resolveOld = res; });
+    const pNew = new Promise<never>(() => {}); // NEW stays in flight
+    const gw = {
+      project: 'ambli', uploadMedia: vi.fn(), snapshot: vi.fn(),
+      submitInspection: vi.fn().mockImplementationOnce(() => pOld).mockImplementationOnce(() => pNew),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection(); // OLD (INSP-90) — attempt 1
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    // a socket refresh delivers a DIFFERENT checklist (INSP-91) — same session/generation
+    s().applySnapshot({ ...makeSnapshot(), checklist: checklistWithId('INSP-91', false, passItemsFor()) });
+    expect(s().checklist!.id).toBe('INSP-91');
+    s().submitInspection(); // NEW (INSP-91) — attempt 2, now in flight
+    await settles(() => gw.submitInspection.mock.calls.length === 2);
+    useStore.setState((st) => { st.toast = 'NEW IN FLIGHT'; });
+
+    resolveOld({ ...makeSnapshot(), checklist: serverChecklistOf(true, twoPassItems()) }); // OLD lands late
+    await pOld;
+    await drainMicrotasks();
+
+    expect(s().checklist!.id).toBe('INSP-91');          // the stale OLD snapshot was NOT applied
+    expect(s().submission.status).toBe('submitting');    // NEW still owns the in-flight submit
+    expect(checklistFrozen(s())).toBe(true);
+    expect(s().toast).toBe('NEW IN FLIGHT');             // no stale success toast
+  });
+
+  it('a transport FAILURE that lands after a socket refresh already confirmed the submit does not toast "Could not submit" (gate round-10)', async () => {
+    let rejectOld!: (e: unknown) => void;
+    const pOld = new Promise((_res, rej) => { rejectOld = rej; });
+    const gw = {
+      project: 'ambli', uploadMedia: vi.fn(), snapshot: vi.fn(),
+      submitInspection: vi.fn().mockImplementationOnce(() => pOld),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection(); // attempt 1
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    // the socket confirms success first: a background refresh brings it submitted
+    s().applySnapshot({ ...makeSnapshot(), checklist: serverChecklistOf(true, twoPassItems()) });
+    expect(s().checklist!.submitted).toBe(true);
+    useStore.setState((st) => { st.toast = 'CONFIRMED VIA SOCKET'; });
+
+    rejectOld(Object.assign(new Error('connection lost'), { status: 0 })); // the transport fails late
+    await pOld.catch(() => {});
+    await drainMicrotasks();
+
+    expect(s().toast).toBe('CONFIRMED VIA SOCKET');   // NOT a stale "Could not submit"
+    expect(s().checklist!.submitted).toBe(true);       // the confirmed submit stands
+  });
+
+  it('a transport SUCCESS that lands after a socket refresh already applied it does not re-toast (gate round-10)', async () => {
+    let resolveOld!: (v: unknown) => void;
+    const pOld = new Promise((res) => { resolveOld = res; });
+    const gw = {
+      project: 'ambli', uploadMedia: vi.fn(), snapshot: vi.fn(),
+      submitInspection: vi.fn().mockImplementationOnce(() => pOld),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection(); // attempt 1
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    s().applySnapshot({ ...makeSnapshot(), checklist: serverChecklistOf(true, twoPassItems()) }); // socket confirms
+    useStore.setState((st) => { st.toast = 'CONFIRMED VIA SOCKET'; });
+
+    resolveOld({ ...makeSnapshot(), checklist: serverChecklistOf(true, twoPassItems()) }); // transport success late
+    await pOld;
+    await drainMicrotasks();
+
+    expect(s().toast).toBe('CONFIRMED VIA SOCKET');   // no duplicate "Inspection submitted" toast
+  });
+
+  it('a normal IN-ORDER submit success still applies and toasts — the attempt guard does not over-block (gate round-10)', async () => {
+    const gw = {
+      project: 'ambli', uploadMedia: vi.fn(), snapshot: vi.fn(),
+      submitInspection: vi.fn().mockResolvedValue({ ...makeSnapshot(), checklist: serverChecklistOf(true, twoPassItems()) }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection();
+    await settles(() => s().checklist?.submitted === true);
+    expect(s().toast).toMatch(/Inspection submitted/i);
+    expect(s().submission.status).toBe('idle');
+  });
+
   it('the user\'s explicit DELETE is the only non-server path that drops bytes', async () => {
     await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'k-del', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
     const evidenceStore = await import('@/data/evidenceStore');

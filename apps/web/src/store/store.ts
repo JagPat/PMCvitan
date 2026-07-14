@@ -118,6 +118,14 @@ export interface ChecklistSubmission {
   inspectionId: string | null;
   generation: number;
   status: ChecklistSubmissionStatus;
+  // A unique, monotonic id for the ONLINE submit dispatch that owns this state
+  // (gate round 10). The (project, generation) scope guard (round 9) cannot tell
+  // two dispatches apart WITHIN one session — a delayed response from a superseded
+  // submit shares the live generation. Each online dispatch stamps a fresh attempt
+  // here; its continuation ignores itself once `attempt` no longer matches (a newer
+  // submit, or a socket-delivered checklist swap that retired it). 0 = no in-flight
+  // online attempt owns this state.
+  attempt: number;
 }
 
 export interface AppState {
@@ -423,16 +431,23 @@ function reconcileSubmission(s: AppState): void {
   const sub = s.submission;
   const c = s.checklist;
   const gen = s.projectScopeGeneration;
+  // gate round 10: any branch that CHANGES ownership (a different checklist, a
+  // server-confirmed submit, a reload of a queued submit, an idle reset) RETIRES
+  // whatever online attempt held this state — reset `attempt` to 0 so that attempt's
+  // in-flight continuation is ignored when it lands. The ONE branch that keeps an
+  // in-flight online submit alive preserves its `attempt`.
   if (!c) {
     sub.inspectionId = null;
     sub.generation = gen;
     sub.status = 'idle';
+    sub.attempt = 0;
     return;
   }
   if (c.submitted) {
     sub.inspectionId = c.id;
     sub.generation = gen;
     sub.status = 'idle';
+    sub.attempt = 0;
     return;
   }
   const queued = s.outbox.some((op) => op.t === 'submitInspection' && op.inspectionId === c.id);
@@ -440,12 +455,15 @@ function reconcileSubmission(s: AppState): void {
     sub.inspectionId = c.id;
     sub.generation = gen;
     sub.status = 'queued';
+    sub.attempt = 0;
   } else if (sub.inspectionId === c.id && sub.generation === gen && sub.status === 'submitting') {
-    // an online submit is still in flight — keep the freeze until it resolves
+    // an online submit is still in flight for THIS inspection — keep the freeze AND
+    // its owning attempt until that submit's own continuation resolves it
   } else {
     sub.inspectionId = c.id;
     sub.generation = gen;
     sub.status = 'idle';
+    sub.attempt = 0;
   }
 }
 
@@ -465,7 +483,7 @@ export function getInitialState(): AppState {
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
-    submission: { inspectionId: null, generation: 0, status: 'idle' },
+    submission: { inspectionId: null, generation: 0, status: 'idle', attempt: 0 },
     reviews: [structuredClone(SEED_REVIEW)],
     activeReviewId: null,
     reinspectionCreated: false,
@@ -690,6 +708,9 @@ export const useStore = create<Store>()(
      *  NEWEST truth may mutate the store. */
     let evidenceEpoch = 0;
     const invalidateEvidenceReconciles = (): number => ++evidenceEpoch;
+    // gate round 10: a monotonic id stamped on every ONLINE submit dispatch, so a
+    // continuation can tell whether it still owns the submission (see submitInspection).
+    let submitAttemptSeq = 0;
     const reconcileEvidence = async (): Promise<void> => {
       const epoch = invalidateEvidenceReconciles(); // this reconciliation supersedes older ones
       const scope = evidenceScope();
@@ -1179,28 +1200,34 @@ export const useStore = create<Store>()(
           // ack arrived). On success the server's submitted checklist lands and
           // applySnapshot drops the marks (gate round 7). On FAILURE we UNLOCK the
           // checklist WITHOUT losing the marks so the engineer can fix and resubmit.
-          set((s) => { s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'submitting' }; });
+          // gate round 10: stamp this dispatch with a unique attempt id. The
+          // (project, generation) scope guard (round 9) cannot separate two submits
+          // WITHIN one session — a socket-delivered checklist swap can retire this
+          // submit and start another under the SAME generation. `attempt` makes each
+          // dispatch identifiable; `isThisAttempt()` is true only while THIS dispatch
+          // still owns the submission (no newer submit, and no reconcile has retired it).
+          const attempt = ++submitAttemptSeq;
+          set((s) => { s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'submitting', attempt }; });
           const scope = currentScope();
+          const isThisAttempt = (): boolean => scopeStillCurrent(scope) && get().submission.attempt === attempt;
           gateway
             .submitInspection(c.id, c.items)
             .then((snap) => {
-              applySnapshot(snap, scope); // submitted:true clears the marks + idles the submission (scope-guarded inside)
-              // gate round 9: a re-auth / project switch may have landed while the
-              // submit was in flight — a re-auth ALWAYS bumps the generation, so a
-              // NEWER session can hold its OWN submit for the same inspection. Only
-              // report success into the SAME session that dispatched THIS request;
-              // otherwise this stale toast (and, in .catch below, a stale unlock)
-              // would leak into the new session.
-              if (scopeStillCurrent(scope)) get().flash('Inspection submitted to the architect for review.');
+              // Ignore a response that no longer owns the submission: a newer submit
+              // or a socket refresh superseded it (round 10), or the session moved
+              // (round 9). Applying its snapshot would overwrite the live checklist
+              // and idle the newer submit; toasting would be a stale notification.
+              if (!isThisAttempt()) return;
+              applySnapshot(snap, scope); // submitted:true clears the marks + idles the submission
+              get().flash('Inspection submitted to the architect for review.');
             })
             .catch(() => {
-              // gate round 9: if the scope moved (re-auth / project switch), this is
-              // the OLD session's request — it must NOT flip the newer session's
-              // in-flight submit from `submitting` to `idle` (which would unlock the
-              // checklist mid-request and lose edits), nor toast into it.
-              if (!scopeStillCurrent(scope)) return;
+              // Same guard on failure: a retired attempt (round 10) or a superseded
+              // session (round 9) must not unlock the live submit or toast "Could not
+              // submit" — a socket refresh may already have confirmed success.
+              if (!isThisAttempt()) return;
               set((s) => {
-                if (s.submission.inspectionId === c.id && s.submission.generation === scope.generation && s.submission.status === 'submitting') {
+                if (s.submission.attempt === attempt && s.submission.status === 'submitting') {
                   s.submission.status = 'idle';
                 }
               });
@@ -1213,7 +1240,7 @@ export const useStore = create<Store>()(
         set((s) => {
           s.outbox.push({ t: 'submitInspection', inspectionId: c.id, items: c.items });
           s.syncQueue.push('Submit inspection');
-          s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued' };
+          s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued', attempt: 0 };
         });
         persistOutbox();
         get().flash('Submit inspection — saved offline, will sync when you reconnect.');
@@ -1224,7 +1251,7 @@ export const useStore = create<Store>()(
       set((s) => {
         if (!s.checklist) return;
         s.checklist.submitted = true;
-        s.submission = { inspectionId: null, generation: s.projectScopeGeneration, status: 'idle' };
+        s.submission = { inspectionId: null, generation: s.projectScopeGeneration, status: 'idle', attempt: 0 };
         s.checklistMarks.inspectionId = null;
         s.checklistMarks.byItem = {};
         // demo (no API): the submitted checklist enters the PMC review queue,
