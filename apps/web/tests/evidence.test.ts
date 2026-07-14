@@ -1058,6 +1058,116 @@ describe('replay lifecycle', () => {
     expect(s().checklist!.items[0].state).toBe('pass');
   });
 
+  // ---- gate round 9: the online-submit continuations are SCOPE-guarded ----
+  /** flush the promise microtask queue (no IndexedDB here — a single macrotask
+   *  drains every chained .then/.catch off a settled submit promise). */
+  const drainMicrotasks = () => new Promise((r) => setTimeout(r, 0));
+  /** a re-auth is a new session identity — it ALWAYS bumps the scope generation. */
+  const reauth = () => useStore.setState((st) => { st.projectScopeGeneration += 1; });
+
+  it('after a re-auth, the OLD submit\'s FAILURE does not unlock the NEWER submit for the same inspection (gate round-9)', async () => {
+    let rejectA!: (e: unknown) => void;
+    const pA = new Promise((_res, rej) => { rejectA = rej; });
+    const pB = new Promise<never>(() => { /* B stays in flight */ });
+    const gw = {
+      project: 'ambli', uploadMedia: vi.fn(), snapshot: vi.fn(),
+      submitInspection: vi.fn().mockImplementationOnce(() => pA).mockImplementationOnce(() => pB),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection(); // request A — dispatched under the ORIGINAL session
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+
+    reauth(); // a new session lands while A is still in flight
+    s().submitInspection(); // request B — the NEW session, SAME inspection
+    await settles(() => gw.submitInspection.mock.calls.length === 2);
+    const genB = s().submission.generation;
+    expect(s().submission.status).toBe('submitting'); // B is in flight
+
+    rejectA(Object.assign(new Error('HTTP 500'), { status: 500 })); // the OLD request fails
+    await pA.catch(() => {});
+    await drainMicrotasks();
+
+    // the stale failure must NOT flip B's in-flight submit to idle
+    expect(s().submission.status).toBe('submitting');
+    expect(s().submission.generation).toBe(genB);
+    expect(checklistFrozen(s())).toBe(true); // the checklist stays frozen under B
+  });
+
+  it('after a re-auth, the OLD submit\'s stale FAILURE toast does not leak into the new session (gate round-9)', async () => {
+    let rejectA!: (e: unknown) => void;
+    const pA = new Promise((_res, rej) => { rejectA = rej; });
+    const pB = new Promise<never>(() => {});
+    const gw = {
+      project: 'ambli', uploadMedia: vi.fn(), snapshot: vi.fn(),
+      submitInspection: vi.fn().mockImplementationOnce(() => pA).mockImplementationOnce(() => pB),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    reauth();
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 2);
+    useStore.setState((st) => { st.toast = 'NEW SESSION'; }); // a sentinel from the new session
+
+    rejectA(Object.assign(new Error('HTTP 500'), { status: 500 }));
+    await pA.catch(() => {});
+    await drainMicrotasks();
+
+    expect(s().toast).toBe('NEW SESSION'); // the stale "Could not submit" toast was suppressed
+  });
+
+  it('after a re-auth, the OLD submit\'s stale SUCCESS neither applies its snapshot nor toasts into the new session (gate round-9)', async () => {
+    let resolveA!: (v: unknown) => void;
+    const pA = new Promise((res) => { resolveA = res; });
+    const pB = new Promise<never>(() => {});
+    const gw = {
+      project: 'ambli', uploadMedia: vi.fn(), snapshot: vi.fn(),
+      submitInspection: vi.fn().mockImplementationOnce(() => pA).mockImplementationOnce(() => pB),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    reauth();
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 2);
+    useStore.setState((st) => { st.toast = 'NEW SESSION'; });
+
+    // the OLD request finally succeeds, carrying a submitted checklist
+    resolveA({ ...makeSnapshot(), checklist: serverChecklistOf(true, twoPassItems()) });
+    await pA;
+    await drainMicrotasks();
+
+    expect(s().toast).toBe('NEW SESSION');            // stale success toast suppressed
+    expect(s().checklist!.submitted).toBe(false);      // the stale snapshot was NOT applied
+    expect(s().submission.status).toBe('submitting');  // B still owns the in-flight submit
+  });
+
+  it('WITHIN the same session, a submit failure still unlocks the checklist and toasts — the scope guard does not over-block (gate round-9)', async () => {
+    const gw = {
+      project: 'ambli', uploadMedia: vi.fn(), snapshot: vi.fn(),
+      submitInspection: vi.fn().mockRejectedValue(Object.assign(new Error('HTTP 500'), { status: 500 })),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection(); // no re-auth — the same session that dispatched it
+    await settles(() => s().submission.status === 'idle');
+    expect(checklistFrozen(s())).toBe(false);          // unlocked
+    expect(s().toast).toMatch(/Could not submit/i);     // the failure toast DOES show
+    s().setItem(0, 'fail');                             // and edits are accepted again
+    expect(s().checklist!.items[0].state).toBe('fail');
+  });
+
   it('the user\'s explicit DELETE is the only non-server path that drops bytes', async () => {
     await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'k-del', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
     const evidenceStore = await import('@/data/evidenceStore');

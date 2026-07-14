@@ -1184,12 +1184,25 @@ export const useStore = create<Store>()(
           gateway
             .submitInspection(c.id, c.items)
             .then((snap) => {
-              applySnapshot(snap, scope); // submitted:true clears the marks + idles the submission
-              get().flash('Inspection submitted to the architect for review.');
+              applySnapshot(snap, scope); // submitted:true clears the marks + idles the submission (scope-guarded inside)
+              // gate round 9: a re-auth / project switch may have landed while the
+              // submit was in flight — a re-auth ALWAYS bumps the generation, so a
+              // NEWER session can hold its OWN submit for the same inspection. Only
+              // report success into the SAME session that dispatched THIS request;
+              // otherwise this stale toast (and, in .catch below, a stale unlock)
+              // would leak into the new session.
+              if (scopeStillCurrent(scope)) get().flash('Inspection submitted to the architect for review.');
             })
             .catch(() => {
+              // gate round 9: if the scope moved (re-auth / project switch), this is
+              // the OLD session's request — it must NOT flip the newer session's
+              // in-flight submit from `submitting` to `idle` (which would unlock the
+              // checklist mid-request and lose edits), nor toast into it.
+              if (!scopeStillCurrent(scope)) return;
               set((s) => {
-                if (s.submission.inspectionId === c.id && s.submission.status === 'submitting') s.submission.status = 'idle';
+                if (s.submission.inspectionId === c.id && s.submission.generation === scope.generation && s.submission.status === 'submitting') {
+                  s.submission.status = 'idle';
+                }
               });
               get().flash('Could not submit — your marks are kept. Please try again.');
             });
