@@ -5,11 +5,12 @@ existing product pillars
 ([plan](../superpowers/plans/2026-07-13-phase-1-existing-pillars.md) ·
 [spec](../superpowers/specs/2026-07-12-modular-construction-control-platform-design.md)).
 Written on 2026-07-13 AFTER every merge it cites and refreshed on 2026-07-14
-twice — after the gate round-1 remediations (PRs #112–#114) merged, and again
-after the gate round-2 narrow-re-review remediations (PRs #116–#118) merged;
-the Verification section's command outputs are the Task 7 runs on `main` at
-`60f69c8` plus the Task 7 changes, and each remediation PR body (both rounds)
-records its own fresh full-battery runs. Timestamps are UTC. Repository `JagPat/PMCvitan`, working branch
+three times — after the gate round-1 remediations (PRs #112–#114) merged,
+after the gate round-2 narrow-re-review remediations (PRs #116–#118) merged,
+and after the gate round-3 remediation (PR #121) merged; the Verification
+section's command outputs are the Task 7 runs on `main` at `60f69c8` plus the
+Task 7 changes, and each remediation PR body (all rounds) records its own
+fresh full-battery runs. Timestamps are UTC. Repository `JagPat/PMCvitan`, working branch
 `claude/vitan-pmc-design-epa2rp`.
 
 ## Revisions
@@ -17,7 +18,8 @@ records its own fresh full-battery runs. Timestamps are UTC. Repository `JagPat/
 - Phase base (Phase 0 closure): `5d6f08b4c39737972b115dcfabf1bebbb25e0e10` (merge of the Phase 0 docs correction, [PR #96](https://github.com/JagPat/PMCvitan/pull/96))
 - Gate round 1 reviewed `main` at `95ad1daf60eb84e6c98855ff68904a7a25ae50bb` (merge of [PR #111](https://github.com/JagPat/PMCvitan/pull/111)) and returned **BLOCKED** with four findings — all remediated in PRs #112–#114 (see "Independent Review — Phase 1 gate round 1" below).
 - Gate round 2 (the narrow re-review) reviewed `main` at `eb977898a7e7524f20884da844f6edccaad85ada` (merge of [PR #115](https://github.com/JagPat/PMCvitan/pull/115), the round-1 packet refresh) and returned **BLOCKED** with three new P2 findings — all remediated in PRs #116–#118 (see "Independent Review — Phase 1 gate round 2" below).
-- **Effective reviewed head for the round-2 narrow re-review**: `main` at `a0b256326c9d98f59ba2ff4c1afeb5c8d04cba18` (merge of [PR #119](https://github.com/JagPat/PMCvitan/pull/119) — the round-2 runtime remediations end at PR #118's merge `03f415a`; #119 is a test-harness seed fix, no product code), plus the docs-only packet-refresh PR this revision ships in.
+- The round-2 narrow re-review reviewed `main` at `eaca534fbff2133a2d578eb57ae588f202f575ae` (merge of [PR #120](https://github.com/JagPat/PMCvitan/pull/120), the round-2 packet refresh): the three round-2 remediations **cleared**, but the verdict was **BLOCKED** on one remaining P2 — the evidence commands (offline capture / Retry / Delete) lacked post-await project-scope guards — remediated in [PR #121](https://github.com/JagPat/PMCvitan/pull/121) (see "gate round 3" below).
+- **Effective reviewed head for the final narrow re-review**: `main` at `d2591ed505e5928dd1c6140291e3385fcd211402` (merge of [PR #121](https://github.com/JagPat/PMCvitan/pull/121)), plus the docs-only packet-refresh PR this revision ships in.
 - Every Phase 1 PR, in landing order. A **head** is the reviewed branch tip; a **merge** is the immutable merge commit on `main`. Bases are the `main` tip each merge was made against (first parent).
 
   | PR | Scope | Base | Head | Merge |
@@ -45,6 +47,8 @@ records its own fresh full-battery runs. Timestamps are UTC. Repository `JagPat/
   | [#117](https://github.com/JagPat/PMCvitan/pull/117) | Gate round-2 finding 2 (P2): scope-safe, ordered evidence reconciliation | `91d133f` | `7b47eac4e14516c5867e710b0798f6ac2dfc68ad` | `e2a3fd983c355f30310109c050c216e56b3003f9` |
   | [#118](https://github.com/JagPat/PMCvitan/pull/118) | Gate round-2 finding 3 (P2): online evidence refresh keeps marks by item ID | `e2a3fd9` | `f5c3eaf0edb15fefcc3eebbdf9bd6c161b5d2178` | `03f415a4be11815eab82033d8320450cbd8758a5` |
   | [#119](https://github.com/JagPat/PMCvitan/pull/119) | Test harness: the seed wipe order holds for a fully populated database (api-e2e re-runnable; no product code) | `03f415a` | `44b331a434d0b2ca6cddebbf5c4c7e07eb75e282` | `a0b256326c9d98f59ba2ff4c1afeb5c8d04cba18` |
+  | [#120](https://github.com/JagPat/PMCvitan/pull/120) | Gate round 2: packet records the narrow re-review and its remediations (docs only) | `a0b2563` | `60543bf6ab09418b930090ea41b9652aa251aa04` | `eaca534fbff2133a2d578eb57ae588f202f575ae` |
+  | [#121](https://github.com/JagPat/PMCvitan/pull/121) | Gate round 3 (P2): evidence commands guard their scope across the IndexedDB await | `eaca534` | `de5fa1d9e69a6306d99362a7695706b397320213` | `d2591ed505e5928dd1c6140291e3385fcd211402` |
 
 ## Vision Alignment
 
@@ -126,6 +130,8 @@ Fresh runs on the Task 7 working tree (2026-07-13, local; PostgreSQL 16):
   | #117 | [`7b47eac` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29306172085) | [`e2a3fd9` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29306341706) |
   | #118 | [`f5c3eaf` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29306379220) | [`03f415a` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29306479544) |
   | #119 | [`44b331a` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29307103158) | [`a0b2563` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29307205943) |
+  | #120 | [`60543bf` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29307316574) | [`eaca534` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29307445163) |
+  | #121 | [`de5fa1d` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29312296787) | [`d2591ed` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29312412005) |
 
   **Honest note on #109:** its `api` job failed AFTER all 75 integration tests passed — the new readiness suite's teardown deleted `Media` before dependent `GateOverride` rows and tripped the containment FK (the very constraint Task 6 added). The failure was masked locally by verifying a piped `vitest … | tail` instead of the exit code. [PR #110](https://github.com/JagPat/PMCvitan/pull/110) fixed the teardown ordering the same day; head and merge are green, and no product code changed between `3a18224` and `dfe475d` besides that test file.
 
@@ -136,7 +142,8 @@ Fresh runs on the Task 7 working tree (2026-07-13, local; PostgreSQL 16):
 - **Task 3 stop (Tasks 2+3 reviewed together)** — 7 findings, remediated in PR #104 (change-control: diagnostic gap, actor role columns, audit attribution) and PR #105 (drawing lifecycle: governing-revision DB backstop, frozen-set semantics, revision tenancy, ack containment); re-review CLEARED.
 - **Task 5 stop** — BLOCKED with one P1: membership eligibility was validated OUTSIDE the lifecycle transaction (TOCTOU) — a member removed or demoted mid-window could still claim completion or receive corrective work ([finding](https://github.com/JagPat/PMCvitan/pull/107#issuecomment-4959531194)). Remediated in PR #108: the membership row is read `FOR UPDATE` and validated FIRST inside both `complete()` and `decide()` transactions, with reproduce-first live-PostgreSQL race probes (red 201 at the pre-fix SHA → 400 with zero side effects after). [Gate cleared](https://github.com/JagPat/PMCvitan/pull/108#issuecomment-4960362431) on merged `main` @ `9d71868`.
 - **Task 7 stop** — the phase-closing gate ran against merged `main` @ `95ad1da` (round 1 below); its four findings were remediated in PRs #112–#115.
-- **Gate round 2 (narrow re-review)** — ran against merged `main` @ `eb97789` (the round-1 packet refresh) and returned **BLOCKED** with three new P2 findings (round 2 below); remediated in PRs #116–#118, and the next narrow re-review runs against the effective reviewed head above.
+- **Gate round 2 (narrow re-review)** — ran against merged `main` @ `eb97789` (the round-1 packet refresh) and returned **BLOCKED** with three new P2 findings (round 2 below); remediated in PRs #116–#118.
+- **Gate round-2 re-review** — ran against merged `main` @ `eaca534` (the round-2 packet refresh, PR #120): all three round-2 remediations **cleared**; **BLOCKED** on one remaining P2 (round 3 below), remediated in PR #121; the final narrow re-review runs against the effective reviewed head above.
 
 ## Independent Review — Phase 1 gate round 1 (Codex) and Remediation
 
@@ -164,6 +171,18 @@ The narrow re-review ran against `main` at `eb977898a7e7524f20884da844f6edccaad8
 Fresh runs after the round (per-PR evidence in each PR body, plus a composite battery on `main` at `03f415a`'s tree): `pnpm check` exit 0 · integration 83/83 on live PostgreSQL 16 · the FULL web suite repeated 10× at the finding-2 head and 6× at the finding-3 head — 0 failures (the reviewer's flake reproducer) · demo e2e 21/21 · api-e2e 18/18 twice consecutively · upgrade proof exit 0 (all 17 assertions) · CI green on every head and merge (table above).
 
 **Honest note on the composite battery:** re-running `pnpm test:e2e:api` against the same disposable database (rather than CI's always-fresh service) exposed a harness defect — the seed's wipe deleted `Membership` and `InspectionItem` before their NO ACTION children (frozen `DrawingRecipient` rows, assigned inspections, completion claims, evidence `Media`; `GateOverride` was never wiped at all), so a lived-in database failed the next seed. Fixed harness-only in [PR #119](https://github.com/JagPat/PMCvitan/pull/119) (same class as PR #110's teardown ordering): the wipe order now holds for a fully populated database, verified by a static check of every `@relation` in the schema plus two consecutive green 18/18 runs against the same database. No product code changed.
+
+## Independent Review — Phase 1 gate round-2 re-review (Codex) and Round-3 Remediation
+
+The narrow re-review ran against `main` at `eaca534fbff2133a2d578eb57ae588f202f575ae` (merge of PR #120) and independently verified the three round-2 remediations **cleared** — with every gate green at that head (web 225/225, API 375/375, integration 83/83, demo 21/21, api-e2e 18/18 twice, migrations 28, upgrade 17/17, migration checksums matching, PR #116–#120 history matching this packet). It returned **BLOCKED** on one remaining P2 (full verdict on [PR #120](https://github.com/JagPat/PMCvitan/pull/120#issuecomment-4965917699)), remediated reproduce-first:
+
+| Finding | Remediation | Reproduce-first proof |
+|---|---|---|
+| P2 — the evidence COMMANDS still mutated whichever project was current after their IndexedDB await: a held offline capture or Retry released after a project switch pushed the old scope's replay op into the NEW project's outbox, pending count and persisted `vitan.outbox.*` key (no cross-project upload — replay consumes the misplaced op as a no-op — but the old operation was temporarily stranded and the new project's queue/UI contaminated); Delete's post-await UI mutation had the same shape | [PR #121](https://github.com/JagPat/PMCvitan/pull/121), head `de5fa1d`, merged `d2591ed`: `captureEvidenceContext()` pins the user scope, project id, `(projectId, generation)` ProjectScope and outbox storage key BEFORE every IndexedDB await in `addChecklistEvidence` (offline path), `retryFailedEvidence` and `deleteFailedEvidence`; the durable operation runs under the CAPTURED coordinates; every post-await store/toast/persistence mutation is refused unless that context is still current — a moved scope leaves the durable row for its own scope's canonical reconciliation to reconstruct. A successful capture also bumps the reconciliation epoch | `tests/evidence.test.ts` — the reviewer's held-capture and held-Retry probes plus the held-Delete consistency probe, red at `eaca534` exactly as the verdict describes → green: the new scope ends with zero ops / zero count / empty persisted key / no toast; the durable row stays (or revives) `pending` in its OWN scope and reconstructs there on return; Delete still honors the user's decision in its own scope while the new scope's Retry/Delete surface (including a same-key row) is untouched. 14 pre-existing probes stay green — 17/17 |
+
+**Non-blocking note addressed in the same PR:** `readiness-lock-coverage.test.ts` is relabeled as the FILE-level tripwire it is (header, describe and assertion names) — it stops a whole writer file from skipping the lock protocol silently; per-writer correctness remains the job of the live-PostgreSQL race probes and review, exactly as the reviewer's note requested ("either describe it as file-level coverage or harden it").
+
+Fresh runs at PR #121's head (its body records the full battery): `pnpm check` exit 0 (web 225/225, API 375/375) · FULL web suite repeated 10× — 0 failures · integration 83/83 on live PostgreSQL 16 · demo e2e 21/21 · api-e2e 18/18 · CI green on head and merge (table above).
 
 ## Acceptance Criteria (spec §25 rows this phase covers)
 
