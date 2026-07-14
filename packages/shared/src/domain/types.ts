@@ -270,6 +270,8 @@ export interface Checklist {
 }
 
 export interface ReviewItem {
+  /** server row id — rejection addresses THIS row (labels are not unique, Task 4/gate finding 3) */
+  id?: string;
   name: string;
   result: InspectionResult;
   /** the item's linked photo evidence as resolvable URLs (Task 4) */

@@ -54,6 +54,9 @@ describe('closing sign-off controls activity completion (integration)', () => {
   });
 
   const http = () => request(t.app.getHttpServer());
+  /** The closing inspection's sign-off row id — rejects address ROWS (gate finding 3). */
+  const signOffIds = async (inspectionId: string): Promise<string[]> =>
+    (await t.prisma.inspectionItem.findMany({ where: { inspectionId, name: 'Work complete and acceptable' } })).map((it) => it.id);
   const as = (token: string) => (path: string, body: object = {}) => http().post(path).set('Authorization', `Bearer ${token}`).send(body);
 
   /** Restore the engineer's ACTIVE membership after a churn test mutated it. */
@@ -113,7 +116,7 @@ describe('closing sign-off controls activity completion (integration)', () => {
     const { activityId, closingId } = await claimedActivity('Waterproofing');
 
     // the PMC rejects the default sign-off item — no explicit assignee given
-    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'] })).status).toBe(201);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemIds: await signOffIds(closingId) })).status).toBe(201);
 
     const reopened = await t.prisma.activity.findUniqueOrThrow({ where: { id: activityId } });
     expect(reopened.status).toBe('in_progress'); // back to execution
@@ -167,14 +170,14 @@ describe('closing sign-off controls activity completion (integration)', () => {
 
     try {
       // no explicit assignee → the recorded completer is no longer active → 400, nothing changes
-      const refused = await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'] });
+      const refused = await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemIds: await signOffIds(closingId) });
       expect(refused.status).toBe(400);
       expect(refused.body.message).toMatch(/active|eligible|assignee/i);
       expect((await t.prisma.inspection.findUniqueOrThrow({ where: { id: closingId } })).decided).toBe(false);
       expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: activityId } })).status).toBe('awaiting_signoff');
 
       // naming an ACTIVE contractor explicitly succeeds
-      expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'], assigneeId: f.strangerUser.id })).status).toBe(201);
+      expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemIds: await signOffIds(closingId), assigneeId: f.strangerUser.id })).status).toBe(201);
       const child = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: closingId } });
       expect(child.assigneeId).toBe(f.strangerUser.id);
       expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: activityId } })).status).toBe('in_progress');
@@ -189,11 +192,11 @@ describe('closing sign-off controls activity completion (integration)', () => {
 
     try {
       // the completer is still ACTIVE but no longer role-eligible — default refused
-      expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'] })).status).toBe(400);
+      expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemIds: await signOffIds(closingId) })).status).toBe(400);
       // naming the (now-client) completer explicitly is refused too
-      expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'], assigneeId: f.ownerUser.id })).status).toBe(400);
+      expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemIds: await signOffIds(closingId), assigneeId: f.ownerUser.id })).status).toBe(400);
       // an eligible explicit assignee resolves it
-      expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'], assigneeId: f.strangerUser.id })).status).toBe(201);
+      expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemIds: await signOffIds(closingId), assigneeId: f.strangerUser.id })).status).toBe(201);
       expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: activityId } })).status).toBe('in_progress');
     } finally {
       await restoreEngineer();
@@ -222,8 +225,8 @@ describe('closing sign-off controls activity completion (integration)', () => {
 
     // reject: no recorded completer exists → an explicit eligible assignee is REQUIRED
     const rj = await mkLegacy('reject');
-    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${rj.closingId}/decide`, { approve: false, rejectedItemNames: [] })).status).toBe(400);
-    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${rj.closingId}/decide`, { approve: false, rejectedItemNames: [], assigneeId: f.strangerUser.id })).status).toBe(201);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${rj.closingId}/decide`, { approve: false, rejectedItemIds: [] })).status).toBe(400);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/inspections/${rj.closingId}/decide`, { approve: false, rejectedItemIds: [], assigneeId: f.strangerUser.id })).status).toBe(201);
     // the PMC's rejection is an ATTRIBUTABLE reopening — this is a human decision, not a migration guess
     expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: rj.activityId } })).status).toBe('in_progress');
     const child = await t.prisma.inspection.findFirstOrThrow({ where: { reinspectionOfId: rj.closingId }, include: { items: true } });
@@ -287,11 +290,12 @@ describe('closing sign-off controls activity completion (integration)', () => {
 
     // race 3: approve vs reject on a fresh claim — ONE outcome, never both
     const two = await claimedActivity('Race mixed signoff');
+    const twoIds = await signOffIds(two.closingId);
     b = barrierOn('inspection', two.closingId);
     try {
       const [r1, r2] = await Promise.all([
         as(pmcToken)(`/projects/${f.projectA.id}/inspections/${two.closingId}/decide`, { approve: true }),
-        as(pmcToken)(`/projects/${f.projectA.id}/inspections/${two.closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'] }),
+        as(pmcToken)(`/projects/${f.projectA.id}/inspections/${two.closingId}/decide`, { approve: false, rejectedItemIds: twoIds }),
       ]);
       expect(b.reads()).toBe(2);
       expect([r1.status, r2.status].sort()).toEqual([201, 409]);
@@ -367,10 +371,11 @@ describe('closing sign-off controls activity completion (integration)', () => {
     it('(b) recorded completer role-changed to CLIENT in the window: the default-assignee rejection refuses with NO side effects', async () => {
       const { activityId, closingId } = await claimedActivity('Window role change');
       const noticesBefore = await t.prisma.notification.count({ where: { projectId: f.projectA.id } });
+      const signIds = await signOffIds(closingId);
 
       const b = holdAtIdScan();
       try {
-        const pending = Promise.resolve(as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'] }));
+        const pending = Promise.resolve(as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemIds: signIds }));
         await b.reached;
         // the completer stops being assignment-eligible INSIDE the window
         await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: f.ownerUser.id } }, data: { role: 'client' } });
@@ -394,9 +399,10 @@ describe('closing sign-off controls activity completion (integration)', () => {
 
     it('(c) EXPLICITLY named assignee REMOVED in the window: the rejection refuses with NO side effects', async () => {
       const { closingId } = await claimedActivity('Window explicit removal');
+      const signIds = await signOffIds(closingId);
       const b = holdAtIdScan();
       try {
-        const pending = Promise.resolve(as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemNames: ['Work complete and acceptable'], assigneeId: f.strangerUser.id }));
+        const pending = Promise.resolve(as(pmcToken)(`/projects/${f.projectA.id}/inspections/${closingId}/decide`, { approve: false, rejectedItemIds: signIds, assigneeId: f.strangerUser.id }));
         await b.reached;
         await t.prisma.membership.update({ where: { projectId_userId: { projectId: f.projectA.id, userId: f.strangerUser.id } }, data: { status: 'removed' } });
         b.release();

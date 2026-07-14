@@ -74,6 +74,9 @@ export type ChangeInput = z.infer<typeof changeSchema>;
 export const submitInspectionSchema = z.object({
   items: z.array(
     z.object({
+      // gate finding 3: items are ROWS — the id addresses the exact row, because
+      // labels are not unique (two "Slope" items are two independent facts)
+      id: z.string().min(1),
       name: z.string(),
       state: z.enum(['pass', 'fail', 'na']).nullable(),
       photos: z.number().int().min(0),
@@ -85,7 +88,8 @@ export type SubmitInspectionInput = z.infer<typeof submitInspectionSchema>;
 
 export const decideReviewSchema = z.object({
   approve: z.boolean(),
-  rejectedItemNames: z.array(z.string()).default([]),
+  // gate finding 3: rejection names exact rows by id, never by non-unique label
+  rejectedItemIds: z.array(z.string()).default([]),
   // Phase 1 Tasks 4/5 (reject only): who corrects the work — defaults to the recorded
   // submitter (ordinary) / the recorded COMPLETER (closing sign-off); must resolve to
   // an ACTIVE engineer/contractor member — and when it's due.

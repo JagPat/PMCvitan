@@ -372,7 +372,7 @@ test('OFFLINE EVIDENCE: a captured photo survives a reload and replays exactly o
     if (!open) break;
     expect((await request.post(`${API}/projects/${chainId}/inspections/${open.id}/submit`, {
       headers: bearer(engToken),
-      data: { items: open.items.map((it: { name: string }) => ({ name: it.name, state: 'pass', photos: 0, note: '' })) },
+      data: { items: open.items.map((it: { id: string; name: string }) => ({ id: it.id, name: it.name, state: 'pass', photos: 0, note: '' })) },
     })).ok()).toBeTruthy();
   }
 

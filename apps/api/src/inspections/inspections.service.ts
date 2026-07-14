@@ -78,13 +78,19 @@ export class InspectionsService {
     if (insp.items.length === 0) throw new BadRequestException('This inspection has no checklist items to submit.');
 
     const actor = await resolveActor(this.prisma, user);
-    const submitted = new Map(input.items.map((it) => [it.name, it]));
-    const unmarked = insp.items.filter((dbIt) => !submitted.get(dbIt.name)?.state);
+    // gate finding 3: the payload addresses ROWS by id — labels are not unique.
+    // Containment first: an id that is not one of THIS inspection's items is a
+    // refused claim, never silently ignored (it could be another inspection's row).
+    const submitted = new Map(input.items.map((it) => [it.id, it]));
+    const known = new Set(insp.items.map((dbIt) => dbIt.id));
+    const foreign = input.items.filter((it) => !known.has(it.id));
+    if (foreign.length > 0) throw new BadRequestException('Submitted item(s) do not belong to this inspection — reload and retry.');
+    const unmarked = insp.items.filter((dbIt) => !submitted.get(dbIt.id)?.state);
     if (unmarked.length > 0) throw new BadRequestException(`Please mark all ${insp.items.length} items before submitting.`);
 
     // THE EVIDENCE RULE: a fail is a claim about the work — it needs a photo that is a
     // LINKED Media row on this exact item (containment-chained), not a counter.
-    const failItemIds = insp.items.filter((dbIt) => submitted.get(dbIt.name)!.state === 'fail').map((dbIt) => dbIt.id);
+    const failItemIds = insp.items.filter((dbIt) => submitted.get(dbIt.id)!.state === 'fail').map((dbIt) => dbIt.id);
     if (failItemIds.length > 0) {
       const evidenced = await this.prisma.media.groupBy({
         by: ['inspectionItemId'],
@@ -100,10 +106,11 @@ export class InspectionsService {
     await this.prisma.$transaction(async (tx) => {
       // submission moves the linked chain's tip state — a readiness write (finding 1)
       await lockProjectReadiness(tx, projectId);
-      // only write items that belong to this inspection (updateMany by inspectionId+name)
+      // write each ROW its own result — (id, inspectionId) keeps containment even
+      // against a raced id (gate finding 3: never keyed by non-unique name)
       for (const dbIt of insp.items) {
-        const s = submitted.get(dbIt.name)!;
-        await tx.inspectionItem.updateMany({ where: { inspectionId, name: dbIt.name }, data: { state: s.state, photos: s.photos, note: s.note } });
+        const s = submitted.get(dbIt.id)!;
+        await tx.inspectionItem.updateMany({ where: { id: dbIt.id, inspectionId }, data: { state: s.state, photos: s.photos, note: s.note } });
       }
       // CAS: one submit wins; a concurrent submit/decide makes count 0 → 409
       const { count } = await tx.inspection.updateMany({
@@ -176,7 +183,11 @@ export class InspectionsService {
         await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'inspection.approve', entity: 'Inspection', entityId: inspectionId } });
       });
     } else {
-      const rejectedItems = insp.items.filter((it) => input.rejectedItemNames.includes(it.name) || it.rejected || it.result === 'FAIL');
+      // gate finding 3: rejection names exact ROWS. An id that matches none of this
+      // inspection's items is a refused claim (it could be another inspection's row).
+      const unknownRejected = input.rejectedItemIds.filter((id) => !insp.items.some((it) => it.id === id));
+      if (unknownRejected.length > 0) throw new BadRequestException('Rejected item(s) do not belong to this inspection — reload and retry.');
+      const rejectedItems = insp.items.filter((it) => input.rejectedItemIds.includes(it.id) || it.rejected || it.result === 'FAIL');
       // a LEGACY zero-item closing may still be rejected (special-cased on the closing
       // flag) — every ordinary rejection must name real items
       if (rejectedItems.length === 0 && !insp.closing) throw new BadRequestException('No items rejected. Use approve instead.');
@@ -239,8 +250,8 @@ export class InspectionsService {
             data: { decided: true, decidedById: actor.actorId, decidedByName: actor.actorName },
           });
           if (count === 0) throw new ConflictException('The inspection changed while deciding — reload and retry');
-          for (const name of input.rejectedItemNames) {
-            await tx.inspectionItem.updateMany({ where: { inspectionId, name }, data: { rejected: true } });
+          for (const itemId of input.rejectedItemIds) {
+            await tx.inspectionItem.updateMany({ where: { id: itemId, inspectionId }, data: { rejected: true } });
           }
           // the LINKED reinspection: only the rejected work returns, fresh and unfilled;
           // the requirement edge is INHERITED — it accepts the same work. NOT itself a

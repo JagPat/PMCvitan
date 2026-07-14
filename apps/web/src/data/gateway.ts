@@ -43,7 +43,7 @@ export interface DataGateway {
   /** Engineer submits a guarded inspection checklist. */
   submitInspection(checklist: Checklist): Promise<void>;
   /** PMC approves an inspection or sends rejections (creating re-inspection tasks). */
-  decideReview(reviewId: string, rejectedItemNames: string[]): Promise<void>;
+  decideReview(reviewId: string, rejectedItemIds: string[]): Promise<void>;
 
   /** Start / complete a site activity (complete auto-creates a closing inspection). */
   startActivity(activityId: string): Promise<Activity>;

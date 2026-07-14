@@ -166,7 +166,7 @@ export interface ReviewDto {
   activityId?: string;
   activityName?: string;
   /** `evidence` = the item's linked photo proof as signed serve paths (Task 4) */
-  items: { name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean; evidence: string[] }[];
+  items: { id: string; name: string; result: 'PASS' | 'FAIL'; swatch: string; note: string; rejected: boolean; evidence: string[] }[];
 }
 
 /** A material delivery placed on the location spine — the Site Map's "materials here". */
