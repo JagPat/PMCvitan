@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import { getEvidence, listEvidence, putEvidence } from '@/data/evidenceStore';
 import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
+import type { Checklist } from '@vitan/shared';
 
 /**
  * Phase 1 Task 4 — offline evidence durability. The rules under test are the
@@ -832,6 +833,126 @@ describe('replay lifecycle', () => {
     // the state clear is honored AND the newer note is kept — each field independent
     expect(s().checklist!.items[0].state).toBeNull();
     expect(s().checklist!.items[0].note).toBe('revised after a closer look');
+  });
+
+  // ---- gate round 7: submission-lifecycle mark retention ----
+  const twoBlankItems = (): Checklist['items'] => [
+    { id: 'item-1', name: 'Slope', state: null, photos: 0, note: '', evidence: [] },
+    { id: 'item-2', name: 'Seal', state: null, photos: 0, note: '', evidence: [] },
+  ];
+  const serverChecklistOf = (submitted: boolean, items: Checklist['items'] = twoBlankItems()): Checklist => ({
+    id: 'INSP-90', title: 'Test check', zone: 'Terrace', date: '03 Jul 2026', submitted, items,
+  });
+  /** seed two blank items and mark them through the real edit path */
+  const markTwoPass = () => {
+    seedChecklist();
+    useStore.setState((st) => { st.checklist!.items[0].state = null; st.checklist!.items[1].state = null; });
+    s().setItem(0, 'pass'); s().setItem(1, 'pass'); s().setNote(0, 'checked before submit');
+  };
+
+  it('a FAILED submit retains the unsubmitted marks — a background snapshot must not erase them (gate round-7)', async () => {
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn(),
+      snapshot: vi.fn(),
+      submitInspection: vi.fn().mockRejectedValue(Object.assign(new Error('HTTP 500'), { status: 500 })),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection(); // the submit rejects (async)
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    // the server never recorded it — a background snapshot arrives with submitted=false
+    s().applySnapshot({ ...makeSnapshot(), checklist: serverChecklistOf(false) });
+
+    // the engineer's UNCONFIRMED work survives the failed submit + refresh
+    const items = s().checklist!.items;
+    expect(items[0].state).toBe('pass');
+    expect(items[1].state).toBe('pass');
+    expect(items[0].note).toBe('checked before submit');
+  });
+
+  it('a PENDING submit (ack not yet arrived) retains the marks across a background snapshot (gate round-7)', async () => {
+    let releaseSubmit!: (v: unknown) => void;
+    const held = new Promise((r) => (releaseSubmit = r));
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn(),
+      snapshot: vi.fn(),
+      submitInspection: vi.fn().mockImplementation(async () => { await held; return { ...makeSnapshot(), checklist: serverChecklistOf(true, [
+        { id: 'item-1', name: 'Slope', state: 'pass', photos: 0, note: 'checked before submit', evidence: [] },
+        { id: 'item-2', name: 'Seal', state: 'pass', photos: 0, note: '', evidence: [] },
+      ]) }; }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection(); // parks in flight
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    // a background snapshot lands BEFORE the ack — submitted still false, no marks
+    s().applySnapshot({ ...makeSnapshot(), checklist: serverChecklistOf(false) });
+    expect(s().checklist!.items[0].state).toBe('pass'); // retained while pending
+    expect(s().checklist!.items[0].note).toBe('checked before submit');
+
+    releaseSubmit(null); // the ack lands (submitted=true) — now the marks are server-owned
+    await settles(() => s().checklist?.submitted === true);
+    expect(s().checklist!.items[0].state).toBe('pass'); // server now carries them
+  });
+
+  it('a SUCCESSFUL submit clears the records; a later background snapshot does NOT re-overlay them (gate round-7)', async () => {
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn(),
+      snapshot: vi.fn(),
+      submitInspection: vi.fn().mockResolvedValue({ ...makeSnapshot(), checklist: serverChecklistOf(true, [
+        { id: 'item-1', name: 'Slope', state: 'pass', photos: 0, note: 'checked before submit', evidence: [] },
+        { id: 'item-2', name: 'Seal', state: 'pass', photos: 0, note: '', evidence: [] },
+      ]) }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection();
+    await settles(() => s().checklist?.submitted === true);
+    // the PMC later un-submits / edits on the server (submitted=false, item-1 cleared);
+    // the CLEARED records must not resurrect the engineer's old local marks
+    s().applySnapshot({ ...makeSnapshot(), checklist: serverChecklistOf(false, [
+      { id: 'item-1', name: 'Slope', state: null, photos: 0, note: '', evidence: [] },
+      { id: 'item-2', name: 'Seal', state: null, photos: 0, note: '', evidence: [] },
+    ]) });
+    expect(s().checklist!.items[0].state).toBeNull(); // server truth wins — no stale overlay
+    expect(s().checklist!.items[0].note).toBe('');
+  });
+
+  it('an OFFLINE submit retains the marks until replay, then clears them on the server ack (gate round-7)', async () => {
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn(),
+      snapshot: vi.fn(),
+      submitInspection: vi.fn().mockResolvedValue({ ...makeSnapshot(), checklist: serverChecklistOf(true, [
+        { id: 'item-1', name: 'Slope', state: 'pass', photos: 0, note: 'checked before submit', evidence: [] },
+        { id: 'item-2', name: 'Seal', state: 'pass', photos: 0, note: '', evidence: [] },
+      ]) }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    markTwoPass();
+
+    s().submitInspection(); // queued offline — NOT sent yet
+    expect(gw.submitInspection).not.toHaveBeenCalled();
+    // a background snapshot while offline-pending must not erase the queued work
+    s().applySnapshot({ ...makeSnapshot(), checklist: serverChecklistOf(false) });
+    expect(s().checklist!.items[0].state).toBe('pass'); // retained while the submit is queued
+    expect(s().checklist!.items[0].note).toBe('checked before submit');
+
+    // reconnect → the queued submit replays and the server acks (submitted=true)
+    useStore.setState((st) => { st.online = true; });
+    await s().flushOutbox();
+    await settles(() => gw.submitInspection.mock.calls.length === 1 && s().checklist?.submitted === true);
+    expect(s().checklist!.items[0].state).toBe('pass'); // server now carries them; records cleared
   });
 
   it('the user\'s explicit DELETE is the only non-server path that drops bytes', async () => {

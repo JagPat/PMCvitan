@@ -487,11 +487,21 @@ export const useStore = create<Store>()(
         // restored as faithfully as a set — no value-guessing (gate round 6).
         const marks = s.checklistMarks;
         if (s.checklist && marks.inspectionId === s.checklist.id && marks.generation === s.projectScopeGeneration) {
-          for (const it of s.checklist.items) {
-            if (!it.id) continue;
-            const edit = marks.byItem[it.id];
-            if (edit?.state) it.state = edit.state.value;
-            if (edit?.note) it.note = edit.note.value;
+          if (s.checklist.submitted) {
+            // gate round 7: the SERVER confirms this inspection is submitted — the
+            // marks are now server-owned. Drop the records and take server truth.
+            // Until this ack lands (a pending or REJECTED submit leaves the server
+            // checklist `submitted: false`), the records are retained and overlaid
+            // below, so unconfirmed work survives a failed submit + a refresh.
+            marks.inspectionId = null;
+            marks.byItem = {};
+          } else {
+            for (const it of s.checklist.items) {
+              if (!it.id) continue;
+              const edit = marks.byItem[it.id];
+              if (edit?.state) it.state = edit.state.value;
+              if (edit?.note) it.note = edit.note.value;
+            }
           }
         }
         s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
@@ -1068,14 +1078,21 @@ export const useStore = create<Store>()(
         get().flash('A failed item needs a photo before you can submit.');
         return;
       }
-      // gate round 6: the marks are being submitted — they are no longer
-      // UNSUBMITTED local edits, so a later snapshot must take server truth, not
-      // re-overlay them. Drop the pending edit set (keep the monotonic counter).
-      set((s) => { s.checklistMarks.inspectionId = null; s.checklistMarks.byItem = {}; });
+      // gate round 7: do NOT drop the edit records here — submission is async.
+      // If the server rejects (or an offline replay hasn't run yet) the marks are
+      // still UNSUBMITTED and must survive a background snapshot; clearing them
+      // now would erase the engineer's unconfirmed work. applySnapshot drops the
+      // records only once the SERVER confirms the inspection is submitted (its
+      // checklist comes back `submitted: true`) — a scope-valid acknowledgement
+      // that also covers successful offline replay.
       if (runRemoteOrQueue({ t: 'submitInspection', inspectionId: c.id, items: c.items }, 'Submit inspection', () => gateway!.submitInspection(c.id, c.items), 'Inspection submitted to the architect for review.')) return;
+      // demo (no gateway): the submit succeeds locally and synchronously — the
+      // marks are now recorded on the (local) submitted checklist, so drop them.
       set((s) => {
         if (!s.checklist) return;
         s.checklist.submitted = true;
+        s.checklistMarks.inspectionId = null;
+        s.checklistMarks.byItem = {};
         // demo (no API): the submitted checklist enters the PMC review queue,
         // mapping each item's pass/fail state to a PASS/FAIL result.
         if (!s.reviews.some((r) => r.id === s.checklist!.id)) {
