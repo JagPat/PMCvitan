@@ -104,6 +104,22 @@ export interface ChecklistMarks {
   byItem: Record<string, { state?: FieldMark<ItemState>; note?: FieldMark<string> }>;
 }
 
+/** The submission lifecycle of the checklist (gate round 8). Once the engineer
+ *  dispatches a submit the payload is FROZEN — no further edits until the outcome:
+ *  - `submitting`  an online submit is in flight (in-memory; a reload resolves it
+ *                  from the server's next snapshot);
+ *  - `queued`      an offline submit is queued (durable in the outbox, so the
+ *                  freeze is rebuilt after a reload);
+ *  - `idle`        nothing pending — editable, unless the SERVER already confirms
+ *                  the checklist `submitted` (that is read-only on its own).
+ *  Scoped to one (inspection, generation): a re-auth / project switch strands it. */
+export type ChecklistSubmissionStatus = 'idle' | 'submitting' | 'queued';
+export interface ChecklistSubmission {
+  inspectionId: string | null;
+  generation: number;
+  status: ChecklistSubmissionStatus;
+}
+
 export interface AppState {
   role: Role;
   screen: ScreenKey;
@@ -124,6 +140,12 @@ export interface AppState {
   // intentional clear from a background wipe). Scoped to one (inspection,
   // generation); reset when the checklist changes, the scope moves, or on submit.
   checklistMarks: ChecklistMarks;
+  // The checklist's submission lifecycle (gate round 8). While a submit is pending
+  // (submitting / queued) — or the server already confirms `submitted` — the
+  // checklist is FROZEN: no edit may change the payload. A failure unlocks it
+  // without losing the marks; an offline-queued submit's freeze survives a reload
+  // (rebuilt from the durable outbox by `reconcileSubmission`).
+  submission: ChecklistSubmission;
   reviews: Review[]; // the PMC review queue (submitted, undecided inspections)
   activeReviewId: string | null; // which queued review the PMC is looking at (null ⇒ first pending)
   reinspectionCreated: boolean;
@@ -371,6 +393,62 @@ function recordChecklistMark(
   else entry.note = { rev, value: value as string };
 }
 
+/** Is the current checklist FROZEN against edits (gate round 8)? True once the
+ *  SERVER confirms it submitted (read-only), OR while a submit for THIS inspection
+ *  is pending in the current scope (submitting / queued). Every checklist mutation
+ *  (state, note, photo, evidence) consults this so nothing changes the payload once
+ *  it has been dispatched. */
+export function checklistFrozen(
+  s: Pick<AppState, 'checklist' | 'submission' | 'projectScopeGeneration'>,
+): boolean {
+  const c = s.checklist;
+  if (!c) return false;
+  if (c.submitted) return true;
+  const sub = s.submission;
+  return (
+    sub.inspectionId === c.id &&
+    sub.generation === s.projectScopeGeneration &&
+    (sub.status === 'submitting' || sub.status === 'queued')
+  );
+}
+
+/** Derive the submission freeze from server truth + the durable outbox (gate round
+ *  8) so a snapshot refresh or a reload never loses OR forges it. Called wherever
+ *  the checklist or the outbox changes. A server-`submitted` checklist is read-only
+ *  (status idles — the freeze comes from `submitted`); a still-unsubmitted checklist
+ *  with a queued submit op stays FROZEN as `queued` (this rebuilds the freeze after a
+ *  reload); an in-flight `submitting` freeze is preserved until its promise resolves;
+ *  anything else (a different checklist, a re-auth/switch, a dropped submit) idles. */
+function reconcileSubmission(s: AppState): void {
+  const sub = s.submission;
+  const c = s.checklist;
+  const gen = s.projectScopeGeneration;
+  if (!c) {
+    sub.inspectionId = null;
+    sub.generation = gen;
+    sub.status = 'idle';
+    return;
+  }
+  if (c.submitted) {
+    sub.inspectionId = c.id;
+    sub.generation = gen;
+    sub.status = 'idle';
+    return;
+  }
+  const queued = s.outbox.some((op) => op.t === 'submitInspection' && op.inspectionId === c.id);
+  if (queued) {
+    sub.inspectionId = c.id;
+    sub.generation = gen;
+    sub.status = 'queued';
+  } else if (sub.inspectionId === c.id && sub.generation === gen && sub.status === 'submitting') {
+    // an online submit is still in flight — keep the freeze until it resolves
+  } else {
+    sub.inspectionId = c.id;
+    sub.generation = gen;
+    sub.status = 'idle';
+  }
+}
+
 export function getInitialState(): AppState {
   return {
     // land on the admin (PMC) view by default — create/manage projects, teams,
@@ -387,6 +465,7 @@ export function getInitialState(): AppState {
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
+    submission: { inspectionId: null, generation: 0, status: 'idle' },
     reviews: [structuredClone(SEED_REVIEW)],
     activeReviewId: null,
     reinspectionCreated: false,
@@ -504,6 +583,11 @@ export const useStore = create<Store>()(
             }
           }
         }
+        // gate round 8: re-derive the submission freeze from this fresh server
+        // truth + the durable outbox. A background `changed` refresh mid-submit
+        // must keep the checklist frozen; a reload rebuilds a queued submit's
+        // freeze; a server-confirmed submit idles the pending status.
+        reconcileSubmission(s);
         s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         s.reinspectionCreated = snap.reinspectionCreated;
@@ -925,14 +1009,16 @@ export const useStore = create<Store>()(
         const c = s.checklist;
         const it = c?.items[idx];
         if (!c || !it) return;
+        if (checklistFrozen(s)) return; // gate round 8: no edits once the payload is frozen
         it.state = it.state === val ? null : val;
         recordChecklistMark(s, c.id, it.id, 'state', it.state);
       }),
-    addPhoto: (idx) => set((s) => { const it = s.checklist?.items[idx]; if (it) it.photos += 1; }),
+    addPhoto: (idx) => set((s) => { if (checklistFrozen(s)) return; const it = s.checklist?.items[idx]; if (it) it.photos += 1; }),
     addChecklistEvidence: async (idx, dataUrl) => {
       const c = get().checklist;
       const item = c?.items[idx];
       if (!c || !item) return;
+      if (checklistFrozen(get())) { get().flash('This inspection is submitted — no more changes.'); return; } // gate round 8
       const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
       if (!m) {
         get().flash('Could not read that photo — please try again.');
@@ -1058,11 +1144,18 @@ export const useStore = create<Store>()(
       get().flash('Photo deleted.');
     },
     hydrateEvidence: async () => reconcileEvidence(),
-    setNote: (idx, txt) => set((s) => { const c = s.checklist; const it = c?.items[idx]; if (c && it) { it.note = txt; recordChecklistMark(s, c.id, it.id, 'note', txt); } }),
+    setNote: (idx, txt) => set((s) => { const c = s.checklist; const it = c?.items[idx]; if (c && it) { if (checklistFrozen(s)) return; it.note = txt; recordChecklistMark(s, c.id, it.id, 'note', txt); } }),
     submitInspection: () => {
       const c = get().checklist;
       if (!c || !c.items.length) {
         get().flash('No checklist has been issued for today yet.');
+        return;
+      }
+      // gate round 8: once the payload is frozen (submitting / queued / already
+      // server-submitted) a repeat submit is a no-op — no double submission, and
+      // no edit can slip in between the click and the outcome.
+      if (checklistFrozen(get())) {
+        get().flash('This inspection has already been submitted.');
         return;
       }
       const undone = c.items.filter((it) => !it.state).length;
@@ -1078,19 +1171,47 @@ export const useStore = create<Store>()(
         get().flash('A failed item needs a photo before you can submit.');
         return;
       }
-      // gate round 7: do NOT drop the edit records here — submission is async.
-      // If the server rejects (or an offline replay hasn't run yet) the marks are
-      // still UNSUBMITTED and must survive a background snapshot; clearing them
-      // now would erase the engineer's unconfirmed work. applySnapshot drops the
-      // records only once the SERVER confirms the inspection is submitted (its
-      // checklist comes back `submitted: true`) — a scope-valid acknowledgement
-      // that also covers successful offline replay.
-      if (runRemoteOrQueue({ t: 'submitInspection', inspectionId: c.id, items: c.items }, 'Submit inspection', () => gateway!.submitInspection(c.id, c.items), 'Inspection submitted to the architect for review.')) return;
+      if (gateway) {
+        if (get().online) {
+          // gate round 8: FREEZE the checklist the instant we dispatch — no edit may
+          // change the payload while the submit is in flight (the round-7 finding:
+          // an edit made during the pending window was silently reverted when the
+          // ack arrived). On success the server's submitted checklist lands and
+          // applySnapshot drops the marks (gate round 7). On FAILURE we UNLOCK the
+          // checklist WITHOUT losing the marks so the engineer can fix and resubmit.
+          set((s) => { s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'submitting' }; });
+          const scope = currentScope();
+          gateway
+            .submitInspection(c.id, c.items)
+            .then((snap) => {
+              applySnapshot(snap, scope); // submitted:true clears the marks + idles the submission
+              get().flash('Inspection submitted to the architect for review.');
+            })
+            .catch(() => {
+              set((s) => {
+                if (s.submission.inspectionId === c.id && s.submission.status === 'submitting') s.submission.status = 'idle';
+              });
+              get().flash('Could not submit — your marks are kept. Please try again.');
+            });
+          return;
+        }
+        // offline: QUEUE the submit (persisted) and freeze as 'queued'. The freeze
+        // survives a reload because reconcileSubmission rebuilds it from the outbox.
+        set((s) => {
+          s.outbox.push({ t: 'submitInspection', inspectionId: c.id, items: c.items });
+          s.syncQueue.push('Submit inspection');
+          s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'queued' };
+        });
+        persistOutbox();
+        get().flash('Submit inspection — saved offline, will sync when you reconnect.');
+        return;
+      }
       // demo (no gateway): the submit succeeds locally and synchronously — the
       // marks are now recorded on the (local) submitted checklist, so drop them.
       set((s) => {
         if (!s.checklist) return;
         s.checklist.submitted = true;
+        s.submission = { inspectionId: null, generation: s.projectScopeGeneration, status: 'idle' };
         s.checklistMarks.inspectionId = null;
         s.checklistMarks.byItem = {};
         // demo (no API): the submitted checklist enters the PMC review queue,
@@ -2081,6 +2202,11 @@ export const useStore = create<Store>()(
       set((s) => {
         s.outbox = [...remaining, ...appended];
         s.syncQueue = []; // local-only labels (check-in, QR) are considered synced on reconnect
+        // gate round 8: the queue changed — a queued submit may have replayed or
+        // been dropped (terminal 4xx). Re-derive the freeze so a dropped submit
+        // UNLOCKS the checklist (a successful replay lands `submitted` via the
+        // snapshot below, which reconciles it to read-only).
+        reconcileSubmission(s);
       });
       persistOutbox();
       if (lastSnap) applySnapshot(lastSnap, flushScope);
@@ -2109,7 +2235,13 @@ export const useStore = create<Store>()(
           // different user or project never leak into the current context.
           const raw = storage.getItem(outboxKey());
           const ops = raw ? (JSON.parse(raw) as OutboxOp[]) : [];
-          set((s) => { s.outbox = Array.isArray(ops) ? ops : []; });
+          set((s) => {
+            s.outbox = Array.isArray(ops) ? ops : [];
+            // gate round 8: rebuild an offline submit's freeze from the durable
+            // outbox, so a reload keeps the checklist frozen until the queued
+            // submit replays (also covered from the snapshot side by applySnapshot).
+            reconcileSubmission(s);
+          });
         }
       } catch {
         /* ignore malformed storage */
