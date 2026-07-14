@@ -892,8 +892,10 @@ export const useStore = create<Store>()(
       // ONLINE: upload now with the idempotency key; reconcile from the snapshot
       const scope = currentScope();
       // the engineer's UNSUBMITTED field marks live only in this store — the snapshot
-      // refresh below must not discard them (Task 7 acceptance finding)
-      const marks = new Map(c.items.map((it) => [it.name, { state: it.state, note: it.note }]));
+      // refresh below must not discard them (Task 7 acceptance finding). Keyed by ROW
+      // ID, never by label: two rows may share a name and each keeps its OWN facts
+      // (gate round-2 finding 3 — this path already requires item.id above).
+      const marks = new Map(c.items.filter((it) => it.id).map((it) => [it.id!, { state: it.state, note: it.note }]));
       try {
         await gateway.uploadMedia({ kind: 'inspection', mime, data: base64, clientKey, ...meta });
         if (!scopeStillCurrent(scope)) return;
@@ -903,7 +905,7 @@ export const useStore = create<Store>()(
           const chk = s.checklist;
           if (chk?.id !== c.id) return;
           for (const it of chk.items) {
-            const kept = marks.get(it.name);
+            const kept = it.id ? marks.get(it.id) : undefined;
             if (kept) { it.state = kept.state; it.note = kept.note; }
           }
         });

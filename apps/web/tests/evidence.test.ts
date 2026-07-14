@@ -248,6 +248,41 @@ describe('replay lifecycle', () => {
     expect(s().outbox).toHaveLength(1); // merge found the pending row already covered
   });
 
+  it('DUPLICATE-LABEL rows keep their OWN marks across the online evidence refresh (gate round-2 finding 3)', async () => {
+    // the reviewer's probe: two rows both named "Slope" — pass/dry vs fail/ponding
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm7', url: '/media/m7' }),
+      snapshot: vi.fn().mockResolvedValue({
+        ...makeSnapshot(),
+        checklist: {
+          id: 'INSP-90', title: 'Dup labels', zone: 'Terrace', date: '03 Jul 2026', submitted: false,
+          items: [
+            { id: 'dup-1', name: 'Slope', state: null, photos: 0, note: '', evidence: [] },
+            { id: 'dup-2', name: 'Slope', state: null, photos: 0, note: '', evidence: ['/media/m7'] },
+          ],
+        },
+      }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.online = true;
+      st.checklist = {
+        id: 'INSP-90', title: 'Dup labels', zone: 'Terrace', date: '03 Jul 2026', submitted: false,
+        items: [
+          { id: 'dup-1', name: 'Slope', state: 'pass', photos: 0, note: 'upper bay dry' },
+          { id: 'dup-2', name: 'Slope', state: 'fail', photos: 0, note: 'ponding at drain' },
+        ],
+      };
+    });
+
+    await s().addChecklistEvidence(1, PX); // evidence onto ROW 2 → upload + snapshot refresh
+
+    const items = s().checklist!.items;
+    expect(items[0]).toMatchObject({ id: 'dup-1', state: 'pass', note: 'upper bay dry' }); // its OWN facts
+    expect(items[1]).toMatchObject({ id: 'dup-2', state: 'fail', note: 'ponding at drain' });
+  });
+
   it('a reconciliation held across a PROJECT SWITCH must not contaminate the new project (gate round-2 finding 2)', async () => {
     s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
     useStore.setState((st) => { st.online = false; });
