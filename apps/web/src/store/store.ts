@@ -519,13 +519,32 @@ export const useStore = create<Store>()(
      *  have a replay op. An op lost to a failed localStorage persistence (quota,
      *  private mode, wiped storage) is reconstructed here, idempotently per
      *  clientKey — the server dedupes on (projectId, clientKey), so even a
-     *  duplicate replay is harmless. */
+     *  duplicate replay is harmless.
+     *
+     *  Gate round-2 finding 2: a reconciliation is a READ followed by a write —
+     *  the read can go stale while it is in flight (a project switch, a flush
+     *  that confirmed uploads, a dead-letter). EVERYTHING the write depends on
+     *  is captured BEFORE the await and re-validated after it, and an epoch
+     *  makes reconciliations single-winner: any flush / retry / delete / newer
+     *  reconciliation invalidates the ones already in flight, so only the
+     *  NEWEST truth may mutate the store. */
+    let evidenceEpoch = 0;
+    const invalidateEvidenceReconciles = (): number => ++evidenceEpoch;
     const reconcileEvidence = async (): Promise<void> => {
+      const epoch = invalidateEvidenceReconciles(); // this reconciliation supersedes older ones
+      const scope = evidenceScope();
+      const projectId = get().activeProjectId;
+      const projScope = currentScope();
+      const storageKey = outboxKey();
       try {
-        const scope = evidenceScope();
-        const entries = await listEvidence(scope, get().activeProjectId);
+        const entries = await listEvidence(scope, projectId);
+        // REJECT a stale result: every captured coordinate must still be live
+        if (epoch !== evidenceEpoch) return; // a newer reconciliation / flush / retry / delete owns the truth now
+        if (!scopeStillCurrent(projScope)) return; // the project switched mid-read
+        if (evidenceScope() !== scope || get().activeProjectId !== projectId || outboxKey() !== storageKey) return;
+
         const failed = entries.filter((e) => e.status === 'failed').map((e) => ({ clientKey: e.clientKey, reason: e.failReason ?? 'upload rejected', mime: e.mime }));
-        const pending = entries.filter((e) => e.status === 'pending');
+        const pending = entries.filter((e) => e.status === 'pending'); // only pending rows earn a replay op
         let reconstructed = false;
         set((s) => {
           s.failedEvidence = failed;
@@ -894,6 +913,7 @@ export const useStore = create<Store>()(
       }
     },
     retryFailedEvidence: async (clientKey) => {
+      invalidateEvidenceReconciles(); // the row is about to change state under any in-flight read
       const revived = await retryEvidence(evidenceScope(), get().activeProjectId, clientKey).catch(() => null);
       if (!revived) return;
       set((s) => {
@@ -906,6 +926,7 @@ export const useStore = create<Store>()(
       if (get().online) get().flushOutbox();
     },
     deleteFailedEvidence: async (clientKey) => {
+      invalidateEvidenceReconciles(); // the row is about to vanish under any in-flight read
       // the user's explicit decision — the only non-server path that drops bytes
       await deleteEvidence(evidenceScope(), get().activeProjectId, clientKey).catch(() => {});
       set((s) => { s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey); });
@@ -1843,6 +1864,10 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       const ops = get().outbox.slice();
       if (ops.length === 0) return;
+      // gate round-2 finding 2: the flush is about to change the durable truth
+      // (confirmed uploads delete rows, terminal failures dead-letter them) — any
+      // reconciliation already in flight read the PRE-flush world and must not apply
+      invalidateEvidenceReconciles();
       // Pin EVERYTHING this flush uses to the moment it started (Codex gate
       // finding 1): the gateway instance, the (project, generation) scope, the
       // session, and the storage key the queue belongs to. The module-level
