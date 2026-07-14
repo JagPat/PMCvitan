@@ -668,6 +668,82 @@ describe('replay lifecycle', () => {
     expect(s().toast).toBeNull(); // the failure belongs to Ambli's context, not Villa's screen
   });
 
+  it('marks and notes entered DURING a slow upload survive the returning snapshot (gate round-5)', async () => {
+    let releaseSnap!: (v: unknown) => void;
+    const heldSnap = new Promise((r) => (releaseSnap = r));
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      snapshot: vi.fn().mockImplementation(async () => {
+        await heldSnap;
+        // the server holds NONE of the engineer's unsubmitted field marks
+        return {
+          ...makeSnapshot(),
+          checklist: {
+            id: 'INSP-90', title: 'Test check', zone: 'Terrace', date: '03 Jul 2026', submitted: false,
+            items: [
+              { id: 'item-1', name: 'Slope', state: null, photos: 1, note: '', evidence: ['/media/m1'] },
+              { id: 'item-2', name: 'Seal', state: null, photos: 0, note: '', evidence: [] },
+            ],
+          },
+        };
+      }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    seedChecklist(); // item-1 'fail', item-2 null
+
+    const upload = s().addChecklistEvidence(0, PX); // uploads, then PARKS on the held snapshot
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+    // the engineer keeps working WHILE the upload is in flight
+    s().setItem(1, 'pass');                       // a NEW mark on item-2
+    s().setNote(0, 'hairline crack at SW corner'); // a NEW note on item-1
+    releaseSnap(null);
+    await upload;
+
+    // the field data entered during the slow upload must NOT be lost to the snapshot
+    const items = s().checklist!.items;
+    expect(items[1].state).toBe('pass');
+    expect(items[0].note).toBe('hairline crack at SW corner');
+    expect(items[0].state).toBe('fail'); // the pre-upload mark is still intact too
+  });
+
+  it('a pre-upload mark survives a BACKGROUND snapshot refresh that lands mid-upload (gate round-5 regression guard)', async () => {
+    // the real-browser mechanism the api-e2e chain exercises: uploading the photo
+    // makes the server emit `changed`, so useApiSync fires a background snapshot
+    // that overwrites the checklist WHILE addChecklistEvidence's own upload is in
+    // flight — the pre-upload mark must not be lost to that wipe.
+    let releaseSnap!: (v: unknown) => void;
+    const heldSnap = new Promise((r) => (releaseSnap = r));
+    const serverChecklist = {
+      id: 'INSP-90', title: 'Test check', zone: 'Terrace', date: '03 Jul 2026', submitted: false,
+      items: [
+        { id: 'item-1', name: 'Slope', state: null, photos: 1, note: '', evidence: ['/media/m1'] },
+        { id: 'item-2', name: 'Seal', state: null, photos: 0, note: '', evidence: [] },
+      ],
+    };
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      snapshot: vi.fn().mockImplementation(async () => { await heldSnap; return { ...makeSnapshot(), checklist: serverChecklist }; }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    seedChecklist(); // item-1 'fail'
+    s().setItem(0, 'pass'); // the engineer marks item-1 BEFORE uploading
+
+    const upload = s().addChecklistEvidence(0, PX); // parks on the held snapshot
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+    // a BACKGROUND socket refresh (useApiSync) lands mid-upload and wipes the mark
+    s().applySnapshot({ ...makeSnapshot(), checklist: serverChecklist });
+    expect(s().checklist!.items[0].state).toBeNull(); // the wipe really happened
+    releaseSnap(null);
+    await upload;
+
+    // the pre-upload mark is restored, not lost to the concurrent refresh
+    expect(s().checklist!.items[0].state).toBe('pass');
+  });
+
   it('the user\'s explicit DELETE is the only non-server path that drops bytes', async () => {
     await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'k-del', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
     const evidenceStore = await import('@/data/evidenceStore');
