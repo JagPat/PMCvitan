@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { resolveProjectNode } from '../nodes/node-scope';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import { ddMmmYyyy } from '../domain/dates';
 import { CLOCK, type Clock } from '../common/clock';
 import { fromIsoCivilDate } from '../common/civil-date';
@@ -19,24 +20,33 @@ export class DailyLogService {
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
-  /** Flag a material as not matching its locked decision → block the linked activity. */
+  /** Flag a material as not matching its locked decision → block the linked activity.
+   *
+   *  Gate round-2 finding 1: this WRITES a readiness input (gateMaterial + status),
+   *  so it takes the per-project readiness lock and re-reads the log, material and
+   *  linked activities INSIDE the locked transaction — a concurrent start() sees the
+   *  mismatch strictly before its readiness evaluation, or this flag waits for the
+   *  start's commit and blocks the freshly started activity as a NEW fact. */
   async flagMismatch(projectId: string, input: FlagMismatchInput, user: AuthUser): Promise<SnapshotDto> {
-    const log = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: [{ logDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }], include: { materials: true } });
-    if (!log) throw new NotFoundException('No daily log for this project');
-    const mat = log.materials.find((m) => m.decisionId === input.decisionId);
-    if (!mat) throw new NotFoundException(`No material linked to ${input.decisionId}`);
+    let matName = '';
+    await this.prisma.$transaction(async (tx) => {
+      await lockProjectReadiness(tx, projectId);
+      const log = await tx.dailyLog.findFirst({ where: { projectId }, orderBy: [{ logDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }], include: { materials: true } });
+      if (!log) throw new NotFoundException('No daily log for this project');
+      const mat = log.materials.find((m) => m.decisionId === input.decisionId);
+      if (!mat) throw new NotFoundException(`No material linked to ${input.decisionId}`);
+      matName = mat.name;
 
-    const activities = await this.prisma.activity.findMany({ where: { projectId, decisionId: input.decisionId } });
-    await this.prisma.$transaction([
-      this.prisma.siteMaterial.update({ where: { id: mat.id }, data: { matched: false } }),
-      ...activities.map((a) =>
-        this.prisma.activity.update({ where: { id: a.id }, data: { gateMaterial: 'fail', status: a.status === 'done' ? a.status : 'blocked', block: 'Material ≠ approved' } }),
-      ),
-      this.prisma.notification.create({ data: { projectId, text: `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, color: '#B23A34', time: 'just now' } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'material.mismatch', entity: 'SiteMaterial', entityId: mat.id } }),
-    ]);
+      const activities = await tx.activity.findMany({ where: { projectId, decisionId: input.decisionId } });
+      await tx.siteMaterial.update({ where: { id: mat.id }, data: { matched: false } });
+      for (const a of activities) {
+        await tx.activity.update({ where: { id: a.id }, data: { gateMaterial: 'fail', status: a.status === 'done' ? a.status : 'blocked', block: 'Material ≠ approved' } });
+      }
+      await tx.notification.create({ data: { projectId, text: `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, color: '#B23A34', time: 'just now' } });
+      await tx.auditLog.create({ data: { projectId, actor: user.role, action: 'material.mismatch', entity: 'SiteMaterial', entityId: mat.id } });
+    });
     // material mismatch blocks work — alert PMC (resolves it) and contractor (supplied it)
-    this.realtime.notifyChanged(projectId, `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, ['pmc', 'contractor']);
+    this.realtime.notifyChanged(projectId, `Material mismatch: ${matName} ≠ approved ${input.decisionId}`, ['pmc', 'contractor']);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 

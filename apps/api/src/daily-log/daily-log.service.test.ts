@@ -15,8 +15,15 @@ const user: AuthUser = { sub: 'u1', role: 'engineer', projectId: 'p1' } as AuthU
 describe('DailyLogService — latest-log selection', () => {
   it('queries by the real civil day (logDate desc, nulls last), createdAt + id as tie-breakers', async () => {
     const findFirst = vi.fn().mockResolvedValue(null);
-    const prisma = { dailyLog: { findFirst } } as unknown as PrismaService;
-    const svc = new DailyLogService(prisma, {} as SnapshotService, {} as RealtimeGateway, { today: () => '2026-07-03' });
+    // flagMismatch now reads INSIDE its locked transaction (gate round-2 finding 1):
+    // the interactive form passes the stub itself; the advisory lock is a no-op here
+    const prisma: Record<string, unknown> = {
+      dailyLog: { findFirst },
+      $executeRaw: vi.fn(async () => 1),
+      $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
+        typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
+    };
+    const svc = new DailyLogService(prisma as unknown as PrismaService, {} as SnapshotService, {} as RealtimeGateway, { today: () => '2026-07-03' });
 
     await expect(svc.flagMismatch('p1', { decisionId: 'DL-1' }, user)).rejects.toThrow('No daily log');
 
