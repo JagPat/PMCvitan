@@ -768,7 +768,15 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
           });
         } catch (err) {
           if (isTerminalOutboxError(err)) {
-            await markEvidenceFailed(op.scope, gw.project, op.clientKey, `upload rejected (${(err as { status?: number }).status ?? 'error'})`).catch(() => {});
+            try {
+              await markEvidenceFailed(op.scope, gw.project, op.clientKey, `upload rejected (${(err as { status?: number }).status ?? 'error'})`);
+            } catch {
+              // gate finding 2: the dead-letter write ITSELF failed — the queued op
+              // is now the ONLY replay path to these bytes. Rethrow WITHOUT a status
+              // so the flush classifies it transient and KEEPS the op, instead of
+              // dropping a "terminal" op whose bytes never reached the Retry surface.
+              throw new Error('evidence dead-letter write failed — keeping the replay op queued');
+            }
           }
           throw err;
         }

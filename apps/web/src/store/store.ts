@@ -513,13 +513,31 @@ export const useStore = create<Store>()(
       }
       return sub;
     };
-    /** Refresh the FAILED-evidence mirror the UI renders (Retry/Delete surface). */
-    const refreshFailedEvidence = async (): Promise<void> => {
+    /** Reconcile the store with the durable evidence rows: refresh the UI mirrors
+     *  (pending count, the FAILED Retry/Delete surface) AND — gate finding 2 —
+     *  treat IndexedDB as the CANONICAL evidence queue: every PENDING row must
+     *  have a replay op. An op lost to a failed localStorage persistence (quota,
+     *  private mode, wiped storage) is reconstructed here, idempotently per
+     *  clientKey — the server dedupes on (projectId, clientKey), so even a
+     *  duplicate replay is harmless. */
+    const reconcileEvidence = async (): Promise<void> => {
       try {
-        const entries = await listEvidence(evidenceScope(), get().activeProjectId);
+        const scope = evidenceScope();
+        const entries = await listEvidence(scope, get().activeProjectId);
         const failed = entries.filter((e) => e.status === 'failed').map((e) => ({ clientKey: e.clientKey, reason: e.failReason ?? 'upload rejected', mime: e.mime }));
-        const pending = entries.filter((e) => e.status === 'pending').length;
-        set((s) => { s.failedEvidence = failed; s.pendingEvidenceCount = pending; });
+        const pending = entries.filter((e) => e.status === 'pending');
+        let reconstructed = false;
+        set((s) => {
+          s.failedEvidence = failed;
+          s.pendingEvidenceCount = pending.length;
+          const queued = new Set(s.outbox.filter((o) => o.t === 'uploadEvidence').map((o) => o.clientKey));
+          for (const e of pending) {
+            if (queued.has(e.clientKey)) continue;
+            s.outbox.push({ t: 'uploadEvidence', scope, clientKey: e.clientKey });
+            reconstructed = true;
+          }
+        });
+        if (reconstructed) persistOutbox();
       } catch {
         /* evidence store unavailable — the mirrors stay empty */
       }
@@ -893,7 +911,7 @@ export const useStore = create<Store>()(
       set((s) => { s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey); });
       get().flash('Photo deleted.');
     },
-    hydrateEvidence: async () => refreshFailedEvidence(),
+    hydrateEvidence: async () => reconcileEvidence(),
     setNote: (idx, txt) => set((s) => { const it = s.checklist?.items[idx]; if (it) it.note = txt; }),
     submitInspection: () => {
       const c = get().checklist;
@@ -1910,28 +1928,35 @@ export const useStore = create<Store>()(
       if (dropped > 0) parts.push(`${dropped} could not be applied and ${dropped > 1 ? 'were' : 'was'} discarded`);
       if (remaining.length > 0) parts.push(`${remaining.length} still pending — will retry when you reconnect`);
       if (parts.length) get().flash(parts.join('; ') + '.');
-      // evidence mirrors: uploaded bytes were cleaned up; terminal rejections moved to FAILED
-      void refreshFailedEvidence();
+      // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
+      // to FAILED; an op kept alive by a failed dead-letter write stays covered
+      void reconcileEvidence();
     },
     hydrateOutbox: () => {
       try {
         const storage = globalThis.localStorage;
-        if (!storage) return;
-        // one-time migration: adopt the old unscoped queue into the current scope
-        const legacy = storage.getItem(LEGACY_OUTBOX_KEY);
-        if (legacy) {
-          storage.removeItem(LEGACY_OUTBOX_KEY);
-          if (!storage.getItem(outboxKey())) storage.setItem(outboxKey(), legacy);
+        if (storage) {
+          // one-time migration: adopt the old unscoped queue into the current scope
+          const legacy = storage.getItem(LEGACY_OUTBOX_KEY);
+          if (legacy) {
+            storage.removeItem(LEGACY_OUTBOX_KEY);
+            if (!storage.getItem(outboxKey())) storage.setItem(outboxKey(), legacy);
+          }
+          // REPLACE the in-memory queue with this scope's persisted one (WEB-02) —
+          // called again on every sign-in / project switch, so ops queued under a
+          // different user or project never leak into the current context.
+          const raw = storage.getItem(outboxKey());
+          const ops = raw ? (JSON.parse(raw) as OutboxOp[]) : [];
+          set((s) => { s.outbox = Array.isArray(ops) ? ops : []; });
         }
-        // REPLACE the in-memory queue with this scope's persisted one (WEB-02) —
-        // called again on every sign-in / project switch, so ops queued under a
-        // different user or project never leak into the current context.
-        const raw = storage.getItem(outboxKey());
-        const ops = raw ? (JSON.parse(raw) as OutboxOp[]) : [];
-        set((s) => { s.outbox = Array.isArray(ops) ? ops : []; });
       } catch {
         /* ignore malformed storage */
       }
+      // gate finding 2: localStorage is only a CACHE of the queue — the durable
+      // evidence rows are canonical. Merge every pending row back into replay
+      // (reconstructing ops a failed/absent setItem lost) and refresh the UI
+      // mirrors — this runs even when localStorage is unavailable entirely.
+      void reconcileEvidence();
     },
 
     // ---- team access / login ----
