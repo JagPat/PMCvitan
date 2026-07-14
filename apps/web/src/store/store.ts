@@ -561,6 +561,25 @@ export const useStore = create<Store>()(
         /* evidence store unavailable — the mirrors stay empty */
       }
     };
+    /** Gate round-3: an evidence COMMAND (offline capture / Retry / Delete)
+     *  crosses an IndexedDB await too. Its durable operation must run under the
+     *  coordinates captured BEFORE the await, and every post-await store /
+     *  toast / persistence mutation must be refused unless that context is
+     *  still current — otherwise a project or session switch landing mid-await
+     *  writes the OLD scope's operation into the NEW scope's outbox, pending
+     *  count and storage key. When the context has moved, the durable row is
+     *  left alone: its own scope's reconciliation reconstructs it. */
+    const captureEvidenceContext = () => ({
+      scope: evidenceScope(),
+      projectId: get().activeProjectId,
+      projScope: currentScope(),
+      storageKey: outboxKey(),
+    });
+    const evidenceContextStillCurrent = (ctx: ReturnType<typeof captureEvidenceContext>): boolean =>
+      scopeStillCurrent(ctx.projScope)
+      && evidenceScope() === ctx.scope
+      && get().activeProjectId === ctx.projectId
+      && outboxKey() === ctx.storageKey;
 
     /**
      * Route a mutation through the gateway when online, or queue it (Phase 8
@@ -872,14 +891,21 @@ export const useStore = create<Store>()(
           get().flash('Could not save this photo on the device (offline storage unavailable) — retake when you have signal.');
           return;
         }
+        // gate round-3: the durable row belongs to the scope the user captured
+        // it in — pin that scope BEFORE the write and never mutate another one
+        const ctx = captureEvidenceContext();
         try {
-          await putEvidence({ userScope: evidenceScope(), projectId: get().activeProjectId, clientKey, mime, data: base64, ...meta });
+          await putEvidence({ userScope: ctx.scope, projectId: ctx.projectId, clientKey, mime, data: base64, ...meta });
         } catch {
-          get().flash('Could not save this photo on the device — free space and retake.');
+          if (evidenceContextStillCurrent(ctx)) get().flash('Could not save this photo on the device — free space and retake.');
           return;
         }
+        // a NEW pending row exists — reconciliations already in flight read a
+        // world without it and must not overwrite the mirrors it feeds
+        invalidateEvidenceReconciles();
+        if (!evidenceContextStillCurrent(ctx)) return; // moved mid-write: the row's own scope reconstructs it
         set((s) => {
-          s.outbox.push({ t: 'uploadEvidence', scope: evidenceScope(), clientKey });
+          s.outbox.push({ t: 'uploadEvidence', scope: ctx.scope, clientKey });
           s.syncQueue.push('Evidence photo');
           const it = s.checklist?.items[idx];
           if (it) { it.photos += 1; it.evidence = [...(it.evidence ?? []), dataUrl]; }
@@ -916,11 +942,14 @@ export const useStore = create<Store>()(
     },
     retryFailedEvidence: async (clientKey) => {
       invalidateEvidenceReconciles(); // the row is about to change state under any in-flight read
-      const revived = await retryEvidence(evidenceScope(), get().activeProjectId, clientKey).catch(() => null);
+      const ctx = captureEvidenceContext(); // the row being revived belongs to THIS scope
+      const revived = await retryEvidence(ctx.scope, ctx.projectId, clientKey).catch(() => null);
       if (!revived) return;
+      // gate round-3: moved mid-revive — the now-pending row reconstructs in its own scope
+      if (!evidenceContextStillCurrent(ctx)) return;
       set((s) => {
         s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey);
-        s.outbox.push({ t: 'uploadEvidence', scope: evidenceScope(), clientKey }); // SAME key — the server dedupes
+        s.outbox.push({ t: 'uploadEvidence', scope: ctx.scope, clientKey }); // SAME key — the server dedupes
         s.syncQueue.push('Evidence photo (retry)');
         s.pendingEvidenceCount += 1;
       });
@@ -929,8 +958,12 @@ export const useStore = create<Store>()(
     },
     deleteFailedEvidence: async (clientKey) => {
       invalidateEvidenceReconciles(); // the row is about to vanish under any in-flight read
+      const ctx = captureEvidenceContext();
       // the user's explicit decision — the only non-server path that drops bytes
-      await deleteEvidence(evidenceScope(), get().activeProjectId, clientKey).catch(() => {});
+      await deleteEvidence(ctx.scope, ctx.projectId, clientKey).catch(() => {});
+      // gate round-3: the delete honored the user's decision in ITS scope; a
+      // switch that landed mid-await leaves the NEW scope's UI untouched
+      if (!evidenceContextStillCurrent(ctx)) return;
       set((s) => { s.failedEvidence = s.failedEvidence.filter((f) => f.clientKey !== clientKey); });
       get().flash('Photo deleted.');
     },

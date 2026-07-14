@@ -382,6 +382,129 @@ describe('replay lifecycle', () => {
     expect(s().outbox).toHaveLength(0); // the bogus op is consumed as a no-op
   });
 
+  it('a held OFFLINE CAPTURE across a project switch leaves the new project untouched; the row reconstructs in its OWN scope (gate round-3)', async () => {
+    s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+
+    const evidenceStore = await import('@/data/evidenceStore');
+    const realPut = evidenceStore.putEvidence;
+    let release!: (v: unknown) => void;
+    const held = new Promise((r) => (release = r));
+    const spy = vi.spyOn(evidenceStore, 'putEvidence').mockImplementationOnce(async (entry) => {
+      await held; // the durable write is IN FLIGHT while the user switches projects
+      return realPut(entry);
+    });
+
+    const capture = s().addChecklistEvidence(0, PX); // parks on the held write
+    useStore.setState((st) => { // the switch lands mid-await
+      st.activeProjectId = 'villa';
+      st.projectScopeGeneration += 1;
+      st.checklist = null;
+      st.outbox = []; st.syncQueue = []; st.pendingEvidenceCount = 0; st.failedEvidence = [];
+      st.toast = null;
+    });
+    release(null);
+    await capture;
+    spy.mockRestore();
+
+    // VILLA sees nothing: no op, no count, no persisted queue, no toast
+    expect(s().outbox).toHaveLength(0);
+    expect(s().pendingEvidenceCount).toBe(0);
+    expect(globalThis.localStorage.getItem('vitan.outbox.anon.villa') ?? '[]').toBe('[]');
+    expect(s().toast).toBeNull();
+
+    // ...but the bytes are DURABLE under AMBLI, pending, keyed to Ambli's scope
+    const ambli = await listEvidence('anon', 'ambli');
+    expect(ambli).toHaveLength(1);
+    expect(ambli[0].status).toBe('pending');
+
+    // returning to Ambli reconstructs the replay op canonically (finding-2 machinery)
+    useStore.setState((st) => { st.activeProjectId = 'ambli'; st.projectScopeGeneration += 1; });
+    await s().hydrateEvidence();
+    expect(s().outbox.map((o) => (o as { clientKey?: string }).clientKey)).toContain(ambli[0].clientKey);
+    expect(s().pendingEvidenceCount).toBe(1);
+  });
+
+  it('a held RETRY across a project switch leaves the new project untouched; the revived row reconstructs in its OWN scope (gate round-3)', async () => {
+    s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'k-retry', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
+    const evidenceStore = await import('@/data/evidenceStore');
+    await evidenceStore.markEvidenceFailed('anon', 'ambli', 'k-retry', 'upload rejected (403)');
+    await s().hydrateEvidence();
+    expect(s().failedEvidence.map((f) => f.clientKey)).toContain('k-retry');
+
+    const realRetry = evidenceStore.retryEvidence;
+    let release!: (v: unknown) => void;
+    const held = new Promise((r) => (release = r));
+    const spy = vi.spyOn(evidenceStore, 'retryEvidence').mockImplementationOnce(async (scope, project, key) => {
+      await held; // the revive is IN FLIGHT while the user switches projects
+      return realRetry(scope, project, key);
+    });
+
+    const retry = s().retryFailedEvidence('k-retry');
+    useStore.setState((st) => {
+      st.activeProjectId = 'villa';
+      st.projectScopeGeneration += 1;
+      st.outbox = []; st.syncQueue = []; st.pendingEvidenceCount = 0; st.failedEvidence = [];
+      st.toast = null;
+    });
+    release(null);
+    await retry;
+    spy.mockRestore();
+
+    // VILLA sees nothing
+    expect(s().outbox).toHaveLength(0);
+    expect(s().pendingEvidenceCount).toBe(0);
+    expect(globalThis.localStorage.getItem('vitan.outbox.anon.villa') ?? '[]').toBe('[]');
+
+    // the row DID revive — in AMBLI's scope — and reconstructs there
+    expect((await getEvidence('anon', 'ambli', 'k-retry'))?.status).toBe('pending');
+    useStore.setState((st) => { st.activeProjectId = 'ambli'; st.projectScopeGeneration += 1; });
+    await s().hydrateEvidence();
+    expect(s().outbox.map((o) => (o as { clientKey?: string }).clientKey)).toContain('k-retry');
+    expect(s().pendingEvidenceCount).toBe(1);
+    expect(s().failedEvidence).toHaveLength(0);
+  });
+
+  it('a held DELETE across a project switch performs the deletion in its OWN scope but never touches the new scope\'s UI (gate round-3)', async () => {
+    s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
+    await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'k-shared', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
+    const evidenceStore = await import('@/data/evidenceStore');
+    await evidenceStore.markEvidenceFailed('anon', 'ambli', 'k-shared', 'upload rejected (400)');
+    await s().hydrateEvidence();
+    expect(s().failedEvidence.map((f) => f.clientKey)).toContain('k-shared');
+
+    const realDelete = evidenceStore.deleteEvidence;
+    let release!: (v: unknown) => void;
+    const held = new Promise((r) => (release = r));
+    const spy = vi.spyOn(evidenceStore, 'deleteEvidence').mockImplementationOnce(async (scope, project, key) => {
+      await held;
+      return realDelete(scope, project, key);
+    });
+
+    const del = s().deleteFailedEvidence('k-shared');
+    useStore.setState((st) => {
+      st.activeProjectId = 'villa';
+      st.projectScopeGeneration += 1;
+      st.outbox = []; st.syncQueue = []; st.pendingEvidenceCount = 0;
+      // Villa's OWN failed row happens to carry the same clientKey — the stale
+      // delete must not sweep it out of Villa's Retry/Delete surface
+      st.failedEvidence = [{ clientKey: 'k-shared', reason: 'upload rejected (400)', mime: 'image/png' }];
+      st.toast = null;
+    });
+    release(null);
+    await del;
+    spy.mockRestore();
+
+    // the user's decision WAS honored — Ambli's bytes are gone...
+    expect(await getEvidence('anon', 'ambli', 'k-shared')).toBeNull();
+    // ...but VILLA's UI is untouched: its same-key row survives, no toast
+    expect(s().failedEvidence.map((f) => f.clientKey)).toContain('k-shared');
+    expect(s().toast).toBeNull();
+  });
+
   it('the user\'s explicit DELETE is the only non-server path that drops bytes', async () => {
     await putEvidence({ userScope: 'anon', projectId: 'ambli', clientKey: 'k-del', mime: 'image/png', data: 'AAAA', inspectionId: 'INSP-90', inspectionItemId: 'item-1' });
     const evidenceStore = await import('@/data/evidenceStore');

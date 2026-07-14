@@ -3,16 +3,20 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 /**
- * Gate round-2 finding 1 — THE EXPLICIT COVERAGE LIST of readiness-input writers.
+ * Gate round-2 finding 1 — FILE-LEVEL coverage tripwire for readiness-input writers.
  *
  * The readiness derivation reads: Activity.gateMaterial / gateTeam / decisionId,
  * the linked Decision's status, linked Inspection rows (+ items), linked Drawing /
  * DrawingRevision / DrawingRecipient / DrawingAck rows, active Membership rows and
- * GateOverride rows. EVERY service that writes one of these inputs must either
- * take lockProjectReadiness inside its transaction, or be exempted HERE with a
- * reason a reviewer can check. A new writer that is not classified fails this
- * test — the protocol can no longer be extended silently (that is exactly how
- * flagMismatch was missed).
+ * GateOverride rows. EVERY service FILE that writes one of these inputs must either
+ * take lockProjectReadiness, or be exempted HERE with a reason a reviewer can check.
+ * A new writer file that is not classified fails this test — a whole service can no
+ * longer skip the protocol silently (that is exactly how flagMismatch was missed).
+ *
+ * Honest scope (round-2 re-review note): this is a FILE-level check. It cannot
+ * catch a new unlocked METHOD added to a file that already locks elsewhere —
+ * per-writer correctness remains the job of the live-PostgreSQL race probes
+ * (start-readiness-race and friends) and code review.
  */
 
 const SRC = join(__dirname, '..');
@@ -57,7 +61,7 @@ function serviceFiles(dir: string): string[] {
   return out;
 }
 
-describe('readiness-lock coverage (gate round-2 finding 1)', () => {
+describe('readiness-lock FILE-LEVEL coverage tripwire (gate round-2 finding 1)', () => {
   const files = serviceFiles(SRC);
   const writers = files.filter((f) => {
     const src = readFileSync(f, 'utf8');
@@ -69,7 +73,7 @@ describe('readiness-lock coverage (gate round-2 finding 1)', () => {
     expect(unclassified, `classify these writers in COVERAGE (locked or exempt-with-reason): ${unclassified.join(', ')}`).toEqual([]);
   });
 
-  it('every LOCKED writer actually takes lockProjectReadiness', () => {
+  it('every LOCKED writer file calls lockProjectReadiness somewhere in the file', () => {
     const missing = Object.entries(COVERAGE)
       .filter(([, v]) => v === 'locked')
       .map(([rel]) => rel)
