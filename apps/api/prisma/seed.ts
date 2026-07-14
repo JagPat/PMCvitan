@@ -24,28 +24,35 @@ const SCHEDULE_ANCHOR = '2026-06-01';
 const atDay = (offset: number): Date => fromIsoCivilDate(addCivilDays(SCHEDULE_ANCHOR, offset))!;
 
 async function main(): Promise<void> {
-  // wipe (children first) for an idempotent seed
-  await prisma.membership.deleteMany();
-  await prisma.orgMembership.deleteMany();
-  await prisma.workerDevice.deleteMany();
-  await prisma.pushSubscription.deleteMany();
-  await prisma.user.deleteMany();
+  // wipe (children first) for an idempotent seed. A previous suite run can
+  // leave rows in every NO ACTION child table, so the order must hold for a
+  // FULLY populated database, not just the fixture this seed creates:
+  // GateOverride → {Activity, Media}; DrawingRecipient → Membership;
+  // Media → {DailyLog, Decision, Inspection, InspectionItem};
+  // Inspection.assignee / Activity.completionRequestedBy → Membership.
+  await prisma.gateOverride.deleteMany();
+  await prisma.drawingRecipient.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.notification.deleteMany();
   await prisma.decisionEvent.deleteMany();
   await prisma.changeRequest.deleteMany();
+  await prisma.media.deleteMany();
   await prisma.inspectionItem.deleteMany();
   await prisma.inspection.deleteMany();
   await prisma.crewRow.deleteMany();
   await prisma.siteMaterial.deleteMany();
-  // media references dailyLog/decision through NO ACTION composite FKs — delete it first
-  await prisma.media.deleteMany();
   await prisma.dailyLog.deleteMany();
   await prisma.drawingAck.deleteMany();
   await prisma.drawingRevision.deleteMany();
   await prisma.drawing.deleteMany();
   await prisma.decisionOption.deleteMany();
   await prisma.activity.deleteMany();
+  // every Membership child (recipients, assignees, completion claims) is gone now
+  await prisma.membership.deleteMany();
+  await prisma.orgMembership.deleteMany();
+  await prisma.workerDevice.deleteMany();
+  await prisma.pushSubscription.deleteMany();
+  await prisma.user.deleteMany();
   await prisma.phase.deleteMany();
   await prisma.decision.deleteMany();
   await prisma.projectNode.deleteMany();
