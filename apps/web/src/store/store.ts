@@ -91,6 +91,19 @@ export interface IssueDecisionPayload extends Omit<NewDecisionInput, 'options'> 
   options: (NewDecisionInput['options'][number] & { photo?: { mime: string; data: string } })[];
 }
 
+/** A single unsubmitted local field edit: the value the engineer set and the
+ *  monotonic revision at which they set it (gate round 6). */
+export interface FieldMark<T> { rev: number; value: T; }
+/** Unsubmitted per-field checklist edits, keyed by inspection-item id, scoped to
+ *  ONE (inspection, scope-generation). `rev` is a monotonic counter shared across
+ *  all fields so a later edit always outranks an earlier one. */
+export interface ChecklistMarks {
+  inspectionId: string | null; // the inspection these edits belong to (null = none)
+  generation: number;          // the projectScopeGeneration they were made under
+  rev: number;                 // monotonic edit counter
+  byItem: Record<string, { state?: FieldMark<ItemState>; note?: FieldMark<string> }>;
+}
+
 export interface AppState {
   role: Role;
   screen: ScreenKey;
@@ -101,6 +114,16 @@ export interface AppState {
   decisions: Decision[];
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
+  // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
+  // live only in this client until they submit; any snapshot refresh — this
+  // upload's own OR a concurrent useApiSync `changed` refresh — would otherwise
+  // discard them. Each field records the value the engineer set AND a monotonic
+  // revision, keyed by inspection-item id, so applySnapshot restores the LATEST
+  // per-field intent (including an intentional clear — state→null / note→'') by
+  // an explicit edit record, never by value comparison (which cannot tell an
+  // intentional clear from a background wipe). Scoped to one (inspection,
+  // generation); reset when the checklist changes, the scope moves, or on submit.
+  checklistMarks: ChecklistMarks;
   reviews: Review[]; // the PMC review queue (submitted, undecided inspections)
   activeReviewId: string | null; // which queued review the PMC is looking at (null ⇒ first pending)
   reinspectionCreated: boolean;
@@ -324,6 +347,30 @@ function freshAccess(): AccessState {
 }
 
 /** A fresh copy of the seeded initial state (deep-cloned so resets never share references). */
+/** Record an unsubmitted per-field checklist edit (gate round 6) so any later
+ *  snapshot refresh restores the engineer's latest intent for that field —
+ *  including an intentional clear. Resets the edit set when the checklist or the
+ *  scope generation changed; no-ops for items without a server id (demo rows). */
+function recordChecklistMark(
+  s: AppState,
+  inspectionId: string,
+  itemId: string | undefined,
+  field: 'state' | 'note',
+  value: ItemState | string,
+): void {
+  if (!itemId) return;
+  const m = s.checklistMarks;
+  if (m.inspectionId !== inspectionId || m.generation !== s.projectScopeGeneration) {
+    m.inspectionId = inspectionId;
+    m.generation = s.projectScopeGeneration;
+    m.byItem = {};
+  }
+  const entry = (m.byItem[itemId] ??= {});
+  const rev = ++m.rev;
+  if (field === 'state') entry.state = { rev, value: value as ItemState };
+  else entry.note = { rev, value: value as string };
+}
+
 export function getInitialState(): AppState {
   return {
     // land on the admin (PMC) view by default — create/manage projects, teams,
@@ -339,6 +386,7 @@ export function getInitialState(): AppState {
     decisions: structuredClone(SEED_DECISIONS),
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
+    checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
     reviews: [structuredClone(SEED_REVIEW)],
     activeReviewId: null,
     reinspectionCreated: false,
@@ -428,6 +476,24 @@ export const useStore = create<Store>()(
         // assigned DIRECTLY, including null — absence means "this project has none",
         // never "keep the previous project's".
         s.checklist = snap.checklist ?? null;
+        // gate round 6: overlay the engineer's UNSUBMITTED per-field edits back
+        // onto the fresh server checklist. This is the ONE place marks survive a
+        // refresh — the upload's own snapshot AND every background useApiSync
+        // `changed` refresh flow through here, so preservation is uniform. Only
+        // edits for THIS inspection made under the CURRENT scope generation apply
+        // (a re-auth or project switch bumps the generation, stranding the old
+        // session's edits — gate round-4 finding 3). Each field carries the value
+        // the engineer set, so an intentional clear (state→null, note→'') is
+        // restored as faithfully as a set — no value-guessing (gate round 6).
+        const marks = s.checklistMarks;
+        if (s.checklist && marks.inspectionId === s.checklist.id && marks.generation === s.projectScopeGeneration) {
+          for (const it of s.checklist.items) {
+            if (!it.id) continue;
+            const edit = marks.byItem[it.id];
+            if (edit?.state) it.state = edit.state.value;
+            if (edit?.note) it.note = edit.note.value;
+          }
+        }
         s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         s.reinspectionCreated = snap.reinspectionCreated;
@@ -846,9 +912,11 @@ export const useStore = create<Store>()(
     // ---- engineer checklist (a null checklist = none issued; every action no-ops) ----
     setItem: (idx, val) =>
       set((s) => {
-        const it = s.checklist?.items[idx];
-        if (!it) return;
+        const c = s.checklist;
+        const it = c?.items[idx];
+        if (!c || !it) return;
         it.state = it.state === val ? null : val;
+        recordChecklistMark(s, c.id, it.id, 'state', it.state);
       }),
     addPhoto: (idx) => set((s) => { const it = s.checklist?.items[idx]; if (it) it.photos += 1; }),
     addChecklistEvidence: async (idx, dataUrl) => {
@@ -921,52 +989,20 @@ export const useStore = create<Store>()(
         get().flash('Photo saved offline — will upload when signal returns.');
         return;
       }
-      // ONLINE: upload now with the idempotency key; reconcile from the snapshot
+      // ONLINE: upload now with the idempotency key; reconcile from the snapshot.
+      // The engineer's UNSUBMITTED field marks are preserved across the refresh by
+      // applySnapshot itself (gate round 6 — the ONE preservation path, keyed by
+      // row id + scope generation), so this path just uploads and reconciles.
       const scope = currentScope();
-      // The engineer's UNSUBMITTED field marks live only in this store — the
-      // snapshot refresh below must not discard them (Task 7 acceptance finding).
-      // Keyed by ROW ID, never by label: two rows may share a name and each keeps
-      // its OWN facts (gate round-2 finding 3 — this path already requires item.id).
-      //
-      // Capture at BOTH points and take the union (gate round 5): marks entered
-      // BEFORE the upload can be wiped mid-flight by a concurrent `changed` socket
-      // refresh (useApiSync applies a server snapshot that has no local marks), and
-      // marks entered DURING the (slow) upload only exist in the live checklist. So
-      // snapshot the marks at ENTRY (pre-upload) and again from the LIVE checklist
-      // right before applySnapshot (during-upload), then restore whichever is a
-      // genuine local edit — preferring the live one, falling back to the entry one
-      // when a background refresh already wiped it.
-      const entryMarks = new Map(c.items.filter((it) => it.id).map((it) => [it.id!, { state: it.state, note: it.note }]));
       try {
         await gateway.uploadMedia({ kind: 'inspection', mime, data: base64, clientKey, ...meta });
         if (!scopeStillCurrent(scope)) return;
         const snap = await gateway.snapshot();
-        const liveNow = get().checklist;
-        const liveMarks: Map<string, { state: ItemState; note: string }> = liveNow?.id === c.id
-          ? new Map(liveNow.items.filter((it) => it.id).map((it) => [it.id!, { state: it.state, note: it.note }]))
-          : new Map();
         // gate round-4 finding 3: the SNAPSHOT await crosses the scope too —
-        // applySnapshot refuses a response whose (project, generation) moved
-        // (a switch OR a same-project re-authentication); when it refused,
-        // NOTHING after it may run, or the previous session's marks would be
-        // restored into the new session's checklist under the same row ids.
+        // applySnapshot refuses a response whose (project, generation) moved (a
+        // switch OR a same-project re-authentication) and returns false; nothing
+        // after it may run.
         if (!applySnapshot(snap, scope)) return;
-        set((s) => {
-          const chk = s.checklist;
-          if (chk?.id !== c.id) return;
-          for (const it of chk.items) {
-            if (!it.id) continue;
-            const live = liveMarks.get(it.id);
-            const entry = entryMarks.get(it.id);
-            // a genuine local edit differs from what the server just returned; the
-            // most-recent (live/during-upload) wins, then the entry (pre-upload)
-            // capture covers a mark a concurrent refresh wiped from the live copy.
-            const edit = (live && (live.state !== it.state || live.note !== it.note)) ? live
-              : (entry && (entry.state !== it.state || entry.note !== it.note)) ? entry
-                : undefined;
-            if (edit) { it.state = edit.state; it.note = edit.note; }
-          }
-        });
         get().flash('Evidence photo uploaded and linked to the item.');
       } catch {
         // the failure belongs to the scope the capture was made in — a moved
@@ -1012,7 +1048,7 @@ export const useStore = create<Store>()(
       get().flash('Photo deleted.');
     },
     hydrateEvidence: async () => reconcileEvidence(),
-    setNote: (idx, txt) => set((s) => { const it = s.checklist?.items[idx]; if (it) it.note = txt; }),
+    setNote: (idx, txt) => set((s) => { const c = s.checklist; const it = c?.items[idx]; if (c && it) { it.note = txt; recordChecklistMark(s, c.id, it.id, 'note', txt); } }),
     submitInspection: () => {
       const c = get().checklist;
       if (!c || !c.items.length) {
@@ -1032,6 +1068,10 @@ export const useStore = create<Store>()(
         get().flash('A failed item needs a photo before you can submit.');
         return;
       }
+      // gate round 6: the marks are being submitted — they are no longer
+      // UNSUBMITTED local edits, so a later snapshot must take server truth, not
+      // re-overlay them. Drop the pending edit set (keep the monotonic counter).
+      set((s) => { s.checklistMarks.inspectionId = null; s.checklistMarks.byItem = {}; });
       if (runRemoteOrQueue({ t: 'submitInspection', inspectionId: c.id, items: c.items }, 'Submit inspection', () => gateway!.submitInspection(c.id, c.items), 'Inspection submitted to the architect for review.')) return;
       set((s) => {
         if (!s.checklist) return;
