@@ -13,7 +13,12 @@ import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
  */
 
 const s = () => useStore.getState();
-const flush = () => new Promise((r) => setTimeout(r, 0));
+/** toggleOnline/retry/hydrate fire replay WITHOUT returning its promise, and the
+ *  replay chain crosses a VARIABLE number of IndexedDB event hops — a fixed count
+ *  of macrotask ticks races it under parallel-suite load (the round-2 "suite
+ *  failed in 2 of 3 runs" flake). Wait for the observable terminal state instead. */
+const settles = (cond: () => boolean) =>
+  vi.waitFor(() => { if (!cond()) throw new Error('not settled yet'); }, { timeout: 5000, interval: 10 });
 const httpError = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
 const PX = `data:image/png;base64,${btoa(String.fromCharCode(0x89, 0x50, 0x4e, 0x47))}`;
 
@@ -132,8 +137,7 @@ describe('replay lifecycle', () => {
     useStore.setState((st) => { st.outbox.push({ t: 'uploadEvidence', scope: 'anon', clientKey: key }); });
 
     s().toggleOnline();
-    await flush();
-    await flush();
+    await settles(() => s().outbox.length === 0);
 
     // first replay uploads + deletes; second finds no bytes and no-ops (server already has it)
     expect(gw.uploadMedia).toHaveBeenCalledTimes(1);
@@ -154,8 +158,7 @@ describe('replay lifecycle', () => {
     const key = (s().outbox[0] as { clientKey: string }).clientKey;
 
     s().toggleOnline();
-    await flush();
-    await flush();
+    await settles(() => s().outbox.length === 0 && s().failedEvidence.some((f) => f.clientKey === key));
 
     // the op is gone from the queue, but the BYTES are not — they are FAILED, surfaced for the user
     expect(s().outbox).toHaveLength(0);
@@ -165,8 +168,7 @@ describe('replay lifecycle', () => {
 
     // the user chooses RETRY → re-queued with the SAME clientKey (server dedupes)
     await s().retryFailedEvidence(key);
-    await flush();
-    await flush();
+    await settles(() => gw.uploadMedia.mock.calls.length === 2 && s().outbox.length === 0);
     expect(gw.uploadMedia).toHaveBeenCalledTimes(2);
     expect(gw.uploadMedia.mock.calls[1][0].clientKey).toBe(key);
     expect(await getEvidence('anon', 'ambli', key)).toBeNull(); // second attempt confirmed → cleaned up
@@ -195,8 +197,7 @@ describe('replay lifecycle', () => {
     useStore.setState(getInitialState());
     s()._setGateway(gw as unknown as ApiGateway);
     s().hydrateOutbox(); // the boot path — must merge the durable pending rows back into replay
-    await flush();
-    await flush();
+    await settles(() => s().outbox.some((o) => (o as { clientKey?: string }).clientKey === key));
     expect(s().outbox.map((o) => (o as { clientKey?: string }).clientKey)).toContain(key);
     expect(s().pendingEvidenceCount).toBe(1);
 
@@ -245,6 +246,105 @@ describe('replay lifecycle', () => {
 
     await s().hydrateEvidence();
     expect(s().outbox).toHaveLength(1); // merge found the pending row already covered
+  });
+
+  it('a reconciliation held across a PROJECT SWITCH must not contaminate the new project (gate round-2 finding 2)', async () => {
+    s()._setGateway({ project: 'ambli', uploadMedia: vi.fn() } as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    await s().addChecklistEvidence(0, PX); // an AMBLI pending row + its op
+    const key = (s().outbox[0] as { clientKey: string }).clientKey;
+
+    const evidenceStore = await import('@/data/evidenceStore');
+    let release!: (v: unknown) => void;
+    const held = new Promise((r) => (release = r));
+    const spy = vi.spyOn(evidenceStore, 'listEvidence').mockImplementationOnce(() => held as never);
+
+    const stale = s().hydrateEvidence(); // captures the AMBLI scope, parks on the held read
+    // the user switches to Villa while the read is in flight
+    useStore.setState((st) => {
+      st.activeProjectId = 'villa';
+      st.projectScopeGeneration += 1;
+      st.outbox = [];
+      st.pendingEvidenceCount = 0;
+      st.failedEvidence = [];
+    });
+    release([{ clientKey: key, status: 'pending', mime: 'image/png' }]); // AMBLI's rows arrive late
+    await stale;
+    spy.mockRestore();
+
+    expect(s().outbox).toHaveLength(0); // the stale AMBLI op must NOT land in Villa
+    expect(s().pendingEvidenceCount).toBe(0);
+    expect(globalThis.localStorage.getItem('vitan.outbox.anon.villa') ?? '[]').toBe('[]'); // nor Villa's persisted queue
+  });
+
+  it('a reconciliation held across a completed FLUSH must not resurrect confirmed ops (gate round-2 finding 2)', async () => {
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockResolvedValue({ id: 'm1', url: '/media/m1' }),
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    await s().addChecklistEvidence(0, PX);
+    const key = (s().outbox[0] as { clientKey: string }).clientKey;
+
+    const evidenceStore = await import('@/data/evidenceStore');
+    let release!: (v: unknown) => void;
+    const held = new Promise((r) => (release = r));
+    const spy = vi.spyOn(evidenceStore, 'listEvidence').mockImplementationOnce(() => held as never);
+
+    const stale = s().hydrateEvidence(); // parked holding the PRE-flush truth
+    useStore.setState((st) => { st.online = true; });
+    await s().flushOutbox(); // uploads (2xx), deletes the row, reconciles fresh
+    expect(s().outbox).toHaveLength(0);
+    expect(await getEvidence('anon', 'ambli', key)).toBeNull(); // confirmed → cleaned up
+
+    release([{ clientKey: key, status: 'pending', mime: 'image/png' }]); // the stale pre-flush list arrives
+    await stale;
+    spy.mockRestore();
+
+    expect(s().outbox).toHaveLength(0); // a confirmed op must NEVER be resurrected
+    expect(s().pendingEvidenceCount).toBe(0);
+  });
+
+  it('a reconciliation held across a DEAD-LETTER must not re-queue the failed row, and replay skips non-pending entries (gate round-2 finding 2)', async () => {
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn().mockRejectedValue(httpError(403)), // terminal, non-dedupe
+      snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    seedChecklist();
+    await s().addChecklistEvidence(0, PX);
+    const key = (s().outbox[0] as { clientKey: string }).clientKey;
+
+    const evidenceStore = await import('@/data/evidenceStore');
+    let release!: (v: unknown) => void;
+    const held = new Promise((r) => (release = r));
+    const spy = vi.spyOn(evidenceStore, 'listEvidence').mockImplementationOnce(() => held as never);
+
+    const stale = s().hydrateEvidence();
+    useStore.setState((st) => { st.online = true; });
+    await s().flushOutbox(); // dead-letters the row (FAILED + Retry), drops the op
+    expect((await getEvidence('anon', 'ambli', key))?.status).toBe('failed');
+
+    release([{ clientKey: key, status: 'pending', mime: 'image/png' }]); // stale list still says pending
+    await stale;
+    spy.mockRestore();
+
+    expect(s().outbox).toHaveLength(0); // the dead-lettered row must NOT be re-queued behind Retry's back
+    expect(s().failedEvidence.map((f) => f.clientKey)).toContain(key);
+
+    // and even if such an op existed, REPLAY must refuse a non-pending row
+    useStore.setState((st) => { st.outbox = [{ t: 'uploadEvidence', scope: 'anon', clientKey: key }]; });
+    gw.uploadMedia.mockClear();
+    await s().flushOutbox();
+    expect(gw.uploadMedia).not.toHaveBeenCalled(); // the bytes stay parked for the USER's Retry/Delete
+    expect((await getEvidence('anon', 'ambli', key))?.status).toBe('failed');
+    expect(s().outbox).toHaveLength(0); // the bogus op is consumed as a no-op
   });
 
   it('the user\'s explicit DELETE is the only non-server path that drops bytes', async () => {

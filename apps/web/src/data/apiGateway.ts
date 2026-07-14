@@ -757,6 +757,11 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       // and rethrows so the flush drops the op — the bytes never silently vanish.
       return getEvidence(op.scope, gw.project, op.clientKey).then(async (entry) => {
         if (!entry) return gw.snapshot(); // user already deleted the bytes — nothing to upload
+        // gate round-2 finding 2: a row that is not PENDING must never replay — a
+        // dead-lettered (failed) row is parked for the USER's explicit Retry/Delete,
+        // and a stale op must not smuggle it past that pause. Retry flips the row
+        // back to pending first, so the legitimate path is unaffected.
+        if (entry.status !== 'pending') return gw.snapshot();
         try {
           await gw.uploadMedia({
             kind: 'inspection',
