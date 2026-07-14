@@ -36,6 +36,10 @@ function make(orgRole: string | null = null) {
         Object.assign(m, data); return m;
       }),
     },
+    // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
+    $executeRaw: vi.fn(async () => 1),
+    $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
+      typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   };
   const svc = new MembersService(prisma as unknown as PrismaService);
   return { svc, users, memberships };

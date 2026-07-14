@@ -7,6 +7,7 @@ import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import { resolveActor } from '../common/actor';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import { ddMmmYyyy } from '../domain/dates';
 import { CLOCK, type Clock } from '../common/clock';
 import { addCivilDays, fromIsoCivilDate } from '../common/civil-date';
@@ -44,16 +45,18 @@ export class InspectionsService {
     const id = nextSeqId('INSP-', existing.map((i) => i.id));
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     const today = this.clock.today(project.timeZone); // real civil date in the project's zone
-    await this.prisma.$transaction([
-      this.prisma.inspection.create({
+    await this.prisma.$transaction(async (tx) => {
+      // a LINKED requirement appears the moment it exists — a readiness write (finding 1)
+      await lockProjectReadiness(tx, projectId);
+      await tx.inspection.create({
         data: { id, projectId, kind: 'checklist', title: input.title, zone: input.zone, nodeId, activityId, date: ddMmmYyyy(fromIsoCivilDate(today)!), inspectionDate: fromIsoCivilDate(today), submitted: false, decided: false },
-      }),
-      ...input.items.map((name, i) =>
-        this.prisma.inspectionItem.create({ data: { inspectionId: id, name, order: i, photos: 0, note: '' } }),
-      ),
-      this.prisma.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone}`, color: '#C08A2D', time: 'just now' } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'inspection.create', entity: 'Inspection', entityId: id } }),
-    ]);
+      });
+      for (const [i, name] of input.items.entries()) {
+        await tx.inspectionItem.create({ data: { inspectionId: id, name, order: i, photos: 0, note: '' } });
+      }
+      await tx.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone}`, color: '#C08A2D', time: 'just now' } });
+      await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'inspection.create', entity: 'Inspection', entityId: id } });
+    });
     // the engineer fills it in the field
     this.realtime.notifyChanged(projectId, `New checklist: ${input.title} — ${input.zone}`, ['engineer']);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -95,6 +98,8 @@ export class InspectionsService {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      // submission moves the linked chain's tip state — a readiness write (finding 1)
+      await lockProjectReadiness(tx, projectId);
       // only write items that belong to this inspection (updateMany by inspectionId+name)
       for (const dbIt of insp.items) {
         const s = submitted.get(dbIt.name)!;
@@ -143,6 +148,8 @@ export class InspectionsService {
       pushRoles = ['contractor', 'client'];
       const project = activity ? await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } }) : null;
       await this.prisma.$transaction(async (tx) => {
+        // deciding closes the linked chain's tip — a readiness write (finding 1)
+        await lockProjectReadiness(tx, projectId);
         const { count } = await tx.inspection.updateMany({
           where: { id: inspectionId, projectId, submitted: true, decided: false },
           data: { decided: true, decidedById: actor.actorId, decidedByName: actor.actorName },
@@ -206,6 +213,9 @@ export class InspectionsService {
 
       try {
         await this.prisma.$transaction(async (tx) => {
+          // rejection opens a linked correction chain — a readiness write (finding 1);
+          // the readiness lock precedes the membership row lock (uniform order)
+          await lockProjectReadiness(tx, projectId);
           // The assignee must be eligible AT COMMIT TIME (Codex Task 5 gate P1):
           // the membership row is read LOCKED inside THIS transaction, so a
           // concurrent removal/role change has a defined order — it either commits

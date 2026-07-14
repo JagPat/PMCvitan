@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import type { AddMemberInput, UpdateMemberInput } from '../contracts';
@@ -68,10 +69,15 @@ export class MembersService {
       user = await this.prisma.user.create({ data: { projectId, role: input.role, name: input.name, email, phone } });
     }
 
-    const membership = await this.prisma.membership.upsert({
-      where: { projectId_userId: { projectId, userId: user.id } },
-      update: { role: input.role, discipline, status: 'active' },
-      create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
+    // (re)activating a member can shrink a frozen distribution's outstanding set —
+    // a readiness write (gate finding 1), serialized against start()
+    const membership = await this.prisma.$transaction(async (tx) => {
+      await lockProjectReadiness(tx, projectId);
+      return tx.membership.upsert({
+        where: { projectId_userId: { projectId, userId: user.id } },
+        update: { role: input.role, discipline, status: 'active' },
+        create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
+      });
     });
     return { userId: user.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status };
   }
@@ -92,7 +98,12 @@ export class MembersService {
     if (userId === requester.sub) throw new BadRequestException('You cannot remove yourself');
     const existing = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId } } });
     if (!existing) throw new NotFoundException('Member not found on this project');
-    await this.prisma.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { status: 'removed' } });
+    // removal changes the active set behind the drawing gate — a readiness write
+    // (gate finding 1), serialized against start()
+    await this.prisma.$transaction(async (tx) => {
+      await lockProjectReadiness(tx, projectId);
+      await tx.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { status: 'removed' } });
+    });
     return { ok: true };
   }
 }

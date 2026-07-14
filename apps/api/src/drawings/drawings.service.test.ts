@@ -136,6 +136,8 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null),
     },
     // the SELECT ... FOR UPDATE row locks, in miniature: 2 bind values = the issue()
+    // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
+    $executeRaw: vi.fn(async () => 1),
     // lock on (projectId, number); 1 bind value = the publish() lock on id. Locking
     // semantics don't exist in-memory — tests assert the CAS/unique outcomes instead.
     $queryRaw: vi.fn(async (q: { values?: unknown[] }) => {

@@ -35,6 +35,8 @@ function make() {
     decisionEvent: { create: vi.fn((args: { data: { type: string } }) => { events.push(args.data); return Promise.resolve(args.data); }) },
     notification: { create: vi.fn((args: { data: { text: string } }) => { notifications.push(args.data); return Promise.resolve(args.data); }) },
     auditLog: { create: vi.fn(async () => ({})) },
+    // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
+    $executeRaw: vi.fn(async () => 1),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   } as unknown as PrismaService;
@@ -155,6 +157,8 @@ function makeLifecycle(status: string) {
     decisionEvent: { create: vi.fn((args: { data: (typeof events)[number] }) => { events.push(args.data); return Promise.resolve(args.data); }) },
     notification: { create: vi.fn((args: { data: { text: string } }) => { notices.push(args.data.text); return Promise.resolve(args.data); }) },
     auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
+    // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
+    $executeRaw: vi.fn(async () => 1),
     // interactive form emulates the REAL transaction's rollback: on a thrown error the
     // decision row and the change requests are restored to their pre-tx state (events/
     // audits written before the throw are also discarded, matching PostgreSQL).

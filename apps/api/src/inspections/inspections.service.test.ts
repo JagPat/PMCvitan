@@ -58,6 +58,8 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
       groupBy: vi.fn(async ({ where }: { where: { inspectionItemId: { in: string[] } } }) =>
         (opts.evidence ?? []).filter((id) => where.inspectionItemId.in.includes(id)).map((id) => ({ inspectionItemId: id }))),
     },
+    // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
+    $executeRaw: vi.fn(async () => 1),
     // the IN-TRANSACTION locked assignee read (SELECT ... FOR UPDATE, Codex gate P1):
     // bind values are [projectId, assigneeId] — resolve against the fixture members
     $queryRaw: vi.fn(async (q: { values: unknown[] }) => {
@@ -118,7 +120,10 @@ describe('InspectionsService.create — location spine (nodeId)', () => {
       projectNode: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null) },
       activity: { findFirst: vi.fn(async () => null) },
       project: { findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })) },
-      $transaction: vi.fn(async (ops: unknown[]) => ops),
+      // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
+      $executeRaw: vi.fn(async () => 1),
+      $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
+        typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
     } as unknown as PrismaService;
     const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
     const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
