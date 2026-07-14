@@ -43,6 +43,14 @@ describe('start vs readiness concurrency (integration)', () => {
     const projectId = f.projectA.id;
     await t.prisma.gateOverride.deleteMany({ where: { projectId } });
     await t.prisma.activity.deleteMany({ where: { projectId } });
+    // the mismatch probes add daily-log/material/decision rows — FK order
+    await t.prisma.siteMaterial.deleteMany({ where: { projectId } });
+    await t.prisma.crewRow.deleteMany({ where: { dailyLog: { projectId } } });
+    await t.prisma.dailyLog.deleteMany({ where: { projectId } });
+    await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } });
+    await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } });
+    await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } });
+    await t.prisma.decision.deleteMany({ where: { projectId } });
     await f?.cleanup();
     await t?.close();
   });
@@ -143,6 +151,62 @@ describe('start vs readiness concurrency (integration)', () => {
     expect(startRes.status).toBe(201);
     expect(revokeRes.status).toBe(200);
     expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: actId } })).status).toBe('in_progress');
+  });
+
+  it('gate round-2 finding 1: a MATERIAL MISMATCH flag waits for the start window like every other readiness write', async () => {
+    // an approved decision + a linked ready activity + a daily-log material tied
+    // to that decision — the mismatch writer's full input surface
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions`, {
+      title: 'Mismatch race stone', room: 'Hall', publish: true,
+      options: [
+        { label: 'A', material: 'Kota', delta: 0, swatch: 's1', recommended: true },
+        { label: 'B', material: 'Granite', delta: 1000, swatch: 's2', recommended: false },
+      ],
+    })).status).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId: f.projectA.id, title: 'Mismatch race stone' } });
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions/${d.id}/approve`, { optionIndex: 0 })).status).toBe(201);
+    const actId = await makeActivity('Race: mismatch vs start', { decisionId: d.id });
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/daily-log/start`)).status).toBe(201);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/daily-log/materials`, { name: 'Kota slabs', qty: '40 sqft', zone: 'Hall', decisionId: d.id })).status).toBe(201);
+
+    const { held, release } = holdAtReadiness();
+    const startReq = Promise.resolve(as(pmcToken)(`/projects/${f.projectA.id}/activities/${actId}/start`));
+    await held;
+
+    const flagReq = Promise.resolve(as(pmcToken)(`/projects/${f.projectA.id}/daily-log/flag-mismatch`, { decisionId: d.id }));
+    // THE FINDING: pre-fix the mismatch settles inside the window — it must wait
+    expect(await settledWithin(flagReq, 300)).toBe('pending');
+
+    release();
+    const [startRes, flagRes] = await Promise.all([startReq, flagReq]);
+    expect(startRes.status).toBe(201); // start held the protocol first
+    expect(flagRes.status).toBe(201); // the mismatch lands strictly AFTER, as a new fact
+    const after = await t.prisma.activity.findUniqueOrThrow({ where: { id: actId } });
+    expect(after.gateMaterial).toBe('fail');
+    expect(after.status).toBe('blocked'); // mismatch re-read the STARTED activity inside its transaction
+    expect(await t.prisma.auditLog.count({ where: { projectId: f.projectA.id, action: 'activity.start', entityId: actId } })).toBe(1);
+  });
+
+  it('gate round-2 finding 1 control: a mismatch committed BEFORE start refuses it with zero side effects', async () => {
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions`, {
+      title: 'Mismatch control stone', room: 'Hall', publish: true,
+      options: [
+        { label: 'A', material: 'Kota', delta: 0, swatch: 's1', recommended: true },
+        { label: 'B', material: 'Granite', delta: 1000, swatch: 's2', recommended: false },
+      ],
+    })).status).toBe(201);
+    const d = await t.prisma.decision.findFirstOrThrow({ where: { projectId: f.projectA.id, title: 'Mismatch control stone' } });
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/decisions/${d.id}/approve`, { optionIndex: 0 })).status).toBe(201);
+    const actId = await makeActivity('Control: mismatch first', { decisionId: d.id });
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/daily-log/materials`, { name: 'Granite slabs', qty: '10 sqft', zone: 'Hall', decisionId: d.id })).status).toBe(201);
+    expect((await as(pmcToken)(`/projects/${f.projectA.id}/daily-log/flag-mismatch`, { decisionId: d.id })).status).toBe(201);
+
+    const res = await as(pmcToken)(`/projects/${f.projectA.id}/activities/${actId}/start`);
+    expect(res.status).toBe(409); // the mismatch blocked the activity — start refuses outright
+    const after = await t.prisma.activity.findUniqueOrThrow({ where: { id: actId } });
+    expect(after.status).toBe('blocked'); // as the mismatch left it — start wrote NOTHING
+    expect(after.actualStartDate).toBeNull();
+    expect(await t.prisma.auditLog.count({ where: { projectId: f.projectA.id, action: 'activity.start', entityId: actId } })).toBe(0);
   });
 
   it('control: a flip committed BEFORE start refuses it with zero side effects', async () => {
