@@ -1,5 +1,5 @@
 import { useRef, type CSSProperties } from 'react';
-import { useStore } from '@/store/store';
+import { useStore, checklistFrozen } from '@/store/store';
 import { EmptyState, Eyebrow, StatTile } from '@/components';
 import { Camera } from '@/lib/icons';
 import type { ItemState } from '@vitan/shared';
@@ -23,6 +23,10 @@ function toggleStyle(active: boolean, solid: string, text: string): CSSPropertie
 
 export function EngineerChecklistScreen() {
   const checklist = useStore((s) => s.checklist);
+  // gate round 8: once a submit is dispatched (submitting / queued) or the server
+  // confirms it submitted, the checklist is FROZEN — every input is read-only.
+  const frozen = useStore((s) => checklistFrozen(s));
+  const submissionStatus = useStore((s) => s.submission.status);
   const setItem = useStore((s) => s.setItem);
   const setNote = useStore((s) => s.setNote);
   const submitInspection = useStore((s) => s.submitInspection);
@@ -80,19 +84,20 @@ export function EngineerChecklistScreen() {
             return (
               <div key={it.name} style={{ background: '#fff', border: `1px solid ${border}`, borderRadius: 14, padding: '13px 14px' }}>
                 <div style={{ fontWeight: 600, fontSize: 14.5, lineHeight: 1.3 }}>{it.name}</div>
-                <div style={{ display: 'flex', gap: 7, marginTop: 11 }}>
-                  <button onClick={set(i, 'pass')} style={toggleStyle(it.state === 'pass', 'var(--green-solid)', 'var(--green-solid)')}>Pass</button>
-                  <button onClick={set(i, 'fail')} style={toggleStyle(it.state === 'fail', 'var(--red-solid)', 'var(--red-solid)')}>Fail</button>
-                  <button onClick={set(i, 'na')} style={toggleStyle(it.state === 'na', '#6b665c', '#6b665c')}>N.A.</button>
+                <div style={{ display: 'flex', gap: 7, marginTop: 11, opacity: frozen ? 0.55 : 1 }}>
+                  <button onClick={set(i, 'pass')} disabled={frozen} style={toggleStyle(it.state === 'pass', 'var(--green-solid)', 'var(--green-solid)')}>Pass</button>
+                  <button onClick={set(i, 'fail')} disabled={frozen} style={toggleStyle(it.state === 'fail', 'var(--red-solid)', 'var(--red-solid)')}>Fail</button>
+                  <button onClick={set(i, 'na')} disabled={frozen} style={toggleStyle(it.state === 'na', '#6b665c', '#6b665c')}>N.A.</button>
                   <button
                     onClick={() => pickEvidence(i)}
+                    disabled={frozen}
                     data-testid={`evidence-${i}`}
                     aria-label="Add photo"
                     style={{
                       flex: 1,
                       padding: '9px 0',
                       borderRadius: 9,
-                      cursor: 'pointer',
+                      cursor: frozen ? 'not-allowed' : 'pointer',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -119,6 +124,7 @@ export function EngineerChecklistScreen() {
                     <input
                       value={it.note}
                       onChange={(e) => setNote(i, e.target.value)}
+                      disabled={frozen}
                       placeholder="Describe the issue…"
                       style={{ width: '100%', marginTop: 7, border: 'none', background: 'transparent', fontFamily: 'var(--font-sans)', fontSize: 13, outline: 'none', color: 'var(--ink)' }}
                     />
@@ -152,7 +158,9 @@ export function EngineerChecklistScreen() {
       <div className={styles.stickyFoot} style={{ padding: '12px 16px 20px', borderTop: '1px solid rgba(35,33,28,.1)', background: 'var(--panel)' }}>
         <button
           onClick={submitInspection}
+          disabled={frozen}
           data-testid="submit-inspection"
+          data-submission={checklist.submitted ? 'submitted' : submissionStatus}
           style={{
             width: '100%',
             maxWidth: 460,
@@ -163,13 +171,20 @@ export function EngineerChecklistScreen() {
             fontFamily: 'var(--font-sans)',
             fontWeight: 600,
             fontSize: 15,
-            cursor: 'pointer',
+            cursor: frozen ? 'not-allowed' : 'pointer',
             border: 'none',
             background: checklist.submitted ? 'var(--green-chip)' : 'var(--ink)',
             color: checklist.submitted ? 'var(--green-text)' : 'var(--sidebar-text)',
+            opacity: !checklist.submitted && frozen ? 0.7 : 1,
           }}
         >
-          {checklist.submitted ? 'Submitted ✓ — awaiting architect' : 'Submit Inspection'}
+          {checklist.submitted
+            ? 'Submitted ✓ — awaiting architect'
+            : submissionStatus === 'submitting'
+            ? 'Submitting…'
+            : submissionStatus === 'queued'
+            ? 'Queued — will submit when you reconnect'
+            : 'Submit Inspection'}
         </button>
       </div>
     </div>

@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { useStore, getInitialState } from '@/store/store';
+import { useStore, getInitialState, checklistFrozen } from '@/store/store';
 import { getEvidence, listEvidence, putEvidence } from '@/data/evidenceStore';
 import type { ApiGateway, ApiSnapshot } from '@/data/apiGateway';
 import type { Checklist } from '@vitan/shared';
@@ -953,6 +953,109 @@ describe('replay lifecycle', () => {
     await s().flushOutbox();
     await settles(() => gw.submitInspection.mock.calls.length === 1 && s().checklist?.submitted === true);
     expect(s().checklist!.items[0].state).toBe('pass'); // server now carries them; records cleared
+  });
+
+  // ---- gate round 8: the submission lifecycle FREEZES the checklist ----
+  const twoPassItems = (): Checklist['items'] => [
+    { id: 'item-1', name: 'Slope', state: 'pass', photos: 0, note: 'checked before submit', evidence: [] },
+    { id: 'item-2', name: 'Seal', state: 'pass', photos: 0, note: '', evidence: [] },
+  ];
+
+  it('an edit made DURING a pending submit is rejected — not accepted-then-reverted (gate round-8)', async () => {
+    let releaseSubmit!: (v: unknown) => void;
+    const held = new Promise((r) => (releaseSubmit = r));
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn(),
+      snapshot: vi.fn(),
+      submitInspection: vi.fn().mockImplementation(async () => { await held; return { ...makeSnapshot(), checklist: serverChecklistOf(true, twoPassItems()) }; }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection(); // dispatch — the payload is now frozen
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    // the engineer keeps typing after clicking submit
+    s().setItem(0, 'fail');
+    s().setNote(0, 'changed after submit click');
+    // round-8: the edit is REJECTED at the source — the frozen payload is unchanged.
+    // (At the round-7 base setItem/setNote mutate freely, so state would be 'fail'.)
+    expect(s().checklist!.items[0].state).toBe('pass');
+    expect(s().checklist!.items[0].note).toBe('checked before submit');
+
+    releaseSubmit(null); // the ack lands (submitted=true)
+    await settles(() => s().checklist?.submitted === true);
+    expect(s().checklist!.items[0].state).toBe('pass'); // exactly what was submitted — no silent revert
+    expect(s().checklist!.items[0].note).toBe('checked before submit');
+  });
+
+  it('a duplicate submit while one is in flight is ignored — the server is called once (gate round-8)', async () => {
+    let releaseSubmit!: (v: unknown) => void;
+    const held = new Promise((r) => (releaseSubmit = r));
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn(),
+      snapshot: vi.fn(),
+      submitInspection: vi.fn().mockImplementation(async () => { await held; return { ...makeSnapshot(), checklist: serverChecklistOf(true, twoPassItems()) }; }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    s().submitInspection(); // duplicate taps while the first is still in flight
+    s().submitInspection();
+    expect(gw.submitInspection).toHaveBeenCalledTimes(1); // round-8: frozen ⇒ no re-dispatch
+
+    releaseSubmit(null);
+    await settles(() => s().checklist?.submitted === true);
+  });
+
+  it('a FAILED submit UNLOCKS the checklist and keeps the marks — the engineer can fix and resubmit (gate round-8)', async () => {
+    const gw = {
+      project: 'ambli',
+      uploadMedia: vi.fn(),
+      snapshot: vi.fn(),
+      submitInspection: vi.fn().mockRejectedValue(Object.assign(new Error('HTTP 500'), { status: 500 })),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; });
+    markTwoPass();
+
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    // the submit failed — the freeze lifts, and the engineer's marks are intact
+    await settles(() => s().submission.status === 'idle');
+    expect(checklistFrozen(s())).toBe(false);
+    expect(s().checklist!.items[0].state).toBe('pass');
+    // an edit is accepted again, and a resubmit re-dispatches
+    s().setItem(0, 'fail');
+    expect(s().checklist!.items[0].state).toBe('fail');
+  });
+
+  it('an OFFLINE-queued submit stays frozen across a reload — the freeze is rebuilt from the durable outbox (gate round-8)', async () => {
+    const gw = { project: 'ambli', uploadMedia: vi.fn(), snapshot: vi.fn(), submitInspection: vi.fn() };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = false; });
+    markTwoPass();
+
+    s().submitInspection(); // queued offline
+    expect(gw.submitInspection).not.toHaveBeenCalled();
+    expect(s().submission.status).toBe('queued');
+    expect(checklistFrozen(s())).toBe(true);
+
+    // "reload": fresh store; the persisted outbox + the server snapshot both return
+    useStore.setState(getInitialState());
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().applySnapshot({ ...makeSnapshot(), checklist: serverChecklistOf(false, twoPassItems()) });
+    s().hydrateOutbox(); // reloads the persisted queue → rebuilds the freeze
+    expect(s().submission.status).toBe('queued');
+    expect(checklistFrozen(s())).toBe(true);
+    // an edit after the reload is still rejected — the queued submit is authoritative
+    s().setItem(0, 'fail');
+    expect(s().checklist!.items[0].state).toBe('pass');
   });
 
   it('the user\'s explicit DELETE is the only non-server path that drops bytes', async () => {
