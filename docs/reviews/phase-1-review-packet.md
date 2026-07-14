@@ -5,10 +5,10 @@ existing product pillars
 ([plan](../superpowers/plans/2026-07-13-phase-1-existing-pillars.md) ·
 [spec](../superpowers/specs/2026-07-12-modular-construction-control-platform-design.md)).
 Written on 2026-07-13 AFTER every merge it cites and refreshed on 2026-07-14
-six times — after the gate round-1 remediations (PRs #112–#114) merged,
+seven times — after the gate round-1 remediations (PRs #112–#114) merged,
 after the gate round-2 narrow-re-review remediations (PRs #116–#118) merged,
-and after the gate round-3 (PR #121), round-4 (PR #123), round-5 (PR #125)
-and round-6 (PR #127) remediations each merged; the Verification section's
+and after the gate round-3 (PR #121), round-4 (PR #123), round-5 (PR #125),
+round-6 (PR #127) and round-7 (PR #129) remediations each merged; the Verification section's
 command outputs are the Task 7 runs on `main` at `60f69c8` plus the Task 7
 changes, and each remediation PR body (all rounds) records its own fresh
 full-battery runs. Timestamps are UTC. Repository `JagPat/PMCvitan`, working branch
@@ -23,7 +23,8 @@ full-battery runs. Timestamps are UTC. Repository `JagPat/PMCvitan`, working bra
 - The final narrow re-review reviewed `main` at `6a3bcbb595fc50c819b9736fe92e391955f4fedb` (merge of [PR #122](https://github.com/JagPat/PMCvitan/pull/122), the round-3 packet refresh): the round-3 remediation **cleared** (and a same-project user-session-switch variant also passed), but the verdict was **BLOCKED** on three more P2 evidence-scope continuations plus one P3 — remediated in [PR #123](https://github.com/JagPat/PMCvitan/pull/123) (see "gate round 4" below).
 - The round-4 narrow re-review reviewed `main` at `223510056acb0db416c2cb9c92dad686600b86b3` (merge of [PR #123](https://github.com/JagPat/PMCvitan/pull/123)): findings 1–3 cleared, and the packet count (finding 4) was corrected — but a new **P2** was found (an unsubmitted mark entered DURING a slow online upload was lost to the returning snapshot), remediated in [PR #125](https://github.com/JagPat/PMCvitan/pull/125) (see "gate round 5" below).
 - The round-5 narrow re-review reviewed `main` at `e180f84623ae50d96a7fa35d03b1c7dda894c38e` (merge of [PR #126](https://github.com/JagPat/PMCvitan/pull/126), the round-5 packet refresh): the round-5 remediation **cleared**, but a new **P2** was found — the round-5 fix used value comparison, which cannot tell an INTENTIONAL clear (toggle a mark off / clear a note during the upload) from a background wipe, so it wrongly restored the pre-upload value — remediated in [PR #127](https://github.com/JagPat/PMCvitan/pull/127) (see "gate round 6" below).
-- **Effective reviewed head for the next narrow re-review**: `main` at `b971f9258f88f8be1385a144798bf7806cc49442` (merge of [PR #127](https://github.com/JagPat/PMCvitan/pull/127)), plus the docs-only packet-refresh PR this revision ships in.
+- The round-6 narrow re-review reviewed `main` at `b971f9258f88f8be1385a144798bf7806cc49442` (merge of [PR #127](https://github.com/JagPat/PMCvitan/pull/127), and its packet refresh [PR #128](https://github.com/JagPat/PMCvitan/pull/128) at `96b3dc141624d4fbfa6f011caa9932e36fcbc60a`): the round-6 remediation **cleared**, but a new **P2** was found — `submitInspection` dropped the per-field edit records BEFORE the asynchronous server submission succeeded, so a failed (or not-yet-replayed offline) submit followed by a background snapshot erased the engineer's unconfirmed marks — remediated in [PR #129](https://github.com/JagPat/PMCvitan/pull/129) (see "gate round 7" below).
+- **Effective reviewed head for the next narrow re-review**: `main` at `c650a9f2195e5ecdace3d74e7c37f33d4730dba5` (merge of [PR #129](https://github.com/JagPat/PMCvitan/pull/129)), plus the docs-only packet-refresh PR this revision ships in.
 - Every Phase 1 PR, in landing order. A **head** is the reviewed branch tip; a **merge** is the immutable merge commit on `main`. Bases are the `main` tip each merge was made against (first parent).
 
   | PR | Scope | Base | Head | Merge |
@@ -59,6 +60,8 @@ full-battery runs. Timestamps are UTC. Repository `JagPat/PMCvitan`, working bra
   | [#125](https://github.com/JagPat/PMCvitan/pull/125) | Gate round 5 (P2): checklist marks survive the upload snapshot — before AND during | `aea7624` | `e021522c6c754ce5bc7e80f605d951a60a593e36` | `f5a5c7ca8efa7e859f6b2c842afb9980bc51d410` |
   | [#126](https://github.com/JagPat/PMCvitan/pull/126) | Gate round 5: packet records the mark-preservation remediation and the regression it caught (docs only) | `f5a5c7c` | `e7adc1b2abf993f90dcbea3e616c6478943b4605` | `e180f84623ae50d96a7fa35d03b1c7dda894c38e` |
   | [#127](https://github.com/JagPat/PMCvitan/pull/127) | Gate round 6 (P2): per-field checklist mark revisions honor an intentional clear | `e180f84` | `e0d656fe41f1018dc632ff441fd672a775278ecd` | `b971f9258f88f8be1385a144798bf7806cc49442` |
+  | [#128](https://github.com/JagPat/PMCvitan/pull/128) | Gate round 6: packet records the per-field mark-revision remediation and corrects the round-5 evidence note (docs only) | `b971f92` | `798f029c1fbedee8cf5252e0548b236a0e6bb971` | `96b3dc141624d4fbfa6f011caa9932e36fcbc60a` |
+  | [#129](https://github.com/JagPat/PMCvitan/pull/129) | Gate round 7 (P2): retain checklist marks until the server confirms the submit | `96b3dc1` | `204220eb0545c1a5366243caf836fa503c43cc16` | `c650a9f2195e5ecdace3d74e7c37f33d4730dba5` |
 
 ## Vision Alignment
 
@@ -148,6 +151,8 @@ Fresh runs on the Task 7 working tree (2026-07-13, local; PostgreSQL 16):
   | #125 | [`e021522` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29319400188) | [`f5a5c7c` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29319512113) |
   | #126 | [`e7adc1b` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29319712586) | [`e180f84` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29320123461) |
   | #127 | [`e0d656f` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29326983687) | [`b971f92` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29327114467) |
+  | #128 | [`798f029` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29327329807) | [`96b3dc1` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29327466176) |
+  | #129 | [`204220e` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29329935804) | [`c650a9f` ✓](https://github.com/JagPat/PMCvitan/actions/runs/29330388235) |
 
   **Honest note on #109:** its `api` job failed AFTER all 75 integration tests passed — the new readiness suite's teardown deleted `Media` before dependent `GateOverride` rows and tripped the containment FK (the very constraint Task 6 added). The failure was masked locally by verifying a piped `vitest … | tail` instead of the exit code. [PR #110](https://github.com/JagPat/PMCvitan/pull/110) fixed the teardown ordering the same day; head and merge are green, and no product code changed between `3a18224` and `dfe475d` besides that test file.
 
@@ -162,7 +167,8 @@ Fresh runs on the Task 7 working tree (2026-07-13, local; PostgreSQL 16):
 - **Gate round-2 re-review** — ran against merged `main` @ `eaca534` (the round-2 packet refresh, PR #120): all three round-2 remediations **cleared**; **BLOCKED** on one remaining P2 (round 3 below), remediated in PR #121.
 - **Gate round-3 final re-review** — ran against merged `main` @ `6a3bcbb` (the round-3 packet refresh, PR #122): the round-3 remediation **cleared**; **BLOCKED** on three more P2 evidence-scope continuations + one P3 (round 4 below), remediated in PR #123.
 - **Gate round-4 re-review** — ran against merged `main` @ `223510056` (the round-4 packet refresh, PR #124): findings 1–3 + the P3 count **cleared**; **BLOCKED** on one new P2 (a mark entered during a slow upload lost to the snapshot; round 5 below), remediated in PR #125.
-- **Gate round-5 re-review** — ran against merged `main` @ `e180f84` (the round-5 packet refresh, PR #126): the round-5 remediation **cleared** and one packet evidence claim was corrected; **BLOCKED** on one new P2 (value comparison could not tell an intentional clear from a wipe; round 6 below), remediated in PR #127; the next narrow re-review runs against the effective reviewed head above.
+- **Gate round-5 re-review** — ran against merged `main` @ `e180f84` (the round-5 packet refresh, PR #126): the round-5 remediation **cleared** and one packet evidence claim was corrected; **BLOCKED** on one new P2 (value comparison could not tell an intentional clear from a wipe; round 6 below), remediated in PR #127.
+- **Gate round-6 re-review** — ran against merged `main` @ `96b3dc1` (the round-6 packet refresh, PR #128): the round-6 remediation **cleared**; **BLOCKED** on one new P2 (the edit records were dropped before the async submit was confirmed, so a failed/offline submit + a background snapshot erased unconfirmed marks; round 7 below), remediated in PR #129; the next narrow re-review runs against the effective reviewed head above.
 
 ## Independent Review — Phase 1 gate round 1 (Codex) and Remediation
 
@@ -239,6 +245,16 @@ The round-5 narrow re-review ran against `main` at `e180f84623ae50d96a7fa35d03b1
 **Evidence correction (per the re-review):** an earlier revision of the round-5 remediation row above wrongly stated both round-5 probes were red at base. Independent execution established: the DURING-upload-edit probe was red at base → green; the background-refresh probe was green at base, red on the naive single-capture attempt, green in the shipped union fix. That row is corrected above.
 
 Fresh runs at PR #127's head (its body records the full battery): evidence suite **26/26** (2 new probes; the intentional-clear probe red at the round-5 base → green), full web suite **237/237**, `pnpm check` exit 0 (API 375/375), **api-e2e 18/18 on an idle host, twice** (the gate the round-5 regression failed), demo e2e 21/21 · CI green on head and merge (table above). Web-only change.
+
+## Independent Review — Phase 1 gate round 7 (narrow re-review) and Remediation
+
+The round-6 narrow re-review ran against `main` at `96b3dc141624d4fbfa6f011caa9932e36fcbc60a` (merge of PR #128): the round-6 remediation **cleared**, but it returned **BLOCKED** on one new P2 (full verdict on [PR #128](https://github.com/JagPat/PMCvitan/pull/128#issuecomment-4968542764)), remediated in [PR #129](https://github.com/JagPat/PMCvitan/pull/129):
+
+| Finding | Remediation | Reproduce-first proof |
+|---|---|---|
+| P2 — `submitInspection` deleted the per-field edit records BEFORE the asynchronous server submission succeeded. Submission is async: if the server rejected (HTTP 500 / validation), or the submit was still in flight, or it was only queued offline, the records were already gone — so the next background `useApiSync` snapshot (`submitted: false`) overwrote the engineer's unconfirmed pass/fail marks and notes with stale server state, with no path back — user field-data loss | [PR #129](https://github.com/JagPat/PMCvitan/pull/129), head `204220e`, merged `c650a9f`: retain the edit records through submission and drop them ONLY on a scope-valid SERVER acknowledgement. `submitInspection` no longer clears the records up front; `applySnapshot` becomes the single place they are dropped, and only when the returned checklist comes back `submitted === true` (the records are then server-owned, so server truth wins). A pending or REJECTED submit leaves the server checklist `submitted === false`, so the records are retained and overlaid — unconfirmed work survives a failed submit plus a background snapshot. The demo path (no gateway) submits synchronously, so it still clears at the moment it sets the local checklist `submitted === true`; successful offline replay flows through the same server ack (gate round-4 finding 3 scope guard and the round-6 per-field records both stay green) | `tests/evidence.test.ts` — the reviewer's four submission-lifecycle categories: a FAILED submit, a PENDING (in-flight) submit, a SUCCESSFUL submit (records cleared; a later background snapshot does NOT re-overlay stale marks) and an OFFLINE submit (retained until the reconnect replay acks). Idle-host A/B: reverting `store.ts` to the round-6 head (which cleared at submit) turns the FAILED / PENDING / OFFLINE retention probes **red (3 failed) → green**; the successful-clear probe is green on both, since the regression is confined to the failure/pending/offline paths |
+
+Fresh runs at PR #129's head (its body records the full battery): evidence suite **30/30** (4 new lifecycle probes; the failed/pending/offline retention probes red at the round-6 base → green), full web suite **241/241**, `pnpm check` exit 0 (API 375/375), **api-e2e 18/18 on an idle host, twice** (the gate the round-5 regression failed), demo e2e 21/21 · CI green on head and merge (table above). Web-only change.
 
 ## Acceptance Criteria (spec §25 rows this phase covers)
 
