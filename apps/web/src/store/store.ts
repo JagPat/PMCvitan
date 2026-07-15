@@ -572,37 +572,51 @@ export const useStore = create<Store>()(
     const scopeStillCurrent = (scope: ProjectScope): boolean =>
       isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope);
 
-    // ---- gate round 11/12: central snapshot-ordering coordinator ----
+    // ---- gate round 11/12/13: central snapshot-ordering coordinator ----
     // Ownership and refresh coalescing are keyed by FULL scope (project + generation),
     // not one store-global slot (gate round 12, finding 1). A monotonic sequence
     // (never timestamps) is global only as an id source; a lease is the newest snapshot
     // intent for ITS OWN scope. So a stale old-scope lease can never change another
     // scope's owner, and a new scope's pull runs independently of an old scope's
-    // in-flight pull. Each scope carries its own newest-lease seq, refresh flight/queue,
-    // and a "submit awaiting reconcile" flag (gate round 12, finding 2).
+    // in-flight pull.
+    //
+    // Gate round 13: a superseded command/submit records a durable REQUIRED
+    // reconciliation on its scope — an obligation that is preserved until CONFIRMED,
+    // not a fire-and-forget flag. `createdAfterSequence` pins it so a refresh that
+    // began BEFORE the requirement can neither satisfy nor clear it (a stale
+    // `submitted:false` snapshot can't disarm a submit recovery). A command clears
+    // only when its post-requirement reconcile APPLIES; a submit clears only when the
+    // exact pending submit is CONFIRMED (its freeze retires). If the mandatory
+    // reconcile fails — or a submit reconcile applies still-unconfirmed — the
+    // recoverable error/Retry boundary is exposed rather than a silent stuck state.
+    type ReconcileRequirement =
+      | null
+      | { kind: 'command'; createdAfterSequence: number }
+      | { kind: 'submit'; inspectionId: string; attempt: number; createdAfterSequence: number };
     interface ScopeCoordinator {
       newestLeaseSeq: number;
       refreshInFlight: boolean;
       refreshQueued: boolean;
-      submitRecover: boolean; // a superseded frozen submit needs confirmed truth or a recoverable error
+      required: ReconcileRequirement; // a committed command/submit still owed confirmed truth
     }
     let snapshotSeq = 0;
     const scopeCoordinators = new Map<string, ScopeCoordinator>();
     const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
-    /** Drop settled coordinators for scopes we've left (nothing in flight, queued or
-     *  awaiting a submit reconcile) so the map can't grow without bound across
-     *  re-auths / project switches; the current scope is always kept. */
+    /** Drop coordinators for scopes we've LEFT that have no pull in flight — a scope
+     *  we moved away from owns nothing anymore, so its pending required reconcile is
+     *  cancelled with it (gate round 13, semantic 6); the current scope is always kept,
+     *  and a coordinator with an in-flight pull self-prunes when that pull settles. */
     const pruneScopeCoordinators = (): void => {
       const liveKey = scopeKey(currentScope());
       for (const [key, c] of scopeCoordinators) {
-        if (key !== liveKey && !c.refreshInFlight && !c.refreshQueued && !c.submitRecover) scopeCoordinators.delete(key);
+        if (key !== liveKey && !c.refreshInFlight) scopeCoordinators.delete(key);
       }
     };
     const coordinatorFor = (scope: ProjectScope): ScopeCoordinator => {
       const key = scopeKey(scope);
       let c = scopeCoordinators.get(key);
       if (!c) {
-        c = { newestLeaseSeq: 0, refreshInFlight: false, refreshQueued: false, submitRecover: false };
+        c = { newestLeaseSeq: 0, refreshInFlight: false, refreshQueued: false, required: null };
         scopeCoordinators.set(key, c);
         pruneScopeCoordinators(); // a new scope appeared — sweep the ones we've left
       }
@@ -726,6 +740,13 @@ export const useStore = create<Store>()(
      *  still gets a recovery attempt. A pull only ever mutates its OWN scope; a scope
      *  we've left neither reruns nor surfaces errors. Never a loop: the rerun fires at
      *  most once per settle and only while nothing new re-queues it. */
+    /** Is the pending submit named by a requirement STILL in flight (not yet confirmed
+     *  by server truth)? Confirmed = its freeze has retired — a different inspection,
+     *  a newer attempt, or an idle/read-only submission all count as "no longer owed". */
+    const submitStillPending = (req: Extract<ReconcileRequirement, { kind: 'submit' }>): boolean => {
+      const sub = get().submission;
+      return sub.status === 'submitting' && sub.inspectionId === req.inspectionId && sub.attempt === req.attempt;
+    };
     const requestFreshSnapshot = async (scope: ProjectScope = currentScope()): Promise<void> => {
       if (!gateway) return;
       const c = coordinatorFor(scope);
@@ -739,17 +760,33 @@ export const useStore = create<Store>()(
       try {
         const snap = await g.snapshot();
         const result = acceptSnapshot(snap, lease);
-        if (result === 'applied') c.submitRecover = false; // confirmed truth landed
-        else if (result === 'invalid-project' && scopeStillCurrent(scope)) {
+        const req = c.required;
+        // Only a pull that BEGAN AFTER the requirement was recorded can satisfy it
+        // (gate round 13, semantic 2) — a stale in-flight refresh can't disarm it.
+        const satisfiesRequirement = req && lease.sequence > req.createdAfterSequence;
+        if (result === 'applied' && satisfiesRequirement && req) {
+          if (req.kind === 'command') {
+            c.required = null; // the committed change is now in this applied snapshot (semantic 3)
+          } else if (!submitStillPending(req)) {
+            c.required = null; // the exact submit is confirmed; its freeze has retired (semantic 4)
+          } else if (scopeStillCurrent(scope)) {
+            // applied, but the submit is STILL unconfirmed — keep the requirement +
+            // freeze/marks and expose Retry rather than silently going ready (semantic 5).
+            set((s) => { s.projectLoadState = 'error'; s.projectLoadError = RECOVERABLE_LOAD_ERROR; });
+          }
+        } else if (result === 'invalid-project' && scopeStillCurrent(scope)) {
           set((s) => { s.projectLoadState = 'error'; s.projectLoadError = RECOVERABLE_LOAD_ERROR; });
         }
         // superseded / scope-moved: a newer owner or the queued rerun supplies truth.
       } catch {
-        // The pull failed. Surface a recoverable error when the user is waiting on THIS
-        // scope's data — an initial load / switch, or a frozen submit awaiting confirmed
-        // truth (round 12, finding 2: never freeze forever; give a retry path instead).
+        // The pull failed. Surface the recoverable error/Retry boundary when the user is
+        // waiting on THIS scope's data — an initial load / switch, or the MANDATORY
+        // reconcile for a pending requirement (a pull that began after it was recorded).
+        // A pre-requirement refresh failing does NOT surface it — its own reconcile follows.
         if (scopeStillCurrent(scope)) set((s) => {
-          if (s.projectLoadState === 'switching' || s.projectLoadState === 'loading' || c.submitRecover) {
+          const req = c.required;
+          const failedMandatoryReconcile = !!req && lease.sequence > req.createdAfterSequence;
+          if (s.projectLoadState === 'switching' || s.projectLoadState === 'loading' || failedMandatoryReconcile) {
             s.projectLoadState = 'error';
             s.projectLoadError = RECOVERABLE_LOAD_ERROR;
           }
@@ -757,8 +794,10 @@ export const useStore = create<Store>()(
       } finally {
         c.refreshInFlight = false;
         // Rerun once if something queued a follow-up (a coalesced refresh OR a superseded
-        // command's reconcile) AND this scope is still current — this fires even after a
-        // FAILED pull, so a recovery attempt always follows the settling refresh.
+        // command/submit's reconcile) AND this scope is still current — this fires even
+        // after a FAILED pull, so the mandatory reconcile always follows the settling
+        // refresh. Bounded (semantic 7): the rerun fires at most once per settle; after a
+        // failed / unconfirmed mandatory reconcile nothing re-queues, so we wait for Retry.
         const rerun = c.refreshQueued && scopeStillCurrent(scope);
         c.refreshQueued = false;
         if (rerun) void requestFreshSnapshot(scope);
@@ -766,17 +805,17 @@ export const useStore = create<Store>()(
       }
     };
 
-    /** Schedule a coalesced reconcile for a CURRENT-scope command/submit whose own
-     *  snapshot was `superseded` (round 12, finding 2). `superseded` proves a newer
-     *  lease exists, NOT that it will land — the newer refresh may still fail. So make
-     *  sure fresh truth is pulled: if a refresh is already in flight for this scope,
-     *  queue a rerun that runs after it settles (even on failure); otherwise pull now.
-     *  A moved scope owns its own truth, so a stale-scope reconcile is dropped. */
-    const scheduleReconcile = (scope: ProjectScope, forSubmit = false): void => {
+    /** Record a REQUIRED reconciliation for a CURRENT-scope command/submit whose own
+     *  snapshot was `superseded`, then queue/start the recovery pull (gate round 13).
+     *  `superseded` proves a newer lease exists, NOT that it will land — the newer
+     *  refresh may fail. The requirement is recorded BEFORE queuing (semantic 1) and
+     *  pinned with `createdAfterSequence` so a refresh already in flight can't satisfy
+     *  it. A moved scope owns its own truth, so a stale-scope reconcile is dropped. */
+    const scheduleReconcile = (scope: ProjectScope, requirement: NonNullable<ReconcileRequirement>): void => {
       if (!scopeStillCurrent(scope)) return;
       const c = coordinatorFor(scope);
-      if (forSubmit) c.submitRecover = true; // a failed reconcile must surface a recoverable error, not freeze
-      if (c.refreshInFlight) c.refreshQueued = true;
+      c.required = requirement;
+      if (c.refreshInFlight) c.refreshQueued = true; // runs after the in-flight pull settles (even on failure)
       else void requestFreshSnapshot(scope);
     };
 
@@ -787,14 +826,13 @@ export const useStore = create<Store>()(
      *  landed in the CURRENT scope — `applied` (this snapshot is freshest) OR
      *  `superseded` (a newer same-scope refresh, almost always the mutation's OWN
      *  `changed` broadcast, already carries the committed truth). On `superseded` also
-     *  schedule a reconcile (round 12): the newer refresh may fail, and the committed
-     *  change must still land. Suppress only when the scope MOVED (a switch / re-auth —
-     *  a stale toast must never leak into the new context) or the payload was
-     *  `invalid-project` (a genuine wrong-project error — never claim success; pull a
-     *  fresh snapshot to recover current truth). */
+     *  record a required reconcile (round 13): the newer refresh may fail, and the
+     *  committed change must land or a Retry be exposed — never silently absent.
+     *  Suppress only when the scope MOVED (a switch / re-auth — no stale toast into the
+     *  new context) or the payload was `invalid-project` (never claim success; recover). */
     const consumeSnapshotResult = (result: SnapshotApplyResult, okMsg?: string): void => {
       if (result === 'applied' || result === 'superseded') { if (okMsg) get().flash(okMsg); }
-      if (result === 'superseded') scheduleReconcile(currentScope());
+      if (result === 'superseded') scheduleReconcile(currentScope(), { kind: 'command', createdAfterSequence: snapshotSeq });
       else if (result === 'invalid-project') void requestFreshSnapshot();
     };
 
@@ -1374,12 +1412,14 @@ export const useStore = create<Store>()(
               if (result === 'applied') {
                 get().flash('Inspection submitted to the architect for review.');
               } else if (result === 'superseded') {
-                // gate round 12: the submit committed, but a newer refresh owns the
+                // gate round 12/13: the submit committed, but a newer refresh owns the
                 // view. Keep the checklist FROZEN (don't unlock — the submit succeeded)
-                // and schedule a reconcile so the confirmed `submitted` truth lands even
-                // if that newer refresh fails; if it truly can't land, the reconcile
-                // surfaces a recoverable error instead of freezing forever.
-                scheduleReconcile(scope, true);
+                // and record a SUBMIT reconcile requirement naming THIS attempt, so the
+                // requirement clears only when this exact submit is confirmed by server
+                // truth (not by a stale unsubmitted snapshot); if the mandatory reconcile
+                // fails or lands still-unconfirmed, a recoverable error/Retry is exposed
+                // instead of freezing forever.
+                scheduleReconcile(scope, { kind: 'submit', inspectionId: c.id, attempt, createdAfterSequence: snapshotSeq });
               } else if (result === 'invalid-project') {
                 // manifestation 2: a rejected (wrong-project) payload must NOT report
                 // success and must NOT leave the checklist frozen forever — unlock the
@@ -1606,7 +1646,7 @@ export const useStore = create<Store>()(
             // since the newer refresh may fail, recover a wrong-project one. Silent if
             // the scope moved (no stale toast into another project).
             if (result === 'applied' || result === 'superseded') done();
-            if (result === 'superseded') scheduleReconcile(scope);
+            if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
             else if (result === 'invalid-project') void requestFreshSnapshot();
           } catch {
             if (scopeStillCurrent(scope)) get().flash('Could not publish every draft — some may still be drafts. Please try again.');
@@ -1941,9 +1981,10 @@ export const useStore = create<Store>()(
         if (result !== 'applied') {
           // a newer refresh owns the tree (superseded) or the payload was wrong-project;
           // don't claim success or return a node id the current tree may not reflect.
-          // gate round 12: on superseded the node WAS created — schedule a reconcile so
-          // it lands even if the newer refresh fails; on wrong-project, recover.
-          if (result === 'superseded') scheduleReconcile(scope);
+          // gate round 12/13: on superseded the node WAS created — record a command
+          // reconcile requirement so it lands (or exposes Retry) even if the newer
+          // refresh fails; on wrong-project, recover.
+          if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
           else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
