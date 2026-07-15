@@ -580,30 +580,33 @@ export const useStore = create<Store>()(
     // scope's owner, and a new scope's pull runs independently of an old scope's
     // in-flight pull.
     //
-    // Gate round 13: a superseded command/submit records a durable REQUIRED
-    // reconciliation on its scope — an obligation that is preserved until CONFIRMED,
-    // not a fire-and-forget flag. `createdAfterSequence` pins it so a refresh that
-    // began BEFORE the requirement can neither satisfy nor clear it (a stale
-    // `submitted:false` snapshot can't disarm a submit recovery). A command clears
-    // only when its post-requirement reconcile APPLIES; a submit clears only when the
-    // exact pending submit is CONFIRMED (its freeze retires). If the mandatory
-    // reconcile fails — or a submit reconcile applies still-unconfirmed — the
-    // recoverable error/Retry boundary is exposed rather than a silent stuck state.
-    type ReconcileRequirement =
-      | null
-      | { kind: 'command'; createdAfterSequence: number }
-      | { kind: 'submit'; inspectionId: string; attempt: number; createdAfterSequence: number };
+    // Gate round 13/14: a superseded command/submit records a durable RECONCILIATION
+    // OBLIGATION on its scope — preserved until CONFIRMED, not a fire-and-forget flag.
+    // `createdAfterSequence` pins each obligation so a refresh that began BEFORE it can
+    // neither satisfy nor clear it (a stale `submitted:false` snapshot can't disarm a
+    // submit recovery). Gate round 14: command and submit obligations are held
+    // SEPARATELY and COMPOSE — a later command can never overwrite an unconfirmed
+    // submit (and vice-versa). A command clears when a post-threshold reconcile
+    // APPLIES; a submit clears only when a post-threshold snapshot retires that exact
+    // attempt. If the mandatory reconcile fails — or a submit reconcile applies
+    // still-unconfirmed while its command sibling is satisfied — the recoverable
+    // error/Retry boundary is exposed rather than a silent stuck state.
+    interface SubmitObligation { inspectionId: string; attempt: number; createdAfterSequence: number; }
     interface ScopeCoordinator {
       newestLeaseSeq: number;
       refreshInFlight: boolean;
       refreshQueued: boolean;
-      required: ReconcileRequirement; // a committed command/submit still owed confirmed truth
+      commandAfterSequence: number | null; // a committed generic command owed confirmed truth
+      submit: SubmitObligation | null;      // a frozen submit owed confirmation
     }
+    type ReconcileObligation =
+      | { kind: 'command'; createdAfterSequence: number }
+      | { kind: 'submit'; inspectionId: string; attempt: number; createdAfterSequence: number };
     let snapshotSeq = 0;
     const scopeCoordinators = new Map<string, ScopeCoordinator>();
     const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
     /** Drop coordinators for scopes we've LEFT that have no pull in flight — a scope
-     *  we moved away from owns nothing anymore, so its pending required reconcile is
+     *  we moved away from owns nothing anymore, so its pending obligations are
      *  cancelled with it (gate round 13, semantic 6); the current scope is always kept,
      *  and a coordinator with an in-flight pull self-prunes when that pull settles. */
     const pruneScopeCoordinators = (): void => {
@@ -616,7 +619,7 @@ export const useStore = create<Store>()(
       const key = scopeKey(scope);
       let c = scopeCoordinators.get(key);
       if (!c) {
-        c = { newestLeaseSeq: 0, refreshInFlight: false, refreshQueued: false, required: null };
+        c = { newestLeaseSeq: 0, refreshInFlight: false, refreshQueued: false, commandAfterSequence: null, submit: null };
         scopeCoordinators.set(key, c);
         pruneScopeCoordinators(); // a new scope appeared — sweep the ones we've left
       }
@@ -740,12 +743,12 @@ export const useStore = create<Store>()(
      *  still gets a recovery attempt. A pull only ever mutates its OWN scope; a scope
      *  we've left neither reruns nor surfaces errors. Never a loop: the rerun fires at
      *  most once per settle and only while nothing new re-queues it. */
-    /** Is the pending submit named by a requirement STILL in flight (not yet confirmed
+    /** Is the pending submit named by an obligation STILL in flight (not yet confirmed
      *  by server truth)? Confirmed = its freeze has retired — a different inspection,
      *  a newer attempt, or an idle/read-only submission all count as "no longer owed". */
-    const submitStillPending = (req: Extract<ReconcileRequirement, { kind: 'submit' }>): boolean => {
+    const submitStillPending = (ob: SubmitObligation): boolean => {
       const sub = get().submission;
-      return sub.status === 'submitting' && sub.inspectionId === req.inspectionId && sub.attempt === req.attempt;
+      return sub.status === 'submitting' && sub.inspectionId === ob.inspectionId && sub.attempt === ob.attempt;
     };
     const requestFreshSnapshot = async (scope: ProjectScope = currentScope()): Promise<void> => {
       if (!gateway) return;
@@ -760,19 +763,22 @@ export const useStore = create<Store>()(
       try {
         const snap = await g.snapshot();
         const result = acceptSnapshot(snap, lease);
-        const req = c.required;
-        // Only a pull that BEGAN AFTER the requirement was recorded can satisfy it
-        // (gate round 13, semantic 2) — a stale in-flight refresh can't disarm it.
-        const satisfiesRequirement = req && lease.sequence > req.createdAfterSequence;
-        if (result === 'applied' && satisfiesRequirement && req) {
-          if (req.kind === 'command') {
-            c.required = null; // the committed change is now in this applied snapshot (semantic 3)
-          } else if (!submitStillPending(req)) {
-            c.required = null; // the exact submit is confirmed; its freeze has retired (semantic 4)
-          } else if (scopeStillCurrent(scope)) {
-            // applied, but the submit is STILL unconfirmed — keep the requirement +
-            // freeze/marks and expose Retry rather than silently going ready (semantic 5).
-            set((s) => { s.projectLoadState = 'error'; s.projectLoadError = RECOVERABLE_LOAD_ERROR; });
+        if (result === 'applied') {
+          // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a
+          // pull that BEGAN AFTER an obligation's threshold can satisfy it (round 13,
+          // semantic 2) — a stale in-flight refresh can't disarm it.
+          if (c.commandAfterSequence !== null && lease.sequence > c.commandAfterSequence) {
+            c.commandAfterSequence = null; // the committed command's change is now in this applied snapshot
+          }
+          if (c.submit && lease.sequence > c.submit.createdAfterSequence) {
+            if (!submitStillPending(c.submit)) {
+              c.submit = null; // the EXACT submit is confirmed; its freeze has retired
+            } else if (scopeStillCurrent(scope)) {
+              // applied, but the submit is STILL unconfirmed — keep the submit obligation +
+              // freeze/marks and expose Retry EVEN THOUGH the same snapshot may have
+              // satisfied the command obligation (gate round 14: obligations compose).
+              set((s) => { s.projectLoadState = 'error'; s.projectLoadError = RECOVERABLE_LOAD_ERROR; });
+            }
           }
         } else if (result === 'invalid-project' && scopeStillCurrent(scope)) {
           set((s) => { s.projectLoadState = 'error'; s.projectLoadError = RECOVERABLE_LOAD_ERROR; });
@@ -781,12 +787,13 @@ export const useStore = create<Store>()(
       } catch {
         // The pull failed. Surface the recoverable error/Retry boundary when the user is
         // waiting on THIS scope's data — an initial load / switch, or the MANDATORY
-        // reconcile for a pending requirement (a pull that began after it was recorded).
-        // A pre-requirement refresh failing does NOT surface it — its own reconcile follows.
+        // reconcile for ANY outstanding obligation (a pull that began after its threshold).
+        // A pre-obligation refresh failing does NOT surface it — its own reconcile follows.
         if (scopeStillCurrent(scope)) set((s) => {
-          const req = c.required;
-          const failedMandatoryReconcile = !!req && lease.sequence > req.createdAfterSequence;
-          if (s.projectLoadState === 'switching' || s.projectLoadState === 'loading' || failedMandatoryReconcile) {
+          const failedMandatory =
+            (c.commandAfterSequence !== null && lease.sequence > c.commandAfterSequence) ||
+            (c.submit !== null && lease.sequence > c.submit.createdAfterSequence);
+          if (s.projectLoadState === 'switching' || s.projectLoadState === 'loading' || failedMandatory) {
             s.projectLoadState = 'error';
             s.projectLoadError = RECOVERABLE_LOAD_ERROR;
           }
@@ -805,16 +812,26 @@ export const useStore = create<Store>()(
       }
     };
 
-    /** Record a REQUIRED reconciliation for a CURRENT-scope command/submit whose own
-     *  snapshot was `superseded`, then queue/start the recovery pull (gate round 13).
+    /** MERGE a reconciliation obligation onto a CURRENT-scope command/submit whose own
+     *  snapshot was `superseded`, then queue/start the recovery pull (gate round 13/14).
      *  `superseded` proves a newer lease exists, NOT that it will land — the newer
-     *  refresh may fail. The requirement is recorded BEFORE queuing (semantic 1) and
-     *  pinned with `createdAfterSequence` so a refresh already in flight can't satisfy
-     *  it. A moved scope owns its own truth, so a stale-scope reconcile is dropped. */
-    const scheduleReconcile = (scope: ProjectScope, requirement: NonNullable<ReconcileRequirement>): void => {
+     *  refresh may fail. Command and submit obligations are held SEPARATELY and NEVER
+     *  overwrite each other (gate round 14). Each is pinned with `createdAfterSequence`
+     *  so a refresh already in flight can't satisfy it. A moved scope owns its own truth,
+     *  so a stale-scope reconcile is dropped. */
+    const scheduleReconcile = (scope: ProjectScope, obligation: ReconcileObligation): void => {
       if (!scopeStillCurrent(scope)) return;
       const c = coordinatorFor(scope);
-      c.required = requirement;
+      if (obligation.kind === 'command') {
+        // keep the LATEST command threshold: a snapshot crossing it necessarily reflects
+        // every earlier committed command too, so no command obligation is ever dropped.
+        c.commandAfterSequence = c.commandAfterSequence === null
+          ? obligation.createdAfterSequence
+          : Math.max(c.commandAfterSequence, obligation.createdAfterSequence);
+      } else {
+        // the newest submit attempt owns the freeze (round 10 retired any older one)
+        c.submit = { inspectionId: obligation.inspectionId, attempt: obligation.attempt, createdAfterSequence: obligation.createdAfterSequence };
+      }
       if (c.refreshInFlight) c.refreshQueued = true; // runs after the in-flight pull settles (even on failure)
       else void requestFreshSnapshot(scope);
     };
