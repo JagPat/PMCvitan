@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import * as apiTransitions from './transitions';
+import * as shared from '@vitan/shared';
 import {
   deriveInspectionGate,
   deriveDrawingGate,
@@ -10,9 +12,15 @@ import {
 } from './transitions';
 
 /**
- * Phase 1 Task 6 — the readiness truth tables, row by row (written BEFORE the
- * implementation). Every numbered row of the plan's two tables is one case,
- * plus the four disambiguation cases the tables were corrected for:
+ * Phase 2 Task 2 — the readiness MIRROR IS RETIRED. The derivation the API runs
+ * server-side is now IMPORTED from the built `@vitan/shared` runtime package; the
+ * imported-identity block below proves the API's `deriveReadiness` (and the two
+ * gate functions) ARE the shared objects, not a pinned copy. The row-by-row truth
+ * tables below then exercise that single shared implementation through the API
+ * surface — so a regression in the shared derivation fails here.
+ *
+ * Phase 1 Task 6 — the readiness truth tables, row by row. Every numbered row of
+ * the plan's two tables is one case, plus the four disambiguation cases:
  *   - an open reinspection child reads FAIL, not wait (row-2-over-row-3);
  *   - two linked drawings aggregate worst-wins (acked construction + review-only → fail);
  *   - a newly issued revision that froze ZERO recipients reads wait (row 3),
@@ -21,6 +29,17 @@ import {
  *   - an unrelated inspection sharing only the room is INVISIBLE to the gate.
  * Rules are FIRST MATCH WINS — no outcome may depend on unstated ordering.
  */
+
+describe('readiness derivation — imported identity with @vitan/shared (mirror retired)', () => {
+  it('the API runs the SAME derivation objects as @vitan/shared (no pinned copy)', () => {
+    expect(apiTransitions.deriveReadiness).toBe(shared.deriveReadiness);
+    expect(apiTransitions.deriveInspectionGate).toBe(shared.deriveInspectionGate);
+    expect(apiTransitions.deriveDrawingGate).toBe(shared.deriveDrawingGate);
+    expect(apiTransitions.readinessReady).toBe(shared.readinessReady);
+    expect(apiTransitions.gateReady).toBe(shared.gateReady);
+    expect(apiTransitions.deriveDecisionReading).toBe(shared.deriveDecisionReading);
+  });
+});
 
 const A = 'ACT-1';
 

@@ -3,7 +3,8 @@ import { describe, it, expect } from 'vitest';
 import { RequestMethod } from '@nestjs/common';
 import { PATH_METADATA, METHOD_METADATA, GUARDS_METADATA } from '@nestjs/common/constants';
 import { JwtGuard } from './auth';
-import { RolesGuard, ROLES_KEY, PUBLIC_KEY, ANY_ROLE_KEY } from './roles';
+import { RolesGuard, ROLES_KEY, PUBLIC_KEY, ANY_ROLE_KEY, ACTION_KEY } from './roles';
+import { ROLE_POLICY, type PolicyAction } from '@vitan/shared';
 
 import { ActivitiesController } from '../activities/activities.controller';
 import { PhasesController } from '../activities/phases.controller';
@@ -57,6 +58,7 @@ interface RouteInfo {
   httpMethod: number;
   isMutating: boolean;
   roles: string[] | undefined;
+  action: string | undefined;
   isPublic: boolean;
   anyRoleReason: string | undefined;
   hasJwtGuard: boolean;
@@ -86,6 +88,7 @@ function collectRoutes(): RouteInfo[] {
         httpMethod,
         isMutating: MUTATING.has(httpMethod),
         roles: Reflect.getMetadata(ROLES_KEY, handler) as string[] | undefined,
+        action: Reflect.getMetadata(ACTION_KEY, handler) as string | undefined,
         isPublic: Reflect.getMetadata(PUBLIC_KEY, handler) === true,
         anyRoleReason: Reflect.getMetadata(ANY_ROLE_KEY, handler) as string | undefined,
         hasJwtGuard: guards.includes(JwtGuard),
@@ -139,69 +142,29 @@ describe('route authorization policy', () => {
 });
 
 /**
- * Drift guard for review finding #8. This map MUST stay identical to the canonical
- * `ROLE_POLICY` in `@vitan/shared` (the web derives its UI gating from that map). The API
- * can't import the source-only shared package at runtime, so we pin the values here and a
- * change to any endpoint's `@Roles` fails this test — forcing the shared map to be updated
- * in lockstep. (Once `@vitan/shared` is a built package the API should `@RolesFor(action)`
- * straight from it and this mirror goes away.)
+ * Phase 2 Task 2 — the POLICY MIRROR IS RETIRED. Every role-gated route now declares
+ * `@RolesFor(action)`, which sources its allowlist from the SINGLE canonical `ROLE_POLICY`
+ * map in the built `@vitan/shared` runtime package (the same map the web UI gating reads).
+ * There is no hand-mirrored `EXPECTED_ROLES` literal anymore: this is an IMPORTED-IDENTITY
+ * assertion — each gated endpoint's roles ARE `ROLE_POLICY[action]`, verified against the
+ * shared package directly. A change to any endpoint's allowlist can now happen in only one
+ * place (the shared map), so the two sides can no longer drift.
  */
-const EXPECTED_ROLES: Record<string, string[]> = {
-  'ProjectController.snapshotFor': ['pmc', 'client', 'engineer', 'contractor', 'consultant'], // SEC-02: no worker tokens
-  'MembersController.list': ['pmc', 'client', 'engineer', 'contractor', 'consultant'], // P1-2: no worker PII reads
-  'CompaniesController.list': ['pmc', 'client', 'engineer', 'contractor', 'consultant'], // P1-2: no worker contact reads
-  'NodesController.create': ['pmc'],
-  'NodesController.rename': ['pmc'],
-  'NodesController.move': ['pmc'],
-  'NodesController.publish': ['pmc'],
-  'NodesController.remove': ['pmc'],
-  'DecisionsController.create': ['pmc'],
-  'DecisionsController.publish': ['pmc'],
-  'DecisionsController.approve': ['client', 'pmc'], // Phase 1 Task 2: also RESOLVES the open ChangeRequest (reapproval)
-  'DecisionsController.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'], // Phase 1 Task 2: refuses when one is already open
-  'DecisionsController.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'], // service narrows to requester-or-pmc (Phase 1 Task 2)
-  'ActivitiesController.create': ['pmc'],
-  'ActivitiesController.update': ['pmc'], // Phase 1 Task 6: gateInspection leaves the updatable contract; adds `override` routes (pmc)
-  'ActivitiesController.remove': ['pmc'],
-  'ActivitiesController.start': ['engineer', 'pmc'],
-  'ActivitiesController.complete': ['engineer', 'pmc'], // Phase 1 Task 5: becomes "request sign-off" (awaiting_signoff)
-  'ActivitiesController.override': ['pmc'], // Phase 1 Task 6: manual readiness exception — attributable, evidenced, expiring
-  'ActivitiesController.revokeOverride': ['pmc'], // Phase 1 Task 6: early revocation — the derivation rules again
-  'PhasesController.create': ['pmc'],
-  'PhasesController.remove': ['pmc'],
-  'InspectionsController.create': ['pmc'],
-  'InspectionsController.submit': ['engineer', 'pmc'], // Phase 1 Task 4: fail items require linked Media evidence
-  'InspectionsController.decide': ['pmc'], // Phase 1 Tasks 4/5: reject creates the linked reinspection; closing approval completes the activity
-  'DailyLogController.start': ['engineer', 'pmc'],
-  'DailyLogController.addMaterial': ['engineer', 'pmc'],
-  'DailyLogController.flag': ['engineer', 'pmc'],
-  'DailyLogController.submit': ['engineer', 'pmc'],
-  'MediaController.upload': ['pmc', 'engineer'],
-  'MediaController.remove': ['pmc', 'engineer'],
-  'MediaController.setNode': ['pmc', 'engineer'],
-  'DrawingsController.issue': ['pmc'], // Phase 1 Task 3: freezes recipients, audits issue, scopes supersession
-  'DrawingsController.publish': ['pmc'],
-  'DrawingsController.presign': ['pmc'],
-  'DrawingsController.acknowledge': ['pmc', 'engineer', 'contractor'], // Phase 1 Task 3: becomes offline-queueable
-  'DrawingsController.remove': ['pmc'],
-  'DrawingsController.setNode': ['pmc'],
-  'OrgsController.createOrg': ['pmc', 'client', 'engineer', 'contractor'],
-};
-
-describe('role allowlists mirror the shared ROLE_POLICY (finding #8 drift guard)', () => {
+describe('role allowlists are sourced from the shared ROLE_POLICY via @RolesFor (mirror retired)', () => {
   const gated = routes.filter((r) => r.roles !== undefined);
 
-  it('every @Roles endpoint matches its expected allowlist', () => {
+  it('every role-gated endpoint carries a @RolesFor action and its roles ARE ROLE_POLICY[action]', () => {
     for (const r of gated) {
-      const expected = EXPECTED_ROLES[r.handlerKey];
-      expect(expected, `No expected allowlist for ${r.handlerKey} — add it here and to @vitan/shared ROLE_POLICY`).toBeDefined();
-      expect([...(r.roles ?? [])].sort(), `${r.handlerKey} @Roles drifted from the shared policy`).toEqual([...expected].sort());
+      expect(r.action, `${r.handlerKey} is role-gated but not via @RolesFor — migrate it to source from ROLE_POLICY`).toBeDefined();
+      const policyRoles = ROLE_POLICY[r.action as PolicyAction] as readonly string[] | undefined;
+      expect(policyRoles, `${r.handlerKey} references action "${r.action}" absent from @vitan/shared ROLE_POLICY`).toBeDefined();
+      expect([...(r.roles ?? [])].sort(), `${r.handlerKey} allowlist is not ROLE_POLICY['${r.action}']`).toEqual([...(policyRoles ?? [])].sort());
     }
   });
 
-  it('every expected allowlist maps to a real gated endpoint (no stale entries)', () => {
-    const gatedKeys = new Set(gated.map((r) => r.handlerKey));
-    const stale = Object.keys(EXPECTED_ROLES).filter((k) => !gatedKeys.has(k));
-    expect(stale, `Expected allowlists with no matching @Roles endpoint:\n${stale.join('\n')}`).toEqual([]);
+  it('every ROLE_POLICY action is exercised by at least one gated route (no dead policy entries)', () => {
+    const used = new Set(gated.map((r) => r.action));
+    const unused = Object.keys(ROLE_POLICY).filter((a) => !used.has(a));
+    expect(unused, `ROLE_POLICY actions with no @RolesFor route:\n${unused.join('\n')}`).toEqual([]);
   });
 });

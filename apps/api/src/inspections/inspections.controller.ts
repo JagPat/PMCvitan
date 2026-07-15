@@ -2,7 +2,7 @@ import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
 import { InspectionsService } from './inspections.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
-import { Roles, RolesGuard } from '../common/roles';
+import { RolesFor, RolesGuard } from '../common/roles';
 import {
   createInspectionSchema,
   decideReviewSchema,
@@ -19,7 +19,7 @@ export class InspectionsController {
 
   /** Issue a stage checklist — the PMC/architect defines what gets inspected. */
   @Post()
-  @Roles('pmc')
+  @RolesFor('inspection.create')
   create(
     @Param('projectId') projectId: string,
     @Body(new ZodPipe(createInspectionSchema)) body: CreateInspectionInput,
@@ -30,7 +30,7 @@ export class InspectionsController {
 
   /** Submit an inspection's photo checklist — the site engineer (or PMC). */
   @Post(':inspectionId/submit')
-  @Roles('engineer', 'pmc')
+  @RolesFor('inspection.submit')
   submit(
     @Param('projectId') projectId: string,
     @Param('inspectionId') inspectionId: string,
@@ -42,7 +42,7 @@ export class InspectionsController {
 
   /** Approve or reject a submitted inspection — the PMC/architect only. */
   @Post(':inspectionId/decide')
-  @Roles('pmc')
+  @RolesFor('inspection.decide')
   decide(
     @Param('projectId') projectId: string,
     @Param('inspectionId') inspectionId: string,

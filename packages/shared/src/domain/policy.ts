@@ -54,6 +54,13 @@ export const ROLE_POLICY = {
   // Real account holders only — a `worker` device token has no User row (see the API's
   // POST /orgs gate), so it is intentionally excluded.
   'org.create': ['pmc', 'client', 'engineer', 'contractor'],
+  // ── Read surfaces that require a REAL account (a worker device token is excluded,
+  // SEC-02 / P1-2). The API GETs derive their allowlist from here too (Phase 2 Task 2),
+  // so the whole role-gated surface — reads and writes — has ONE source of truth. The web
+  // UI does not currently gate these reads, so `can()` simply isn't called for them.
+  'project.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
+  'members.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
+  'companies.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
 } as const satisfies Record<string, readonly TokenRole[]>;
 
 /** A permissioned project action, e.g. `'drawing.acknowledge'`. */

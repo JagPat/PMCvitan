@@ -5,7 +5,7 @@ import { SignedUrlService } from './signed-url.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { createMediaSchema, setNodeSchema, type CreateMediaInput, type SetNodeInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
-import { Public, Roles, RolesGuard } from '../common/roles';
+import { Public, RolesFor, RolesGuard } from '../common/roles';
 
 @Controller()
 export class MediaController {
@@ -19,7 +19,7 @@ export class MediaController {
    *  anonymously-minted worker tokens from writing arbitrary blobs, matching the DELETE gate below. */
   @Post('projects/:projectId/media')
   @UseGuards(JwtGuard, RolesGuard)
-  @Roles('pmc', 'engineer')
+  @RolesFor('media.upload')
   upload(
     @Param('projectId') projectId: string,
     @CurrentUser() user: AuthUser,
@@ -32,7 +32,7 @@ export class MediaController {
    *  the same authority that uploads them. Returns the fresh snapshot. Location spine. */
   @Patch('projects/:projectId/media/:mediaId/node')
   @UseGuards(JwtGuard, RolesGuard)
-  @Roles('pmc', 'engineer')
+  @RolesFor('media.file')
   setNode(
     @Param('projectId') projectId: string,
     @Param('mediaId') mediaId: string,
@@ -67,7 +67,7 @@ export class MediaController {
   /** Delete a photo (bucket object + row). Scoped to the caller's project; PMC or site engineer only. */
   @Delete('media/:id')
   @UseGuards(JwtGuard, RolesGuard)
-  @Roles('pmc', 'engineer')
+  @RolesFor('media.delete')
   async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean }> {
     const ok = await this.media.remove(id, user.projectId);
     if (!ok) throw new NotFoundException('Media not found');

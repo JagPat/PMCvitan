@@ -5,7 +5,7 @@ import { SignedUrlService } from '../media/signed-url.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { issueDrawingSchema, presignDrawingSchema, setNodeSchema, type IssueDrawingInput, type PresignDrawingInput, type SetNodeInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
-import { Public, Roles, RolesGuard } from '../common/roles';
+import { Public, RolesFor, RolesGuard } from '../common/roles';
 
 @Controller()
 export class DrawingsController {
@@ -18,7 +18,7 @@ export class DrawingsController {
    *  PMC only — issuing controlled drawings is the architect's authority. */
   @Post('projects/:projectId/drawings')
   @UseGuards(JwtGuard, RolesGuard)
-  @Roles('pmc')
+  @RolesFor('drawing.issue')
   issue(
     @Param('projectId') projectId: string,
     @CurrentUser() user: AuthUser,
@@ -30,7 +30,7 @@ export class DrawingsController {
   /** Publish a private draft drawing → issue it to the build team (PMC only). */
   @Post('projects/:projectId/drawings/:drawingId/publish')
   @UseGuards(JwtGuard, RolesGuard)
-  @Roles('pmc')
+  @RolesFor('drawing.publish')
   publish(
     @Param('projectId') projectId: string,
     @Param('drawingId') drawingId: string,
@@ -42,7 +42,7 @@ export class DrawingsController {
   /** Presigned direct-to-bucket upload target for a large drawing (PMC only, Slice 3). */
   @Post('projects/:projectId/drawings/presign')
   @UseGuards(JwtGuard, RolesGuard)
-  @Roles('pmc')
+  @RolesFor('drawing.presign')
   presign(
     @Param('projectId') projectId: string,
     @Body(new ZodPipe(presignDrawingSchema)) body: PresignDrawingInput,
@@ -55,7 +55,7 @@ export class DrawingsController {
    *  anonymously-minted worker tokens off the drawing-ack register. */
   @Post('projects/:projectId/drawings/rev/:revId/ack')
   @UseGuards(JwtGuard, RolesGuard)
-  @Roles('pmc', 'engineer', 'contractor')
+  @RolesFor('drawing.acknowledge')
   acknowledge(
     @Param('projectId') projectId: string,
     @Param('revId') revId: string,
@@ -68,7 +68,7 @@ export class DrawingsController {
    *  architect controls where a drawing sits, matching PMC-only issue. Location spine. */
   @Patch('projects/:projectId/drawings/:drawingId/node')
   @UseGuards(JwtGuard, RolesGuard)
-  @Roles('pmc')
+  @RolesFor('drawing.file')
   setNode(
     @Param('projectId') projectId: string,
     @Param('drawingId') drawingId: string,
@@ -103,7 +103,7 @@ export class DrawingsController {
    *  the architect controls the drawing register, matching PMC-only issue. */
   @Delete('drawings/:id')
   @UseGuards(JwtGuard, RolesGuard)
-  @Roles('pmc')
+  @RolesFor('drawing.delete')
   async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean }> {
     const ok = await this.drawings.remove(id, user.projectId, user);
     if (!ok) throw new NotFoundException('Drawing not found');
