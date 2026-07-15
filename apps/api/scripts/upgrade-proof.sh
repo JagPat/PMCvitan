@@ -68,9 +68,14 @@ echo "upgrade:  ${#phase1_dirs[@]} Phase 1 migrations queued"
 echo ""
 echo "=== planting the legacy fixture (pre-Phase-1 shapes) ==="
 $PSQL -q <<'SQL' || { echo "fixture failed"; exit 1; }
-INSERT INTO "Project" ("id","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
-VALUES ('p1','Legacy Site A','LA','','Finishing','LA-01','01 Jan 2026','31 Dec 2026',50,30,60),
-       ('p2','Legacy Site B','LB','','Finishing','LB-01','01 Jan 2026','31 Dec 2026',50,30,60);
+-- Tenancy shape (Phase 2 Task 4): the event envelope requires every project to have an org,
+-- so its migration ABORTS on a null orgId. This legacy DB is one the operator has already
+-- tenant-backfilled (ensure-accounts) before upgrading — the projects carry their org, and
+-- they predate the event store (they hold NO DomainEvent rows, asserted below).
+INSERT INTO "Org" ("id","name","slug") VALUES ('org-legacy','Legacy Org','legacy-org');
+INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+VALUES ('p1','org-legacy','Legacy Site A','LA','','Finishing','LA-01','01 Jan 2026','31 Dec 2026',50,30,60),
+       ('p2','org-legacy','Legacy Site B','LB','','Finishing','LB-01','01 Jan 2026','31 Dec 2026',50,30,60);
 
 -- Credential-rollout shape: an existing password must survive the additive
 -- enrollment migration byte-for-byte, with the compatibility version at zero.
@@ -216,6 +221,32 @@ assert "legacy user starts at credential version zero without fabricated verific
 assert "durable password challenge and security audit tables exist" \
   "SELECT ((to_regclass('\"PasswordCredentialChallenge\"') IS NOT NULL) AND (to_regclass('\"SecurityAuditEvent\"') IS NOT NULL))::text;" \
   "true"
+
+# Phase 2 Task 4 — the domain-event envelope is additive over a tenant-backfilled legacy DB
+assert "the event store + per-project stream counter tables exist" \
+  "SELECT ((to_regclass('\"DomainEvent\"') IS NOT NULL) AND (to_regclass('\"ProjectEventStream\"') IS NOT NULL))::text;" \
+  "true"
+assert "Project.orgId was locked NOT NULL (every project now carries a tenant)" \
+  "SELECT is_nullable FROM information_schema.columns WHERE table_name='Project' AND column_name='orgId';" \
+  "NO"
+assert "the composite tenant identity (orgId, id) is database-enforced" \
+  "SELECT COUNT(*) FROM pg_indexes WHERE indexname='Project_orgId_id_key';" \
+  "1"
+assert "every legacy project was backfilled its stream counter at position 0" \
+  "SELECT COUNT(*) FILTER (WHERE \"nextPosition\" = 0)::text || '/' || COUNT(*)::text FROM \"ProjectEventStream\";" \
+  "2/2"
+assert "the append-only trigger guards the event store" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname='DomainEvent_append_only';" \
+  "1"
+assert "the attribution truth-table CHECK exists" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname='DomainEvent_attribution_truth_table';" \
+  "1"
+assert "a legacy project predates the event store — it carries NO domain events" \
+  "SELECT COUNT(*) FROM \"DomainEvent\" WHERE \"projectId\"='p1';" \
+  "0"
+assert "legacy decisions/activities are untouched by the additive event migration" \
+  "SELECT (SELECT status FROM \"Decision\" WHERE id='DL-1') || '|' || (SELECT status FROM \"Activity\" WHERE id='ACT-1');" \
+  "change|done"
 
 echo ""
 if [ "$FAIL" = "0" ]; then

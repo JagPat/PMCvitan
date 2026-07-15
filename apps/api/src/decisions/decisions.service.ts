@@ -12,6 +12,7 @@ import { pendingDecisionNotice } from '../domain/notifications';
 import type { ApproveInput, ChangeInput, CreateDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
+import { emitEvent } from '../platform/events';
 
 @Injectable()
 export class DecisionsService {
@@ -50,11 +51,11 @@ export class DecisionsService {
     // publishes. `publish: true` is the one-step "issue now" — created already live.
     const publishedAt = input.publish ? new Date() : null;
 
-    await this.prisma.$transaction([
-      this.prisma.decision.create({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.decision.create({
         data: { id, projectId, title: input.title, room, nodeId, status: 'pending', ageDays: 0, photoSwatch: lead.swatch, authorId: user.sub, publishedAt },
-      }),
-      this.prisma.decisionOption.createMany({
+      });
+      await tx.decisionOption.createMany({
         data: input.options.map((o, i) => ({
           decisionId: id,
           label: o.label ?? `Option ${String.fromCharCode(65 + i)}`,
@@ -66,10 +67,11 @@ export class DecisionsService {
           recommended: o.recommended,
           order: i,
         })),
-      }),
-      this.prisma.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: input.title } } }),
-      recordAudit(this.prisma, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id }),
-    ]);
+      });
+      await tx.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: input.title } } });
+      await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
+      await emitEvent(tx, { projectId, actor, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title } });
+    });
     // Only a PUBLISHED decision reaches the client (a draft is private to its author, and
     // must not notify anyone). When published in one step, fire the same side-effects publish() does.
     if (input.publish) {
@@ -88,12 +90,13 @@ export class DecisionsService {
     if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
     if (d.publishedAt) throw new ConflictException('Decision is already published');
 
-    await this.prisma.$transaction([
-      this.prisma.decision.update({ where: { id: decisionId }, data: { publishedAt: new Date() } }),
-      this.prisma.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } }),
-      this.prisma.notification.create({ data: { projectId, text: pendingDecisionNotice(d.title), color: '#C08A2D', time: 'just now' } }),
-      recordAudit(this.prisma, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId }),
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.decision.update({ where: { id: decisionId }, data: { publishedAt: new Date() } });
+      await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } });
+      await tx.notification.create({ data: { projectId, text: pendingDecisionNotice(d.title), color: '#C08A2D', time: 'just now' } });
+      await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
+      await emitEvent(tx, { projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title } });
+    });
     // now it's live — surface it on the client's side, exactly like a one-step issue
     this.realtime.notifyChanged(projectId, `New decision awaiting your approval: ${d.title}`, ['client']);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -169,6 +172,7 @@ export class DecisionsService {
       });
       await tx.notification.create({ data: { projectId, text: announce, color: '#3F7A54', time: 'just now' } });
       await recordAudit(tx, { projectId, actor, action: 'decision.approve', entity: 'Decision', entityId: decisionId });
+      await emitEvent(tx, { projectId, actor, eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId, payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) } });
     });
 
     // the decision is locked; PMC/contractor/engineer act on it — told truthfully by whom
@@ -199,6 +203,7 @@ export class DecisionsService {
         });
         await tx.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: input } });
         await recordAudit(tx, { projectId, actor, action: 'decision.change', entity: 'Decision', entityId: decisionId });
+        await emitEvent(tx, { projectId, actor, eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId, payload: { reason: input.reason, ...(input.costImpact !== undefined ? { costImpact: input.costImpact } : {}), ...(input.timeImpactDays !== undefined ? { timeImpactDays: input.timeImpactDays } : {}) } });
       });
     } catch (e) {
       // the one-open-per-decision partial unique index fired — a concurrent request won
@@ -243,6 +248,7 @@ export class DecisionsService {
       if (closed.count !== 1) throw new ConflictException('The change request changed while withdrawing — reload and retry');
       await tx.decisionEvent.create({ data: { decisionId, type: 'change_withdrawn', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole } });
       await recordAudit(tx, { projectId, actor, action: 'decision.change_withdraw', entity: 'Decision', entityId: decisionId });
+      await emitEvent(tx, { projectId, actor, eventType: 'decision.change_withdrawn', entityType: 'Decision', entityId: decisionId });
     });
 
     this.realtime.notifyChanged(projectId);

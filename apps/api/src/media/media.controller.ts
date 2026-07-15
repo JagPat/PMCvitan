@@ -25,7 +25,7 @@ export class MediaController {
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(createMediaSchema)) body: CreateMediaInput,
   ) {
-    return this.media.create(projectId, user.sub, body);
+    return this.media.create(projectId, user, body);
   }
 
   /** Re-file a photo onto a location-tree node (or null to unfile). PMC or site engineer —
@@ -69,7 +69,7 @@ export class MediaController {
   @UseGuards(JwtGuard, RolesGuard)
   @RolesFor('media.delete')
   async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean }> {
-    const ok = await this.media.remove(id, user.projectId);
+    const ok = await this.media.remove(id, user);
     if (!ok) throw new NotFoundException('Media not found');
     return { ok: true };
   }

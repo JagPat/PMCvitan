@@ -67,7 +67,9 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
       const m = members.find((x) => x.projectId === projectId && x.userId === userId);
       return m ? [{ status: m.status, role: m.role }] : [];
     }),
-    project: { findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata' })) },
+    project: { findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', orgId: 'org-test' })) },
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     notification: { create: vi.fn(async () => ({})) },
     auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
@@ -119,7 +121,9 @@ describe('InspectionsService.create — location spine (nodeId)', () => {
       auditLog: { create: vi.fn(async () => ({})) },
       projectNode: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null) },
       activity: { findFirst: vi.fn(async () => null) },
-      project: { findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })) },
+      project: { findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z'), orgId: 'org-test' })) },
+      projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+      domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
       // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
       $executeRaw: vi.fn(async () => 1),
       $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>

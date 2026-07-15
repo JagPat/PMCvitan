@@ -3,6 +3,8 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import type { AddMemberInput, UpdateMemberInput } from '../contracts';
+import { resolveActor } from '../common/actor';
+import { emitEvent } from '../platform/events';
 
 export interface MemberDto {
   userId: string;
@@ -80,15 +82,18 @@ export class MembersService {
       user = await this.prisma.user.create({ data: { projectId, role: input.role, name: input.name, email, phone } });
     }
 
+    const actor = await resolveActor(this.prisma, requester);
     // (re)activating a member can shrink a frozen distribution's outstanding set —
     // a readiness write (gate finding 1), serialized against start()
     const membership = await this.prisma.$transaction(async (tx) => {
       await lockProjectReadiness(tx, projectId);
-      return tx.membership.upsert({
+      const m = await tx.membership.upsert({
         where: { projectId_userId: { projectId, userId: user.id } },
         update: { role: input.role, discipline, status: 'active' },
         create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
       });
+      await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role } });
+      return m;
     });
     return { userId: user.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }
@@ -97,9 +102,18 @@ export class MembersService {
     await this.assertCanManage(projectId, requester);
     const existing = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { user: true } });
     if (!existing) throw new NotFoundException('Member not found on this project');
-    const membership = await this.prisma.membership.update({
-      where: { projectId_userId: { projectId, userId } },
-      data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
+    const actor = await resolveActor(this.prisma, requester);
+    const membership = await this.prisma.$transaction(async (tx) => {
+      const m = await tx.membership.update({
+        where: { projectId_userId: { projectId, userId } },
+        data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
+      });
+      await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role } });
+      // a consultant's discipline moving is its own fact
+      if ((existing.discipline ?? null) !== (m.discipline ?? null)) {
+        await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: m.discipline ? { discipline: m.discipline } : undefined });
+      }
+      return m;
     });
     return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
   }
@@ -109,11 +123,13 @@ export class MembersService {
     if (userId === requester.sub) throw new BadRequestException('You cannot remove yourself');
     const existing = await this.prisma.membership.findUnique({ where: { projectId_userId: { projectId, userId } } });
     if (!existing) throw new NotFoundException('Member not found on this project');
+    const actor = await resolveActor(this.prisma, requester);
     // removal changes the active set behind the drawing gate — a readiness write
     // (gate finding 1), serialized against start()
     await this.prisma.$transaction(async (tx) => {
       await lockProjectReadiness(tx, projectId);
       await tx.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { status: 'removed' } });
+      await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId });
     });
     return { ok: true };
   }

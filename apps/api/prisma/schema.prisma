@@ -77,12 +77,64 @@ model Project {
   drawings      Drawing[]
   phases        Phase[]
   gateOverrides GateOverride[]
-  org           Org?           @relation(fields: [orgId], references: [id])
-  orgId         String?
+  // Tenant — NON-NULL since Phase 2 Task 4 (the event envelope's composite tenant key
+  // (organizationId, projectId) references Project(orgId, id); a project cannot exist
+  // without an org). Legacy null-org projects are backfilled by the migration's diagnostic,
+  // which ABORTS rather than guess a tenant. @@unique([orgId, id]) is added in raw SQL.
+  org           Org            @relation(fields: [orgId], references: [id])
+  orgId         String
   memberships   Membership[]
   companies     ProjectCompany[]
   nodes         ProjectNode[]
   siteMaterials SiteMaterial[]
+  eventStream   ProjectEventStream?
+  domainEvents  DomainEvent[]
+
+  // Composite identity the DomainEvent tenant FK references (Phase 2 Task 4) — proves an
+  // event's (organizationId, projectId) is the project's REAL org, so org cannot be forged.
+  @@unique([orgId, id])
+}
+
+// Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
+// (created inside the project-creation transaction; backfilled for legacy projects).
+// `emit()` locks this row (SELECT … FOR UPDATE via an atomic increment) and assigns the
+// gap-safe `streamPosition` INSIDE the owning mutation transaction, so two concurrent
+// commits on one project can never collide or skip a position.
+model ProjectEventStream {
+  projectId    String  @id
+  nextPosition BigInt  @default(0)
+  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+// Phase 2 Task 4 — the append-only domain-event store. Ordering is (projectId, streamPosition),
+// NEVER occurredAt (display/audit only). The composite tenant FK (organizationId, projectId) ->
+// Project(orgId, id), the attribution truth-table CHECK, and the BEFORE UPDATE OR DELETE
+// append-only trigger are all added in raw SQL by 20261015000000_phase2_event_envelope
+// (Prisma cannot express them). See packages/shared/src/platform/events.ts for the envelope.
+model DomainEvent {
+  eventId         String   @id @default(uuid())
+  eventType       String
+  payloadVersion  Int      @default(1)
+  organizationId  String
+  projectId       String
+  streamPosition  BigInt
+  siteId          String?
+  actorId         String?
+  actorKind       String // 'human' | 'system'
+  systemActor     String? // NON-NULL iff actorKind='system' (a named constant system actor)
+  entityType      String
+  entityId        String
+  occurredAt      DateTime @default(now()) // DISPLAY/AUDIT ONLY — never an ordering key
+  correlationId   String?
+  causedByEventId String?
+  payload         Json?
+  // Composite tenant FK → Project(orgId, id): a forged organizationId (not the project's own
+  // org) is rejected by the DB. RESTRICT — an append-only event outlives soft-deletes.
+  tenant          Project  @relation(fields: [organizationId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([projectId, streamPosition])
+  @@index([projectId, streamPosition])
+  @@index([eventType])
 }
 
 // A firm/consultant associated with a project — the client company, the main

@@ -1,0 +1,134 @@
+/**
+ * Phase 2 Task 4 — the shared DomainEvent envelope + catalog.
+ *
+ * Every consequential state change appends ONE immutable, tenant-consistent, totally
+ * ordered domain event inside its owning mutation transaction. This is the canonical
+ * envelope shape the API (which writes it) and future consumers/projections (which read
+ * it) agree on.
+ *
+ * Ordering is a **gap-safe per-project stream position** (`projectId` + `streamPosition`),
+ * assigned by locking + incrementing the project's `ProjectEventStream` counter inside the
+ * same transaction. `occurredAt` is DISPLAY/AUDIT ONLY — never an ordering key or a
+ * checkpoint (equal timestamps still get distinct positions; a transaction that started
+ * later but committed earlier still gets a later position and is never skipped).
+ */
+
+/** A change is attributed to a real person or a named system process — the same
+ *  {@link Actor} kind the audit kernel resolves in Task 3. */
+export type ActorKind = 'human' | 'system';
+
+/**
+ * The full Task-1 event vocabulary (`docs/reviews/phase2-projection-matrix.md` §0). The
+ * `eventType` column stores the base name; the schema version is the separate integer
+ * `payloadVersion` column (all `@1` today). This is the PROJECT-SCOPED store — every event
+ * carries a non-null `projectId` and orders in that project's stream. Three groups of Task-1
+ * vocabulary are therefore intentionally absent:
+ *   - `activity.readiness_changed` — readiness is DERIVED at read time from explicit links;
+ *     emitting it would contradict the Phase 1 readiness architecture.
+ *   - `org.updated` — no org-update mutation exists yet.
+ *   - `org.created`, `orgMembership.added|role_changed|removed` — ORG-scoped, with no single
+ *     project to order under; a per-org event stream is a separate future concern, out of
+ *     scope for this project-scoped store (Task 4).
+ */
+export const DOMAIN_EVENT_TYPES = [
+  // decisions
+  'decision.drafted',
+  'decision.published',
+  'decision.approved',
+  'decision.reapproved',
+  'decision.change_requested',
+  'decision.change_withdrawn',
+  // activities
+  'activity.created',
+  'activity.updated',
+  'activity.deleted',
+  'activity.started',
+  'activity.completion_requested',
+  'activity.override_granted',
+  'activity.override_revoked',
+  'activity.signed_off',
+  'activity.signoff_rejected',
+  // phases
+  'phase.created',
+  'phase.removed',
+  // inspections
+  'inspection.created',
+  'inspection.submitted',
+  'inspection.approved',
+  'inspection.rejected',
+  'inspection.reinspection_created',
+  // drawings
+  'drawing.issued',
+  'drawing.revised',
+  'drawing.recipients_frozen',
+  'drawing.published',
+  'drawing.acknowledged',
+  'drawing.refiled',
+  'drawing.removed',
+  // daily-log
+  'dailylog.started',
+  'dailylog.submitted',
+  'material.added',
+  'material.mismatch_flagged',
+  // nodes (location spine)
+  'node.created',
+  'node.published',
+  'node.renamed',
+  'node.moved',
+  'node.removed',
+  // media
+  'media.uploaded',
+  'media.refiled',
+  'media.removed',
+  // project lifecycle
+  'project.created',
+  'project.updated',
+  'project.archived',
+  'project.restored',
+  // project membership
+  'membership.added',
+  'membership.role_changed',
+  'membership.discipline_changed',
+  'membership.removed',
+] as const;
+
+export type DomainEventType = (typeof DOMAIN_EVENT_TYPES)[number];
+
+/**
+ * The persisted envelope. `streamPosition` is a per-project `BIGINT`; it is modelled as a JS
+ * number here because a single project's lifetime event count never approaches 2^53.
+ */
+export interface DomainEventEnvelope {
+  /** UUID primary key, assigned by the writer. */
+  eventId: string;
+  /** e.g. `decision.approved`, `activity.started` — one of {@link DOMAIN_EVENT_TYPES}. */
+  eventType: string;
+  /** Schema version of `payload`, so a consumer can migrate an old shape. */
+  payloadVersion: number;
+  /** Tenant — ALWAYS non-null. A composite FK ties `(organizationId, projectId)` to the real org. */
+  organizationId: string;
+  /** The project (site) the event belongs to; the ordering scope. */
+  projectId: string;
+  /** Gap-safe position within the project's stream. Ordering key — NEVER `occurredAt`. */
+  streamPosition: number;
+  /** Optional location (ProjectNode) the change happened at; null when not location-bound. */
+  siteId: string | null;
+  /** The real user id for a `human` actor; null for `system` (which names `systemActor`). */
+  actorId: string | null;
+  /** Whether a person or a named system process caused this. */
+  actorKind: ActorKind;
+  /** The named constant system actor (e.g. `system:migrator`) — non-null iff `actorKind='system'`. */
+  systemActor: string | null;
+  /** The domain entity type, e.g. `Decision`, `Activity`, `Inspection`. */
+  entityType: string;
+  /** The domain entity id. */
+  entityId: string;
+  /** Human-facing timestamp — DISPLAY/AUDIT ONLY, never an ordering key. ISO-8601 string. */
+  occurredAt: string;
+  /** Correlates events produced by one logical operation across entities. */
+  correlationId: string | null;
+  /** The event that directly caused this one, for causal chains. */
+  causedByEventId: string | null;
+  /** The event-type-specific body. */
+  payload: unknown;
+}

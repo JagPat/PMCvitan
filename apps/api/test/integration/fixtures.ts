@@ -58,6 +58,12 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
   await prisma.orgMembership.create({ data: { orgId: orgA.id, userId: ownerUser.id, role: 'owner' } });
 
   const cleanup = async (): Promise<void> => {
+    // DomainEvent is append-only (a BEFORE UPDATE OR DELETE trigger blocks row deletes) and its
+    // tenant FK is ON DELETE RESTRICT, so a project carrying events cannot be deleted until its
+    // events are cleared. TRUNCATE fires no row trigger, so it is the sanctioned reset for the
+    // disposable test DB (the suites run serially and share one database). Production never does
+    // this — events are immutable there. ProjectEventStream cascades with the project delete.
+    await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent"');
     // reverse foreign-key order, one transaction — a failed test never strands rows
     await prisma.$transaction([
       prisma.securityAuditEvent.deleteMany({ where: { targetUserId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),

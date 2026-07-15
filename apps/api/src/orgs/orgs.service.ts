@@ -6,6 +6,9 @@ import { addCivilDays, fromIsoCivilDate, toIsoCivilDate } from '../common/civil-
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
 import { lockUserCredential } from '../common/credential-lock';
+import { resolveActor } from '../common/actor';
+import { emitEvent } from '../platform/events';
+import type { AuthUser } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 
@@ -267,26 +270,35 @@ export class OrgsService {
     // its time zone; templates/copies convert their relative offsets against it.
     const timeZone = input.timeZone ?? 'Asia/Kolkata';
     const scheduleStartDate = input.scheduleStartDate ?? this.clock.today(timeZone);
-    const project = await this.prisma.project.create({
-      data: {
-        id,
-        orgId,
-        name: input.name,
-        short: input.short,
-        descriptor: input.descriptor,
-        stage: input.stage,
-        siteCode: input.siteCode,
-        projStart: input.projStart,
-        projEnd: input.projEnd,
-        scheduleStartDate: fromIsoCivilDate(scheduleStartDate),
-        timeZone,
-        elapsedPct: 0,
-        todayDay: 0,
-        milestonePct: 0,
-      },
+    const actor = await resolveActor(this.prisma, { sub: userId, role, projectId: id } as unknown as AuthUser);
+    // The project row, its PMC membership and the project.created event commit together — the
+    // AFTER INSERT trigger also creates the ProjectEventStream row in this same transaction, so
+    // a project can never exist without its tenant, its PMC or its event counter. (Copying
+    // structure / instantiating modules keep their own transactions after this core commit.)
+    const project = await this.prisma.$transaction(async (tx) => {
+      const p = await tx.project.create({
+        data: {
+          id,
+          orgId,
+          name: input.name,
+          short: input.short,
+          descriptor: input.descriptor,
+          stage: input.stage,
+          siteCode: input.siteCode,
+          projStart: input.projStart,
+          projEnd: input.projEnd,
+          scheduleStartDate: fromIsoCivilDate(scheduleStartDate),
+          timeZone,
+          elapsedPct: 0,
+          todayDay: 0,
+          milestonePct: 0,
+        },
+      });
+      // the creator runs the project as its PMC
+      await tx.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
+      await emitEvent(tx, { projectId: id, actor, eventType: 'project.created', entityType: 'Project', entityId: id, payload: { name: input.name } });
+      return p;
     });
-    // the creator runs the project as its PMC
-    await this.prisma.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
     // Templates Slice 1: optionally start from another project's structure instead of a blank slate
     if (input.structureFrom) await this.copyStructure(orgId, input.structureFrom, id, userId);
     // Templates Slice 2+3: compose from org modules — a named preset expands first, then any
@@ -838,7 +850,12 @@ export class OrgsService {
     if (!allowed) throw new ForbiddenException('Only the project PMC or an org admin can edit a project');
     const project = await this.prisma.project.findUnique({ where: { id: pid }, select: { orgId: true } });
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
-    const updated = await this.prisma.project.update({ where: { id: pid }, data: input });
+    const actor = await resolveActor(this.prisma, { sub: userId, role: orgRole ?? 'pmc', projectId: pid } as unknown as AuthUser);
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.project.update({ where: { id: pid }, data: input });
+      await emitEvent(tx, { projectId: pid, actor, eventType: 'project.updated', entityType: 'Project', entityId: pid });
+      return u;
+    });
     return { id: updated.id, name: updated.name, short: updated.short };
   }
 
@@ -851,7 +868,11 @@ export class OrgsService {
     }
     const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
-    await this.prisma.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
+    const actor = await resolveActor(this.prisma, { sub: userId, role, projectId } as unknown as AuthUser);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
+      await emitEvent(tx, { projectId, actor, eventType: 'project.archived', entityType: 'Project', entityId: projectId });
+    });
     return { ok: true };
   }
 
@@ -863,7 +884,11 @@ export class OrgsService {
     }
     const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { orgId: true } });
     if (!project || project.orgId !== orgId) throw new NotFoundException('Project not found in this org');
-    await this.prisma.project.update({ where: { id: projectId }, data: { archivedAt: null } });
+    const actor = await resolveActor(this.prisma, { sub: userId, role, projectId } as unknown as AuthUser);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.project.update({ where: { id: projectId }, data: { archivedAt: null } });
+      await emitEvent(tx, { projectId, actor, eventType: 'project.restored', entityType: 'Project', entityId: projectId });
+    });
     return { ok: true };
   }
 
