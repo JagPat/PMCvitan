@@ -208,44 +208,46 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
 
   // ─── activities (audit split: create/update/remove/start BARE; complete/override attributed) ──
   describe('activities', () => {
-    it('create: activity.create(bare role) + push[engineer,contractor] + signal, no notification', async () => {
+    it('create: activity.create(attributed — Task 3) + push[engineer,contractor] + signal, no notification', async () => {
       const before = await notifCount();
       const res = await post(`/projects/${pid}/activities`, { name: 'Wall', zone: 'GF', plannedStart: 0, plannedEnd: 5 });
       expect(res.status).toBeLessThan(300);
       const audit = await lastAudit('activity.create');
-      expect(audit?.actorId, 'activity.create records NO actorId — the gap Task 3 closes').toBeNull();
-      expect(audit?.actor).toBe('pmc');
+      // Task 3 CLOSED the attribution gap: this formerly-bare site now carries a real actorId
+      // (routed through recordAudit), and the role is preserved in actorRole.
+      expect(audit?.actorId, 'Task 3: activity.create is attributed to the real user').toBe(uid);
+      expect(audit?.actorRole).toBe('pmc');
       expect(await notifCount()).toBe(before);
       expectPush('Schedule updated: Wall planned', ['engineer', 'contractor']);
       expectSignal();
     });
 
-    it('update: activity.update(bare role) + signal, no push', async () => {
+    it('update: activity.update(attributed — Task 3) + signal, no push', async () => {
       const a = await t.prisma.activity.findFirstOrThrow({ where: { projectId: pid, name: 'Wall' } });
       const res = await patch(`/projects/${pid}/activities/${a.id}`, { name: 'Wall B' });
       expect(res.status).toBeLessThan(300);
-      expect((await lastAudit('activity.update'))?.actorId).toBeNull();
+      expect((await lastAudit('activity.update'))?.actorId).toBe(uid);
       expectNoPush();
       expectSignal();
     });
 
-    it('remove: activity.delete(bare role) + CROSS-MODULE drawing.activityId→null + signal, no push', async () => {
+    it('remove: activity.delete(attributed — Task 3) + CROSS-MODULE drawing.activityId→null + signal, no push', async () => {
       const a = await t.prisma.activity.create({ data: { id: sk('p2c-act-rm'), projectId: pid, name: 'Temp', zone: 'GF', status: 'not_started', plannedStart: 0, plannedEnd: 1 } });
       await t.prisma.drawing.create({ data: { id: sk('p2c-dwg-link'), projectId: pid, number: 'A-1', title: 'Plan', discipline: 'arch', activityId: a.id, publishedAt: new Date(), authorId: uid } });
       const res = await del(`/projects/${pid}/activities/${a.id}`);
       expect(res.status).toBeLessThan(300);
-      expect((await lastAudit('activity.delete'))?.actorId).toBeNull();
+      expect((await lastAudit('activity.delete'))?.actorId).toBe(uid);
       expect((await t.prisma.drawing.findUniqueOrThrow({ where: { id: sk('p2c-dwg-link') } })).activityId, 'the linked drawing was unlinked (cross-module)').toBeNull();
       expectNoPush();
       expectSignal();
     });
 
-    it('start: activity.start(bare role) → in_progress + signal, no push (all gates na)', async () => {
+    it('start: activity.start(attributed — Task 3) → in_progress + signal, no push (all gates na)', async () => {
       await t.prisma.activity.create({ data: { id: sk('p2c-act-start'), projectId: pid, name: 'Ready', zone: 'GF', status: 'not_started', plannedStart: 0, plannedEnd: 3, gateMaterial: 'na', gateTeam: 'na' } });
       const res = await post(`/projects/${pid}/activities/${sk('p2c-act-start')}/start`);
       expect(res.status).toBeLessThan(300);
       expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: sk('p2c-act-start') } })).status).toBe('in_progress');
-      expect((await lastAudit('activity.start'))?.actorId).toBeNull();
+      expect((await lastAudit('activity.start'))?.actorId).toBe(uid);
       expectNoPush();
       expectSignal();
     });
@@ -295,22 +297,22 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     });
   });
 
-  // ─── phases (audit BARE role; remove writes CROSS-MODULE Activity.phaseId) ───
+  // ─── phases (audit attributed via recordAudit — Task 3; remove writes CROSS-MODULE Activity.phaseId) ───
   describe('phases', () => {
-    it('create: phase.create(bare role) + signal, no push', async () => {
+    it('create: phase.create(attributed — Task 3) + signal, no push', async () => {
       const res = await post(`/projects/${pid}/phases`, { name: 'Foundation', plannedStart: 0, plannedEnd: 10 });
       expect(res.status).toBeLessThan(300);
-      expect((await lastAudit('phase.create'))?.actorId).toBeNull();
+      expect((await lastAudit('phase.create'))?.actorId).toBe(uid);
       expectNoPush();
       expectSignal();
     });
 
-    it('remove: phase.delete(bare role) + CROSS-MODULE activity.phaseId→null + signal, no push', async () => {
+    it('remove: phase.delete(attributed — Task 3) + CROSS-MODULE activity.phaseId→null + signal, no push', async () => {
       const ph = await t.prisma.phase.create({ data: { id: sk('p2c-phase-rm'), projectId: pid, name: 'Temp phase', order: 9 } });
       await t.prisma.activity.create({ data: { id: sk('p2c-act-ph'), projectId: pid, name: 'Phased', zone: 'GF', status: 'not_started', plannedStart: 0, plannedEnd: 1, phaseId: ph.id } });
       const res = await del(`/projects/${pid}/phases/${ph.id}`);
       expect(res.status).toBeLessThan(300);
-      expect((await lastAudit('phase.delete'))?.actorId).toBeNull();
+      expect((await lastAudit('phase.delete'))?.actorId).toBe(uid);
       expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: sk('p2c-act-ph') } })).phaseId, 'phase delete nulls Activity.phaseId (cross-module)').toBeNull();
       expectNoPush();
       expectSignal();
@@ -461,25 +463,25 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     });
   });
 
-  // ─── daily-log (audit BARE role) ────────────────────────────────────────────
+  // ─── daily-log (audit attributed via recordAudit — Task 3) ────────────────────────────────────────────
   describe('daily-log', () => {
-    it('start: dailylog.start(bare role) + signal, no push', async () => {
+    it('start: dailylog.start(attributed — Task 3) + signal, no push', async () => {
       const res = await post(`/projects/${pid}/daily-log/start`);
       expect(res.status).toBeLessThan(300);
-      expect((await lastAudit('dailylog.start'))?.actorId).toBeNull();
+      expect((await lastAudit('dailylog.start'))?.actorId).toBe(uid);
       expectNoPush();
       expectSignal();
     });
 
-    it('addMaterial: material.add(bare role) + signal, no push', async () => {
+    it('addMaterial: material.add(attributed — Task 3) + signal, no push', async () => {
       const res = await post(`/projects/${pid}/daily-log/materials`, { name: 'Cement', qty: '10 bags', zone: 'GF' });
       expect(res.status).toBeLessThan(300);
-      expect((await lastAudit('material.add'))?.actorId).toBeNull();
+      expect((await lastAudit('material.add'))?.actorId).toBe(uid);
       expectNoPush();
       expectSignal();
     });
 
-    it('flagMismatch: material.mismatch(bare role) + 1 notif + CROSS-MODULE activity gate/block + push[pmc,contractor]', async () => {
+    it('flagMismatch: material.mismatch(attributed — Task 3) + 1 notif + CROSS-MODULE activity gate/block + push[pmc,contractor]', async () => {
       const dec = await t.prisma.decision.create({ data: { id: sk('p2c-dec-mm'), projectId: pid, title: 'Tile', room: 'GF', photoSwatch: 'marble', status: 'approved', publishedAt: new Date(), authorId: uid } });
       await t.prisma.activity.create({ data: { id: sk('p2c-act-mm'), projectId: pid, name: 'Tiling', zone: 'GF', status: 'in_progress', plannedStart: 0, plannedEnd: 3, decisionId: dec.id } });
       const log = await t.prisma.dailyLog.findFirstOrThrow({ where: { projectId: pid } });
@@ -487,7 +489,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       const before = await notifCount();
       const res = await post(`/projects/${pid}/daily-log/flag-mismatch`, { decisionId: dec.id });
       expect(res.status).toBeLessThan(300);
-      expect((await lastAudit('material.mismatch'))?.actorId).toBeNull();
+      expect((await lastAudit('material.mismatch'))?.actorId).toBe(uid);
       expect(await notifCount()).toBe(before + 1);
       const act = await t.prisma.activity.findUniqueOrThrow({ where: { id: sk('p2c-act-mm') } });
       expect(act.gateMaterial, 'mismatch fails the material gate (cross-module)').toBe('fail');
@@ -496,10 +498,10 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       expectSignal();
     });
 
-    it('submit: dailylog.submit(bare role) + signal, no push', async () => {
+    it('submit: dailylog.submit(attributed — Task 3) + signal, no push', async () => {
       const res = await post(`/projects/${pid}/daily-log/submit`, { checkedIn: true, checkinTime: '09:00', progress: 2, crew: [] });
       expect(res.status).toBeLessThan(300);
-      expect((await lastAudit('dailylog.submit'))?.actorId).toBeNull();
+      expect((await lastAudit('dailylog.submit'))?.actorId).toBe(uid);
       expectNoPush();
       expectSignal();
     });

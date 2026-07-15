@@ -18,6 +18,7 @@ describe('DailyLogService — latest-log selection', () => {
     // flagMismatch now reads INSIDE its locked transaction (gate round-2 finding 1):
     // the interactive form passes the stub itself; the advisory lock is a no-op here
     const prisma: Record<string, unknown> = {
+      user: { findUnique: vi.fn(async () => ({ name: 'Ravi (Engineer)' })) },
       dailyLog: { findFirst },
       $executeRaw: vi.fn(async () => 1),
       $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>

@@ -15,6 +15,7 @@ import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
 import type { CreateInspectionInput, DecideReviewInput, SubmitInspectionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
+import { recordAudit } from '../platform/audit';
 
 /** Corrective work is executed by these roles — a reinspection assignee must hold one
  *  as an ACTIVE membership (a PMC may assign themselves EXPLICITLY; see decide()). */
@@ -55,7 +56,7 @@ export class InspectionsService {
         await tx.inspectionItem.create({ data: { inspectionId: id, name, order: i, photos: 0, note: '' } });
       }
       await tx.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone}`, color: '#C08A2D', time: 'just now' } });
-      await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'inspection.create', entity: 'Inspection', entityId: id } });
+      await recordAudit(tx, { projectId, actor, action: 'inspection.create', entity: 'Inspection', entityId: id });
     });
     // the engineer fills it in the field
     this.realtime.notifyChanged(projectId, `New checklist: ${input.title} — ${input.zone}`, ['engineer']);
@@ -118,7 +119,7 @@ export class InspectionsService {
         data: { submitted: true, by: actor.actorName, submittedById: actor.actorId, submittedByName: actor.actorName },
       });
       if (count === 0) throw new ConflictException('The inspection changed while submitting — reload and retry');
-      await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'inspection.submit', entity: 'Inspection', entityId: inspectionId } });
+      await recordAudit(tx, { projectId, actor, action: 'inspection.submit', entity: 'Inspection', entityId: inspectionId });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -177,10 +178,10 @@ export class InspectionsService {
             if (row?.status !== 'done') throw new ConflictException('The activity changed while signing off — reload and retry');
             if (!row.doneAt) await tx.activity.update({ where: { id: activity.id }, data: { doneAt: fromIsoCivilDate(today) } });
           }
-          await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.signoff', entity: 'Activity', entityId: activity.id, payload: { closingInspectionId: inspectionId } } });
+          await recordAudit(tx, { projectId, actor, action: 'activity.signoff', entity: 'Activity', entityId: activity.id, payload: { closingInspectionId: inspectionId } });
         }
         await tx.notification.create({ data: { projectId, text: pushBody, color: '#3F7A54', time: 'just now' } });
-        await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'inspection.approve', entity: 'Inspection', entityId: inspectionId } });
+        await recordAudit(tx, { projectId, actor, action: 'inspection.approve', entity: 'Inspection', entityId: inspectionId });
       });
     } else {
       // gate finding 3: rejection names exact ROWS. An id that matches none of this
@@ -284,10 +285,10 @@ export class InspectionsService {
               data: { status: 'in_progress', doneAt: null },
             });
             if (revert.count === 0) throw new ConflictException('The activity changed while rejecting the sign-off — reload and retry');
-            await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.signoff_rejected', entity: 'Activity', entityId: activity.id, payload: { closingInspectionId: inspectionId, reinspectionId: childId, assigneeId } } });
+            await recordAudit(tx, { projectId, actor, action: 'activity.signoff_rejected', entity: 'Activity', entityId: activity.id, payload: { closingInspectionId: inspectionId, reinspectionId: childId, assigneeId } });
           }
           await tx.notification.create({ data: { projectId, text: pushBody, color: '#B23A34', time: 'just now' } });
-          await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'inspection.reject', entity: 'Inspection', entityId: inspectionId, payload: { reinspectionId: childId, assigneeId, dueDate: dueIso } } });
+          await recordAudit(tx, { projectId, actor, action: 'inspection.reject', entity: 'Inspection', entityId: inspectionId, payload: { reinspectionId: childId, assigneeId, dueDate: dueIso } });
         });
       } catch (e) {
         // the one-reinspection-child index fired — a concurrent reject already created it

@@ -10,6 +10,7 @@ const user: AuthUser = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as AuthUse
 function make(anchor: string | null) {
   const create = vi.fn(async ({ data }: { data: unknown }) => data);
   const prisma = {
+    user: { findUnique: vi.fn(async () => ({ name: 'Priya (PMC)' })) },
     project: { findUniqueOrThrow: vi.fn(async () => ({ scheduleStartDate: anchor ? new Date(`${anchor}T00:00:00.000Z`) : null })) },
     phase: { aggregate: vi.fn(async () => ({ _max: { order: 2 } })), create },
     auditLog: { create: vi.fn(async () => ({})) },
