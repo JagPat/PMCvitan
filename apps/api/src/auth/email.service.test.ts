@@ -43,4 +43,10 @@ describe('EmailService (dev stub — no SMTP)', () => {
       process.env.NODE_ENV = 'test';
     }
   });
+
+  it('does not place a supplied password-credential code in the legacy OTP store', async () => {
+    const svc = new EmailService();
+    await expect(svc.sendPasswordCredentialCode('member@example.com', '654321')).resolves.toEqual({ live: false });
+    await expect(svc.verifyOtp('member@example.com', '654321')).resolves.toBe(false);
+  });
 });

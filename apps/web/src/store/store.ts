@@ -332,6 +332,7 @@ export interface AppActions {
   saveProjectAsTemplate: (name: string) => void;
   addOrgMember: (orgId: string, input: AddOrgMemberInput) => void;
   updateOrgMemberRole: (orgId: string, userId: string, role: OrgRole) => void;
+  correctInvitationEmail: (orgId: string, userId: string, email: string) => void;
   removeOrgMember: (orgId: string, userId: string) => void;
   // schedule
   startActivity: (id: string) => void;
@@ -356,6 +357,10 @@ export interface AppActions {
   accGoLogin: () => void;
   login: (email: string, password: string) => void;
   accSetEmail: (v: string) => void;
+  accGoPasswordSetup: () => void;
+  requestPasswordSetup: () => void;
+  verifyPasswordSetup: () => void;
+  completePasswordSetup: (password: string, confirmation: string) => void;
   accGoEmailOtp: () => void;
   requestEmailOtp: () => void;
   accSetCode: (v: string) => void;
@@ -391,8 +396,22 @@ export type Store = AppState & AppActions;
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** A pristine access-flow state (used to init and to reset after sign-out). */
-function freshAccess(): AccessState {
-  return { step: 'who', who: null, trade: null, phone: '', email: '', otp: '', worker: null, sending: false, error: null, devCode: null };
+function freshAccess(generation = 0): AccessState {
+  return {
+    generation,
+    step: 'who',
+    who: null,
+    trade: null,
+    phone: '',
+    email: '',
+    otp: '',
+    worker: null,
+    sending: false,
+    error: null,
+    devCode: null,
+    passwordRequestId: null,
+    passwordSetupToken: null,
+  };
 }
 
 /** A fresh copy of the seeded initial state (deep-cloned so resets never share references). */
@@ -1014,7 +1033,7 @@ export const useStore = create<Store>()(
         s.screen = opts?.targetScreen && allowed.includes(opts.targetScreen) ? opts.targetScreen : allowed[0];
         s.sessionToken = res.token;
         s.userName = res.name ?? null;
-        s.access = freshAccess();
+        s.access = freshAccess(s.access.generation + 1);
         // EVERY auth result is a new session identity, so it always starts a new
         // scope generation — a reply issued FOR the previous identity (even on the
         // SAME project: a different user/role sees different records) can never
@@ -1052,7 +1071,7 @@ export const useStore = create<Store>()(
       set((s) => {
         s.role = role;
         s.screen = screensFor(role)[0].key;
-        s.access = freshAccess();
+        s.access = freshAccess(s.access.generation + 1);
       });
       get().flash('Signed in as ' + role + ' (demo).');
     };
@@ -1113,7 +1132,7 @@ export const useStore = create<Store>()(
       set((s) => {
         s.sessionToken = null;
         s.userName = null;
-        s.access = freshAccess();
+        s.access = freshAccess(s.access.generation + 1);
         s.role = 'client';
         s.screen = screensFor('client')[0].key;
         s.notifOpen = false;
@@ -2211,6 +2230,14 @@ export const useStore = create<Store>()(
         .then(() => { get().loadOrgMembers(orgId); get().flash('Org role changed to ' + role + '.'); })
         .catch(() => get().flash('Could not change the role — the org must keep at least one owner.'));
     },
+    correctInvitationEmail: (orgId, userId, email) => {
+      if (!gateway) return;
+      const normalized = email.trim().toLowerCase();
+      gateway
+        .correctInvitationEmail(orgId, userId, normalized)
+        .then(() => { get().loadOrgMembers(orgId); get().flash('Invitation email corrected.'); })
+        .catch(() => get().flash('Could not correct the email — it may already be active or in use.'));
+    },
     removeOrgMember: (orgId, userId) => {
       if (!gateway) return;
       gateway
@@ -2585,9 +2612,12 @@ export const useStore = create<Store>()(
       }),
     accGoLogin: () =>
       set((s) => {
+        s.access.generation += 1;
         s.access.step = 'login';
         s.access.error = null;
         s.access.sending = false;
+        s.access.passwordRequestId = null;
+        s.access.passwordSetupToken = null;
       }),
     login: (email, password) => {
       const em = email.trim().toLowerCase();
@@ -2612,14 +2642,120 @@ export const useStore = create<Store>()(
       set((s) => {
         s.role = role;
         s.screen = screensFor(role)[0].key;
-        s.access = freshAccess();
+        s.access = freshAccess(s.access.generation + 1);
       });
       get().flash('Signed in as ' + role + ' (demo).');
     },
     accSetEmail: (v) =>
       set((s) => { s.access.email = v; s.access.error = null; }),
+    accGoPasswordSetup: () =>
+      set((s) => {
+        s.access.generation += 1;
+        s.access.step = 'password-email';
+        s.access.otp = '';
+        s.access.error = null;
+        s.access.sending = false;
+        s.access.passwordRequestId = null;
+        s.access.passwordSetupToken = null;
+      }),
+    requestPasswordSetup: () => {
+      const email = get().access.email.trim().toLowerCase();
+      if (get().access.sending) return;
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        set((s) => { s.access.error = 'Enter a valid invited email address.'; });
+        return;
+      }
+      if (!gateway) {
+        set((s) => { s.access.error = 'Password setup needs the live server.'; });
+        return;
+      }
+      let generation = 0;
+      set((s) => {
+        s.access.generation += 1;
+        generation = s.access.generation;
+        s.access.sending = true;
+        s.access.error = null;
+        s.access.passwordRequestId = null;
+        s.access.passwordSetupToken = null;
+      });
+      gateway.passwordCredentialRequest(email)
+        .then((result) => {
+          if (get().access.generation !== generation) return;
+          set((s) => {
+            s.access.sending = false;
+            s.access.step = 'password-code';
+            s.access.otp = '';
+            s.access.passwordRequestId = result.requestId;
+          });
+        })
+        .catch(() => {
+          if (get().access.generation !== generation) return;
+          set((s) => { s.access.sending = false; s.access.error = 'Could not send the code. Please try again.'; });
+        });
+    },
+    verifyPasswordSetup: () => {
+      const access = get().access;
+      if (!gateway || !access.passwordRequestId || access.otp.length !== 6 || access.sending) return;
+      let generation = 0;
+      const requestId = access.passwordRequestId;
+      const code = access.otp;
+      set((s) => {
+        s.access.generation += 1;
+        generation = s.access.generation;
+        s.access.sending = true;
+        s.access.error = null;
+      });
+      gateway.passwordCredentialVerify(requestId, code)
+        .then((result) => {
+          if (get().access.generation !== generation) return;
+          set((s) => {
+            s.access.sending = false;
+            s.access.step = 'password-create';
+            s.access.otp = '';
+            s.access.passwordSetupToken = result.setupToken;
+          });
+        })
+        .catch(() => {
+          if (get().access.generation !== generation) return;
+          set((s) => { s.access.sending = false; s.access.otp = ''; s.access.error = 'Wrong or expired code. Request a new code and try again.'; });
+        });
+    },
+    completePasswordSetup: (password, confirmation) => {
+      const access = get().access;
+      if (access.sending) return;
+      if (password !== confirmation) {
+        set((s) => { s.access.error = 'Passwords do not match.'; });
+        return;
+      }
+      if (password.length < 12 || password.length > 128) {
+        set((s) => { s.access.error = 'Use a password between 12 and 128 characters.'; });
+        return;
+      }
+      if (!gateway || !access.passwordSetupToken) {
+        set((s) => { s.access.error = 'This setup link expired. Request a new code.'; });
+        return;
+      }
+      const setupToken = access.passwordSetupToken;
+      let generation = 0;
+      set((s) => {
+        s.access.generation += 1;
+        generation = s.access.generation;
+        s.access.sending = true;
+        s.access.error = null;
+      });
+      gateway.passwordCredentialComplete(setupToken, password)
+        .then((result) => {
+          if (get().access.generation !== generation) return;
+          applyAuthResult(result, { msg: 'Password saved. You are signed in.' });
+        })
+        .catch(() => {
+          if (get().access.generation !== generation) return;
+          set((s) => { s.access.sending = false; s.access.error = 'Could not save the password. Request a new code and try again.'; });
+        });
+    },
     accGoEmailOtp: () =>
       set((s) => {
+        s.access.generation += 1;
         s.access.step = 'emailentry';
         s.access.otp = '';
         s.access.error = null;
@@ -2750,7 +2886,7 @@ export const useStore = create<Store>()(
             s.screen = screensFor(role)[0].key;
             s.sessionToken = null;
             s.userName = name;
-            s.access = freshAccess();
+            s.access = freshAccess(s.access.generation + 1);
           });
           get().flash('Verified ✓ — signed in as ' + (name ?? role) + '.');
         } else {
@@ -2786,7 +2922,7 @@ export const useStore = create<Store>()(
         s.access.step = 'jobcard';
       });
     },
-    accReset: () => set((s) => { s.access = freshAccess(); }),
+    accReset: () => set((s) => { s.access = freshAccess(s.access.generation + 1); }),
     speakJob: () => {
       const langName = { en: 'English', hi: 'Hindi', gu: 'Gujarati' }[get().lang];
       get().flash('🔊 Reading the job aloud in ' + langName + '…');

@@ -98,7 +98,7 @@ export type Gate = 'ok' | 'wait' | 'fail' | 'na';
 export type ItemState = 'pass' | 'fail' | 'na' | null;
 export type InspectionResult = 'PASS' | 'FAIL';
 export type ModalType = 'approve' | 'change' | 'qr' | null;
-export type AccessStep = 'who' | 'trade' | 'phone' | 'otp' | 'login' | 'emailentry' | 'emailcode' | 'badge' | 'jobcard' | 'tradehome';
+export type AccessStep = 'who' | 'trade' | 'phone' | 'otp' | 'login' | 'password-email' | 'password-code' | 'password-create' | 'emailentry' | 'emailcode' | 'badge' | 'jobcard' | 'tradehome';
 export type AccessWho = 'team' | 'trade' | 'worker' | null;
 
 export interface DecisionOption {
@@ -321,6 +321,8 @@ export interface ProjectMember {
   discipline?: string;
   role: Role;
   status: string;
+  /** Present only when the caller may manage this project team. */
+  credentialState?: 'not_set' | 'active';
 }
 
 /** Kind of firm/consultant attached to a project. */
@@ -354,6 +356,7 @@ export interface OrgMember {
   email: string | null;
   phone: string | null;
   orgRole: OrgRole;
+  credentialState: 'not_set' | 'active';
 }
 
 // ── Drawings register (Slice 1) ──────────────────────────────────────────────
@@ -496,6 +499,8 @@ export interface Worker {
 }
 
 export interface AccessState {
+  /** Retires async replies from an older login/setup attempt. */
+  generation: number;
   step: AccessStep;
   who: AccessWho;
   trade: string | null;
@@ -509,6 +514,9 @@ export interface AccessState {
   error: string | null;
   /** dev-stub OTP hint returned by the server when no SMS provider is configured. */
   devCode: string | null;
+  /** Public request id and one-time setup token; memory-only, never persisted. */
+  passwordRequestId: string | null;
+  passwordSetupToken: string | null;
 }
 
 export interface AppNotification {

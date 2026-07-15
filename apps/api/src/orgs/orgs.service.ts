@@ -1,11 +1,12 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { CLOCK, type Clock } from '../common/clock';
 import { addCivilDays, fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
-import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
+import { lockUserCredential } from '../common/credential-lock';
+import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
 
 /** A member of an org's admin roster (owner/admin/member). */
@@ -15,6 +16,7 @@ export interface OrgMemberDto {
   email: string | null;
   phone: string | null;
   orgRole: string;
+  credentialState: 'not_set' | 'active';
 }
 
 /** A per-project monitoring rollup across every project the user can access. */
@@ -100,7 +102,7 @@ export class OrgsService {
     const role = await this.orgRole(orgId, callerId);
     if (role !== 'owner' && role !== 'admin') throw new ForbiddenException('Only an org owner or admin can view the roster');
     const rows = await this.prisma.orgMembership.findMany({ where: { orgId }, include: { user: true }, orderBy: { createdAt: 'asc' } });
-    return rows.map((m) => ({ userId: m.userId, name: m.user.name, email: m.user.email, phone: m.user.phone, orgRole: m.role }));
+    return rows.map((m) => ({ userId: m.userId, name: m.user.name, email: m.user.email, phone: m.user.phone, orgRole: m.role, credentialState: m.user.passwordHash ? 'active' : 'not_set' }));
   }
 
   /**
@@ -148,7 +150,7 @@ export class OrgsService {
       update: { role: input.role },
       create: { orgId, userId: user.id, role: input.role },
     });
-    return { userId: user.id, name: user.name, email: user.email, phone: user.phone, orgRole: membership.role };
+    return { userId: user.id, name: user.name, email: user.email, phone: user.phone, orgRole: membership.role, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }
 
   /**
@@ -163,7 +165,69 @@ export class OrgsService {
       throw new BadRequestException('The org must keep at least one owner');
     }
     const membership = await this.prisma.orgMembership.update({ where: { orgId_userId: { orgId, userId } }, data: { role: input.role } });
-    return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, orgRole: membership.role };
+    return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, orgRole: membership.role, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
+  }
+
+  /**
+   * Correct a mistyped invitation address before the identity establishes a
+   * credential. The authority, target containment, enrolled-state check, email
+   * update, outstanding-challenge revocation and audit record are one transaction.
+   */
+  async correctInvitationEmail(
+    orgId: string,
+    callerId: string,
+    userId: string,
+    input: CorrectInvitationEmailInput,
+  ): Promise<OrgMemberDto> {
+    const now = new Date();
+    const email = input.email.trim().toLowerCase();
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await lockUserCredential(tx, userId);
+        const caller = await tx.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId: callerId } } });
+        if (caller?.role !== 'owner' && caller?.role !== 'admin') {
+          throw new ForbiddenException('Only an org owner or admin can correct invitation emails');
+        }
+
+        const target = await tx.orgMembership.findUnique({
+          where: { orgId_userId: { orgId, userId } },
+          include: { user: true },
+        });
+        if (!target) throw new NotFoundException('Not a member of this org');
+        if (target.user.passwordHash || target.user.emailVerifiedAt) {
+          throw new BadRequestException('This account has already established its sign-in credential');
+        }
+
+        const user = await tx.user.update({ where: { id: userId }, data: { email } });
+        await tx.passwordCredentialChallenge.updateMany({
+          where: { userId, consumedAt: null },
+          data: { consumedAt: now },
+        });
+        await tx.securityAuditEvent.create({
+          data: {
+            action: 'auth.invitation_email_changed',
+            targetUserId: userId,
+            actorUserId: callerId,
+            actorKind: 'administrator',
+            correlationId: randomUUID(),
+            payload: { orgId },
+          },
+        });
+        return {
+          userId,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          orgRole: target.role,
+          credentialState: 'not_set',
+        };
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'P2002') {
+        throw new ConflictException('That email address cannot be used');
+      }
+      throw error;
+    }
   }
 
   /**

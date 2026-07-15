@@ -20,8 +20,8 @@ export class MembersController {
    *  anonymously-minted `worker` device token, which must never read team PII (P1-2). */
   @Get()
   @Roles('pmc', 'client', 'engineer', 'contractor', 'consultant')
-  list(@Param('projectId') projectId: string) {
-    return this.members.list(projectId);
+  list(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.members.list(projectId, user);
   }
 
   @Post()

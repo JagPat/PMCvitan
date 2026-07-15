@@ -6,6 +6,7 @@ import { AppModule } from '../../src/app.module';
 import { configureApp } from '../../src/app-setup';
 import { PrismaService } from '../../src/prisma.service';
 import type { Role } from '../../src/common/auth';
+import { EmailService } from '../../src/auth/email.service';
 
 export interface TestApp {
   app: NestExpressApplication;
@@ -22,11 +23,24 @@ export interface TestApp {
  * service) against the REAL database in DATABASE_URL, configured exactly like
  * production via the shared configureApp(). Nothing is mocked.
  */
-export async function createTestApp(): Promise<TestApp> {
+export interface TestAppOptions {
+  capturePasswordCode?: (email: string, code: string) => void;
+}
+
+export async function createTestApp(options: TestAppOptions = {}): Promise<TestApp> {
   if (!process.env.DATABASE_URL?.includes('test')) {
     throw new Error('Refusing to run integration tests: DATABASE_URL must point at a disposable *test* database');
   }
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  const builder = Test.createTestingModule({ imports: [AppModule] });
+  if (options.capturePasswordCode) {
+    const email = new EmailService();
+    email.sendPasswordCredentialCode = async (address, code) => {
+      options.capturePasswordCode!(address, code);
+      return { live: true };
+    };
+    builder.overrideProvider(EmailService).useValue(email);
+  }
+  const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app);
   await app.init();

@@ -16,6 +16,7 @@ interface FakeUser {
   email?: string | null;
   phone?: string | null;
   passwordHash?: string | null;
+  credentialVersion?: number;
 }
 
 interface FakeMembership {
@@ -123,15 +124,15 @@ describe('AuthService.login', () => {
 
   it('accepts the right password and issues a role-scoped token', async () => {
     const prisma = fakePrisma(
-      [{ id: 'u1', projectId: 'ambli', role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in', passwordHash: bcrypt.hashSync('secret', 10) }],
+      [{ id: 'u1', projectId: 'ambli', role: 'pmc', name: 'Ar. Vitan', email: 'pmc@vitan.in', passwordHash: bcrypt.hashSync('secret', 10), credentialVersion: 7 }],
       [{ projectId: 'ambli', userId: 'u1', role: 'pmc', status: 'active' }],
     );
     const { auth, jwt } = make(prisma);
     const res = await auth.login({ email: 'PMC@vitan.in', password: 'secret' });
     expect(res.role).toBe('pmc');
     expect(res.name).toBe('Ar. Vitan');
-    const decoded = jwt.verify<{ sub: string; role: string; projectId: string }>(res.token);
-    expect(decoded).toMatchObject({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
+    const decoded = jwt.verify<{ sub: string; role: string; projectId: string; credentialVersion: number }>(res.token);
+    expect(decoded).toMatchObject({ sub: 'u1', role: 'pmc', projectId: 'ambli', credentialVersion: 7 });
   });
 
   it('rejects a wrong password', async () => {
@@ -271,8 +272,9 @@ describe('AuthService.workerToken', () => {
     const { auth, jwt } = make(prisma);
     const res = await auth.workerToken({ projectId: 'ambli', name: 'Suresh', trade: 'Mason' });
     expect(res.role).toBe('worker');
-    const decoded = jwt.verify<{ sub: string; role: string; worker: boolean }>(res.token);
+    const decoded = jwt.verify<{ sub: string; role: string; worker: boolean; credentialVersion?: number }>(res.token);
     expect(decoded).toMatchObject({ role: 'worker', worker: true });
+    expect(decoded.credentialVersion).toBeUndefined();
     expect(decoded.sub).toMatch(/^worker-/);
   });
 

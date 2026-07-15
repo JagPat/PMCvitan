@@ -1,6 +1,7 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from './auth';
+import { isProduction } from '../config';
 
 /**
  * The canonical LIVE authorization for a user on a project (Phase 0 Task 4).
@@ -11,6 +12,20 @@ import type { AuthUser } from './auth';
 @Injectable()
 export class ProjectAccessService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /** A password reset increments the durable version, invalidating all older
+   * named-user JWTs. Legacy tokens without the claim represent version zero. */
+  async assertCredentialVersion(user: AuthUser): Promise<void> {
+    if (user.worker) return;
+    if (!isProduction() && user.sub.startsWith('dev-')) return;
+    const current = await this.prisma.user.findUnique({
+      where: { id: user.sub },
+      select: { credentialVersion: true },
+    });
+    if (!current || current.credentialVersion !== (user.credentialVersion ?? 0)) {
+      throw new UnauthorizedException('Session expired');
+    }
+  }
 
   async authorize(user: AuthUser, projectId: string): Promise<AuthUser> {
     const project = await this.prisma.project.findUnique({

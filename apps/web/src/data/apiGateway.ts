@@ -334,6 +334,18 @@ export class ApiGateway {
   login(email: string, password: string): Promise<AuthResult> {
     return this.pub('/auth/login', { email, password });
   }
+  /** Begin invite-only password enrollment/reset. The public response is generic. */
+  passwordCredentialRequest(email: string): Promise<{ accepted: true; requestId: string }> {
+    return this.pub('/auth/password/request', { email });
+  }
+  /** Prove email control. This returns no application session. */
+  passwordCredentialVerify(requestId: string, code: string): Promise<{ setupToken: string; expiresInSeconds: number }> {
+    return this.pub('/auth/password/verify', { requestId, code });
+  }
+  /** Commit the new password and receive the normal project-scoped session. */
+  passwordCredentialComplete(setupToken: string, password: string): Promise<AuthResult> {
+    return this.pub('/auth/password/complete', { setupToken, password });
+  }
   /** Ask the server to send a phone OTP. `devCode` is present only in dev-stub mode. */
   requestOtp(phone: string): Promise<{ sent: boolean; live: boolean; devCode?: string }> {
     return this.pub('/auth/otp/request', { phone, projectId: this.projectId });
@@ -436,6 +448,10 @@ export class ApiGateway {
   /** Change an org member's role (org owner only). */
   updateOrgMemberRole(orgId: string, userId: string, role: OrgRole): Promise<OrgMember> {
     return this.req(`/orgs/${orgId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role }) });
+  }
+  /** Correct an invitation email before the member establishes a password. */
+  correctInvitationEmail(orgId: string, userId: string, email: string): Promise<OrgMember> {
+    return this.req(`/orgs/${orgId}/members/${userId}/invitation-email`, { method: 'PATCH', body: JSON.stringify({ email }) });
   }
   /** Revoke someone's org membership (org owner only). */
   removeOrgMember(orgId: string, userId: string): Promise<{ ok: boolean }> {

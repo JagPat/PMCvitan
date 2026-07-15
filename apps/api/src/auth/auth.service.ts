@@ -47,6 +47,10 @@ export class AuthService {
     return this.jwt.sign({ sub, role, projectId, ...extra });
   }
 
+  private issueNamedUser(user: { id: string; credentialVersion?: number }, role: Role, projectId: string): string {
+    return this.issue(user.id, role, projectId, { credentialVersion: user.credentialVersion ?? 0 });
+  }
+
   /** Self-signup for the office channels (email / Google) is invite-only by
    * default; set AUTH_ALLOW_SIGNUP=true to let an unknown email/Google identity
    * auto-provision an account. */
@@ -156,11 +160,11 @@ export class AuthService {
       await this.prisma.membership.create({
         data: { projectId: input.projectId, userId: created.id, role: 'engineer', status: 'active' },
       });
-      return { token: this.issue(created.id, 'engineer', created.projectId), role: 'engineer', projectId: created.projectId, name: created.name };
+      return { token: this.issueNamedUser(created, 'engineer', created.projectId), role: 'engineer', projectId: created.projectId, name: created.name };
     }
     const access = await this.signInAccess(user);
     return {
-      token: this.issue(user.id, access.role, access.projectId),
+      token: this.issueNamedUser(user, access.role, access.projectId),
       role: access.role,
       projectId: access.projectId,
       name: user.name,
@@ -178,7 +182,7 @@ export class AuthService {
   async session(input: SessionInput): Promise<TokenResult> {
     const real = await this.prisma.user.findFirst({ where: { role: input.role, projectId: input.projectId } });
     if (real) {
-      return { token: this.issue(real.id, real.role as Role, real.projectId), role: real.role as Role, projectId: real.projectId, name: real.name };
+      return { token: this.issueNamedUser(real, real.role as Role, real.projectId), role: real.role as Role, projectId: real.projectId, name: real.name };
     }
     return {
       token: this.issue(`dev-${input.role}`, input.role, input.projectId),
@@ -197,7 +201,19 @@ export class AuthService {
     // a valid password is not enough — the account must still hold access somewhere
     const access = await this.signInAccess(user);
     return {
-      token: this.issue(user.id, access.role, access.projectId),
+      token: this.issueNamedUser(user, access.role, access.projectId),
+      role: access.role,
+      projectId: access.projectId,
+      name: user.name,
+    };
+  }
+
+  /** Issue the normal project-scoped session after an identity-level credential
+   * transaction succeeds. Password proof alone grants no project access. */
+  async signInUser(user: { id: string; projectId: string; role: string; name: string; credentialVersion?: number }): Promise<TokenResult> {
+    const access = await this.signInAccess(user);
+    return {
+      token: this.issueNamedUser(user, access.role, access.projectId),
       role: access.role,
       projectId: access.projectId,
       name: user.name,
@@ -341,6 +357,6 @@ export class AuthService {
     // admins over an explicit membership is a product decision — see docs/ORGS.md.)
     const role = await this.resolveProjectRole(user, projectId);
     if (!role) throw new ForbiddenException('You are not a member of this project');
-    return { token: this.issue(userId, role, projectId), role, projectId, name: user.name };
+    return { token: this.issueNamedUser(user, role, projectId), role, projectId, name: user.name };
   }
 }

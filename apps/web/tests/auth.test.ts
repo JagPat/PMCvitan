@@ -269,6 +269,73 @@ describe('email OTP', () => {
   });
 });
 
+describe('password setup and recovery', () => {
+  it('does not install a session until password completion succeeds', async () => {
+    const gw = {
+      passwordCredentialRequest: vi.fn().mockResolvedValue({ accepted: true, requestId: 'req-1' }),
+      passwordCredentialVerify: vi.fn().mockResolvedValue({ setupToken: 'setup-token', expiresInSeconds: 600 }),
+      passwordCredentialComplete: vi.fn().mockResolvedValue({ token: 'JWT-new', role: 'engineer', projectId: 'ambli', name: 'Site Engineer' }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    s().accGoPasswordSetup();
+    s().accSetEmail('Engineer@Example.com');
+    s().requestPasswordSetup();
+    await flush();
+
+    expect(gw.passwordCredentialRequest).toHaveBeenCalledWith('engineer@example.com');
+    expect(s().access.step).toBe('password-code');
+    expect(s().sessionToken).toBeNull();
+
+    s().accSetCode('123456');
+    s().verifyPasswordSetup();
+    await flush();
+    expect(gw.passwordCredentialVerify).toHaveBeenCalledWith('req-1', '123456');
+    expect(s().access.step).toBe('password-create');
+    expect(s().sessionToken).toBeNull();
+
+    s().completePasswordSetup('a long internal passphrase', 'a long internal passphrase');
+    await flush();
+    expect(gw.passwordCredentialComplete).toHaveBeenCalledWith('setup-token', 'a long internal passphrase');
+    expect(s().sessionToken).toBe('JWT-new');
+    expect(s().role).toBe('engineer');
+    expect(s().access.step).toBe('who');
+  });
+
+  it('rejects mismatched and short passwords before calling the API', async () => {
+    const gw = { passwordCredentialComplete: vi.fn() };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((state) => {
+      state.access.step = 'password-create';
+      state.access.passwordSetupToken = 'setup-token';
+    });
+    s().completePasswordSetup('short', 'different');
+    expect(s().access.error).toMatch(/match/i);
+    s().completePasswordSetup('short', 'short');
+    expect(s().access.error).toMatch(/12/);
+    expect(gw.passwordCredentialComplete).not.toHaveBeenCalled();
+  });
+
+  it('retires a verification response after the access flow is reset', async () => {
+    let resolveVerify!: (value: { setupToken: string; expiresInSeconds: number }) => void;
+    const gw = {
+      passwordCredentialVerify: vi.fn(() => new Promise((resolve) => { resolveVerify = resolve; })),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((state) => {
+      state.access.step = 'password-code';
+      state.access.passwordRequestId = 'req-old';
+      state.access.otp = '123456';
+    });
+    s().verifyPasswordSetup();
+    s().accReset();
+    resolveVerify({ setupToken: 'stale-token', expiresInSeconds: 600 });
+    await flush();
+    expect(s().access.step).toBe('who');
+    expect(s().access.passwordSetupToken).toBeNull();
+    expect(s().sessionToken).toBeNull();
+  });
+});
+
 describe('Google sign-in', () => {
   it('API mode: exchanges the ID token for a session', async () => {
     const gw = { googleSignIn: vi.fn().mockResolvedValue({ token: 'JWT-g', role: 'client', projectId: 'ambli', name: 'Mr. Shah' }) };

@@ -192,13 +192,13 @@ describe('multi-project + team (Orgs Slice 2)', () => {
 
   it('loadOrgMembers populates the org roster', async () => {
     const gw = {
-      listOrgMembers: vi.fn().mockResolvedValue([{ userId: 'u1', name: 'Ar. Vitan', email: 'pmc@vitan.in', phone: null, orgRole: 'owner' }]),
+      listOrgMembers: vi.fn().mockResolvedValue([{ userId: 'u1', name: 'Ar. Vitan', email: 'pmc@vitan.in', phone: null, orgRole: 'owner', credentialState: 'active' }]),
     };
     s()._setGateway(gw as unknown as ApiGateway);
     s().loadOrgMembers('o');
     await flush();
     expect(gw.listOrgMembers).toHaveBeenCalledWith('o');
-    expect(s().orgMembers).toEqual([{ userId: 'u1', name: 'Ar. Vitan', email: 'pmc@vitan.in', phone: null, orgRole: 'owner' }]);
+    expect(s().orgMembers).toEqual([{ userId: 'u1', name: 'Ar. Vitan', email: 'pmc@vitan.in', phone: null, orgRole: 'owner', credentialState: 'active' }]);
   });
 
   it('addOrgMember posts then reloads the roster', async () => {
@@ -244,6 +244,21 @@ describe('multi-project + team (Orgs Slice 2)', () => {
 
     expect(gw.removeOrgMember).toHaveBeenCalledWith('o', 'u2');
     expect(s().orgMembers).toEqual([]);
+  });
+
+  it('correctInvitationEmail patches then reloads the roster', async () => {
+    const gw = {
+      correctInvitationEmail: vi.fn().mockResolvedValue({}),
+      listOrgMembers: vi.fn().mockResolvedValue([{ userId: 'u2', name: 'JP', email: 'correct@vitan.in', phone: null, orgRole: 'member', credentialState: 'not_set' }]),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+
+    s().correctInvitationEmail('o', 'u2', ' Correct@Vitan.in ');
+    await flush();
+    await flush();
+
+    expect(gw.correctInvitationEmail).toHaveBeenCalledWith('o', 'u2', 'correct@vitan.in');
+    expect(s().orgMembers[0]).toMatchObject({ userId: 'u2', email: 'correct@vitan.in', credentialState: 'not_set' });
   });
 
   it('requestOtp steers to email when the code cannot be delivered to the number', async () => {

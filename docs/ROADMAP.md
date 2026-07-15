@@ -2,6 +2,22 @@
 
 Phased delivery, building forward from the [architecture](./ARCHITECTURE.md). Status reflects the current branch.
 
+## Internal named-user password access (IMPLEMENTED — rollout-gated)
+
+Named PMC, client, engineer, contractor and consultant users now use their invited email plus a stable password for routine sign-in. The first setup, and any later reset, requires one email OTP; verifying that OTP does **not** create an application session. Password completion establishes the credential, increments the user's credential version and invalidates older sessions. Unknown, inactive and removed-only identities receive the same public response but no usable challenge. Worker access remains QR/device based.
+
+Project team managers can see only `Password not set` or `Password active`. Organisation owners/admins see the same state in the organisation roster and may correct a mistyped invitation email only before password enrollment; the correction revokes outstanding setup challenges and creates an attributable security audit event. Organisation role/add/remove authority remains owner-only.
+
+Internal rollout order:
+
+1. Rotate the exposed Coolify root token and `SMTP_PASS`; verify credential emails are delivered by the live SMTP provider.
+2. Copy the database backup out of container `/tmp`, store it durably, and confirm daily automated backups plus a restore check.
+3. Deploy the API first and confirm `20261012000000_internal_password_enrollment` applies cleanly; then deploy the web app.
+4. Pilot setup, login, reset and old-session rejection with one controlled internal account.
+5. Confirm invitation emails in the Team screen, correct any pre-enrollment typo, then enroll the remaining named users.
+
+Existing construction/project data and existing password hashes are preserved by the additive migration. Do not run the destructive demo seed against production.
+
 ## Phase 2 — platform modularization (PLANNING)
 
 The next canonical-spec phase — plan: [`docs/superpowers/plans/2026-07-15-phase-2-platform-modularization.md`](./superpowers/plans/2026-07-15-phase-2-platform-modularization.md) (canonical spec: [`docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`](./superpowers/specs/2026-07-12-modular-construction-control-platform-design.md), Phase 2 row, §§6–9/§17/§19–21). Give the existing modules explicit ownership, typed command/query contracts, a canonical audit/event envelope, transactional-outbox delivery, idempotent consumers, rebuildable projections and module-owned frontend state — **without changing any working user flow** — so Materials/Labour/Commercial (Phases 3–5) attach to stable connectors instead of restructuring the app each time. The application stays a single deployable modular monolith (no service split). Planning baseline `main` @ `cff18c4`. **Implementation begins only after this plan's independent review clears** (Tasks 1–9 land in order; review stops after Tasks 1, 4, 6 and 9). Out of scope: any Phase 3+ business capability, the full `Company`/`ProjectParty` hybrid-tenancy split (Phase 6), separate deployable services, broad UI redesign.

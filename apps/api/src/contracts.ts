@@ -15,6 +15,25 @@ export const loginSchema = z.object({
 });
 export type LoginInput = z.infer<typeof loginSchema>;
 
+// Invite-only password enrollment/reset. Verifying the OTP returns a one-time
+// setup token, never an application session.
+export const passwordCredentialRequestSchema = z.object({
+  email: z.string().trim().email().transform((value) => value.toLowerCase()),
+});
+export type PasswordCredentialRequestInput = z.infer<typeof passwordCredentialRequestSchema>;
+
+export const passwordCredentialVerifySchema = z.object({
+  requestId: z.string().uuid(),
+  code: z.string().regex(/^\d{6}$/),
+});
+export type PasswordCredentialVerifyInput = z.infer<typeof passwordCredentialVerifySchema>;
+
+export const passwordCredentialCompleteSchema = z.object({
+  setupToken: z.string().min(32).max(256),
+  password: z.string().min(12).max(128),
+});
+export type PasswordCredentialCompleteInput = z.infer<typeof passwordCredentialCompleteSchema>;
+
 // Phone-OTP sign-in for site engineers (MSG91, dev-stubbed with no provider).
 export const otpRequestSchema = z.object({
   phone: z.string().min(8),
@@ -592,3 +611,10 @@ export type AddOrgMemberInput = z.infer<typeof addOrgMemberSchema>;
 // Change an org member's role (owner only) — see OrgsService.updateOrgMemberRole.
 export const updateOrgMemberSchema = z.object({ role: orgRole });
 export type UpdateOrgMemberInput = z.infer<typeof updateOrgMemberSchema>;
+
+// Correct a mistyped invitation address only before that identity establishes a
+// password. Authorization and the enrolled-state guard live in OrgsService.
+export const correctInvitationEmailSchema = z.object({
+  email: z.string().trim().email().transform((value) => value.toLowerCase()),
+});
+export type CorrectInvitationEmailInput = z.infer<typeof correctInvitationEmailSchema>;

@@ -13,6 +13,7 @@ import { HealthController } from './health.controller';
 import { SmsService } from './auth/sms.service';
 import { EmailService } from './auth/email.service';
 import { GoogleAuthService } from './auth/google.service';
+import { PasswordCredentialsService } from './auth/password-credentials.service';
 import { SnapshotService } from './snapshot/snapshot.service';
 import { ProjectController } from './snapshot/project.controller';
 import { DecisionsService } from './decisions/decisions.service';
@@ -81,6 +82,7 @@ import { CompaniesController } from './orgs/companies.controller';
     SmsService,
     EmailService,
     GoogleAuthService,
+    PasswordCredentialsService,
     SnapshotService,
     DecisionsService,
     ActivitiesService,

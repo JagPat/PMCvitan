@@ -66,14 +66,16 @@ describe('drawing change control (integration)', () => {
    *  requests pass through before the racing section, effective before AND after the
    *  fix (the fix removes the drawing pre-read, so the barrier lives upstream of it). */
   function actorBarrier(userId: string) {
-    const delegate = t.prisma.user as unknown as { findUnique: (args: { where: { id?: string } }) => Promise<unknown> };
+    const delegate = t.prisma.user as unknown as { findUnique: (args: { where: { id?: string }; select?: { name?: boolean } }) => Promise<unknown> };
     const original = delegate.findUnique.bind(t.prisma.user);
     let release!: () => void;
     const both = new Promise<void>((resolve) => { release = resolve; });
     let reads = 0;
-    delegate.findUnique = async (args: { where: { id?: string } }) => {
+    delegate.findUnique = async (args: { where: { id?: string }; select?: { name?: boolean } }) => {
       const row = await original(args);
-      if (args?.where?.id === userId) {
+      // JwtGuard now performs its own credentialVersion read. This barrier is
+      // specifically on resolveActor's `{ select: { name: true } }` read.
+      if (args?.where?.id === userId && args.select?.name === true) {
         reads += 1;
         if (reads === 2) release();
         await both;

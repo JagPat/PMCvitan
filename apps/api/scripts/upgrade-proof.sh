@@ -14,6 +14,7 @@
 #   - a done activity + its zero-item 'INSP-<id>-close' closing, plus a
 #     stray close-pattern id naming no activity                   (Task 5)
 #   - a stored gateInspection flag on a live activity             (Task 6)
+#   - an existing named user with a password hash                  (credential rollout)
 #
 # then applies ALL Phase 1 migrations in ledger order — each the way Prisma
 # does (one transaction, stop on error) — echoing their diagnostic output,
@@ -70,6 +71,11 @@ $PSQL -q <<'SQL' || { echo "fixture failed"; exit 1; }
 INSERT INTO "Project" ("id","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
 VALUES ('p1','Legacy Site A','LA','','Finishing','LA-01','01 Jan 2026','31 Dec 2026',50,30,60),
        ('p2','Legacy Site B','LB','','Finishing','LB-01','01 Jan 2026','31 Dec 2026',50,30,60);
+
+-- Credential-rollout shape: an existing password must survive the additive
+-- enrollment migration byte-for-byte, with the compatibility version at zero.
+INSERT INTO "User" ("id","projectId","role","name","email","passwordHash")
+VALUES ('USER-1','p1','pmc','Legacy PMC','legacy@vitan.in','legacy-bcrypt-hash');
 
 -- Task 2 shapes: a reopened decision with a would-be-open legacy request, and
 -- an approved decision with a stale pending one (closed long ago, never modeled)
@@ -199,6 +205,17 @@ assert "stored gateInspection flag preserved verbatim (read path derives; the co
 assert "GateOverride table exists and the upgrade granted no overrides" \
   "SELECT COUNT(*) FROM \"GateOverride\";" \
   "0"
+
+# Internal named-user password enrollment — additive and data-preserving
+assert "existing password hash survives credential migration unchanged" \
+  "SELECT \"passwordHash\" FROM \"User\" WHERE id='USER-1';" \
+  "legacy-bcrypt-hash"
+assert "legacy user starts at credential version zero without fabricated verification" \
+  "SELECT \"credentialVersion\"::text || '|' || COALESCE(\"emailVerifiedAt\"::text,'<null>') FROM \"User\" WHERE id='USER-1';" \
+  "0|<null>"
+assert "durable password challenge and security audit tables exist" \
+  "SELECT ((to_regclass('\"PasswordCredentialChallenge\"') IS NOT NULL) AND (to_regclass('\"SecurityAuditEvent\"') IS NOT NULL))::text;" \
+  "true"
 
 echo ""
 if [ "$FAIL" = "0" ]; then

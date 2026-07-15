@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@n
 import { OrgsService } from './orgs.service';
 import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
-import { addOrgMemberSchema, createModuleSchema, createOrgSchema, createProjectSchema, createTemplateSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
+import { addOrgMemberSchema, correctInvitationEmailSchema, createModuleSchema, createOrgSchema, createProjectSchema, createTemplateSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { CurrentUser, IdentityScoped, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, Roles, RolesGuard } from '../common/roles';
 
@@ -66,6 +66,18 @@ export class OrgsController {
   @Get('orgs/:orgId/members')
   listOrgMembers(@Param('orgId') orgId: string, @CurrentUser() user: AuthUser) {
     return this.orgs.listOrgMembers(orgId, user.sub);
+  }
+
+  /** Correct an invitation typo before password enrollment (org owner/admin only). */
+  @Patch('orgs/:orgId/members/:userId/invitation-email')
+  @AllowAnyRole(ORG_AUTHZ)
+  correctInvitationEmail(
+    @Param('orgId') orgId: string,
+    @Param('userId') userId: string,
+    @CurrentUser() user: AuthUser,
+    @Body(new ZodPipe(correctInvitationEmailSchema)) body: CorrectInvitationEmailInput,
+  ) {
+    return this.orgs.correctInvitationEmail(orgId, user.sub, userId, body);
   }
 
   /** Add someone to the org's admin roster — owner/admin/member (org owner only). */
