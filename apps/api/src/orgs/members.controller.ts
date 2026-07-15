@@ -3,7 +3,7 @@ import { MembersService } from './members.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { addMemberSchema, updateMemberSchema, type AddMemberInput, type UpdateMemberInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
-import { AllowAnyRole, Roles, RolesGuard } from '../common/roles';
+import { AllowAnyRole, RolesFor, RolesGuard } from '../common/roles';
 
 const MEMBERS_AUTHZ = 'MembersService.canManage() enforces project-PMC / org owner-admin authority';
 
@@ -19,7 +19,7 @@ export class MembersController {
   /** Roster with contact PII — interactive session roles only. Excludes the
    *  anonymously-minted `worker` device token, which must never read team PII (P1-2). */
   @Get()
-  @Roles('pmc', 'client', 'engineer', 'contractor', 'consultant')
+  @RolesFor('members.read')
   list(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
     return this.members.list(projectId, user);
   }

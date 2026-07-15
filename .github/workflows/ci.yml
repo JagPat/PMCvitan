@@ -78,6 +78,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Build @vitan/shared (runtime package the API imports)
+        run: pnpm build:shared
       - name: Prisma generate
         run: pnpm --filter api prisma:generate
       - name: Install Playwright Chromium
@@ -148,6 +150,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Build @vitan/shared (runtime package the API imports)
+        run: pnpm build:shared
       - name: Prisma generate
         run: pnpm --filter api prisma:generate
       - name: Apply migrations to the test database

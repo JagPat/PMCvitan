@@ -3,7 +3,7 @@ import { CompaniesService } from './companies.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { addCompanySchema, updateCompanySchema, type AddCompanyInput, type UpdateCompanyInput } from '../contracts';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
-import { AllowAnyRole, Roles, RolesGuard } from '../common/roles';
+import { AllowAnyRole, RolesFor, RolesGuard } from '../common/roles';
 
 const COMPANIES_AUTHZ = 'CompaniesService.canManage() enforces project-PMC / org owner-admin authority';
 
@@ -18,7 +18,7 @@ export class CompaniesController {
   /** Consultant/company contacts & notes — interactive session roles only; never the
    *  anonymously-minted `worker` device token (P1-2). */
   @Get()
-  @Roles('pmc', 'client', 'engineer', 'contractor', 'consultant')
+  @RolesFor('companies.read')
   list(@Param('projectId') projectId: string) {
     return this.companies.list(projectId);
   }

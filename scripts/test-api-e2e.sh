@@ -19,6 +19,8 @@ export THROTTLE_DISABLED=true
 pnpm --filter api prisma:migrate
 pnpm --filter api seed
 # the Playwright config serves the COMPILED api (node dist/main.js) — the same
-# artifact production runs — so build it first
+# artifact production runs — so build it first. @vitan/shared is a built runtime
+# dependency the compiled API `require()`s, so build it before the API (Phase 2 Task 2).
+pnpm --filter @vitan/shared build
 pnpm --filter api build
 pnpm --filter web exec playwright test --config playwright.api.config.ts

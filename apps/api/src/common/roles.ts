@@ -1,10 +1,12 @@
-import { CanActivate, ExecutionContext, ForbiddenException, Injectable, SetMetadata } from '@nestjs/common';
+import { CanActivate, ExecutionContext, ForbiddenException, Injectable, SetMetadata, applyDecorators } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { ROLE_POLICY, type PolicyAction } from '@vitan/shared';
 import type { AuthUser, Role } from './auth';
 
 export const ROLES_KEY = 'roles';
 export const PUBLIC_KEY = 'route:public';
 export const ANY_ROLE_KEY = 'route:any-role';
+export const ACTION_KEY = 'route:action';
 
 /**
  * Declarative authorization markers, enforced at CI time by `route-policy.test.ts`
@@ -40,6 +42,20 @@ export const AllowAnyRole = (reason: string): MethodDecorator & ClassDecorator =
  * decorator can never silently grant access.
  */
 export const Roles = (...roles: [Role, ...Role[]]): MethodDecorator & ClassDecorator => SetMetadata(ROLES_KEY, roles);
+
+/**
+ * Restrict a handler to the roles the SHARED authorization policy assigns to `action`
+ * (Phase 2 Task 2). The allowlist is sourced from `@vitan/shared`'s `ROLE_POLICY` — the
+ * SAME map the web UI gating (`can`) reads — so the API can never drift from it and the
+ * hand-mirrored role literals are retired. It sets the identical `ROLES_KEY` metadata a
+ * literal `@Roles(...)` would (so `RolesGuard` enforcement and behavior are unchanged),
+ * and additionally records the action under `ACTION_KEY` so `route-policy.test.ts` can
+ * assert the endpoint's allowlist IS `ROLE_POLICY[action]` (imported identity).
+ */
+export function RolesFor(action: PolicyAction): MethodDecorator & ClassDecorator {
+  const roles = [...ROLE_POLICY[action]] as Role[];
+  return applyDecorators(SetMetadata(ROLES_KEY, roles), SetMetadata(ACTION_KEY, action));
+}
 
 @Injectable()
 export class RolesGuard implements CanActivate {

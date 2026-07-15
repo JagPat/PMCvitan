@@ -3,40 +3,22 @@
  * `prisma/seed.ts` (wipe + reload) and `prisma/ensure-accounts.ts` (create-only, live-safe)
  * draw from.
  *
- * MIRRORS `packages/shared/src/domain/seed.ts` (the demo's fixtures). That package is
- * source-only — the Node runtime can't import it — so the values are pinned here and
- * `seed-data.test.ts` guards the alignment (same convention as the `EXPECTED_ROLES`
- * mirror in route-policy.test.ts). This closes the data-flow audit's #1 finding: the API
- * seed used to be a hand-copy with an EMPTY location spine, so a freshly seeded API
- * rendered a blank Site Map while the demo showed a rich tree.
+ * The location-tree spine (`SEED_NODES`) is now IMPORTED from the built `@vitan/shared`
+ * runtime package (Phase 2 Task 2) — the API seed no longer keeps its own copy of the
+ * demo tree, so web and API seed from ONE tree (its `ProjectNode` shape is identical to
+ * the former local `SeedNode`). The DB-seed shapes below (decisions/activities/inspections/
+ * materials + the starter library) remain API-specific Prisma-create inputs — a distinct
+ * representation from the web view-model in `shared/seed.ts`, not a mirror — and
+ * `seed-data.test.ts` still guards that they file only onto nodes of the shared tree.
  */
 import type { PrismaClient } from '@prisma/client';
+import type { ProjectNode } from '@vitan/shared';
 import type { ModulePayload } from '../contracts';
 
-// ── The location spine (zones → rooms → objects) — mirrors shared SEED_NODES ──
-
-export interface SeedNode {
-  id: string;
-  parentId: string | null;
-  name: string;
-  kind: 'zone' | 'room' | 'element';
-  order: number;
-  /** a private draft branch (the PMC's work-in-progress Basement) */
-  draft?: boolean;
-}
-
-export const SEED_NODES: SeedNode[] = [
-  { id: 'z-gf', parentId: null, name: 'Ground Floor', kind: 'zone', order: 0 },
-  { id: 'r-living', parentId: 'z-gf', name: 'Living Room', kind: 'room', order: 0 },
-  { id: 'r-entrance', parentId: 'z-gf', name: 'Entrance', kind: 'room', order: 1 },
-  { id: 'e-maindoor', parentId: 'r-entrance', name: 'Main Door', kind: 'element', order: 0 },
-  { id: 'r-kitchen', parentId: 'z-gf', name: 'Kitchen', kind: 'room', order: 2 },
-  { id: 'z-sf', parentId: null, name: 'Second Floor', kind: 'zone', order: 1 },
-  { id: 'r-mbath', parentId: 'z-sf', name: 'Master Bath', kind: 'room', order: 0 },
-  { id: 'z-terrace', parentId: null, name: 'Terrace', kind: 'zone', order: 2 },
-  { id: 'z-basement', parentId: null, name: 'Basement', kind: 'zone', order: 3, draft: true },
-  { id: 'r-cellar', parentId: 'z-basement', name: 'Wine Cellar', kind: 'room', order: 0, draft: true },
-];
+// ── The location spine (zones → rooms → objects) — the ONE tree, from @vitan/shared ──
+/** @deprecated alias kept for back-compat; the tree node shape is `ProjectNode` from @vitan/shared. */
+export type SeedNode = ProjectNode;
+export { SEED_NODES } from '@vitan/shared';
 
 // ── Decisions (placed on the spine; DL-015 is the seeded private draft) ──
 

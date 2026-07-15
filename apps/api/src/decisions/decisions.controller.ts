@@ -2,7 +2,7 @@ import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
 import { DecisionsService } from './decisions.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
-import { Roles, RolesGuard } from '../common/roles';
+import { RolesFor, RolesGuard } from '../common/roles';
 import { approveSchema, changeSchema, createDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput } from '../contracts';
 
 @Controller('projects/:projectId/decisions')
@@ -12,7 +12,7 @@ export class DecisionsController {
 
   /** Issue a new decision (title/room + options) — the PMC/architect's authority. */
   @Post()
-  @Roles('pmc')
+  @RolesFor('decision.create')
   create(
     @Param('projectId') projectId: string,
     @Body(new ZodPipe(createDecisionSchema)) body: CreateDecisionInput,
@@ -23,7 +23,7 @@ export class DecisionsController {
 
   /** Publish a private draft decision → issue it to the client (PMC/architect authority). */
   @Post(':decisionId/publish')
-  @Roles('pmc')
+  @RolesFor('decision.publish')
   publish(
     @Param('projectId') projectId: string,
     @Param('decisionId') decisionId: string,
@@ -34,7 +34,7 @@ export class DecisionsController {
 
   /** Approve/lock a decision — the client's choice, or the PMC/architect on their behalf. */
   @Post(':decisionId/approve')
-  @Roles('client', 'pmc')
+  @RolesFor('decision.approve')
   approve(
     @Param('projectId') projectId: string,
     @Param('decisionId') decisionId: string,
@@ -48,7 +48,7 @@ export class DecisionsController {
    *  engineer (the engineer's Decision Log UI exposes this, and the service records
    *  `actor: user.role`, so all four are legitimate change requesters). */
   @Post(':decisionId/change')
-  @Roles('pmc', 'client', 'contractor', 'engineer', 'consultant')
+  @RolesFor('decision.change')
   change(
     @Param('projectId') projectId: string,
     @Param('decisionId') decisionId: string,
@@ -61,7 +61,7 @@ export class DecisionsController {
   /** Withdraw the open change request — same roles that may raise one; the service
    *  narrows the authority to the actual REQUESTER or the PMC (Phase 1 Task 2). */
   @Post(':decisionId/change/withdraw')
-  @Roles('pmc', 'client', 'contractor', 'engineer', 'consultant')
+  @RolesFor('decision.withdrawChange')
   withdrawChange(
     @Param('projectId') projectId: string,
     @Param('decisionId') decisionId: string,

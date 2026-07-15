@@ -2,35 +2,15 @@
  * Civil-date helpers (Phase 0 Task 6) — a calendar day with no time or zone,
  * ISO `YYYY-MM-DD` at every boundary, UTC arithmetic ONLY.
  *
- * PINNED COPY of packages/shared/src/lib/dates.ts (the shared package is
- * source-only ESM the CommonJS API build can't import — the repo's mirrored
- * convention; both test suites share the same leap/year-boundary vectors).
- * The planned shared-runtime promotion removes this copy.
+ * The calendar arithmetic (`parseCivilDate`/`addCivilDays`/`diffCivilDays`) is now
+ * IMPORTED from the built `@vitan/shared` runtime package (Phase 2 Task 2) — one
+ * source of truth shared with the web app; the former pinned copy is retired.
+ * Only the two Prisma `@db.Date` bridges below are API-specific (no web
+ * equivalent) and stay local.
  */
+import { parseCivilDate } from '@vitan/shared';
 
-const ISO_CIVIL_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-/** Parse an ISO civil date to a UTC-midnight Date; throws on anything else. */
-export function parseCivilDate(value: string): Date {
-  if (!ISO_CIVIL_DATE.test(value)) throw new Error(`Invalid civil date: ${value}`);
-  const date = new Date(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
-    throw new Error(`Invalid civil date: ${value}`);
-  }
-  return date;
-}
-
-/** Add whole days (negative allowed) across month/year/leap boundaries. */
-export function addCivilDays(value: string, days: number): string {
-  const date = parseCivilDate(value);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-/** Whole days from `from` to `to` (positive when `to` is later). */
-export function diffCivilDays(from: string, to: string): number {
-  return Math.round((parseCivilDate(to).getTime() - parseCivilDate(from).getTime()) / 86_400_000);
-}
+export { parseCivilDate, addCivilDays, diffCivilDays } from '@vitan/shared';
 
 /** A Prisma `@db.Date` value (UTC-midnight Date) -> ISO civil date; null passes through. */
 export function toIsoCivilDate(value: Date | null | undefined): string | null {

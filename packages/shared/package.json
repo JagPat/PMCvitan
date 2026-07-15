@@ -3,10 +3,28 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Shared domain layer for Vitan PMC: design tokens, i18n dictionaries, formatting helpers, domain types, seed data. Consumed by apps/web via path alias; promoted to a built package when apps/api lands.",
-  "main": "src/index.ts",
+  "description": "Shared domain layer for Vitan PMC: design tokens, i18n dictionaries, formatting + civil-date helpers, domain types, derived-readiness truth tables, authorization policy, seed data. A BUILT runtime package (Phase 2 Task 2): apps/web consumes the source via a Vite path alias in dev; apps/api imports the built dual CJS/ESM artifact as a workspace dependency.",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
     "./*": "./src/*"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.7.3"
   }
 }

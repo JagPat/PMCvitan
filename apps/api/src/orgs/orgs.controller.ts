@@ -4,7 +4,7 @@ import { AuthService } from '../auth/auth.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { addOrgMemberSchema, correctInvitationEmailSchema, createModuleSchema, createOrgSchema, createProjectSchema, createTemplateSchema, updateOrgMemberSchema, updateProjectSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { CurrentUser, IdentityScoped, JwtGuard, type AuthUser } from '../common/auth';
-import { AllowAnyRole, Roles, RolesGuard } from '../common/roles';
+import { AllowAnyRole, RolesFor, RolesGuard } from '../common/roles';
 
 /** Org owner/admin authority is enforced per-route inside OrgsService (these are org-role
  *  checks, not project-role checks, so they can't be a simple @Roles allowlist). */
@@ -45,7 +45,7 @@ export class OrgsController {
    *  `worker` device token has no User row, so letting it through creates an ownerless
    *  org (its owner-membership FK fails). Excluding `worker` closes that path. */
   @Post('orgs')
-  @Roles('pmc', 'client', 'engineer', 'contractor')
+  @RolesFor('org.create')
   createOrg(@CurrentUser() user: AuthUser, @Body(new ZodPipe(createOrgSchema)) body: CreateOrgInput) {
     return this.orgs.createOrg(user.sub, body);
   }

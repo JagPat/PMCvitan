@@ -36,6 +36,11 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'drawing.delete': ['pmc'],
   'drawing.file': ['pmc'],
   'org.create': ['pmc', 'client', 'engineer', 'contractor'],
+  // Read surfaces requiring a real account (the API derives these GET allowlists from the
+  // same map — Phase 2 Task 2); a worker device token is excluded.
+  'project.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
+  'members.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
+  'companies.read': ['pmc', 'client', 'engineer', 'contractor', 'consultant'],
 };
 
 describe('authorization policy (shared source of truth)', () => {

@@ -1,30 +1,25 @@
 import { describe, it, expect } from 'vitest';
+import * as apiSeed from './seed-data';
+import * as shared from '@vitan/shared';
 import { SEED_NODES, SEED_DECISIONS, SEED_ACTIVITIES, SEED_INSPECTIONS, SEED_LOG_MATERIALS, STARTER_MODULES, STARTER_TEMPLATE } from './seed-data';
 import { modulePayloadSchema } from '../contracts';
 
 /**
- * Seed-alignment drift guard (data-flow audit finding #1). The API seed is a hand-mirror
- * of `packages/shared/src/domain/seed.ts` (source-only — not importable here), so this
- * test pins the spine the same way route-policy.test.ts pins ROLE_POLICY: change the
- * demo's tree/attachments and this fails until the API seed is updated in lockstep.
+ * Phase 2 Task 2 — the location-tree SEED MIRROR IS RETIRED. The API no longer keeps
+ * its own copy of the demo tree; `SEED_NODES` is re-exported from the built
+ * `@vitan/shared` runtime package, so the imported-identity assertion below proves the
+ * API seeds from the SAME tree object the web uses. The remaining tests then guard that
+ * the API's DB-seed shapes (decisions/activities/inspections/materials — a distinct
+ * Prisma-create representation, NOT a shared mirror) file only onto nodes of that one
+ * shared tree, so a spine change still fails here.
  */
 
-// MUST stay identical to shared SEED_NODES (id → kind), incl. the draft Basement branch.
-const EXPECTED_TREE: Record<string, 'zone' | 'room' | 'element'> = {
-  'z-gf': 'zone',
-  'r-living': 'room',
-  'r-entrance': 'room',
-  'e-maindoor': 'element',
-  'r-kitchen': 'room',
-  'z-sf': 'zone',
-  'r-mbath': 'room',
-  'z-terrace': 'zone',
-  'z-basement': 'zone',
-  'r-cellar': 'room',
-};
+// Derived from the ONE shared tree — no hand-mirrored EXPECTED_TREE literal anymore.
+const EXPECTED_TREE: Record<string, string> = Object.fromEntries(shared.SEED_NODES.map((n) => [n.id, n.kind]));
 
 describe('API seed ↔ demo spine alignment', () => {
-  it('the seeded tree mirrors the demo tree exactly (ids + kinds)', () => {
+  it('the API re-exports the SAME SEED_NODES tree object as @vitan/shared (mirror retired)', () => {
+    expect(apiSeed.SEED_NODES).toBe(shared.SEED_NODES);
     const got = Object.fromEntries(SEED_NODES.map((n) => [n.id, n.kind]));
     expect(got).toEqual(EXPECTED_TREE);
   });

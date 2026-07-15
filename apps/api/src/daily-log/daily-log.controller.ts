@@ -2,7 +2,7 @@ import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
 import { DailyLogService } from './daily-log.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
-import { Roles, RolesGuard } from '../common/roles';
+import { RolesFor, RolesGuard } from '../common/roles';
 import { addMaterialSchema, flagMismatchSchema, submitDailyLogSchema, type AddMaterialInput, type FlagMismatchInput, type SubmitDailyLogInput } from '../contracts';
 
 @Controller('projects/:projectId/daily-log')
@@ -12,14 +12,14 @@ export class DailyLogController {
 
   /** Start a fresh day's log (previous one must be submitted) — engineer (or PMC). */
   @Post('start')
-  @Roles('engineer', 'pmc')
+  @RolesFor('dailyLog.start')
   start(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
     return this.dailyLog.start(projectId, user);
   }
 
   /** Record a material delivery on the open log — engineer (or PMC). */
   @Post('materials')
-  @Roles('engineer', 'pmc')
+  @RolesFor('dailyLog.addMaterial')
   addMaterial(
     @Param('projectId') projectId: string,
     @Body(new ZodPipe(addMaterialSchema)) body: AddMaterialInput,
@@ -30,7 +30,7 @@ export class DailyLogController {
 
   /** Flag a material mismatch against the plan — the site engineer (or PMC). */
   @Post('flag-mismatch')
-  @Roles('engineer', 'pmc')
+  @RolesFor('dailyLog.flagMismatch')
   flag(
     @Param('projectId') projectId: string,
     @Body(new ZodPipe(flagMismatchSchema)) body: FlagMismatchInput,
@@ -41,7 +41,7 @@ export class DailyLogController {
 
   /** Submit the daily site log (attendance, crew, materials, photos) — the site engineer (or PMC). */
   @Post('submit')
-  @Roles('engineer', 'pmc')
+  @RolesFor('dailyLog.submit')
   submit(
     @Param('projectId') projectId: string,
     @Body(new ZodPipe(submitDailyLogSchema)) body: SubmitDailyLogInput,
