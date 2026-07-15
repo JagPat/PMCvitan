@@ -678,6 +678,96 @@ describe('snapshot coordinator — required-reconciliation record (round 13)', (
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Gate round 14 — command and submit obligations COMPOSE: a later command can
+// never overwrite an unconfirmed submit obligation (and vice-versa).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('snapshot coordinator — composable reconciliation obligations (round 14)', () => {
+  it('a later command obligation does NOT overwrite an unconfirmed submit obligation; the submit still exposes Retry, and Retry confirms BOTH', async () => {
+    const holdSubmit = deferred<ApiSnapshot>();
+    const holdCmdA = deferred<ApiSnapshot>();
+    const holdCmdB = deferred<ApiSnapshot>();
+    const holdRefresh = deferred<ApiSnapshot>();
+    let snapCall = 0;
+    const gw = {
+      submitInspection: vi.fn().mockImplementation(() => holdSubmit.promise),
+      createDecision: vi.fn().mockImplementationOnce(() => holdCmdA.promise).mockImplementationOnce(() => holdCmdB.promise),
+      snapshot: vi.fn().mockImplementation(() => {
+        snapCall += 1;
+        if (snapCall === 1) return holdRefresh.promise;                                                    // background refresh
+        if (snapCall === 2) return Promise.resolve(makeSnapshot({ decisions: [decisionRow('DL-A')], checklist: unsubmittedChecklist() })); // reconcile: decision present, submit NOT yet
+        return Promise.resolve(makeSnapshot({ decisions: [decisionRow('DL-A')], checklist: submittedChecklist() }));                        // Retry: submit confirmed
+      }),
+      uploadMedia: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.decisions = []; });
+    seedTwoPass();
+
+    s().submitInspection();                                    // lease 1
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    s().requestFreshSnapshot();                                // lease 2 — background refresh (held)
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+
+    holdSubmit.release(makeSnapshot({ checklist: submittedChecklist() })); // ack superseded → SUBMIT obligation
+    await drainMicrotasks();
+
+    s().issueDecision({ title: 'A', room: '', options: [], publish: true }); // lease 3
+    s().issueDecision({ title: 'B', room: '', options: [], publish: true }); // lease 4 (newer; makes A superseded)
+    await settles(() => gw.createDecision.mock.calls.length === 2);
+    holdCmdA.release(makeSnapshot({ decisions: [decisionRow('DL-A')] })); // command A superseded → COMMAND obligation (must NOT erase the submit)
+    await drainMicrotasks();
+
+    holdRefresh.release(makeSnapshot({ checklist: unsubmittedChecklist() })); // background refresh settles → the ONE queued reconcile runs
+    // the reconcile applies the decision (command satisfied) but the submit is still
+    // unconfirmed — round 14: the submit obligation survives and exposes Retry.
+    await settles(() => s().projectLoadState === 'error');
+    expect(s().submission.status).toBe('submitting');          // freeze retained
+    expect(s().checklist!.submitted).toBe(false);
+    expect(decisionIds()).toContain('DL-A');                   // the command DID land
+
+    s().retryProjectLoad();                                    // user Retry → confirmed submit truth
+    await settles(() => s().checklist?.submitted === true);
+    expect(s().submission.status).toBe('idle');                // submit obligation cleared, freeze retired
+    expect(s().projectLoadState).toBe('ready');                // both obligations satisfied
+    expect(decisionIds()).toContain('DL-A');
+  });
+
+  it('reverse order: a submit obligation does not erase a command obligation — both compose and both clear', async () => {
+    const holdCmdA = deferred<ApiSnapshot>();
+    const holdCmdB = deferred<ApiSnapshot>();
+    const holdSubmit = deferred<ApiSnapshot>();
+    let snapCall = 0;
+    const gw = {
+      createDecision: vi.fn().mockImplementationOnce(() => holdCmdA.promise).mockImplementationOnce(() => holdCmdB.promise),
+      submitInspection: vi.fn().mockImplementation(() => holdSubmit.promise),
+      snapshot: vi.fn().mockImplementation(() => {
+        snapCall += 1;
+        // the mandatory reconcile confirms BOTH: the decision landed and the submit is submitted
+        return Promise.resolve(makeSnapshot({ decisions: [decisionRow('DL-A')], checklist: submittedChecklist() }));
+      }),
+      uploadMedia: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.decisions = []; });
+    seedTwoPass();
+
+    s().issueDecision({ title: 'A', room: '', options: [], publish: true }); // lease 1
+    s().issueDecision({ title: 'B', room: '', options: [], publish: true }); // lease 2 (newer)
+    await settles(() => gw.createDecision.mock.calls.length === 2);
+    s().submitInspection();                                    // lease 3 — a newer lease that supersedes command A's reply
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+
+    holdCmdA.release(makeSnapshot({ decisions: [decisionRow('DL-A')] })); // command A superseded → COMMAND obligation (records + starts the reconcile)
+    await drainMicrotasks();
+    holdSubmit.release(makeSnapshot({ checklist: submittedChecklist() })); // submit superseded → SUBMIT obligation (must NOT erase the command)
+    await settles(() => s().checklist?.submitted === true);   // the reconcile confirms both
+    expect(s().submission.status).toBe('idle');               // submit obligation cleared
+    expect(decisionIds()).toContain('DL-A');                  // command obligation satisfied
+    expect(s().projectLoadState).toBe('ready');               // both cleared — no stuck state
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Source-scan tripwire — pin the single call site of the private copier
 // ─────────────────────────────────────────────────────────────────────────────
 describe('snapshot coordinator — source invariant', () => {
