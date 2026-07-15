@@ -9,7 +9,7 @@
 | Snapshot top-level shape (16 keys), per-role gating, author-private drafts, AND the exact nested key/optionality/nullability of every DTO | **test-enforced** | `apps/api/test/integration/phase2-snapshot-shape.test.ts` (live PG) — a SOURCE SCAN of `snapshot/types.ts` pins each DTO's keys + `?`-optional + `\| null`-nullable set, and a RUNTIME conformance check asserts a fully-populated snapshot carries EXACTLY those keys with nulls only where allowed, for all 16 top-level keys; plus `apps/web/tests/snapshot-shape.test.ts` (exact client contract) |
 | Cross-module edge set (§1) — COUNTED | **test-enforced** | `apps/api/src/common/cross-module-graph.test.ts` — an exhaustive classifier that auto-discovers every `*.service.ts` (a new file fails until triaged) and asserts each service's foreign writes as a model→**count** map (removing one of two writes to the same foreign model fails), the ordered `notifyChanged` push signature + one-emit-per-method, and each service's edge set mirrors §1 |
 | Per-mutation consequence set (§3) | **test-enforced** | `apps/api/test/integration/phase2-consequences.test.ts` (live PG) — **42 isolated tests, one per semantic branch**, each in a fresh capture window asserting the exact canonical write, audit action+actor, DecisionEvent, notification, socket payload `{ projectId }`, push body+roles, the NO-side-effect facts (no push / no signal / no audit where none is due) and rollback |
-| Command-inventory route surface (§4) — SIGNATURES | **test-enforced** | `cross-module-graph.test.ts` pins the exact **ordered route signatures** per controller (63 total) — replacing one route with another (same count) fails; a new controller with a mutating route fails until documented |
+| Command-inventory route surface (§4) — SIGNATURES | **test-enforced** | `cross-module-graph.test.ts` pins the exact **ordered route signatures** per controller (66 total) — replacing one route with another (same count) fails; a new controller with a mutating route fails until documented |
 | Auth PROVISIONING writes (§4) | **test-enforced** | `cross-module-graph.test.ts` pins `auth.service.ts` writes = `{ user, membership, workerDevice }` — the fact that verify/worker-token provisioning writes project/org-scoped identity rows (finding 1), not "auth writes nothing" |
 | Projection dependency matrix (§2) event→consumer→authz→rebuild mapping | **design reference** | not directly executable — it is the contract Tasks 3/4 (event catalog) and Tasks 9/10 (projection cutover) implement and test; each projection ships with its own rebuild + authz tests then. Every event named below is an EXACT `type@version` (no wildcards). |
 
@@ -158,7 +158,7 @@ The consequence bundle each pillar mutation produces today (the set Tasks 3–6 
 
 ## §4. Command inventory (plan finding 5 — the checklist Task 10's gate verifies fully migrated)
 
-Every state-changing HTTP route (**63 total**, ordered route signatures pinned per controller by `cross-module-graph.test.ts`). Columns per the Task-5 ledger design:
+Every state-changing HTTP route (**66 total**, ordered route signatures pinned per controller by `cross-module-graph.test.ts`). Columns per the Task-5 ledger design:
 
 - **scopeKind** (`project`|`org`) + the subject id(s) the `CommandExecution` partial unique index keys on.
 - **key source** — the client-supplied idempotency key that keys the ledger row. **The honest state today (finding 1):** the frontend offline outbox variants (`apiGateway.ts:688` `OutboxOp`) carry **no operation id**, and only `media.create` sends a `clientKey` (`contracts.ts:130`). So **no command except `media.create` is idempotent today** — every other row is annotated `none today → Task N key`, meaning the ledger's Task-5 schema plus the migrating task (Task 8 for decisions, Task 10 for the rest) must have the client GENERATE and send a stable per-command key; the ledger cannot adopt a key that does not yet exist.
@@ -232,7 +232,7 @@ Every state-changing HTTP route (**63 total**, ordered route signatures pinned p
 
 ### Auth / identity commands — split by whether they WRITE (finding 1)
 
-The blanket "auth writes nothing" exclusion was wrong. The nine `auth.controller.ts` routes divide into two mechanisms:
+The blanket "auth writes nothing" exclusion was wrong. The twelve `auth.controller.ts` routes divide into three mechanisms:
 
 **(a) Pure session — no canonical write, correctly excluded from the ledger.** `auth.switch`, `auth.session`, `auth.login`, `auth.otp/request`, `auth.email/request` — mint/refresh a token or send an OTP; no project/org row is created, and there is no authenticated actor subject to key a `CommandExecution` row. OTP replay-safety is the OTP store's single-use property + the rate limiter, not command idempotency.
 
@@ -247,7 +247,9 @@ The blanket "auth writes nothing" exclusion was wrong. The nine `auth.controller
 
 The classifier test pins `auth.service.ts` writes = `{ user, membership, workerDevice }`, so this provisioning surface cannot silently be re-described as write-free. Task 10's identity-command work adopts the natural-key mechanism above (unique `User.email`/`User.phone`; single-use OTP) rather than a `CommandExecution` row — because at provisioning time the actor (the account) does not yet exist, so the ledger's `(scope, actorId, key)` subject is undefined. This is the documented identity-command mechanism the plan requires, distinct from the project/org `CommandExecution` ledger.
 
-**Route accounting:** 42 project + 12 org + 9 auth = **63** mutating routes, the count and per-controller ordered signatures pinned by `cross-module-graph.test.ts`.
+**(c) Password credential security — identity-scoped durable commands, separately audited.** `auth.password/request`, `auth.password/verify`, and `auth.password/complete` create or CAS-update `PasswordCredentialChallenge`, append `SecurityAuditEvent`, and on completion update the named `User` credential. They have no project/org subject and may run before an application session exists, so they do not fit the `(scope, actorId, key)` command ledger. Their mechanism is a generic public response, rate limiting, HMAC OTP, hashed setup token, single-use database CAS, credential-version revocation and an append-only security audit.
+
+**Route accounting:** 42 project + 12 org + 12 auth = **66** mutating routes, the count and per-controller ordered signatures pinned by `cross-module-graph.test.ts`.
 
 ---
 

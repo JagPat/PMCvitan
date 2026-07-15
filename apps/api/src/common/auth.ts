@@ -28,6 +28,8 @@ export interface AuthUser {
   role: Role;
   projectId: string;
   orgId?: string;
+  credentialVersion?: number;
+  worker?: boolean;
 }
 
 /**
@@ -64,6 +66,7 @@ export class JwtGuard implements CanActivate {
     if (routeProject && routeProject !== user.projectId) {
       throw new ForbiddenException('Token is not scoped to this project');
     }
+    await this.projectAccess.assertCredentialVersion(user);
     // LIVE authorization on EVERY guarded route (finding 2): a route without a
     // `:projectId` param (global-scoped deletes) is authorized against the
     // token's own project — a removed member's unexpired token must not retain

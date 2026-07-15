@@ -12,7 +12,7 @@ const jwt = new JwtService({ secret: 'test-secret', signOptions: { expiresIn: '1
 
 function fakePrisma(
   memberships: Array<{ projectId: string; userId: string; role: string; status: string }>,
-  users: Array<{ id: string; projectId: string; role: string; name: string }>,
+  users: Array<{ id: string; projectId: string; role: string; name: string; credentialVersion?: number }>,
   orgMemberships: Array<{ orgId: string; userId: string; role: string }> = [],
   projects: Array<{ id: string; name: string; short: string; orgId: string; archivedAt?: Date }> = [],
 ) {
@@ -63,7 +63,7 @@ describe('AuthService.switchProject', () => {
     const res = await auth.switchProject('u1', 'p2');
     expect(res.projectId).toBe('p2');
     expect(res.role).toBe('client');
-    expect(jwt.verify<AuthUser>(res.token)).toMatchObject({ sub: 'u1', role: 'client', projectId: 'p2' });
+    expect(jwt.verify<AuthUser>(res.token)).toMatchObject({ sub: 'u1', role: 'client', projectId: 'p2', credentialVersion: 0 });
   });
 
   it('forbids the user’s own home project when there is no membership row (legacy fallback retired)', async () => {
@@ -171,19 +171,27 @@ describe('AuthService.listMemberships', () => {
 
 describe('JwtGuard tenancy', () => {
   // typed fake: records live-authorization calls; pass-through unless told otherwise
-  const makeAccess = (behavior?: (user: AuthUser, projectId: string) => Promise<AuthUser>) => {
+  const makeAccess = (
+    behavior?: (user: AuthUser, projectId: string) => Promise<AuthUser>,
+    versionBehavior?: (user: AuthUser) => Promise<void>,
+  ) => {
     const calls: Array<{ sub: string; projectId: string }> = [];
+    const versionCalls: Array<{ sub: string; credentialVersion: number }> = [];
     const fake = {
+      assertCredentialVersion: async (user: AuthUser): Promise<void> => {
+        versionCalls.push({ sub: user.sub, credentialVersion: user.credentialVersion ?? 0 });
+        if (versionBehavior) await versionBehavior(user);
+      },
       authorize: async (user: AuthUser, projectId: string): Promise<AuthUser> => {
         calls.push({ sub: user.sub, projectId });
         return behavior ? behavior(user, projectId) : user;
       },
     };
-    return { fake: fake as unknown as import('../common/project-access.service').ProjectAccessService, calls };
+    return { fake: fake as unknown as import('../common/project-access.service').ProjectAccessService, calls, versionCalls };
   };
   const reflector = { getAllAndOverride: () => undefined } as unknown as import('@nestjs/core').Reflector;
   const identityReflector = { getAllAndOverride: () => true } as unknown as import('@nestjs/core').Reflector;
-  const guardWith = (access = makeAccess(), refl = reflector) => ({ guard: new JwtGuard(jwt, access.fake, refl), calls: access.calls });
+  const guardWith = (access = makeAccess(), refl = reflector) => ({ guard: new JwtGuard(jwt, access.fake, refl), calls: access.calls, versionCalls: access.versionCalls });
   const ctxFor = (token: string, params: Record<string, string>): ExecutionContext =>
     ({ switchToHttp: () => ({ getRequest: () => ({ headers: { authorization: `Bearer ${token}` }, params }) }), getHandler: () => undefined, getClass: () => undefined }) as unknown as ExecutionContext;
 
@@ -225,11 +233,19 @@ describe('JwtGuard tenancy', () => {
   });
 
   it('identity-scoped routes (/me discovery, org admin with :pid) skip the project lookup — their services check live org rows', async () => {
-    const { guard, calls } = guardWith(makeAccess(), identityReflector);
-    const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli' });
+    const { guard, calls, versionCalls } = guardWith(makeAccess(), identityReflector);
+    const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli', credentialVersion: 3 });
     // an org admin scoped to 'ambli' deleting a different project 'villa' must not be tenancy-blocked
     await expect(guard.canActivate(ctxFor(token, { orgId: 'org1', pid: 'villa' }))).resolves.toBe(true);
     expect(calls).toEqual([]); // org routes keep their own (live) authorization path
+    expect(versionCalls).toEqual([{ sub: 'u1', credentialVersion: 3 }]);
+  });
+
+  it('rejects a stale credential version on identity-scoped routes before the controller runs', async () => {
+    const stale = makeAccess(undefined, async () => { throw new UnauthorizedException('Session expired'); });
+    const { guard } = guardWith(stale, identityReflector);
+    const token = jwt.sign({ sub: 'u1', role: 'pmc', projectId: 'ambli', credentialVersion: 1 });
+    await expect(guard.canActivate(ctxFor(token, {}))).rejects.toThrow(UnauthorizedException);
   });
 
   it('rejects a missing/invalid token', async () => {

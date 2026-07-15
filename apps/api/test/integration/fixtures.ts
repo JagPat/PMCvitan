@@ -60,6 +60,8 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
   const cleanup = async (): Promise<void> => {
     // reverse foreign-key order, one transaction — a failed test never strands rows
     await prisma.$transaction([
+      prisma.securityAuditEvent.deleteMany({ where: { targetUserId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
+      prisma.passwordCredentialChallenge.deleteMany({ where: { userId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
       prisma.auditLog.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.notification.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.membership.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),

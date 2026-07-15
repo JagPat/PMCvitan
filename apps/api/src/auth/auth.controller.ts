@@ -1,5 +1,6 @@
 import { Body, Controller, ForbiddenException, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { PasswordCredentialsService } from './password-credentials.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { AllowAnyRole, Public } from '../common/roles';
@@ -11,6 +12,9 @@ const WINDOW = 10 * 60 * 1000; // 10 minutes
 import {
   sessionSchema,
   loginSchema,
+  passwordCredentialRequestSchema,
+  passwordCredentialVerifySchema,
+  passwordCredentialCompleteSchema,
   otpRequestSchema,
   otpVerifySchema,
   workerTokenSchema,
@@ -20,6 +24,9 @@ import {
   switchProjectSchema,
   type SessionInput,
   type LoginInput,
+  type PasswordCredentialRequestInput,
+  type PasswordCredentialVerifyInput,
+  type PasswordCredentialCompleteInput,
   type OtpRequestInput,
   type OtpVerifyInput,
   type WorkerTokenInput,
@@ -32,7 +39,10 @@ import {
 @Controller('auth')
 @UseGuards(ThrottleGuard)
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly passwordCredentials: PasswordCredentialsService,
+  ) {}
 
   /** Re-scope the session to another project the user belongs to (project switch). */
   @Post('switch')
@@ -65,6 +75,28 @@ export class AuthController {
   @Post('login')
   login(@Body(new ZodPipe(loginSchema)) body: LoginInput) {
     return this.auth.login(body);
+  }
+
+  @Public()
+  @Throttle(5, WINDOW)
+  @Post('password/request')
+  passwordRequest(@Body(new ZodPipe(passwordCredentialRequestSchema)) body: PasswordCredentialRequestInput) {
+    return this.passwordCredentials.request(body);
+  }
+
+  @Public()
+  @Throttle(15, WINDOW)
+  @Post('password/verify')
+  passwordVerify(@Body(new ZodPipe(passwordCredentialVerifySchema)) body: PasswordCredentialVerifyInput) {
+    return this.passwordCredentials.verify(body);
+  }
+
+  @Public()
+  @Throttle(10, WINDOW)
+  @Post('password/complete')
+  async passwordComplete(@Body(new ZodPipe(passwordCredentialCompleteSchema)) body: PasswordCredentialCompleteInput) {
+    const user = await this.passwordCredentials.complete(body);
+    return this.auth.signInUser(user);
   }
 
   // Sending an OTP costs a paid SMS — keep this tight.
