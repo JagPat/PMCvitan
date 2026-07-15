@@ -60,7 +60,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, PROJECT_ID, API_BASE } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 
@@ -1187,7 +1187,10 @@ export const useStore = create<Store>()(
       const { decId, optIdx } = get().modal;
       if (decId == null || optIdx == null) return;
       set((s) => { s.modal = { type: null }; });
-      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx), 'Approved & locked — saved to the server.')) return;
+      // one stable idempotency key for this approval — the online send and any offline replay
+      // reach the server under it, so a lost-response retry re-locks once (Phase 2 Task 5).
+      const approveKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'approve', decisionId: decId, optionIndex: optIdx, idempotencyKey: approveKey }, 'Approve ' + decId, () => gateway!.approveDecision(decId, optIdx, approveKey), 'Approved & locked — saved to the server.')) return;
       const src = get().decisions.find((x) => x.id === decId);
       const material = src ? src.options[optIdx].material : '';
       const title = src ? src.title : '';
@@ -1223,7 +1226,8 @@ export const useStore = create<Store>()(
       const costImpact = parseInt(String(changeCost ?? '').replace(/[^\d-]/g, ''), 10) || 0;
       const timeImpactDays = parseInt(String(changeTime ?? '').replace(/[^\d-]/g, ''), 10) || 0;
       set((s) => { s.modal = { type: null }; });
-      if (runRemoteOrQueue({ t: 'change', decisionId: decId, reason, costImpact, timeImpactDays }, 'Change ' + decId, () => gateway!.requestChange(decId, reason, costImpact, timeImpactDays), 'Change Request submitted for client re-approval.')) return;
+      const changeKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'change', decisionId: decId, reason, costImpact, timeImpactDays, idempotencyKey: changeKey }, 'Change ' + decId, () => gateway!.requestChange(decId, reason, costImpact, timeImpactDays, changeKey), 'Change Request submitted for client re-approval.')) return;
       set((s) => {
         const d = s.decisions.find((x) => x.id === decId);
         if (d) {
@@ -1235,7 +1239,8 @@ export const useStore = create<Store>()(
       get().flash('Change Request submitted for client re-approval.');
     },
     withdrawChange: (decId) => {
-      if (runRemoteOrQueue({ t: 'changeWithdraw', decisionId: decId }, 'Withdraw change ' + decId, () => gateway!.withdrawChange(decId), 'Change request withdrawn — the decision is locked again.')) return;
+      const withdrawKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'changeWithdraw', decisionId: decId, idempotencyKey: withdrawKey }, 'Withdraw change ' + decId, () => gateway!.withdrawChange(decId, withdrawKey), 'Change request withdrawn — the decision is locked again.')) return;
       set((s) => {
         const d = s.decisions.find((x) => x.id === decId);
         if (d && d.status === 'change') {
@@ -1668,7 +1673,7 @@ export const useStore = create<Store>()(
         const scope = currentScope();
         void (async () => {
           try {
-            for (const id of decIds) await gw.publishDecision(id);
+            for (const id of decIds) await gw.publishDecision(id, newIdempotencyKey());
             for (const id of dwgIds) await gw.publishDrawing(id);
             // gate round 11: capture the lease before the reconcile fetch. The
             // publishes committed on the server, so announce success once the reply
@@ -1971,7 +1976,7 @@ export const useStore = create<Store>()(
             }),
           );
           const lease = beginSnapshotLease(scope); // gate round 11: before the create request
-          const snap = await gw.createDecision({ title: input.title, nodeId: input.nodeId, room: input.room, options, publish: input.publish });
+          const snap = await gw.createDecision({ title: input.title, nodeId: input.nodeId, room: input.room, options, publish: input.publish }, newIdempotencyKey());
           consumeSnapshotResult(
             acceptSnapshot(snap, lease),
             input.publish
@@ -1990,7 +1995,7 @@ export const useStore = create<Store>()(
       if (!d) return;
       // API mode: the server flips publishedAt, notifies the client, and returns a fresh snapshot.
       if (gateway) {
-        runRemote(() => gateway!.publishDecision(decisionId), `Published: ${d.title} — the client has been asked to choose.`);
+        runRemote(() => gateway!.publishDecision(decisionId, newIdempotencyKey()), `Published: ${d.title} — the client has been asked to choose.`);
         return;
       }
       // Demo (no server): flip the draft live locally and raise the client's notification,

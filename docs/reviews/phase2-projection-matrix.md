@@ -166,17 +166,17 @@ Every state-changing HTTP route (**67 total**, ordered route signatures pinned p
 - **key source** — the client-supplied idempotency key that keys the ledger row. **The honest state today (finding 1):** the frontend offline outbox variants (`apiGateway.ts:688` `OutboxOp`) carry **no operation id**, and only `media.create` sends a `clientKey` (`contracts.ts:130`). So **no command except `media.create` is idempotent today** — every other row is annotated `none today → Task N key`, meaning the ledger's Task-5 schema plus the migrating task (Task 8 for decisions, Task 10 for the rest) must have the client GENERATE and send a stable per-command key; the ledger cannot adopt a key that does not yet exist.
 - **request-hash inputs** — the EXACT validated request DTO fields (from `contracts.ts`, no `…`) hashed for the same-key/different-payload → 409 rule. Routes whose body is empty (id is in the path) hash the path subject.
 - **result ref** — the entity the committed command's `resultRef` resolves to, replayed to the same actor+scope once a key exists.
-- **task** = the Phase-2 task that migrates the route onto the ledger.
+- **task** = the Phase-2 task that migrates the route onto the ledger. **Task 5 wires the decision pillar (the plan's "pillar commands") onto the `CommandExecution` ledger as the reference integration** — the reserve/execute/receipt protocol + the web sending a stable key per command — so the five `decisions.*` rows below read `5 → 8`: the ledger + key land in Task 5, and Task 8 formalizes their shared command contract when it extracts the module. Every other row migrates in Task 10.
 
 ### Project-scoped commands (`scopeKind='project'`, subject `(projectId, actorId, commandType, key)`)
 
 | Command · path | `@Roles` | key source | request-hash inputs (exact) | result ref | task |
 |---|---|---|---|---|---|
-| `decisions.create` POST `/projects/:p/decisions` | pmc | none today → Task 8 key | `{title, nodeId?, room, options:[{label?,material,delta,swatch,photoUrl?,recommended}], publish}` | `Decision.id` | 8 |
-| `decisions.publish` POST `…/decisions/:id/publish` | pmc | none today → Task 8 key | path `{decisionId}` | `Decision.id` | 8 |
-| `decisions.approve` POST `…/decisions/:id/approve` | client,pmc | none today → Task 8 key | `{decisionId, optionIndex}` | `Decision.id` | 8 |
-| `decisions.requestChange` POST `…/decisions/:id/change` | pmc,client,contractor,engineer,consultant | none today → Task 8 key | `{decisionId, reason, costImpact, timeImpactDays}` | `ChangeRequest.id` | 8 |
-| `decisions.withdrawChange` POST `…/decisions/:id/change/withdraw` | pmc,client,contractor,engineer,consultant | none today → Task 8 key | path `{decisionId}` | `Decision.id` | 8 |
+| `decisions.create` POST `/projects/:p/decisions` | pmc | none today → Task 8 key | `{title, nodeId?, room, options:[{label?,material,delta,swatch,photoUrl?,recommended}], publish}` | `Decision.id` | 5 → 8 |
+| `decisions.publish` POST `…/decisions/:id/publish` | pmc | none today → Task 8 key | path `{decisionId}` | `Decision.id` | 5 → 8 |
+| `decisions.approve` POST `…/decisions/:id/approve` | client,pmc | none today → Task 8 key | `{decisionId, optionIndex}` | `Decision.id` | 5 → 8 |
+| `decisions.requestChange` POST `…/decisions/:id/change` | pmc,client,contractor,engineer,consultant | none today → Task 8 key | `{decisionId, reason, costImpact, timeImpactDays}` | `ChangeRequest.id` | 5 → 8 |
+| `decisions.withdrawChange` POST `…/decisions/:id/change/withdraw` | pmc,client,contractor,engineer,consultant | none today → Task 8 key | path `{decisionId}` | `Decision.id` | 5 → 8 |
 | `activities.create` POST `/projects/:p/activities` | pmc | none today → Task 10 key | `{name, zone, plannedStart, plannedEnd, plannedStartDate?, plannedEndDate?, phaseId?, decisionId?, nodeId?, gateMaterial, gateTeam}` | `Activity.id` | 10 |
 | `activities.update` PATCH `…/activities/:id` | pmc | none today → Task 10 key | `{activityId, name?, zone?, plannedStart?, plannedEnd?, plannedStartDate?, plannedEndDate?, phaseId?, decisionId?, nodeId?, gateMaterial?, gateTeam?}` | `Activity.id` | 10 |
 | `activities.remove` DELETE `…/activities/:id` | pmc | none today → Task 10 key | path `{activityId}` | `Activity.id` | 10 |

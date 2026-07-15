@@ -1,4 +1,4 @@
-import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Headers, Param, Post, UseGuards } from '@nestjs/common';
 import { DecisionsService } from './decisions.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
@@ -10,15 +10,17 @@ import { approveSchema, changeSchema, createDecisionSchema, type ApproveInput, t
 export class DecisionsController {
   constructor(private readonly decisions: DecisionsService) {}
 
-  /** Issue a new decision (title/room + options) — the PMC/architect's authority. */
+  /** Issue a new decision (title/room + options) — the PMC/architect's authority. The optional
+   *  `Idempotency-Key` header makes a retried/replayed issue create the decision exactly once. */
   @Post()
   @RolesFor('decision.create')
   create(
     @Param('projectId') projectId: string,
     @Body(new ZodPipe(createDecisionSchema)) body: CreateDecisionInput,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.decisions.create(projectId, body, user);
+    return this.decisions.create(projectId, body, user, idempotencyKey);
   }
 
   /** Publish a private draft decision → issue it to the client (PMC/architect authority). */
@@ -28,11 +30,13 @@ export class DecisionsController {
     @Param('projectId') projectId: string,
     @Param('decisionId') decisionId: string,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.decisions.publish(projectId, decisionId, user);
+    return this.decisions.publish(projectId, decisionId, user, idempotencyKey);
   }
 
-  /** Approve/lock a decision — the client's choice, or the PMC/architect on their behalf. */
+  /** Approve/lock a decision — the client's choice, or the PMC/architect on their behalf. A
+   *  retry with the same `Idempotency-Key` replays the same lock instead of racing a 409. */
   @Post(':decisionId/approve')
   @RolesFor('decision.approve')
   approve(
@@ -40,8 +44,9 @@ export class DecisionsController {
     @Param('decisionId') decisionId: string,
     @Body(new ZodPipe(approveSchema)) body: ApproveInput,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.decisions.approve(projectId, decisionId, body, user);
+    return this.decisions.approve(projectId, decisionId, body, user, idempotencyKey);
   }
 
   /** Raise a change request against a decision — PMC, client, contractor, or the site
@@ -54,8 +59,9 @@ export class DecisionsController {
     @Param('decisionId') decisionId: string,
     @Body(new ZodPipe(changeSchema)) body: ChangeInput,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.decisions.requestChange(projectId, decisionId, body, user);
+    return this.decisions.requestChange(projectId, decisionId, body, user, idempotencyKey);
   }
 
   /** Withdraw the open change request — same roles that may raise one; the service
@@ -66,7 +72,8 @@ export class DecisionsController {
     @Param('projectId') projectId: string,
     @Param('decisionId') decisionId: string,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.decisions.withdrawChange(projectId, decisionId, user);
+    return this.decisions.withdrawChange(projectId, decisionId, user, idempotencyKey);
   }
 }
