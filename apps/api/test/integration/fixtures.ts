@@ -66,6 +66,10 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
     await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent"');
     // reverse foreign-key order, one transaction — a failed test never strands rows
     await prisma.$transaction([
+      // command-idempotency receipts (Phase 2 Task 5) reference the project/org tenant; clear
+      // them before the project/org rows they hang off (their tenant FK is ON DELETE CASCADE,
+      // but an explicit delete keeps the disposable test DB tidy for cross-suite reuse).
+      prisma.commandExecution.deleteMany({ where: { OR: [{ projectId: { in: [projectA.id, projectB.id] } }, { organizationId: { in: [orgA.id, orgB.id] } }] } }),
       prisma.securityAuditEvent.deleteMany({ where: { targetUserId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
       prisma.passwordCredentialChallenge.deleteMany({ where: { userId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
       prisma.auditLog.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),

@@ -489,12 +489,12 @@ export class ApiGateway {
   }
 
   /** Create a decision (PMC). Defaults to a private draft; pass `publish: true` to issue it. */
-  createDecision(input: NewDecisionInput): Promise<ApiSnapshot> {
-    return this.p('/decisions', input);
+  createDecision(input: NewDecisionInput, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p('/decisions', input, idempotencyKey);
   }
   /** Publish a private draft decision (PMC) → issue it to the client. */
-  publishDecision(decisionId: string): Promise<ApiSnapshot> {
-    return this.p(`/decisions/${decisionId}/publish`, {});
+  publishDecision(decisionId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/publish`, {}, idempotencyKey);
   }
   /** Create a location node (zone/room/element) — PMC. Returns a node-carrying snapshot. */
   createNode(input: NewNodeInput): Promise<ApiSnapshot> {
@@ -575,10 +575,14 @@ export class ApiGateway {
     return res.json() as Promise<T>;
   }
 
-  private p(path: string, body?: unknown): Promise<ApiSnapshot> {
+  /** POST to a project-scoped route. An optional `idempotencyKey` becomes the `Idempotency-Key`
+   *  header (Phase 2 Task 5): the server reserves→executes→receipts under it, so a network retry
+   *  or offline replay of the SAME key applies the effect exactly once and returns the same result. */
+  private p(path: string, body?: unknown, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.req<ApiSnapshot>(`/projects/${this.projectId}${path}`, {
       method: 'POST',
       body: body ? JSON.stringify(body) : undefined,
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
     });
   }
 
@@ -586,15 +590,15 @@ export class ApiGateway {
     return this.req<ApiSnapshot>(`/projects/${this.projectId}/snapshot`);
   }
 
-  approveDecision(decisionId: string, optionIndex: number): Promise<ApiSnapshot> {
-    return this.p(`/decisions/${decisionId}/approve`, { optionIndex });
+  approveDecision(decisionId: string, optionIndex: number, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/approve`, { optionIndex }, idempotencyKey);
   }
-  requestChange(decisionId: string, reason: string, costImpact: number, timeImpactDays: number): Promise<ApiSnapshot> {
-    return this.p(`/decisions/${decisionId}/change`, { reason, costImpact, timeImpactDays });
+  requestChange(decisionId: string, reason: string, costImpact: number, timeImpactDays: number, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/change`, { reason, costImpact, timeImpactDays }, idempotencyKey);
   }
   /** Withdraw the open change request — the decision re-locks (requester or PMC only). */
-  withdrawChange(decisionId: string): Promise<ApiSnapshot> {
-    return this.p(`/decisions/${decisionId}/change/withdraw`);
+  withdrawChange(decisionId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/change/withdraw`, undefined, idempotencyKey);
   }
   startActivity(activityId: string): Promise<ApiSnapshot> {
     return this.p(`/activities/${activityId}/start`);
@@ -701,10 +705,20 @@ export class ApiGateway {
  * A mutation captured while offline, replayed through the gateway on reconnect
  * (Phase 8 offline write outbox). Each variant maps 1:1 to a gateway method.
  */
+/** A stable client idempotency key (Phase 2 Task 5). Generated ONCE when a command is initiated
+ *  and carried on its outbox op, so the immediate online send AND any later offline replay reach
+ *  the server under the SAME key — the command-ledger then applies the effect exactly once. */
+export function newIdempotencyKey(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export type OutboxOp =
-  | { t: 'approve'; decisionId: string; optionIndex: number }
-  | { t: 'change'; decisionId: string; reason: string; costImpact: number; timeImpactDays: number }
-  | { t: 'changeWithdraw'; decisionId: string }
+  // the decision-pillar ops carry a stable idempotencyKey (Phase 2 Task 5): a queued op replayed
+  // on reconnect reaches the server under the SAME key it was first sent with, so a lost-response
+  // retry never double-applies.
+  | { t: 'approve'; decisionId: string; optionIndex: number; idempotencyKey: string }
+  | { t: 'change'; decisionId: string; reason: string; costImpact: number; timeImpactDays: number; idempotencyKey: string }
+  | { t: 'changeWithdraw'; decisionId: string; idempotencyKey: string }
   | { t: 'ackDrawing'; revisionId: string }
   | { t: 'submitInspection'; inspectionId: string; items: Checklist['items'] }
   | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemIds: string[] }
@@ -739,11 +753,11 @@ export function isTerminalOutboxError(err: unknown): boolean {
 export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapshot> {
   switch (op.t) {
     case 'approve':
-      return gw.approveDecision(op.decisionId, op.optionIndex);
+      return gw.approveDecision(op.decisionId, op.optionIndex, op.idempotencyKey);
     case 'change':
-      return gw.requestChange(op.decisionId, op.reason, op.costImpact, op.timeImpactDays);
+      return gw.requestChange(op.decisionId, op.reason, op.costImpact, op.timeImpactDays, op.idempotencyKey);
     case 'changeWithdraw':
-      return gw.withdrawChange(op.decisionId);
+      return gw.withdrawChange(op.decisionId, op.idempotencyKey);
     case 'ackDrawing':
       // the server ack is an idempotent upsert on (revisionId, userId) — the model
       // replayable op; it returns {ok,ackCount}, so refetch to reconcile the register

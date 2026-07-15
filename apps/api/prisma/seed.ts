@@ -31,6 +31,13 @@ async function main(): Promise<void> {
   // Media → {DailyLog, Decision, Inspection, InspectionItem};
   // Inspection.assignee / Activity.completionRequestedBy → Membership;
   // credential challenges and security events → User.
+  // The append-only DomainEvent store (Phase 2 Task 4) has a BEFORE DELETE trigger that
+  // blocks row deletes and an ON DELETE RESTRICT tenant FK, so a normal deleteMany fails and
+  // its rows would block the Project wipe below. TRUNCATE fires no row trigger — the sanctioned
+  // reset for a disposable database (this seed is destructive by contract). CommandExecution
+  // (Task 5) and ProjectEventStream cascade with the Project delete, but clearing the events
+  // here is what lets that Project delete run at all when a prior run left events behind.
+  await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent"');
   await prisma.gateOverride.deleteMany();
   await prisma.drawingRecipient.deleteMany();
   await prisma.passwordCredentialChallenge.deleteMany();

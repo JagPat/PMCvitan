@@ -323,7 +323,7 @@ describe('Phase 7b write-cutover — API mode routes mutations through the gatew
     s().confirmApprove();
     await flush();
 
-    expect(gw.approveDecision).toHaveBeenCalledWith('DL-014', 1);
+    expect(gw.approveDecision).toHaveBeenCalledWith('DL-014', 1, expect.any(String));
     expect(s().decisions.find((d) => d.id === 'DL-014')?.status).toBe('approved');
     expect(s().notifications[0].text).toBe('SERVER applied'); // snapshot applied
     expect(s().modal.type).toBeNull(); // modal closed

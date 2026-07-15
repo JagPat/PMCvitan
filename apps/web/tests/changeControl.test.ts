@@ -50,7 +50,7 @@ describe('withdrawChange store action', () => {
     s().withdrawChange('DL-003');
     await flush();
 
-    expect(gw.withdrawChange).toHaveBeenCalledWith('DL-003');
+    expect(gw.withdrawChange).toHaveBeenCalledWith('DL-003', expect.any(String));
     expect(s().notifications[0].text).toBe('SERVER applied'); // snapshot reconciled
   });
 
@@ -61,19 +61,19 @@ describe('withdrawChange store action', () => {
 
     s().withdrawChange('DL-003');
     expect(gw.withdrawChange).not.toHaveBeenCalled();
-    expect(s().outbox).toEqual([{ t: 'changeWithdraw', decisionId: 'DL-003' }]);
+    expect(s().outbox).toEqual([{ t: 'changeWithdraw', decisionId: 'DL-003', idempotencyKey: expect.any(String) }]);
 
     s().toggleOnline();
     await flush();
-    expect(gw.withdrawChange).toHaveBeenCalledWith('DL-003');
+    expect(gw.withdrawChange).toHaveBeenCalledWith('DL-003', expect.any(String));
     expect(s().outbox).toHaveLength(0);
   });
 
   it('replayOutboxOp maps the changeWithdraw op to gateway.withdrawChange', async () => {
     const gw = { withdrawChange: vi.fn().mockResolvedValue(makeSnapshot()) };
-    const op: OutboxOp = { t: 'changeWithdraw', decisionId: 'DL-042' };
+    const op: OutboxOp = { t: 'changeWithdraw', decisionId: 'DL-042', idempotencyKey: 'k-test' };
     await replayOutboxOp(gw as unknown as ApiGateway, op);
-    expect(gw.withdrawChange).toHaveBeenCalledWith('DL-042');
+    expect(gw.withdrawChange).toHaveBeenCalledWith('DL-042', 'k-test');
   });
 
   it('demo (no gateway): re-locks the decision and clears the open change request', () => {

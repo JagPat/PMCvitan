@@ -45,7 +45,7 @@ describe('Phase 8 offline outbox', () => {
     s().confirmApprove();
 
     expect(gw.approveDecision).not.toHaveBeenCalled();
-    expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1 }]);
+    expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1, idempotencyKey: expect.any(String) }]);
     expect(s().syncQueue.length).toBe(1); // banner reflects the queued op
     expect(s().modal.type).toBeNull();
   });
@@ -67,7 +67,7 @@ describe('Phase 8 offline outbox', () => {
     s().toggleOnline(); // back online → flush
     await flush();
 
-    expect(gw.approveDecision).toHaveBeenCalledWith('DL-014', 1);
+    expect(gw.approveDecision).toHaveBeenCalledWith('DL-014', 1, expect.any(String));
     expect(gw.startActivity).toHaveBeenCalledWith('ACT-31');
     expect(s().outbox).toHaveLength(0);
     expect(s().syncQueue).toHaveLength(0);
@@ -83,7 +83,7 @@ describe('Phase 8 offline outbox', () => {
     s().confirmApprove();
     await flush();
 
-    expect(gw.approveDecision).toHaveBeenCalledWith('DL-014', 1);
+    expect(gw.approveDecision).toHaveBeenCalledWith('DL-014', 1, expect.any(String));
     expect(s().outbox).toHaveLength(0);
   });
 
@@ -102,7 +102,7 @@ describe('Phase 8 offline outbox', () => {
     useStore.setState(getInitialState());
     expect(s().outbox).toHaveLength(0);
     s().hydrateOutbox();
-    expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1 }]);
+    expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1, idempotencyKey: expect.any(String) }]);
   });
 
   it('WEB-02: work queued under one project is not hydrated in another', () => {
@@ -122,7 +122,7 @@ describe('Phase 8 offline outbox', () => {
     // …and switching back restores the original project's queued work.
     useStore.setState((st) => { st.activeProjectId = 'ambli'; });
     s().hydrateOutbox();
-    expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1 }]);
+    expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1, idempotencyKey: expect.any(String) }]);
   });
 
   it('WEB-02: work queued by one user is not hydrated for another (shared browser)', () => {
@@ -148,7 +148,7 @@ describe('Phase 8 offline outbox', () => {
     // u1 returns — their queued work resumes
     useStore.setState((st) => { st.sessionToken = tokenFor('u1'); });
     s().hydrateOutbox();
-    expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1 }]);
+    expect(s().outbox).toEqual([{ t: 'approve', decisionId: 'DL-014', optionIndex: 1, idempotencyKey: expect.any(String) }]);
   });
 
   it('WEB-02: migrates a legacy unscoped queue into the current scope once', () => {

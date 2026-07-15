@@ -248,6 +248,23 @@ assert "legacy decisions/activities are untouched by the additive event migratio
   "SELECT (SELECT status FROM \"Decision\" WHERE id='DL-1') || '|' || (SELECT status FROM \"Activity\" WHERE id='ACT-1');" \
   "change|done"
 
+# Phase 2 Task 5 — the command-idempotency ledger is a pure, row-free capability addition
+assert "the CommandExecution ledger table exists" \
+  "SELECT (to_regclass('\"CommandExecution\"') IS NOT NULL)::text;" \
+  "true"
+assert "both SCOPE-SPECIFIC partial unique indexes exist (project index never constrains org rows and vice versa)" \
+  "SELECT COUNT(*) FROM pg_indexes WHERE indexname IN ('command_execution_project_key','command_execution_org_key');" \
+  "2"
+assert "the scope truth-table CHECK and the status CHECK are database-enforced" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('CommandExecution_scope_truth_table','CommandExecution_status_check');" \
+  "2"
+assert "the composite project-scoped tenant FK (organizationId, projectId) -> Project(orgId, id) exists" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname='CommandExecution_tenant_fkey' AND contype='f';" \
+  "1"
+assert "the additive migration wrote NO receipts — a legacy client that sends no key keeps working" \
+  "SELECT COUNT(*) FROM \"CommandExecution\";" \
+  "0"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

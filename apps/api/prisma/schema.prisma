@@ -137,6 +137,36 @@ model DomainEvent {
   @@index([eventType])
 }
 
+// Phase 2 Task 5 — the command-idempotency ledger. One receipt per (scope, actor, commandType,
+// idempotencyKey): a retried/duplicated command (offline replay, network retry, double-tap)
+// reserves→executes→commits its succeeded receipt in ONE transaction, so the effect happens
+// exactly once and a replay returns the stored result. Ordering/collision is enforced by
+// SCOPE-SPECIFIC PARTIAL unique indexes (raw SQL — Prisma cannot express WHERE): project-scoped
+// rows key on (projectId, actorId, commandType, idempotencyKey), org-scoped rows on
+// (organizationId, …), so an org index never constrains a project row. The scope truth-table
+// CHECK, the status CHECK and the composite project-scoped tenant FK (organizationId, projectId)
+// -> Project(orgId, id) are raw SQL too (20261016000000_phase2_command_ledger). The simple
+// organizationId -> Org(id) FK below is Prisma-expressible and covers org-scoped rows.
+model CommandExecution {
+  id             String    @id @default(uuid())
+  scopeKind      String // 'project' | 'org'
+  organizationId String
+  projectId      String? // NULL for org-scoped commands (the scope CHECK enforces this)
+  actorId        String
+  commandType    String
+  idempotencyKey String
+  requestHash    String
+  status         String // 'reserved' | 'succeeded' | 'failed'
+  resultRef      String? // the committed entity id (Decision.id, …), replayed to the same actor+scope
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  org Org @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([projectId])
+}
+
 // A firm/consultant associated with a project — the client company, the main
 // contractor, the structural/MEP consultants, etc. Distinct from Membership (which
 // is a *person* with a login role); a company is an organisation + a contact.
@@ -166,6 +196,7 @@ model Org {
   members   OrgMembership[]
   modules   TemplateModule[]
   templates ProjectTemplate[]
+  commandExecutions CommandExecution[]
 }
 
 // Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
