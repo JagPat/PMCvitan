@@ -58,11 +58,12 @@ const submittedChecklist = (): Checklist => ({ id: 'INSP-90', title: 'Test', zon
 /** a snapshot addressed to a DIFFERENT project (wrong-project payload). */
 const otherProjectSnapshot = () => makeSnapshot({ project: { ...PROJECT, id: 'OTHER' } });
 
-/** a held gateway method: returns a promise the test releases on demand. */
+/** a held gateway method: returns a promise the test releases (or rejects) on demand. */
 function deferred<T>() {
   let release!: (v: T) => void;
-  const promise = new Promise<T>((r) => { release = r; });
-  return { promise, release };
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { release = res; reject = rej; });
+  return { promise, release, reject };
 }
 
 beforeEach(() => {
@@ -285,6 +286,222 @@ describe('snapshot coordinator — requestFreshSnapshot pull', () => {
     s().requestFreshSnapshot();
     await settles(() => s().projectLoadState === 'error');
     expect(s().projectLoadError).toMatch(/could not load this project/i);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gate round 12 — the reviewer's five probes: scope-keyed ownership, guaranteed
+// reconciliation after supersession, and scope-guarded drawing continuations.
+// ─────────────────────────────────────────────────────────────────────────────
+/** move the store to a NEW project scope (new id + generation) with a new gateway. */
+const switchTo = (projectId: string, generation: number, gw: unknown) => {
+  useStore.setState((st) => {
+    st.activeProjectId = projectId;
+    st.projectScopeGeneration = generation;
+    st.projectLoadState = 'switching';
+    st.decisions = [];
+  });
+  s()._setGateway(gw as unknown as ApiGateway);
+};
+const snapFor = (id: string, extra?: Partial<ApiSnapshot>) => makeSnapshot({ project: { ...PROJECT, id }, ...extra });
+const drawingInput = (number: string) => ({ number, title: 'Foundation layout', discipline: 'structural' as const, rev: 'A', mime: 'application/pdf', data: 'JVBERi0=' });
+
+describe('snapshot coordinator — scope-keyed ownership (round 12, finding 1)', () => {
+  it("gap 1A: a new scope's initial pull starts independently of an old scope's in-flight pull", async () => {
+    const holdA = deferred<ApiSnapshot>();
+    const holdB = deferred<ApiSnapshot>();
+    const gwA = { snapshot: vi.fn().mockImplementation(() => holdA.promise) };
+    const gwB = { snapshot: vi.fn().mockImplementation(() => holdB.promise) };
+    s()._setGateway(gwA as unknown as ApiGateway);
+    useStore.setState((st) => { st.activeProjectId = 'A'; st.projectScopeGeneration = 1; st.projectLoadState = 'switching'; st.decisions = []; });
+
+    s().requestFreshSnapshot();                       // A's pull — in flight (held)
+    await settles(() => gwA.snapshot.mock.calls.length === 1);
+
+    switchTo('B', 2, gwB);
+    s().requestFreshSnapshot();                        // B's pull MUST start, not queue behind A
+    await settles(() => gwB.snapshot.mock.calls.length === 1);
+    expect(gwB.snapshot).toHaveBeenCalledTimes(1);
+
+    holdA.release(snapFor('A'));                        // A lands late — scope-moved, ignored
+    holdB.release(snapFor('B', { decisions: [decisionRow('DL-B')] }));
+    await settles(() => decisionIds().includes('DL-B')); // B applied — never left blank
+    expect(s().projectLoadState).toBe('ready');
+  });
+
+  it("gap 1B: a stale old-scope command lease does not supersede a live scope's response", async () => {
+    const holdPublishA = deferred<void>();
+    const holdSnapB = deferred<ApiSnapshot>();
+    const gwA = {
+      publishDecision: vi.fn().mockImplementation(() => holdPublishA.promise),
+      publishDrawing: vi.fn(),
+      snapshot: vi.fn().mockResolvedValue(snapFor('A')),
+    };
+    const gwB = { snapshot: vi.fn().mockImplementation(() => holdSnapB.promise) };
+    s()._setGateway(gwA as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.activeProjectId = 'A'; st.projectScopeGeneration = 1; st.projectLoadState = 'ready';
+      st.decisions = [{ ...decisionRow('DL-DRAFT'), draft: true }];
+    });
+
+    s().publishAllDrafts();                            // holds on A's publish
+    await settles(() => gwA.publishDecision.mock.calls.length === 1);
+
+    switchTo('B', 2, gwB);
+    s().requestFreshSnapshot();                        // B's initial pull (held)
+    await settles(() => gwB.snapshot.mock.calls.length === 1);
+
+    holdPublishA.release();                             // A resumes: takes an A lease AFTER the await
+    await drainMicrotasks();
+    holdSnapB.release(snapFor('B', { decisions: [decisionRow('DL-B')] }));
+    await settles(() => decisionIds().includes('DL-B')); // B's valid response applied, NOT superseded by stale A
+    expect(s().projectLoadState).toBe('ready');
+  });
+
+  it("gap 1 (public apply): a stale delivered snapshot for a left scope does not poison the live scope's lease", async () => {
+    const holdB = deferred<ApiSnapshot>();
+    const gwB = { snapshot: vi.fn().mockImplementation(() => holdB.promise) };
+    switchTo('B', 2, gwB);
+    s().requestFreshSnapshot();                        // B's pull in flight (lease newest for B)
+    await settles(() => gwB.snapshot.mock.calls.length === 1);
+
+    // a stale socket-delivered snapshot for a scope we've LEFT arrives via the public action
+    const staleScope = { projectId: 'A', generation: 1 };
+    expect(s().applySnapshot(snapFor('A'), staleScope)).toBe(false); // scope-moved, not applied
+
+    holdB.release(snapFor('B', { decisions: [decisionRow('DL-B')] }));
+    await settles(() => decisionIds().includes('DL-B')); // B still applies — its lease was never poisoned
+  });
+});
+
+describe('snapshot coordinator — guaranteed reconcile after supersession (round 12, finding 2)', () => {
+  it('gap 2 command: a superseded command reconciles even when the newer refresh FAILS', async () => {
+    const holdCmd = deferred<ApiSnapshot>();
+    const holdRefresh = deferred<ApiSnapshot>();
+    let snapCall = 0;
+    const gw = {
+      createDecision: vi.fn().mockImplementation(() => holdCmd.promise),
+      snapshot: vi.fn().mockImplementation(() => { snapCall += 1; return snapCall === 1 ? holdRefresh.promise : Promise.resolve(makeSnapshot({ decisions: [decisionRow('DL-CMD')] })); }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.decisions = []; st.projectLoadState = 'ready'; });
+
+    s().issueDecision({ title: 'X', room: '', options: [], publish: true }); // lease 1 (held)
+    await settles(() => gw.createDecision.mock.calls.length === 1);
+    s().requestFreshSnapshot();                        // lease 2 — the background refresh (held)
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+
+    holdCmd.release(makeSnapshot({ decisions: [decisionRow('DL-CMD')] })); // command reply — superseded
+    await drainMicrotasks();
+    expect(s().toast).toMatch(/Decision issued/i);      // success announced (it committed)
+
+    holdRefresh.reject(new Error('offline'));           // the newer refresh FAILS
+    await settles(() => gw.snapshot.mock.calls.length === 2); // a recovery pull runs ANYWAY
+    await settles(() => decisionIds().includes('DL-CMD'));    // and lands the committed decision
+  });
+
+  it('gap 2 submit: a superseded submit reconciles; if it cannot land, a recoverable error (never frozen forever)', async () => {
+    const holdSubmit = deferred<ApiSnapshot>();
+    const holdRefresh = deferred<ApiSnapshot>();
+    let snapCall = 0;
+    const gw = {
+      submitInspection: vi.fn().mockImplementation(() => holdSubmit.promise),
+      snapshot: vi.fn().mockImplementation(() => { snapCall += 1; return snapCall === 1 ? holdRefresh.promise : Promise.reject(new Error('offline')); }),
+      uploadMedia: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; });
+    seedTwoPass();
+
+    s().submitInspection();                             // submitting — lease 1 (held)
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    s().requestFreshSnapshot();                         // lease 2 — background refresh (held)
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+
+    holdSubmit.release(makeSnapshot({ checklist: submittedChecklist() })); // ack — superseded
+    await drainMicrotasks();
+    expect(s().submission.status).toBe('submitting');   // stays FROZEN (the submit succeeded; don't unlock)
+
+    holdRefresh.reject(new Error('offline'));            // the newer refresh fails
+    await settles(() => gw.snapshot.mock.calls.length === 2); // a recovery pull runs anyway
+    await settles(() => s().projectLoadState === 'error');    // it too failed → recoverable error, not a silent freeze
+    expect(s().submission.status).toBe('submitting');   // still frozen, but now retryable via the boundary
+  });
+
+  it('gap 2 submit (happy): a superseded submit auto-reconciles to confirmed truth', async () => {
+    const holdSubmit = deferred<ApiSnapshot>();
+    const holdRefresh = deferred<ApiSnapshot>();
+    let snapCall = 0;
+    const gw = {
+      submitInspection: vi.fn().mockImplementation(() => holdSubmit.promise),
+      snapshot: vi.fn().mockImplementation(() => { snapCall += 1; return snapCall === 1 ? holdRefresh.promise : Promise.resolve(makeSnapshot({ checklist: submittedChecklist() })); }),
+      uploadMedia: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; });
+    seedTwoPass();
+
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    s().requestFreshSnapshot();
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+
+    holdSubmit.release(makeSnapshot({ checklist: submittedChecklist() }));
+    await drainMicrotasks();
+    holdRefresh.reject(new Error('offline'));            // newer refresh fails, but the reconcile lands truth
+    await settles(() => s().checklist?.submitted === true);
+    expect(s().submission.status).toBe('idle');          // freeze retired on confirmed truth
+  });
+});
+
+describe('snapshot coordinator — drawing issue/ack scope guards (round 12, finding 3)', () => {
+  it('issue: a resolve after a project switch neither toasts nor refreshes the new project', async () => {
+    const holdIssueA = deferred<void>();
+    const gwA = { issueDrawing: vi.fn().mockImplementation(() => holdIssueA.promise) };
+    const gwB = { snapshot: vi.fn() };
+    s()._setGateway(gwA as unknown as ApiGateway);
+    useStore.setState((st) => { st.activeProjectId = 'A'; st.projectScopeGeneration = 1; });
+
+    s().issueDrawing(drawingInput('A-101'));            // held
+    await settles(() => gwA.issueDrawing.mock.calls.length === 1);
+
+    switchTo('B', 2, gwB);
+    useStore.setState((st) => { st.toast = 'B-TOAST'; });
+    holdIssueA.release();                                // A's issue resolves after the switch
+    await drainMicrotasks();
+    expect(s().toast).toBe('B-TOAST');                   // no "Drawing issued: A-101" leaked into B
+    expect(gwB.snapshot).not.toHaveBeenCalled();         // A's continuation did NOT refresh B
+  });
+
+  it('issue: a same-scope resolve toasts and refreshes as before', async () => {
+    const gwA = { issueDrawing: vi.fn().mockResolvedValue(undefined), snapshot: vi.fn().mockResolvedValue(snapFor('A')) };
+    s()._setGateway(gwA as unknown as ApiGateway);
+    useStore.setState((st) => { st.activeProjectId = 'A'; st.projectScopeGeneration = 1; st.projectLoadState = 'ready'; });
+
+    s().issueDrawing(drawingInput('A-101'));
+    await settles(() => (s().toast ?? '').match(/Drawing issued: A-101/i) !== null);
+    await settles(() => gwA.snapshot.mock.calls.length === 1); // it did refresh THIS scope
+  });
+
+  it('ack: a resolve after a project switch neither toasts nor refreshes the new project', async () => {
+    const holdAckA = deferred<void>();
+    const gwA = { acknowledgeDrawing: vi.fn().mockImplementation(() => holdAckA.promise) };
+    const gwB = { snapshot: vi.fn() };
+    s()._setGateway(gwA as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.activeProjectId = 'A'; st.projectScopeGeneration = 1; st.online = true;
+      st.drawings = [{ id: 'DWG-A', number: 'A-101', title: 'Foundation', discipline: 'structural', zone: null, activityId: null, decisionId: null, current: { id: 'REV-A', rev: 'A', status: 'for_construction', mime: 'application/pdf', url: '/d', sizeBytes: 1, note: '', issuedBy: 'x', issuedAt: 'now', acks: [] }, ackedByMe: false, revisions: [] }];
+    });
+
+    s().acknowledgeDrawing('DWG-A');                     // held
+    await settles(() => gwA.acknowledgeDrawing.mock.calls.length === 1);
+
+    switchTo('B', 2, gwB);
+    useStore.setState((st) => { st.toast = 'B-TOAST'; });
+    holdAckA.release();
+    await drainMicrotasks();
+    expect(s().toast).toBe('B-TOAST');                   // no "Acknowledged…" leaked into B
+    expect(gwB.snapshot).not.toHaveBeenCalled();
   });
 });
 
