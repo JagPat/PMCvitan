@@ -33,31 +33,17 @@ export function useApiSync(): void {
     const gw = new ApiGateway(API_BASE, activeProjectId);
 
     const refresh = () => {
-      // capture the scope this request is FOR — a reply landing after a switch or
-      // sign-in (generation bumped) is rejected by applySnapshot, never applied.
-      const st = useStore.getState();
-      const scope = st.captureProjectScope();
-      // initial load: surface the loading state BEFORE the request (Task 3). A
-      // background refresh (already 'ready') stays 'ready' — stale-while-revalidate,
-      // no loading flash on every socket ping.
-      if (st.projectLoadState !== 'ready') {
-        useStore.setState((s) => { s.projectLoadState = 'loading'; });
-      }
-      gw.snapshot()
-        .then((snap) => {
-          if (!cancelled) useStore.getState().applySnapshot(snap, scope);
-        })
-        .catch(() => {
-          // the snapshot didn't arrive — surface a RECOVERABLE error state instead of
-          // stranding the transition (records were already cleared; nothing stale shows).
-          if (cancelled) return;
-          useStore.setState((s) => {
-            if (s.projectLoadState === 'switching' || s.projectLoadState === 'loading') {
-              s.projectLoadState = 'error';
-              s.projectLoadError = 'Could not load this project — check your connection and access, then retry.';
-            }
-          });
-        });
+      // gate round 11: every snapshot pull — the initial load, a retry, and every
+      // socket `changed` ping — routes through the store's central coordinator. It
+      // captures the ordering lease + scope, surfaces the loading state on a
+      // non-`ready` load (stale-while-revalidate on a background refresh), applies
+      // through the single ordered entry point (so a reply that lands after a switch
+      // or sign-in is dropped, and a newer owner wins), coalesces concurrent pulls,
+      // and surfaces the recoverable error state itself. The `cancelled` closure is
+      // no longer needed for correctness here — a torn-down effect's scope is
+      // superseded/scope-moved by the coordinator — but still gates the socket
+      // handler below so we don't schedule a pull after unmount.
+      useStore.getState().requestFreshSnapshot();
     };
 
     (async () => {

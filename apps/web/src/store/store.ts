@@ -128,6 +128,20 @@ export interface ChecklistSubmission {
   attempt: number;
 }
 
+/** Gate round 11 — central snapshot ordering. A full project snapshot has SCOPE
+ *  identity (project + generation) but, before this, no freshness/ownership
+ *  ordering: any producer whose (project, generation) still matched could apply
+ *  its snapshot last-response-wins — so a slow offline replay could overwrite a
+ *  newer socket refresh or online submit. A `SnapshotLease` stamps every producer
+ *  with a monotonic sequence captured when its request STARTS; only the newest
+ *  eligible lease may apply. Applying returns one of these outcomes; a caller must
+ *  consume the result and never announce success unless it is `applied`. */
+export type SnapshotApplyResult = 'applied' | 'superseded' | 'scope-moved' | 'invalid-project';
+export interface SnapshotLease {
+  scope: ProjectScope;
+  sequence: number;
+}
+
 export interface AppState {
   role: Role;
   screen: ScreenKey;
@@ -361,10 +375,15 @@ export interface AppActions {
   /** Refetch the active project's snapshot after a load error (the boundary's Retry). */
   retryProjectLoad: () => void;
   _setGateway: (g: ApiGateway | null) => void;
-  /** Apply a snapshot only if it belongs to the CURRENT scope (project id + generation
-   *  captured when the request was issued). Returns true only when applied, so callers
-   *  can't mark a stale response as ready. */
+  /** Apply a delivered snapshot as the newest snapshot intent for the current scope
+   *  (gate round 11 — begins a fresh lease, then routes through the coordinator).
+   *  Models a pushed/socket-delivered snapshot; returns true only when `applied`, so
+   *  callers can't mark a stale/rejected response as ready. Prefer `requestFreshSnapshot`
+   *  for a pull; the internal command paths use the coordinator's `acceptSnapshot`. */
   applySnapshot: (snap: ApiSnapshot, capturedScope?: ProjectScope) => boolean;
+  /** Pull one coalesced fresh snapshot through the coordinator (socket refresh,
+   *  initial load, retry, invalid-project recovery). At most one in flight per scope. */
+  requestFreshSnapshot: () => void;
 }
 
 export type Store = AppState & AppActions;
@@ -553,16 +572,23 @@ export const useStore = create<Store>()(
     const scopeStillCurrent = (scope: ProjectScope): boolean =>
       isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope);
 
-    const applySnapshot = (snap: ApiSnapshot, capturedScope?: ProjectScope): boolean => {
-      // Default to the CURRENT scope for direct/local callers; network callers pass
-      // the scope captured when their request was issued.
-      const scope = capturedScope ?? currentScope();
-      const st = get();
-      // Reject a snapshot for a project we've since left, or one whose request
-      // predates a scope change (generation bumped by a switch/sign-in) — applying
-      // it would show the wrong project's records under the active selection.
-      if (snap.project.id !== st.activeProjectId) return false;
-      if (!isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, scope)) return false;
+    // ---- gate round 11: central snapshot-ordering coordinator ----
+    // A monotonic sequence in the store closure (never timestamps). `begin` makes a
+    // lease the newest snapshot intent for the current scope; a lease stays eligible
+    // only while its scope is still current AND no newer lease has begun.
+    let snapshotSeq = 0;
+    let newestLeaseSeq = 0;
+    const beginSnapshotLease = (scope: ProjectScope): SnapshotLease => {
+      const sequence = ++snapshotSeq;
+      newestLeaseSeq = sequence;
+      return { scope, sequence };
+    };
+
+    /** The pure state-copy for a snapshot. PRODUCTION CODE MUST NOT CALL THIS
+     *  DIRECTLY — only `acceptSnapshot` may, after the ordering checks. A source-scan
+     *  test (`snapshot-ordering.test.ts`) enforces the single call site so an
+     *  unsequenced apply cannot be reintroduced. */
+    const applySnapshotCore = (snap: ApiSnapshot): void => {
       set((s) => {
         s.projectLoadState = 'ready'; // the active project's data has landed
         s.projectLoadError = null;
@@ -640,17 +666,86 @@ export const useStore = create<Store>()(
         s.milestonePct = snap.project.milestonePct;
         s.nodes = snap.nodes ?? [];
       });
-      return true;
+    };
+
+    /** The ONE ordered entry point for applying a snapshot. Checks, in order:
+     *  (1) current-scope — a project switch / re-auth since the request started;
+     *  (2) newest-sequence — a newer lease (socket refresh, mutation or submit) has
+     *      taken ownership, so this response is stale even in the same scope;
+     *  (3) snapshot-project — the payload is for a different project (wrong-project);
+     *  then applies. The result MUST be consumed; success is announced only for
+     *  `applied`. `superseded` / `scope-moved` are silent no-ops; `invalid-project`
+     *  never reports success and the caller requests a fresh snapshot to recover. */
+    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease): SnapshotApplyResult => {
+      const st = get();
+      if (!isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, lease.scope)) return 'scope-moved';
+      if (lease.sequence !== newestLeaseSeq) return 'superseded';
+      if (snap.project.id !== lease.scope.projectId) return 'invalid-project';
+      applySnapshotCore(snap);
+      return 'applied';
+    };
+
+    /** Coalesced fresh-snapshot pull — the ONE way to fetch current truth (socket
+     *  refresh, initial load, retry, invalid-project recovery). At most one is in
+     *  flight per active scope; a request made while one runs schedules exactly one
+     *  more after it settles (never a loop, and never across a scope change). */
+    let refreshInFlight = false;
+    let refreshQueued = false;
+    const requestFreshSnapshot = async (): Promise<void> => {
+      if (!gateway) return;
+      if (refreshInFlight) { refreshQueued = true; return; }
+      refreshInFlight = true;
+      const g = gateway;
+      const lease = beginSnapshotLease(currentScope());
+      // initial load / retry surfaces 'loading'; a background refresh (already
+      // 'ready') stays ready — stale-while-revalidate, no flash on every socket ping.
+      if (get().projectLoadState !== 'ready') set((s) => { s.projectLoadState = 'loading'; });
+      try {
+        const snap = await g.snapshot();
+        const result = acceptSnapshot(snap, lease);
+        if (result === 'invalid-project' && scopeStillCurrent(lease.scope)) {
+          set((s) => {
+            s.projectLoadState = 'error';
+            s.projectLoadError = 'Could not load this project — check your connection and access, then retry.';
+          });
+        }
+        // superseded / scope-moved: a newer owner or the next refresh supplies truth.
+      } catch {
+        if (scopeStillCurrent(lease.scope)) set((s) => {
+          if (s.projectLoadState === 'switching' || s.projectLoadState === 'loading') {
+            s.projectLoadState = 'error';
+            s.projectLoadError = 'Could not load this project — check your connection and access, then retry.';
+          }
+        });
+      } finally {
+        refreshInFlight = false;
+        if (refreshQueued && scopeStillCurrent(lease.scope)) { refreshQueued = false; void requestFreshSnapshot(); }
+        else refreshQueued = false;
+      }
+    };
+
+    /** Consume an `acceptSnapshot` result on a COMMAND path (a user-initiated
+     *  mutation: approve, publish, issue, evidence upload…). The command's success
+     *  is independent of the snapshot ORDERING race: the mutation committed on the
+     *  server the moment its call resolved. So announce success whenever the reply
+     *  landed in the CURRENT scope — `applied` (this snapshot is freshest) OR
+     *  `superseded` (a newer same-scope refresh, almost always the mutation's OWN
+     *  `changed` broadcast, already carries the committed truth). Suppress only when
+     *  the scope MOVED (a switch / re-auth — a stale toast must never leak into the
+     *  new context) or the payload was `invalid-project` (a genuine wrong-project
+     *  error — never claim success; pull a fresh snapshot to recover current truth).
+     *  This keeps success announcements truthful without re-announcing on a stale
+     *  cross-scope reply. */
+    const consumeSnapshotResult = (result: SnapshotApplyResult, okMsg?: string): void => {
+      if (result === 'applied' || result === 'superseded') { if (okMsg) get().flash(okMsg); }
+      else if (result === 'invalid-project') void requestFreshSnapshot();
     };
 
     const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: string): void => {
-      const scope = currentScope(); // the project this mutation belongs to
+      const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
       call()
-        .then((snap) => {
-          applySnapshot(snap, scope);
-          get().flash(okMsg);
-        })
-        .catch(() => get().flash('Could not reach the server — please try again.'));
+        .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), okMsg))
+        .catch(() => { if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.'); });
     };
 
     // WEB-02: queued offline writes are scoped to WHO queued them and WHERE — the
@@ -866,24 +961,23 @@ export const useStore = create<Store>()(
     captureProjectScope: currentScope,
     retryProjectLoad: () => {
       if (!gateway) return;
-      const scope = currentScope();
-      set((s) => {
-        s.projectLoadState = 'loading';
-        s.projectLoadError = null;
-      });
-      gateway
-        .snapshot()
-        .then((snap) => { applySnapshot(snap, scope); })
-        .catch(() => set((s) => {
-          if (!isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) return;
-          s.projectLoadState = 'error';
-          s.projectLoadError = 'Could not load this project — check your connection and access, then retry.';
-        }));
+      set((s) => { s.projectLoadError = null; });
+      // gate round 11: the boundary's Retry is a coalesced fresh pull through the
+      // coordinator — it surfaces loading, applies only if it's still the newest,
+      // and re-exposes the recoverable error on failure / wrong-project.
+      void requestFreshSnapshot();
     },
     _setGateway: (g) => {
       gateway = g;
     },
-    applySnapshot,
+    // gate round 11: the PUBLIC apply is a coordinator entry — it begins a FRESH
+    // lease (a delivered snapshot is the newest intent) and routes through
+    // acceptSnapshot, returning true only for `applied`. Internal command paths do
+    // NOT use this; they capture their lease before their request and call the
+    // coordinator's acceptSnapshot directly.
+    applySnapshot: (snap, capturedScope) =>
+      acceptSnapshot(snap, beginSnapshotLease(capturedScope ?? currentScope())) === 'applied',
+    requestFreshSnapshot: () => { void requestFreshSnapshot(); },
 
     // ---- shell ----
     setRole: (role) => {
@@ -1114,13 +1208,13 @@ export const useStore = create<Store>()(
       try {
         await gateway.uploadMedia({ kind: 'inspection', mime, data: base64, clientKey, ...meta });
         if (!scopeStillCurrent(scope)) return;
+        // gate round 11: capture the snapshot lease BEFORE the refetch, then route
+        // through the coordinator — a newer socket refresh / submit that began
+        // meanwhile supersedes this reconcile, and the success toast fires only when
+        // the snapshot is actually `applied` (never on a superseded / wrong-project one).
+        const lease = beginSnapshotLease(scope);
         const snap = await gateway.snapshot();
-        // gate round-4 finding 3: the SNAPSHOT await crosses the scope too —
-        // applySnapshot refuses a response whose (project, generation) moved (a
-        // switch OR a same-project re-authentication) and returns false; nothing
-        // after it may run.
-        if (!applySnapshot(snap, scope)) return;
-        get().flash('Evidence photo uploaded and linked to the item.');
+        consumeSnapshotResult(acceptSnapshot(snap, lease), 'Evidence photo uploaded and linked to the item.');
       } catch {
         // the failure belongs to the scope the capture was made in — a moved
         // scope (gate round-4 finding 3) hears nothing
@@ -1209,22 +1303,31 @@ export const useStore = create<Store>()(
           const attempt = ++submitAttemptSeq;
           set((s) => { s.submission = { inspectionId: c.id, generation: s.projectScopeGeneration, status: 'submitting', attempt }; });
           const scope = currentScope();
+          // gate round 11: the submit needs BOTH guards — the attempt id owns the
+          // COMMAND lifecycle (round 10), and a snapshot lease captured at dispatch
+          // owns snapshot FRESHNESS (so a newer socket refresh / submit that began
+          // while this was in flight supersedes this response even in the same scope).
+          const lease = beginSnapshotLease(scope);
           const isThisAttempt = (): boolean => scopeStillCurrent(scope) && get().submission.attempt === attempt;
           gateway
             .submitInspection(c.id, c.items)
             .then((snap) => {
-              // Ignore a response that no longer owns the submission: a newer submit
-              // or a socket refresh superseded it (round 10), or the session moved
-              // (round 9). Applying its snapshot would overwrite the live checklist
-              // and idle the newer submit; toasting would be a stale notification.
-              if (!isThisAttempt()) return;
-              applySnapshot(snap, scope); // submitted:true clears the marks + idles the submission
-              get().flash('Inspection submitted to the architect for review.');
+              if (!isThisAttempt()) return; // a newer submit/socket/session retired this command
+              const result = acceptSnapshot(snap, lease);
+              if (result === 'applied') {
+                get().flash('Inspection submitted to the architect for review.');
+              } else if (result === 'invalid-project') {
+                // manifestation 2: a rejected (wrong-project) payload must NOT report
+                // success and must NOT leave the checklist frozen forever — unlock the
+                // attempt and pull a fresh snapshot to recover current truth.
+                set((s) => { if (s.submission.attempt === attempt && s.submission.status === 'submitting') s.submission.status = 'idle'; });
+                void requestFreshSnapshot();
+              }
+              // superseded / scope-moved: silent — the newer owner/refresh has truth.
             })
             .catch(() => {
-              // Same guard on failure: a retired attempt (round 10) or a superseded
-              // session (round 9) must not unlock the live submit or toast "Could not
-              // submit" — a socket refresh may already have confirmed success.
+              // A retired attempt (round 9/10) or a superseded session must not unlock
+              // the live submit or toast — a socket refresh may already have confirmed.
               if (!isThisAttempt()) return;
               set((s) => {
                 if (s.submission.attempt === attempt && s.submission.status === 'submitting') {
@@ -1338,7 +1441,7 @@ export const useStore = create<Store>()(
           .issueDrawing(input)
           .then(() => {
             get().flash(`Drawing issued: ${input.number} Rev ${input.rev} — team notified.`);
-            ((scope) => gateway!.snapshot().then((snap) => applySnapshot(snap, scope)).catch(() => {}))(currentScope());
+            requestFreshSnapshot(); // gate round 11: one coalesced, coordinator-ordered refresh
           })
           .catch(() => get().flash('Could not issue the drawing — please try again.'));
         return;
@@ -1421,8 +1524,15 @@ export const useStore = create<Store>()(
           try {
             for (const id of decIds) await gw.publishDecision(id);
             for (const id of dwgIds) await gw.publishDrawing(id);
-            applySnapshot(await gw.snapshot(), scope);
-            done();
+            // gate round 11: capture the lease before the reconcile fetch. The
+            // publishes committed on the server, so announce success once the reply
+            // lands in the current scope — `applied` OR `superseded` (a newer
+            // same-scope refresh already carries the published state). Suppress on a
+            // wrong-project payload (recover) or a scope move (no stale toast leak).
+            const lease = beginSnapshotLease(scope);
+            const result = acceptSnapshot(await gw.snapshot(), lease);
+            if (result === 'applied' || result === 'superseded') done();
+            else if (result === 'invalid-project') void requestFreshSnapshot();
           } catch {
             get().flash('Could not publish every draft — some may still be drafts. Please try again.');
           }
@@ -1469,7 +1579,7 @@ export const useStore = create<Store>()(
           .acknowledgeDrawing(rev.id)
           .then(() => {
             get().flash(`Acknowledged — building to ${drawing.number} Rev ${rev.rev}.`);
-            ((scope) => gateway!.snapshot().then((snap) => applySnapshot(snap, scope)).catch(() => {}))(currentScope());
+            requestFreshSnapshot(); // gate round 11: one coalesced, coordinator-ordered refresh
           })
           .catch(() => get().flash('Could not record the acknowledgement — please try again.'));
         return;
@@ -1705,9 +1815,10 @@ export const useStore = create<Store>()(
               return { ...o, photoUrl: up.url };
             }),
           );
+          const lease = beginSnapshotLease(scope); // gate round 11: before the create request
           const snap = await gw.createDecision({ title: input.title, nodeId: input.nodeId, room: input.room, options, publish: input.publish });
-          applySnapshot(snap, scope);
-          get().flash(
+          consumeSnapshotResult(
+            acceptSnapshot(snap, lease),
             input.publish
               ? `Decision issued: ${input.title} — the client has been asked to choose.`
               : `Draft saved: ${input.title} — visible only to you until you publish it.`,
@@ -1743,8 +1854,15 @@ export const useStore = create<Store>()(
       const before = new Set(get().nodes.map((n) => n.id));
       const scope = currentScope();
       try {
+        const lease = beginSnapshotLease(scope); // gate round 11: before the create request
         const snap = await gateway.createNode(input);
-        applySnapshot(snap, scope);
+        const result = acceptSnapshot(snap, lease);
+        if (result !== 'applied') {
+          // a newer refresh owns the tree (superseded) or the payload was wrong-project;
+          // don't claim success or return a node id the current tree may not reflect.
+          if (result === 'invalid-project') void requestFreshSnapshot();
+          return null;
+        }
         get().flash(`Added ${input.kind}: ${input.name}.`);
         // the newly-created node is the one whose id wasn't present before
         const created = get().nodes.find((n) => !before.has(n.id) && n.name === input.name && n.kind === input.kind);
@@ -2174,6 +2292,12 @@ export const useStore = create<Store>()(
       const flushScope = currentScope();
       const flushToken = get().sessionToken;
       const flushKey = outboxKey();
+      // gate round 11: take the ordering lease NOW, before replaying the first op.
+      // The reconcile snapshot below is applied through the coordinator against this
+      // lease, so if a newer socket/mutation lease begins while a replay is in flight
+      // the flush's (older) snapshot is `superseded` and discarded instead of stomping
+      // the newer checklist. This is the reviewer's manifestation #1 — the core bug.
+      const flushLease = beginSnapshotLease(flushScope);
 
       // Replay in order, one at a time, committing progress as we go so a later failure
       // never re-runs an op that already succeeded. A permanently-rejected op (terminal
@@ -2249,7 +2373,7 @@ export const useStore = create<Store>()(
         reconcileSubmission(s);
       });
       persistOutbox();
-      if (lastSnap) applySnapshot(lastSnap, flushScope);
+      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease));
 
       const parts: string[] = [];
       if (synced > 0) parts.push(`${synced} offline update${synced > 1 ? 's' : ''} synced`);
