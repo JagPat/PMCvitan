@@ -11,6 +11,10 @@ export interface EmailOtpResult {
   devCode?: string;
 }
 
+export interface PasswordCredentialEmailResult {
+  live: boolean;
+}
+
 /**
  * Email OTP delivery, dev-stub-first. When SMTP is configured
  * (SMTP_HOST + SMTP_USER + SMTP_PASS) it emails a code we generate; with no SMTP
@@ -84,5 +88,32 @@ export class EmailService {
 
   async verifyOtp(email: string, code: string): Promise<boolean> {
     return this.otp.verify(email.trim().toLowerCase(), code);
+  }
+
+  /** Deliver a code whose lifecycle is owned by the durable credential service.
+   * It is deliberately never copied into the legacy in-memory sign-in OTP store. */
+  async sendPasswordCredentialCode(email: string, code: string): Promise<PasswordCredentialEmailResult> {
+    const to = email.trim().toLowerCase();
+    if (!this.configured) {
+      if (isProduction()) {
+        throw new ServiceUnavailableException('Password setup email is not available.');
+      }
+      // Do not log or return credential material. Integration tests replace this
+      // provider with a capture transport; local manual use should run SMTP/Mailpit.
+      return { live: false };
+    }
+    try {
+      await this.tx().sendMail({
+        from: this.from,
+        to,
+        subject: 'Set up or reset your Vitan PMC password',
+        text: `Your Vitan PMC password verification code is ${code}. It expires in 10 minutes. If you did not request this, ignore this email.`,
+        html: `<p>Your Vitan PMC password verification code is <b style="font-size:20px;letter-spacing:2px">${code}</b>.</p><p>It expires in 10 minutes. If you did not request this, ignore this email.</p>`,
+      });
+    } catch (error) {
+      this.log.error(`Password credential email failed: ${(error as Error).constructor.name}`);
+      throw new ServiceUnavailableException('Could not send the password setup email.');
+    }
+    return { live: true };
   }
 }

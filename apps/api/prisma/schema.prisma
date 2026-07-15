@@ -391,18 +391,61 @@ model DrawingAck {
 // dev auth (the "Viewing as" persona switch) is separate and gated by
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
-  id           String   @id @default(cuid())
-  project      Project  @relation(fields: [projectId], references: [id])
-  projectId    String
-  role         String // pmc | client | engineer | contractor
-  name         String
-  email        String?  @unique
-  phone        String?  @unique
-  passwordHash String?
-  createdAt    DateTime @default(now())
+  id                String    @id @default(cuid())
+  project           Project   @relation(fields: [projectId], references: [id])
+  projectId         String
+  role              String // pmc | client | engineer | contractor
+  name              String
+  email             String?   @unique
+  phone             String?   @unique
+  passwordHash      String?
+  emailVerifiedAt   DateTime?
+  credentialVersion Int       @default(0)
+  createdAt         DateTime  @default(now())
 
   orgMemberships OrgMembership[]
   memberships    Membership[]
+  passwordChallenges PasswordCredentialChallenge[]
+  securityEvents     SecurityAuditEvent[]          @relation("SecurityEventTarget")
+  securityActorEvents SecurityAuditEvent[]         @relation("SecurityEventActor")
+}
+
+// Durable, purpose-bound proof used only to establish or reset a password. It
+// never represents an application session and stores no reusable secret.
+model PasswordCredentialChallenge {
+  id                  String    @id @default(uuid()) @db.Uuid
+  userId              String
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose             String
+  otpHash             String
+  attempts            Int       @default(0)
+  expiresAt           DateTime
+  verifiedAt          DateTime?
+  setupTokenHash      String?   @unique
+  setupTokenExpiresAt DateTime?
+  consumedAt          DateTime?
+  createdAt           DateTime  @default(now())
+
+  @@index([userId, purpose, consumedAt])
+  @@index([expiresAt])
+}
+
+// Identity-level security trail. Password recovery is not a project event, so
+// it must not be forced into the project operations AuditLog.
+model SecurityAuditEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  action        String
+  targetUserId  String
+  targetUser    User     @relation("SecurityEventTarget", fields: [targetUserId], references: [id], onDelete: Restrict)
+  actorUserId   String?
+  actorUser     User?    @relation("SecurityEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorKind     String
+  correlationId String
+  payload       Json?
+  createdAt     DateTime @default(now())
+
+  @@index([targetUserId, createdAt])
+  @@index([actorUserId, createdAt])
 }
 
 // A worker's device identity (QR / tap-photo job card) — no account, no
