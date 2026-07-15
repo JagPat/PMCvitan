@@ -6,6 +6,8 @@ import { addCivilDays, diffCivilDays, fromIsoCivilDate, toIsoCivilDate } from '.
 import type { AuthUser } from '../common/auth';
 import type { CreatePhaseInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
+import { recordAudit } from '../platform/audit';
+import { resolveActor } from '../common/actor';
 
 @Injectable()
 export class PhasesService {
@@ -20,6 +22,7 @@ export class PhasesService {
    *  derives from the project's schedule anchor + the legacy offsets — and the
    *  legacy ints stay coherent when ISO drove the write. */
   async create(projectId: string, input: CreatePhaseInput, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { scheduleStartDate: true } });
     const anchor = toIsoCivilDate(project.scheduleStartDate);
     const startIso = input.plannedStartDate ?? (anchor ? addCivilDays(anchor, input.plannedStart) : null);
@@ -42,7 +45,7 @@ export class PhasesService {
           order: (maxOrder._max.order ?? 0) + 1,
         },
       }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'phase.create', entity: 'Phase', entityId: input.name } }),
+      recordAudit(this.prisma, { projectId, actor, action: 'phase.create', entity: 'Phase', entityId: input.name }),
     ]);
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -50,12 +53,13 @@ export class PhasesService {
 
   /** PMC removes a phase; its activities are detached (they render in the flat list). */
   async remove(projectId: string, phaseId: string, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const p = await this.prisma.phase.findUnique({ where: { id: phaseId } });
     if (!p || p.projectId !== projectId) throw new NotFoundException('Phase not found');
     await this.prisma.$transaction([
       this.prisma.activity.updateMany({ where: { phaseId }, data: { phaseId: null } }),
       this.prisma.phase.delete({ where: { id: phaseId } }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'phase.delete', entity: 'Phase', entityId: phaseId } }),
+      recordAudit(this.prisma, { projectId, actor, action: 'phase.delete', entity: 'Phase', entityId: phaseId }),
     ]);
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);

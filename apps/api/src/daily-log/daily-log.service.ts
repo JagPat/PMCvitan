@@ -10,6 +10,8 @@ import { fromIsoCivilDate } from '../common/civil-date';
 import type { AuthUser } from '../common/auth';
 import type { AddMaterialInput, FlagMismatchInput, SubmitDailyLogInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
+import { recordAudit } from '../platform/audit';
+import { resolveActor } from '../common/actor';
 
 @Injectable()
 export class DailyLogService {
@@ -28,6 +30,7 @@ export class DailyLogService {
    *  mismatch strictly before its readiness evaluation, or this flag waits for the
    *  start's commit and blocks the freshly started activity as a NEW fact. */
   async flagMismatch(projectId: string, input: FlagMismatchInput, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     let matName = '';
     await this.prisma.$transaction(async (tx) => {
       await lockProjectReadiness(tx, projectId);
@@ -43,7 +46,7 @@ export class DailyLogService {
         await tx.activity.update({ where: { id: a.id }, data: { gateMaterial: 'fail', status: a.status === 'done' ? a.status : 'blocked', block: 'Material ≠ approved' } });
       }
       await tx.notification.create({ data: { projectId, text: `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, color: '#B23A34', time: 'just now' } });
-      await tx.auditLog.create({ data: { projectId, actor: user.role, action: 'material.mismatch', entity: 'SiteMaterial', entityId: mat.id } });
+      await recordAudit(tx, { projectId, actor, action: 'material.mismatch', entity: 'SiteMaterial', entityId: mat.id });
     });
     // material mismatch blocks work — alert PMC (resolves it) and contractor (supplied it)
     this.realtime.notifyChanged(projectId, `Material mismatch: ${matName} ≠ approved ${input.decisionId}`, ['pmc', 'contractor']);
@@ -53,6 +56,7 @@ export class DailyLogService {
   /** Engineer starts a fresh day's log once the previous one is submitted. Crew trades
    *  are carried over at count 0 so the steppers appear pre-populated. */
   async start(projectId: string, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const latest = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: [{ logDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }], include: { crew: { orderBy: { order: 'asc' } } } });
     if (latest && !latest.submitted) throw new ConflictException('The current daily log is still open — submit it before starting a new day');
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
@@ -63,7 +67,7 @@ export class DailyLogService {
     if (latest?.crew.length) {
       await this.prisma.crewRow.createMany({ data: latest.crew.map((c) => ({ dailyLogId: log.id, trade: c.trade, count: 0, order: c.order })) });
     }
-    await this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'dailylog.start', entity: 'DailyLog', entityId: log.id } });
+    await recordAudit(this.prisma, { projectId, actor, action: 'dailylog.start', entity: 'DailyLog', entityId: log.id });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -71,6 +75,7 @@ export class DailyLogService {
   /** Engineer records a material delivery on the open log (optionally linked to the
    *  decision that approved it, which is what mismatch-flagging keys off). */
   async addMaterial(projectId: string, input: AddMaterialInput, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const log = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: [{ logDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }], include: { materials: true } });
     if (!log) throw new NotFoundException('No daily log for this project — start one first');
     if (log.submitted) throw new ConflictException('This log is already submitted — start a new day first');
@@ -85,7 +90,7 @@ export class DailyLogService {
       this.prisma.siteMaterial.create({
         data: { projectId, dailyLogId: log.id, name: input.name, qty: input.qty, zone: input.zone, decisionId: input.decisionId ?? null, swatch: input.swatch, matched: true, nodeId, order },
       }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'material.add', entity: 'DailyLog', entityId: log.id } }),
+      recordAudit(this.prisma, { projectId, actor, action: 'material.add', entity: 'DailyLog', entityId: log.id }),
     ]);
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -93,6 +98,7 @@ export class DailyLogService {
 
   /** Submit the daily log to PMC (must be checked in first). */
   async submit(projectId: string, input: SubmitDailyLogInput, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const log = await this.prisma.dailyLog.findFirst({ where: { projectId }, orderBy: [{ logDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }] });
     if (!log) throw new NotFoundException('No daily log for this project');
     if (!input.checkedIn) throw new BadRequestException('Please check in at site before submitting the daily log.');
@@ -100,7 +106,7 @@ export class DailyLogService {
     await this.prisma.$transaction([
       this.prisma.dailyLog.update({ where: { id: log.id }, data: { checkedIn: input.checkedIn, checkinTime: input.checkinTime, progress: input.progress, submitted: true } }),
       ...input.crew.map((c) => this.prisma.crewRow.updateMany({ where: { dailyLogId: log.id, trade: c.trade }, data: { count: c.count } })),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'dailylog.submit', entity: 'DailyLog', entityId: log.id } }),
+      recordAudit(this.prisma, { projectId, actor, action: 'dailylog.submit', entity: 'DailyLog', entityId: log.id }),
     ]);
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);

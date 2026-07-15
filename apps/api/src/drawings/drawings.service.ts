@@ -12,6 +12,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import type { IssueDrawingInput } from '../contracts';
+import { recordAudit } from '../platform/audit';
 
 export interface IssuedDrawing {
   drawingId: string;
@@ -209,17 +210,13 @@ export class DrawingsService {
           revisionId = drawing.revisions[0].id;
           if (published) await this.freezeRecipients(tx, projectId, revisionId);
         }
-        await tx.auditLog.create({
-          data: {
-            projectId,
-            actor: actor.actorName,
-            actorId: actor.actorId,
-            actorRole: actor.actorRole,
-            action: isRevise ? 'drawing.revise' : 'drawing.issue',
-            entity: 'DrawingRevision',
-            entityId: revisionId,
-            payload: { number: input.number, rev: input.rev, status: input.status },
-          },
+        await recordAudit(tx, {
+          projectId,
+          actor,
+          action: isRevise ? 'drawing.revise' : 'drawing.issue',
+          entity: 'DrawingRevision',
+          entityId: revisionId,
+          payload: { number: input.number, rev: input.rev, status: input.status },
         });
       });
     } catch (e) {
@@ -266,9 +263,7 @@ export class DrawingsService {
         select: { id: true },
       });
       for (const rev of unfrozen) await this.freezeRecipients(tx, projectId, rev.id);
-      await tx.auditLog.create({
-        data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } },
-      });
+      await recordAudit(tx, { projectId, actor, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } });
     });
     this.realtime.notifyChanged(projectId, `Drawing issued: ${d.number} — ${d.title}`, ['engineer', 'contractor']);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -283,9 +278,7 @@ export class DrawingsService {
     const actor = await resolveActor(this.prisma, user);
     await this.prisma.$transaction([
       this.prisma.drawing.update({ where: { id }, data: { nodeId: resolved } }),
-      this.prisma.auditLog.create({
-        data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } },
-      }),
+      recordAudit(this.prisma, { projectId, actor, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } }),
     ]);
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -314,9 +307,7 @@ export class DrawingsService {
         const existing = await tx.drawingAck.findUnique({ where: { revisionId_userId: { revisionId, userId: user.sub } } });
         if (existing) return; // replay — the fact is already recorded and audited
         await tx.drawingAck.create({ data: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role } });
-        await tx.auditLog.create({
-          data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } },
-        });
+        await recordAudit(tx, { projectId, actor, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } });
         firstAck = true;
       });
     } catch (e) {
@@ -357,9 +348,7 @@ export class DrawingsService {
       // deleting a linked drawing changes the aggregated gate (finding 1)
       await lockProjectReadiness(tx, projectId);
       await tx.drawing.delete({ where: { id } }); // revisions + recipients cascade
-      await tx.auditLog.create({
-        data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } },
-      });
+      await recordAudit(tx, { projectId, actor, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } });
     });
     this.realtime.notifyChanged(projectId);
     return true;

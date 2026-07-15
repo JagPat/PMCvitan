@@ -15,6 +15,7 @@ import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
 import type { CreateActivityInput, OverrideGateInput, UpdateActivityInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
+import { recordAudit } from '../platform/audit';
 
 @Injectable()
 export class ActivitiesService {
@@ -64,6 +65,7 @@ export class ActivitiesService {
 
   /** PMC plans a new activity (name, zone, planned window, gates, phase/decision links). */
   async create(projectId: string, input: CreateActivityInput, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     await this.assertRefs(projectId, input.phaseId, input.decisionId, input.nodeId);
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     const anchor = toIsoCivilDate(project.scheduleStartDate);
@@ -97,7 +99,7 @@ export class ActivitiesService {
           order,
         },
       }),
-      this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.create', entity: 'Activity', entityId: id } }),
+      recordAudit(this.prisma, { projectId, actor, action: 'activity.create', entity: 'Activity', entityId: id }),
     ]);
     this.realtime.notifyChanged(projectId, `Schedule updated: ${input.name} planned`, ['engineer', 'contractor']);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -105,6 +107,7 @@ export class ActivitiesService {
 
   /** PMC edits the plan — only provided fields change; explicit null clears a link. */
   async update(projectId: string, activityId: string, input: UpdateActivityInput, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
     const ps = input.plannedStart ?? a.plannedStart;
@@ -142,7 +145,7 @@ export class ActivitiesService {
       // stored material/team flags and the decision link move readiness (finding 1)
       await lockProjectReadiness(tx, projectId);
       await tx.activity.update({ where: { id: activityId }, data });
-      await tx.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.update', entity: 'Activity', entityId: activityId } });
+      await recordAudit(tx, { projectId, actor, action: 'activity.update', entity: 'Activity', entityId: activityId });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -150,6 +153,7 @@ export class ActivitiesService {
 
   /** PMC removes a planned activity. Refused once field records reference it. */
   async remove(projectId: string, activityId: string, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
     try {
@@ -162,7 +166,7 @@ export class ActivitiesService {
     } catch {
       throw new ConflictException('This activity has linked records (inspections/materials) — it can no longer be deleted');
     }
-    await this.prisma.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.delete', entity: 'Activity', entityId: activityId } });
+    await recordAudit(this.prisma, { projectId, actor, action: 'activity.delete', entity: 'Activity', entityId: activityId });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -217,6 +221,7 @@ export class ActivitiesService {
    *  (409, no duplicate audit); a concurrent gate flip lands strictly before
    *  (this start refuses it) or strictly after (it waits for this commit). */
   async start(projectId: string, activityId: string, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     // the actual start is TODAY in the project's time zone — a real civil date,
     // never the prototype's todayDay counter
@@ -248,7 +253,7 @@ export class ActivitiesService {
         },
       });
       if (count === 0) throw new ConflictException('Activity is not in a startable state');
-      await tx.auditLog.create({ data: { projectId, actor: user.role, action: 'activity.start', entity: 'Activity', entityId: activityId } });
+      await recordAudit(tx, { projectId, actor, action: 'activity.start', entity: 'Activity', entityId: activityId });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -322,7 +327,7 @@ export class ActivitiesService {
           },
         });
         await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${a.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now' } });
-        await tx.auditLog.create({ data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.complete_requested', entity: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } } });
+        await recordAudit(tx, { projectId, actor, action: 'activity.complete_requested', entity: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } });
       });
     } catch (e) {
       // a concurrent inspection create took the sequential id — a plain retry resolves it
@@ -355,9 +360,7 @@ export class ActivitiesService {
       await tx.gateOverride.create({
         data: { projectId, activityId, gate: input.gate, state: input.state, reason: input.reason, actorId: actor.actorId, actorName: actor.actorName, evidenceMediaId, expiresAt },
       });
-      await tx.auditLog.create({
-        data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.override', entity: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state, reason: input.reason, expiresAt: expiresAt.toISOString(), evidenceMediaId } },
-      });
+      await recordAudit(tx, { projectId, actor, action: 'activity.override', entity: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state, reason: input.reason, expiresAt: expiresAt.toISOString(), evidenceMediaId } });
     });
     this.realtime.notifyChanged(projectId, `Gate override on ${a.name}: ${input.gate} → ${input.state} (expires ${ddMmmYyyy(expiresAt)})`, ['engineer', 'contractor']);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -375,9 +378,7 @@ export class ActivitiesService {
       // revoking restores the derivation instantly — a readiness write (finding 1)
       await lockProjectReadiness(tx, projectId);
       await tx.gateOverride.delete({ where: { id: overrideId } });
-      await tx.auditLog.create({
-        data: { projectId, actor: actor.actorName, actorId: actor.actorId, actorRole: actor.actorRole, action: 'activity.override_revoke', entity: 'Activity', entityId: activityId, payload: { overrideId, gate: row.gate, state: row.state, reason: row.reason } },
-      });
+      await recordAudit(tx, { projectId, actor, action: 'activity.override_revoke', entity: 'Activity', entityId: activityId, payload: { overrideId, gate: row.gate, state: row.state, reason: row.reason } });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
