@@ -29,7 +29,9 @@ The relational model (PostgreSQL) for the domain. The frontend today runs agains
 | `GateOverride` | A MANUAL readiness exception (Task 6) — never a silent flag-flip | projectId, **activityId** (composite FK), gate (`decision\|material\|team\|inspection\|drawing`), state, **reason**, **actorId/actorName**, **evidenceMediaId** (optional, composite FK to Media), **expiresAt** (always in the future at creation; expiry or early revocation restores the derivation), createdAt. Audited as `activity.override` / `activity.override_revoke` |
 | `Notification` | Feed item | projectId, text, kind/color, at |
 | `SyncOutboxEntry` | Offline mutation queue (idempotency) | clientId, opType, payload, appliedAt |
-| `AuditLog` | Global attribution trail | actor, **actorId/actorRole** (real identity + role held at action time), action, entity, entityId, at. Drawing actions: `drawing.issue\|revise\|publish\|ack\|remove\|refile` (Phase 1 Task 3) |
+| `AuditLog` | Global attribution trail | actor, **actorId/actorRole** (real identity + role held at action time), action, entity, entityId, at. Drawing actions: `drawing.issue\|revise\|publish\|ack\|remove\|refile` (Phase 1 Task 3). Written ONLY through `platform/audit.ts` `recordAudit` (Phase 2 Task 3) |
+| `DomainEvent` | Append-only event store (Phase 2 Task 4) | eventId (uuid PK), eventType (see `packages/shared` catalog), payloadVersion, **organizationId** (NON-NULL) + projectId + **streamPosition** (`@@unique`), siteId?, actorId?/**actorKind** (`human\|system`)/systemActor?, entityType/entityId, occurredAt (DISPLAY ONLY), correlationId?/causedByEventId?, payload. Composite tenant FK `(organizationId, projectId) → Project(orgId, id)`; attribution CHECK; **`BEFORE UPDATE OR DELETE` trigger makes it append-only**. Written ONLY through `platform/events.ts` `emitEvent` inside the mutation transaction |
+| `ProjectEventStream` | Per-project gap-safe position counter (Phase 2 Task 4) | projectId (PK, FK Project), nextPosition (BIGINT). Locked + incremented inside the mutation txn to assign `DomainEvent.streamPosition`; auto-created for every project by an `AFTER INSERT` trigger |
 
 ## Conventions
 

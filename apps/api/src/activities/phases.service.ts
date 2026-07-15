@@ -7,6 +7,7 @@ import type { AuthUser } from '../common/auth';
 import type { CreatePhaseInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
+import { emitEvent } from '../platform/events';
 import { resolveActor } from '../common/actor';
 
 @Injectable()
@@ -33,8 +34,8 @@ export class PhasesService {
       throw new BadRequestException('The planned window is reversed: the resolved end date is before the start date');
     }
     const maxOrder = await this.prisma.phase.aggregate({ where: { projectId }, _max: { order: true } });
-    await this.prisma.$transaction([
-      this.prisma.phase.create({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.phase.create({
         data: {
           projectId,
           name: input.name,
@@ -44,9 +45,10 @@ export class PhasesService {
           plannedEndDate: fromIsoCivilDate(endIso),
           order: (maxOrder._max.order ?? 0) + 1,
         },
-      }),
-      recordAudit(this.prisma, { projectId, actor, action: 'phase.create', entity: 'Phase', entityId: input.name }),
-    ]);
+      });
+      await recordAudit(tx, { projectId, actor, action: 'phase.create', entity: 'Phase', entityId: input.name });
+      await emitEvent(tx, { projectId, actor, eventType: 'phase.created', entityType: 'Phase', entityId: input.name, payload: { name: input.name } });
+    });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -56,11 +58,12 @@ export class PhasesService {
     const actor = await resolveActor(this.prisma, user);
     const p = await this.prisma.phase.findUnique({ where: { id: phaseId } });
     if (!p || p.projectId !== projectId) throw new NotFoundException('Phase not found');
-    await this.prisma.$transaction([
-      this.prisma.activity.updateMany({ where: { phaseId }, data: { phaseId: null } }),
-      this.prisma.phase.delete({ where: { id: phaseId } }),
-      recordAudit(this.prisma, { projectId, actor, action: 'phase.delete', entity: 'Phase', entityId: phaseId }),
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.activity.updateMany({ where: { phaseId }, data: { phaseId: null } });
+      await tx.phase.delete({ where: { id: phaseId } });
+      await recordAudit(tx, { projectId, actor, action: 'phase.delete', entity: 'Phase', entityId: phaseId });
+      await emitEvent(tx, { projectId, actor, eventType: 'phase.removed', entityType: 'Phase', entityId: phaseId });
+    });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }

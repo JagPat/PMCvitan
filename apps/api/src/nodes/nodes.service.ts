@@ -5,6 +5,8 @@ import { RealtimeGateway } from '../realtime/realtime.gateway';
 import type { AuthUser } from '../common/auth';
 import type { CreateNodeInput, MoveNodeInput, RenameNodeInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
+import { resolveActor } from '../common/actor';
+import { emitEvent } from '../platform/events';
 
 /** The location tree is exactly 3 levels: a zone contains rooms, a room contains
  *  elements (the objects, e.g. "Main Door"). A node's kind fixes what its parent
@@ -30,14 +32,18 @@ export class NodesService {
 
   /** Create a zone/room/element under the right kind of parent. */
   async create(projectId: string, input: CreateNodeInput, user: AuthUser): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
     const parent = await this.requireParentForKind(projectId, input.kind, input.parentId ?? null);
     const order = await this.nextOrder(projectId, input.parentId ?? null);
     // Draft → Publish: a node under a DRAFT parent must itself be a draft (a published child of a
     // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
     const parentIsDraft = parent ? parent.publishedAt === null : false;
     const publishedAt = input.publish && !parentIsDraft ? new Date() : null;
-    await this.prisma.projectNode.create({
-      data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order, authorId: user.sub, publishedAt },
+    await this.prisma.$transaction(async (tx) => {
+      const created = await tx.projectNode.create({
+        data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order, authorId: user.sub, publishedAt },
+      });
+      await emitEvent(tx, { projectId, actor, eventType: 'node.created', entityType: 'ProjectNode', entityId: created.id, payload: { name: input.name, kind: input.kind } });
     });
     return this.done(projectId, user);
   }
@@ -46,13 +52,17 @@ export class NodesService {
    *  whole) become visible to the team and available in the filing pickers. PMC authority. */
   async publish(projectId: string, nodeId: string, user: AuthUser): Promise<SnapshotDto> {
     const node = await this.requireNode(projectId, nodeId);
+    const actor = await resolveActor(this.prisma, user);
     // publish the whole branch: draft ancestors (so the breadcrumb is complete) + the subtree.
     const ancestors = await this.ancestorIds(nodeId);
     const subtree = await this.subtreeIds(nodeId);
     const branch = [...new Set([...ancestors, ...subtree])];
-    await this.prisma.projectNode.updateMany({
-      where: { id: { in: branch }, projectId, publishedAt: null },
-      data: { publishedAt: new Date() },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.projectNode.updateMany({
+        where: { id: { in: branch }, projectId, publishedAt: null },
+        data: { publishedAt: new Date() },
+      });
+      await emitEvent(tx, { projectId, actor, eventType: 'node.published', entityType: 'ProjectNode', entityId: nodeId });
     });
     void node;
     return this.done(projectId, user);
@@ -61,7 +71,11 @@ export class NodesService {
   /** Rename a node (its decisions/children are untouched). */
   async rename(projectId: string, nodeId: string, input: RenameNodeInput, user: AuthUser): Promise<SnapshotDto> {
     await this.requireNode(projectId, nodeId);
-    await this.prisma.projectNode.update({ where: { id: nodeId }, data: { name: input.name } });
+    const actor = await resolveActor(this.prisma, user);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.projectNode.update({ where: { id: nodeId }, data: { name: input.name } });
+      await emitEvent(tx, { projectId, actor, eventType: 'node.renamed', entityType: 'ProjectNode', entityId: nodeId, payload: { name: input.name } });
+    });
     return this.done(projectId, user);
   }
 
@@ -74,7 +88,11 @@ export class NodesService {
       if (await this.isDescendant(parent.id, nodeId)) throw new BadRequestException('Cannot move a node under one of its own descendants');
     }
     const order = input.order ?? (await this.nextOrder(projectId, input.parentId));
-    await this.prisma.projectNode.update({ where: { id: nodeId }, data: { parentId: parent?.id ?? null, order } });
+    const actor = await resolveActor(this.prisma, user);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.projectNode.update({ where: { id: nodeId }, data: { parentId: parent?.id ?? null, order } });
+      await emitEvent(tx, { projectId, actor, eventType: 'node.moved', entityType: 'ProjectNode', entityId: nodeId, payload: { parentId: parent?.id ?? null } });
+    });
     return this.done(projectId, user);
   }
 
@@ -85,6 +103,7 @@ export class NodesService {
    */
   async remove(projectId: string, nodeId: string, user: AuthUser): Promise<SnapshotDto> {
     await this.requireNode(projectId, nodeId);
+    const actor = await resolveActor(this.prisma, user);
     const subtree = await this.subtreeIds(nodeId);
     const attached = await this.prisma.decision.count({ where: { nodeId: { in: subtree } } });
     if (attached > 0) {
@@ -95,14 +114,15 @@ export class NodesService {
     // reference in the doomed subtree in the SAME transaction as the delete —
     // the records stay, they just become unplaced (Codex gate finding 4).
     const inSubtree = { projectId, nodeId: { in: subtree } };
-    await this.prisma.$transaction([
-      this.prisma.activity.updateMany({ where: inSubtree, data: { nodeId: null } }),
-      this.prisma.inspection.updateMany({ where: inSubtree, data: { nodeId: null } }),
-      this.prisma.media.updateMany({ where: inSubtree, data: { nodeId: null } }),
-      this.prisma.drawing.updateMany({ where: inSubtree, data: { nodeId: null } }),
-      this.prisma.siteMaterial.updateMany({ where: inSubtree, data: { nodeId: null } }),
-      this.prisma.projectNode.delete({ where: { id: nodeId } }), // children cascade
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.activity.updateMany({ where: inSubtree, data: { nodeId: null } });
+      await tx.inspection.updateMany({ where: inSubtree, data: { nodeId: null } });
+      await tx.media.updateMany({ where: inSubtree, data: { nodeId: null } });
+      await tx.drawing.updateMany({ where: inSubtree, data: { nodeId: null } });
+      await tx.siteMaterial.updateMany({ where: inSubtree, data: { nodeId: null } });
+      await tx.projectNode.delete({ where: { id: nodeId } }); // children cascade
+      await emitEvent(tx, { projectId, actor, eventType: 'node.removed', entityType: 'ProjectNode', entityId: nodeId });
+    });
     return this.done(projectId, user);
   }
 

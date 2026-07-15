@@ -132,6 +132,9 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
       count: vi.fn(async ({ where }: { where: { revisionId: string } }) => acks.filter((a) => a.revisionId === where.revisionId).length),
     },
     auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
+    project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     projectNode: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null),
     },

@@ -7,12 +7,13 @@ import { SnapshotService } from '../snapshot/snapshot.service';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import { ddMmmYyyy } from '../domain/dates';
-import { resolveActor } from '../common/actor';
+import { resolveActor, type Actor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import type { IssueDrawingInput } from '../contracts';
 import { recordAudit } from '../platform/audit';
+import { emitEvent } from '../platform/events';
 
 export interface IssuedDrawing {
   drawingId: string;
@@ -58,7 +59,7 @@ export class DrawingsService {
    * was empty" is a different fact from the legacy null). Runs inside the issue/
    * publish transaction so the distribution commits with the revision itself.
    */
-  private async freezeRecipients(tx: Tx, projectId: string, revisionId: string): Promise<void> {
+  private async freezeRecipients(tx: Tx, actor: Actor, projectId: string, revisionId: string): Promise<void> {
     const members = await tx.membership.findMany({
       where: { projectId, status: 'active', role: { in: ['engineer', 'contractor'] } },
       select: { userId: true, role: true },
@@ -70,6 +71,9 @@ export class DrawingsService {
       });
     }
     await tx.drawingRevision.update({ where: { id: revisionId }, data: { recipientsFrozenAt: new Date() } });
+    // The distribution set is now frozen for this revision (Phase 2 Task 4) — one event per
+    // revision, even when the set was empty (a real fact, distinct from the legacy null).
+    await emitEvent(tx, { projectId, actor, eventType: 'drawing.recipients_frozen', entityType: 'DrawingRevision', entityId: revisionId, payload: { recipients: members.length } });
   }
 
   async issue(projectId: string, user: AuthUser, input: IssueDrawingInput): Promise<IssuedDrawing> {
@@ -183,9 +187,9 @@ export class DrawingsService {
                 where: { drawingId: locked.id, status: { not: 'superseded' }, recipientsFrozenAt: null },
                 select: { id: true },
               });
-              for (const r of unfrozen) await this.freezeRecipients(tx, projectId, r.id);
+              for (const r of unfrozen) await this.freezeRecipients(tx, actor, projectId, r.id);
             } else {
-              await this.freezeRecipients(tx, projectId, revisionId);
+              await this.freezeRecipients(tx, actor, projectId, revisionId);
             }
           }
         } else {
@@ -208,7 +212,7 @@ export class DrawingsService {
           });
           drawingId = drawing.id;
           revisionId = drawing.revisions[0].id;
-          if (published) await this.freezeRecipients(tx, projectId, revisionId);
+          if (published) await this.freezeRecipients(tx, actor, projectId, revisionId);
         }
         await recordAudit(tx, {
           projectId,
@@ -218,6 +222,7 @@ export class DrawingsService {
           entityId: revisionId,
           payload: { number: input.number, rev: input.rev, status: input.status },
         });
+        await emitEvent(tx, { projectId, actor, eventType: isRevise ? 'drawing.revised' : 'drawing.issued', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: input.number, rev: input.rev, status: input.status } });
       });
     } catch (e) {
       // a unique fired: the (drawingId, rev) label, a concurrent same-number create,
@@ -262,8 +267,9 @@ export class DrawingsService {
         where: { drawingId, status: { not: 'superseded' }, recipientsFrozenAt: null },
         select: { id: true },
       });
-      for (const rev of unfrozen) await this.freezeRecipients(tx, projectId, rev.id);
+      for (const rev of unfrozen) await this.freezeRecipients(tx, actor, projectId, rev.id);
       await recordAudit(tx, { projectId, actor, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } });
+      await emitEvent(tx, { projectId, actor, eventType: 'drawing.published', entityType: 'Drawing', entityId: drawingId, payload: { number: d.number } });
     });
     this.realtime.notifyChanged(projectId, `Drawing issued: ${d.number} — ${d.title}`, ['engineer', 'contractor']);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -276,10 +282,11 @@ export class DrawingsService {
     if (!drawing || drawing.projectId !== projectId) throw new NotFoundException('Drawing not found');
     const resolved = await resolveProjectNode(this.prisma, projectId, nodeId);
     const actor = await resolveActor(this.prisma, user);
-    await this.prisma.$transaction([
-      this.prisma.drawing.update({ where: { id }, data: { nodeId: resolved } }),
-      recordAudit(this.prisma, { projectId, actor, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } }),
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.drawing.update({ where: { id }, data: { nodeId: resolved } });
+      await recordAudit(tx, { projectId, actor, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } });
+      await emitEvent(tx, { projectId, actor, eventType: 'drawing.refiled', entityType: 'Drawing', entityId: id, payload: { nodeId: resolved } });
+    });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -308,6 +315,7 @@ export class DrawingsService {
         if (existing) return; // replay — the fact is already recorded and audited
         await tx.drawingAck.create({ data: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role } });
         await recordAudit(tx, { projectId, actor, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } });
+        await emitEvent(tx, { projectId, actor, eventType: 'drawing.acknowledged', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } });
         firstAck = true;
       });
     } catch (e) {
@@ -349,6 +357,7 @@ export class DrawingsService {
       await lockProjectReadiness(tx, projectId);
       await tx.drawing.delete({ where: { id } }); // revisions + recipients cascade
       await recordAudit(tx, { projectId, actor, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } });
+      await emitEvent(tx, { projectId, actor, eventType: 'drawing.removed', entityType: 'Drawing', entityId: id, payload: { number: drawing.number } });
     });
     this.realtime.notifyChanged(projectId);
     return true;

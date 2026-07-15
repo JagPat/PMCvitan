@@ -35,6 +35,10 @@ function make() {
     decisionEvent: { create: vi.fn((args: { data: { type: string } }) => { events.push(args.data); return Promise.resolve(args.data); }) },
     notification: { create: vi.fn((args: { data: { text: string } }) => { notifications.push(args.data); return Promise.resolve(args.data); }) },
     auditLog: { create: vi.fn(async () => ({})) },
+    // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its three steps
+    project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
@@ -157,6 +161,10 @@ function makeLifecycle(status: string) {
     decisionEvent: { create: vi.fn((args: { data: (typeof events)[number] }) => { events.push(args.data); return Promise.resolve(args.data); }) },
     notification: { create: vi.fn((args: { data: { text: string } }) => { notices.push(args.data.text); return Promise.resolve(args.data); }) },
     auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
+    // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its three steps
+    project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
     // interactive form emulates the REAL transaction's rollback: on a thrown error the

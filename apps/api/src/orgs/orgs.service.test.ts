@@ -20,13 +20,19 @@ function make(orgRole: string | null) {
     project: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { projects.push(data); return data; }),
       findUnique: vi.fn(async () => ({ orgId: 'org1' })),
-      findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
+      findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1', timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => ({ id: where.id, ...data })),
     },
     membership: {
       create: vi.fn(async ({ data }: { data: unknown }) => { memberships.push(data); return data; }),
       findUnique: vi.fn(async () => null as { role: string; status: string } | null),
     },
+    // resolveActor (Task 3) + the platform event kernel (Task 4) now run inside these mutations
+    user: { findUnique: vi.fn(async () => ({ name: 'Tester' })) },
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    $transaction: vi.fn(async (arg: unknown) =>
+      typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
   };
   const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
   return { svc, prisma, projects, memberships, orgMemberships };
@@ -435,9 +441,16 @@ function makeCopy(source: {
     phase: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-p${++cuid}`, ...data }; created.phases.push(row); return row; }) },
     activity: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.activities.push(data); return data; }) },
     inspection: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.inspections.push(data); return data; }) },
+    // the createProject CORE transaction (project + PMC membership + project.created event, Task 4)
+    // runs through this same tx before copyStructure/instantiateModules do their own transactions
+    project: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data), findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1' })) },
+    membership: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
   };
   const prisma = {
     orgMembership: { findUnique: vi.fn(async () => ({ role: 'owner' })) },
+    user: { findUnique: vi.fn(async () => ({ name: 'Tester' })) },
     project: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
       findUnique: vi.fn(async () => (source.sourceProject === undefined ? { orgId: 'org1', archivedAt: null } : source.sourceProject)),
@@ -529,9 +542,14 @@ describe('OrgsService.createProject — structureFrom (Templates Slice 1)', () =
   });
 
   it('without structureFrom, createProject never touches the copy path', async () => {
-    const { svc, prisma } = makeCopy({});
+    const { svc, created } = makeCopy({});
     await svc.createProject('org1', 'u1', { ...CREATE_INPUT, structureFrom: undefined });
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    // Task 4 makes the createProject CORE (project + PMC membership + project.created) atomic, so
+    // a transaction DOES run now — the copy path is proven untouched by nothing being copied.
+    expect(created.nodes).toHaveLength(0);
+    expect(created.phases).toHaveLength(0);
+    expect(created.activities).toHaveLength(0);
+    expect(created.inspections).toHaveLength(0);
   });
 });
 
@@ -553,9 +571,15 @@ function makeModules(opts: {
     phase: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-p${++cuid}`, ...data }; created.phases.push(row); return row; }) },
     activity: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.activities.push(data); return data; }) },
     inspection: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.inspections.push(data); return data; }) },
+    // the createProject CORE transaction (project + PMC membership + project.created event, Task 4)
+    project: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data), findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1' })) },
+    membership: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
   };
   const prisma = {
     orgMembership: { findUnique: vi.fn(async () => (opts.orgRole === undefined ? { role: 'owner' } : opts.orgRole ? { role: opts.orgRole } : null)) },
+    user: { findUnique: vi.fn(async () => ({ name: 'Tester' })) },
     project: {
       create: vi.fn(async ({ data }: { data: Record<unknown, unknown> }) => data),
       findUnique: vi.fn(async () => ({ orgId: 'org1', archivedAt: null })),

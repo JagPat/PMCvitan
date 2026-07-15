@@ -10,6 +10,8 @@ import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
 import type { SnapshotDto } from '../snapshot/types';
 import type { CreateMediaInput } from '../contracts';
+import { resolveActor } from '../common/actor';
+import { emitEvent } from '../platform/events';
 
 export interface UploadedMedia {
   id: string;
@@ -33,7 +35,8 @@ export class MediaService {
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
    *  IDEMPOTENT per (projectId, clientKey): replaying the same key returns the
    *  already-stored row — an offline photo uploads exactly once (Phase 1 Task 4). */
-  async create(projectId: string, uploadedBy: string, input: CreateMediaInput): Promise<UploadedMedia> {
+  async create(projectId: string, user: AuthUser, input: CreateMediaInput): Promise<UploadedMedia> {
+    const uploadedBy = user.sub;
     // idempotency fast-path: this exact photo already landed
     if (input.clientKey) {
       const existing = await this.prisma.media.findUnique({
@@ -66,29 +69,36 @@ export class MediaService {
     // that public url — the file is only ever reached through the token-gated serve
     // endpoint, which presigns a GET on demand. Dev stub keeps the bytes in the row.
     const { url: bucketUrl } = await this.storage.put(key, bytes, input.mime);
+    const actor = await resolveActor(this.prisma, user);
 
     let row;
     try {
-      row = await this.prisma.media.create({
-        data: {
-          projectId,
-          kind: input.kind,
-          mime: input.mime,
-          uploadedBy,
-          sizeBytes: bytes.length,
-          storageKey: key,
-          data: bucketUrl ? null : bytes, // bucket mode drops the bytes; stub keeps them
-          url: null, // never store a public bucket URL (private-file delivery)
-          geoLat: input.geoLat,
-          geoLng: input.geoLng,
-          takenAt: input.takenAt,
-          decisionId,
-          dailyLogId,
-          nodeId,
-          inspectionId: input.inspectionId ?? null,
-          inspectionItemId: input.inspectionItemId ?? null,
-          clientKey: input.clientKey ?? null,
-        },
+      // the row and its `media.uploaded` event commit together (a replay of the same
+      // clientKey lands on the unique below and records NO second event)
+      row = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.media.create({
+          data: {
+            projectId,
+            kind: input.kind,
+            mime: input.mime,
+            uploadedBy,
+            sizeBytes: bytes.length,
+            storageKey: key,
+            data: bucketUrl ? null : bytes, // bucket mode drops the bytes; stub keeps them
+            url: null, // never store a public bucket URL (private-file delivery)
+            geoLat: input.geoLat,
+            geoLng: input.geoLng,
+            takenAt: input.takenAt,
+            decisionId,
+            dailyLogId,
+            nodeId,
+            inspectionId: input.inspectionId ?? null,
+            inspectionItemId: input.inspectionItemId ?? null,
+            clientKey: input.clientKey ?? null,
+          },
+        });
+        await emitEvent(tx, { projectId, actor, eventType: 'media.uploaded', entityType: 'Media', entityId: created.id, payload: { kind: input.kind } });
+        return created;
       });
     } catch (e) {
       // a concurrent replay of the same clientKey landed first — return ITS row
@@ -114,7 +124,11 @@ export class MediaService {
     const row = await this.prisma.media.findUnique({ where: { id } });
     if (!row || row.projectId !== projectId) throw new NotFoundException('Media not found');
     const resolved = await resolveProjectNode(this.prisma, projectId, nodeId);
-    await this.prisma.media.update({ where: { id }, data: { nodeId: resolved } });
+    const actor = await resolveActor(this.prisma, user);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.media.update({ where: { id }, data: { nodeId: resolved } });
+      await emitEvent(tx, { projectId, actor, eventType: 'media.refiled', entityType: 'Media', entityId: id, payload: { nodeId: resolved } });
+    });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -141,11 +155,16 @@ export class MediaService {
    * one project can't delete another's media. Returns false when not found /
    * out of scope. Best-effort on the bucket delete (dev stub is a no-op).
    */
-  async remove(id: string, projectId: string): Promise<boolean> {
+  async remove(id: string, user: AuthUser): Promise<boolean> {
+    const projectId = user.projectId;
     const row = await this.prisma.media.findUnique({ where: { id } });
     if (!row || row.projectId !== projectId) return false;
     if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
-    await this.prisma.media.delete({ where: { id } });
+    const actor = await resolveActor(this.prisma, user);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.media.delete({ where: { id } });
+      await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id });
+    });
     this.realtime.notifyChanged(projectId);
     return true;
   }

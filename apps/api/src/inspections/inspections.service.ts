@@ -16,6 +16,7 @@ import type { AuthUser } from '../common/auth';
 import type { CreateInspectionInput, DecideReviewInput, SubmitInspectionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
+import { emitEvent } from '../platform/events';
 
 /** Corrective work is executed by these roles — a reinspection assignee must hold one
  *  as an ACTIVE membership (a PMC may assign themselves EXPLICITLY; see decide()). */
@@ -57,6 +58,7 @@ export class InspectionsService {
       }
       await tx.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone}`, color: '#C08A2D', time: 'just now' } });
       await recordAudit(tx, { projectId, actor, action: 'inspection.create', entity: 'Inspection', entityId: id });
+      await emitEvent(tx, { projectId, actor, eventType: 'inspection.created', entityType: 'Inspection', entityId: id, payload: { title: input.title, zone: input.zone } });
     });
     // the engineer fills it in the field
     this.realtime.notifyChanged(projectId, `New checklist: ${input.title} — ${input.zone}`, ['engineer']);
@@ -120,6 +122,7 @@ export class InspectionsService {
       });
       if (count === 0) throw new ConflictException('The inspection changed while submitting — reload and retry');
       await recordAudit(tx, { projectId, actor, action: 'inspection.submit', entity: 'Inspection', entityId: inspectionId });
+      await emitEvent(tx, { projectId, actor, eventType: 'inspection.submitted', entityType: 'Inspection', entityId: inspectionId });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -182,6 +185,9 @@ export class InspectionsService {
         }
         await tx.notification.create({ data: { projectId, text: pushBody, color: '#3F7A54', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'inspection.approve', entity: 'Inspection', entityId: inspectionId });
+        const approved = await emitEvent(tx, { projectId, actor, eventType: 'inspection.approved', entityType: 'Inspection', entityId: inspectionId });
+        // A CLOSING inspection's approval CAUSES the activity sign-off — one causal chain.
+        if (activity) await emitEvent(tx, { projectId, actor, eventType: 'activity.signed_off', entityType: 'Activity', entityId: activity.id, causedByEventId: approved.eventId, payload: { closingInspectionId: inspectionId } });
       });
     } else {
       // gate finding 3: rejection names exact ROWS. An id that matches none of this
@@ -289,6 +295,10 @@ export class InspectionsService {
           }
           await tx.notification.create({ data: { projectId, text: pushBody, color: '#B23A34', time: 'just now' } });
           await recordAudit(tx, { projectId, actor, action: 'inspection.reject', entity: 'Inspection', entityId: inspectionId, payload: { reinspectionId: childId, assigneeId, dueDate: dueIso } });
+          // The rejection CAUSES both the linked reinspection and (for a closing) the sign-off reversal.
+          const rejected = await emitEvent(tx, { projectId, actor, eventType: 'inspection.rejected', entityType: 'Inspection', entityId: inspectionId, payload: { reinspectionId: childId, assigneeId } });
+          await emitEvent(tx, { projectId, actor, eventType: 'inspection.reinspection_created', entityType: 'Inspection', entityId: childId, causedByEventId: rejected.eventId, payload: { reinspectionOf: inspectionId, assigneeId } });
+          if (activity) await emitEvent(tx, { projectId, actor, eventType: 'activity.signoff_rejected', entityType: 'Activity', entityId: activity.id, causedByEventId: rejected.eventId, payload: { closingInspectionId: inspectionId, reinspectionId: childId } });
         });
       } catch (e) {
         // the one-reinspection-child index fired — a concurrent reject already created it

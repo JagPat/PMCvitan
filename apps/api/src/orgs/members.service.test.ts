@@ -12,7 +12,10 @@ function make(orgRole: string | null = null) {
   const memberships: M[] = [];
   let seq = 0;
   const prisma = {
-    project: { findUnique: vi.fn(async () => ({ id: 'p1', orgId: 'org1' })) },
+    project: { findUnique: vi.fn(async () => ({ id: 'p1', orgId: 'org1' })), findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1' })) },
+    // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its stream + event steps
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     orgMembership: { findUnique: vi.fn(async () => (orgRole ? { role: orgRole } : null)) },
     user: {
       findUnique: vi.fn(async ({ where }: { where: { id?: string; email?: string; phone?: string } }) =>

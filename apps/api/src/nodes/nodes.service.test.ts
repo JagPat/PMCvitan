@@ -50,7 +50,13 @@ function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
     media: { updateMany: vi.fn(async () => ({ count: 0 })) },
     drawing: { updateMany: vi.fn(async () => ({ count: 0 })) },
     siteMaterial: { updateMany: vi.fn(async () => ({ count: 0 })) },
-    $transaction: vi.fn(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[])),
+    // resolveActor (Task 3) + the platform event kernel (Task 4) now run inside these mutations
+    user: { findUnique: vi.fn(async () => ({ name: 'Tester' })) },
+    project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    $transaction: vi.fn(async (arg: unknown) =>
+      typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
   const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;

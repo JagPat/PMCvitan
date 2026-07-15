@@ -11,6 +11,7 @@ import type { AuthUser } from '../common/auth';
 import type { AddMaterialInput, FlagMismatchInput, SubmitDailyLogInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
+import { emitEvent } from '../platform/events';
 import { resolveActor } from '../common/actor';
 
 @Injectable()
@@ -47,6 +48,7 @@ export class DailyLogService {
       }
       await tx.notification.create({ data: { projectId, text: `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, color: '#B23A34', time: 'just now' } });
       await recordAudit(tx, { projectId, actor, action: 'material.mismatch', entity: 'SiteMaterial', entityId: mat.id });
+      await emitEvent(tx, { projectId, actor, eventType: 'material.mismatch_flagged', entityType: 'SiteMaterial', entityId: mat.id, payload: { decisionId: input.decisionId } });
     });
     // material mismatch blocks work — alert PMC (resolves it) and contractor (supplied it)
     this.realtime.notifyChanged(projectId, `Material mismatch: ${matName} ≠ approved ${input.decisionId}`, ['pmc', 'contractor']);
@@ -61,13 +63,16 @@ export class DailyLogService {
     if (latest && !latest.submitted) throw new ConflictException('The current daily log is still open — submit it before starting a new day');
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     const today = this.clock.today(project.timeZone); // the civil day site work belongs to
-    const log = await this.prisma.dailyLog.create({
-      data: { projectId, logDate: fromIsoCivilDate(today), date: ddMmmYyyy(fromIsoCivilDate(today)!) },
+    await this.prisma.$transaction(async (tx) => {
+      const log = await tx.dailyLog.create({
+        data: { projectId, logDate: fromIsoCivilDate(today), date: ddMmmYyyy(fromIsoCivilDate(today)!) },
+      });
+      if (latest?.crew.length) {
+        await tx.crewRow.createMany({ data: latest.crew.map((c) => ({ dailyLogId: log.id, trade: c.trade, count: 0, order: c.order })) });
+      }
+      await recordAudit(tx, { projectId, actor, action: 'dailylog.start', entity: 'DailyLog', entityId: log.id });
+      await emitEvent(tx, { projectId, actor, eventType: 'dailylog.started', entityType: 'DailyLog', entityId: log.id });
     });
-    if (latest?.crew.length) {
-      await this.prisma.crewRow.createMany({ data: latest.crew.map((c) => ({ dailyLogId: log.id, trade: c.trade, count: 0, order: c.order })) });
-    }
-    await recordAudit(this.prisma, { projectId, actor, action: 'dailylog.start', entity: 'DailyLog', entityId: log.id });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -86,12 +91,13 @@ export class DailyLogService {
     // Location spine: validate the place this material was delivered to.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
     const order = log.materials.reduce((m, x) => Math.max(m, x.order), 0) + 1;
-    await this.prisma.$transaction([
-      this.prisma.siteMaterial.create({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.siteMaterial.create({
         data: { projectId, dailyLogId: log.id, name: input.name, qty: input.qty, zone: input.zone, decisionId: input.decisionId ?? null, swatch: input.swatch, matched: true, nodeId, order },
-      }),
-      recordAudit(this.prisma, { projectId, actor, action: 'material.add', entity: 'DailyLog', entityId: log.id }),
-    ]);
+      });
+      await recordAudit(tx, { projectId, actor, action: 'material.add', entity: 'DailyLog', entityId: log.id });
+      await emitEvent(tx, { projectId, actor, eventType: 'material.added', entityType: 'DailyLog', entityId: log.id });
+    });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -103,11 +109,14 @@ export class DailyLogService {
     if (!log) throw new NotFoundException('No daily log for this project');
     if (!input.checkedIn) throw new BadRequestException('Please check in at site before submitting the daily log.');
 
-    await this.prisma.$transaction([
-      this.prisma.dailyLog.update({ where: { id: log.id }, data: { checkedIn: input.checkedIn, checkinTime: input.checkinTime, progress: input.progress, submitted: true } }),
-      ...input.crew.map((c) => this.prisma.crewRow.updateMany({ where: { dailyLogId: log.id, trade: c.trade }, data: { count: c.count } })),
-      recordAudit(this.prisma, { projectId, actor, action: 'dailylog.submit', entity: 'DailyLog', entityId: log.id }),
-    ]);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.dailyLog.update({ where: { id: log.id }, data: { checkedIn: input.checkedIn, checkinTime: input.checkinTime, progress: input.progress, submitted: true } });
+      for (const c of input.crew) {
+        await tx.crewRow.updateMany({ where: { dailyLogId: log.id, trade: c.trade }, data: { count: c.count } });
+      }
+      await recordAudit(tx, { projectId, actor, action: 'dailylog.submit', entity: 'DailyLog', entityId: log.id });
+      await emitEvent(tx, { projectId, actor, eventType: 'dailylog.submitted', entityType: 'DailyLog', entityId: log.id });
+    });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }

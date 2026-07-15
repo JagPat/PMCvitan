@@ -40,6 +40,13 @@ function make(
     projectNode: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null),
     },
+    // resolveActor (Task 3) + the platform event kernel (Task 4) now run inside these mutations
+    user: { findUnique: vi.fn(async () => ({ name: 'Tester' })) },
+    project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    $transaction: vi.fn(async (arg: unknown) =>
+      typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
   };
   const storage = {
     keyFor: vi.fn(() => 'ambli/progress/med1.jpg'),
@@ -61,13 +68,15 @@ function make(
 }
 
 const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
+// create() now takes the AuthUser (sub becomes uploadedBy); remove() derives projectId from it
+const uploader = { sub: 'user-1', role: 'pmc', projectId: 'ambli' } as never;
 
 const input: CreateMediaInput = { kind: 'progress', mime: 'image/jpeg', data: Buffer.from('hello').toString('base64') };
 
 describe('MediaService.create', () => {
   it('dev stub: keeps bytes in the row and returns a signed serve path (no public url stored)', async () => {
     const { svc, prisma, realtime } = make(null);
-    const res = await svc.create('ambli', 'user-1', input);
+    const res = await svc.create('ambli', uploader, input);
 
     expect(res).toEqual({ id: 'med1', url: '/media/med1?t=tok' });
     const row = prisma.media.create.mock.calls[0][0].data;
@@ -81,7 +90,7 @@ describe('MediaService.create', () => {
 
   it('S3 mode: drops the bytes, stores NO public url, and returns a signed serve path', async () => {
     const { svc, prisma } = make('https://cdn.vitan.in/ambli/progress/med1.jpg');
-    const res = await svc.create('ambli', 'user-1', input);
+    const res = await svc.create('ambli', uploader, input);
 
     expect(res.url).toBe('/media/med1?t=tok'); // signed path, not the bucket url
     const row = prisma.media.create.mock.calls[0][0].data;
@@ -120,7 +129,7 @@ describe('MediaService.remove', () => {
     const { svc, prisma, storage, realtime } = make(null);
     prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', projectId: 'ambli', storageKey: 'ambli/progress/m.jpg' });
 
-    expect(await svc.remove('m', 'ambli')).toBe(true);
+    expect(await svc.remove('m', user)).toBe(true);
     expect(storage.remove).toHaveBeenCalledWith('ambli/progress/m.jpg');
     expect(prisma.media.delete).toHaveBeenCalledWith({ where: { id: 'm' } });
     expect(realtime.notifyChanged).toHaveBeenCalledWith('ambli');
@@ -130,7 +139,7 @@ describe('MediaService.remove', () => {
     const { svc, prisma, storage } = make(null);
     prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', projectId: 'other', storageKey: 'k' });
 
-    expect(await svc.remove('m', 'ambli')).toBe(false);
+    expect(await svc.remove('m', user)).toBe(false);
     expect(storage.remove).not.toHaveBeenCalled();
     expect(prisma.media.delete).not.toHaveBeenCalled();
   });
@@ -138,20 +147,20 @@ describe('MediaService.remove', () => {
   it('returns false when the media does not exist', async () => {
     const { svc, prisma } = make(null);
     prisma.media.findUnique.mockResolvedValueOnce(null);
-    expect(await svc.remove('missing', 'ambli')).toBe(false);
+    expect(await svc.remove('missing', user)).toBe(false);
   });
 });
 
 describe('MediaService — location spine (nodeId)', () => {
   it('stores a valid nodeId with the photo', async () => {
     const { svc, prisma } = make(null, null, [{ id: 'r1', projectId: 'ambli' }]);
-    await svc.create('ambli', 'user-1', { ...input, nodeId: 'r1' });
+    await svc.create('ambli', uploader, { ...input, nodeId: 'r1' });
     expect(prisma.media.create.mock.calls[0][0].data.nodeId).toBe('r1');
   });
 
   it('rejects a photo pinned to another project’s node', async () => {
     const { svc } = make(null, null, [{ id: 'r1', projectId: 'other' }]);
-    await expect(svc.create('ambli', 'user-1', { ...input, nodeId: 'r1' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(svc.create('ambli', uploader, { ...input, nodeId: 'r1' })).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('setNode re-files onto a node and returns a snapshot', async () => {
@@ -178,12 +187,12 @@ describe('MediaService — location spine (nodeId)', () => {
 describe('MediaService — project-owned references (Phase 0 Task 5)', () => {
   it('rejects a forged decisionId from another project', async () => {
     const { svc } = make(null, null, [], { decisions: [{ id: 'DL-9', projectId: 'other' }] });
-    await expect(svc.create('ambli', 'user-1', { ...input, decisionId: 'DL-9' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(svc.create('ambli', uploader, { ...input, decisionId: 'DL-9' })).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('rejects a forged dailyLogId from another project', async () => {
     const { svc } = make(null, null, [], { dailyLogs: [{ id: 'log-9', projectId: 'other' }] });
-    await expect(svc.create('ambli', 'user-1', { ...input, dailyLogId: 'log-9' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(svc.create('ambli', uploader, { ...input, dailyLogId: 'log-9' })).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('accepts same-project decision + daily-log references', async () => {
@@ -191,7 +200,7 @@ describe('MediaService — project-owned references (Phase 0 Task 5)', () => {
       decisions: [{ id: 'DL-1', projectId: 'ambli' }],
       dailyLogs: [{ id: 'log-1', projectId: 'ambli' }],
     });
-    await svc.create('ambli', 'user-1', { ...input, decisionId: 'DL-1', dailyLogId: 'log-1' });
+    await svc.create('ambli', uploader, { ...input, decisionId: 'DL-1', dailyLogId: 'log-1' });
     const row = prisma.media.create.mock.calls[0][0].data;
     expect(row.decisionId).toBe('DL-1');
     expect(row.dailyLogId).toBe('log-1');

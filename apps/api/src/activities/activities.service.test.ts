@@ -75,8 +75,11 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
       return m ? [{ status: m.status, role: m.role }] : [];
     }),
     project: {
-      findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
+      findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test', timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
     },
+    // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its stream + event steps
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     inspection: {
       // the readiness loader queries by activityId (Task 6); the id scan has no where
       findMany: vi.fn(async (args?: { where?: { activityId?: string } }) =>

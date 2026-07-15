@@ -16,6 +16,7 @@ import type { AuthUser } from '../common/auth';
 import type { CreateActivityInput, OverrideGateInput, UpdateActivityInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
+import { emitEvent } from '../platform/events';
 
 @Injectable()
 export class ActivitiesService {
@@ -79,8 +80,8 @@ export class ActivitiesService {
     const order = existing.reduce((m, a) => Math.max(m, a.order), 0) + 1;
     const dates = this.plannedDates(anchor, { start: input.plannedStartDate, end: input.plannedEndDate }, { start: input.plannedStart, end: input.plannedEnd });
     this.assertOrderedWindow(dates.plannedStartDate, dates.plannedEndDate);
-    await this.prisma.$transaction([
-      this.prisma.activity.create({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.activity.create({
         data: {
           id,
           projectId,
@@ -98,9 +99,10 @@ export class ActivitiesService {
           // is DERIVED from linked inspections; the column stays at its default
           order,
         },
-      }),
-      recordAudit(this.prisma, { projectId, actor, action: 'activity.create', entity: 'Activity', entityId: id }),
-    ]);
+      });
+      await recordAudit(tx, { projectId, actor, action: 'activity.create', entity: 'Activity', entityId: id });
+      await emitEvent(tx, { projectId, actor, eventType: 'activity.created', entityType: 'Activity', entityId: id, payload: { name: input.name } });
+    });
     this.realtime.notifyChanged(projectId, `Schedule updated: ${input.name} planned`, ['engineer', 'contractor']);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -146,6 +148,7 @@ export class ActivitiesService {
       await lockProjectReadiness(tx, projectId);
       await tx.activity.update({ where: { id: activityId }, data });
       await recordAudit(tx, { projectId, actor, action: 'activity.update', entity: 'Activity', entityId: activityId });
+      await emitEvent(tx, { projectId, actor, eventType: 'activity.updated', entityType: 'Activity', entityId: activityId });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -159,14 +162,15 @@ export class ActivitiesService {
     try {
       // drawings reference activities through a NO ACTION composite FK — unlink
       // first (a drawing outlives its planned activity), then delete atomically
-      await this.prisma.$transaction([
-        this.prisma.drawing.updateMany({ where: { projectId, activityId }, data: { activityId: null } }),
-        this.prisma.activity.delete({ where: { id: activityId } }),
-      ]);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.drawing.updateMany({ where: { projectId, activityId }, data: { activityId: null } });
+        await tx.activity.delete({ where: { id: activityId } });
+        await recordAudit(tx, { projectId, actor, action: 'activity.delete', entity: 'Activity', entityId: activityId });
+        await emitEvent(tx, { projectId, actor, eventType: 'activity.deleted', entityType: 'Activity', entityId: activityId });
+      });
     } catch {
       throw new ConflictException('This activity has linked records (inspections/materials) — it can no longer be deleted');
     }
-    await recordAudit(this.prisma, { projectId, actor, action: 'activity.delete', entity: 'Activity', entityId: activityId });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
@@ -254,6 +258,7 @@ export class ActivitiesService {
       });
       if (count === 0) throw new ConflictException('Activity is not in a startable state');
       await recordAudit(tx, { projectId, actor, action: 'activity.start', entity: 'Activity', entityId: activityId });
+      await emitEvent(tx, { projectId, actor, eventType: 'activity.started', entityType: 'Activity', entityId: activityId });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -328,6 +333,7 @@ export class ActivitiesService {
         });
         await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${a.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'activity.complete_requested', entity: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } });
+        await emitEvent(tx, { projectId, actor, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } });
       });
     } catch (e) {
       // a concurrent inspection create took the sequential id — a plain retry resolves it
@@ -361,6 +367,7 @@ export class ActivitiesService {
         data: { projectId, activityId, gate: input.gate, state: input.state, reason: input.reason, actorId: actor.actorId, actorName: actor.actorName, evidenceMediaId, expiresAt },
       });
       await recordAudit(tx, { projectId, actor, action: 'activity.override', entity: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state, reason: input.reason, expiresAt: expiresAt.toISOString(), evidenceMediaId } });
+      await emitEvent(tx, { projectId, actor, eventType: 'activity.override_granted', entityType: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state } });
     });
     this.realtime.notifyChanged(projectId, `Gate override on ${a.name}: ${input.gate} → ${input.state} (expires ${ddMmmYyyy(expiresAt)})`, ['engineer', 'contractor']);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -379,6 +386,7 @@ export class ActivitiesService {
       await lockProjectReadiness(tx, projectId);
       await tx.gateOverride.delete({ where: { id: overrideId } });
       await recordAudit(tx, { projectId, actor, action: 'activity.override_revoke', entity: 'Activity', entityId: activityId, payload: { overrideId, gate: row.gate, state: row.state, reason: row.reason } });
+      await emitEvent(tx, { projectId, actor, eventType: 'activity.override_revoked', entityType: 'Activity', entityId: activityId });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);

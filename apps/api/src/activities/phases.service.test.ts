@@ -11,10 +11,14 @@ function make(anchor: string | null) {
   const create = vi.fn(async ({ data }: { data: unknown }) => data);
   const prisma = {
     user: { findUnique: vi.fn(async () => ({ name: 'Priya (PMC)' })) },
-    project: { findUniqueOrThrow: vi.fn(async () => ({ scheduleStartDate: anchor ? new Date(`${anchor}T00:00:00.000Z`) : null })) },
+    project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test', scheduleStartDate: anchor ? new Date(`${anchor}T00:00:00.000Z`) : null })) },
     phase: { aggregate: vi.fn(async () => ({ _max: { order: 2 } })), create },
     auditLog: { create: vi.fn(async () => ({})) },
-    $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
+    // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its stream + event steps
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
+      typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   } as unknown as PrismaService;
   const svc = new PhasesService(
     prisma,
