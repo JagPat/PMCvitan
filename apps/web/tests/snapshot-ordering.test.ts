@@ -55,6 +55,7 @@ const seedTwoPass = () => useStore.setState((st) => {
   st.checklist = { id: 'INSP-90', title: 'Test', zone: 'Terrace', date: '03 Jul 2026', submitted: false, items: twoPass() };
 });
 const submittedChecklist = (): Checklist => ({ id: 'INSP-90', title: 'Test', zone: 'Terrace', date: '03 Jul 2026', submitted: true, items: twoPass() });
+const unsubmittedChecklist = (): Checklist => ({ id: 'INSP-90', title: 'Test', zone: 'Terrace', date: '03 Jul 2026', submitted: false, items: twoPass() });
 /** a snapshot addressed to a DIFFERENT project (wrong-project payload). */
 const otherProjectSnapshot = () => makeSnapshot({ project: { ...PROJECT, id: 'OTHER' } });
 
@@ -502,6 +503,177 @@ describe('snapshot coordinator — drawing issue/ack scope guards (round 12, fin
     await drainMicrotasks();
     expect(s().toast).toBe('B-TOAST');                   // no "Acknowledged…" leaked into B
     expect(gwB.snapshot).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gate round 13 — the required-reconciliation record: a committed command/submit's
+// obligation is preserved until CONFIRMED, never silently dropped, and a stale
+// snapshot can't disarm it.
+// ─────────────────────────────────────────────────────────────────────────────
+const drawingWithCurrent = (id: string, number: string) => ({
+  id, number, title: 'Foundation', discipline: 'structural' as const, zone: null, activityId: null, decisionId: null,
+  current: { id: `REV-${id}`, rev: 'A', status: 'for_construction' as const, mime: 'application/pdf', url: '/d', sizeBytes: 1, note: '', issuedBy: 'x', issuedAt: 'now', acks: [] },
+  ackedByMe: false, revisions: [],
+});
+
+describe('snapshot coordinator — required-reconciliation record (round 13)', () => {
+  it('A: a committed command whose reconcile FAILS exposes Retry; Retry lands the decision and clears the error (bounded)', async () => {
+    const holdCmd = deferred<ApiSnapshot>();
+    const holdRefresh = deferred<ApiSnapshot>();
+    let snapCall = 0;
+    const gw = {
+      createDecision: vi.fn().mockImplementation(() => holdCmd.promise),
+      snapshot: vi.fn().mockImplementation(() => {
+        snapCall += 1;
+        if (snapCall === 1) return holdRefresh.promise;                         // newer background refresh (will fail)
+        if (snapCall === 2) return Promise.reject(new Error('offline'));        // the mandatory reconcile fails
+        return Promise.resolve(makeSnapshot({ decisions: [decisionRow('DL-CMD')] })); // the user's Retry succeeds
+      }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.decisions = []; st.projectLoadState = 'ready'; });
+
+    s().issueDecision({ title: 'X', room: '', options: [], publish: true });
+    await settles(() => gw.createDecision.mock.calls.length === 1);
+    s().requestFreshSnapshot();
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+
+    holdCmd.release(makeSnapshot({ decisions: [decisionRow('DL-CMD')] })); // superseded → toast + requirement recorded
+    await drainMicrotasks();
+    expect(s().toast).toMatch(/Decision issued/i);
+
+    holdRefresh.reject(new Error('offline'));            // newer refresh fails → mandatory reconcile runs → fails too
+    await settles(() => s().projectLoadState === 'error'); // recoverable Retry exposed — NOT silently absent
+    expect(gw.snapshot).toHaveBeenCalledTimes(2);          // bounded: refresh + one reconcile, no auto-loop
+    expect(decisionIds()).not.toContain('DL-CMD');
+
+    s().retryProjectLoad();                                // user Retry
+    await settles(() => decisionIds().includes('DL-CMD')); // committed decision now appears
+    expect(s().projectLoadState).toBe('ready');            // error cleared
+    expect(gw.snapshot).toHaveBeenCalledTimes(3);
+  });
+
+  it('B: an older applied unsubmitted snapshot does NOT disarm submit recovery; the failed reconcile exposes Retry with the freeze retained', async () => {
+    const holdSubmit = deferred<ApiSnapshot>();
+    const holdRefresh = deferred<ApiSnapshot>();
+    let snapCall = 0;
+    const gw = {
+      submitInspection: vi.fn().mockImplementation(() => holdSubmit.promise),
+      snapshot: vi.fn().mockImplementation(() => {
+        snapCall += 1;
+        if (snapCall === 1) return holdRefresh.promise;                  // older background refresh (submitted:false), RESOLVES
+        return Promise.reject(new Error('offline'));                     // the mandatory reconcile fails
+      }),
+      uploadMedia: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; });
+    seedTwoPass();
+
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    s().requestFreshSnapshot();                            // the older refresh, in flight (began BEFORE the requirement)
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+
+    holdSubmit.release(makeSnapshot({ checklist: submittedChecklist() })); // ack superseded → submit requirement recorded
+    await drainMicrotasks();
+    expect(s().submission.status).toBe('submitting');
+
+    holdRefresh.release(makeSnapshot({ checklist: unsubmittedChecklist() })); // older submitted:false snapshot applies — must NOT clear the requirement
+    await settles(() => gw.snapshot.mock.calls.length === 2);  // the mandatory reconcile runs
+    await settles(() => s().projectLoadState === 'error');      // it fails → Retry exposed (round 12 went silent here)
+    expect(s().submission.status).toBe('submitting');          // freeze retained (not silently stuck-ready)
+    expect(gw.snapshot).toHaveBeenCalledTimes(2);              // bounded
+  });
+
+  it('a submit reconcile that lands SUBMITTED truth clears the requirement and retires the freeze', async () => {
+    const holdSubmit = deferred<ApiSnapshot>();
+    const holdRefresh = deferred<ApiSnapshot>();
+    let snapCall = 0;
+    const gw = {
+      submitInspection: vi.fn().mockImplementation(() => holdSubmit.promise),
+      snapshot: vi.fn().mockImplementation(() => {
+        snapCall += 1;
+        if (snapCall === 1) return holdRefresh.promise;                       // older refresh (submitted:false)
+        return Promise.resolve(makeSnapshot({ checklist: submittedChecklist() })); // reconcile lands confirmed truth
+      }),
+      uploadMedia: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; });
+    seedTwoPass();
+
+    s().submitInspection();
+    await settles(() => gw.submitInspection.mock.calls.length === 1);
+    s().requestFreshSnapshot();
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+
+    holdSubmit.release(makeSnapshot({ checklist: submittedChecklist() }));
+    await drainMicrotasks();
+    holdRefresh.release(makeSnapshot({ checklist: unsubmittedChecklist() })); // older snapshot can't confirm
+    await settles(() => s().checklist?.submitted === true);   // the mandatory reconcile confirms
+    expect(s().submission.status).toBe('idle');               // freeze retired
+    expect(s().projectLoadState).toBe('ready');               // no error
+  });
+
+  it('after a CONFIRMED submit, a later optional background-refresh failure raises no false error', async () => {
+    const gw = {
+      submitInspection: vi.fn().mockResolvedValue(makeSnapshot({ checklist: submittedChecklist() })),
+      snapshot: vi.fn().mockRejectedValue(new Error('offline')),
+      uploadMedia: vi.fn(),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; });
+    seedTwoPass();
+
+    s().submitInspection();                                    // applied in-order → confirmed, no requirement
+    await settles(() => s().checklist?.submitted === true);
+    expect(s().submission.status).toBe('idle');
+
+    s().requestFreshSnapshot();                                // a later OPTIONAL background refresh fails
+    await settles(() => gw.snapshot.mock.calls.length === 1);
+    await drainMicrotasks();
+    expect(s().projectLoadState).toBe('ready');                // no false error — there was no obligation
+  });
+
+  it('switching scope while a required reconcile is pending leaves the new project clean (no leaked error/toast)', async () => {
+    const holdCmd = deferred<ApiSnapshot>();
+    const holdRefreshA = deferred<ApiSnapshot>();
+    const holdSnapB = deferred<ApiSnapshot>();
+    const gwA = { createDecision: vi.fn().mockImplementation(() => holdCmd.promise), snapshot: vi.fn().mockImplementation(() => holdRefreshA.promise) };
+    const gwB = { snapshot: vi.fn().mockImplementation(() => holdSnapB.promise) };
+    s()._setGateway(gwA as unknown as ApiGateway);
+    useStore.setState((st) => { st.activeProjectId = 'A'; st.projectScopeGeneration = 1; st.projectLoadState = 'ready'; st.decisions = []; });
+
+    s().issueDecision({ title: 'X', room: '', options: [], publish: true });
+    await settles(() => gwA.createDecision.mock.calls.length === 1);
+    s().requestFreshSnapshot();
+    await settles(() => gwA.snapshot.mock.calls.length === 1);
+    holdCmd.release(makeSnapshot({ project: { ...PROJECT, id: 'A' }, decisions: [decisionRow('DL-A')] })); // superseded → A requirement recorded
+    await drainMicrotasks();
+
+    switchTo('B', 2, gwB);                                       // leave A before its reconcile can land
+    s().requestFreshSnapshot();
+    await settles(() => gwB.snapshot.mock.calls.length === 1);
+    holdRefreshA.reject(new Error('offline'));                   // A's in-flight refresh fails AFTER the switch
+    holdSnapB.release(snapFor('B', { decisions: [decisionRow('DL-B')] }));
+    await settles(() => decisionIds().includes('DL-B'));
+    expect(s().projectLoadState).toBe('ready');                 // B is clean — A's failed obligation never leaked here
+    expect(s().toast ?? '').not.toMatch(/could not/i);
+  });
+
+  it('ack: a same-scope resolve toasts and refreshes (completes the issue/ack same+moved matrix)', async () => {
+    const gwA = { acknowledgeDrawing: vi.fn().mockResolvedValue(undefined), snapshot: vi.fn().mockResolvedValue(snapFor('A')) };
+    s()._setGateway(gwA as unknown as ApiGateway);
+    useStore.setState((st) => {
+      st.activeProjectId = 'A'; st.projectScopeGeneration = 1; st.online = true; st.projectLoadState = 'ready';
+      st.drawings = [drawingWithCurrent('DWG-A', 'A-101')];
+    });
+
+    s().acknowledgeDrawing('DWG-A');
+    await settles(() => (s().toast ?? '').match(/Acknowledged/i) !== null);
+    await settles(() => gwA.snapshot.mock.calls.length === 1); // refreshed THIS scope
   });
 });
 
