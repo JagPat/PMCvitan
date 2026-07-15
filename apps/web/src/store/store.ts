@@ -572,15 +572,45 @@ export const useStore = create<Store>()(
     const scopeStillCurrent = (scope: ProjectScope): boolean =>
       isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope);
 
-    // ---- gate round 11: central snapshot-ordering coordinator ----
-    // A monotonic sequence in the store closure (never timestamps). `begin` makes a
-    // lease the newest snapshot intent for the current scope; a lease stays eligible
-    // only while its scope is still current AND no newer lease has begun.
+    // ---- gate round 11/12: central snapshot-ordering coordinator ----
+    // Ownership and refresh coalescing are keyed by FULL scope (project + generation),
+    // not one store-global slot (gate round 12, finding 1). A monotonic sequence
+    // (never timestamps) is global only as an id source; a lease is the newest snapshot
+    // intent for ITS OWN scope. So a stale old-scope lease can never change another
+    // scope's owner, and a new scope's pull runs independently of an old scope's
+    // in-flight pull. Each scope carries its own newest-lease seq, refresh flight/queue,
+    // and a "submit awaiting reconcile" flag (gate round 12, finding 2).
+    interface ScopeCoordinator {
+      newestLeaseSeq: number;
+      refreshInFlight: boolean;
+      refreshQueued: boolean;
+      submitRecover: boolean; // a superseded frozen submit needs confirmed truth or a recoverable error
+    }
     let snapshotSeq = 0;
-    let newestLeaseSeq = 0;
+    const scopeCoordinators = new Map<string, ScopeCoordinator>();
+    const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
+    /** Drop settled coordinators for scopes we've left (nothing in flight, queued or
+     *  awaiting a submit reconcile) so the map can't grow without bound across
+     *  re-auths / project switches; the current scope is always kept. */
+    const pruneScopeCoordinators = (): void => {
+      const liveKey = scopeKey(currentScope());
+      for (const [key, c] of scopeCoordinators) {
+        if (key !== liveKey && !c.refreshInFlight && !c.refreshQueued && !c.submitRecover) scopeCoordinators.delete(key);
+      }
+    };
+    const coordinatorFor = (scope: ProjectScope): ScopeCoordinator => {
+      const key = scopeKey(scope);
+      let c = scopeCoordinators.get(key);
+      if (!c) {
+        c = { newestLeaseSeq: 0, refreshInFlight: false, refreshQueued: false, submitRecover: false };
+        scopeCoordinators.set(key, c);
+        pruneScopeCoordinators(); // a new scope appeared — sweep the ones we've left
+      }
+      return c;
+    };
     const beginSnapshotLease = (scope: ProjectScope): SnapshotLease => {
       const sequence = ++snapshotSeq;
-      newestLeaseSeq = sequence;
+      coordinatorFor(scope).newestLeaseSeq = sequence; // advance ONLY this scope's owner
       return { scope, sequence };
     };
 
@@ -679,49 +709,75 @@ export const useStore = create<Store>()(
     const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease): SnapshotApplyResult => {
       const st = get();
       if (!isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, lease.scope)) return 'scope-moved';
-      if (lease.sequence !== newestLeaseSeq) return 'superseded';
+      // newest-owner is checked against THIS lease's own scope, so a stale lease in a
+      // scope we've left can never mark a live scope's response superseded (round 12).
+      if (lease.sequence !== coordinatorFor(lease.scope).newestLeaseSeq) return 'superseded';
       if (snap.project.id !== lease.scope.projectId) return 'invalid-project';
       applySnapshotCore(snap);
       return 'applied';
     };
 
-    /** Coalesced fresh-snapshot pull — the ONE way to fetch current truth (socket
-     *  refresh, initial load, retry, invalid-project recovery). At most one is in
-     *  flight per active scope; a request made while one runs schedules exactly one
-     *  more after it settles (never a loop, and never across a scope change). */
-    let refreshInFlight = false;
-    let refreshQueued = false;
-    const requestFreshSnapshot = async (): Promise<void> => {
+    const RECOVERABLE_LOAD_ERROR = 'Could not load this project — check your connection and access, then retry.';
+    /** Coalesced fresh-snapshot pull for ONE scope — the ONE way to fetch current
+     *  truth (socket refresh, initial load, retry, invalid-project recovery, and the
+     *  reconcile a superseded command/submit schedules). At most one is in flight PER
+     *  SCOPE (round 12); a request made while its scope's pull runs schedules exactly
+     *  one more after it settles — even when that pull FAILED, so a superseded command
+     *  still gets a recovery attempt. A pull only ever mutates its OWN scope; a scope
+     *  we've left neither reruns nor surfaces errors. Never a loop: the rerun fires at
+     *  most once per settle and only while nothing new re-queues it. */
+    const requestFreshSnapshot = async (scope: ProjectScope = currentScope()): Promise<void> => {
       if (!gateway) return;
-      if (refreshInFlight) { refreshQueued = true; return; }
-      refreshInFlight = true;
+      const c = coordinatorFor(scope);
+      if (c.refreshInFlight) { c.refreshQueued = true; return; }
+      c.refreshInFlight = true;
       const g = gateway;
-      const lease = beginSnapshotLease(currentScope());
+      const lease = beginSnapshotLease(scope);
       // initial load / retry surfaces 'loading'; a background refresh (already
       // 'ready') stays ready — stale-while-revalidate, no flash on every socket ping.
-      if (get().projectLoadState !== 'ready') set((s) => { s.projectLoadState = 'loading'; });
+      if (scopeStillCurrent(scope) && get().projectLoadState !== 'ready') set((s) => { s.projectLoadState = 'loading'; });
       try {
         const snap = await g.snapshot();
         const result = acceptSnapshot(snap, lease);
-        if (result === 'invalid-project' && scopeStillCurrent(lease.scope)) {
-          set((s) => {
-            s.projectLoadState = 'error';
-            s.projectLoadError = 'Could not load this project — check your connection and access, then retry.';
-          });
+        if (result === 'applied') c.submitRecover = false; // confirmed truth landed
+        else if (result === 'invalid-project' && scopeStillCurrent(scope)) {
+          set((s) => { s.projectLoadState = 'error'; s.projectLoadError = RECOVERABLE_LOAD_ERROR; });
         }
-        // superseded / scope-moved: a newer owner or the next refresh supplies truth.
+        // superseded / scope-moved: a newer owner or the queued rerun supplies truth.
       } catch {
-        if (scopeStillCurrent(lease.scope)) set((s) => {
-          if (s.projectLoadState === 'switching' || s.projectLoadState === 'loading') {
+        // The pull failed. Surface a recoverable error when the user is waiting on THIS
+        // scope's data — an initial load / switch, or a frozen submit awaiting confirmed
+        // truth (round 12, finding 2: never freeze forever; give a retry path instead).
+        if (scopeStillCurrent(scope)) set((s) => {
+          if (s.projectLoadState === 'switching' || s.projectLoadState === 'loading' || c.submitRecover) {
             s.projectLoadState = 'error';
-            s.projectLoadError = 'Could not load this project — check your connection and access, then retry.';
+            s.projectLoadError = RECOVERABLE_LOAD_ERROR;
           }
         });
       } finally {
-        refreshInFlight = false;
-        if (refreshQueued && scopeStillCurrent(lease.scope)) { refreshQueued = false; void requestFreshSnapshot(); }
-        else refreshQueued = false;
+        c.refreshInFlight = false;
+        // Rerun once if something queued a follow-up (a coalesced refresh OR a superseded
+        // command's reconcile) AND this scope is still current — this fires even after a
+        // FAILED pull, so a recovery attempt always follows the settling refresh.
+        const rerun = c.refreshQueued && scopeStillCurrent(scope);
+        c.refreshQueued = false;
+        if (rerun) void requestFreshSnapshot(scope);
+        else pruneScopeCoordinators();
       }
+    };
+
+    /** Schedule a coalesced reconcile for a CURRENT-scope command/submit whose own
+     *  snapshot was `superseded` (round 12, finding 2). `superseded` proves a newer
+     *  lease exists, NOT that it will land — the newer refresh may still fail. So make
+     *  sure fresh truth is pulled: if a refresh is already in flight for this scope,
+     *  queue a rerun that runs after it settles (even on failure); otherwise pull now.
+     *  A moved scope owns its own truth, so a stale-scope reconcile is dropped. */
+    const scheduleReconcile = (scope: ProjectScope, forSubmit = false): void => {
+      if (!scopeStillCurrent(scope)) return;
+      const c = coordinatorFor(scope);
+      if (forSubmit) c.submitRecover = true; // a failed reconcile must surface a recoverable error, not freeze
+      if (c.refreshInFlight) c.refreshQueued = true;
+      else void requestFreshSnapshot(scope);
     };
 
     /** Consume an `acceptSnapshot` result on a COMMAND path (a user-initiated
@@ -730,14 +786,15 @@ export const useStore = create<Store>()(
      *  server the moment its call resolved. So announce success whenever the reply
      *  landed in the CURRENT scope — `applied` (this snapshot is freshest) OR
      *  `superseded` (a newer same-scope refresh, almost always the mutation's OWN
-     *  `changed` broadcast, already carries the committed truth). Suppress only when
-     *  the scope MOVED (a switch / re-auth — a stale toast must never leak into the
-     *  new context) or the payload was `invalid-project` (a genuine wrong-project
-     *  error — never claim success; pull a fresh snapshot to recover current truth).
-     *  This keeps success announcements truthful without re-announcing on a stale
-     *  cross-scope reply. */
+     *  `changed` broadcast, already carries the committed truth). On `superseded` also
+     *  schedule a reconcile (round 12): the newer refresh may fail, and the committed
+     *  change must still land. Suppress only when the scope MOVED (a switch / re-auth —
+     *  a stale toast must never leak into the new context) or the payload was
+     *  `invalid-project` (a genuine wrong-project error — never claim success; pull a
+     *  fresh snapshot to recover current truth). */
     const consumeSnapshotResult = (result: SnapshotApplyResult, okMsg?: string): void => {
       if (result === 'applied' || result === 'superseded') { if (okMsg) get().flash(okMsg); }
+      if (result === 'superseded') scheduleReconcile(currentScope());
       else if (result === 'invalid-project') void requestFreshSnapshot();
     };
 
@@ -1316,6 +1373,13 @@ export const useStore = create<Store>()(
               const result = acceptSnapshot(snap, lease);
               if (result === 'applied') {
                 get().flash('Inspection submitted to the architect for review.');
+              } else if (result === 'superseded') {
+                // gate round 12: the submit committed, but a newer refresh owns the
+                // view. Keep the checklist FROZEN (don't unlock — the submit succeeded)
+                // and schedule a reconcile so the confirmed `submitted` truth lands even
+                // if that newer refresh fails; if it truly can't land, the reconcile
+                // surfaces a recoverable error instead of freezing forever.
+                scheduleReconcile(scope, true);
               } else if (result === 'invalid-project') {
                 // manifestation 2: a rejected (wrong-project) payload must NOT report
                 // success and must NOT leave the checklist frozen forever — unlock the
@@ -1323,7 +1387,7 @@ export const useStore = create<Store>()(
                 set((s) => { if (s.submission.attempt === attempt && s.submission.status === 'submitting') s.submission.status = 'idle'; });
                 void requestFreshSnapshot();
               }
-              // superseded / scope-moved: silent — the newer owner/refresh has truth.
+              // scope-moved: silent — the new scope owns its own truth.
             })
             .catch(() => {
               // A retired attempt (round 9/10) or a superseded session must not unlock
@@ -1437,13 +1501,19 @@ export const useStore = create<Store>()(
     // ---- drawings register ----
     issueDrawing: (input) => {
       if (gateway) {
+        // gate round 12: capture the scope BEFORE the request and guard EVERY
+        // continuation on it — success toast, refresh AND the failure toast. Without
+        // this, an issue that resolves after a project switch flashed "Drawing issued"
+        // into project B and refreshed B through its gateway (finding 3).
+        const scope = currentScope();
         gateway
           .issueDrawing(input)
           .then(() => {
+            if (!scopeStillCurrent(scope)) return; // resolved after a switch — B is not ours to touch
             get().flash(`Drawing issued: ${input.number} Rev ${input.rev} — team notified.`);
-            requestFreshSnapshot(); // gate round 11: one coalesced, coordinator-ordered refresh
+            requestFreshSnapshot(scope); // one coalesced, coordinator-ordered refresh for THIS scope
           })
-          .catch(() => get().flash('Could not issue the drawing — please try again.'));
+          .catch(() => { if (scopeStillCurrent(scope)) get().flash('Could not issue the drawing — please try again.'); });
         return;
       }
       // local demo: add to the register (or add a rev + supersede the prior)
@@ -1531,10 +1601,15 @@ export const useStore = create<Store>()(
             // wrong-project payload (recover) or a scope move (no stale toast leak).
             const lease = beginSnapshotLease(scope);
             const result = acceptSnapshot(await gw.snapshot(), lease);
+            // gate round 12: the publishes committed; announce on applied/superseded
+            // (the mutation landed in the current scope), reconcile a superseded reply
+            // since the newer refresh may fail, recover a wrong-project one. Silent if
+            // the scope moved (no stale toast into another project).
             if (result === 'applied' || result === 'superseded') done();
+            if (result === 'superseded') scheduleReconcile(scope);
             else if (result === 'invalid-project') void requestFreshSnapshot();
           } catch {
-            get().flash('Could not publish every draft — some may still be drafts. Please try again.');
+            if (scopeStillCurrent(scope)) get().flash('Could not publish every draft — some may still be drafts. Please try again.');
           }
         })();
         return;
@@ -1575,13 +1650,17 @@ export const useStore = create<Store>()(
           get().flash(`Acknowledge ${drawing.number} — saved offline, will sync when you reconnect.`);
           return;
         }
+        // gate round 12: capture + guard the scope on every continuation, so an ack
+        // that resolves after a project switch neither toasts nor refreshes project B.
+        const scope = currentScope();
         gateway
           .acknowledgeDrawing(rev.id)
           .then(() => {
+            if (!scopeStillCurrent(scope)) return;
             get().flash(`Acknowledged — building to ${drawing.number} Rev ${rev.rev}.`);
-            requestFreshSnapshot(); // gate round 11: one coalesced, coordinator-ordered refresh
+            requestFreshSnapshot(scope); // one coalesced, coordinator-ordered refresh for THIS scope
           })
-          .catch(() => get().flash('Could not record the acknowledgement — please try again.'));
+          .catch(() => { if (scopeStillCurrent(scope)) get().flash('Could not record the acknowledgement — please try again.'); });
         return;
       }
       // local demo: mark building-to on the current rev
@@ -1824,7 +1903,9 @@ export const useStore = create<Store>()(
               : `Draft saved: ${input.title} — visible only to you until you publish it.`,
           );
         } catch {
-          get().flash(input.publish ? 'Could not issue the decision — check your access and try again.' : 'Could not save the draft — check your access and try again.');
+          // gate round 12: a failure that lands after a project switch must not toast
+          // into the new project (the same stale-toast rule as the success path).
+          if (scopeStillCurrent(scope)) get().flash(input.publish ? 'Could not issue the decision — check your access and try again.' : 'Could not save the draft — check your access and try again.');
         }
       })();
     },
@@ -1860,7 +1941,10 @@ export const useStore = create<Store>()(
         if (result !== 'applied') {
           // a newer refresh owns the tree (superseded) or the payload was wrong-project;
           // don't claim success or return a node id the current tree may not reflect.
-          if (result === 'invalid-project') void requestFreshSnapshot();
+          // gate round 12: on superseded the node WAS created — schedule a reconcile so
+          // it lands even if the newer refresh fails; on wrong-project, recover.
+          if (result === 'superseded') scheduleReconcile(scope);
+          else if (result === 'invalid-project') void requestFreshSnapshot();
           return null;
         }
         get().flash(`Added ${input.kind}: ${input.name}.`);
@@ -1868,7 +1952,8 @@ export const useStore = create<Store>()(
         const created = get().nodes.find((n) => !before.has(n.id) && n.name === input.name && n.kind === input.kind);
         return created?.id ?? null;
       } catch {
-        get().flash('Could not add the location — check your access and try again.');
+        // gate round 12: a failure landing after a switch must not toast into project B.
+        if (scopeStillCurrent(scope)) get().flash('Could not add the location — check your access and try again.');
         return null;
       }
     },

@@ -873,7 +873,7 @@ describe('replay lifecycle', () => {
     expect(items[0].note).toBe('checked before submit');
   });
 
-  it('a PENDING submit retains the marks across a background snapshot; the stale ack is superseded by the newer refresh (gate round-7 / round-11)', async () => {
+  it('a PENDING submit retains the marks across a background snapshot; the superseded ack AUTO-reconciles to confirmed truth (gate round-7 / round-11 / round-12)', async () => {
     let releaseSubmit!: (v: unknown) => void;
     const held = new Promise((r) => (releaseSubmit = r));
     const submittedChecklist = (): Checklist => serverChecklistOf(true, [
@@ -883,7 +883,8 @@ describe('replay lifecycle', () => {
     const gw = {
       project: 'ambli',
       uploadMedia: vi.fn(),
-      snapshot: vi.fn(),
+      // gate round 12: the reconcile pull a superseded submit schedules confirms the submit
+      snapshot: vi.fn().mockResolvedValue({ ...makeSnapshot(), checklist: submittedChecklist() }),
       submitInspection: vi.fn().mockImplementation(async () => { await held; return { ...makeSnapshot(), checklist: submittedChecklist() }; }),
     };
     s()._setGateway(gw as unknown as ApiGateway);
@@ -900,22 +901,14 @@ describe('replay lifecycle', () => {
     expect(s().checklist!.items[0].note).toBe('checked before submit');
 
     releaseSubmit(null); // the ack lands (submitted=true) — but its lease (#1) is stale
-    await drainMicrotasks();
-    // round-11 newest-lease-wins: a snapshot whose lease began BEFORE a newer refresh
-    // is `superseded`, so the stale submit ack does NOT stomp the fresher background
-    // view. submitted stays false, the marks are still retained, and the freeze holds
-    // until fresh truth arrives (no premature unlock, no stale success toast).
-    expect(s().checklist!.submitted).toBe(false);
-    expect(s().checklist!.items[0].state).toBe('pass');
-    expect(s().submission.status).toBe('submitting');
-
-    // recovery: the successful submit emitted `changed`; the socket's fresh pull (a
-    // NEWER lease) brings the confirmed checklist, which applies and — now that the
-    // server owns the marks — drops the local records and retires the freeze.
-    s().applySnapshot({ ...makeSnapshot(), checklist: submittedChecklist() });
-    expect(s().checklist!.submitted).toBe(true);
-    expect(s().checklist!.items[0].state).toBe('pass'); // server now carries them
-    expect(s().submission.status).toBe('idle');
+    // round-11 newest-lease-wins: the stale submit ack does NOT stomp the fresher view.
+    // round-12: `superseded` does NOT assume the newer refresh already landed the truth —
+    // the submit stays frozen AND schedules a reconcile that pulls the confirmed checklist,
+    // so it can never freeze forever.
+    await settles(() => s().checklist?.submitted === true); // the auto-reconcile landed it
+    expect(gw.snapshot).toHaveBeenCalled();                  // a recovery pull actually ran
+    expect(s().checklist!.items[0].state).toBe('pass');      // server now carries them
+    expect(s().submission.status).toBe('idle');              // the freeze retired on confirmed truth
   });
 
   it('a SUCCESSFUL submit clears the records; a later background snapshot does NOT re-overlay them (gate round-7)', async () => {
