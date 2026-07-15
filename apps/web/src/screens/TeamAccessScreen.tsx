@@ -68,7 +68,10 @@ export function TeamAccessScreen() {
   const accGoLogin = useStore((s) => s.accGoLogin);
   const login = useStore((s) => s.login);
   const accSetEmail = useStore((s) => s.accSetEmail);
-  const accGoEmailOtp = useStore((s) => s.accGoEmailOtp);
+  const accGoPasswordSetup = useStore((s) => s.accGoPasswordSetup);
+  const requestPasswordSetup = useStore((s) => s.requestPasswordSetup);
+  const verifyPasswordSetup = useStore((s) => s.verifyPasswordSetup);
+  const completePasswordSetup = useStore((s) => s.completePasswordSetup);
   const requestEmailOtp = useStore((s) => s.requestEmailOtp);
   const accSetCode = useStore((s) => s.accSetCode);
   const emailOtpVerify = useStore((s) => s.emailOtpVerify);
@@ -83,6 +86,8 @@ export function TeamAccessScreen() {
   const { t, trade: tradeLabel, workerTrade } = useT();
   const [email, setEmail] = useState('');
   const [pw, setPw] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
   const container = styles.mobileScreen;
 
@@ -234,11 +239,133 @@ export function TeamAccessScreen() {
         >
           {sending ? t.verifying : 'Sign in'}
         </button>
-        <button onClick={accGoEmailOtp} data-testid="go-email-otp" style={linkBtn}>
-          Email me a code instead
+        <button onClick={accGoPasswordSetup} data-testid="go-password-setup" style={linkBtn}>
+          Set up or forgot password
         </button>
         <GoogleSignInButton onToken={googleSignIn} />
         <div style={{ marginTop: 'auto' }} />
+      </div>
+    );
+  }
+
+  // ---- PASSWORD SETUP / RESET — enter invited email ----
+  if (step === 'password-email') {
+    const ready = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(otpEmail.trim()) && !sending;
+    return (
+      <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+        <BackBtn onClick={accGoLogin} label={t.back} />
+        <div style={{ marginTop: 14 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Set up or reset password</h1>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>Use the email your administrator added to Vitan PMC.</div>
+        </div>
+        <input
+          type="email"
+          inputMode="email"
+          autoComplete="email"
+          autoFocus
+          value={otpEmail}
+          onChange={(e) => accSetEmail(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && ready && requestPasswordSetup()}
+          placeholder="you@example.com"
+          aria-label="Invited email"
+          data-testid="password-email"
+          style={loginField}
+        />
+        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        <button
+          onClick={requestPasswordSetup}
+          disabled={!ready}
+          data-testid="password-request"
+          style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
+        >
+          {sending ? t.sending : 'Send verification code'}
+        </button>
+      </div>
+    );
+  }
+
+  // ---- PASSWORD SETUP / RESET — verify the invited email ----
+  if (step === 'password-code') {
+    const ready = otp.length === 6 && !sending;
+    return (
+      <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+        <BackBtn onClick={accGoPasswordSetup} label={t.back} />
+        <div style={{ textAlign: 'center', marginTop: 14 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Verify your email</h1>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>Enter the 6-digit code sent to {otpEmail}</div>
+        </div>
+        <input
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          autoFocus
+          value={otp}
+          onChange={(e) => accSetCode(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && ready && verifyPasswordSetup()}
+          placeholder="6-digit code"
+          aria-label="Verification code"
+          data-testid="password-code"
+          style={{ ...loginField, marginTop: 24, textAlign: 'center', fontFamily: 'var(--font-mono)', letterSpacing: '.3em', fontSize: 22 }}
+        />
+        <div style={{ textAlign: 'center', minHeight: 20, fontSize: 13, marginTop: 8 }}>
+          {sending && <span style={{ color: 'var(--muted)' }}>{t.verifying}</span>}
+          {error && !sending && <span style={{ color: 'var(--red-solid)' }}>{error}</span>}
+        </div>
+        <button onClick={requestPasswordSetup} disabled={sending} style={linkBtn}>Send a new code</button>
+        <button
+          onClick={verifyPasswordSetup}
+          disabled={!ready}
+          data-testid="password-verify"
+          style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
+        >
+          Verify email
+        </button>
+      </div>
+    );
+  }
+
+  // ---- PASSWORD SETUP / RESET — commit a new password ----
+  if (step === 'password-create') {
+    const ready = newPassword.length >= 12 && newPassword.length <= 128 && confirmPassword.length > 0 && !sending;
+    const submit = () => ready && completePasswordSetup(newPassword, confirmPassword);
+    return (
+      <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+        <BackBtn onClick={accGoPasswordSetup} label="Start again" />
+        <div style={{ marginTop: 14 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Create your password</h1>
+          <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>Use 12 to 128 characters. A long passphrase is acceptable.</div>
+        </div>
+        <label style={{ fontSize: 12, fontWeight: 600, marginTop: 22 }}>
+          New password
+          <input
+            type="password"
+            autoComplete="new-password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            aria-label="New password"
+            style={{ ...loginField, marginTop: 7, width: '100%', boxSizing: 'border-box' }}
+          />
+        </label>
+        <label style={{ fontSize: 12, fontWeight: 600, marginTop: 14 }}>
+          Confirm password
+          <input
+            type="password"
+            autoComplete="new-password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && submit()}
+            aria-label="Confirm password"
+            style={{ ...loginField, marginTop: 7, width: '100%', boxSizing: 'border-box' }}
+          />
+        </label>
+        {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
+        <button
+          onClick={submit}
+          disabled={!ready}
+          data-testid="password-complete"
+          style={{ marginTop: 'auto', height: 56, borderRadius: 14, border: 'none', background: ready ? 'var(--ink)' : 'rgba(35,33,28,.25)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 16, cursor: ready ? 'pointer' : 'default' }}
+        >
+          {sending ? 'Saving password…' : 'Save password and sign in'}
+        </button>
       </div>
     );
   }
