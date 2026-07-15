@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   // reset for a disposable database (this seed is destructive by contract). CommandExecution
   // (Task 5) and ProjectEventStream cascade with the Project delete, but clearing the events
   // here is what lets that Project delete run at all when a prior run left events behind.
-  await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent"');
+  await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
   await prisma.gateOverride.deleteMany();
   await prisma.drawingRecipient.deleteMany();
   await prisma.passwordCredentialChallenge.deleteMany();

@@ -265,6 +265,20 @@ assert "the additive migration wrote NO receipts — a legacy client that sends 
   "SELECT COUNT(*) FROM \"CommandExecution\";" \
   "0"
 
+# Phase 2 Task 6 — the per-consumer transactional outbox is a pure, row-free capability addition
+assert "the OutboxDelivery / ProcessedEvent / ProjectionCursor tables exist" \
+  "SELECT ((to_regclass('\"OutboxDelivery\"') IS NOT NULL) AND (to_regclass('\"ProcessedEvent\"') IS NOT NULL) AND (to_regclass('\"ProjectionCursor\"') IS NOT NULL))::text;" \
+  "true"
+assert "the delivery FK to DomainEvent + the (eventId, consumer) unique are database-enforced" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname='OutboxDelivery_eventId_fkey' AND contype='f')::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname='OutboxDelivery_eventId_consumer_key')::text;" \
+  "1|1"
+assert "the delivery status / consumerKind / cursor-status CHECKs exist (NO ambiguous 'failed' status)" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('OutboxDelivery_status_check','OutboxDelivery_consumerKind_check','ProjectionCursor_status_check');" \
+  "3"
+assert "the additive migration wrote NO deliveries — pre-cutover events are backfilled at app boot" \
+  "SELECT COUNT(*) FROM \"OutboxDelivery\";" \
+  "0"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

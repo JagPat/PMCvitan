@@ -16,6 +16,12 @@ export JWT_SECRET
 # honors this ONLY outside production (see src/common/throttle.ts + its tests).
 export THROTTLE_DISABLED=true
 
+# The outbox relay's background interval (Phase 2 Task 6) is pure churn in the acceptance run —
+# the legacy in-request path is the sole notification sender here, and the relay is exercised by
+# the integration suite. Disable its auto-start so it never adds timing variance to the
+# browser-driven flows (the outbox tables + materialization are still populated per mutation).
+export OUTBOX_RELAY_AUTOSTART=false
+
 pnpm --filter api prisma:migrate
 pnpm --filter api seed
 # the Playwright config serves the COMPILED api (node dist/main.js) — the same

@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import type { Actor } from '../common/actor';
 import type { DomainEventType } from '@vitan/shared';
+import { materializeDeliveries, type NotificationIntent } from './outbox/registry';
 
 /**
  * Phase 2 Task 4 — the platform event kernel.
@@ -36,6 +37,11 @@ export interface EmitInput {
    *  `activity.signed_off`), so a multi-event command threads its causal chain. */
   causedByEventId?: string | null;
   payload?: Prisma.InputJsonValue;
+  /** A human-facing notification this event should drive (Task 6): the Web Push body + target
+   *  roles. When present, the emit transaction ALSO materializes a `webpush.notify` delivery
+   *  carrying it, so the outbox can fan it out post-commit. The canonical Notification DB row is
+   *  still written by the command itself; this is only the push intent for the outbox path. */
+  notification?: NotificationIntent;
 }
 
 /**
@@ -76,5 +82,22 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<{ eventI
     },
     select: { eventId: true },
   });
+  // Task 6 — materialize one OutboxDelivery per registered consumer IN THIS transaction, so a
+  // committed event can never lack its durable delivery work. A no-op when no consumer is
+  // registered (unit tests without an app boot), so mocked-prisma services need no outbox stub.
+  await materializeDeliveries(
+    tx,
+    {
+      eventId: event.eventId,
+      eventType: input.eventType,
+      projectId: input.projectId,
+      organizationId: orgId,
+      streamPosition,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      payload: input.payload ?? null,
+    },
+    input.notification,
+  );
   return { eventId: event.eventId, streamPosition: Number(streamPosition) };
 }
