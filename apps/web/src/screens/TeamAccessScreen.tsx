@@ -325,7 +325,17 @@ export function TeamAccessScreen() {
 
   // ---- PASSWORD SETUP / RESET — commit a new password ----
   if (step === 'password-create') {
-    const ready = newPassword.length >= 12 && newPassword.length <= 128 && confirmPassword.length > 0 && !sending;
+    const missingCharacters = Math.max(0, 12 - newPassword.length);
+    const excessCharacters = Math.max(0, newPassword.length - 128);
+    const confirmationMismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
+    const passwordGuidance = missingCharacters > 0 && newPassword.length > 0
+      ? `Add ${missingCharacters} more ${missingCharacters === 1 ? 'character' : 'characters'} to continue.`
+      : excessCharacters > 0
+        ? `Remove ${excessCharacters} ${excessCharacters === 1 ? 'character' : 'characters'} to continue.`
+        : confirmationMismatch
+          ? 'Passwords do not match.'
+          : null;
+    const ready = newPassword.length >= 12 && newPassword.length <= 128 && confirmPassword.length > 0 && !confirmationMismatch && !sending;
     const submit = () => ready && completePasswordSetup(newPassword, confirmPassword);
     return (
       <div className={container} style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
@@ -342,6 +352,7 @@ export function TeamAccessScreen() {
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             aria-label="New password"
+            aria-describedby="password-validation"
             style={{ ...loginField, marginTop: 7, width: '100%', boxSizing: 'border-box' }}
           />
         </label>
@@ -354,9 +365,17 @@ export function TeamAccessScreen() {
             onChange={(e) => setConfirmPassword(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && submit()}
             aria-label="Confirm password"
+            aria-describedby="password-validation"
             style={{ ...loginField, marginTop: 7, width: '100%', boxSizing: 'border-box' }}
           />
         </label>
+        <div
+          id="password-validation"
+          aria-live="polite"
+          style={{ minHeight: 20, color: confirmationMismatch || excessCharacters > 0 ? 'var(--red-solid)' : 'var(--muted)', fontSize: 13, marginTop: 8 }}
+        >
+          {passwordGuidance}
+        </div>
         {error && <div style={{ color: 'var(--red-solid)', fontSize: 13, marginTop: 12 }}>{error}</div>}
         <button
           onClick={submit}
