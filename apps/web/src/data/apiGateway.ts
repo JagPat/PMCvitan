@@ -449,6 +449,10 @@ export class ApiGateway {
   updateOrgMemberRole(orgId: string, userId: string, role: OrgRole): Promise<OrgMember> {
     return this.req(`/orgs/${orgId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role }) });
   }
+  /** Correct an invitation email before the member establishes a password. */
+  correctInvitationEmail(orgId: string, userId: string, email: string): Promise<OrgMember> {
+    return this.req(`/orgs/${orgId}/members/${userId}/invitation-email`, { method: 'PATCH', body: JSON.stringify({ email }) });
+  }
   /** Revoke someone's org membership (org owner only). */
   removeOrgMember(orgId: string, userId: string): Promise<{ ok: boolean }> {
     return this.req(`/orgs/${orgId}/members/${userId}`, { method: 'DELETE' });

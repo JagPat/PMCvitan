@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
 import type { PrismaService } from '../prisma.service';
 
@@ -251,6 +251,105 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
   it('forbids a non-owner from removing anyone', async () => {
     const { svc } = makeManage([{ userId: 'a1', role: 'admin' }, { userId: 'u2', role: 'member' }]);
     await expect(svc.removeOrgMember('org1', 'a1', 'u2')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('OrgsService invitation-email correction', () => {
+  function makeEmailCorrection(options: {
+    callerRole?: string | null;
+    targetExists?: boolean;
+    passwordHash?: string | null;
+    emailVerifiedAt?: Date | null;
+    duplicateEmail?: boolean;
+  } = {}) {
+    const target = {
+      id: 'target1',
+      name: 'Site Engineer',
+      email: 'wrong@vitan.in',
+      phone: null,
+      passwordHash: options.passwordHash ?? null,
+      emailVerifiedAt: options.emailVerifiedAt ?? null,
+    };
+    const challenges: Array<{ userId: string; consumedAt: Date | null }> = [
+      { userId: target.id, consumedAt: null },
+    ];
+    const audits: Array<Record<string, unknown>> = [];
+    const prisma = {
+      orgMembership: {
+        findUnique: vi.fn(async ({ where }: { where: { orgId_userId: { userId: string } } }) => {
+          if (where.orgId_userId.userId === 'caller1') return { role: options.callerRole ?? 'owner' };
+          if (where.orgId_userId.userId === target.id && options.targetExists !== false) {
+            return { role: 'member', user: target };
+          }
+          return null;
+        }),
+      },
+      user: {
+        update: vi.fn(async ({ data }: { data: { email: string } }) => {
+          if (options.duplicateEmail) throw Object.assign(new Error('unique'), { code: 'P2002' });
+          target.email = data.email;
+          return target;
+        }),
+      },
+      passwordCredentialChallenge: {
+        updateMany: vi.fn(async ({ where, data }: { where: { userId: string; consumedAt: null }; data: { consumedAt: Date } }) => {
+          let count = 0;
+          for (const challenge of challenges) {
+            if (challenge.userId === where.userId && challenge.consumedAt === null) {
+              challenge.consumedAt = data.consumedAt;
+              count += 1;
+            }
+          }
+          return { count };
+        }),
+      },
+      securityAuditEvent: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { audits.push(data); return data; }),
+      },
+      $executeRaw: vi.fn(async () => 1),
+      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
+    };
+    const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
+    return { svc, prisma, target, challenges, audits };
+  }
+
+  it.each(['owner', 'admin'])('%s may correct an unverified invitation email and consume old challenges', async (callerRole) => {
+    const { svc, target, challenges, audits } = makeEmailCorrection({ callerRole });
+
+    await expect(svc.correctInvitationEmail('org1', 'caller1', 'target1', { email: ' Correct@Vitan.in ' }))
+      .resolves.toMatchObject({ email: 'correct@vitan.in', credentialState: 'not_set' });
+    expect(target.email).toBe('correct@vitan.in');
+    expect(challenges[0].consumedAt).toBeInstanceOf(Date);
+    expect(audits).toEqual([expect.objectContaining({
+      action: 'auth.invitation_email_changed',
+      actorUserId: 'caller1',
+      targetUserId: 'target1',
+      actorKind: 'administrator',
+    })]);
+  });
+
+  it('refuses plain members and users outside the org', async () => {
+    const member = makeEmailCorrection({ callerRole: 'member' });
+    await expect(member.svc.correctInvitationEmail('org1', 'caller1', 'target1', { email: 'new@vitan.in' }))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    const foreign = makeEmailCorrection({ targetExists: false });
+    await expect(foreign.svc.correctInvitationEmail('org1', 'caller1', 'target1', { email: 'new@vitan.in' }))
+      .rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it.each([
+    { passwordHash: 'bcrypt-hash', emailVerifiedAt: null },
+    { passwordHash: null, emailVerifiedAt: new Date('2026-07-15T00:00:00Z') },
+  ])('refuses correction after credential establishment %#', async (state) => {
+    const { svc } = makeEmailCorrection(state);
+    await expect(svc.correctInvitationEmail('org1', 'caller1', 'target1', { email: 'new@vitan.in' }))
+      .rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('returns a generic conflict when the corrected email is already used', async () => {
+    const { svc } = makeEmailCorrection({ duplicateEmail: true });
+    await expect(svc.correctInvitationEmail('org1', 'caller1', 'target1', { email: 'used@vitan.in' }))
+      .rejects.toBeInstanceOf(ConflictException);
   });
 });
 

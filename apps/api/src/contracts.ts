@@ -611,3 +611,10 @@ export type AddOrgMemberInput = z.infer<typeof addOrgMemberSchema>;
 // Change an org member's role (owner only) — see OrgsService.updateOrgMemberRole.
 export const updateOrgMemberSchema = z.object({ role: orgRole });
 export type UpdateOrgMemberInput = z.infer<typeof updateOrgMemberSchema>;
+
+// Correct a mistyped invitation address only before that identity establishes a
+// password. Authorization and the enrolled-state guard live in OrgsService.
+export const correctInvitationEmailSchema = z.object({
+  email: z.string().trim().email().transform((value) => value.toLowerCase()),
+});
+export type CorrectInvitationEmailInput = z.infer<typeof correctInvitationEmailSchema>;

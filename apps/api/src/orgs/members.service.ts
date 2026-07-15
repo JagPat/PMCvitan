@@ -13,6 +13,7 @@ export interface MemberDto {
   /** for a `consultant` member: the discipline they cover */
   discipline?: string;
   status: string;
+  credentialState?: 'not_set' | 'active';
 }
 
 /**
@@ -40,13 +41,23 @@ export class MembersService {
     }
   }
 
-  async list(projectId: string): Promise<MemberDto[]> {
+  async list(projectId: string, requester: AuthUser): Promise<MemberDto[]> {
+    const showCredentialState = await this.canManage(projectId, requester);
     const rows = await this.prisma.membership.findMany({
       where: { projectId, status: { not: 'removed' } },
       include: { user: true },
       orderBy: { createdAt: 'asc' },
     });
-    return rows.map((m) => ({ userId: m.userId, name: m.user.name, email: m.user.email, phone: m.user.phone, role: m.role, discipline: m.discipline ?? undefined, status: m.status }));
+    return rows.map((m) => ({
+      userId: m.userId,
+      name: m.user.name,
+      email: m.user.email,
+      phone: m.user.phone,
+      role: m.role,
+      discipline: m.discipline ?? undefined,
+      status: m.status,
+      ...(showCredentialState ? { credentialState: m.user.passwordHash ? 'active' as const : 'not_set' as const } : {}),
+    }));
   }
 
   /** A discipline is only meaningful for a consultant — clear it for any other role. */
@@ -79,7 +90,7 @@ export class MembersService {
         create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
       });
     });
-    return { userId: user.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status };
+    return { userId: user.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }
 
   async updateRole(projectId: string, requester: AuthUser, userId: string, input: UpdateMemberInput): Promise<MemberDto> {
@@ -90,7 +101,7 @@ export class MembersService {
       where: { projectId_userId: { projectId, userId } },
       data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
     });
-    return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status };
+    return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
   }
 
   async remove(projectId: string, requester: AuthUser, userId: string): Promise<{ ok: boolean }> {

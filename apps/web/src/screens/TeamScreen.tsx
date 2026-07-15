@@ -42,7 +42,9 @@ export function TeamScreen() {
   const activeOrgId = activeMembership?.orgId ?? null;
   const orgRole = myOrgs.find((o) => o.id === activeOrgId)?.role;
   const canDeleteProject = orgRole === 'owner' || orgRole === 'admin';
-  // Granting/revoking org admins is the OWNER's alone — the single gatekeeper.
+  // Owners and admins may inspect credential readiness and correct pre-enrolment
+  // invitation typos. Granting/revoking org power remains the OWNER's alone.
+  const canViewOrgRoster = orgRole === 'owner' || orgRole === 'admin';
   const canManageOrgRoster = orgRole === 'owner';
   const canEditProject = (canManage || canDeleteProject) && !!activeOrgId;
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -123,6 +125,7 @@ export function TeamScreen() {
                 {m.role === 'consultant' && m.discipline && <span style={discChip}>{discLabel(m.discipline)}</span>}
               </div>
               <div style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.email ?? m.phone ?? '—'}</div>
+              {m.credentialState && <CredentialBadge state={m.credentialState} />}
             </div>
             {canManage ? (
               <>
@@ -149,7 +152,9 @@ export function TeamScreen() {
 
       <CompaniesSection canManage={canEditProject} />
 
-      {canManageOrgRoster && activeOrgId && <OrgRoster orgId={activeOrgId} />}
+      {canViewOrgRoster && activeOrgId && (
+        <OrgRoster orgId={activeOrgId} canManageRoles={canManageOrgRoster} canCorrectEmails />
+      )}
 
       {canDeleteProject && activeOrgId && (
         <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }}>
@@ -181,16 +186,20 @@ export function TeamScreen() {
  * project access from being on the roster — they must be added to a specific
  * project's team to see it. Adding someone here provisions their login only; their
  * project access comes from their org role (owner/admin) or an explicit project
- * membership. Managed by the org OWNER only — this whole section is owner-gated.
+ * membership. Owners manage roster membership and roles; owners/admins may inspect
+ * credential readiness and correct a pre-enrolment invitation typo.
  */
-function OrgRoster({ orgId }: { orgId: string }) {
+function OrgRoster({ orgId, canManageRoles, canCorrectEmails }: { orgId: string; canManageRoles: boolean; canCorrectEmails: boolean }) {
   const orgMembers = useStore(useShallow((s) => s.orgMembers));
   const loadOrgMembers = useStore((s) => s.loadOrgMembers);
   const addOrgMember = useStore((s) => s.addOrgMember);
   const updateOrgMemberRole = useStore((s) => s.updateOrgMemberRole);
   const removeOrgMember = useStore((s) => s.removeOrgMember);
+  const correctInvitationEmail = useStore((s) => s.correctInvitationEmail);
   useEffect(() => { loadOrgMembers(orgId); }, [loadOrgMembers, orgId]);
   const ownerCount = orgMembers.filter((m) => m.orgRole === 'owner').length;
+  const [correctingId, setCorrectingId] = useState<string | null>(null);
+  const [correctedEmail, setCorrectedEmail] = useState('');
 
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
@@ -211,16 +220,18 @@ function OrgRoster({ orgId }: { orgId: string }) {
         Owners &amp; admins can create projects, build teams, and run every project in the org. A plain member gets no project access here — add them to a specific project&apos;s team for that.
       </div>
 
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 18, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="org-member-name" />
-        <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="org-member-contact" />
-        <select value={role} onChange={(e) => setRole(e.target.value as OrgRole)} style={{ ...fld, flex: '0 0 130px' }} aria-label="Org role">
-          {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
-        </select>
-        <Button variant="ink" onClick={submit} disabled={!ready} data-testid="add-org-member" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '11px 15px', fontSize: 13 }}>
-          <Plus size={15} /> Add admin
-        </Button>
-      </div>
+      {canManageRoles && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 18, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" style={{ ...fld, flex: '1 1 140px' }} data-testid="org-member-name" />
+          <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Email or phone" style={{ ...fld, flex: '1 1 180px' }} data-testid="org-member-contact" />
+          <select value={role} onChange={(e) => setRole(e.target.value as OrgRole)} style={{ ...fld, flex: '0 0 130px' }} aria-label="Org role">
+            {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
+          </select>
+          <Button variant="ink" onClick={submit} disabled={!ready} data-testid="add-org-member" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '11px 15px', fontSize: 13 }}>
+            <Plus size={15} /> Add admin
+          </Button>
+        </div>
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
         {orgMembers.length === 0 && <div style={{ color: 'var(--muted)', fontSize: 13.5 }}>No admins loaded — this needs the server.</div>}
@@ -228,37 +239,94 @@ function OrgRoster({ orgId }: { orgId: string }) {
           // The sole owner can't be demoted or removed — the org must keep an owner.
           const lastOwner = m.orgRole === 'owner' && ownerCount <= 1;
           return (
-            <div key={m.userId} style={cardStyle}>
+            <div key={m.userId} style={{ ...cardStyle, flexWrap: 'wrap' }}>
               <div style={{ width: 40, height: 40, flex: 'none', borderRadius: '50%', background: 'var(--accent)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 16 }}>{m.name[0]}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 15 }}>{m.name}</div>
                 <div style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.email ?? m.phone ?? '—'}</div>
+                <CredentialBadge state={m.credentialState} />
               </div>
-              <select
-                value={m.orgRole}
-                disabled={lastOwner}
-                onChange={(e) => updateOrgMemberRole(orgId, m.userId, e.target.value as OrgRole)}
-                aria-label={`Org role for ${m.name}`}
-                data-testid="org-member-role"
-                style={{ ...fld, flex: '0 0 120px', height: 38, opacity: lastOwner ? 0.6 : 1 }}
-              >
-                {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
-              </select>
-              <button
-                onClick={() => removeOrgMember(orgId, m.userId)}
-                disabled={lastOwner}
-                aria-label={`Remove ${m.name}`}
-                title={lastOwner ? 'The org must keep at least one owner' : undefined}
-                data-testid="remove-org-member"
-                style={{ background: 'transparent', border: 'none', cursor: lastOwner ? 'not-allowed' : 'pointer', color: 'var(--muted)', display: 'flex', padding: 4, opacity: lastOwner ? 0.35 : 1 }}
-              >
-                <X size={17} />
-              </button>
+              {correctingId === m.userId ? (
+                <div style={{ display: 'flex', gap: 7, flex: '1 1 100%', minWidth: 0, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    type="email"
+                    value={correctedEmail}
+                    onChange={(e) => setCorrectedEmail(e.target.value)}
+                    aria-label={`Corrected email for ${m.name}`}
+                    style={{ ...fld, flex: '1 1 190px', height: 38 }}
+                  />
+                  <Button
+                    variant="ink"
+                    disabled={!correctedEmail.trim().includes('@')}
+                    aria-label={`Save email for ${m.name}`}
+                    onClick={() => {
+                      correctInvitationEmail(orgId, m.userId, correctedEmail.trim().toLowerCase());
+                      setCorrectingId(null);
+                    }}
+                    style={{ fontSize: 12, padding: '9px 12px' }}
+                  >Save email</Button>
+                  <Button variant="outline" onClick={() => setCorrectingId(null)} style={{ fontSize: 12, padding: '9px 12px' }}>Cancel</Button>
+                </div>
+              ) : (
+                <>
+                  {canCorrectEmails && m.credentialState === 'not_set' && (
+                    <Button
+                      variant="outline"
+                      aria-label={`Correct email for ${m.name}`}
+                      onClick={() => { setCorrectingId(m.userId); setCorrectedEmail(m.email ?? ''); }}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, padding: '9px 11px' }}
+                    ><Pencil size={13} /> Correct email</Button>
+                  )}
+                  {canManageRoles ? (
+                    <>
+                      <select
+                        value={m.orgRole}
+                        disabled={lastOwner}
+                        onChange={(e) => updateOrgMemberRole(orgId, m.userId, e.target.value as OrgRole)}
+                        aria-label={`Org role for ${m.name}`}
+                        data-testid="org-member-role"
+                        style={{ ...fld, flex: '0 0 120px', height: 38, opacity: lastOwner ? 0.6 : 1 }}
+                      >
+                        {ORG_ROLES.map((r) => <option key={r} value={r}>{ORG_ROLE_LABEL[r]}</option>)}
+                      </select>
+                      <button
+                        onClick={() => removeOrgMember(orgId, m.userId)}
+                        disabled={lastOwner}
+                        aria-label={`Remove ${m.name}`}
+                        title={lastOwner ? 'The org must keep at least one owner' : undefined}
+                        data-testid="remove-org-member"
+                        style={{ background: 'transparent', border: 'none', cursor: lastOwner ? 'not-allowed' : 'pointer', color: 'var(--muted)', display: 'flex', padding: 4, opacity: lastOwner ? 0.35 : 1 }}
+                      >
+                        <X size={17} />
+                      </button>
+                    </>
+                  ) : <span style={roleChip}>{ORG_ROLE_LABEL[m.orgRole]}</span>}
+                </>
+              )}
             </div>
           );
         })}
       </div>
     </div>
+  );
+}
+
+function CredentialBadge({ state }: { state: 'not_set' | 'active' }) {
+  const active = state === 'active';
+  return (
+    <span style={{
+      display: 'inline-block',
+      marginTop: 5,
+      padding: '3px 7px',
+      borderRadius: 6,
+      fontSize: 10.5,
+      fontWeight: 650,
+      color: active ? '#2F6545' : '#8A5A13',
+      background: active ? '#E8F2EB' : '#FFF2D9',
+      border: `1px solid ${active ? '#BFD8C6' : '#E8CF9F'}`,
+    }}>
+      {active ? 'Password active' : 'Password not set'}
+    </span>
   );
 }
 

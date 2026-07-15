@@ -321,6 +321,8 @@ export interface ProjectMember {
   discipline?: string;
   role: Role;
   status: string;
+  /** Present only when the caller may manage this project team. */
+  credentialState?: 'not_set' | 'active';
 }
 
 /** Kind of firm/consultant attached to a project. */
@@ -354,6 +356,7 @@ export interface OrgMember {
   email: string | null;
   phone: string | null;
   orgRole: OrgRole;
+  credentialState: 'not_set' | 'active';
 }
 
 // ── Drawings register (Slice 1) ──────────────────────────────────────────────

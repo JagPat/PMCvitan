@@ -96,6 +96,7 @@ function fakePrisma(seed: UserRow[]) {
         return data;
       }),
     },
+    $executeRaw: vi.fn(async () => 1),
     $transaction: vi.fn(async (work: (tx: unknown) => Promise<unknown>) => {
       const beforeUsers = structuredClone(users);
       const beforeChallenges = structuredClone(challenges);

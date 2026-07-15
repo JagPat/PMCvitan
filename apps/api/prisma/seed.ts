@@ -29,9 +29,12 @@ async function main(): Promise<void> {
   // FULLY populated database, not just the fixture this seed creates:
   // GateOverride → {Activity, Media}; DrawingRecipient → Membership;
   // Media → {DailyLog, Decision, Inspection, InspectionItem};
-  // Inspection.assignee / Activity.completionRequestedBy → Membership.
+  // Inspection.assignee / Activity.completionRequestedBy → Membership;
+  // credential challenges and security events → User.
   await prisma.gateOverride.deleteMany();
   await prisma.drawingRecipient.deleteMany();
+  await prisma.passwordCredentialChallenge.deleteMany();
+  await prisma.securityAuditEvent.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.notification.deleteMany();
   await prisma.decisionEvent.deleteMany();

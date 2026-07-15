@@ -9,6 +9,7 @@ import type {
   PasswordCredentialVerifyInput,
 } from '../contracts';
 import { PrismaService } from '../prisma.service';
+import { lockUserCredential } from '../common/credential-lock';
 import { EmailService } from './email.service';
 
 const PURPOSE = 'password_setup_or_reset';
@@ -93,7 +94,10 @@ export class PasswordCredentialsService {
 
     const now = new Date();
     const code = String(randomInt(100000, 1000000));
-    await this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
+      await lockUserCredential(tx, user!.id);
+      const eligible = await this.userById(tx, user!.id);
+      if (!this.eligible(eligible) || eligible?.email !== email) return false;
       await tx.passwordCredentialChallenge.updateMany({
         where: { userId: user!.id, purpose: PURPOSE, consumedAt: null },
         data: { consumedAt: now },
@@ -122,7 +126,9 @@ export class PasswordCredentialsService {
           correlationId: publicRequestId,
         },
       });
+      return true;
     });
+    if (!created) return { accepted: true, requestId: publicRequestId };
 
     try {
       await this.email.sendPasswordCredentialCode(email, code);
@@ -186,6 +192,7 @@ export class PasswordCredentialsService {
 
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_COST);
     return this.prisma.$transaction(async (tx) => {
+      await lockUserCredential(tx, challenge.userId);
       const claimed = await tx.passwordCredentialChallenge.updateMany({
         where: {
           id: challenge.id,

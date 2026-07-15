@@ -332,6 +332,7 @@ export interface AppActions {
   saveProjectAsTemplate: (name: string) => void;
   addOrgMember: (orgId: string, input: AddOrgMemberInput) => void;
   updateOrgMemberRole: (orgId: string, userId: string, role: OrgRole) => void;
+  correctInvitationEmail: (orgId: string, userId: string, email: string) => void;
   removeOrgMember: (orgId: string, userId: string) => void;
   // schedule
   startActivity: (id: string) => void;
@@ -2228,6 +2229,14 @@ export const useStore = create<Store>()(
         .updateOrgMemberRole(orgId, userId, role)
         .then(() => { get().loadOrgMembers(orgId); get().flash('Org role changed to ' + role + '.'); })
         .catch(() => get().flash('Could not change the role — the org must keep at least one owner.'));
+    },
+    correctInvitationEmail: (orgId, userId, email) => {
+      if (!gateway) return;
+      const normalized = email.trim().toLowerCase();
+      gateway
+        .correctInvitationEmail(orgId, userId, normalized)
+        .then(() => { get().loadOrgMembers(orgId); get().flash('Invitation email corrected.'); })
+        .catch(() => get().flash('Could not correct the email — it may already be active or in use.'));
     },
     removeOrgMember: (orgId, userId) => {
       if (!gateway) return;

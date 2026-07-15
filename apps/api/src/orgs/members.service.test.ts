@@ -4,7 +4,7 @@ import { MembersService } from './members.service';
 import type { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 
-interface U { id: string; name: string; email: string | null; phone: string | null; role: string; projectId: string }
+interface U { id: string; name: string; email: string | null; phone: string | null; role: string; projectId: string; passwordHash: string | null }
 interface M { projectId: string; userId: string; role: string; status: string }
 
 function make(orgRole: string | null = null) {
@@ -18,7 +18,7 @@ function make(orgRole: string | null = null) {
       findUnique: vi.fn(async ({ where }: { where: { id?: string; email?: string; phone?: string } }) =>
         users.find((u) => (where.id && u.id === where.id) || (where.email && u.email === where.email) || (where.phone && u.phone === where.phone)) ?? null,
       ),
-      create: vi.fn(async ({ data }: { data: Partial<U> }) => { const u = { id: `u${++seq}`, name: data.name!, email: data.email ?? null, phone: data.phone ?? null, role: data.role!, projectId: data.projectId! }; users.push(u); return u; }),
+      create: vi.fn(async ({ data }: { data: Partial<U> }) => { const u = { id: `u${++seq}`, name: data.name!, email: data.email ?? null, phone: data.phone ?? null, role: data.role!, projectId: data.projectId!, passwordHash: data.passwordHash ?? null }; users.push(u); return u; }),
     },
     membership: {
       findMany: vi.fn(async () => memberships.filter((m) => m.status !== 'removed').map((m) => ({ ...m, user: users.find((u) => u.id === m.userId) }))),
@@ -46,6 +46,29 @@ function make(orgRole: string | null = null) {
 }
 
 const pmc: AuthUser = { sub: 'pmc1', role: 'pmc', projectId: 'p1' };
+
+describe('MembersService.list', () => {
+  it('shows credential status to a project team manager', async () => {
+    const { svc, users } = make();
+    await svc.add('p1', pmc, { name: 'Not enrolled', role: 'engineer', email: 'new@vitan.in' });
+    await svc.add('p1', pmc, { name: 'Enrolled', role: 'contractor', email: 'active@vitan.in' });
+    users[1].passwordHash = 'bcrypt-hash';
+
+    await expect(svc.list('p1', pmc)).resolves.toEqual([
+      expect.objectContaining({ email: 'new@vitan.in', credentialState: 'not_set' }),
+      expect.objectContaining({ email: 'active@vitan.in', credentialState: 'active' }),
+    ]);
+  });
+
+  it('does not disclose credential status to a project member who cannot manage the team', async () => {
+    const { svc } = make(null);
+    await svc.add('p1', pmc, { name: 'Enrolled', role: 'contractor', email: 'active@vitan.in' });
+    const engineer: AuthUser = { sub: 'e1', role: 'engineer', projectId: 'p1' };
+
+    const rows = await svc.list('p1', engineer);
+    expect(rows[0]).not.toHaveProperty('credentialState');
+  });
+});
 
 describe('MembersService.add', () => {
   it('a PMC adds a member by email — provisions the account + membership', async () => {

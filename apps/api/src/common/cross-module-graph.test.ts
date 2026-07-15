@@ -69,6 +69,9 @@ const MODEL_OWNER: Record<string, string> = {
   projectTemplate: 'orgs', templateModule: 'orgs', user: 'orgs', workerDevice: 'orgs',
   // shared infrastructure every module appends to — NOT a cross-module edge
   auditLog: 'SHARED', notification: 'SHARED', pushSubscription: 'SHARED',
+  // identity-security infrastructure is shared by auth self-service and the
+  // org-admin invitation correction workflow.
+  passwordCredentialChallenge: 'SHARED', securityAuditEvent: 'SHARED',
 };
 
 // A push signature per `notifyChanged(` call: 'silent' (signal only), the exact
@@ -199,7 +202,7 @@ function routeSignatures(src: string): string[] {
 // The EXACT ordered mutating-route signature of every controller with mutations.
 const CONTROLLER_ROUTES: Record<string, string[]> = {
   'orgs/orgs.controller.ts': [
-    "Post('orgs')", "Post('orgs/:orgId/members')", "Patch('orgs/:orgId/members/:userId')", "Delete('orgs/:orgId/members/:userId')",
+    "Post('orgs')", "Patch('orgs/:orgId/members/:userId/invitation-email')", "Post('orgs/:orgId/members')", "Patch('orgs/:orgId/members/:userId')", "Delete('orgs/:orgId/members/:userId')",
     "Post('orgs/:orgId/projects')", "Patch('orgs/:orgId/projects/:pid')", "Delete('orgs/:orgId/projects/:pid')", "Post('orgs/:orgId/projects/:pid/restore')",
     "Post('orgs/:orgId/modules')", "Delete('orgs/:orgId/modules/:moduleId')", "Post('orgs/:orgId/templates')", "Delete('orgs/:orgId/templates/:templateId')",
   ],
@@ -294,12 +297,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('66 mutating routes total (the documented command inventory §4)', () => {
+    it('67 mutating routes total (the documented command inventory §4)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(66);
+      expect(total).toBe(67);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(66);
+      expect(live).toBe(67);
     });
   });
 
