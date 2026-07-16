@@ -1,14 +1,22 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
 
 /**
- * PR C Task 5 — the EXACTLY-ONE external-consequence assertions, run in BOTH sender modes
- * (`test:e2e:api:legacy` and `test:e2e:api:outbox`). Every consequence here is read from the DB
- * snapshot, which is synchronous in either mode — so the SAME assertions must hold whether the
- * in-request dispatcher (legacy) or the background relay (outbox) is the sole external sender:
+ * PR C Task 5 — the mode-invariant SYNCHRONOUS-consequence assertions, run in BOTH sender modes
+ * (`test:e2e:api:legacy` and `test:e2e:api:outbox`). What this suite proves is that the durable,
+ * in-transaction consequences a browser reads back are IDENTICAL whichever sender owns external
+ * dispatch:
  *
  *   - a private DRAFT decision stays invisible to the client and notifies no one;
- *   - a PUBLISHED decision reaches the client and notifies EXACTLY once;
+ *   - a PUBLISHED decision reaches the client and records EXACTLY one notification;
  *   - a keyed RETRY of the publish is a replay — no duplicate decision row, no second notice.
+ *
+ * SCOPE (honest): every assertion reads the DB snapshot, and the `Notification` row + the decision
+ * row are written INSIDE the command transaction — synchronous in either mode — so this validates
+ * the exactly-once command effect (the idempotency ledger) and draft privacy, mode-agnostically. It
+ * does NOT observe the ASYNCHRONOUS external delivery (the socket invalidation / Web Push), which is
+ * not surfaced through the API; that path — the relay as the sole sender after the outbox cutover,
+ * and the legacy dispatcher's lease-coordinated send + at-least-once retry — is covered by the
+ * unit/integration suites (external-effect-dispatcher.test.ts + outbox.test.ts over live PG).
  *
  * Pure API (the same contracts the UI calls); it shares the seeded database with the pillar chain
  * (serial, one worker) and uses run-unique titles in the seeded `ambli` project so it never
