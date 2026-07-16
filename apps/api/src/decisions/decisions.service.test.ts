@@ -7,6 +7,7 @@ import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { RealtimeGateway } from '../realtime/realtime.gateway';
 import type { AuthUser } from '../common/auth';
 import type { CreateDecisionInput } from '../contracts';
+import { pendingDecisionNotice } from '../domain/notifications';
 
 interface DecisionRow { id: string; projectId: string; title: string; publishedAt: Date | null; authorId: string | null }
 
@@ -18,7 +19,9 @@ const NAMES: Record<string, string> = { 'u-client': 'Asha Shah', 'u-arch': 'Ar. 
 function make() {
   const decisions: DecisionRow[] = [];
   const notifications: Array<{ text: string }> = [];
+  const notificationTxStates: boolean[] = [];
   const events: Array<{ type: string }> = [];
+  let inCommandTx = false;
   const prisma = {
     user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (NAMES[where.id] ? { name: NAMES[where.id] } : null)) },
     decision: {
@@ -33,7 +36,7 @@ function make() {
     },
     decisionOption: { createMany: vi.fn(async () => ({ count: 0 })) },
     decisionEvent: { create: vi.fn((args: { data: { type: string } }) => { events.push(args.data); return Promise.resolve(args.data); }) },
-    notification: { create: vi.fn((args: { data: { text: string } }) => { notifications.push(args.data); return Promise.resolve(args.data); }) },
+    notification: { create: vi.fn((args: { data: { text: string } }) => { notificationTxStates.push(inCommandTx); notifications.push(args.data); return Promise.resolve(args.data); }) },
     auditLog: { create: vi.fn(async () => ({})) },
     // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its three steps
     project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
@@ -41,10 +44,17 @@ function make() {
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
-    $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
-      typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
+    $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) => {
+      if (typeof arg !== 'function') return Promise.all(arg);
+      inCommandTx = true;
+      try {
+        return await arg(prisma);
+      } finally {
+        inCommandTx = false;
+      }
+    }),
   } as unknown as PrismaService;
-  return { prisma, decisions, notifications, events };
+  return { prisma, decisions, notifications, notificationTxStates, events };
 }
 
 const snapshot = { build: vi.fn(async () => ({ ok: true })) } as unknown as SnapshotService;
@@ -85,6 +95,29 @@ describe('DecisionsService — draft → publish lifecycle', () => {
     expect(decisions[0].publishedAt).not.toBeNull();
     expect(notifications).toHaveLength(1);
     expect(realtime.notifyChanged).toHaveBeenCalledWith('proj-1', expect.stringContaining('awaiting your approval'), ['client']);
+  });
+
+  it('create with publish:true writes exactly one canonical notification inside the command transaction; drafts write none', async () => {
+    const { prisma, notificationTxStates, notifications } = make();
+    const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
+    const svc = new DecisionsService(prisma, snapshot, realtime);
+
+    await svc.create('proj-1', baseInput(true), user);
+
+    expect(prisma.notification.create).toHaveBeenCalledTimes(1);
+    expect(notificationTxStates).toEqual([true]);
+    expect(notifications).toEqual([{
+      projectId: 'proj-1',
+      text: pendingDecisionNotice('Kitchen counter top'),
+      color: '#C08A2D',
+      time: 'just now',
+    }]);
+
+    const draft = make();
+    const draftSvc = new DecisionsService(draft.prisma, snapshot, realtime);
+    await draftSvc.create('proj-1', baseInput(false), user);
+    expect(draft.prisma.notification.create).not.toHaveBeenCalled();
+    expect(draft.notificationTxStates).toEqual([]);
   });
 
   it('publish() flips a draft live and fires the client notice; re-publishing conflicts', async () => {

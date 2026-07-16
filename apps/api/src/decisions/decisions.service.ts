@@ -67,6 +67,7 @@ export class DecisionsService {
     // Draft by default: `publishedAt` stays null (author-private, weightless) until the PMC
     // publishes. `publish: true` is the one-step "issue now" — created already live.
     const publishedAt = input.publish ? new Date() : null;
+    const notice = pendingDecisionNotice(input.title);
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -92,12 +93,15 @@ export class DecisionsService {
           })),
         });
         await tx.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: input.title } } });
+        if (input.publish) {
+          await tx.notification.create({ data: { projectId, text: notice, color: '#C08A2D', time: 'just now' } });
+        }
         await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
         await emitEvent(tx, {
           projectId, actor, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title },
           // Task 6: a one-step ISSUE notifies the client; a draft is silent. The outbox push
           // consumer carries this intent (the old in-request push still sends in legacy mode).
-          ...(input.publish ? { notification: { body: pendingDecisionNotice(input.title), roles: ['client'] } } : {}),
+          ...(input.publish ? { notification: { body: notice, roles: ['client'] } } : {}),
         });
         return { resultRef: id };
       },
@@ -107,7 +111,6 @@ export class DecisionsService {
     // not notify anyone). Post-commit side-effects fire once, on a FRESH execution only — a
     // replay must not re-notify. When published in one step, fire the same side-effects publish() does.
     if (input.publish && !outcome.replayed) {
-      await this.prisma.notification.create({ data: { projectId, text: pendingDecisionNotice(input.title), color: '#C08A2D', time: 'just now' } });
       this.realtime.notifyChanged(projectId, `New decision awaiting your approval: ${input.title}`, ['client']);
     }
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -127,6 +130,7 @@ export class DecisionsService {
     const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
     if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
     if (d.publishedAt) throw new ConflictException('Decision is already published');
+    const notice = pendingDecisionNotice(d.title);
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -137,11 +141,11 @@ export class DecisionsService {
       run: async (tx) => {
         await tx.decision.update({ where: { id: decisionId }, data: { publishedAt: new Date() } });
         await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } });
-        await tx.notification.create({ data: { projectId, text: pendingDecisionNotice(d.title), color: '#C08A2D', time: 'just now' } });
+        await tx.notification.create({ data: { projectId, text: notice, color: '#C08A2D', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
         await emitEvent(tx, {
           projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
-          notification: { body: `New decision awaiting your approval: ${d.title}`, roles: ['client'] },
+          notification: { body: notice, roles: ['client'] },
         });
         return { resultRef: decisionId };
       },
