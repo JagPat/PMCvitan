@@ -183,6 +183,45 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
     expect(await projectionEffects(p)).toBe(1);
   });
 
+  // ── PR C fix-forward: lease-coordinated external senders (mixed-mode safe + legacy at-least-once) ──
+  it('legacy mode: the relay LEAVES a fresh external delivery to the immediate dispatcher (does not claim a recent first attempt)', async () => {
+    const p = await freshProject();
+    const { eventId } = await emit(p, 'D-fresh'); // decision.approved invalidates → a pending socket delivery
+    const socket = await deliveryFor(SOCKET_CONSUMER, eventId);
+    expect(socket.status).toBe('pending');
+    await relay.runOnce(); // legacy: the relay owns only retries/recovery — a fresh row is the dispatcher's
+    expect((await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: socket.id } })).status).toBe('pending');
+  });
+
+  it('legacy mode: the relay RETRIES a FAILED external delivery (at-least-once — a dropped provider attempt is re-sent)', async () => {
+    const p = await freshProject();
+    const { eventId } = await emit(p, 'D-extretry');
+    const socket = await deliveryFor(SOCKET_CONSUMER, eventId);
+    // simulate a failed immediate attempt: attempts=1, back to pending, now due
+    await t.prisma.outboxDelivery.update({ where: { id: socket.id }, data: { attempts: 1, nextAttemptAt: new Date(Date.now() - 1000) } });
+    await relay.runOnce(); // legacy: a due retry IS the relay's — it claims + re-sends → succeeded
+    expect((await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: socket.id } })).status).toBe('succeeded');
+  });
+
+  it('legacy mode: the relay RECOVERS a stranded fresh external delivery the dispatcher never reached (older than the lease window)', async () => {
+    const p = await freshProject();
+    const { eventId } = await emit(p, 'D-stranded');
+    const socket = await deliveryFor(SOCKET_CONSUMER, eventId);
+    // simulate a crash/DB-blip between commit and immediate dispatch: still pending, attempts=0, but stale
+    await t.prisma.$executeRawUnsafe(`UPDATE "OutboxDelivery" SET "updatedAt" = now() - interval '5 minutes' WHERE "id" = $1`, socket.id);
+    await relay.runOnce();
+    expect((await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: socket.id } })).status).toBe('succeeded');
+  });
+
+  it('claimOne is an atomic single-winner: the first caller wins the lease, a second loses (mixed-mode double-send guard)', async () => {
+    const p = await freshProject();
+    const { eventId } = await emit(p, 'D-claim');
+    const socket = await deliveryFor(SOCKET_CONSUMER, eventId);
+    expect(await relay.claimOne(socket.id)).toBe(true); // the dispatcher wins
+    expect(await relay.claimOne(socket.id)).toBe(false); // a racing outbox-mode relay loses — no second sender
+    expect((await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: socket.id } })).status).toBe('leased');
+  });
+
   it('an ordered consumer cannot apply position N+1 before N — it waits, and only advances contiguously', async () => {
     const p = await freshProject();
     const e0 = await emit(p, 'D-p0'); // streamPosition 0

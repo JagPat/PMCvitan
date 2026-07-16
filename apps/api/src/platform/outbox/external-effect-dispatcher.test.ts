@@ -38,9 +38,10 @@ function make(deliveries: Delivery[]) {
   const updateMany = vi.fn(async () => ({ count: 0 }));
   const prisma = { outboxDelivery: { findMany, updateMany } } as unknown as PrismaService;
   const dispatchOne = vi.fn(async () => 'succeeded' as const);
-  const relay = { dispatchOne } as unknown as OutboxRelay;
+  const claimOne = vi.fn(async () => true); // by default the immediate path wins the delivery lease
+  const relay = { dispatchOne, claimOne } as unknown as OutboxRelay;
   const dispatcher = new ExternalEffectDispatcher(prisma, relay);
-  return { dispatcher, findMany, updateMany, dispatchOne };
+  return { dispatcher, findMany, updateMany, dispatchOne, claimOne };
 }
 
 afterEach(() => {
@@ -74,7 +75,7 @@ describe('ExternalEffectDispatcher — the single post-commit external sender', 
     expect(dispatchOne).toHaveBeenCalledTimes(1);
     expect(dispatchOne).toHaveBeenCalledWith('s1');
     expect(updateMany).toHaveBeenCalledTimes(1);
-    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: { in: ['s2'] } }, data: expect.objectContaining({ status: 'succeeded' }) }));
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: { in: ['s2'] }, status: 'pending' }, data: expect.objectContaining({ status: 'succeeded' }) }));
   });
 
   it('legacy mode: TWO projects each get their own single socket invalidation', async () => {
@@ -101,9 +102,30 @@ describe('ExternalEffectDispatcher — the single post-commit external sender', 
     expect(dispatchOne).toHaveBeenCalledTimes(2);
   });
 
+  it('legacy mode: the lease is claimed BEFORE the send (immediate path is lease-coordinated)', async () => {
+    const { dispatcher, dispatchOne, claimOne } = make([{ id: 's1', projectId: 'p', consumer: SOCKET_CONSUMER }]);
+    await dispatcher.dispatchCommitted([meta('e1')]);
+    expect(claimOne).toHaveBeenCalledWith('s1');
+    expect(dispatchOne).toHaveBeenCalledWith('s1');
+  });
+
+  it('mixed-mode: when the relay already owns the lease (claimOne loses), the dispatcher does NOT send — exactly one sender', async () => {
+    const { dispatcher, dispatchOne, claimOne } = make([{ id: 's1', projectId: 'p', consumer: SOCKET_CONSUMER }]);
+    (claimOne as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(false); // an outbox-mode relay claimed it first
+    await dispatcher.dispatchCommitted([meta('e1')]);
+    expect(claimOne).toHaveBeenCalledWith('s1');
+    expect(dispatchOne).not.toHaveBeenCalled(); // the relay will send it — no double-send across a rolling cutover
+  });
+
   it('a provider failure NEVER throws out of the post-commit path (durable state carries the outcome)', async () => {
     const { dispatcher, dispatchOne } = make([{ id: 's1', projectId: 'p', consumer: SOCKET_CONSUMER }]);
     (dispatchOne as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('web push endpoint gone'));
+    await expect(dispatcher.dispatchCommitted([meta('e1')])).resolves.toBeUndefined();
+  });
+
+  it('a transient DB error in the post-commit query NEVER throws out (the already-committed command stays successful)', async () => {
+    const { dispatcher, findMany } = make([{ id: 's1', projectId: 'p', consumer: SOCKET_CONSUMER }]);
+    (findMany as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('connection reset'));
     await expect(dispatcher.dispatchCommitted([meta('e1')])).resolves.toBeUndefined();
   });
 

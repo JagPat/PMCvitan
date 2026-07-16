@@ -4,6 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as ts from 'typescript';
 import { describe, it, expect } from 'vitest';
+import { RequestMethod } from '@nestjs/common';
+import { PATH_METADATA, METHOD_METADATA } from '@nestjs/common/constants';
 import type { ModuleManifest } from '@vitan/shared';
 import { MODULE_MANIFESTS, MANIFEST_BY_ID, validateModuleRegistry } from './registry';
 import { RAW_SQL_WRITE_WAIVERS, CROSS_MODULE_WRITE_WAIVERS } from './boundary-waivers';
@@ -57,8 +59,10 @@ const STUB = `
 interface Delegate {
   create(a?: unknown): Promise<{ id: string }>;
   createMany(a?: unknown): Promise<unknown>;
+  createManyAndReturn(a?: unknown): Promise<unknown>;
   update(a?: unknown): Promise<unknown>;
   updateMany(a?: unknown): Promise<unknown>;
+  updateManyAndReturn(a?: unknown): Promise<unknown>;
   upsert(a?: unknown): Promise<unknown>;
   delete(a?: unknown): Promise<unknown>;
   deleteMany(a?: unknown): Promise<unknown>;
@@ -77,6 +81,13 @@ interface FixtureWaivers {
   rawWaivers?: typeof RAW_SQL_WRITE_WAIVERS;
   crossWaivers?: typeof CROSS_MODULE_WRITE_WAIVERS;
 }
+
+// Synthetic relation map for the stub models, so NESTED-write fixtures resolve a relation field to
+// its foreign delegate exactly as the live DMMF map does for real models.
+const FIXTURE_RELATIONS = new Map<string, Map<string, string>>([
+  ['decision', new Map([['drawings', 'drawing'], ['activities', 'activity'], ['media', 'media']])],
+  ['activity', new Map([['inspections', 'inspection']])],
+]);
 
 /** Compile in-memory fixture files and run the persistence analyzer over them. */
 function analyzeFixture(files: Record<string, string>, waivers: FixtureWaivers = {}): BoundaryFinding[] {
@@ -102,6 +113,7 @@ function analyzeFixture(files: Record<string, string>, waivers: FixtureWaivers =
       ownerOf: OWNER,
       kindOf: KIND,
       delegates: DELEGATES,
+      relationsOf: FIXTURE_RELATIONS,
       rawWaivers: waivers.rawWaivers ?? [],
       crossWaivers: waivers.crossWaivers ?? [],
     }).findings;
@@ -141,8 +153,11 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
 
   it('NO analyzed persistence write crosses a module boundary except the declared waivers', () => {
     expect(analysis.persistence.findings).toEqual([]);
-    // the sole runtime raw write is the outbox relay lease claim (waived)
-    expect(analysis.persistence.rawWrites.map((r) => `${r.file}:${r.symbol}`)).toEqual(['platform/outbox/relay.service.ts:claim']);
+    // the only runtime raw writes are the outbox relay's two lease claims (both waived)
+    expect(analysis.persistence.rawWrites.map((r) => `${r.file}:${r.symbol}`).sort()).toEqual([
+      'platform/outbox/relay.service.ts:claim',
+      'platform/outbox/relay.service.ts:claimExternalRecovery',
+    ]);
     // and no un-analyzable dynamic delegate exists in runtime code
     expect(analysis.persistence.dynamicWrites).toEqual([]);
   });
@@ -208,6 +223,56 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
       expect(f).toHaveLength(1);
       expect(f[0].code).toBe('cross-module-write');
       expect(f[0].model).toBe('inspection');
+    });
+
+    it('a NESTED relation write to a foreign model → cross-module-write (own-model delegate call, foreign rows in the payload)', () => {
+      const f = analyzeFixture({
+        'decisions/evil-nested.ts': `export async function evilNested(prisma: PrismaLike) { await prisma.decision.update({ where: {}, data: { title: 'x', drawings: { create: { number: 'A1' } } } }); }`,
+      });
+      // the decision.update is own-module (no finding); the nested drawings.create is the cross write
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-write');
+      expect(f[0].model).toBe('drawing');
+    });
+
+    it('a deeply nested relation write (decision → activity → inspection) attributes the deepest foreign model', () => {
+      const f = analyzeFixture({
+        'decisions/evil-deep.ts': `export async function evilDeep(prisma: PrismaLike) { await prisma.decision.create({ data: { activities: { create: { inspections: { create: { id: 'i1' } } } } } }); }`,
+      });
+      // activities.create (→activity) AND the deeper inspections.create (→inspection), both foreign to decisions
+      expect(f.map((x) => x.model).sort()).toEqual(['activity', 'inspection']);
+      expect(f.every((x) => x.code === 'cross-module-write')).toBe(true);
+    });
+
+    it('a *AndReturn write to a foreign model → cross-module-write', () => {
+      const f = analyzeFixture({
+        'decisions/evil-return.ts': `export async function evilReturn(prisma: PrismaLike) { await prisma.activity.createManyAndReturn({ data: [{ id: '1' }] }); }`,
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-write');
+      expect(f[0].model).toBe('activity');
+    });
+
+    it('a raw TRUNCATE of a foreign table with no waiver → raw-write-unwaived', () => {
+      const f = analyzeFixture({
+        'decisions/evil-truncate.ts': `export async function evilTruncate(prisma: PrismaLike) { await prisma.$executeRawUnsafe('TRUNCATE "Activity"'); }`,
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('raw-write-unwaived');
+      expect(f[0].symbol).toBe('evilTruncate');
+    });
+
+    it('two controller routes colliding only by param name → route-structural-duplicate', () => {
+      class CtrlA { patch(): void {} }
+      class CtrlB { patch(): void {} }
+      Reflect.defineMetadata(PATH_METADATA, 'projects/:projectId/decisions/:id', CtrlA);
+      Reflect.defineMetadata(METHOD_METADATA, RequestMethod.PATCH, CtrlA.prototype.patch);
+      Reflect.defineMetadata(PATH_METADATA, '', CtrlA.prototype.patch);
+      Reflect.defineMetadata(PATH_METADATA, 'projects/:projectId/decisions/:decisionId', CtrlB);
+      Reflect.defineMetadata(METHOD_METADATA, RequestMethod.PATCH, CtrlB.prototype.patch);
+      Reflect.defineMetadata(PATH_METADATA, '', CtrlB.prototype.patch);
+      const findings = analyzeRoutes([], [CtrlA as never, CtrlB as never]);
+      expect(findings.some((x) => x.code === 'route-structural-duplicate')).toBe(true);
     });
 
     it('a raw INSERT with no waiver → raw-write-unwaived', () => {

@@ -27,6 +27,11 @@ export interface OutboxStatus extends OutboxMetrics {
 
 const truncate = (s: string | null, max = 200): string | null => (s == null ? null : s.length > max ? `${s.slice(0, max)}…` : s);
 
+/** The seal holds a SHARE ROW EXCLUSIVE lock on DomainEvent across its gap scan; give the interactive
+ *  transaction a generous ceiling (well over Prisma's 5s default) so a large event history can be
+ *  scanned without the whole seal timing out and rolling back mid-cutover. */
+const SEAL_TX_TIMEOUT_MS = 120_000;
+
 @Injectable()
 export class OutboxOperationsService {
   private readonly log = new Logger('OutboxOps');
@@ -194,7 +199,7 @@ export class OutboxOperationsService {
         data: { action: 'seal-external', operatorIdentity, reason },
       });
       return { coverageVersion, auditId: action.id, neutralized: ids.length };
-    });
+    }, { timeout: SEAL_TX_TIMEOUT_MS, maxWait: SEAL_TX_TIMEOUT_MS });
     this.log.warn(`external-effect cutover sealed at coverage ${result.coverageVersion} by '${operatorIdentity}' — ${result.neutralized} legacy delivery(ies) neutralized (audit ${result.auditId})`);
     return result;
   }
