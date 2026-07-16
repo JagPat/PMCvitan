@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
@@ -6,6 +6,11 @@ import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { PrismaService } from '../prisma.service';
 import { Prisma } from '@prisma/client';
+import { registerConsumer, unregisterConsumer } from '../platform/outbox/registry';
+
+const PROJECT_INIT_TEST_CONSUMER = 'project-init.unit-test';
+
+afterEach(() => unregisterConsumer(PROJECT_INIT_TEST_CONSUMER));
 
 /** Task 7 — the project-init participants are leaf providers (no deps); a fresh instance
  *  per construction lets these unit tests drive createProject through the same mock tx. */
@@ -17,6 +22,7 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     memberships: [] as Record<string, unknown>[],
     streams: [] as Record<string, unknown>[],
     events: [] as Record<string, unknown>[],
+    deliveries: [] as Record<string, unknown>[],
     nodes: [] as Record<string, unknown>[],
     phases: [] as Record<string, unknown>[],
     activities: [] as Record<string, unknown>[],
@@ -29,8 +35,23 @@ function makeAtomicProjectInit(throwFromInspection = false) {
   const sourceInspections = [{ id: 'INSP-22', projectId: 'ambli', kind: 'checklist', title: 'Source QA', zone: 'GF', nodeId: 'z1', items: [{ name: 'Check', order: 0 }] }];
   const module = {
     id: 'mod-kitchen', orgId: 'org1', archivedAt: null, name: 'Kitchen', anchorKind: 'zone',
-    payload: { nodes: [{ key: 'k', parentKey: null, name: 'Kitchen', kind: 'room', order: 0 }], phases: [], activities: [], inspections: [] },
+    payload: {
+      nodes: [{ key: 'k', parentKey: null, name: 'Kitchen', kind: 'room', order: 0 }],
+      phases: [{ name: 'Kitchen Fitout', order: 2, plannedStart: 9, plannedEnd: 12 }],
+      activities: [{ name: 'Kitchen work', zone: 'GF', plannedStart: 9, plannedEnd: 12, nodeKey: 'k', phaseName: 'Kitchen Fitout', order: 1 }],
+      inspections: [{ title: 'Kitchen QA', zone: 'GF', nodeKey: 'k', items: ['Kitchen check'] }],
+    },
   };
+  const explicitModule = {
+    id: 'mod-bathroom', orgId: 'org1', archivedAt: null, name: 'Bathroom', anchorKind: 'zone',
+    payload: {
+      nodes: [{ key: 'b', parentKey: null, name: 'Bathroom', kind: 'room', order: 1 }],
+      phases: [{ name: 'Bathroom Fitout', order: 3, plannedStart: 13, plannedEnd: 16 }],
+      activities: [{ name: 'Bathroom work', zone: 'GF', plannedStart: 13, plannedEnd: 16, nodeKey: 'b', phaseName: 'Bathroom Fitout', order: 2 }],
+      inspections: [{ title: 'Bathroom QA', zone: 'GF', nodeKey: 'b', items: ['Bathroom check'] }],
+    },
+  };
+  const modules = [module, explicitModule];
   const template = { id: 'tpl-house', orgId: 'org1', archivedAt: null, items: [{ moduleId: 'mod-kitchen', count: 1, underZone: 'Ground Floor' }] };
   let rowId = 0;
 
@@ -48,10 +69,16 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     membership: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.memberships.push(data); return data; }) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { eventId: 'evt-test', ...data }; created.events.push(row); return row; }) },
+    outboxDelivery: {
+      createMany: vi.fn(async ({ data }: { data: Record<string, unknown>[] }) => {
+        created.deliveries.push(...data);
+        return { count: data.length };
+      }),
+    },
     projectTemplate: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => where.id === template.id ? template : null) },
     templateModule: {
-      findMany: vi.fn(async () => [module]),
-      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => where.id === module.id ? module : null),
+      findMany: vi.fn(async () => modules),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => modules.find((candidate) => candidate.id === where.id) ?? null),
     },
     projectNode: {
       findMany: vi.fn(async ({ where }: { where: { projectId: string } }) => where.projectId === 'ambli' ? sourceNodes : created.nodes),
@@ -78,7 +105,7 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     },
     projectTemplate: { findUnique: vi.fn(async () => template) },
     templateModule: {
-      findMany: vi.fn(async () => [module]),
+      findMany: vi.fn(async () => modules),
       findUnique: vi.fn(async () => module),
     },
     projectNode: { findMany: vi.fn(async () => sourceNodes) },
@@ -118,7 +145,24 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     activityInit as unknown as ActivityParticipant,
     inspectionInit as unknown as InspectionParticipant,
   );
-  return { svc, prisma, tx, topLevel, created, participants: { nodeInit, activityInit, inspectionInit } };
+  registerConsumer({
+    name: PROJECT_INIT_TEST_CONSUMER,
+    kind: 'unordered',
+    effect: 'external',
+    deliveryFor: () => ({}),
+    handle: async () => undefined,
+  });
+  return {
+    svc,
+    prisma,
+    tx,
+    topLevel,
+    created,
+    sourcePhases,
+    sourceActivities,
+    module,
+    participants: { nodeInit, activityInit, inspectionInit },
+  };
 }
 
 function make(orgRole: string | null) {
@@ -190,6 +234,7 @@ describe('OrgsService.createProject', () => {
     await svc.createProject('org1', 'u1', {
       name: 'Atomic Villa', short: 'Atomic Villa', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '',
       structureFrom: 'ambli', templateId: 'tpl-house',
+      modules: [{ moduleId: 'mod-bathroom', count: 1, underZone: 'Ground Floor' }],
     } as never);
 
     expect(prisma.$transaction).toHaveBeenCalledOnce();
@@ -197,13 +242,7 @@ describe('OrgsService.createProject', () => {
     for (const delegate of Object.values(topLevel)) {
       for (const method of Object.values(delegate)) expect(method).not.toHaveBeenCalled();
     }
-    expect(tx.project.findUnique).toHaveBeenCalled();
-    expect(tx.projectTemplate.findUnique).toHaveBeenCalled();
-    expect(tx.templateModule.findMany.mock.calls.length + tx.templateModule.findUnique.mock.calls.length).toBeGreaterThan(0);
-    expect(tx.activity.findMany).toHaveBeenCalled();
-    expect(tx.inspection.findMany).toHaveBeenCalled();
-    const projectWriteOrder = tx.project.create.mock.invocationCallOrder[0]!;
-    for (const readOrLock of [
+    const requiredReadsAndLocks = [
       tx.project.findUnique,
       tx.projectTemplate.findUnique,
       tx.templateModule.findMany,
@@ -212,14 +251,88 @@ describe('OrgsService.createProject', () => {
       tx.activity.findMany,
       tx.inspection.findMany,
       tx.$executeRaw,
-    ]) {
+    ];
+    for (const readOrLock of requiredReadsAndLocks) expect(readOrLock).toHaveBeenCalled();
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(tx.activity.findMany).toHaveBeenCalledTimes(2);
+    expect(tx.inspection.findMany).toHaveBeenCalledTimes(2);
+    const projectWriteOrder = tx.project.create.mock.invocationCallOrder[0]!;
+    for (const readOrLock of requiredReadsAndLocks) {
       expect(Math.max(...readOrLock.mock.invocationCallOrder)).toBeLessThan(projectWriteOrder);
     }
     for (const participant of [participants.nodeInit, participants.activityInit, participants.inspectionInit]) {
       for (const method of Object.values(participant)) {
+        expect(method).toHaveBeenCalled();
         for (const call of method.mock.calls) expect(call[0]).toBe(tx);
       }
     }
+  });
+
+  it('writes the complete source, template, and explicit-module union exactly once', async () => {
+    const { svc, created } = makeAtomicProjectInit();
+
+    await svc.createProject('org1', 'u1', {
+      name: 'Union Villa', short: 'Union Villa', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '',
+      structureFrom: 'ambli', templateId: 'tpl-house',
+      modules: [{ moduleId: 'mod-bathroom', count: 1, underZone: 'Ground Floor' }],
+    } as never);
+
+    const exactlyOnce = (rows: Record<string, unknown>[], field: string, expected: string[]) => {
+      expect(rows.map((row) => row[field])).toEqual(expected);
+      expect(new Set(rows.map((row) => row[field])).size).toBe(expected.length);
+    };
+    exactlyOnce(created.nodes, 'name', ['Ground Floor', 'Kitchen', 'Bathroom']);
+    exactlyOnce(created.phases, 'name', ['Structure', 'Kitchen Fitout', 'Bathroom Fitout']);
+    exactlyOnce(created.activities, 'name', ['Source work', 'Kitchen work', 'Bathroom work']);
+    exactlyOnce(created.inspections, 'title', ['Source QA', 'Kitchen QA', 'Bathroom QA']);
+    expect(created.deliveries).toHaveLength(1);
+    expect(created.deliveries[0]).toMatchObject({ consumer: PROJECT_INIT_TEST_CONSUMER });
+  });
+
+  it('preserves duplicate normalized source phases and each activity phase attachment by source phase ID', async () => {
+    const { svc, sourcePhases, sourceActivities, created } = makeAtomicProjectInit();
+    sourcePhases.push({ id: 'ph2', projectId: 'ambli', name: ' structure ', order: 2, plannedStart: 9, plannedEnd: 14 });
+    sourceActivities.push({
+      id: 'ACT-32', projectId: 'ambli', name: 'Second source work', zone: 'GF', plannedStart: 9, plannedEnd: 14,
+      gateMaterial: 'wait', gateTeam: 'na', gateInspection: 'ok', phaseId: 'ph2', nodeId: 'z1', order: 1,
+    });
+
+    await svc.createProject('org1', 'u1', {
+      name: 'Duplicate Phase Villa', short: 'Duplicate Phase Villa', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '',
+      structureFrom: 'ambli',
+    } as never);
+
+    expect(created.phases.map((phase) => phase.name)).toEqual(['Structure', ' structure ']);
+    const phaseIds = created.phases.map((phase) => phase.id);
+    expect(phaseIds[0]).not.toBe(phaseIds[1]);
+    expect(created.activities.map((activity) => activity.phaseId)).toEqual(phaseIds);
+  });
+
+  it('coalesces a module phase to the first exact matching source phase definition', async () => {
+    const { svc, module, created } = makeAtomicProjectInit();
+    module.payload.phases[0] = { name: ' structure ', order: 1, plannedStart: 2, plannedEnd: 8 };
+    module.payload.activities[0]!.phaseName = ' structure ';
+
+    await svc.createProject('org1', 'u1', {
+      name: 'Coalesced Phase Villa', short: 'Coalesced Phase Villa', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '',
+      structureFrom: 'ambli', templateId: 'tpl-house',
+    } as never);
+
+    expect(created.phases.map((phase) => phase.name)).toEqual(['Structure']);
+    expect(created.activities.map((activity) => activity.phaseId)).toEqual([created.phases[0]!.id, created.phases[0]!.id]);
+  });
+
+  it('rejects a module phase when source phases share its normalized name but none match its definition', async () => {
+    const { svc, module, created } = makeAtomicProjectInit();
+    module.payload.phases[0] = { name: ' structure ', order: 9, plannedStart: 20, plannedEnd: 30 };
+    module.payload.activities[0]!.phaseName = ' structure ';
+
+    await expect(svc.createProject('org1', 'u1', {
+      name: 'Conflicting Phase Villa', short: 'Conflicting Phase Villa', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '',
+      structureFrom: 'ambli', templateId: 'tpl-house',
+    } as never)).rejects.toBeInstanceOf(BadRequestException);
+
+    for (const rows of Object.values(created)) expect(rows).toHaveLength(0);
   });
 
   it('rolls back the project and every initialized collection when a participant throws after a node write', async () => {

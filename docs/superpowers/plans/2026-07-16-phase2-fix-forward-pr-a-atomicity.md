@@ -13,7 +13,7 @@
 - Forward remediation only: do not revert Tasks 6 or 7, rewrite history, delete production data, or discard events/deliveries.
 - PostgreSQL 16 is the supported database target.
 - DomainEvent remains append-only.
-- Project initialization retries only Prisma `P2034`, at most three total attempts, with 25 ms then 75 ms backoff plus 0-25 ms jitter.
+- Project initialization retries Prisma `P2034` plus only a genuine single-column `Activity.id`/`Inspection.id` Prisma `P2002` caused by the serializable advisory-lock stale-snapshot race. It makes at most three total attempts, with 25 ms then 75 ms backoff plus 0-25 ms jitter; every other error fails immediately.
 - All project-init writes use one `Prisma.TransactionClient`; participant code performs database I/O only.
 - Existing user-visible project, decision, template, and module behavior remains unchanged except malformed input now returns 400 atomically.
 - Use TDD: each production behavior change starts with a focused failing test and records the expected red failure.
@@ -124,11 +124,11 @@ Implement deterministic maps plus depth-first color marking. Roots must have no 
 
 - [ ] **Step 4: Write retry and lock tests**
 
-Assert `runSerializableProjectInit` retries `P2034` twice then succeeds, stops after attempt three, never retries another Prisma code, and uses delays in the ranges 25-50 ms then 75-100 ms. Assert `lockInitializationDisplayIds` executes `ACT` then `INSP` transaction advisory locks in fixed order.
+Assert `runSerializableProjectInit` retries `P2034` twice then succeeds, retries a genuine `Activity.id`/`Inspection.id` primary-key `P2002` only after whole-attempt rollback, stops after attempt three, rejects every unrelated or merely P2002-shaped error, and uses delays in the ranges 25-50 ms then 75-100 ms. Assert `lockInitializationDisplayIds` executes `ACT` then `INSP` transaction advisory locks in fixed order.
 
 - [ ] **Step 5: Implement retry and display-ID locks**
 
-Use `$transaction(run, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })`. Generate project ID before calling this helper. Lock with `pg_advisory_xact_lock(hashtextextended('project-init-display-id:activity',0))` followed by inspection, then scan/allocate IDs through the same transaction.
+Use `$transaction(run, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })`. Generate project ID before calling this helper. Lock with `pg_advisory_xact_lock(hashtextextended('project-init-display-id:activity',0))` followed by inspection, then scan/allocate IDs through the same transaction. Because a blocking lock statement can retain a pre-wait serializable snapshot, narrowly restart only a real Prisma `P2002` whose model is `Activity`/`Inspection` and whose target is the single `id` primary key; the failed attempt is already fully rolled back and the restart obtains a fresh snapshot.
 
 - [ ] **Step 6: Run helper tests and confirm GREEN**
 

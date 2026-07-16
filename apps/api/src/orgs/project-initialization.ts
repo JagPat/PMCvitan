@@ -13,6 +13,8 @@ export interface InitializationNode {
 
 export interface InitializationPhase {
   source: string;
+  identity?: string;
+  coalesceByName?: boolean;
   name: string;
   order: number;
   plannedStart: number;
@@ -23,6 +25,7 @@ export interface InitializationActivity {
   source: string;
   name: string;
   nodeKey?: string;
+  phaseIdentity?: string;
   phaseName?: string;
 }
 
@@ -40,6 +43,8 @@ export interface InitializationGraph {
 }
 
 const normalizedName = (name: string): string => name.trim().toLocaleLowerCase('en-US');
+const samePhaseDefinition = (left: InitializationPhase, right: InitializationPhase): boolean =>
+  left.order === right.order && left.plannedStart === right.plannedStart && left.plannedEnd === right.plannedEnd;
 
 const invalid = (label: string, source: string, detail: string): never => {
   throw new BadRequestException(`${label}: ${source}: ${detail}`);
@@ -82,23 +87,45 @@ export function validateInitializationGraph(label: string, graph: Initialization
     }
   }
 
-  const phasesByName = new Map<string, InitializationPhase>();
+  const coalescedPhasesByName = new Map<string, InitializationPhase[]>();
+  const preservedPhasesByName = new Map<string, InitializationPhase[]>();
   const phaseNamesBySource = new Map<string, Set<string>>();
+  const phaseIdentitiesBySource = new Map<string, Set<string>>();
   for (const phase of graph.phases) {
     const name = normalizedName(phase.name);
+    const identity = phase.identity ?? name;
+    const sourceIdentities = phaseIdentitiesBySource.get(phase.source) ?? new Set<string>();
+    if (sourceIdentities.has(identity)) invalid(label, phase.source, `duplicate phase identity "${identity}"`);
+    sourceIdentities.add(identity);
+    phaseIdentitiesBySource.set(phase.source, sourceIdentities);
+
+    if (phase.coalesceByName === false) {
+      const preserved = preservedPhasesByName.get(name) ?? [];
+      preserved.push(phase);
+      preservedPhasesByName.set(name, preserved);
+      continue;
+    }
     const sourceNames = phaseNamesBySource.get(phase.source) ?? new Set<string>();
     if (sourceNames.has(name)) invalid(label, phase.source, `duplicate phase name "${phase.name.trim()}"`);
     sourceNames.add(name);
     phaseNamesBySource.set(phase.source, sourceNames);
 
-    const existing = phasesByName.get(name);
-    if (
-      existing &&
-      (existing.order !== phase.order || existing.plannedStart !== phase.plannedStart || existing.plannedEnd !== phase.plannedEnd)
-    ) {
-      invalid(label, phase.source, `phase "${phase.name.trim()}" conflicts with ${existing.source}`);
+    const coalesced = coalescedPhasesByName.get(name) ?? [];
+    coalesced.push(phase);
+    coalescedPhasesByName.set(name, coalesced);
+  }
+
+  for (const [name, coalesced] of coalescedPhasesByName) {
+    const canonical = coalesced[0]!;
+    for (const phase of coalesced.slice(1)) {
+      if (!samePhaseDefinition(canonical, phase)) {
+        invalid(label, phase.source, `phase "${phase.name.trim()}" conflicts with ${canonical.source}`);
+      }
     }
-    if (!existing) phasesByName.set(name, phase);
+    const preserved = preservedPhasesByName.get(name) ?? [];
+    if (preserved.length && !preserved.some((phase) => samePhaseDefinition(canonical, phase))) {
+      invalid(label, canonical.source, `phase "${canonical.name.trim()}" conflicts with ${preserved[0]!.source}`);
+    }
   }
 
   for (const activity of graph.activities) {
@@ -106,7 +133,12 @@ export function validateInitializationGraph(label: string, graph: Initialization
     if (activity.nodeKey && !nodes.has(activity.nodeKey)) {
       invalid(label, activity.source, `activity "${activity.name}" has missing node key "${activity.nodeKey}"`);
     }
-    if (activity.phaseName && !phasesByName.has(normalizedName(activity.phaseName))) {
+    if (activity.phaseIdentity) {
+      const phases = phaseIdentitiesBySource.get(activity.source) ?? new Set<string>();
+      if (!phases.has(activity.phaseIdentity)) {
+        invalid(label, activity.source, `activity "${activity.name}" has missing phase identity "${activity.phaseIdentity}"`);
+      }
+    } else if (activity.phaseName && !coalescedPhasesByName.has(normalizedName(activity.phaseName))) {
       invalid(label, activity.source, `activity "${activity.name}" has missing phase "${activity.phaseName}"`);
     }
   }
@@ -129,6 +161,17 @@ type Sleep = (delayMs: number) => Promise<void>;
 
 const defaultSleep: Sleep = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
 
+// A blocking advisory-lock statement can retain a pre-wait Serializable snapshot. If that
+// snapshot allocates a stale legacy ID, PostgreSQL aborts the whole transaction on the global
+// primary key. Only that precisely identified race is safe to restart with a fresh snapshot.
+function isDisplayIdPrimaryKeyConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') return false;
+  const meta = error.meta as { modelName?: unknown; target?: unknown } | undefined;
+  if (meta?.modelName !== 'Activity' && meta?.modelName !== 'Inspection') return false;
+  return meta.target === `${meta.modelName}_pkey`
+    || (Array.isArray(meta.target) && meta.target.length === 1 && meta.target[0] === 'id');
+}
+
 export async function runSerializableProjectInit<T>(
   prisma: SerializableRunner,
   run: (tx: Prisma.TransactionClient) => Promise<T>,
@@ -139,7 +182,8 @@ export async function runSerializableProjectInit<T>(
     try {
       return await prisma.$transaction(run, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     } catch (error) {
-      if ((error as { code?: string }).code !== 'P2034' || attempt === 2) throw error;
+      const retryable = (error as { code?: string }).code === 'P2034' || isDisplayIdPrimaryKeyConflict(error);
+      if (!retryable || attempt === 2) throw error;
       const baseDelay = attempt === 0 ? 25 : 75;
       await sleep(baseDelay + Math.floor(random() * 26));
     }

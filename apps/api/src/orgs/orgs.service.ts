@@ -81,13 +81,21 @@ interface PreparedInitSource {
   rootParentKind: InitNodeKind | null;
   rootParentName?: string;
   nodes: Array<{ key: string; parentKey: string | null; name: string; kind: InitNodeKind; order: number }>;
-  phases: Array<{ name: string; order: number; plannedStart: number; plannedEnd: number }>;
+  phases: Array<{
+    identity: string;
+    coalesceByName: boolean;
+    name: string;
+    order: number;
+    plannedStart: number;
+    plannedEnd: number;
+  }>;
   activities: Array<{
     name: string;
     zone: string;
     plannedStart: number;
     plannedEnd: number;
     nodeKey?: string;
+    phaseIdentity?: string;
     phaseName?: string;
     order: number;
     gateMaterial: string;
@@ -105,10 +113,13 @@ interface InitWriteState {
   activityIds: string[];
   inspectionIds: string[];
   zoneIdByName: Map<string, string>;
-  phaseIdByName: Map<string, string>;
+  phaseIdByIdentity: Map<string, string>;
+  phaseIdByDefinition: Map<string, string>;
 }
 
 const normalizedPhaseName = (name: string): string => name.trim().toLocaleLowerCase('en-US');
+const phaseDefinitionKey = (phase: { name: string; order: number; plannedStart: number; plannedEnd: number }): string =>
+  `${normalizedPhaseName(phase.name)}\u0000${phase.order}\u0000${phase.plannedStart}\u0000${phase.plannedEnd}`;
 
 /**
  * Orgs (accounts) and the projects they own — the multi-tenant admin layer.
@@ -361,7 +372,8 @@ export class OrgsService {
         activityIds: allActivityIds.map((row) => row.id),
         inspectionIds: allInspectionIds.map((row) => row.id),
         zoneIdByName: new Map<string, string>(),
-        phaseIdByName: new Map<string, string>(),
+        phaseIdByIdentity: new Map<string, string>(),
+        phaseIdByDefinition: new Map<string, string>(),
       };
       await this.createInitializationPhases(tx, sources, state);
       if (source) await this.copyStructure(tx, source, state);
@@ -413,19 +425,25 @@ export class OrgsService {
       tx.activity.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
       tx.inspection.findMany({ where: { projectId: sourceId, kind: 'checklist' }, include: { items: { orderBy: { order: 'asc' } } } }),
     ]);
-    const phaseNameById = new Map(phases.map((phase) => [phase.id, phase.name]));
     return {
       label: `source project "${sourceId}"`,
       rootParentKind: null,
       nodes: nodes.map((node) => ({ key: node.id, parentKey: node.parentId, name: node.name, kind: node.kind as InitNodeKind, order: node.order })),
-      phases: phases.map((phase) => ({ name: phase.name, order: phase.order, plannedStart: phase.plannedStart, plannedEnd: phase.plannedEnd })),
+      phases: phases.map((phase) => ({
+        identity: phase.id,
+        coalesceByName: false,
+        name: phase.name,
+        order: phase.order,
+        plannedStart: phase.plannedStart,
+        plannedEnd: phase.plannedEnd,
+      })),
       activities: activities.map((activity) => ({
         name: activity.name,
         zone: activity.zone,
         plannedStart: activity.plannedStart,
         plannedEnd: activity.plannedEnd,
         ...(activity.nodeId ? { nodeKey: activity.nodeId } : {}),
-        ...(activity.phaseId ? { phaseName: phaseNameById.get(activity.phaseId) ?? `unresolved:${activity.phaseId}` } : {}),
+        ...(activity.phaseId ? { phaseIdentity: activity.phaseId } : {}),
         order: activity.order,
         gateMaterial: activity.gateMaterial === 'na' ? 'na' : 'wait',
         gateTeam: activity.gateTeam === 'na' ? 'na' : 'wait',
@@ -461,10 +479,15 @@ export class OrgsService {
             kind: node.kind,
             order: node.order,
           })),
-          phases: parsed.data.phases,
+          phases: parsed.data.phases.map((phase) => ({
+            identity: normalizedPhaseName(phase.name),
+            coalesceByName: true,
+            ...phase,
+          })),
           activities: parsed.data.activities.map((activity) => ({
             ...activity,
             name: `${activity.name}${suffix}`,
+            ...(activity.phaseName ? { phaseIdentity: normalizedPhaseName(activity.phaseName) } : {}),
             gateMaterial: 'wait',
             gateTeam: 'wait',
             gateInspection: 'wait',
@@ -490,6 +513,7 @@ export class OrgsService {
         source: source.label,
         name: activity.name,
         ...(activity.nodeKey ? { nodeKey: activity.nodeKey } : {}),
+        ...(activity.phaseIdentity ? { phaseIdentity: activity.phaseIdentity } : {}),
         ...(activity.phaseName ? { phaseName: activity.phaseName } : {}),
       }))),
       inspections: sources.flatMap((source) => source.inspections.map((inspection) => ({
@@ -781,22 +805,31 @@ export class OrgsService {
       state.targetAnchor
         ? { plannedStartDate: fromIsoCivilDate(addCivilDays(state.targetAnchor, start)), plannedEndDate: fromIsoCivilDate(addCivilDays(state.targetAnchor, end)) }
         : {};
-    for (const source of sources) {
-      for (const phase of source.phases) {
-        const phaseKey = normalizedPhaseName(phase.name);
-        if (state.phaseIdByName.has(phaseKey)) continue;
-        const created = await this.activityInit.createPhaseForInit(tx, {
-          data: {
-            projectId: state.targetId,
-            name: phase.name,
-            order: phase.order,
-            plannedStart: phase.plannedStart,
-            plannedEnd: phase.plannedEnd,
-            ...datesFor(phase.plannedStart, phase.plannedEnd),
-          },
-        });
-        state.phaseIdByName.set(phaseKey, created.id);
+    const phases = sources.flatMap((source) => source.phases.map((phase) => ({ source, phase })));
+    const ordered = [
+      ...phases.filter(({ phase }) => !phase.coalesceByName),
+      ...phases.filter(({ phase }) => phase.coalesceByName),
+    ];
+    for (const { source, phase } of ordered) {
+      const identityKey = `${source.label}\u0000${phase.identity}`;
+      const definitionKey = phaseDefinitionKey(phase);
+      const coalescedId = phase.coalesceByName ? state.phaseIdByDefinition.get(definitionKey) : undefined;
+      if (coalescedId) {
+        state.phaseIdByIdentity.set(identityKey, coalescedId);
+        continue;
       }
+      const created = await this.activityInit.createPhaseForInit(tx, {
+        data: {
+          projectId: state.targetId,
+          name: phase.name,
+          order: phase.order,
+          plannedStart: phase.plannedStart,
+          plannedEnd: phase.plannedEnd,
+          ...datesFor(phase.plannedStart, phase.plannedEnd),
+        },
+      });
+      state.phaseIdByIdentity.set(identityKey, created.id);
+      if (!state.phaseIdByDefinition.has(definitionKey)) state.phaseIdByDefinition.set(definitionKey, created.id);
     }
   }
 
@@ -864,7 +897,9 @@ export class OrgsService {
           gateTeam: activity.gateTeam as never,
           gateInspection: activity.gateInspection as never,
           decisionId: null,
-          phaseId: activity.phaseName ? required(state.phaseIdByName, normalizedPhaseName(activity.phaseName), 'phase name') : null,
+          phaseId: activity.phaseIdentity
+            ? required(state.phaseIdByIdentity, `${source.label}\u0000${activity.phaseIdentity}`, 'phase identity')
+            : null,
           nodeId: activity.nodeKey ? required(nodeIdByKey, activity.nodeKey, 'node key') : null,
           order: activity.order,
         },

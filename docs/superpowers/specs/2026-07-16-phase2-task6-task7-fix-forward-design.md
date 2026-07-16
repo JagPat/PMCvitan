@@ -89,9 +89,9 @@ The notification text is computed once and passed to both the Notification row a
 
 The initialization helpers accept a `Prisma.TransactionClient`. They do not call `this.prisma`, open nested transactions, or perform writes after the outer transaction commits.
 
-The transaction uses at most three total attempts and retries only Prisma `P2034` serialization conflicts, with bounded 25 ms then 75 ms backoff plus 0-25 ms jitter. The project ID and normalized request are allocated once before the first attempt and remain stable across retries. Any other database or participant error is returned immediately. A unique-ID conflict is reported honestly and does not reuse partially allocated records.
+The transaction uses at most three total attempts. It retries Prisma `P2034` serialization conflicts and one narrowly identified concurrency outcome: a real Prisma `P2002` on the single-column `Activity.id` or `Inspection.id` primary key after the entire initialization transaction has rolled back. The latter handles the stale-snapshot case described below; no other `P2002`, plain error object, database error, or participant error is retried. Backoff is bounded to 25 ms then 75 ms plus 0-25 ms jitter. The project ID and normalized request are allocated once before the first attempt and remain stable across retries.
 
-Before allocating the legacy global `ACT-###` and `INSP-###` display IDs, the transaction takes fixed-order transaction advisory locks for those two namespaces and performs the ID scans through the same transaction client. This prevents two concurrent project initializations from selecting the same identifiers without pulling the deferred internal-PK/data-model work into this remediation.
+Before allocating the legacy global `ACT-###` and `INSP-###` display IDs, the transaction takes fixed-order transaction advisory locks for those two namespaces and performs the ID scans through the same transaction client. PostgreSQL can retain the serializable snapshot established before a blocking advisory-lock statement finishes waiting; if that stale snapshot selects an ID committed by the prior lock holder, the primary key rejects the write, the whole attempt rolls back, and only that exact primary-key conflict restarts with a fresh snapshot. This preserves uniqueness without pulling the deferred internal-PK/data-model work into this remediation.
 
 Initializer participants are database-only during this transaction. Email, push, socket, file upload, and other external I/O are forbidden inside participant implementations; post-commit effects must be represented by the event outbox instead.
 
@@ -106,7 +106,7 @@ All selected templates, modules, and source-project structure are read and autho
 - hierarchy is `zone -> room -> element`; invalid kind parentage is rejected;
 - every activity and inspection `nodeKey` resolves;
 - every activity `phaseName` resolves when supplied;
-- duplicate phase names within one module are rejected; across selected sources, an identical normalized name coalesces only when its schedule definition matches, otherwise the conflict is rejected rather than first/last-write-wins;
+- duplicate phase names within one module are rejected; ID-distinct phases from a source project remain distinct and source activities retain their exact phase attachment; module phases coalesce with another module or source phase only when normalized name and schedule definition match exactly, otherwise the conflict is rejected rather than first/last-write-wins;
 - requested module/template rows belong to the organization and remain unarchived;
 - `structureFrom` belongs to the organization and remains unarchived.
 

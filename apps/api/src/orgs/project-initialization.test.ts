@@ -103,6 +103,12 @@ describe('validateInitializationGraph', () => {
 
 describe('runSerializableProjectInit', () => {
   const p2034 = () => Object.assign(new Error('serialization conflict'), { code: 'P2034' });
+  const p2002 = (modelName: string, target: string | string[]) =>
+    new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+      code: 'P2002',
+      clientVersion: 'test',
+      meta: { modelName, target },
+    });
 
   it('retries P2034 twice and then succeeds with Serializable transactions', async () => {
     const run = vi.fn(async () => 'created');
@@ -133,6 +139,37 @@ describe('runSerializableProjectInit', () => {
 
   it('does not retry another Prisma error code', async () => {
     const error = Object.assign(new Error('unique conflict'), { code: 'P2002' });
+    const transaction = vi.fn().mockRejectedValue(error);
+    const sleep = vi.fn(async () => undefined);
+
+    await expect(runSerializableProjectInit({ $transaction: transaction } as never, vi.fn(), sleep)).rejects.toBe(error);
+    expect(transaction).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Activity', 'Activity_pkey'],
+    ['Inspection', ['id']],
+  ])('retries a genuine %s display-ID primary-key conflict after atomic rollback', async (modelName, target) => {
+    const conflict = p2002(modelName, target);
+    const run = vi.fn(async () => 'created');
+    const transaction = vi.fn()
+      .mockRejectedValueOnce(conflict)
+      .mockImplementationOnce(run);
+    const sleep = vi.fn(async () => undefined);
+
+    await expect(runSerializableProjectInit({ $transaction: transaction } as never, run, sleep, () => 0)).resolves.toBe('created');
+
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(sleep).toHaveBeenCalledWith(25);
+  });
+
+  it.each([
+    ['another model primary key', p2002('Project', 'Project_pkey')],
+    ['an Activity non-primary unique constraint', p2002('Activity', ['projectId', 'id'])],
+    ['a P2002-shaped plain object', Object.assign(new Error('unique conflict'), { code: 'P2002', meta: { modelName: 'Activity', target: ['id'] } })],
+  ])('does not retry %s', async (_label, error) => {
     const transaction = vi.fn().mockRejectedValue(error);
     const sleep = vi.fn(async () => undefined);
 
