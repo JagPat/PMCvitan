@@ -1,7 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
+import { NodeInitParticipant } from '../nodes/node-init.participant';
+import { ActivityParticipant } from '../activities/activity.participant';
+import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { PrismaService } from '../prisma.service';
+
+/** Task 7 — the project-init participants are leaf providers (no deps); a fresh instance
+ *  per construction lets these unit tests drive createProject through the same mock tx. */
+const initParticipants = () => [new NodeInitParticipant(), new ActivityParticipant(), new InspectionParticipant()] as const;
 
 function make(orgRole: string | null) {
   const projects: unknown[] = [];
@@ -34,7 +41,7 @@ function make(orgRole: string | null) {
     $transaction: vi.fn(async (arg: unknown) =>
       typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
   };
-  const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
+  const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants());
   return { svc, prisma, projects, memberships, orgMemberships };
 }
 
@@ -144,7 +151,7 @@ describe('OrgsService.addOrgMember', () => {
       },
       membership: { create: vi.fn() }, // must NOT be called by addOrgMember (no phantom project grant)
     };
-    return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }), prisma, created, orgMemberships };
+    return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants()), prisma, created, orgMemberships };
   }
 
   it('lets an org owner add a new roster member with NO phantom project grant', async () => {
@@ -211,7 +218,7 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
         }),
       },
     };
-    return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }), prisma, state };
+    return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants()), prisma, state };
   }
 
   it('an owner changes an admin down to member', async () => {
@@ -315,7 +322,7 @@ describe('OrgsService invitation-email correction', () => {
       $executeRaw: vi.fn(async () => 1),
       $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     };
-    const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
+    const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants());
     return { svc, prisma, target, challenges, audits };
   }
 
@@ -372,7 +379,7 @@ describe('OrgsService.portfolio', () => {
       decision: { count: vi.fn(async () => 3) },
       phase: { count: vi.fn(async () => 3) },
     };
-    return { svc: new OrgsService(prisma as unknown as PrismaService), prisma };
+    return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants()), prisma };
   }
 
   it('rolls up a project the PMC can access, counting activities by status', async () => {
@@ -417,7 +424,7 @@ describe('OrgsService.portfolio', () => {
       decision: { count: vi.fn(async () => 3) },
       phase: { count: vi.fn(async () => 0) },
     };
-    const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
+    const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants());
     expect(await svc.portfolio('u1')).toEqual([]);
     expect(prisma.decision.count).not.toHaveBeenCalled(); // never even reached a project rollup
   });
@@ -464,7 +471,7 @@ function makeCopy(source: {
     inspection: { findMany: vi.fn().mockResolvedValueOnce(source.inspections ?? []).mockResolvedValueOnce([{ id: 'INSP-22' }]) },
     $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)),
   };
-  const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
+  const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants());
   return { svc, prisma, created };
 }
 
@@ -598,7 +605,7 @@ function makeModules(opts: {
     },
     $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)),
   };
-  const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' });
+  const svc = new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants());
   return { svc, prisma, created, tx };
 }
 

@@ -279,6 +279,15 @@ assert "the additive migration wrote NO deliveries — pre-cutover events are ba
   "SELECT COUNT(*) FROM \"OutboxDelivery\";" \
   "0"
 
+# Phase 2 Task 7 — the module-boundary edges 5/6/7 became database ON DELETE SET NULL FK
+# actions (confdeltype 'n'); the guarded/blocking edges stay NO ACTION ('a'). Row-free.
+assert "the seven referential edges (5/6/7) are now ON DELETE SET NULL (confdeltype 'n')" \
+  "SELECT string_agg(confdeltype, '' ORDER BY conname) FROM pg_constraint WHERE conname IN ('Activity_projectId_nodeId_fkey','Activity_projectId_phaseId_fkey','Drawing_projectId_activityId_fkey','Drawing_projectId_nodeId_fkey','Inspection_projectId_nodeId_fkey','Media_projectId_nodeId_fkey','SiteMaterial_projectId_nodeId_fkey');" \
+  "nnnnnnn"
+assert "the guarded/blocking edges stay NO ACTION ('a'): Decision node-guard + Inspection/GateOverride activity-block" \
+  "SELECT string_agg(confdeltype, '' ORDER BY conname) FROM pg_constraint WHERE conname IN ('Decision_projectId_nodeId_fkey','GateOverride_projectId_activityId_fkey','Inspection_projectId_activityId_fkey');" \
+  "aaa"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

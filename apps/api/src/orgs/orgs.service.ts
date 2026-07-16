@@ -8,6 +8,9 @@ import { ddMmmYyyy } from '../domain/dates';
 import { lockUserCredential } from '../common/credential-lock';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
+import { NodeInitParticipant } from '../nodes/node-init.participant';
+import { ActivityParticipant } from '../activities/activity.participant';
+import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { AuthUser } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
@@ -73,6 +76,13 @@ export class OrgsService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(CLOCK) private readonly clock: Clock,
+    // Task 7 (edge 8) — project INITIALIZATION participants: instantiating a project's
+    // starting structure (copyStructure / instantiateModules) creates ProjectNode/Phase/
+    // Activity/Inspection rows THROUGH these owning-module participants, so orgs never
+    // writes another domain's tables directly.
+    private readonly nodeInit: NodeInitParticipant,
+    private readonly activityInit: ActivityParticipant,
+    private readonly inspectionInit: InspectionParticipant,
   ) {}
 
   /** Org role of a user, or null if not a member. */
@@ -618,7 +628,7 @@ export class OrgsService {
       const zoneFor = async (name: string): Promise<string> => {
         const existing = zoneIdByName.get(name);
         if (existing) return existing;
-        const created = await tx.projectNode.create({
+        const created = await this.nodeInit.createForInit(tx, {
           data: { projectId: targetId, parentId: null, name, kind: 'zone', order: zoneIdByName.size, publishedAt: null, authorId: userId },
         });
         zoneIdByName.set(name, created.id);
@@ -645,7 +655,7 @@ export class OrgsService {
             const batch = remaining.filter((n) => !n.parentKey || keyToId.has(n.parentKey));
             if (batch.length === 0) break; // malformed payload parentage — skip rather than loop
             for (const n of batch) {
-              const created = await tx.projectNode.create({
+              const created = await this.nodeInit.createForInit(tx, {
                 data: {
                   projectId: targetId,
                   parentId: n.parentKey ? (keyToId.get(n.parentKey) ?? null) : rootParentId,
@@ -664,14 +674,14 @@ export class OrgsService {
 
           for (const p of payload.phases) {
             if (phaseIdByName.has(p.name)) continue; // phases merge by name across modules/copies
-            const created = await tx.phase.create({
+            const created = await this.activityInit.createPhaseForInit(tx, {
               data: { projectId: targetId, name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd, ...datesFor(p.plannedStart, p.plannedEnd) },
             });
             phaseIdByName.set(p.name, created.id);
           }
 
           for (const a of payload.activities) {
-            await tx.activity.create({
+            await this.activityInit.createForInit(tx, {
               data: {
                 id: newActId(),
                 projectId: targetId,
@@ -693,7 +703,7 @@ export class OrgsService {
           }
 
           for (const i of payload.inspections) {
-            await tx.inspection.create({
+            await this.inspectionInit.createForInit(tx, {
               data: {
                 id: newInspId(),
                 projectId: targetId,
@@ -770,7 +780,7 @@ export class OrgsService {
         const batch = remaining.filter((n) => !n.parentId || nodeIdMap.has(n.parentId));
         if (batch.length === 0) break; // orphaned rows (shouldn't happen) — skip, never loop forever
         for (const n of batch) {
-          const created = await tx.projectNode.create({
+          const created = await this.nodeInit.createForInit(tx, {
             data: {
               projectId: targetId,
               parentId: n.parentId ? (nodeIdMap.get(n.parentId) ?? null) : null,
@@ -787,14 +797,14 @@ export class OrgsService {
       }
 
       for (const p of phases) {
-        const created = await tx.phase.create({
+        const created = await this.activityInit.createPhaseForInit(tx, {
           data: { projectId: targetId, name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd, ...datesFor(p.plannedStart, p.plannedEnd) },
         });
         phaseIdMap.set(p.id, created.id);
       }
 
       for (const a of activities) {
-        await tx.activity.create({
+        await this.activityInit.createForInit(tx, {
           data: {
             id: newActId(),
             projectId: targetId,
@@ -819,7 +829,7 @@ export class OrgsService {
       }
 
       for (const i of inspections) {
-        await tx.inspection.create({
+        await this.inspectionInit.createForInit(tx, {
           data: {
             id: newInspId(),
             projectId: targetId,

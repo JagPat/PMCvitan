@@ -4,6 +4,7 @@ import { ActivitiesService } from './activities.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { AuthUser } from '../common/auth';
 
 /**
@@ -101,7 +102,7 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({ ok: true })) } as unknown as SnapshotService;
   const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-  const svc = new ActivitiesService(prisma, snapshot, realtime, { today: () => '2026-07-05' });
+  const svc = new ActivitiesService(prisma, snapshot, realtime, { today: () => '2026-07-05' }, new InspectionParticipant());
   const user = { sub: 'u-eng', role: 'engineer' } as AuthUser;
   return { svc, prisma, user, inspectionCreates, activityUpdates, audits, activity };
 }

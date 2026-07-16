@@ -4,6 +4,7 @@ import { InspectionsService } from './inspections.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import { ActivityParticipant } from '../activities/activity.participant';
 
 type Item = { id: string; name: string; state: string | null; photos: number; result: string | null; rejected: boolean };
 type Insp = {
@@ -77,7 +78,7 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
   const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-  const svc = new InspectionsService(prisma, snapshot, realtime, { today: () => '2026-07-03' });
+  const svc = new InspectionsService(prisma, snapshot, realtime, { today: () => '2026-07-03' }, new ActivityParticipant());
   const user = { sub: 'u1', role: 'engineer', projectId: insp.projectId } as never;
   const pmc = { sub: 'u-pmc', role: 'pmc', projectId: insp.projectId } as never;
   return { svc, prisma, user, pmc, created, audits, insp };
@@ -131,7 +132,7 @@ describe('InspectionsService.create — location spine (nodeId)', () => {
     } as unknown as PrismaService;
     const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
     const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-    const svc = new InspectionsService(prisma, snapshot, realtime, { today: () => '2026-07-03' });
+    const svc = new InspectionsService(prisma, snapshot, realtime, { today: () => '2026-07-03' }, new ActivityParticipant());
     const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
     return { svc, user, created };
   }
