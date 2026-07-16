@@ -102,7 +102,10 @@ describe('validateInitializationGraph', () => {
 });
 
 describe('runSerializableProjectInit', () => {
-  const p2034 = () => Object.assign(new Error('serialization conflict'), { code: 'P2034' });
+  const p2034 = () => new Prisma.PrismaClientKnownRequestError('serialization conflict', {
+    code: 'P2034',
+    clientVersion: 'test',
+  });
   const p2002 = (modelName: string, target: string | string[]) =>
     new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
       code: 'P2002',
@@ -139,6 +142,16 @@ describe('runSerializableProjectInit', () => {
 
   it('does not retry another Prisma error code', async () => {
     const error = Object.assign(new Error('unique conflict'), { code: 'P2002' });
+    const transaction = vi.fn().mockRejectedValue(error);
+    const sleep = vi.fn(async () => undefined);
+
+    await expect(runSerializableProjectInit({ $transaction: transaction } as never, vi.fn(), sleep)).rejects.toBe(error);
+    expect(transaction).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a plain P2034-shaped participant error', async () => {
+    const error = Object.assign(new Error('participant fault'), { code: 'P2034' });
     const transaction = vi.fn().mockRejectedValue(error);
     const sleep = vi.fn(async () => undefined);
 

@@ -182,7 +182,8 @@ export async function runSerializableProjectInit<T>(
     try {
       return await prisma.$transaction(run, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     } catch (error) {
-      const retryable = (error as { code?: string }).code === 'P2034' || isDisplayIdPrimaryKeyConflict(error);
+      const retryable = (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034')
+        || isDisplayIdPrimaryKeyConflict(error);
       if (!retryable || attempt === 2) throw error;
       const baseDelay = attempt === 0 ? 25 : 75;
       await sleep(baseDelay + Math.floor(random() * 26));
