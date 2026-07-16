@@ -205,6 +205,8 @@ PGHOST=localhost PGUSER=postgres PGPASSWORD=postgres bash apps/api/scripts/outbo
 
 ## 12. PR B correction round 1 (Codex BLOCKED verdict)
 
+> **Merged** as **PR #164** — base `main @ 4904e1168ce543ddbe28e17863e46390b3757037`, head `755523a9b474af9996461d38660ac48b301999c4`, merge commit `be2d8f6d32f05a7af66b1c3f380fe3ead1a12b19` (all 10 CI check-runs green). PR B is complete; PR C proceeds from `main @ be2d8f6`.
+
 Codex reviewed the merged PR B (this packet's §1–§11) and returned **BLOCKED** with four findings — two runtime corrections and two evidence/documentation corrections. All four were verified reproduce-first against `main @ 4904e116` (the merge of PR #163) before fixing. This section records the correction; it is a **fix-forward** on the merged code — PRs #162/#163 are not rolled back, and **no migration is added** (the `OutboxConsumerCatalog.active` column already exists).
 
 ### Findings (all verified real)

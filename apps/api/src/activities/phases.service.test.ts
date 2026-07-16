@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { PhasesService } from './phases.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
-import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { AuthUser } from '../common/auth';
 
 const user: AuthUser = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as AuthUser;
@@ -23,7 +23,7 @@ function make(anchor: string | null) {
   const svc = new PhasesService(
     prisma,
     { build: vi.fn(async () => ({})) } as unknown as SnapshotService,
-    { notifyChanged: vi.fn() } as unknown as RealtimeGateway,
+    { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher,
   );
   return { svc, create };
 }

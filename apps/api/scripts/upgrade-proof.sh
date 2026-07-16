@@ -318,6 +318,17 @@ assert "PR B wrote NO deliveries over an event-free legacy DB (row-free capabili
   "SELECT COUNT(*) FROM \"OutboxDelivery\";" \
   "0"
 
+# Phase 2 fix-forward PR C Task 3 — the external-effect cutover seal is a pure invariant addition
+# over the event-free legacy DB: a BEFORE INSERT trigger that requires a dispatchIntent ONCE the
+# singleton cutover row exists. Installing the trigger touches no row and does not seal anything —
+# the DB stays UNSEALED until an operator runs `outbox:seal-external` in legacy/shadow mode.
+assert "the seal BEFORE INSERT trigger on DomainEvent was installed" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname='DomainEvent_seal_requires_intent' AND NOT tgisinternal;" \
+  "1"
+assert "the DB is UNSEALED over the legacy fixture (no cutover row until an operator seals)" \
+  "SELECT COUNT(*) FROM \"OutboxCutoverState\";" \
+  "0"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

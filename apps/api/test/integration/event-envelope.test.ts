@@ -31,7 +31,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
   /** emit one event inside a real interactive transaction, like a command would. */
   const emit = (over: Partial<EmitInput> = {}) =>
     t.prisma.$transaction((tx) =>
-      emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-1', ...over }),
+      emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-1', effectKey: 'decision.approved', dispatch: {}, ...over }),
     );
 
   const streamOf = (projectId: string) => t.prisma.projectEventStream.findUnique({ where: { projectId } });
@@ -66,7 +66,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     const before = (await streamOf(f.projectA.id))!.nextPosition;
     await expect(
       t.prisma.$transaction(async (tx) => {
-        await emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rollback' });
+        await emitEvent(tx, { projectId: f.projectA.id, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rollback', effectKey: 'decision.approved', dispatch: {} });
         throw new Error('boom'); // the command failed after emitting — everything rolls back
       }),
     ).rejects.toThrow('boom');
@@ -81,7 +81,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     // Fire N emits concurrently; the counter row-lock serializes them, so a transaction that
     // committed earlier gets the lower position and none is ever skipped past.
     const results = await Promise.all(Array.from({ length: N }, (_, i) => emit({ entityId: `D-conc-${i}` })));
-    const positions = results.map((r) => r.streamPosition).sort((a, b) => a - b);
+    const positions = results.map((r) => Number(r.streamPosition)).sort((a, b) => a - b);
     const expected = Array.from({ length: N }, (_, i) => Number(base) + i);
     expect(positions, 'positions are exactly the contiguous run — distinct, ordered, no gap').toEqual(expected);
     expect(new Set(positions).size).toBe(N);
@@ -150,7 +150,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     expect(await streamOf(tmp.id), 'the trigger auto-created its counter on insert').not.toBeNull();
     await t.prisma.projectEventStream.delete({ where: { projectId: tmp.id } });
     await expect(
-      t.prisma.$transaction((tx) => emitEvent(tx, { projectId: tmp.id, actor: human, eventType: 'project.created', entityType: 'Project', entityId: tmp.id })),
+      t.prisma.$transaction((tx) => emitEvent(tx, { projectId: tmp.id, actor: human, eventType: 'project.created', entityType: 'Project', entityId: tmp.id, effectKey: 'project.created', dispatch: {} })),
     ).rejects.toThrow();
     await t.prisma.project.delete({ where: { id: tmp.id } });
     await t.prisma.org.delete({ where: { id: tmpOrg.id } });

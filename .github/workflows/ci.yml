@@ -84,8 +84,12 @@ jobs:
         run: pnpm --filter api prisma:generate
       - name: Install Playwright Chromium
         run: pnpm --filter web exec playwright install --with-deps chromium
-      - name: Two-project acceptance suite (migrate + seed + Playwright over the real API)
-        run: pnpm test:e2e:api
+      # PR C Task 5 — the acceptance suite runs in BOTH sender modes over PostgreSQL 16, each on a
+      # freshly migrated + seeded disposable database, proving the same user-visible consequences.
+      - name: API acceptance — LEGACY sender mode (immediate dispatch; relay recovery on)
+        run: pnpm test:e2e:api:legacy
+      - name: API acceptance — OUTBOX sender mode (sealed cutover; background relay is sole sender)
+        run: pnpm test:e2e:api:outbox
       - name: Upload Playwright traces
         if: failure()
         uses: actions/upload-artifact@v4

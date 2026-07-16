@@ -17,6 +17,11 @@ export const dailyLogManifest: ModuleManifest = {
   consumesEvents: [],
   commands: ['daily-log.start', 'daily-log.addMaterial', 'daily-log.flagMismatch', 'daily-log.submit'],
   queries: [],
-  routes: ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('submit')"],
+  routes: [
+    'POST /projects/:projectId/daily-log/start',
+    'POST /projects/:projectId/daily-log/materials',
+    'POST /projects/:projectId/daily-log/flag-mismatch',
+    'POST /projects/:projectId/daily-log/submit',
+  ],
   permissions: ['pmc', 'engineer'],
 };

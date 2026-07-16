@@ -44,6 +44,7 @@ import { MembersController } from './orgs/members.controller';
 import { CompaniesService } from './orgs/companies.service';
 import { CompaniesController } from './orgs/companies.controller';
 import { OutboxRelay } from './platform/outbox/relay.service';
+import { ExternalEffectDispatcher } from './platform/outbox/external-effect-dispatcher';
 import { OutboxBootstrap } from './platform/outbox/outbox.bootstrap';
 import { OutboxOperationsService } from './platform/outbox/outbox-operations.service';
 import { ModuleRegistryService } from './platform/module-registry/module-registry.service';
@@ -107,6 +108,9 @@ import { NodeInitParticipant } from './nodes/node-init.participant';
     CompaniesService,
     NodesService,
     OutboxRelay,
+    // PR C Task 2 — the single external-effect sender (legacy/shadow immediate dispatch);
+    // depends on OutboxRelay for the shared claim/dispatch/failure path.
+    ExternalEffectDispatcher,
     OutboxBootstrap,
     OutboxOperationsService,
     ModuleRegistryService,

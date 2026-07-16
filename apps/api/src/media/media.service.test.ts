@@ -4,7 +4,7 @@ import { MediaService } from './media.service';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './storage.service';
 import type { SignedUrlService } from './signed-url.service';
-import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { CreateMediaInput } from '../contracts';
 
@@ -55,16 +55,16 @@ function make(
     remove: vi.fn(async () => {}),
   };
   const signed = { mediaPath: vi.fn((id: string) => `/media/${id}?t=tok`) };
-  const realtime = { notifyChanged: vi.fn() };
+  const dispatcher = { dispatchCommitted: vi.fn() };
   const snapshot = { build: vi.fn(async () => ({ ok: true })) };
   const svc = new MediaService(
     prisma as unknown as PrismaService,
     storage as unknown as StorageService,
     signed as unknown as SignedUrlService,
-    realtime as unknown as RealtimeGateway,
+    dispatcher as unknown as ExternalEffectDispatcher,
     snapshot as unknown as SnapshotService,
   );
-  return { svc, prisma, storage, signed, realtime, snapshot, created };
+  return { svc, prisma, storage, signed, dispatcher, snapshot, created };
 }
 
 const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
@@ -75,7 +75,7 @@ const input: CreateMediaInput = { kind: 'progress', mime: 'image/jpeg', data: Bu
 
 describe('MediaService.create', () => {
   it('dev stub: keeps bytes in the row and returns a signed serve path (no public url stored)', async () => {
-    const { svc, prisma, realtime } = make(null);
+    const { svc, prisma, dispatcher } = make(null);
     const res = await svc.create('ambli', uploader, input);
 
     expect(res).toEqual({ id: 'med1', url: '/media/med1?t=tok' });
@@ -85,7 +85,8 @@ describe('MediaService.create', () => {
     expect(row.url).toBeNull(); // never persist a public bucket URL
     expect(row.sizeBytes).toBe(5);
     expect(row.uploadedBy).toBe('user-1');
-    expect(realtime.notifyChanged).toHaveBeenCalledWith('ambli');
+    // the fresh upload hands its committed event to the single sender exactly once (signal-only)
+    expect(dispatcher.dispatchCommitted).toHaveBeenCalledTimes(1);
   });
 
   it('S3 mode: drops the bytes, stores NO public url, and returns a signed serve path', async () => {
@@ -126,13 +127,13 @@ describe('MediaService.fetch', () => {
 
 describe('MediaService.remove', () => {
   it('deletes the bucket object + row for a media in the caller’s project', async () => {
-    const { svc, prisma, storage, realtime } = make(null);
+    const { svc, prisma, storage, dispatcher } = make(null);
     prisma.media.findUnique.mockResolvedValueOnce({ id: 'm', projectId: 'ambli', storageKey: 'ambli/progress/m.jpg' });
 
     expect(await svc.remove('m', user)).toBe(true);
     expect(storage.remove).toHaveBeenCalledWith('ambli/progress/m.jpg');
     expect(prisma.media.delete).toHaveBeenCalledWith({ where: { id: 'm' } });
-    expect(realtime.notifyChanged).toHaveBeenCalledWith('ambli');
+    expect(dispatcher.dispatchCommitted).toHaveBeenCalledTimes(1);
   });
 
   it('refuses to delete media from another project (tenant isolation)', async () => {

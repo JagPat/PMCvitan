@@ -92,7 +92,7 @@ export class MembersService {
         update: { role: input.role, discipline, status: 'active' },
         create: { projectId, userId: user.id, role: input.role, discipline, status: 'active' },
       });
-      await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role } });
+      await emitEvent(tx, { projectId, actor, eventType: 'membership.added', entityType: 'Membership', entityId: user.id, payload: discipline ? { role: input.role, discipline } : { role: input.role }, effectKey: 'membership.added', dispatch: {} });
       return m;
     });
     return { userId: user.id, name: user.name, email: user.email, phone: user.phone, role: membership.role, discipline: membership.discipline ?? undefined, status: membership.status, credentialState: user.passwordHash ? 'active' : 'not_set' };
@@ -108,10 +108,10 @@ export class MembersService {
         where: { projectId_userId: { projectId, userId } },
         data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
       });
-      await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role } });
+      await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role }, effectKey: 'membership.role_changed', dispatch: {} });
       // a consultant's discipline moving is its own fact
       if ((existing.discipline ?? null) !== (m.discipline ?? null)) {
-        await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: m.discipline ? { discipline: m.discipline } : undefined });
+        await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: m.discipline ? { discipline: m.discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} });
       }
       return m;
     });
@@ -129,7 +129,7 @@ export class MembersService {
     await this.prisma.$transaction(async (tx) => {
       await lockProjectReadiness(tx, projectId);
       await tx.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { status: 'removed' } });
-      await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId });
+      await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
     });
     return { ok: true };
   }

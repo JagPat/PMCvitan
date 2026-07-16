@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from '../media/storage.service';
-import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
@@ -14,6 +14,7 @@ import type { SnapshotDto } from '../snapshot/types';
 import type { IssueDrawingInput } from '../contracts';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
+import type { EmittedEventMeta } from '../platform/outbox/registry';
 
 export interface IssuedDrawing {
   drawingId: string;
@@ -40,7 +41,8 @@ export class DrawingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
-    private readonly realtime: RealtimeGateway,
+    // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
+    private readonly dispatcher: ExternalEffectDispatcher,
     private readonly snapshot: SnapshotService,
   ) {}
 
@@ -73,7 +75,7 @@ export class DrawingsService {
     await tx.drawingRevision.update({ where: { id: revisionId }, data: { recipientsFrozenAt: new Date() } });
     // The distribution set is now frozen for this revision (Phase 2 Task 4) — one event per
     // revision, even when the set was empty (a real fact, distinct from the legacy null).
-    await emitEvent(tx, { projectId, actor, eventType: 'drawing.recipients_frozen', entityType: 'DrawingRevision', entityId: revisionId, payload: { recipients: members.length } });
+    await emitEvent(tx, { projectId, actor, eventType: 'drawing.recipients_frozen', entityType: 'DrawingRevision', entityId: revisionId, payload: { recipients: members.length }, effectKey: 'drawing.recipients_frozen', dispatch: {} });
   }
 
   async issue(projectId: string, user: AuthUser, input: IssueDrawingInput): Promise<IssuedDrawing> {
@@ -127,6 +129,9 @@ export class DrawingsService {
 
     let drawingId = '';
     let revisionId = '';
+    // The socket/push-bearing issue|revise event (the recipients-frozen events are weightless
+    // no-ops, so they need no dispatch). Handed to the single sender after commit.
+    let issued: EmittedEventMeta | undefined;
     // Draft → Publish: a brand-new drawing is a private draft unless `publish` is set. An
     // existing drawing that's already published stays published (adding a revision is a normal
     // issue); publishing an existing draft is also honoured. `published` decides the notice.
@@ -222,7 +227,7 @@ export class DrawingsService {
           entityId: revisionId,
           payload: { number: input.number, rev: input.rev, status: input.status },
         });
-        await emitEvent(tx, { projectId, actor, eventType: isRevise ? 'drawing.revised' : 'drawing.issued', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: input.number, rev: input.rev, status: input.status } });
+        issued = await emitEvent(tx, { projectId, actor, eventType: isRevise ? 'drawing.revised' : 'drawing.issued', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: input.number, rev: input.rev, status: input.status }, effectKey: published ? (isRevise ? 'drawing.revised' : 'drawing.issued') : (isRevise ? 'drawing.revised_draft' : 'drawing.issued_draft'), dispatch: published ? { push: { body: `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}` } } : {} });
       });
     } catch (e) {
       // a unique fired: the (drawingId, rev) label, a concurrent same-number create,
@@ -233,10 +238,9 @@ export class DrawingsService {
       throw e;
     }
 
-    // A draft notifies no one — only a published drawing reaches the people who build from it.
-    if (published) {
-      this.realtime.notifyChanged(projectId, `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}`, ['engineer', 'contractor']);
-    }
+    // A draft notifies no one — its persisted intent is weightless, so the sender is a no-op.
+    // Only a published issue|revise reaches the people who build from it.
+    await this.dispatcher.dispatchCommitted(issued ? [issued] : []);
     return { drawingId, revisionId };
   }
 
@@ -251,7 +255,7 @@ export class DrawingsService {
     if (!d || d.projectId !== projectId) throw new NotFoundException('Drawing not found');
     if (d.publishedAt) throw new ConflictException('Drawing is already published');
 
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       // publication activates the frozen distribution — a readiness write (finding 1)
       await lockProjectReadiness(tx, projectId);
       // lock the drawing row, then CAS on publishedAt STILL null — the loser of a
@@ -269,9 +273,9 @@ export class DrawingsService {
       });
       for (const rev of unfrozen) await this.freezeRecipients(tx, actor, projectId, rev.id);
       await recordAudit(tx, { projectId, actor, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } });
-      await emitEvent(tx, { projectId, actor, eventType: 'drawing.published', entityType: 'Drawing', entityId: drawingId, payload: { number: d.number } });
+      return emitEvent(tx, { projectId, actor, eventType: 'drawing.published', entityType: 'Drawing', entityId: drawingId, payload: { number: d.number }, effectKey: 'drawing.published', dispatch: { push: { body: `Drawing issued: ${d.number} — ${d.title}` } } });
     });
-    this.realtime.notifyChanged(projectId, `Drawing issued: ${d.number} — ${d.title}`, ['engineer', 'contractor']);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -282,12 +286,12 @@ export class DrawingsService {
     if (!drawing || drawing.projectId !== projectId) throw new NotFoundException('Drawing not found');
     const resolved = await resolveProjectNode(this.prisma, projectId, nodeId);
     const actor = await resolveActor(this.prisma, user);
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       await tx.drawing.update({ where: { id }, data: { nodeId: resolved } });
       await recordAudit(tx, { projectId, actor, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } });
-      await emitEvent(tx, { projectId, actor, eventType: 'drawing.refiled', entityType: 'Drawing', entityId: id, payload: { nodeId: resolved } });
+      return emitEvent(tx, { projectId, actor, eventType: 'drawing.refiled', entityType: 'Drawing', entityId: id, payload: { nodeId: resolved }, effectKey: 'drawing.refiled', dispatch: {} });
     });
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -307,6 +311,7 @@ export class DrawingsService {
     const actor = await resolveActor(this.prisma, user);
 
     let firstAck = false;
+    let ackEvent: EmittedEventMeta | undefined;
     try {
       await this.prisma.$transaction(async (tx) => {
         // an acknowledgement can complete the frozen set — a readiness write (finding 1)
@@ -315,7 +320,7 @@ export class DrawingsService {
         if (existing) return; // replay — the fact is already recorded and audited
         await tx.drawingAck.create({ data: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role } });
         await recordAudit(tx, { projectId, actor, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } });
-        await emitEvent(tx, { projectId, actor, eventType: 'drawing.acknowledged', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } });
+        ackEvent = await emitEvent(tx, { projectId, actor, eventType: 'drawing.acknowledged', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev }, effectKey: 'drawing.acknowledged', dispatch: { push: { body: `${actor.actorName} is building to ${rev.drawing.number} Rev ${rev.rev}` } } });
         firstAck = true;
       });
     } catch (e) {
@@ -328,8 +333,9 @@ export class DrawingsService {
     }
 
     const ackCount = await this.prisma.drawingAck.count({ where: { revisionId } });
-    // only the FIRST acknowledgement announces — a replay repeats nothing
-    if (firstAck) this.realtime.notifyChanged(projectId, `${actor.actorName} is building to ${rev.drawing.number} Rev ${rev.rev}`, ['pmc']);
+    // only the FIRST acknowledgement announces — a replay repeats nothing (its emit rolled back
+    // on the unique conflict, so there is no committed event to dispatch)
+    if (firstAck && ackEvent) await this.dispatcher.dispatchCommitted([ackEvent]);
     return { ok: true, ackCount };
   }
 
@@ -352,14 +358,14 @@ export class DrawingsService {
     if (!drawing || drawing.projectId !== projectId) return false;
     const actor = await resolveActor(this.prisma, user);
     await Promise.all(drawing.revisions.map((r) => (r.storageKey ? this.storage.remove(r.storageKey).catch(() => {}) : Promise.resolve())));
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       // deleting a linked drawing changes the aggregated gate (finding 1)
       await lockProjectReadiness(tx, projectId);
       await tx.drawing.delete({ where: { id } }); // revisions + recipients cascade
       await recordAudit(tx, { projectId, actor, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } });
-      await emitEvent(tx, { projectId, actor, eventType: 'drawing.removed', entityType: 'Drawing', entityId: id, payload: { number: drawing.number } });
+      return emitEvent(tx, { projectId, actor, eventType: 'drawing.removed', entityType: 'Drawing', entityId: id, payload: { number: drawing.number }, effectKey: 'drawing.removed', dispatch: {} });
     });
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return true;
   }
 }

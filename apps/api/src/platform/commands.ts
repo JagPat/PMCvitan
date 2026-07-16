@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma.service';
 import type { Actor } from '../common/actor';
+import type { EmittedEventMeta } from './outbox/registry';
 
 /**
  * Phase 2 Task 5 — the command-idempotency kernel.
@@ -43,6 +44,9 @@ export interface CommandResult<T> {
   /** Optional value threaded back to the caller on a FRESH execution (unused when the caller
    *  rebuilds its own response, e.g. a snapshot). */
   value?: T;
+  /** PR C Task 2 — the domain events this fresh execution emitted, in causal order, so the caller
+   *  hands them to the post-commit ExternalEffectDispatcher. Omit for a command that emits none. */
+  events?: EmittedEventMeta[];
 }
 
 export interface ExecuteInput<T> {
@@ -64,6 +68,9 @@ export interface ExecuteOutcome<T> {
   replayed: boolean;
   resultRef: string;
   value?: T;
+  /** PR C Task 2 — the events this call emitted (empty on a replay, which re-emits nothing). The
+   *  caller passes them to `ExternalEffectDispatcher.dispatchCommitted` post-commit. */
+  events: EmittedEventMeta[];
 }
 
 /** Whether a missing idempotency key is REFUSED (the capability/version gate). Off by default so
@@ -142,14 +149,14 @@ export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInp
       throw new BadRequestException('This action requires an Idempotency-Key — please update the app to continue.');
     }
     const r = await prisma.$transaction((tx) => input.run(tx));
-    return { replayed: false, resultRef: r.resultRef, value: r.value };
+    return { replayed: false, resultRef: r.resultRef, value: r.value, events: r.events ?? [] };
   }
 
   // ── Fast path: replay a prior committed receipt for THIS actor + scope ─────────────────────
   const prior = await prisma.commandExecution.findFirst({ where: receiptWhere(input.scope, input.actor.actorId, input.commandType, key) });
   if (prior?.status === 'succeeded') {
     if (prior.requestHash !== input.requestHash) throw sameKeyDifferentRequest();
-    return { replayed: true, resultRef: prior.resultRef ?? '', value: undefined };
+    return { replayed: true, resultRef: prior.resultRef ?? '', value: undefined, events: [] };
   }
 
   // ── Reserve + execute + receipt, all in ONE transaction ────────────────────────────────────
@@ -176,7 +183,7 @@ export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInp
       });
       return result;
     });
-    return { replayed: false, resultRef: r.resultRef, value: r.value };
+    return { replayed: false, resultRef: r.resultRef, value: r.value, events: r.events ?? [] };
   } catch (e) {
     // A concurrent duplicate committed first → the scope-specific partial unique index rejected
     // our reserve. By the time P2002 surfaces, the winner has committed, so its `succeeded`
@@ -185,7 +192,7 @@ export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInp
       const winner = await prisma.commandExecution.findFirst({ where: receiptWhere(input.scope, input.actor.actorId, input.commandType, key) });
       if (winner?.status === 'succeeded') {
         if (winner.requestHash !== input.requestHash) throw sameKeyDifferentRequest();
-        return { replayed: true, resultRef: winner.resultRef ?? '', value: undefined };
+        return { replayed: true, resultRef: winner.resultRef ?? '', value: undefined, events: [] };
       }
       // The winner isn't `succeeded` (its own transaction rolled back after we saw the conflict)
       // — extremely rare; the key is free again, so surface a retryable conflict.

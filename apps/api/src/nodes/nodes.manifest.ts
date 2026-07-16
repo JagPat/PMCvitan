@@ -18,6 +18,12 @@ export const nodesManifest: ModuleManifest = {
   consumesEvents: [],
   commands: ['nodes.create', 'nodes.rename', 'nodes.move', 'nodes.publish', 'nodes.remove'],
   queries: [],
-  routes: ['Post()', "Patch(':nodeId')", "Post(':nodeId/move')", "Post(':nodeId/publish')", "Delete(':nodeId')"],
+  routes: [
+    'POST /projects/:projectId/nodes',
+    'PATCH /projects/:projectId/nodes/:nodeId',
+    'POST /projects/:projectId/nodes/:nodeId/move',
+    'POST /projects/:projectId/nodes/:nodeId/publish',
+    'DELETE /projects/:projectId/nodes/:nodeId',
+  ],
   permissions: ['pmc'],
 };

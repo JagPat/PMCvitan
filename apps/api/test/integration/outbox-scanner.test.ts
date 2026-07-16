@@ -70,7 +70,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
     return id;
   };
   const emit = (projectId: string, entityId: string) =>
-    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId }));
+    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId, effectKey: 'decision.approved', dispatch: {} }));
   const cursor = (consumer: string, projectId: string) =>
     t.prisma.projectionCursor.findUnique({ where: { consumer_projectId: { consumer, projectId } } });
   const effects = (projectId: string) => t.prisma.auditLog.count({ where: { action: 'test.filtered', projectId } });

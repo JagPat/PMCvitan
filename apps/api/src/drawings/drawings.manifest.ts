@@ -21,12 +21,12 @@ export const drawingsManifest: ModuleManifest = {
   commands: ['drawings.issue', 'drawings.publish', 'drawings.presign', 'drawings.acknowledge', 'drawings.setNode', 'drawings.remove'],
   queries: [],
   routes: [
-    "Post('projects/:projectId/drawings')",
-    "Post('projects/:projectId/drawings/:drawingId/publish')",
-    "Post('projects/:projectId/drawings/presign')",
-    "Post('projects/:projectId/drawings/rev/:revId/ack')",
-    "Patch('projects/:projectId/drawings/:drawingId/node')",
-    "Delete('drawings/:id')",
+    'POST /projects/:projectId/drawings',
+    'POST /projects/:projectId/drawings/:drawingId/publish',
+    'POST /projects/:projectId/drawings/presign',
+    'POST /projects/:projectId/drawings/rev/:revId/ack',
+    'PATCH /projects/:projectId/drawings/:drawingId/node',
+    'DELETE /drawings/:id',
   ],
   permissions: ['pmc', 'engineer', 'contractor'],
 };

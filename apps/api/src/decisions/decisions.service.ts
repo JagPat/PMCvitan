@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
-import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { ddMmmYyyy } from '../domain/dates';
 import type { AuthUser } from '../common/auth';
 import { resolveActor, ROLE_LABEL } from '../common/actor';
@@ -14,13 +14,17 @@ import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
+import type { EmittedEventMeta } from '../platform/outbox/registry';
 
 @Injectable()
 export class DecisionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
-    private readonly realtime: RealtimeGateway,
+    // PR C Task 2 — the SINGLE external-effect sender. A command hands its committed events to
+    // `dispatchCommitted` post-commit; the dispatcher (legacy/shadow) or the relay (outbox) is the
+    // sole sender for the active mode, so no service ever sends a socket/push directly.
+    private readonly dispatcher: ExternalEffectDispatcher,
   ) {}
 
   /** PMC issues a new decision (title/room + 2–4 options) → shows as pending on the
@@ -97,22 +101,23 @@ export class DecisionsService {
           await tx.notification.create({ data: { projectId, text: notice, color: '#C08A2D', time: 'just now' } });
         }
         await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
-        await emitEvent(tx, {
+        const ev = await emitEvent(tx, {
           projectId, actor, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title },
-          // Task 6: a one-step ISSUE notifies the client; a draft is silent. The outbox push
-          // consumer carries this intent (the old in-request push still sends in legacy mode).
-          ...(input.publish ? { notification: { body: notice, roles: ['client'] } } : {}),
+          effectKey: input.publish ? 'decision.published' : 'decision.drafted',
+          // A one-step ISSUE carries the client push; a draft is weightless (no invalidate, no push).
+          // The persisted intent is the ONLY source of the send — the dispatcher reads it post-commit.
+          // The push body is the client-facing announcement (distinct from the persisted Notification
+          // row text `notice`), preserved exactly as the pre-PR-C in-request push sent it.
+          dispatch: input.publish ? { push: { body: `New decision awaiting your approval: ${input.title}` } } : {},
         });
-        return { resultRef: id };
+        return { resultRef: id, events: [ev] };
       },
     });
 
-    // Only a PUBLISHED decision reaches the client (a draft is private to its author, and must
-    // not notify anyone). Post-commit side-effects fire once, on a FRESH execution only — a
-    // replay must not re-notify. When published in one step, fire the same side-effects publish() does.
-    if (input.publish && !outcome.replayed) {
-      this.realtime.notifyChanged(projectId, `New decision awaiting your approval: ${input.title}`, ['client']);
-    }
+    // Hand the committed events to the single sender (fresh execution only — a replay re-sends
+    // nothing, and its `events` is empty). A draft's intent is weightless, so a draft still
+    // notifies no one; a one-step publish sends exactly what publish() does.
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -143,16 +148,19 @@ export class DecisionsService {
         await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } });
         await tx.notification.create({ data: { projectId, text: notice, color: '#C08A2D', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
-        await emitEvent(tx, {
+        const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
-          notification: { body: notice, roles: ['client'] },
+          effectKey: 'decision.published',
+          // client-facing push body (the Notification row keeps `notice`), preserved from the
+          // pre-PR-C in-request push so the pinned behaviour is unchanged.
+          dispatch: { push: { body: `New decision awaiting your approval: ${d.title}` } },
         });
-        return { resultRef: decisionId };
+        return { resultRef: decisionId, events: [ev] };
       },
     });
 
     // now it's live — surface it on the client's side, exactly like a one-step issue (fresh only)
-    if (!outcome.replayed) this.realtime.notifyChanged(projectId, `New decision awaiting your approval: ${d.title}`, ['client']);
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -241,16 +249,17 @@ export class DecisionsService {
         });
         await tx.notification.create({ data: { projectId, text: announce, color: '#3F7A54', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'decision.approve', entity: 'Decision', entityId: decisionId });
-        await emitEvent(tx, {
+        const ev = await emitEvent(tx, {
           projectId, actor, eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId, payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) },
-          notification: { body: announce, roles: ['pmc', 'contractor', 'engineer'] },
+          effectKey: prior === 'change' ? 'decision.reapproved' : 'decision.approved',
+          dispatch: { push: { body: announce } },
         });
-        return { resultRef: decisionId };
+        return { resultRef: decisionId, events: [ev] };
       },
     });
 
     // the decision is locked; PMC/contractor/engineer act on it — told truthfully by whom (fresh only)
-    if (!outcome.replayed) this.realtime.notifyChanged(projectId, announce, ['pmc', 'contractor', 'engineer']);
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -276,6 +285,7 @@ export class DecisionsService {
       idempotencyKey,
       requestHash,
       run: async (tx) => {
+        const events: EmittedEventMeta[] = [];
         try {
           // reopening reverts readiness — a readiness write (gate finding 1)
           await lockProjectReadiness(tx, projectId);
@@ -289,7 +299,7 @@ export class DecisionsService {
           });
           await tx.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: input } });
           await recordAudit(tx, { projectId, actor, action: 'decision.change', entity: 'Decision', entityId: decisionId });
-          await emitEvent(tx, { projectId, actor, eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId, payload: { reason: input.reason, ...(input.costImpact !== undefined ? { costImpact: input.costImpact } : {}), ...(input.timeImpactDays !== undefined ? { timeImpactDays: input.timeImpactDays } : {}) } });
+          events.push(await emitEvent(tx, { projectId, actor, eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId, payload: { reason: input.reason, ...(input.costImpact !== undefined ? { costImpact: input.costImpact } : {}), ...(input.timeImpactDays !== undefined ? { timeImpactDays: input.timeImpactDays } : {}) }, effectKey: 'decision.change_requested', dispatch: {} }));
         } catch (e) {
           // the one-open-per-decision partial unique index fired — a concurrent request won.
           // Translate HERE (inside run) so the command kernel never mistakes THIS P2002 for a
@@ -299,11 +309,11 @@ export class DecisionsService {
           }
           throw e;
         }
-        return { resultRef: decisionId };
+        return { resultRef: decisionId, events };
       },
     });
 
-    if (!outcome.replayed) this.realtime.notifyChanged(projectId);
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -350,12 +360,12 @@ export class DecisionsService {
         if (closed.count !== 1) throw new ConflictException('The change request changed while withdrawing — reload and retry');
         await tx.decisionEvent.create({ data: { decisionId, type: 'change_withdrawn', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole } });
         await recordAudit(tx, { projectId, actor, action: 'decision.change_withdraw', entity: 'Decision', entityId: decisionId });
-        await emitEvent(tx, { projectId, actor, eventType: 'decision.change_withdrawn', entityType: 'Decision', entityId: decisionId });
-        return { resultRef: decisionId };
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'decision.change_withdrawn', entityType: 'Decision', entityId: decisionId, effectKey: 'decision.change_withdrawn', dispatch: {} });
+        return { resultRef: decisionId, events: [ev] };
       },
     });
 
-    if (!outcome.replayed) this.realtime.notifyChanged(projectId);
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

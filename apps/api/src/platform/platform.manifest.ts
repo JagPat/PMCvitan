@@ -35,6 +35,6 @@ export const platformManifest: ModuleManifest = {
   consumesEvents: [],
   commands: ['push.subscribe'],
   queries: ['snapshot.project'],
-  routes: ["Post('projects/:projectId/push/subscribe')"],
+  routes: ['POST /projects/:projectId/push/subscribe'],
   permissions: [],
 };

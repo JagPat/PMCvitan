@@ -362,7 +362,7 @@ export class OrgsService {
       });
       // the creator runs the project as its PMC
       await tx.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
-      await emitEvent(tx, { projectId: id, actor, eventType: 'project.created', entityType: 'Project', entityId: id, payload: { name: input.name } });
+      await emitEvent(tx, { projectId: id, actor, eventType: 'project.created', entityType: 'Project', entityId: id, payload: { name: input.name }, effectKey: 'project.created', dispatch: {} });
 
       const state: InitWriteState = {
         targetId: id,
@@ -942,7 +942,7 @@ export class OrgsService {
     const actor = await resolveActor(this.prisma, { sub: userId, role: orgRole ?? 'pmc', projectId: pid } as unknown as AuthUser);
     const updated = await this.prisma.$transaction(async (tx) => {
       const u = await tx.project.update({ where: { id: pid }, data: input });
-      await emitEvent(tx, { projectId: pid, actor, eventType: 'project.updated', entityType: 'Project', entityId: pid });
+      await emitEvent(tx, { projectId: pid, actor, eventType: 'project.updated', entityType: 'Project', entityId: pid, effectKey: 'project.updated', dispatch: {} });
       return u;
     });
     return { id: updated.id, name: updated.name, short: updated.short };
@@ -960,7 +960,7 @@ export class OrgsService {
     const actor = await resolveActor(this.prisma, { sub: userId, role, projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
-      await emitEvent(tx, { projectId, actor, eventType: 'project.archived', entityType: 'Project', entityId: projectId });
+      await emitEvent(tx, { projectId, actor, eventType: 'project.archived', entityType: 'Project', entityId: projectId, effectKey: 'project.archived', dispatch: {} });
     });
     return { ok: true };
   }
@@ -976,7 +976,7 @@ export class OrgsService {
     const actor = await resolveActor(this.prisma, { sub: userId, role, projectId } as unknown as AuthUser);
     await this.prisma.$transaction(async (tx) => {
       await tx.project.update({ where: { id: projectId }, data: { archivedAt: null } });
-      await emitEvent(tx, { projectId, actor, eventType: 'project.restored', entityType: 'Project', entityId: projectId });
+      await emitEvent(tx, { projectId, actor, eventType: 'project.restored', entityType: 'Project', entityId: projectId, effectKey: 'project.restored', dispatch: {} });
     });
     return { ok: true };
   }

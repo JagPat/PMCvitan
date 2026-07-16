@@ -17,7 +17,8 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "outbox:status": "tsx src/platform/outbox/outbox.cli.ts status",
-    "outbox:retry": "tsx src/platform/outbox/outbox.cli.ts retry"
+    "outbox:retry": "tsx src/platform/outbox/outbox.cli.ts retry",
+    "outbox:seal-external": "tsx src/platform/outbox/outbox.cli.ts seal-external"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

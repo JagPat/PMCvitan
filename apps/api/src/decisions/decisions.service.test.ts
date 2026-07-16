@@ -4,10 +4,22 @@ import { Prisma } from '@prisma/client';
 import { DecisionsService } from './decisions.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
-import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { AuthUser } from '../common/auth';
 import type { CreateDecisionInput } from '../contracts';
 import { pendingDecisionNotice } from '../domain/notifications';
+
+/**
+ * PR C Task 2 — services no longer call `notifyChanged`; they hand their committed events to the
+ * single {@link ExternalEffectDispatcher}. The push body + target roles now live in each event's
+ * PERSISTED dispatch intent (built from the external-effect catalog by `emitEvent`), so these unit
+ * tests assert on the dispatched event's intent. The exact per-branch send behaviour against live
+ * PostgreSQL is pinned by test/integration/phase2-consequences.test.ts.
+ */
+type DispatcherMock = { dispatchCommitted: ReturnType<typeof vi.fn> };
+type Intent = { effectKey: string; invalidate: boolean; push?: { body: string; roles: string[] } } | null;
+const dispatchedIntents = (d: DispatcherMock): Intent[] =>
+  ((d.dispatchCommitted.mock.calls.at(-1)?.[0] ?? []) as Array<{ dispatchIntent: Intent }>).map((e) => e.dispatchIntent);
 
 interface DecisionRow { id: string; projectId: string; title: string; publishedAt: Date | null; authorId: string | null }
 
@@ -71,8 +83,8 @@ const baseInput = (publish: boolean): CreateDecisionInput => ({
 describe('DecisionsService — draft → publish lifecycle', () => {
   it('creates a private DRAFT by default: no publishedAt, no client notice, no realtime push', async () => {
     const { prisma, decisions, notifications, events } = make();
-    const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-    const svc = new DecisionsService(prisma, snapshot, realtime);
+    const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
+    const svc = new DecisionsService(prisma, snapshot, dispatcher);
 
     await svc.create('proj-1', baseInput(false), user);
 
@@ -81,25 +93,28 @@ describe('DecisionsService — draft → publish lifecycle', () => {
     expect(decisions[0].authorId).toBe('u-arch'); // owned by its creator
     expect(events.map((e) => e.type)).toContain('drafted');
     expect(notifications).toHaveLength(0); // the client is NOT told about a draft
-    expect(realtime.notifyChanged).not.toHaveBeenCalled();
+    // the draft's dispatched event is WEIGHTLESS — it neither invalidates nor pushes, so the
+    // single sender is a no-op for it (a draft reaches no one).
+    expect(dispatchedIntents(dispatcher)).toEqual([{ effectKey: 'decision.drafted', invalidate: false, coverageVersion: expect.any(String) }]);
   });
 
   it('create with publish:true issues in one step — publishedAt set, client notified', async () => {
     const { prisma, decisions, notifications } = make();
-    const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-    const svc = new DecisionsService(prisma, snapshot, realtime);
+    const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
+    const svc = new DecisionsService(prisma, snapshot, dispatcher);
 
     await svc.create('proj-1', baseInput(true), user);
 
     expect(decisions[0].publishedAt).not.toBeNull();
     expect(notifications).toHaveLength(1);
-    expect(realtime.notifyChanged).toHaveBeenCalledWith('proj-1', expect.stringContaining('awaiting your approval'), ['client']);
+    // the dispatched published event carries the client push (roles from the catalog, body from the command)
+    expect(dispatchedIntents(dispatcher)[0]).toMatchObject({ effectKey: 'decision.published', invalidate: true, push: { body: expect.stringContaining('awaiting your approval'), roles: ['client'] } });
   });
 
   it('create with publish:true writes exactly one canonical notification inside the command transaction; drafts write none', async () => {
     const { prisma, notifications, txNotificationCreate } = make();
-    const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-    const svc = new DecisionsService(prisma, snapshot, realtime);
+    const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
+    const svc = new DecisionsService(prisma, snapshot, dispatcher);
 
     await svc.create('proj-1', baseInput(true), user);
 
@@ -113,7 +128,7 @@ describe('DecisionsService — draft → publish lifecycle', () => {
     }]);
 
     const draft = make();
-    const draftSvc = new DecisionsService(draft.prisma, snapshot, realtime);
+    const draftSvc = new DecisionsService(draft.prisma, snapshot, dispatcher);
     await draftSvc.create('proj-1', baseInput(false), user);
     expect(draft.prisma.notification.create).not.toHaveBeenCalled();
     expect(draft.txNotificationCreate).not.toHaveBeenCalled();
@@ -121,8 +136,8 @@ describe('DecisionsService — draft → publish lifecycle', () => {
 
   it('publish() flips a draft live and fires the client notice; re-publishing conflicts', async () => {
     const { prisma, decisions, notifications } = make();
-    const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-    const svc = new DecisionsService(prisma, snapshot, realtime);
+    const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
+    const svc = new DecisionsService(prisma, snapshot, dispatcher);
 
     await svc.create('proj-1', baseInput(false), user);
     const id = decisions[0].id;
@@ -131,7 +146,7 @@ describe('DecisionsService — draft → publish lifecycle', () => {
     await svc.publish('proj-1', id, user);
     expect(decisions[0].publishedAt).not.toBeNull();
     expect(notifications).toHaveLength(1);
-    expect(realtime.notifyChanged).toHaveBeenCalledWith('proj-1', expect.stringContaining('awaiting your approval'), ['client']);
+    expect(dispatchedIntents(dispatcher)[0]).toMatchObject({ effectKey: 'decision.published', invalidate: true, push: { body: expect.stringContaining('awaiting your approval'), roles: ['client'] } });
 
     // publishing again is a no-op conflict (already live)
     await expect(svc.publish('proj-1', id, user)).rejects.toBeInstanceOf(ConflictException);
@@ -222,9 +237,9 @@ function makeLifecycle(status: string) {
       }
     }),
   } as unknown as PrismaService;
-  const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-  const svc = new DecisionsService(prisma, snapshot, realtime);
-  return { svc, prisma, row, changeRequests, events, audits, notices, realtime };
+  const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
+  const svc = new DecisionsService(prisma, snapshot, dispatcher);
+  return { svc, prisma, row, changeRequests, events, audits, notices, dispatcher };
 }
 
 describe('DecisionsService — change control & mandatory re-approval (Phase 1 Task 2)', () => {
@@ -361,12 +376,13 @@ describe('DecisionsService — change control & mandatory re-approval (Phase 1 T
     const direct = makeLifecycle('pending');
     await direct.svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, client);
     expect(direct.notices.find((n) => n.includes('approved'))).toMatch(/^Client approved Kitchen counter top/);
-    expect(direct.realtime.notifyChanged).toHaveBeenCalledWith('proj-1', expect.stringMatching(/^Client approved/), ['pmc', 'contractor', 'engineer']);
+    // the dispatched approved event carries the truthful push (body + catalog roles)
+    expect(dispatchedIntents(direct.dispatcher)[0]).toMatchObject({ effectKey: 'decision.approved', invalidate: true, push: { body: expect.stringMatching(/^Client approved/), roles: ['pmc', 'contractor', 'engineer'] } });
 
     const behalf = makeLifecycle('pending');
     await behalf.svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, user); // the PMC, 'Ar. Meghna'
     const text = behalf.notices.find((n) => n.includes('approved'));
     expect(text).toMatch(/^Ar\. Meghna \(PMC\) approved Kitchen counter top on behalf of the client/);
-    expect(behalf.realtime.notifyChanged).toHaveBeenCalledWith('proj-1', expect.stringContaining('on behalf of the client'), ['pmc', 'contractor', 'engineer']);
+    expect(dispatchedIntents(behalf.dispatcher)[0]).toMatchObject({ effectKey: 'decision.approved', invalidate: true, push: { body: expect.stringContaining('on behalf of the client'), roles: ['pmc', 'contractor', 'engineer'] } });
   });
 });

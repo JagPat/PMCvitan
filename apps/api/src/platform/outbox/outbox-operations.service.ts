@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
+import { outboxSenderMode } from './registry';
+import { effectCoverageVersion } from '../external-effects';
 
 /**
  * Phase 2 fix-forward PR B Task 4 — audited dead-letter operations.
@@ -102,6 +104,98 @@ export class OutboxOperationsService {
       return { auditId: action.id };
     });
     this.log.warn(`outbox delivery ${input.deliveryId} retried by '${operatorIdentity}' (audit ${result.auditId})`);
+    return result;
+  }
+
+  /**
+   * PR C Task 3 — the audited external-effect cutover SEAL. Run in `legacy`/`shadow` mode; it pins the
+   * compiled coverage version that `OUTBOX_SENDER_MODE=outbox` startup then requires, and neutralizes
+   * the pre-cutover external deliveries so switching to outbox mode never re-sends historical
+   * socket/push. It NEVER deletes an event, a delivery, or a payload — a `noop`/`succeeded` mark
+   * preserves the historical push body for audit.
+   *
+   * Protocol (ONE transaction):
+   *   1. `LOCK TABLE "DomainEvent" IN SHARE ROW EXCLUSIVE MODE` — conflicts with the ROW EXCLUSIVE an
+   *      INSERT takes, so an in-flight event insert commits BEFORE the seal proceeds and no new event
+   *      can be inserted while the seal runs (the seal sees a stable set).
+   *   2. Refuse if the outbox has unresolved trouble: a `dead` delivery, a `blocked` cursor, or a
+   *      delivery GAP (an active external consumer missing a delivery for some event) — the operator
+   *      must let the relay expand / resolve first, or the seal would strand it.
+   *   3. Row-lock the pre-cutover external deliveries (null-intent legacy events + non-current-coverage
+   *      compat intents). Abort if any is currently `leased` (a sender owns it). Mark the rest
+   *      `noop`/`succeeded` WITHOUT clearing payload. Current-coverage deliveries are left alone.
+   *   4. Upsert the singleton coverage version and write the operator audit. Once the singleton exists,
+   *      the BEFORE INSERT trigger rejects any future null-intent event.
+   */
+  async sealExternal(input: { operatorIdentity: string; reason: string }): Promise<{ coverageVersion: string; auditId: string; neutralized: number }> {
+    const operatorIdentity = input.operatorIdentity?.trim();
+    const reason = input.reason?.trim();
+    if (!operatorIdentity) throw new Error('operator identity is required');
+    if (!reason) throw new Error('reason is required');
+    if (outboxSenderMode() === 'outbox') {
+      throw new Error('the seal must be run in legacy or shadow mode — outbox mode requires an EXISTING seal to start, so it cannot create the first one');
+    }
+    const coverageVersion = effectCoverageVersion();
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      // (1) Serialize against concurrent event inserts.
+      await tx.$executeRawUnsafe('LOCK TABLE "DomainEvent" IN SHARE ROW EXCLUSIVE MODE');
+
+      // (2) Refuse on unresolved trouble.
+      const dead = await tx.outboxDelivery.count({ where: { status: 'dead' } });
+      if (dead > 0) throw new Error(`refusing to seal: ${dead} dead outbox delivery(ies) — resolve (retry) them before cutting over`);
+      const blocked = await tx.projectionCursor.count({ where: { status: 'blocked' } });
+      if (blocked > 0) throw new Error(`refusing to seal: ${blocked} blocked projection cursor(s) — resolve them before cutting over`);
+      // A delivery GAP: an active external consumer with a DomainEvent that has no delivery for it.
+      // The relay's expander closes these continuously; the operator must let it catch up first.
+      const gaps = await tx.$queryRaw<Array<{ missing: bigint }>>`
+        SELECT count(*) AS missing
+        FROM "OutboxConsumerCatalog" c
+        JOIN "DomainEvent" e ON true
+        WHERE c."active" = true AND c."consumerEffect" = 'external'
+          AND NOT EXISTS (SELECT 1 FROM "OutboxDelivery" d WHERE d."eventId" = e."eventId" AND d."consumer" = c."consumer")`;
+      const gapCount = Number(gaps[0]?.missing ?? 0n);
+      if (gapCount > 0) throw new Error(`refusing to seal: ${gapCount} external delivery gap(s) — let the relay expand missing deliveries before cutting over`);
+
+      // (3) The pre-cutover external deliveries: null-intent legacy events, or a non-current coverage
+      // (a PR B 'compat.task6' intent). Current-coverage deliveries are NOT touched — the relay will
+      // still send any the immediate dispatcher hasn't (at-least-once), which is correct.
+      const targets = await tx.$queryRaw<Array<{ id: string; status: string }>>`
+        SELECT d."id", d."status"
+        FROM "OutboxDelivery" d
+        JOIN "DomainEvent" e ON e."eventId" = d."eventId"
+        WHERE d."consumerKind" = 'unordered'
+          AND d."status" IN ('pending', 'leased')
+          AND (
+            e."dispatchIntent" IS NULL
+            OR (e."dispatchIntent" ->> 'coverageVersion') IS DISTINCT FROM ${coverageVersion}
+          )
+        FOR UPDATE`;
+      const leased = targets.filter((t) => t.status === 'leased');
+      if (leased.length > 0) {
+        throw new Error(`refusing to seal: ${leased.length} legacy external delivery(ies) are leased by a sender — retry after the lease expires`);
+      }
+      const ids = targets.map((t) => t.id);
+      if (ids.length) {
+        await tx.outboxDelivery.updateMany({
+          where: { id: { in: ids } },
+          // neutralize but PRESERVE the payload (the historical push body stays for audit)
+          data: { status: 'succeeded', deliveryAction: 'noop', leaseOwner: null, leaseExpiresAt: null, lastError: null },
+        });
+      }
+
+      // (4) Pin the coverage version + audit. The singleton's existence is what the trigger keys on.
+      await tx.outboxCutoverState.upsert({
+        where: { key: 'singleton' },
+        create: { key: 'singleton', coverageVersion, sealedBy: operatorIdentity, reason },
+        update: { coverageVersion, sealedBy: operatorIdentity, reason },
+      });
+      const action = await tx.outboxOperatorAction.create({
+        data: { action: 'seal-external', operatorIdentity, reason },
+      });
+      return { coverageVersion, auditId: action.id, neutralized: ids.length };
+    });
+    this.log.warn(`external-effect cutover sealed at coverage ${result.coverageVersion} by '${operatorIdentity}' — ${result.neutralized} legacy delivery(ies) neutralized (audit ${result.auditId})`);
     return result;
   }
 }
