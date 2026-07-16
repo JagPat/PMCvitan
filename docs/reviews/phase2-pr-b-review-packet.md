@@ -65,10 +65,12 @@ Two kinds of red-at-base signal, both honest TDD reds:
 
 | Probe file | Capability exercised | Absent at base |
 |---|---|---|
-| `test/integration/outbox-scanner.test.ts` (4) | `OutboxRelay.expandMissingDeliveries` invoked by `runOnce` before claiming: late-registered consumer backfilled; two concurrent scanners idempotent; ordered no-op at pos 0 then dispatch at pos 1; filtered consumer gets historical dispatch + no-op rows | `expandMissingDeliveries` does not exist; `runOnce` never expands |
-| `test/integration/outbox-operations.test.ts` (5) | `OutboxOperationsService.status`/`retry`: status aggregates + truncated errors; retry rejects non-dead/inactive/mismatched; unordered dead reset; ordered cursor unblocked only when exact-next; one audit row per retry | `OutboxOperationsService` does not exist |
-| `src/platform/outbox/registry.test.ts` (6) | total `deliveryFor` (no null); unordered no-op → `succeeded/noop`; ordered no-op → `pending/noop`; `syncConsumerCatalog` creates rows and rejects kind/effect/version drift | total planning + `syncConsumerCatalog` do not exist |
+| `test/integration/outbox-scanner.test.ts` | `OutboxRelay.expandMissingDeliveries` invoked by `runOnce` before claiming: late-registered consumer backfilled; two concurrent scanners idempotent; ordered no-op at pos 0 then dispatch at pos 1. (**Corrected in round 1** — see §12: the original "dispatch + no-op mix" and old-instance/crash cases are now explicitly proven; the initial suite used a no-op-only late consumer and did not prove the mix.) | `expandMissingDeliveries` does not exist; `runOnce` never expands |
+| `test/integration/outbox-operations.test.ts` | `OutboxOperationsService.status`/`retry`: status aggregates + truncated errors; retry rejects **non-dead / missing**; unordered dead reset; ordered cursor unblocked only when exact-next; one audit row per retry. (**Corrected in round 1** — see §12: the original packet also claimed "inactive / mismatched" rejection; the **inactive** rejection is now explicitly tested, and **coordinate mismatch** is structurally unreachable — the composite `(eventId,projectId,streamPosition)` FK prevents it — so the retry mismatch guard is defense-in-depth, not separately testable.) | `OutboxOperationsService` does not exist |
+| `src/platform/outbox/registry.test.ts` | total `deliveryFor` (no null); unordered no-op → `succeeded/noop`; ordered no-op → `pending/noop`; `syncConsumerCatalog` creates rows and rejects kind/effect/version drift; **(round 1)** materialize writes rows only for **active** catalog consumers | total planning + `syncConsumerCatalog` do not exist |
 | `src/health.controller.test.ts` (2) | `/health` returns outbox aggregates and stays HTTP 200 with `outboxAvailable:false` when the diagnostic query throws | health has no outbox fields, no fail-soft path |
+
+> **Round-1 correction (Codex BLOCKED verdict).** The row counts and two claims above were revised in the PR B correction round (§12). The original packet stated exact per-file test counts and claimed a dispatch/no-op mix and inactive/mismatched retry rejection that the committed suites did not all prove. §12 records the corrected, executed probe map with red-at-main / green-at-head results.
 
 ---
 
@@ -165,7 +167,7 @@ This proves the diagnostic-first invariant: a coordinate contradiction halts the
 
 1. **`compat.task6` intent (interim).** Until PR C supplies the final per-command catalog key, `emitEvent` persists a compatibility `dispatchIntent` (`effectKey:'compat.task6'`, `coverageVersion:'compat-task6'`) capturing current socket + decision-notification behavior. External dispatch plans derive from this persisted intent; a null-intent legacy event is an external no-op. This is deliberately honest about coverage — it does **not** claim complete cutover; PR C seals the final per-command coverage via `OutboxCutoverState`.
 2. **`OutboxCutoverState` declared, not yet enforced.** The singleton table exists for PR C's seal; PR B neither reads nor gates on it.
-3. **Bounded scanner passes.** `expandMissingDeliveries` repairs in batches of 200 per pass; a very large backlog is closed over successive relay ticks, not in a single tick. Idempotent and gap-safe, but not instantaneous.
+3. **Bounded scanner passes.** `expandMissingDeliveries` repairs **at most `batchSize` (default 200) events per active consumer per invocation** — a fair, deterministic budget; a very large backlog is closed over successive relay ticks, not in a single tick or a single bootstrap pass. Idempotent and gap-safe, but not instantaneous. (**Round 1** made this real — the original code drained the whole backlog per call; see §12 finding 2.)
 4. **Ordered blocking is intentional.** A dead exact-next ordered row halts that project's ordered cursor until an operator retries — no auto-skip. Operators observe this via `/health` (`outboxBlocked`) and `outbox:status`, and recover via `outbox:retry`.
 
 ---
@@ -198,3 +200,62 @@ for i in $(seq 1 10); do pnpm exec --dir apps/api vitest run --config apps/api/v
 PGHOST=localhost PGUSER=postgres PGPASSWORD=postgres bash apps/api/scripts/upgrade-proof.sh
 PGHOST=localhost PGUSER=postgres PGPASSWORD=postgres bash apps/api/scripts/outbox-migration-abort-proof.sh
 ```
+
+---
+
+## 12. PR B correction round 1 (Codex BLOCKED verdict)
+
+Codex reviewed the merged PR B (this packet's §1–§11) and returned **BLOCKED** with four findings — two runtime corrections and two evidence/documentation corrections. All four were verified reproduce-first against `main @ 4904e116` (the merge of PR #163) before fixing. This section records the correction; it is a **fix-forward** on the merged code — PRs #162/#163 are not rolled back, and **no migration is added** (the `OutboxConsumerCatalog.active` column already exists).
+
+### Findings (all verified real)
+
+| # | Sev | Finding | Verified at `4904e116` |
+|---|---|---|---|
+| 1 | P1 | Inactive consumers still receive and process work — `materializeDeliveries` and the relay's claim/dispatch never checked durable `catalog.active` (only the scanner did) | deactivate a consumer, emit → **1** delivery row created (expected 0); dispatch runs its handler |
+| 2 | P2 | Expansion not actually bounded — `expandMissingDeliveries` looped an inner `for(;;)` until the whole backlog drained; bootstrap awaited the full drain | five owed obligations, `expandMissingDeliveries(2)` returned **5** (expected ≤2) |
+| 3 | P2 | Packet claimed probes that did not exist — the scanner's late consumer was no-op-only (no dispatch/no-op mix proven); ops did not prove inactive/mismatched retry rejection | test bodies inspected (`outbox-scanner.test.ts:85`, `outbox-operations.test.ts:63`) |
+| 4 | P3 | Stale phase memory — `CLAUDE.md` and `docs/ROADMAP.md` still said Phase 2 was "PLANNING / pending review" | doc lines read |
+
+### Fixes
+
+**Finding 1 — `OutboxConsumerCatalog.active` is now authoritative** (no delete/rewrite of any historical event or delivery):
+- `materializeDeliveries` reads the active catalog set **inside the emit transaction** and writes a row only for an active compiled consumer (empty-registry fast path preserved for mocked-prisma unit tests).
+- `runOnce` claims only active consumers; `dispatchOne` re-checks `active` and, on a contract deactivated between claim and handle, **releases the lease back to `pending`** (recoverable, never dead-lettered) and returns `skip`.
+- Inactive **pending** deliveries survive and resume on reactivation.
+
+**Finding 2 — expansion is bounded**: the inner drain loop is removed; each `expandMissingDeliveries(batchSize)` invocation processes **at most `batchSize` events per active consumer**. Bootstrap performs one bounded pass; later relay ticks continue until `NOT EXISTS` returns nothing.
+
+**Finding 3 — evidence corrected**: §3 and §9 above are revised; the new tests below back every retained claim, and the two unprovable/removed claims (exact per-file counts, coordinate-mismatch retry as a *tested* path) are corrected — coordinate mismatch is structurally prevented by the composite FK (proven by `outbox-reliability` + the abort-proof), so the retry mismatch guard is documented as defense-in-depth.
+
+**Finding 4 — docs corrected**: `CLAUDE.md` and `docs/ROADMAP.md` now state Phase 2 review has cleared, the kernel spine + outbox fix-forward (PR A #161, PR B #162/#163) are merged, this correction is in review, and PR C + the extraction tasks remain.
+
+### Correction probe map — red-at-main (`4904e116`) → green-at-head
+
+| Test (file) | At `main` | At head | Kind |
+|---|---|---|---|
+| bounded expansion: `expandMissingDeliveries(2)` over 5 owed → ≤2 per call, drains over passes (`outbox-scanner`) | **FAIL** (creates 5) | pass | finding 2 |
+| deactivated consumer + new event → no delivery row (`outbox-scanner`) | **FAIL** (creates 1) | pass | finding 1 (materialize) |
+| deactivate after creation → no handler, row stays `pending`, reactivation resumes (`outbox-scanner`) | **FAIL** (handler runs, row `succeeded`) | pass | finding 1 (claim/dispatch) |
+| materialize writes no row for a registered-but-inactive consumer (`registry.test.ts`, unit) | **FAIL** | pass | finding 1 (unit) |
+| late **filtered** consumer gets BOTH a dispatch and a no-op row (`outbox-scanner`) | pass | pass | finding 3 (proof gap) |
+| catalog persisted while code absent → repaired by scanner after registration (`outbox-scanner`) | pass | pass | finding 3 (proof gap) |
+| retry rejects an **inactive** contract — no reset, no audit row (`outbox-operations`) | pass | pass | finding 3 (proof gap) |
+
+The three finding-1/2 tests are behavioral reds at `main`; the three finding-3 tests are coverage that closes the packet's proof gaps (correct at `main` and head — the scanner/retry guards already behaved correctly; only the *evidence* was missing).
+
+### Correction gate (at correction head, live PostgreSQL 16)
+
+| Command | Exit | Result |
+|---|---|---|
+| `pnpm --filter api typecheck` | 0 | clean |
+| `pnpm --filter api test` (unit) | 0 | **492 passed** (44 files; +1 registry unit test vs the merged head's 491) |
+| `pnpm --filter api test:integration` | 0 | **238 passed** (26 files; +6 outbox tests vs the 232 in §4) |
+| `pnpm check` | 0 | web **298** + api **492** — boundary + cross-module graph gates green |
+| `upgrade-proof.sh` / `outbox-migration-abort-proof.sh` | 0 / 0 | unchanged — no migration added |
+| `pnpm --filter web test:e2e` (demo Playwright) | 0 | **21 passed** |
+| `pnpm test:e2e:api` (compiled-API Playwright) | 0 | **18 passed** (`OUTBOX_RELAY_AUTOSTART=false`, legacy sender — my change is behavior-neutral here) |
+| four outbox suites ×10 | — | 0 failing / 10 (**36 passed** per run, up from 30) |
+
+> One gate-only test correction was required: `orgs.service.test.ts`'s `createProject` mock now stubs `tx.outboxConsumerCatalog.findMany` (materialize reads the active set inside the emit tx). No production behavior change.
+
+No data rewritten; `DomainEvent` stays append-only; existing deliveries keep their identity/history; only the delivery-planning + relay + scanner logic changed (plus docs + tests). Exact commands, totals and the 10× log are in the PR body.

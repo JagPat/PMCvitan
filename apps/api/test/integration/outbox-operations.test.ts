@@ -107,4 +107,23 @@ describe('PR B Task 4 — outbox operations (live PG)', () => {
     expect(cur.appliedPosition ?? null).toBeNull();
     expect((await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: d0.id } })).status).toBe('pending');
   });
+
+  // PR B correction round 1 (Codex finding 3): prove the inactive-contract retry rejection the packet
+  // claimed but did not test — retry refuses a dead delivery whose catalog contract is inactive and
+  // mutates NOTHING (the row stays dead, no audit row is written). The guard runs inside the retry
+  // transaction, so a throw rolls back before any write.
+  it('retry rejects a delivery whose catalog contract is inactive — no reset, no audit row', async () => {
+    const p = await freshProject();
+    const { eventId } = await emit(p, 'D-off');
+    const d = await deliveryFor(eventId);
+    await t.prisma.outboxDelivery.update({ where: { id: d.id }, data: { status: 'dead', lastError: 'boom' } });
+    await t.prisma.outboxConsumerCatalog.update({ where: { consumer: ORD }, data: { active: false } });
+    try {
+      await expect(ops.retry({ deliveryId: d.id, operatorIdentity: 'op', reason: 'r' })).rejects.toThrow(/active catalog contract/i);
+      expect((await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: d.id } })).status).toBe('dead'); // unchanged
+      expect(await t.prisma.outboxOperatorAction.count()).toBe(0); // no audit mutation
+    } finally {
+      await t.prisma.outboxConsumerCatalog.update({ where: { consumer: ORD }, data: { active: true } }); // restore for later tests
+    }
+  });
 });
