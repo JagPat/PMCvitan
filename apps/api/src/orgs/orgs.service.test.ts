@@ -69,6 +69,9 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     membership: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.memberships.push(data); return data; }) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { eventId: 'evt-test', ...data }; created.events.push(row); return row; }) },
+    // materializeDeliveries reads the active catalog set inside the emit tx (PR B correction — active
+    // is authoritative); the test consumer registered below is active.
+    outboxConsumerCatalog: { findMany: vi.fn(async () => [{ consumer: PROJECT_INIT_TEST_CONSUMER }]) },
     outboxDelivery: {
       createMany: vi.fn(async ({ data }: { data: Record<string, unknown>[] }) => {
         created.deliveries.push(...data);
