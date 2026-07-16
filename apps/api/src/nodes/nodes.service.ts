@@ -1,12 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
-import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { AuthUser } from '../common/auth';
 import type { CreateNodeInput, MoveNodeInput, RenameNodeInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
+import type { EmittedEventMeta } from '../platform/outbox/registry';
 
 /** The location tree is exactly 3 levels: a zone contains rooms, a room contains
  *  elements (the objects, e.g. "Main Door"). A node's kind fixes what its parent
@@ -27,7 +28,8 @@ export class NodesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
-    private readonly realtime: RealtimeGateway,
+    // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
+    private readonly dispatcher: ExternalEffectDispatcher,
   ) {}
 
   /** Create a zone/room/element under the right kind of parent. */
@@ -39,13 +41,13 @@ export class NodesService {
     // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
     const parentIsDraft = parent ? parent.publishedAt === null : false;
     const publishedAt = input.publish && !parentIsDraft ? new Date() : null;
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       const created = await tx.projectNode.create({
         data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order, authorId: user.sub, publishedAt },
       });
-      await emitEvent(tx, { projectId, actor, eventType: 'node.created', entityType: 'ProjectNode', entityId: created.id, payload: { name: input.name, kind: input.kind }, effectKey: 'node.created', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'node.created', entityType: 'ProjectNode', entityId: created.id, payload: { name: input.name, kind: input.kind }, effectKey: 'node.created', dispatch: {} });
     });
-    return this.done(projectId, user);
+    return this.done(projectId, user, [ev]);
   }
 
   /** Publish a private draft location → it (its subtree, and any draft ancestors so the path is
@@ -57,26 +59,26 @@ export class NodesService {
     const ancestors = await this.ancestorIds(nodeId);
     const subtree = await this.subtreeIds(nodeId);
     const branch = [...new Set([...ancestors, ...subtree])];
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       await tx.projectNode.updateMany({
         where: { id: { in: branch }, projectId, publishedAt: null },
         data: { publishedAt: new Date() },
       });
-      await emitEvent(tx, { projectId, actor, eventType: 'node.published', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.published', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'node.published', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.published', dispatch: {} });
     });
     void node;
-    return this.done(projectId, user);
+    return this.done(projectId, user, [ev]);
   }
 
   /** Rename a node (its decisions/children are untouched). */
   async rename(projectId: string, nodeId: string, input: RenameNodeInput, user: AuthUser): Promise<SnapshotDto> {
     await this.requireNode(projectId, nodeId);
     const actor = await resolveActor(this.prisma, user);
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       await tx.projectNode.update({ where: { id: nodeId }, data: { name: input.name } });
-      await emitEvent(tx, { projectId, actor, eventType: 'node.renamed', entityType: 'ProjectNode', entityId: nodeId, payload: { name: input.name }, effectKey: 'node.renamed', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'node.renamed', entityType: 'ProjectNode', entityId: nodeId, payload: { name: input.name }, effectKey: 'node.renamed', dispatch: {} });
     });
-    return this.done(projectId, user);
+    return this.done(projectId, user, [ev]);
   }
 
   /** Reparent (and optionally reorder) a node — kind rules and cycle-safety enforced. */
@@ -89,11 +91,11 @@ export class NodesService {
     }
     const order = input.order ?? (await this.nextOrder(projectId, input.parentId));
     const actor = await resolveActor(this.prisma, user);
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       await tx.projectNode.update({ where: { id: nodeId }, data: { parentId: parent?.id ?? null, order } });
-      await emitEvent(tx, { projectId, actor, eventType: 'node.moved', entityType: 'ProjectNode', entityId: nodeId, payload: { parentId: parent?.id ?? null }, effectKey: 'node.moved', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'node.moved', entityType: 'ProjectNode', entityId: nodeId, payload: { parentId: parent?.id ?? null }, effectKey: 'node.moved', dispatch: {} });
     });
-    return this.done(projectId, user);
+    return this.done(projectId, user, [ev]);
   }
 
   /**
@@ -116,17 +118,17 @@ export class NodesService {
     // become unplaced. No cross-module write here. Decisions are excluded on purpose:
     // their FK stays NO ACTION and the count guard above refuses the delete instead of
     // silently unfiling them.
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       await tx.projectNode.delete({ where: { id: nodeId } }); // children cascade; FKs unfile placed records
-      await emitEvent(tx, { projectId, actor, eventType: 'node.removed', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.removed', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'node.removed', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.removed', dispatch: {} });
     });
-    return this.done(projectId, user);
+    return this.done(projectId, user, [ev]);
   }
 
   // ---- helpers ----
 
-  private async done(projectId: string, user: AuthUser): Promise<SnapshotDto> {
-    this.realtime.notifyChanged(projectId);
+  private async done(projectId: string, user: AuthUser, events: EmittedEventMeta[]): Promise<SnapshotDto> {
+    await this.dispatcher.dispatchCommitted(events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 

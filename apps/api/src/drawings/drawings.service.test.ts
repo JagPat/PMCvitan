@@ -4,9 +4,20 @@ import { Prisma } from '@prisma/client';
 import { DrawingsService } from './drawings.service';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './../media/storage.service';
-import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { IssueDrawingInput } from '../contracts';
+
+/**
+ * PR C Task 2 — the service hands committed events to the single {@link ExternalEffectDispatcher}
+ * instead of calling `notifyChanged`. The push body + roles are in each event's PERSISTED dispatch
+ * intent (built from the external-effect catalog); these tests assert on that. Live-PG per-branch
+ * send behaviour is pinned by test/integration/phase2-consequences.test.ts.
+ */
+type DispatcherMock = { dispatchCommitted: ReturnType<typeof vi.fn> };
+type Intent = { effectKey: string; invalidate: boolean; push?: { body: string; roles: string[] } } | null;
+const dispatchedIntents = (d: DispatcherMock): Intent[] =>
+  ((d.dispatchCommitted.mock.calls.at(-1)?.[0] ?? []) as Array<{ dispatchIntent: Intent }>).map((e) => e.dispatchIntent);
 
 interface Rev { id: string; drawingId: string; projectId?: string; status: string; rev: string; storageKey?: string | null; mime: string; data: Buffer | null; url: string | null; recipientsFrozenAt?: Date | null }
 interface Draw { id: string; projectId: string; number: string; title: string; discipline: string; zone?: string | null; activityId?: string | null; decisionId?: string | null; nodeId?: string | null; publishedAt?: Date | null; authorId?: string | null; revisions: Rev[] }
@@ -162,10 +173,10 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
     presignPut: vi.fn(async () => (storagePutUrl ? { uploadUrl: 'https://cdn.vitan.in/upload?sig=x', url: storagePutUrl } : null)),
     remove: vi.fn(async () => {}),
   };
-  const realtime = { notifyChanged: vi.fn() };
+  const dispatcher = { dispatchCommitted: vi.fn() };
   const snapshot = { build: vi.fn(async () => ({ ok: true })) };
-  const svc = new DrawingsService(prisma as unknown as PrismaService, storage as unknown as StorageService, realtime as unknown as RealtimeGateway, snapshot as unknown as SnapshotService);
-  return { svc, prisma, storage, realtime, snapshot, draws, acks, recipients, audits };
+  const svc = new DrawingsService(prisma as unknown as PrismaService, storage as unknown as StorageService, dispatcher as unknown as ExternalEffectDispatcher, snapshot as unknown as SnapshotService);
+  return { svc, prisma, storage, dispatcher, snapshot, draws, acks, recipients, audits };
 }
 
 const drawUser = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
@@ -174,32 +185,33 @@ const base: IssueDrawingInput = { number: 'A-201', title: 'Living Room Flooring 
 
 describe('DrawingsService.issue', () => {
   it('creates a new register entry as a private draft by default (no team notice)', async () => {
-    const { svc, draws, realtime } = make();
+    const { svc, draws, dispatcher } = make();
     await svc.issue('ambli', drawUser, base);
     expect(draws).toHaveLength(1);
     expect(draws[0].revisions).toHaveLength(1);
     expect(draws[0].revisions[0].status).toBe('for_construction');
     expect(draws[0].publishedAt).toBeNull(); // it's a draft
     expect(draws[0].authorId).toBe('u1'); // owned by its creator
-    expect(realtime.notifyChanged).not.toHaveBeenCalled(); // a draft notifies no one
+    // a draft's dispatched issue event is WEIGHTLESS — no invalidate, no push (reaches no one)
+    expect(dispatchedIntents(dispatcher)).toEqual([{ effectKey: 'drawing.issued_draft', invalidate: false, coverageVersion: expect.any(String) }]);
   });
 
   it('issues in one step when publish is set — publishedAt set, build team notified', async () => {
-    const { svc, draws, realtime } = make();
+    const { svc, draws, dispatcher } = make();
     await svc.issue('ambli', drawUser, { ...base, publish: true });
     expect(draws[0].publishedAt).not.toBeNull();
-    expect(realtime.notifyChanged).toHaveBeenCalledWith('ambli', expect.stringContaining('A-201 Rev A'), ['engineer', 'contractor']);
+    expect(dispatchedIntents(dispatcher)[0]).toMatchObject({ effectKey: 'drawing.issued', invalidate: true, push: { body: expect.stringContaining('A-201 Rev A'), roles: ['engineer', 'contractor'] } });
   });
 
   it('publish() flips a draft drawing live and notifies; re-publishing conflicts', async () => {
-    const { svc, draws, realtime } = make();
+    const { svc, draws, dispatcher } = make();
     await svc.issue('ambli', drawUser, base); // draft
     const id = draws[0].id;
-    expect(realtime.notifyChanged).not.toHaveBeenCalled();
+    expect(dispatchedIntents(dispatcher)[0]).toMatchObject({ effectKey: 'drawing.issued_draft', invalidate: false }); // draft: weightless
 
     await svc.publish('ambli', id, drawUser);
     expect(draws[0].publishedAt).not.toBeNull();
-    expect(realtime.notifyChanged).toHaveBeenCalledWith('ambli', expect.stringContaining('A-201'), ['engineer', 'contractor']);
+    expect(dispatchedIntents(dispatcher)[0]).toMatchObject({ effectKey: 'drawing.published', invalidate: true, push: { body: expect.stringContaining('A-201'), roles: ['engineer', 'contractor'] } });
 
     await expect(svc.publish('ambli', id, drawUser)).rejects.toBeInstanceOf(ConflictException);
   });
@@ -357,7 +369,7 @@ describe('DrawingsService.acknowledge', () => {
   const asUser = (role: string, sub = 'u1') => ({ sub, role, projectId: 'ambli' }) as never;
 
   it('records a build-acknowledgement, audits drawing.ack with actorId, and notifies the PMC', async () => {
-    const { svc, draws, acks, audits, realtime } = make();
+    const { svc, draws, acks, audits, dispatcher } = make();
     await svc.issue('ambli', drawUser, base);
     const revId = draws[0].revisions[0].id;
 
@@ -367,7 +379,7 @@ describe('DrawingsService.acknowledge', () => {
     expect(acks[0].userName).toBe('Suresh & Co'); // real name on the register
     const audit = audits.find((a) => a.action === 'drawing.ack');
     expect(audit?.actorId).toBe('u-con');
-    expect(realtime.notifyChanged).toHaveBeenLastCalledWith('ambli', expect.stringContaining('building to A-201 Rev A'), ['pmc']);
+    expect(dispatchedIntents(dispatcher)[0]).toMatchObject({ effectKey: 'drawing.acknowledged', invalidate: true, push: { body: expect.stringContaining('building to A-201 Rev A'), roles: ['pmc'] } });
   });
 
   it('is idempotent per (revision, user)', async () => {
@@ -486,19 +498,19 @@ describe('DrawingsService — gate remediation (findings 2, 3, 5)', () => {
   });
 
   it('GATE FINDING 3: an ack replay records nothing new — one row, ONE audit, announced once', async () => {
-    const { svc, draws, acks, audits, realtime } = make();
+    const { svc, draws, acks, audits, dispatcher } = make();
     await svc.issue('ambli', drawUser, { ...base, publish: true });
     const revId = draws[0].revisions[0].id;
 
     const first = await svc.acknowledge('ambli', revId, eng);
-    const announced = (realtime.notifyChanged as Mock).mock.calls.length;
+    const announced = (dispatcher.dispatchCommitted as Mock).mock.calls.length;
     const replay = await svc.acknowledge('ambli', revId, eng);
 
     expect(first).toEqual({ ok: true, ackCount: 1 });
     expect(replay).toEqual({ ok: true, ackCount: 1 }); // replay-safe result shape
     expect(acks).toHaveLength(1);
     expect(audits.filter((a) => a.action === 'drawing.ack')).toHaveLength(1); // audit written WITH the ack, once
-    expect((realtime.notifyChanged as Mock).mock.calls.length).toBe(announced); // the replay announced nothing
+    expect((dispatcher.dispatchCommitted as Mock).mock.calls.length).toBe(announced); // the replay dispatched nothing
   });
 
   it('GATE FINDING 5: a one-step publish of an existing draft freezes EVERY live revision', async () => {

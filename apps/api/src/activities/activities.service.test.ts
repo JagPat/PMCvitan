@@ -3,7 +3,7 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ActivitiesService } from './activities.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
-import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { AuthUser } from '../common/auth';
 
@@ -101,8 +101,8 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({ ok: true })) } as unknown as SnapshotService;
-  const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-  const svc = new ActivitiesService(prisma, snapshot, realtime, { today: () => '2026-07-05' }, new InspectionParticipant());
+  const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
+  const svc = new ActivitiesService(prisma, snapshot, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant());
   const user = { sub: 'u-eng', role: 'engineer' } as AuthUser;
   return { svc, prisma, user, inspectionCreates, activityUpdates, audits, activity };
 }

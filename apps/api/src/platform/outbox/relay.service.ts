@@ -67,10 +67,16 @@ export class OutboxRelay implements OnModuleDestroy {
     // catalog.active is authoritative: a deactivated contract is never claimed (its pending rows stay
     // recoverable for reactivation). Read once per pass; the dispatch guard covers a mid-pass change.
     const active = await this.activeConsumerNames();
+    // PR C Task 2 — the background relay owns EXTERNAL dispatch only in `outbox` mode. In
+    // legacy/shadow the immediate ExternalEffectDispatcher is the sole external sender, so the relay
+    // must not also claim external deliveries (that would be a second active sender). Ordered `db`
+    // projection consumers are always the relay's to advance.
+    const relayOwnsExternal = outboxSenderMode() === 'outbox';
     for (let guard = 0; guard < 1000; guard++) {
       let progressed = false;
       for (const consumer of listConsumers()) {
         if (!active.has(consumer.name)) continue; // deactivated contract — do not claim
+        if (consumer.effect === 'external' && !relayOwnsExternal) continue; // dispatcher owns it
         const ids = await this.claim(consumer.name);
         for (const id of ids) {
           const outcome = await this.dispatchOne(id);

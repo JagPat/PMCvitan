@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from './storage.service';
 import { SignedUrlService } from './signed-url.service';
-import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
@@ -12,6 +12,7 @@ import type { SnapshotDto } from '../snapshot/types';
 import type { CreateMediaInput } from '../contracts';
 import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
+import type { EmittedEventMeta } from '../platform/outbox/registry';
 
 export interface UploadedMedia {
   id: string;
@@ -28,7 +29,8 @@ export class MediaService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly signed: SignedUrlService,
-    private readonly realtime: RealtimeGateway,
+    // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
+    private readonly dispatcher: ExternalEffectDispatcher,
     private readonly snapshot: SnapshotService,
   ) {}
 
@@ -72,6 +74,7 @@ export class MediaService {
     const actor = await resolveActor(this.prisma, user);
 
     let row;
+    let ev: EmittedEventMeta | undefined;
     try {
       // the row and its `media.uploaded` event commit together (a replay of the same
       // clientKey lands on the unique below and records NO second event)
@@ -97,7 +100,7 @@ export class MediaService {
             clientKey: input.clientKey ?? null,
           },
         });
-        await emitEvent(tx, { projectId, actor, eventType: 'media.uploaded', entityType: 'Media', entityId: created.id, payload: { kind: input.kind }, effectKey: 'media.uploaded', dispatch: {} });
+        ev = await emitEvent(tx, { projectId, actor, eventType: 'media.uploaded', entityType: 'Media', entityId: created.id, payload: { kind: input.kind }, effectKey: 'media.uploaded', dispatch: {} });
         return created;
       });
     } catch (e) {
@@ -113,7 +116,8 @@ export class MediaService {
       throw e;
     }
 
-    this.realtime.notifyChanged(projectId);
+    // a fresh upload signals its project once; a replay (P2002 return above) never reaches here
+    if (ev) await this.dispatcher.dispatchCommitted([ev]);
     // a short-lived, signed path resolved against the API base by the frontend
     return { id: row.id, url: this.signed.mediaPath(row.id) };
   }
@@ -125,11 +129,11 @@ export class MediaService {
     if (!row || row.projectId !== projectId) throw new NotFoundException('Media not found');
     const resolved = await resolveProjectNode(this.prisma, projectId, nodeId);
     const actor = await resolveActor(this.prisma, user);
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       await tx.media.update({ where: { id }, data: { nodeId: resolved } });
-      await emitEvent(tx, { projectId, actor, eventType: 'media.refiled', entityType: 'Media', entityId: id, payload: { nodeId: resolved }, effectKey: 'media.refiled', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'media.refiled', entityType: 'Media', entityId: id, payload: { nodeId: resolved }, effectKey: 'media.refiled', dispatch: {} });
     });
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -161,11 +165,11 @@ export class MediaService {
     if (!row || row.projectId !== projectId) return false;
     if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
     const actor = await resolveActor(this.prisma, user);
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       await tx.media.delete({ where: { id } });
-      await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id, effectKey: 'media.removed', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id, effectKey: 'media.removed', dispatch: {} });
     });
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return true;
   }
 }

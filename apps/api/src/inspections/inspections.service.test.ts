@@ -3,7 +3,7 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { InspectionsService } from './inspections.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
-import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { ActivityParticipant } from '../activities/activity.participant';
 
 type Item = { id: string; name: string; state: string | null; photos: number; result: string | null; rejected: boolean };
@@ -77,8 +77,8 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
-  const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-  const svc = new InspectionsService(prisma, snapshot, realtime, { today: () => '2026-07-03' }, new ActivityParticipant());
+  const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
+  const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant());
   const user = { sub: 'u1', role: 'engineer', projectId: insp.projectId } as never;
   const pmc = { sub: 'u-pmc', role: 'pmc', projectId: insp.projectId } as never;
   return { svc, prisma, user, pmc, created, audits, insp };
@@ -131,8 +131,8 @@ describe('InspectionsService.create — location spine (nodeId)', () => {
         typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
     } as unknown as PrismaService;
     const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
-    const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-    const svc = new InspectionsService(prisma, snapshot, realtime, { today: () => '2026-07-03' }, new ActivityParticipant());
+    const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
+    const svc = new InspectionsService(prisma, snapshot, dispatcher, { today: () => '2026-07-03' }, new ActivityParticipant());
     const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
     return { svc, user, created };
   }

@@ -3,7 +3,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { NodesService } from './nodes.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
-import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 
 interface Node { id: string; projectId: string; parentId: string | null; name: string; kind: string; order: number; publishedAt?: Date | null; authorId?: string | null }
 
@@ -59,8 +59,8 @@ function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
       typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
-  const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
-  const svc = new NodesService(prisma, snapshot, realtime);
+  const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
+  const svc = new NodesService(prisma, snapshot, dispatcher);
   const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
   return { svc, prisma, nodes, user };
 }

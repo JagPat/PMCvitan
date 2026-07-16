@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Inject, Injectable, NotFoundExc
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
-import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { deriveReadiness, gateReady, readinessReady, type ActivityReadiness, type DecisionStatus, type GateState } from '../domain/transitions';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
@@ -17,6 +17,7 @@ import type { CreateActivityInput, OverrideGateInput, UpdateActivityInput } from
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
+import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 
 @Injectable()
@@ -24,7 +25,8 @@ export class ActivitiesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
-    private readonly realtime: RealtimeGateway,
+    // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
+    private readonly dispatcher: ExternalEffectDispatcher,
     @Inject(CLOCK) private readonly clock: Clock,
     // Task 7 — the inspections module's workflow participant: completion (edge 1)
     // creates the linked closing inspection THROUGH it, so the Inspection write stays
@@ -85,7 +87,7 @@ export class ActivitiesService {
     const order = existing.reduce((m, a) => Math.max(m, a.order), 0) + 1;
     const dates = this.plannedDates(anchor, { start: input.plannedStartDate, end: input.plannedEndDate }, { start: input.plannedStart, end: input.plannedEnd });
     this.assertOrderedWindow(dates.plannedStartDate, dates.plannedEndDate);
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       await tx.activity.create({
         data: {
           id,
@@ -106,9 +108,9 @@ export class ActivitiesService {
         },
       });
       await recordAudit(tx, { projectId, actor, action: 'activity.create', entity: 'Activity', entityId: id });
-      await emitEvent(tx, { projectId, actor, eventType: 'activity.created', entityType: 'Activity', entityId: id, payload: { name: input.name }, effectKey: 'activity.created', dispatch: { push: { body: `Schedule updated: ${input.name} planned` } } });
+      return emitEvent(tx, { projectId, actor, eventType: 'activity.created', entityType: 'Activity', entityId: id, payload: { name: input.name }, effectKey: 'activity.created', dispatch: { push: { body: `Schedule updated: ${input.name} planned` } } });
     });
-    this.realtime.notifyChanged(projectId, `Schedule updated: ${input.name} planned`, ['engineer', 'contractor']);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -148,14 +150,14 @@ export class ActivitiesService {
       'plannedStartDate' in data ? (data.plannedStartDate as Date | null) : a.plannedStartDate,
       'plannedEndDate' in data ? (data.plannedEndDate as Date | null) : a.plannedEndDate,
     );
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       // stored material/team flags and the decision link move readiness (finding 1)
       await lockProjectReadiness(tx, projectId);
       await tx.activity.update({ where: { id: activityId }, data });
       await recordAudit(tx, { projectId, actor, action: 'activity.update', entity: 'Activity', entityId: activityId });
-      await emitEvent(tx, { projectId, actor, eventType: 'activity.updated', entityType: 'Activity', entityId: activityId, effectKey: 'activity.updated', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'activity.updated', entityType: 'Activity', entityId: activityId, effectKey: 'activity.updated', dispatch: {} });
     });
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -164,21 +166,22 @@ export class ActivitiesService {
     const actor = await resolveActor(this.prisma, user);
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
+    let ev: EmittedEventMeta;
     try {
       // Task 7 (edge 5): a drawing outlives its planned activity — the
       // Drawing(projectId, activityId) FK is now ON DELETE SET NULL (activityId), so the
       // database unlinks governed drawings when the activity is deleted. No cross-module
       // write here. Inspections/overrides keep their NO ACTION FKs and still BLOCK the
       // delete (surfaced as the Conflict below), so a referenced activity is never lost.
-      await this.prisma.$transaction(async (tx) => {
+      ev = await this.prisma.$transaction(async (tx) => {
         await tx.activity.delete({ where: { id: activityId } });
         await recordAudit(tx, { projectId, actor, action: 'activity.delete', entity: 'Activity', entityId: activityId });
-        await emitEvent(tx, { projectId, actor, eventType: 'activity.deleted', entityType: 'Activity', entityId: activityId, effectKey: 'activity.deleted', dispatch: {} });
+        return emitEvent(tx, { projectId, actor, eventType: 'activity.deleted', entityType: 'Activity', entityId: activityId, effectKey: 'activity.deleted', dispatch: {} });
       });
     } catch {
       throw new ConflictException('This activity has linked records (inspections/materials) — it can no longer be deleted');
     }
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -238,7 +241,7 @@ export class ActivitiesService {
     // never the prototype's todayDay counter
     const today = this.clock.today(project.timeZone);
     const anchor = toIsoCivilDate(project.scheduleStartDate);
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       await lockProjectReadiness(tx, projectId);
       const a = await tx.activity.findUnique({ where: { id: activityId }, include: { decision: true } });
       if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
@@ -265,9 +268,9 @@ export class ActivitiesService {
       });
       if (count === 0) throw new ConflictException('Activity is not in a startable state');
       await recordAudit(tx, { projectId, actor, action: 'activity.start', entity: 'Activity', entityId: activityId });
-      await emitEvent(tx, { projectId, actor, eventType: 'activity.started', entityType: 'Activity', entityId: activityId, effectKey: 'activity.started', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'activity.started', entityType: 'Activity', entityId: activityId, effectKey: 'activity.started', dispatch: {} });
     });
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -289,8 +292,9 @@ export class ActivitiesService {
     // (INSP-<activityId>-close) is RETIRED; `closing` + `activityId` are the facts
     const existingIds = await this.prisma.inspection.findMany({ select: { id: true } });
     const closingId = nextSeqId('INSP-', existingIds.map((i) => i.id));
+    let ev: EmittedEventMeta;
     try {
-      await this.prisma.$transaction(async (tx) => {
+      ev = await this.prisma.$transaction(async (tx) => {
         // The claim must be attributable to a member who is ACTIVE AT COMMIT TIME
         // (Codex Task 5 gate P1): the membership row is read LOCKED inside THIS
         // transaction, so a concurrent removal has a defined order — it either
@@ -329,7 +333,7 @@ export class ActivitiesService {
         });
         await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${a.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'activity.complete_requested', entity: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } });
-        await emitEvent(tx, { projectId, actor, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId }, effectKey: 'activity.completion_requested', dispatch: { push: { body: `Sign-off requested: ${a.name}` } } });
+        return emitEvent(tx, { projectId, actor, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId }, effectKey: 'activity.completion_requested', dispatch: { push: { body: `Sign-off requested: ${a.name}` } } });
       });
     } catch (e) {
       // a concurrent inspection create took the sequential id — a plain retry resolves it
@@ -339,7 +343,7 @@ export class ActivitiesService {
       throw e;
     }
     // the sign-off is the PMC's decision to make
-    this.realtime.notifyChanged(projectId, `Sign-off requested: ${a.name}`, ['pmc']);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -356,16 +360,16 @@ export class ActivitiesService {
     // supporting evidence must be THIS project's photo (composite FK is the backstop)
     const evidenceMediaId = await resolveProjectRef(this.prisma, 'media', projectId, input.evidenceMediaId, 'evidenceMediaId');
     const actor = await resolveActor(this.prisma, user);
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       // an override moves a gate the moment it exists (finding 1)
       await lockProjectReadiness(tx, projectId);
       await tx.gateOverride.create({
         data: { projectId, activityId, gate: input.gate, state: input.state, reason: input.reason, actorId: actor.actorId, actorName: actor.actorName, evidenceMediaId, expiresAt },
       });
       await recordAudit(tx, { projectId, actor, action: 'activity.override', entity: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state, reason: input.reason, expiresAt: expiresAt.toISOString(), evidenceMediaId } });
-      await emitEvent(tx, { projectId, actor, eventType: 'activity.override_granted', entityType: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state }, effectKey: 'activity.override_granted', dispatch: { push: { body: `Gate override on ${a.name}: ${input.gate} → ${input.state} (expires ${ddMmmYyyy(expiresAt)})` } } });
+      return emitEvent(tx, { projectId, actor, eventType: 'activity.override_granted', entityType: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state }, effectKey: 'activity.override_granted', dispatch: { push: { body: `Gate override on ${a.name}: ${input.gate} → ${input.state} (expires ${ddMmmYyyy(expiresAt)})` } } });
     });
-    this.realtime.notifyChanged(projectId, `Gate override on ${a.name}: ${input.gate} → ${input.state} (expires ${ddMmmYyyy(expiresAt)})`, ['engineer', 'contractor']);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -377,14 +381,14 @@ export class ActivitiesService {
       throw new NotFoundException(`Override ${overrideId} not found`);
     }
     const actor = await resolveActor(this.prisma, user);
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       // revoking restores the derivation instantly — a readiness write (finding 1)
       await lockProjectReadiness(tx, projectId);
       await tx.gateOverride.delete({ where: { id: overrideId } });
       await recordAudit(tx, { projectId, actor, action: 'activity.override_revoke', entity: 'Activity', entityId: activityId, payload: { overrideId, gate: row.gate, state: row.state, reason: row.reason } });
-      await emitEvent(tx, { projectId, actor, eventType: 'activity.override_revoked', entityType: 'Activity', entityId: activityId, effectKey: 'activity.override_revoked', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'activity.override_revoked', entityType: 'Activity', entityId: activityId, effectKey: 'activity.override_revoked', dispatch: {} });
     });
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

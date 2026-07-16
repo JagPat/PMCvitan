@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
-import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { addCivilDays, diffCivilDays, fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import type { AuthUser } from '../common/auth';
 import type { CreatePhaseInput } from '../contracts';
@@ -15,7 +15,8 @@ export class PhasesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
-    private readonly realtime: RealtimeGateway,
+    // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
+    private readonly dispatcher: ExternalEffectDispatcher,
   ) {}
 
   /** PMC adds a phase to group schedule activities under. Real civil dates are
@@ -34,7 +35,7 @@ export class PhasesService {
       throw new BadRequestException('The planned window is reversed: the resolved end date is before the start date');
     }
     const maxOrder = await this.prisma.phase.aggregate({ where: { projectId }, _max: { order: true } });
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       await tx.phase.create({
         data: {
           projectId,
@@ -47,9 +48,9 @@ export class PhasesService {
         },
       });
       await recordAudit(tx, { projectId, actor, action: 'phase.create', entity: 'Phase', entityId: input.name });
-      await emitEvent(tx, { projectId, actor, eventType: 'phase.created', entityType: 'Phase', entityId: input.name, payload: { name: input.name }, effectKey: 'phase.created', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'phase.created', entityType: 'Phase', entityId: input.name, payload: { name: input.name }, effectKey: 'phase.created', dispatch: {} });
     });
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -58,15 +59,15 @@ export class PhasesService {
     const actor = await resolveActor(this.prisma, user);
     const p = await this.prisma.phase.findUnique({ where: { id: phaseId } });
     if (!p || p.projectId !== projectId) throw new NotFoundException('Phase not found');
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       // Edge 6 (Task 7): the Activity(projectId, phaseId) FK is now ON DELETE SET NULL
       // (phaseId), so deleting the phase detaches its activities in the database — no
       // cross-module write here (they render in the flat list once unfiled).
       await tx.phase.delete({ where: { id: phaseId } });
       await recordAudit(tx, { projectId, actor, action: 'phase.delete', entity: 'Phase', entityId: phaseId });
-      await emitEvent(tx, { projectId, actor, eventType: 'phase.removed', entityType: 'Phase', entityId: phaseId, effectKey: 'phase.removed', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'phase.removed', entityType: 'Phase', entityId: phaseId, effectKey: 'phase.removed', dispatch: {} });
     });
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

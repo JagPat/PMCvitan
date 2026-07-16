@@ -74,38 +74,42 @@ const MODEL_OWNER: Record<string, string> = {
   passwordCredentialChallenge: 'SHARED', securityAuditEvent: 'SHARED',
 };
 
-// A push signature per `notifyChanged(` call: 'silent' (signal only), the exact
-// literal target roles joined by ',', or 'dynamic' (roles computed at runtime).
-type PushSig = string;
-
 // The PILLAR mutating services: each owns a domain, writes an EXACT multiset of
-// foreign models (model→count), and emits an EXACT ordered list of `changed`
-// signals. `orgs` is a pillar writer that emits nothing (push:[]).
-// Phase 2 Task 7 UPDATE: every cross-module edge in §1 has been REMOVED from its former
-// writer service — so each pillar service now writes EXACTLY its own domain (foreign: {}).
-// The atomic edges (1–4) route their foreign write through the owning module's leaf
-// WORKFLOW PARTICIPANT (activity.participant / inspection.participant), the referential
-// edges (5–7) became database ON DELETE SET NULL FK actions, and project-init (8) writes
-// through the owning modules' INITIALIZER participants. The manifest-driven boundary check
-// (platform/module-registry/boundary.test.ts) is what now enforces "no foreign write";
-// this classifier keeps the ordered `changed` push signatures + route signatures pinned
-// (both UNCHANGED by Task 7 — no notifyChanged or controller was touched).
-const SERVICES: Record<string, { domain: string; foreign: Record<string, number>; push: PushSig[] }> = {
-  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, push: ['client', 'client', 'pmc,contractor,engineer', 'silent', 'silent'] },
+// foreign models (model→count), and hands its committed events to the SINGLE
+// external-effect sender an EXACT number of times (`dispatch`). `orgs` is a pillar
+// writer whose events are all weightless, so it dispatches nothing (dispatch: 0).
+//
+// Phase 2 Task 7: every cross-module edge in §1 was REMOVED from its former writer service —
+// so each pillar service now writes EXACTLY its own domain (foreign: {}). The atomic edges
+// (1–4) route through the owning module's leaf WORKFLOW PARTICIPANT, the referential edges
+// (5–7) became database ON DELETE SET NULL FK actions, and project-init (8) writes through
+// the owning modules' INITIALIZER participants.
+//
+// PR C Task 2: the in-request `notifyChanged(socket + push)` was REMOVED from every service.
+// External effects (socket invalidation + Web Push) are now sent EXCLUSIVELY through the outbox
+// consumers, invoked by the SINGLE ExternalEffectDispatcher post-commit. So this classifier no
+// longer pins per-call push ROLES (those live in the external-effect CATALOG —
+// platform/external-effects.ts, verified by external-effects.test.ts, and pinned end-to-end per
+// command branch by test/integration/phase2-consequences.test.ts). It instead pins that NO
+// service sends directly and that each command dispatches exactly once. The `dispatch` count
+// mirrors the pre-PR-C `changed`-emission count (one per emitting command); the total is
+// unchanged at 30.
+const SERVICES: Record<string, { domain: string; foreign: Record<string, number>; dispatch: number }> = {
+  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 5 },
   // edge 1 (closing inspection) → inspection.participant; edge 5 (drawing unlink) → FK SET NULL
-  'activities/activities.service.ts': { domain: 'activities', foreign: {}, push: ['engineer,contractor', 'silent', 'silent', 'silent', 'pmc', 'engineer,contractor', 'silent'] },
+  'activities/activities.service.ts': { domain: 'activities', foreign: {}, dispatch: 7 },
   // edge 6 (phase→activity detach) → FK SET NULL (phaseId)
-  'activities/phases.service.ts': { domain: 'phases', foreign: {}, push: ['silent', 'silent'] },
+  'activities/phases.service.ts': { domain: 'phases', foreign: {}, dispatch: 2 },
   // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
-  'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, push: ['engineer', 'silent', 'dynamic'] },
-  'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, push: ['engineer,contractor', 'engineer,contractor', 'silent', 'pmc', 'silent'] },
+  'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 3 },
+  'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, dispatch: 5 },
   // edge 4 (material mismatch block) → activity.participant.blockForMaterialMismatch
-  'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, push: ['pmc,contractor', 'silent', 'silent', 'silent'] },
+  'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, dispatch: 4 },
   // edge 7 (node unfiling across five domains) → FK SET NULL (nodeId); decisions stay a guarded NO ACTION
-  'nodes/nodes.service.ts': { domain: 'nodes', foreign: {}, push: ['silent'] },
-  'media/media.service.ts': { domain: 'media', foreign: {}, push: ['silent', 'silent', 'silent'] },
+  'nodes/nodes.service.ts': { domain: 'nodes', foreign: {}, dispatch: 1 },
+  'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 3 },
   // edge 8 (project-init structure) → node/activity/inspection init participants
-  'orgs/orgs.service.ts': { domain: 'orgs', foreign: {}, push: [] },
+  'orgs/orgs.service.ts': { domain: 'orgs', foreign: {}, dispatch: 0 },
 };
 
 // Services that WRITE but are NOT pillar signal emitters. Documented so a new
@@ -160,41 +164,14 @@ function foreignWrites(src: string, domain: string): Record<string, number> {
   return out;
 }
 
-/** Balanced-paren argument text of every `notifyChanged( … )` call, in source order. */
-function notifyCalls(src: string): { args: string; index: number }[] {
-  const calls: { args: string; index: number }[] = [];
-  const re = /notifyChanged\(/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(src))) {
-    let depth = 1;
-    let i = m.index + m[0].length;
-    const start = i;
-    for (; i < src.length && depth > 0; i++) {
-      if (src[i] === '(') depth++;
-      else if (src[i] === ')') depth--;
-    }
-    calls.push({ args: src.slice(start, i - 1), index: m.index });
-  }
-  return calls;
+/** Source index of every `notifyChanged(` call (the in-request sender that PR C removed). */
+function notifyChangedCalls(src: string): number[] {
+  return [...src.matchAll(/notifyChanged\(/g)].map((m) => m.index);
 }
 
-/** Classify one call's push target: 'silent' | exact roles | 'dynamic'. */
-function pushSig(args: string): PushSig {
-  // split on top-level commas
-  const parts: string[] = [];
-  let depth = 0;
-  let cur = '';
-  for (const ch of args) {
-    if ('([{'.includes(ch)) depth++;
-    else if (')]}'.includes(ch)) depth--;
-    if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; } else cur += ch;
-  }
-  if (cur.trim()) parts.push(cur);
-  if (parts.length <= 1) return 'silent'; // notifyChanged(projectId)
-  const rolesArg = parts[parts.length - 1].trim();
-  const arr = rolesArg.match(/^\[([^\]]*)\]$/);
-  if (!arr) return 'dynamic'; // roles is an identifier computed at runtime
-  return [...arr[1].matchAll(/'([^']+)'/g)].map((r) => r[1]).join(',');
+/** Source index of every `dispatchCommitted(` call, in source order — the single-sender handoff. */
+function dispatchCalls(src: string): { index: number }[] {
+  return [...src.matchAll(/dispatchCommitted\(/g)].map((m) => ({ index: m.index }));
 }
 
 /** Name of the class method enclosing a source index (nearest 2-space-indent header before it). */
@@ -282,22 +259,29 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
     }
   });
 
-  describe('the `changed` signal is emitted with the EXACT ordered signature per pillar service', () => {
+  describe('PR C Task 2 — the in-request sender is gone; each command dispatches through the SINGLE ExternalEffectDispatcher', () => {
+    it('NO pillar service calls notifyChanged (the in-request socket/push sender was removed)', () => {
+      for (const file of Object.keys(SERVICES)) {
+        expect(notifyChangedCalls(read(file)), `${file} still calls notifyChanged — external effects must go through the dispatcher`).toEqual([]);
+      }
+    });
+
     for (const [file, spec] of Object.entries(SERVICES)) {
-      it(`${file}: push signatures === [${spec.push.join(' · ') || '∅'}]`, () => {
+      it(`${file}: dispatchCommitted() called ${spec.dispatch}× (one per emitting command)`, () => {
         const src = read(file);
-        const calls = notifyCalls(src);
-        // ordered push signature (silent / exact roles / dynamic) — catches an added,
-        // removed, reordered or re-targeted emit.
-        expect(calls.map((c) => pushSig(c.args)), `${file} notifyChanged signature list changed`).toEqual(spec.push);
-        // one emit per method — catches a call MOVED into a method that already emits
+        const calls = dispatchCalls(src);
+        // the count mirrors the pre-PR-C `changed`-emission count — catches an added or removed
+        // dispatch site (a command that stopped/started sending external effects).
+        expect(calls.length, `${file} dispatchCommitted call count drifted`).toBe(spec.dispatch);
+        // one dispatch per method — catches a handoff MOVED into a method that already dispatches
         // (which the raw count would miss).
         const methods = calls.map((c) => enclosingMethod(src, c.index));
-        expect(new Set(methods).size, `${file} has two notifyChanged() in one method — a signal was moved`).toBe(calls.length);
+        expect(new Set(methods).size, `${file} has two dispatchCommitted() in one method — a signal was moved`).toBe(calls.length);
       });
     }
-    it('30 `changed` emissions total across the pillar services', () => {
-      const total = Object.keys(SERVICES).reduce((n, f) => n + notifyCalls(read(f)).length, 0);
+
+    it('30 external-effect dispatch sites total across the pillar services (unchanged from the pre-PR-C emission count)', () => {
+      const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
       expect(total).toBe(30);
     });
   });
@@ -326,12 +310,14 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
     });
   });
 
-  describe('read + signal coupling (SnapshotService + RealtimeGateway injected in every emitter)', () => {
-    const emitters = Object.entries(SERVICES).filter(([, s]) => s.push.length > 0).map(([f]) => f);
-    it('all eight emitting services depend on SnapshotService today', () => {
+  describe('read + sender coupling (SnapshotService + ExternalEffectDispatcher injected in every emitter)', () => {
+    const emitters = Object.entries(SERVICES).filter(([, s]) => s.dispatch > 0).map(([f]) => f);
+    it('all eight dispatching services depend on SnapshotService and the single ExternalEffectDispatcher', () => {
       expect(emitters.length).toBe(8);
       for (const file of emitters) {
         expect(read(file), `${file} no longer references SnapshotService`).toContain('SnapshotService');
+        // PR C: the in-request RealtimeGateway is replaced by the single sender in every emitter.
+        expect(read(file), `${file} no longer injects ExternalEffectDispatcher`).toContain('ExternalEffectDispatcher');
       }
     });
   });

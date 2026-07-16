@@ -3,7 +3,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
-import { RealtimeGateway } from '../realtime/realtime.gateway';
+import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import { resolveActor } from '../common/actor';
@@ -17,6 +17,7 @@ import type { CreateInspectionInput, DecideReviewInput, SubmitInspectionInput } 
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
+import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { ActivityParticipant } from '../activities/activity.participant';
 
 /** Corrective work is executed by these roles — a reinspection assignee must hold one
@@ -31,7 +32,8 @@ export class InspectionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
-    private readonly realtime: RealtimeGateway,
+    // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
+    private readonly dispatcher: ExternalEffectDispatcher,
     @Inject(CLOCK) private readonly clock: Clock,
     // Task 7 — the activities module's workflow participant: a CLOSING inspection's
     // decision writes the linked activity's sign-off/revert THROUGH it (edges 2/3), so
@@ -53,7 +55,7 @@ export class InspectionsService {
     const id = nextSeqId('INSP-', existing.map((i) => i.id));
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     const today = this.clock.today(project.timeZone); // real civil date in the project's zone
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       // a LINKED requirement appears the moment it exists — a readiness write (finding 1)
       await lockProjectReadiness(tx, projectId);
       await tx.inspection.create({
@@ -64,10 +66,10 @@ export class InspectionsService {
       }
       await tx.notification.create({ data: { projectId, text: `New checklist issued: ${input.title} — ${input.zone}`, color: '#C08A2D', time: 'just now' } });
       await recordAudit(tx, { projectId, actor, action: 'inspection.create', entity: 'Inspection', entityId: id });
-      await emitEvent(tx, { projectId, actor, eventType: 'inspection.created', entityType: 'Inspection', entityId: id, payload: { title: input.title, zone: input.zone }, effectKey: 'inspection.created', dispatch: { push: { body: `New checklist: ${input.title} — ${input.zone}` } } });
+      return emitEvent(tx, { projectId, actor, eventType: 'inspection.created', entityType: 'Inspection', entityId: id, payload: { title: input.title, zone: input.zone }, effectKey: 'inspection.created', dispatch: { push: { body: `New checklist: ${input.title} — ${input.zone}` } } });
     });
     // the engineer fills it in the field
-    this.realtime.notifyChanged(projectId, `New checklist: ${input.title} — ${input.zone}`, ['engineer']);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -112,7 +114,7 @@ export class InspectionsService {
       }
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    const ev = await this.prisma.$transaction(async (tx) => {
       // submission moves the linked chain's tip state — a readiness write (finding 1)
       await lockProjectReadiness(tx, projectId);
       // write each ROW its own result — (id, inspectionId) keeps containment even
@@ -128,9 +130,9 @@ export class InspectionsService {
       });
       if (count === 0) throw new ConflictException('The inspection changed while submitting — reload and retry');
       await recordAudit(tx, { projectId, actor, action: 'inspection.submit', entity: 'Inspection', entityId: inspectionId });
-      await emitEvent(tx, { projectId, actor, eventType: 'inspection.submitted', entityType: 'Inspection', entityId: inspectionId, effectKey: 'inspection.submitted', dispatch: {} });
+      return emitEvent(tx, { projectId, actor, eventType: 'inspection.submitted', entityType: 'Inspection', entityId: inspectionId, effectKey: 'inspection.submitted', dispatch: {} });
     });
-    this.realtime.notifyChanged(projectId);
+    await this.dispatcher.dispatchCommitted([ev]);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -155,14 +157,18 @@ export class InspectionsService {
     const activity = insp.closing && insp.activityId
       ? await this.prisma.activity.findUnique({ where: { id: insp.activityId } })
       : null;
+    // The push body still drives the in-transaction Notification row + the emit dispatch body; the
+    // TARGET ROLES now come from the external-effect catalog (per effectKey), not a local variable.
     let pushBody: string;
-    let pushRoles: string[];
+    // Every emit this command commits, in causal order, handed to the single sender post-commit. A
+    // multi-event decide (approve+signoff, reject+reinspection+signoff-reversal) invalidates the
+    // socket ONCE (the dispatcher dedups per project) and pushes exactly the one body-bearing event.
+    const events: EmittedEventMeta[] = [];
 
     if (input.approve) {
       pushBody = activity
         ? `Signed off: ${activity.name} is complete.`
         : 'Inspection approved. Contractor and client notified.';
-      pushRoles = ['contractor', 'client'];
       const project = activity ? await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } }) : null;
       await this.prisma.$transaction(async (tx) => {
         // deciding closes the linked chain's tip — a readiness write (finding 1)
@@ -183,8 +189,9 @@ export class InspectionsService {
         await tx.notification.create({ data: { projectId, text: pushBody, color: '#3F7A54', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'inspection.approve', entity: 'Inspection', entityId: inspectionId });
         const approved = await emitEvent(tx, { projectId, actor, eventType: 'inspection.approved', entityType: 'Inspection', entityId: inspectionId, effectKey: 'inspection.approved', dispatch: activity ? {} : { push: { body: 'Inspection approved. Contractor and client notified.' } } });
+        events.push(approved);
         // A CLOSING inspection's approval CAUSES the activity sign-off — one causal chain.
-        if (activity) await emitEvent(tx, { projectId, actor, eventType: 'activity.signed_off', entityType: 'Activity', entityId: activity.id, causedByEventId: approved.eventId, payload: { closingInspectionId: inspectionId }, effectKey: 'activity.signed_off', dispatch: { push: { body: `Signed off: ${activity.name} is complete.` } } });
+        if (activity) events.push(await emitEvent(tx, { projectId, actor, eventType: 'activity.signed_off', entityType: 'Activity', entityId: activity.id, causedByEventId: approved.eventId, payload: { closingInspectionId: inspectionId }, effectKey: 'activity.signed_off', dispatch: { push: { body: `Signed off: ${activity.name} is complete.` } } }));
       });
     } else {
       // gate finding 3: rejection names exact ROWS. An id that matches none of this
@@ -224,7 +231,6 @@ export class InspectionsService {
       const childItems = rejectedItems.length > 0 ? rejectedItems.map((it) => it.name) : ['Work complete and acceptable'];
 
       pushBody = `Re-inspection ${childId} created for ${childItems.length} item(s) — due ${ddMmmYyyy(dueDate)}.`;
-      pushRoles = ['engineer']; // the assignee performs the re-inspection
 
       try {
         await this.prisma.$transaction(async (tx) => {
@@ -291,8 +297,9 @@ export class InspectionsService {
           await recordAudit(tx, { projectId, actor, action: 'inspection.reject', entity: 'Inspection', entityId: inspectionId, payload: { reinspectionId: childId, assigneeId, dueDate: dueIso } });
           // The rejection CAUSES both the linked reinspection and (for a closing) the sign-off reversal.
           const rejected = await emitEvent(tx, { projectId, actor, eventType: 'inspection.rejected', entityType: 'Inspection', entityId: inspectionId, payload: { reinspectionId: childId, assigneeId }, effectKey: 'inspection.rejected', dispatch: {} });
-          await emitEvent(tx, { projectId, actor, eventType: 'inspection.reinspection_created', entityType: 'Inspection', entityId: childId, causedByEventId: rejected.eventId, payload: { reinspectionOf: inspectionId, assigneeId }, effectKey: 'inspection.reinspection_created', dispatch: { push: { body: pushBody } } });
-          if (activity) await emitEvent(tx, { projectId, actor, eventType: 'activity.signoff_rejected', entityType: 'Activity', entityId: activity.id, causedByEventId: rejected.eventId, payload: { closingInspectionId: inspectionId, reinspectionId: childId }, effectKey: 'activity.signoff_rejected', dispatch: {} });
+          events.push(rejected);
+          events.push(await emitEvent(tx, { projectId, actor, eventType: 'inspection.reinspection_created', entityType: 'Inspection', entityId: childId, causedByEventId: rejected.eventId, payload: { reinspectionOf: inspectionId, assigneeId }, effectKey: 'inspection.reinspection_created', dispatch: { push: { body: pushBody } } }));
+          if (activity) events.push(await emitEvent(tx, { projectId, actor, eventType: 'activity.signoff_rejected', entityType: 'Activity', entityId: activity.id, causedByEventId: rejected.eventId, payload: { closingInspectionId: inspectionId, reinspectionId: childId }, effectKey: 'activity.signoff_rejected', dispatch: {} }));
         });
       } catch (e) {
         // the one-reinspection-child index fired — a concurrent reject already created it
@@ -302,7 +309,7 @@ export class InspectionsService {
         throw e;
       }
     }
-    this.realtime.notifyChanged(projectId, pushBody, pushRoles);
+    await this.dispatcher.dispatchCommitted(events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

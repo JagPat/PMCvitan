@@ -3,7 +3,6 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
-import { RealtimeGateway } from '../../src/realtime/realtime.gateway';
 import { registerConsumer, unregisterConsumer, getConsumer, syncConsumerCatalog, type OutboxConsumer } from '../../src/platform/outbox/registry';
 import { SOCKET_CONSUMER, PUSH_CONSUMER, makeSocketConsumer, makePushConsumer } from '../../src/platform/outbox/consumers';
 import type { Actor } from '../../src/common/actor';
@@ -236,44 +235,30 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
 });
 
 /**
- * Exactly one external SENDER at all times across the cutover modes: the legacy in-request path
- * sends in `legacy`/`shadow` and the outbox consumers send only in `outbox` — never both.
+ * PR C Task 2 — the external outbox consumers are now the SOLE senders: a consumer SENDS whenever
+ * its `handle` is invoked, in EVERY mode. Exactly-one-sender is enforced BEFORE invocation — the
+ * immediate {@link ExternalEffectDispatcher} invokes them in `legacy`/`shadow`, the background relay
+ * in `outbox`, never both (see external-effect-dispatcher.test.ts + the relay's runOnce gate). The
+ * old in-request `notifyChanged` is gone.
  */
-describe('Phase 2 Task 6 — exactly one external sender across the cutover (unit)', () => {
+describe('PR C Task 2 — the outbox consumers are the sole senders (unit)', () => {
   const modes = ['legacy', 'shadow', 'outbox'] as const;
 
-  const meta = { eventId: 'e', eventType: 'decision.approved', projectId: 'p', organizationId: 'o', streamPosition: 0n, entityType: 'Decision', entityId: 'D', payload: null };
+  const meta = { eventId: 'e', eventType: 'decision.approved', projectId: 'p', organizationId: 'o', streamPosition: 0n, entityType: 'Decision', entityId: 'D', payload: null, dispatchIntent: { effectKey: 'decision.approved', coverageVersion: 'v', invalidate: true, push: { body: 'b', roles: ['client'] } } };
 
-  it.each(modes)('the in-request notifyChanged sends iff NOT outbox (mode=%s)', (mode) => {
-    process.env.OUTBOX_SENDER_MODE = mode;
-    try {
-      const emit = vi.fn();
-      const server = { to: vi.fn(() => ({ emit })) };
-      const push = { notifyProject: vi.fn(async () => {}) };
-      const gw = new RealtimeGateway(push as never);
-      (gw as unknown as { server: unknown }).server = server;
-      gw.notifyChanged('p', 'body', ['client']);
-      const shouldSend = mode !== 'outbox';
-      expect(emit).toHaveBeenCalledTimes(shouldSend ? 1 : 0);
-      expect(push.notifyProject).toHaveBeenCalledTimes(shouldSend ? 1 : 0);
-    } finally {
-      delete process.env.OUTBOX_SENDER_MODE;
-    }
-  });
-
-  it.each(modes)('the outbox socket + push consumers send iff outbox (mode=%s)', async (mode) => {
+  it.each(modes)('the socket + push consumers SEND whenever handle() is invoked — mode-independent (mode=%s)', async (mode) => {
     process.env.OUTBOX_SENDER_MODE = mode;
     try {
       const emitChanged = vi.fn();
       const notifyProject = vi.fn(async () => {});
-      const socket = makeSocketConsumer({ emitChanged, recordShadowIntent: vi.fn() } as never);
+      const socket = makeSocketConsumer({ emitChanged } as never);
       const push = makePushConsumer({ notifyProject } as never);
       const dispatch = { delivery: { id: 'd', consumer: '', projectId: 'p', streamPosition: 0n, payload: { body: 'b', roles: ['client'] } }, meta, senderMode: mode };
       await socket.handle(dispatch as never);
       await push.handle(dispatch as never);
-      const shouldSend = mode === 'outbox';
-      expect(emitChanged).toHaveBeenCalledTimes(shouldSend ? 1 : 0);
-      expect(notifyProject).toHaveBeenCalledTimes(shouldSend ? 1 : 0);
+      // WHO invokes handle is gated by mode+lease elsewhere; the handle itself always sends once.
+      expect(emitChanged).toHaveBeenCalledTimes(1);
+      expect(notifyProject).toHaveBeenCalledTimes(1);
     } finally {
       delete process.env.OUTBOX_SENDER_MODE;
     }
