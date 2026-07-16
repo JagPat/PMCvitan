@@ -3,8 +3,11 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
+import { OutboxOperationsService } from '../../src/platform/outbox/outbox-operations.service';
+import { OutboxBootstrap } from '../../src/platform/outbox/outbox.bootstrap';
 import { registerConsumer, unregisterConsumer, getConsumer, syncConsumerCatalog, type OutboxConsumer } from '../../src/platform/outbox/registry';
 import { SOCKET_CONSUMER, PUSH_CONSUMER, makeSocketConsumer, makePushConsumer } from '../../src/platform/outbox/consumers';
+import { effectCoverageVersion } from '../../src/platform/external-effects';
 import type { Actor } from '../../src/common/actor';
 
 /**
@@ -271,5 +274,159 @@ describe('PR C Task 2 — the outbox consumers are the sole senders (unit)', () 
     expect(socket?.kind).toBe('unordered');
     expect(socket?.effect).toBe('external');
     expect(push?.effect).toBe('external');
+  });
+});
+
+/**
+ * PR C Task 3 — the audited external-effect cutover SEAL, proven against live PostgreSQL.
+ *
+ * The seal is a FORWARD gate: it pins the compiled coverage version, neutralizes the pre-cutover
+ * external deliveries (never deleting a row or payload), and — once present — makes outbox-mode
+ * startup require that exact coverage and the DB reject any future null-intent event. Step-1 probes.
+ */
+describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
+  let t: TestApp;
+  let f: TwoProjectFixture;
+  let ops: OutboxOperationsService;
+  let boot: OutboxBootstrap;
+  let projSeq = 0;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+    f = await createTwoProjectFixture(t.prisma);
+    ops = t.app.get(OutboxOperationsService);
+    boot = t.app.get(OutboxBootstrap);
+  });
+  afterAll(async () => {
+    await t?.prisma.$executeRawUnsafe('DELETE FROM "OutboxCutoverState"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await f?.cleanup();
+    await t?.close();
+  });
+  afterEach(async () => {
+    delete process.env.OUTBOX_SENDER_MODE;
+    // The seal is a singleton whose presence arms the null-intent trigger — always clear it so a
+    // later test's raw legacy insert is not spuriously rejected.
+    await t.prisma.$executeRawUnsafe('DELETE FROM "OutboxCutoverState"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t.prisma.outboxOperatorAction.deleteMany({ where: { action: 'seal-external' } });
+    await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-seal-' } } });
+  });
+
+  const freshProject = async (): Promise<string> => {
+    const id = `it-seal-${Date.now() % 1e6}-${projSeq++}`;
+    await t.prisma.project.create({
+      data: { id, orgId: f.orgA.id, name: id, short: 'O', descriptor: '', stage: 'x', siteCode: 'O', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+    });
+    return id;
+  };
+
+  /** Raw-insert a pre-cutover DomainEvent (null or a given coverage) with BOTH external deliveries —
+   *  the socket delivery in the given `status` (the seal's target), and the push delivery as an
+   *  already-`noop`/`succeeded` row (so the seal's gap check sees no missing consumer). Bypasses
+   *  emitEvent so we can pin exactly the legacy shapes the seal must neutralize / leave alone. */
+  const rawEventWithSocketDelivery = async (
+    projectId: string, evId: string, delId: string, pos: number,
+    coverage: string | null, status: 'pending' | 'leased' = 'pending', payload = '{"legacy":"body"}',
+  ): Promise<void> => {
+    const intent = coverage === null ? 'NULL' : `'${JSON.stringify({ effectKey: 'compat.task6', coverageVersion: coverage, invalidate: true })}'::jsonb`;
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
+      `VALUES ('${evId}','decision.approved',1,'${f.orgA.id}','${projectId}',${pos},'system','system:seed','Decision','D',${intent})`,
+    );
+    const leaseCols = status === 'leased' ? ',"leaseOwner","leaseExpiresAt"' : '';
+    const leaseVals = status === 'leased' ? ", 'sender-x', now() + interval '30 seconds'" : '';
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","payload","updatedAt"${leaseCols}) ` +
+      `VALUES ('${delId}','${evId}','${projectId}','socket.invalidation','unordered','dispatch',${pos},'${status}','${payload}'::jsonb, now()${leaseVals})`,
+    );
+    // the push delivery is a recorded no-op (a compat/legacy event carries no push) — present so the
+    // seal's gap check sees every active external consumer covered for this event.
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "OutboxDelivery" ("id","eventId","projectId","consumer","consumerKind","deliveryAction","streamPosition","status","updatedAt") ` +
+      `VALUES ('${delId}-push','${evId}','${projectId}','webpush.notify','unordered','noop',${pos},'succeeded', now())`,
+    );
+  };
+
+  const seal = () => ops.sealExternal({ operatorIdentity: 'ops@vitan.in', reason: 'cutover' });
+
+  it('the seal is REFUSED in outbox mode — outbox needs an existing seal to start, so it cannot mint the first one', async () => {
+    process.env.OUTBOX_SENDER_MODE = 'outbox';
+    await expect(seal()).rejects.toThrow(/legacy or shadow mode/);
+    expect(await t.prisma.outboxCutoverState.findUnique({ where: { key: 'singleton' } })).toBeNull();
+  });
+
+  it('startup GATE: outbox mode is blocked when no seal exists', async () => {
+    process.env.OUTBOX_SENDER_MODE = 'outbox';
+    await expect(boot.onModuleInit()).rejects.toThrow(/requires an external-effect cutover seal/);
+  });
+
+  it('startup GATE: outbox mode is blocked when the seal coverage is STALE (≠ compiled catalog)', async () => {
+    await t.prisma.outboxCutoverState.create({ data: { key: 'singleton', coverageVersion: 'stale-coverage', sealedBy: 'ops', reason: 'x' } });
+    process.env.OUTBOX_SENDER_MODE = 'outbox';
+    await expect(boot.onModuleInit()).rejects.toThrow(/!= compiled catalog/);
+  });
+
+  it('startup GATE: outbox mode STARTS when the seal coverage equals the compiled catalog', async () => {
+    await seal(); // legacy mode (default) — pins the compiled coverage
+    expect((await t.prisma.outboxCutoverState.findUniqueOrThrow({ where: { key: 'singleton' } })).coverageVersion).toBe(effectCoverageVersion());
+    process.env.OUTBOX_SENDER_MODE = 'outbox';
+    await expect(boot.onModuleInit()).resolves.toBeUndefined();
+  });
+
+  it('the seal NEUTRALIZES a non-current-coverage pending external delivery (noop/succeeded, payload preserved) and LEAVES a current-coverage one alone', async () => {
+    const p = await freshProject();
+    // a PR-B compat delivery (old coverage) — must be neutralized
+    await rawEventWithSocketDelivery(p, 'seal-old-ev', 'seal-old-del', 100, 'compat-old', 'pending', '{"old":"push"}');
+    // a current-coverage delivery — must be LEFT pending (the relay will send it in outbox mode)
+    await rawEventWithSocketDelivery(p, 'seal-cur-ev', 'seal-cur-del', 101, effectCoverageVersion(), 'pending', '{"cur":"push"}');
+
+    const res = await seal();
+    expect(res.neutralized).toBe(1);
+    expect(res.coverageVersion).toBe(effectCoverageVersion());
+
+    const old = await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: 'seal-old-del' } });
+    expect(old.status).toBe('succeeded');
+    expect(old.deliveryAction).toBe('noop');
+    expect(old.payload, 'the historical push body is PRESERVED, never cleared').toEqual({ old: 'push' });
+    // rows and events are never deleted
+    expect(await t.prisma.domainEvent.count({ where: { projectId: p } })).toBe(2);
+
+    const cur = await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: 'seal-cur-del' } });
+    expect(cur.status, 'a current-coverage delivery is not neutralized').toBe('pending');
+    expect(cur.deliveryAction).toBe('dispatch');
+  });
+
+  it('the seal ABORTS (no state change) when a legacy target delivery is LEASED by a sender', async () => {
+    const p = await freshProject();
+    await rawEventWithSocketDelivery(p, 'seal-leased-ev', 'seal-leased-del', 200, 'compat-old', 'leased');
+    await expect(seal()).rejects.toThrow(/leased by a sender/);
+    // nothing changed — no seal row, the leased delivery is untouched
+    expect(await t.prisma.outboxCutoverState.findUnique({ where: { key: 'singleton' } })).toBeNull();
+    expect((await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: 'seal-leased-del' } })).status).toBe('leased');
+  });
+
+  it('after the seal the DB trigger REJECTS a null-intent event, but ACCEPTS a valid current-intent event', async () => {
+    const p = await freshProject();
+    await seal();
+    const intent = JSON.stringify({ effectKey: 'decision.approved', coverageVersion: effectCoverageVersion(), invalidate: true });
+    // null intent → refused by the seal trigger
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId") ` +
+        `VALUES ('seal-null-after','decision.approved',1,'${f.orgA.id}','${p}',300,'system','system:seed','Decision','D')`,
+      ),
+    ).rejects.toThrow(/cutover is sealed/);
+    // a valid current-intent event still commits
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DomainEvent" ("eventId","eventType","payloadVersion","organizationId","projectId","streamPosition","actorKind","systemActor","entityType","entityId","dispatchIntent") ` +
+      `VALUES ('seal-ok-after','decision.approved',1,'${f.orgA.id}','${p}',301,'system','system:seed','Decision','D','${intent}'::jsonb)`,
+    );
+    expect(await t.prisma.domainEvent.findUnique({ where: { eventId: 'seal-ok-after' } })).not.toBeNull();
+  });
+
+  it('the seal requires an operator identity and a reason (audited action)', async () => {
+    await expect(ops.sealExternal({ operatorIdentity: '', reason: 'x' })).rejects.toThrow(/operator identity/);
+    await expect(ops.sealExternal({ operatorIdentity: 'ops', reason: '' })).rejects.toThrow(/reason/);
   });
 });

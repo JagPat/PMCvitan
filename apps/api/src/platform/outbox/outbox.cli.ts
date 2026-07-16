@@ -33,8 +33,14 @@ async function main(): Promise<void> {
       const f = parseFlags(process.argv.slice(3));
       const { auditId } = await ops.retry({ deliveryId: f.delivery ?? '', operatorIdentity: f.operator ?? '', reason: f.reason ?? '' });
       process.stdout.write(JSON.stringify({ ok: true, action: 'retry', delivery: f.delivery, auditId }) + '\n');
+    } else if (cmd === 'seal-external') {
+      // PR C Task 3 — the audited external-effect cutover. Run in legacy/shadow BEFORE switching a
+      // process to OUTBOX_SENDER_MODE=outbox (whose startup then requires this exact coverage seal).
+      const f = parseFlags(process.argv.slice(3));
+      const { coverageVersion, auditId, neutralized } = await ops.sealExternal({ operatorIdentity: f.operator ?? '', reason: f.reason ?? '' });
+      process.stdout.write(JSON.stringify({ ok: true, action: 'seal-external', coverageVersion, neutralized, auditId }) + '\n');
     } else {
-      process.stderr.write('usage: outbox <status | retry --delivery <uuid> --operator <identity> --reason <text>>\n');
+      process.stderr.write('usage: outbox <status | retry --delivery <uuid> --operator <identity> --reason <text> | seal-external --operator <identity> --reason <text>>\n');
       process.exitCode = 2;
     }
   } catch (e) {

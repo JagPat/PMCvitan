@@ -3,8 +3,9 @@ import { PrismaService } from '../../prisma.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { PushService } from '../../push/push.service';
 import { OutboxRelay } from './relay.service';
-import { registerConsumer, syncConsumerCatalog } from './registry';
+import { registerConsumer, syncConsumerCatalog, outboxSenderMode } from './registry';
 import { makeSocketConsumer, makePushConsumer } from './consumers';
+import { effectCoverageVersion } from '../external-effects';
 
 /**
  * Phase 2 Task 6 — outbox lifecycle bootstrap. At app start it registers the socket + push
@@ -36,6 +37,22 @@ export class OutboxBootstrap implements OnModuleInit {
     // correctness fault, not a warn-and-continue. The relay also re-runs this every pass.
     const created = await this.relay.expandMissingDeliveries();
     if (created) this.log.log(`delivery expansion created ${created} outbox deliveries`);
+    // PR C Task 3 — the outbox-mode startup gate. In `outbox` mode the background relay becomes the
+    // SOLE external sender, so it must not start until the external-effect cutover is SEALED at the
+    // EXACT compiled coverage version — otherwise the relay could re-send pre-cutover history or send
+    // under a catalog the seal never covered. `legacy`/`shadow` stay available for a forward deploy
+    // and a later reseal, so this gate fires only for `outbox`.
+    if (outboxSenderMode() === 'outbox') {
+      const seal = await this.prisma.outboxCutoverState.findUnique({ where: { key: 'singleton' } });
+      const compiled = effectCoverageVersion();
+      if (!seal) {
+        throw new Error('OUTBOX_SENDER_MODE=outbox requires an external-effect cutover seal — run `outbox:seal-external` in legacy/shadow mode first');
+      }
+      if (seal.coverageVersion !== compiled) {
+        throw new Error(`OUTBOX_SENDER_MODE=outbox seal coverage ${seal.coverageVersion} != compiled catalog ${compiled} — reseal (in legacy/shadow) after the external-effect catalog changed`);
+      }
+      this.log.log(`outbox-mode cutover seal verified at coverage ${compiled}`);
+    }
     this.relay.start();
   }
 }

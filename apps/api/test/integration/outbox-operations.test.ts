@@ -5,6 +5,7 @@ import { emitEvent } from '../../src/platform/events';
 import { OutboxOperationsService } from '../../src/platform/outbox/outbox-operations.service';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { registerConsumer, unregisterConsumer, syncConsumerCatalog, type OutboxConsumer } from '../../src/platform/outbox/registry';
+import { effectCoverageVersion } from '../../src/platform/external-effects';
 import type { Actor } from '../../src/common/actor';
 
 /**
@@ -124,6 +125,22 @@ describe('PR B Task 4 — outbox operations (live PG)', () => {
       expect(await t.prisma.outboxOperatorAction.count()).toBe(0); // no audit mutation
     } finally {
       await t.prisma.outboxConsumerCatalog.update({ where: { consumer: ORD }, data: { active: true } }); // restore for later tests
+    }
+  });
+
+  // PR C Task 3 — the seal is an AUDITED operator action, keyed on the compiled coverage version.
+  it('sealExternal pins the compiled coverage + writes a seal-external operator audit; input is required', async () => {
+    await expect(ops.sealExternal({ operatorIdentity: '', reason: 'x' })).rejects.toThrow(/operator identity/);
+    await expect(ops.sealExternal({ operatorIdentity: 'op', reason: '' })).rejects.toThrow(/reason/);
+    try {
+      const res = await ops.sealExternal({ operatorIdentity: 'ops@vitan.in', reason: 'phase-2 cutover' });
+      expect(res.coverageVersion).toBe(effectCoverageVersion());
+      const audit = await t.prisma.outboxOperatorAction.findUniqueOrThrow({ where: { id: res.auditId } });
+      expect(audit.action).toBe('seal-external');
+      expect(audit.operatorIdentity).toBe('ops@vitan.in');
+      expect((await t.prisma.outboxCutoverState.findUniqueOrThrow({ where: { key: 'singleton' } })).coverageVersion).toBe(effectCoverageVersion());
+    } finally {
+      await t.prisma.$executeRawUnsafe('DELETE FROM "OutboxCutoverState"'); // clear the singleton so later files' raw legacy inserts aren't rejected
     }
   });
 });
