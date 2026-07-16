@@ -252,6 +252,8 @@ The three finding-1/2 tests are behavioral reds at `main`; the three finding-3 t
 | `pnpm --filter api test:integration` | 0 | **238 passed** (26 files; +6 outbox tests vs the 232 in §4) |
 | `pnpm check` | 0 | web **298** + api **492** — boundary + cross-module graph gates green |
 | `upgrade-proof.sh` / `outbox-migration-abort-proof.sh` | 0 / 0 | unchanged — no migration added |
+| `pnpm --filter web test:e2e` (demo Playwright) | 0 | **21 passed** |
+| `pnpm test:e2e:api` (compiled-API Playwright) | 0 | **18 passed** (`OUTBOX_RELAY_AUTOSTART=false`, legacy sender — my change is behavior-neutral here) |
 | four outbox suites ×10 | — | 0 failing / 10 (**36 passed** per run, up from 30) |
 
 > One gate-only test correction was required: `orgs.service.test.ts`'s `createProject` mock now stubs `tx.outboxConsumerCatalog.findMany` (materialize reads the active set inside the emit tx). No production behavior change.
