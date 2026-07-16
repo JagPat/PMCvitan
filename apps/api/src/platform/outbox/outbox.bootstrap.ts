@@ -31,10 +31,11 @@ export class OutboxBootstrap implements OnModuleInit {
     // drift or a failed sync ABORTS boot (never downgraded to a warning): an unsynced catalog would
     // let deliveries reference an undeclared contract, and a silent skip would lose the obligation.
     await syncConsumerCatalog(this.prisma);
-    // Repair any events that predate a consumer's registration (rolling deploy / legacy DB). Also
-    // fail-closed — a lost delivery obligation is a correctness fault, not a warn-and-continue.
-    const created = await this.relay.backfillPreCutover();
-    if (created) this.log.log(`pre-cutover backfill created ${created} outbox deliveries`);
+    // Expand any missing delivery obligations before the relay starts (events predating a consumer's
+    // registration, a rolling-deploy gap, a legacy DB). Fail-closed — a lost obligation is a
+    // correctness fault, not a warn-and-continue. The relay also re-runs this every pass.
+    const created = await this.relay.expandMissingDeliveries();
+    if (created) this.log.log(`delivery expansion created ${created} outbox deliveries`);
     this.relay.start();
   }
 }

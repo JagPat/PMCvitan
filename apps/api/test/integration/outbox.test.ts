@@ -223,13 +223,13 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
     await t.prisma.outboxDelivery.deleteMany({ where: { consumer: PROJECTION, eventId } });
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: PROJECTION, eventId } })).toBe(0);
 
-    const created = await relay.backfillPreCutover();
+    const created = await relay.expandMissingDeliveries();
     expect(created).toBeGreaterThanOrEqual(1);
     const repaired = await deliveryFor(PROJECTION, eventId);
     expect(repaired.status).toBe('pending');
     expect(repaired.streamPosition).toBe(0n);
     // idempotent — a second backfill creates no duplicate (the unique (eventId, consumer) holds)
-    await relay.backfillPreCutover();
+    await relay.expandMissingDeliveries();
     expect(await t.prisma.outboxDelivery.count({ where: { consumer: PROJECTION, eventId } })).toBe(1);
   });
 });
