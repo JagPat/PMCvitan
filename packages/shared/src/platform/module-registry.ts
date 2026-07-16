@@ -70,7 +70,15 @@ export interface ModuleManifest {
   readonly commands: readonly string[];
   /** Read query types this module answers. */
   readonly queries: readonly string[];
-  /** Ordered HTTP route signatures (`Post('x')`) the module's controller declares. */
+  /**
+   * The fully-qualified mutating HTTP routes the module's controller(s) declare, each as
+   * a canonical `"<METHOD> /fully/qualified/path"` string (e.g.
+   * `"POST /projects/:projectId/decisions"`). These are derived from Nest's controller +
+   * handler metadata by the boundary analyzer (`boundary-analyzer.ts`), so a fully-qualified
+   * route is GLOBALLY UNIQUE — {@link validateRegistry} rejects a route contributed by two
+   * modules, and the analyzer proves this set equals the routes the compiled controllers
+   * actually expose.
+   */
   readonly routes: readonly string[];
   /** RBAC roles the module's commands reference (validated against the known-role set). */
   readonly permissions: readonly string[];
@@ -145,16 +153,27 @@ export function validateRegistry(
     }
   }
 
-  // unique command contributions across the registry. (Route SIGNATURES like `Post()`
-  // legitimately repeat across controllers — they are unique only under a controller
-  // base path — so routes are declared for manifest-driven nav + documentation, not
-  // globally uniqueness-checked; commands are module-prefixed and MUST be unique.)
+  // unique command contributions across the registry. Commands are module-prefixed and
+  // MUST be unique.
   const commandOwner = new Map<string, string>();
   for (const m of manifests) {
     for (const c of m.commands) {
       const prior = commandOwner.get(c);
       if (prior) errors.push({ code: 'duplicate-command', message: `Command "${c}" is contributed by both "${prior}" and "${m.id}"` });
       else commandOwner.set(c, m.id);
+    }
+  }
+
+  // unique route contributions across the registry. Fully-qualified `"<METHOD> /path"`
+  // routes ARE globally unique (unlike the old bare decorator signatures like `Post()`),
+  // so a route claimed by two modules is a boundary drift — the boundary analyzer proves
+  // this same set against the compiled controllers.
+  const routeOwner = new Map<string, string>();
+  for (const m of manifests) {
+    for (const r of m.routes) {
+      const prior = routeOwner.get(r);
+      if (prior) errors.push({ code: 'duplicate-route', message: `Route "${r}" is contributed by both "${prior}" and "${m.id}"` });
+      else routeOwner.set(r, m.id);
     }
   }
 

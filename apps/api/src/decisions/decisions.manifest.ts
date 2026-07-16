@@ -19,6 +19,12 @@ export const decisionsManifest: ModuleManifest = {
   consumesEvents: [],
   commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange'],
   queries: [],
-  routes: ['Post()', "Post(':decisionId/publish')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/change/withdraw')"],
+  routes: [
+    'POST /projects/:projectId/decisions',
+    'POST /projects/:projectId/decisions/:decisionId/publish',
+    'POST /projects/:projectId/decisions/:decisionId/approve',
+    'POST /projects/:projectId/decisions/:decisionId/change',
+    'POST /projects/:projectId/decisions/:decisionId/change/withdraw',
+  ],
   permissions: ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
 };

@@ -12,6 +12,10 @@ export const mediaManifest: ModuleManifest = {
   consumesEvents: [],
   commands: ['media.create', 'media.setNode', 'media.remove'],
   queries: [],
-  routes: ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Delete('media/:id')"],
+  routes: [
+    'POST /projects/:projectId/media',
+    'PATCH /projects/:projectId/media/:mediaId/node',
+    'DELETE /media/:id',
+  ],
   permissions: ['pmc', 'engineer'],
 };

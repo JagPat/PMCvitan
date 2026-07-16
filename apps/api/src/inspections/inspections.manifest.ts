@@ -30,6 +30,10 @@ export const inspectionsManifest: ModuleManifest = {
   consumesEvents: [],
   commands: ['inspections.create', 'inspections.submit', 'inspections.decide'],
   queries: [],
-  routes: ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')"],
+  routes: [
+    'POST /projects/:projectId/inspections',
+    'POST /projects/:projectId/inspections/:inspectionId/submit',
+    'POST /projects/:projectId/inspections/:inspectionId/decide',
+  ],
   permissions: ['pmc', 'engineer', 'contractor'],
 };
