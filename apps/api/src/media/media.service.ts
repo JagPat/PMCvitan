@@ -97,7 +97,7 @@ export class MediaService {
             clientKey: input.clientKey ?? null,
           },
         });
-        await emitEvent(tx, { projectId, actor, eventType: 'media.uploaded', entityType: 'Media', entityId: created.id, payload: { kind: input.kind } });
+        await emitEvent(tx, { projectId, actor, eventType: 'media.uploaded', entityType: 'Media', entityId: created.id, payload: { kind: input.kind }, effectKey: 'media.uploaded', dispatch: {} });
         return created;
       });
     } catch (e) {
@@ -127,7 +127,7 @@ export class MediaService {
     const actor = await resolveActor(this.prisma, user);
     await this.prisma.$transaction(async (tx) => {
       await tx.media.update({ where: { id }, data: { nodeId: resolved } });
-      await emitEvent(tx, { projectId, actor, eventType: 'media.refiled', entityType: 'Media', entityId: id, payload: { nodeId: resolved } });
+      await emitEvent(tx, { projectId, actor, eventType: 'media.refiled', entityType: 'Media', entityId: id, payload: { nodeId: resolved }, effectKey: 'media.refiled', dispatch: {} });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -163,7 +163,7 @@ export class MediaService {
     const actor = await resolveActor(this.prisma, user);
     await this.prisma.$transaction(async (tx) => {
       await tx.media.delete({ where: { id } });
-      await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id });
+      await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id, effectKey: 'media.removed', dispatch: {} });
     });
     this.realtime.notifyChanged(projectId);
     return true;

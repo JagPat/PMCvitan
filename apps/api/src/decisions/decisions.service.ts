@@ -99,9 +99,10 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
         await emitEvent(tx, {
           projectId, actor, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title },
+          effectKey: input.publish ? 'decision.published' : 'decision.drafted',
           // Task 6: a one-step ISSUE notifies the client; a draft is silent. The outbox push
           // consumer carries this intent (the old in-request push still sends in legacy mode).
-          ...(input.publish ? { notification: { body: notice, roles: ['client'] } } : {}),
+          dispatch: input.publish ? { push: { body: notice } } : {},
         });
         return { resultRef: id };
       },
@@ -145,7 +146,8 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
         await emitEvent(tx, {
           projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
-          notification: { body: notice, roles: ['client'] },
+          effectKey: 'decision.published',
+          dispatch: { push: { body: notice } },
         });
         return { resultRef: decisionId };
       },
@@ -243,7 +245,8 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: 'decision.approve', entity: 'Decision', entityId: decisionId });
         await emitEvent(tx, {
           projectId, actor, eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId, payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) },
-          notification: { body: announce, roles: ['pmc', 'contractor', 'engineer'] },
+          effectKey: prior === 'change' ? 'decision.reapproved' : 'decision.approved',
+          dispatch: { push: { body: announce } },
         });
         return { resultRef: decisionId };
       },
@@ -289,7 +292,7 @@ export class DecisionsService {
           });
           await tx.decisionEvent.create({ data: { decisionId, type: 'change_requested', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: input } });
           await recordAudit(tx, { projectId, actor, action: 'decision.change', entity: 'Decision', entityId: decisionId });
-          await emitEvent(tx, { projectId, actor, eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId, payload: { reason: input.reason, ...(input.costImpact !== undefined ? { costImpact: input.costImpact } : {}), ...(input.timeImpactDays !== undefined ? { timeImpactDays: input.timeImpactDays } : {}) } });
+          await emitEvent(tx, { projectId, actor, eventType: 'decision.change_requested', entityType: 'Decision', entityId: decisionId, payload: { reason: input.reason, ...(input.costImpact !== undefined ? { costImpact: input.costImpact } : {}), ...(input.timeImpactDays !== undefined ? { timeImpactDays: input.timeImpactDays } : {}) }, effectKey: 'decision.change_requested', dispatch: {} });
         } catch (e) {
           // the one-open-per-decision partial unique index fired — a concurrent request won.
           // Translate HERE (inside run) so the command kernel never mistakes THIS P2002 for a
@@ -350,7 +353,7 @@ export class DecisionsService {
         if (closed.count !== 1) throw new ConflictException('The change request changed while withdrawing — reload and retry');
         await tx.decisionEvent.create({ data: { decisionId, type: 'change_withdrawn', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole } });
         await recordAudit(tx, { projectId, actor, action: 'decision.change_withdraw', entity: 'Decision', entityId: decisionId });
-        await emitEvent(tx, { projectId, actor, eventType: 'decision.change_withdrawn', entityType: 'Decision', entityId: decisionId });
+        await emitEvent(tx, { projectId, actor, eventType: 'decision.change_withdrawn', entityType: 'Decision', entityId: decisionId, effectKey: 'decision.change_withdrawn', dispatch: {} });
         return { resultRef: decisionId };
       },
     });

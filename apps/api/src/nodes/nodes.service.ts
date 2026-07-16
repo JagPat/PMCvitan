@@ -43,7 +43,7 @@ export class NodesService {
       const created = await tx.projectNode.create({
         data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order, authorId: user.sub, publishedAt },
       });
-      await emitEvent(tx, { projectId, actor, eventType: 'node.created', entityType: 'ProjectNode', entityId: created.id, payload: { name: input.name, kind: input.kind } });
+      await emitEvent(tx, { projectId, actor, eventType: 'node.created', entityType: 'ProjectNode', entityId: created.id, payload: { name: input.name, kind: input.kind }, effectKey: 'node.created', dispatch: {} });
     });
     return this.done(projectId, user);
   }
@@ -62,7 +62,7 @@ export class NodesService {
         where: { id: { in: branch }, projectId, publishedAt: null },
         data: { publishedAt: new Date() },
       });
-      await emitEvent(tx, { projectId, actor, eventType: 'node.published', entityType: 'ProjectNode', entityId: nodeId });
+      await emitEvent(tx, { projectId, actor, eventType: 'node.published', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.published', dispatch: {} });
     });
     void node;
     return this.done(projectId, user);
@@ -74,7 +74,7 @@ export class NodesService {
     const actor = await resolveActor(this.prisma, user);
     await this.prisma.$transaction(async (tx) => {
       await tx.projectNode.update({ where: { id: nodeId }, data: { name: input.name } });
-      await emitEvent(tx, { projectId, actor, eventType: 'node.renamed', entityType: 'ProjectNode', entityId: nodeId, payload: { name: input.name } });
+      await emitEvent(tx, { projectId, actor, eventType: 'node.renamed', entityType: 'ProjectNode', entityId: nodeId, payload: { name: input.name }, effectKey: 'node.renamed', dispatch: {} });
     });
     return this.done(projectId, user);
   }
@@ -91,7 +91,7 @@ export class NodesService {
     const actor = await resolveActor(this.prisma, user);
     await this.prisma.$transaction(async (tx) => {
       await tx.projectNode.update({ where: { id: nodeId }, data: { parentId: parent?.id ?? null, order } });
-      await emitEvent(tx, { projectId, actor, eventType: 'node.moved', entityType: 'ProjectNode', entityId: nodeId, payload: { parentId: parent?.id ?? null } });
+      await emitEvent(tx, { projectId, actor, eventType: 'node.moved', entityType: 'ProjectNode', entityId: nodeId, payload: { parentId: parent?.id ?? null }, effectKey: 'node.moved', dispatch: {} });
     });
     return this.done(projectId, user);
   }
@@ -118,7 +118,7 @@ export class NodesService {
     // silently unfiling them.
     await this.prisma.$transaction(async (tx) => {
       await tx.projectNode.delete({ where: { id: nodeId } }); // children cascade; FKs unfile placed records
-      await emitEvent(tx, { projectId, actor, eventType: 'node.removed', entityType: 'ProjectNode', entityId: nodeId });
+      await emitEvent(tx, { projectId, actor, eventType: 'node.removed', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.removed', dispatch: {} });
     });
     return this.done(projectId, user);
   }

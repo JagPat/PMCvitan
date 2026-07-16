@@ -53,7 +53,7 @@ export class DailyLogService {
       await this.activities.blockForMaterialMismatch(tx, { projectId, decisionId: input.decisionId });
       await tx.notification.create({ data: { projectId, text: `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, color: '#B23A34', time: 'just now' } });
       await recordAudit(tx, { projectId, actor, action: 'material.mismatch', entity: 'SiteMaterial', entityId: mat.id });
-      await emitEvent(tx, { projectId, actor, eventType: 'material.mismatch_flagged', entityType: 'SiteMaterial', entityId: mat.id, payload: { decisionId: input.decisionId } });
+      await emitEvent(tx, { projectId, actor, eventType: 'material.mismatch_flagged', entityType: 'SiteMaterial', entityId: mat.id, payload: { decisionId: input.decisionId }, effectKey: 'material.mismatch_flagged', dispatch: { push: { body: `Material mismatch: ${matName} ≠ approved ${input.decisionId}` } } });
     });
     // material mismatch blocks work — alert PMC (resolves it) and contractor (supplied it)
     this.realtime.notifyChanged(projectId, `Material mismatch: ${matName} ≠ approved ${input.decisionId}`, ['pmc', 'contractor']);
@@ -76,7 +76,7 @@ export class DailyLogService {
         await tx.crewRow.createMany({ data: latest.crew.map((c) => ({ dailyLogId: log.id, trade: c.trade, count: 0, order: c.order })) });
       }
       await recordAudit(tx, { projectId, actor, action: 'dailylog.start', entity: 'DailyLog', entityId: log.id });
-      await emitEvent(tx, { projectId, actor, eventType: 'dailylog.started', entityType: 'DailyLog', entityId: log.id });
+      await emitEvent(tx, { projectId, actor, eventType: 'dailylog.started', entityType: 'DailyLog', entityId: log.id, effectKey: 'dailylog.started', dispatch: {} });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -101,7 +101,7 @@ export class DailyLogService {
         data: { projectId, dailyLogId: log.id, name: input.name, qty: input.qty, zone: input.zone, decisionId: input.decisionId ?? null, swatch: input.swatch, matched: true, nodeId, order },
       });
       await recordAudit(tx, { projectId, actor, action: 'material.add', entity: 'DailyLog', entityId: log.id });
-      await emitEvent(tx, { projectId, actor, eventType: 'material.added', entityType: 'DailyLog', entityId: log.id });
+      await emitEvent(tx, { projectId, actor, eventType: 'material.added', entityType: 'DailyLog', entityId: log.id, effectKey: 'material.added', dispatch: {} });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -120,7 +120,7 @@ export class DailyLogService {
         await tx.crewRow.updateMany({ where: { dailyLogId: log.id, trade: c.trade }, data: { count: c.count } });
       }
       await recordAudit(tx, { projectId, actor, action: 'dailylog.submit', entity: 'DailyLog', entityId: log.id });
-      await emitEvent(tx, { projectId, actor, eventType: 'dailylog.submitted', entityType: 'DailyLog', entityId: log.id });
+      await emitEvent(tx, { projectId, actor, eventType: 'dailylog.submitted', entityType: 'DailyLog', entityId: log.id, effectKey: 'dailylog.submitted', dispatch: {} });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);

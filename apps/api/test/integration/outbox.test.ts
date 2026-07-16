@@ -80,7 +80,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
   };
 
   const emit = (projectId: string, entityId: string, over: Record<string, unknown> = {}) =>
-    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId, ...over }));
+    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId, effectKey: 'decision.approved', dispatch: {}, ...over }));
 
   const deliveryFor = (consumer: string, eventId: string) =>
     t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer, eventId } });
@@ -89,7 +89,8 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
 
   it('materializes one delivery per registered consumer IN the event transaction; a rolled-back emit writes none', async () => {
     const p = await freshProject();
-    const { eventId } = await emit(p, 'D-1', { notification: { body: 'hello', roles: ['client'] } });
+    // a published-decision event carries a push whose roles come from the catalog (['client'])
+    const { eventId } = await emit(p, 'D-1', { eventType: 'decision.published', effectKey: 'decision.published', dispatch: { push: { body: 'hello' } } });
     // socket (always), push (notification present) and the ordered projection each got a row
     const socket = await deliveryFor(SOCKET_CONSUMER, eventId);
     const push = await deliveryFor(PUSH_CONSUMER, eventId);
@@ -102,7 +103,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
 
     // a rolled-back mutation writes NO event AND NO deliveries — they share the transaction
     await expect(t.prisma.$transaction(async (tx) => {
-      await emitEvent(tx, { projectId: p, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rb' });
+      await emitEvent(tx, { projectId: p, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-rb', effectKey: 'decision.approved', dispatch: {} });
       throw new Error('boom');
     })).rejects.toThrow('boom');
     expect(await t.prisma.outboxDelivery.count({ where: { projectId: p, eventId: { not: eventId } } })).toBe(0);

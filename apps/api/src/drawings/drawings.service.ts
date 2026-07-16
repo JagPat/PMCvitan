@@ -73,7 +73,7 @@ export class DrawingsService {
     await tx.drawingRevision.update({ where: { id: revisionId }, data: { recipientsFrozenAt: new Date() } });
     // The distribution set is now frozen for this revision (Phase 2 Task 4) — one event per
     // revision, even when the set was empty (a real fact, distinct from the legacy null).
-    await emitEvent(tx, { projectId, actor, eventType: 'drawing.recipients_frozen', entityType: 'DrawingRevision', entityId: revisionId, payload: { recipients: members.length } });
+    await emitEvent(tx, { projectId, actor, eventType: 'drawing.recipients_frozen', entityType: 'DrawingRevision', entityId: revisionId, payload: { recipients: members.length }, effectKey: 'drawing.recipients_frozen', dispatch: {} });
   }
 
   async issue(projectId: string, user: AuthUser, input: IssueDrawingInput): Promise<IssuedDrawing> {
@@ -222,7 +222,7 @@ export class DrawingsService {
           entityId: revisionId,
           payload: { number: input.number, rev: input.rev, status: input.status },
         });
-        await emitEvent(tx, { projectId, actor, eventType: isRevise ? 'drawing.revised' : 'drawing.issued', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: input.number, rev: input.rev, status: input.status } });
+        await emitEvent(tx, { projectId, actor, eventType: isRevise ? 'drawing.revised' : 'drawing.issued', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: input.number, rev: input.rev, status: input.status }, effectKey: published ? (isRevise ? 'drawing.revised' : 'drawing.issued') : (isRevise ? 'drawing.revised_draft' : 'drawing.issued_draft'), dispatch: published ? { push: { body: `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}` } } : {} });
       });
     } catch (e) {
       // a unique fired: the (drawingId, rev) label, a concurrent same-number create,
@@ -269,7 +269,7 @@ export class DrawingsService {
       });
       for (const rev of unfrozen) await this.freezeRecipients(tx, actor, projectId, rev.id);
       await recordAudit(tx, { projectId, actor, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } });
-      await emitEvent(tx, { projectId, actor, eventType: 'drawing.published', entityType: 'Drawing', entityId: drawingId, payload: { number: d.number } });
+      await emitEvent(tx, { projectId, actor, eventType: 'drawing.published', entityType: 'Drawing', entityId: drawingId, payload: { number: d.number }, effectKey: 'drawing.published', dispatch: { push: { body: `Drawing issued: ${d.number} — ${d.title}` } } });
     });
     this.realtime.notifyChanged(projectId, `Drawing issued: ${d.number} — ${d.title}`, ['engineer', 'contractor']);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -285,7 +285,7 @@ export class DrawingsService {
     await this.prisma.$transaction(async (tx) => {
       await tx.drawing.update({ where: { id }, data: { nodeId: resolved } });
       await recordAudit(tx, { projectId, actor, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } });
-      await emitEvent(tx, { projectId, actor, eventType: 'drawing.refiled', entityType: 'Drawing', entityId: id, payload: { nodeId: resolved } });
+      await emitEvent(tx, { projectId, actor, eventType: 'drawing.refiled', entityType: 'Drawing', entityId: id, payload: { nodeId: resolved }, effectKey: 'drawing.refiled', dispatch: {} });
     });
     this.realtime.notifyChanged(projectId);
     return this.snapshot.build(projectId, user.role, user.sub);
@@ -315,7 +315,7 @@ export class DrawingsService {
         if (existing) return; // replay — the fact is already recorded and audited
         await tx.drawingAck.create({ data: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role } });
         await recordAudit(tx, { projectId, actor, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } });
-        await emitEvent(tx, { projectId, actor, eventType: 'drawing.acknowledged', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } });
+        await emitEvent(tx, { projectId, actor, eventType: 'drawing.acknowledged', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev }, effectKey: 'drawing.acknowledged', dispatch: { push: { body: `${actor.actorName} is building to ${rev.drawing.number} Rev ${rev.rev}` } } });
         firstAck = true;
       });
     } catch (e) {
@@ -357,7 +357,7 @@ export class DrawingsService {
       await lockProjectReadiness(tx, projectId);
       await tx.drawing.delete({ where: { id } }); // revisions + recipients cascade
       await recordAudit(tx, { projectId, actor, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } });
-      await emitEvent(tx, { projectId, actor, eventType: 'drawing.removed', entityType: 'Drawing', entityId: id, payload: { number: drawing.number } });
+      await emitEvent(tx, { projectId, actor, eventType: 'drawing.removed', entityType: 'Drawing', entityId: id, payload: { number: drawing.number }, effectKey: 'drawing.removed', dispatch: {} });
     });
     this.realtime.notifyChanged(projectId);
     return true;

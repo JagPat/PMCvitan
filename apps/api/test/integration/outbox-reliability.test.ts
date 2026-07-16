@@ -38,7 +38,7 @@ describe('PR B Task 1 — durable outbox constraints (live PG)', () => {
     return id;
   };
   const emit = (projectId: string) =>
-    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-1' }));
+    t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: 'D-1', effectKey: 'decision.approved', dispatch: {} }));
   const insDelivery = (o: { eventId: string; consumer: string; kind: string; projectId: string; pos: number; action?: string }) =>
     t.prisma.$executeRawUnsafe(
       `INSERT INTO "OutboxDelivery"(id,"eventId","projectId",consumer,"consumerKind","deliveryAction","streamPosition","updatedAt")

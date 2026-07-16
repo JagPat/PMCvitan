@@ -45,7 +45,7 @@ describe('PR B Task 4 — outbox operations (live PG)', () => {
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-ops-' } } });
   });
   const freshProject = async () => { const id = `it-ops-${Date.now() % 1e6}-${seq++}`; await t.prisma.project.create({ data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 } }); return id; };
-  const emit = (p: string, e: string) => t.prisma.$transaction((tx) => emitEvent(tx, { projectId: p, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: e }));
+  const emit = (p: string, e: string) => t.prisma.$transaction((tx) => emitEvent(tx, { projectId: p, actor: human, eventType: 'decision.approved', entityType: 'Decision', entityId: e, effectKey: 'decision.approved', dispatch: {} }));
   const deliveryFor = (eventId: string) => t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer: ORD, eventId } });
 
   it('status aggregates counts and truncates the error — no payloads or secrets', async () => {

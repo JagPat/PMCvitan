@@ -1,7 +1,8 @@
 import { Prisma } from '@prisma/client';
 import type { Actor } from '../common/actor';
 import type { DomainEventType } from '@vitan/shared';
-import { materializeDeliveries, type NotificationIntent, type DispatchIntent } from './outbox/registry';
+import { materializeDeliveries, type DispatchIntent as PersistedDispatchIntent } from './outbox/registry';
+import { buildDispatchIntent, type ExternalEffectKey, type DispatchInput } from './external-effects';
 
 /**
  * Phase 2 Task 4 — the platform event kernel.
@@ -37,11 +38,14 @@ export interface EmitInput {
    *  `activity.signed_off`), so a multi-event command threads its causal chain. */
   causedByEventId?: string | null;
   payload?: Prisma.InputJsonValue;
-  /** A human-facing notification this event should drive (Task 6): the Web Push body + target
-   *  roles. When present, the emit transaction ALSO materializes a `webpush.notify` delivery
-   *  carrying it, so the outbox can fan it out post-commit. The canonical Notification DB row is
-   *  still written by the command itself; this is only the push intent for the outbox path. */
-  notification?: NotificationIntent;
+  /** PR C — the external-effect catalog key this event is emitted under. There is NO default: every
+   *  producer names an exact key, and the catalog decides whether the event invalidates the live
+   *  snapshot and which roles a push may reach. Validated against the catalog at emit time. */
+  effectKey: ExternalEffectKey;
+  /** PR C — the command-supplied part of the dispatch: only the push BODY (roles come from the
+   *  catalog). A key whose catalog `push` is null must not carry a push body. Omit `push` for a
+   *  signal-only or weightless (draft/no-op) event. */
+  dispatch: DispatchInput;
 }
 
 /**
@@ -63,17 +67,12 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<{ eventI
   });
   const streamPosition = stream.nextPosition - 1n;
   const actorKind = input.actor.actorKind;
-  // PR B — the immutable dispatch intent recorded WITH the event: what external consequences the
-  // command requested at commit time. Until PR C supplies the final per-command effect catalog,
-  // this is the COMPATIBILITY intent — the current socket behavior (invalidate for every event) +
-  // the command's own notification argument — so the scanner/consumers reproduce today's behavior
-  // exactly, without claiming complete cutover coverage.
-  const dispatchIntent: DispatchIntent = {
-    effectKey: 'compat.task6',
-    coverageVersion: 'compat-task6',
-    invalidate: true,
-    ...(input.notification ? { push: { body: input.notification.body, roles: input.notification.roles ?? null } } : {}),
-  };
+  // PR C — the immutable dispatch intent recorded WITH the event, derived from the external-effect
+  // catalog: the exact per-command invalidation + push audience the command requested at commit time.
+  // Validated against the catalog (unknown key / eventType mismatch / illegal push → throw before any
+  // write). The persisted `coverageVersion` is what the cutover seal pins.
+  const builtIntent = buildDispatchIntent(input.effectKey, input.eventType, input.dispatch);
+  const dispatchIntent = builtIntent as unknown as PersistedDispatchIntent;
   const event = await tx.domainEvent.create({
     data: {
       eventType: input.eventType,
