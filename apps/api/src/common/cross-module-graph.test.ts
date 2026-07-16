@@ -109,6 +109,7 @@ const NON_PILLAR_WRITERS: Record<string, string> = {
   'orgs/members.service.ts': 'project roster — writes orgs-owned User/Membership; no cross-domain write, no signal',
   'orgs/companies.service.ts': 'project roster — writes orgs-owned ProjectCompany; no cross-domain write, no signal',
   'push/push.service.ts': 'infra — writes the SHARED PushSubscription; no domain table, no signal',
+  'platform/outbox/relay.service.ts': 'platform infra (Task 6) — the outbox relay writes the SHARED OutboxDelivery/ProcessedEvent/ProjectionCursor delivery-state tables and dispatches to consumers; no module domain table',
 };
 
 // Services that perform NO Prisma write (readers, token/OTP/blob helpers, the

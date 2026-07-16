@@ -93,7 +93,12 @@ export class DecisionsService {
         });
         await tx.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: input.title } } });
         await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
-        await emitEvent(tx, { projectId, actor, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title } });
+        await emitEvent(tx, {
+          projectId, actor, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title },
+          // Task 6: a one-step ISSUE notifies the client; a draft is silent. The outbox push
+          // consumer carries this intent (the old in-request push still sends in legacy mode).
+          ...(input.publish ? { notification: { body: pendingDecisionNotice(input.title), roles: ['client'] } } : {}),
+        });
         return { resultRef: id };
       },
     });
@@ -134,7 +139,10 @@ export class DecisionsService {
         await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } });
         await tx.notification.create({ data: { projectId, text: pendingDecisionNotice(d.title), color: '#C08A2D', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
-        await emitEvent(tx, { projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title } });
+        await emitEvent(tx, {
+          projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
+          notification: { body: `New decision awaiting your approval: ${d.title}`, roles: ['client'] },
+        });
         return { resultRef: decisionId };
       },
     });
@@ -229,7 +237,10 @@ export class DecisionsService {
         });
         await tx.notification.create({ data: { projectId, text: announce, color: '#3F7A54', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'decision.approve', entity: 'Decision', entityId: decisionId });
-        await emitEvent(tx, { projectId, actor, eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId, payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) } });
+        await emitEvent(tx, {
+          projectId, actor, eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId, payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) },
+          notification: { body: announce, roles: ['pmc', 'contractor', 'engineer'] },
+        });
         return { resultRef: decisionId };
       },
     });

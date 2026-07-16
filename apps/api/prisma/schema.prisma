@@ -135,6 +135,65 @@ model DomainEvent {
   @@unique([projectId, streamPosition])
   @@index([projectId, streamPosition])
   @@index([eventType])
+  deliveries      OutboxDelivery[]
+}
+
+// Phase 2 Task 6 — the per-consumer transactional outbox. For each DomainEvent, one
+// OutboxDelivery row per registered consumer is written IN THE SAME mutation transaction, so a
+// crash can never leave an event with no durable delivery work. A lease-based relay claims
+// pending rows (a SHORT lease transaction — never a lock held across dispatch), dispatches to the
+// consumer, and moves the row pending→leased→succeeded, or on a retryable failure clears the
+// lease + backs off (attempts++, nextAttemptAt) back to pending, or on exhaustion → dead. There
+// is NO ambiguous 'failed'. Contract: at-least-once delivery, effectively-once DB effects.
+model OutboxDelivery {
+  id             String      @id @default(uuid())
+  event          DomainEvent @relation(fields: [eventId], references: [eventId], onDelete: Cascade)
+  eventId        String
+  projectId      String
+  consumer       String
+  consumerKind   String // 'ordered' | 'unordered'
+  streamPosition BigInt // copied from the event; ordered consumers checkpoint on it
+  status         String    @default("pending") // 'pending' | 'leased' | 'succeeded' | 'dead'
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime  @default(now())
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  lastError      String?
+  payload        Json? // consumer-specific dispatch data (e.g. Web Push {body, roles})
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([eventId, consumer]) // exactly one delivery row per (event, consumer)
+  @@index([consumer, status, nextAttemptAt]) // the relay's claim scan
+  @@index([consumer, projectId, streamPosition]) // an ordered consumer's per-project stream
+}
+
+// Phase 2 Task 6 — a database consumer records one ProcessedEvent per (consumer, eventId) IN THE
+// SAME transaction as its side effect (effectively-once). A duplicate dispatch finds the row and
+// skips re-applying. External consumers (socket/push) are at-least-once and do not use this.
+model ProcessedEvent {
+  id          String   @id @default(uuid())
+  consumer    String
+  eventId     String
+  processedAt DateTime @default(now())
+
+  @@unique([consumer, eventId])
+}
+
+// Phase 2 Task 6 — an ordered (per-project) consumer advances this cursor CONTIGUOUSLY: it may
+// not apply streamPosition N+1 before N. A slow/failed earlier position holds the cursor; a
+// `dead` earlier position sets status='blocked' and the projection is visibly degraded until an
+// operator resolves it — never a silent skip. `appliedPosition` NULL = nothing applied yet (next
+// expected = 0); otherwise the next expected position is appliedPosition + 1.
+model ProjectionCursor {
+  id              String   @id @default(uuid())
+  consumer        String
+  projectId       String
+  appliedPosition BigInt? // NULL = none applied yet
+  status          String   @default("live") // 'live' | 'blocked'
+  updatedAt       DateTime @updatedAt
+
+  @@unique([consumer, projectId])
 }
 
 // Phase 2 Task 5 — the command-idempotency ledger. One receipt per (scope, actor, commandType,

@@ -63,7 +63,9 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
     // events are cleared. TRUNCATE fires no row trigger, so it is the sanctioned reset for the
     // disposable test DB (the suites run serially and share one database). Production never does
     // this — events are immutable there. ProjectEventStream cascades with the project delete.
-    await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent"');
+    // OutboxDelivery (Task 6) FK-references DomainEvent, so truncate them together; ProcessedEvent
+    // and ProjectionCursor carry no FK but are cleared for a clean per-suite slate.
+    await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
     // reverse foreign-key order, one transaction — a failed test never strands rows
     await prisma.$transaction([
       // command-idempotency receipts (Phase 2 Task 5) reference the project/org tenant; clear

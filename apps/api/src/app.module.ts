@@ -43,6 +43,8 @@ import { MembersService } from './orgs/members.service';
 import { MembersController } from './orgs/members.controller';
 import { CompaniesService } from './orgs/companies.service';
 import { CompaniesController } from './orgs/companies.controller';
+import { OutboxRelay } from './platform/outbox/relay.service';
+import { OutboxBootstrap } from './platform/outbox/outbox.bootstrap';
 
 @Module({
   imports: [
@@ -99,6 +101,8 @@ import { CompaniesController } from './orgs/companies.controller';
     MembersService,
     CompaniesService,
     NodesService,
+    OutboxRelay,
+    OutboxBootstrap,
   ],
 })
 export class AppModule {}
