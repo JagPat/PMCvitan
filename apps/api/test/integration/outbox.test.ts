@@ -4,7 +4,7 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { RealtimeGateway } from '../../src/realtime/realtime.gateway';
-import { registerConsumer, unregisterConsumer, getConsumer, type OutboxConsumer } from '../../src/platform/outbox/registry';
+import { registerConsumer, unregisterConsumer, getConsumer, syncConsumerCatalog, type OutboxConsumer } from '../../src/platform/outbox/registry';
 import { SOCKET_CONSUMER, PUSH_CONSUMER, makeSocketConsumer, makePushConsumer } from '../../src/platform/outbox/consumers';
 import type { Actor } from '../../src/common/actor';
 
@@ -33,8 +33,8 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
   /** An ordered database consumer whose side effect is one AuditLog row per event, so
    *  "applied exactly once" is a row count and its ordered cursor can be observed directly. */
   const orderedConsumer: OutboxConsumer = {
-    name: PROJECTION, kind: 'ordered', effect: 'db',
-    deliveryFor: () => ({}),
+    name: PROJECTION, kind: 'ordered', effect: 'db', catalogVersion: 1,
+    deliveryFor: () => ({ action: 'dispatch' }),
     handle: async (ctx) => {
       if (control.failMode !== 'none') {
         if (control.failMode === 'once') control.failMode = 'none';
@@ -51,6 +51,9 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
     relay = t.app.get(OutboxRelay);
     human.actorId = f.memberUser.id;
     registerConsumer(orderedConsumer);
+    // The ad-hoc ordered projection consumer needs its catalog contract row before it can own
+    // deliveries (the (consumer, consumerKind) FK) — bootstrap synced only socket/push.
+    await syncConsumerCatalog(t.prisma);
   });
   afterAll(async () => {
     unregisterConsumer(PROJECTION);

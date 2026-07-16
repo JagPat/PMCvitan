@@ -20,7 +20,11 @@ export function makeSocketConsumer(realtime: RealtimeGateway): OutboxConsumer {
     name: SOCKET_CONSUMER,
     kind: 'unordered',
     effect: 'external',
-    deliveryFor: () => ({}), // a delivery for every event; projectId is on the row
+    catalogVersion: 1,
+    // Dispatch only when the PERSISTED intent asks to invalidate; otherwise a recorded no-op. Today
+    // the compat intent always invalidates (unchanged behavior); PR C narrows it per command so a
+    // private draft no longer invalidates. A null-intent legacy event is never invalidated here.
+    deliveryFor: (meta) => (meta.dispatchIntent?.invalidate ? { action: 'dispatch' } : { action: 'noop' }),
     handle: async (ctx) => {
       if (ctx.senderMode === 'outbox') realtime.emitChanged(ctx.meta.projectId);
       else if (ctx.senderMode === 'shadow') realtime.recordShadowIntent('socket', ctx.meta.projectId);
@@ -35,8 +39,14 @@ export function makePushConsumer(push: PushService): OutboxConsumer {
     name: PUSH_CONSUMER,
     kind: 'unordered',
     effect: 'external',
-    deliveryFor: (_meta, notification) =>
-      notification ? { payload: { body: notification.body, roles: notification.roles ?? null } } : null,
+    catalogVersion: 1,
+    // Dispatch only when the PERSISTED intent carries a push body; otherwise a recorded no-op. A
+    // null-intent legacy event has no push, so it is always a no-op — the outbox never invents a
+    // historical push from an old payload.
+    deliveryFor: (meta) => {
+      const push = meta.dispatchIntent?.push;
+      return push?.body ? { action: 'dispatch', payload: { body: push.body, roles: push.roles ?? null } } : { action: 'noop' };
+    },
     handle: async (ctx) => {
       const p = (ctx.delivery.payload ?? null) as { body?: string; roles?: string[] | null } | null;
       if (!p?.body) return;

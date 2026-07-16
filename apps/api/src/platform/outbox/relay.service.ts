@@ -99,16 +99,7 @@ export class OutboxRelay implements OnModuleDestroy {
     if (!consumer) return this.deadLetter(delivery.id, delivery.attempts, `no consumer registered: ${delivery.consumer}`);
     const event = await this.prisma.domainEvent.findUnique({ where: { eventId: delivery.eventId } });
     if (!event) return this.deadLetter(delivery.id, delivery.attempts, 'event row missing');
-    const meta: EmittedEventMeta = {
-      eventId: event.eventId,
-      eventType: event.eventType,
-      projectId: event.projectId,
-      organizationId: event.organizationId,
-      streamPosition: event.streamPosition,
-      entityType: event.entityType,
-      entityId: event.entityId,
-      payload: event.payload,
-    };
+    const meta = metaFromEvent(event);
     const ctxDelivery = { id: delivery.id, consumer: delivery.consumer, projectId: delivery.projectId, streamPosition: delivery.streamPosition, payload: delivery.payload };
     return consumer.effect === 'db'
       ? this.dispatchOrdered(delivery, consumer, meta, ctxDelivery)
@@ -205,33 +196,32 @@ export class OutboxRelay implements OnModuleDestroy {
   }
 
   /**
-   * One-time pre-cutover backfill: every DomainEvent that predates a registered consumer gets its
-   * missing delivery rows derived from the event. Idempotent — `@@unique(eventId, consumer)` makes
-   * a re-run a no-op. Runs at bootstrap so a legacy database (events but no deliveries) is repaired.
+   * Pre-cutover backfill (PR B): every DomainEvent that lacks a registered consumer's delivery gets
+   * one — a TOTAL row (`dispatch` or `noop`) derived from the event's FULL envelope (including its
+   * persisted `dispatchIntent`), never a partial-envelope stub. A pre-intent legacy event
+   * (`dispatchIntent = null`) yields an external no-op — the outbox never invents a historical push.
+   * Idempotent — `@@unique(eventId, consumer)` makes a re-run a no-op. (PR B Task 3 makes this the
+   * continuous scanner entry point; here it repairs a legacy database at boot.)
    */
   async backfillPreCutover(): Promise<number> {
     let created = 0;
     for (const consumer of listConsumers()) {
-      // events with no delivery row for this consumer yet
-      const missing = await this.prisma.$queryRaw<{ eventId: string; projectId: string; streamPosition: bigint }[]>`
-        SELECT e."eventId", e."projectId", e."streamPosition"
-        FROM "DomainEvent" e
+      const missing = await this.prisma.$queryRaw<{ eventId: string }[]>`
+        SELECT e."eventId" FROM "DomainEvent" e
         WHERE NOT EXISTS (
           SELECT 1 FROM "OutboxDelivery" d WHERE d."eventId" = e."eventId" AND d."consumer" = ${consumer.name}
         )`;
-      for (const e of missing) {
-        const meta: EmittedEventMeta = {
-          eventId: e.eventId, eventType: '', projectId: e.projectId, organizationId: '',
-          streamPosition: e.streamPosition, entityType: '', entityId: '', payload: null,
-        };
-        const d = consumer.deliveryFor(meta);
-        if (!d) continue; // a pre-cutover event with no push intent recorded gets no push delivery
+      if (!missing.length) continue;
+      const events = await this.prisma.domainEvent.findMany({ where: { eventId: { in: missing.map((m) => m.eventId) } } });
+      for (const event of events) {
+        const plan = consumer.deliveryFor(metaFromEvent(event));
+        const status = plan.action === 'dispatch' ? 'pending' : consumer.kind === 'unordered' ? 'succeeded' : 'pending';
         try {
           await this.prisma.outboxDelivery.create({
             data: {
-              eventId: e.eventId, projectId: e.projectId, consumer: consumer.name, consumerKind: consumer.kind,
-              streamPosition: e.streamPosition, status: 'pending',
-              ...(d.payload !== undefined ? { payload: d.payload } : {}),
+              eventId: event.eventId, projectId: event.projectId, consumer: consumer.name, consumerKind: consumer.kind,
+              streamPosition: event.streamPosition, deliveryAction: plan.action, status,
+              ...(plan.action === 'dispatch' && plan.payload !== undefined ? { payload: plan.payload } : {}),
             },
           });
           created++;
@@ -243,6 +233,22 @@ export class OutboxRelay implements OnModuleDestroy {
     }
     return created;
   }
+}
+
+/** Build the consumer-facing event meta from a DomainEvent row, including the persisted dispatch
+ *  intent (null for a pre-intent legacy event). The single place the relay/scanner reconstruct the
+ *  envelope, so external consumers always derive their plan from durable state. */
+function metaFromEvent(event: {
+  eventId: string; eventType: string; projectId: string; organizationId: string;
+  streamPosition: bigint; entityType: string; entityId: string;
+  payload: Prisma.JsonValue | null; dispatchIntent: Prisma.JsonValue | null;
+}): EmittedEventMeta {
+  return {
+    eventId: event.eventId, eventType: event.eventType, projectId: event.projectId,
+    organizationId: event.organizationId, streamPosition: event.streamPosition,
+    entityType: event.entityType, entityId: event.entityId, payload: event.payload,
+    dispatchIntent: (event.dispatchIntent ?? null) as EmittedEventMeta['dispatchIntent'],
+  };
 }
 
 interface DispatchDeliveryCtx {

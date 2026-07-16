@@ -423,7 +423,9 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
         membership: 1,
         stream: 1,
         event: 1,
-        delivery: 1,
+        // PR B totality: every registered consumer gets one delivery per event — the one
+        // `project.created` event yields a socket `dispatch` row + a push `noop` row (no push intent).
+        delivery: 2,
         nodes: 1,
         phases: 1,
         activities: 1,
