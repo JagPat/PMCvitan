@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import type { Actor } from '../common/actor';
 import type { DomainEventType } from '@vitan/shared';
-import { materializeDeliveries, type NotificationIntent } from './outbox/registry';
+import { materializeDeliveries, type NotificationIntent, type DispatchIntent } from './outbox/registry';
 
 /**
  * Phase 2 Task 4 — the platform event kernel.
@@ -63,6 +63,17 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<{ eventI
   });
   const streamPosition = stream.nextPosition - 1n;
   const actorKind = input.actor.actorKind;
+  // PR B — the immutable dispatch intent recorded WITH the event: what external consequences the
+  // command requested at commit time. Until PR C supplies the final per-command effect catalog,
+  // this is the COMPATIBILITY intent — the current socket behavior (invalidate for every event) +
+  // the command's own notification argument — so the scanner/consumers reproduce today's behavior
+  // exactly, without claiming complete cutover coverage.
+  const dispatchIntent: DispatchIntent = {
+    effectKey: 'compat.task6',
+    coverageVersion: 'compat-task6',
+    invalidate: true,
+    ...(input.notification ? { push: { body: input.notification.body, roles: input.notification.roles ?? null } } : {}),
+  };
   const event = await tx.domainEvent.create({
     data: {
       eventType: input.eventType,
@@ -78,6 +89,7 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<{ eventI
       entityId: input.entityId,
       correlationId: input.correlationId ?? null,
       causedByEventId: input.causedByEventId ?? null,
+      dispatchIntent: dispatchIntent as unknown as Prisma.InputJsonValue,
       ...(input.payload !== undefined ? { payload: input.payload } : {}),
     },
     select: { eventId: true },
@@ -85,19 +97,16 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<{ eventI
   // Task 6 — materialize one OutboxDelivery per registered consumer IN THIS transaction, so a
   // committed event can never lack its durable delivery work. A no-op when no consumer is
   // registered (unit tests without an app boot), so mocked-prisma services need no outbox stub.
-  await materializeDeliveries(
-    tx,
-    {
-      eventId: event.eventId,
-      eventType: input.eventType,
-      projectId: input.projectId,
-      organizationId: orgId,
-      streamPosition,
-      entityType: input.entityType,
-      entityId: input.entityId,
-      payload: input.payload ?? null,
-    },
-    input.notification,
-  );
+  await materializeDeliveries(tx, {
+    eventId: event.eventId,
+    eventType: input.eventType,
+    projectId: input.projectId,
+    organizationId: orgId,
+    streamPosition,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    payload: input.payload ?? null,
+    dispatchIntent,
+  });
   return { eventId: event.eventId, streamPosition: Number(streamPosition) };
 }
