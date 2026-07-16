@@ -248,10 +248,12 @@ The three finding-1/2 tests are behavioral reds at `main`; the three finding-3 t
 | Command | Exit | Result |
 |---|---|---|
 | `pnpm --filter api typecheck` | 0 | clean |
-| `pnpm --filter api test` (unit) | 0 | see PR body |
+| `pnpm --filter api test` (unit) | 0 | **492 passed** (44 files; +1 registry unit test vs the merged head's 491) |
 | `pnpm --filter api test:integration` | 0 | **238 passed** (26 files; +6 outbox tests vs the 232 in §4) |
-| `pnpm check` | 0 | web + api gates green |
+| `pnpm check` | 0 | web **298** + api **492** — boundary + cross-module graph gates green |
 | `upgrade-proof.sh` / `outbox-migration-abort-proof.sh` | 0 / 0 | unchanged — no migration added |
 | four outbox suites ×10 | — | 0 failing / 10 (**36 passed** per run, up from 30) |
+
+> One gate-only test correction was required: `orgs.service.test.ts`'s `createProject` mock now stubs `tx.outboxConsumerCatalog.findMany` (materialize reads the active set inside the emit tx). No production behavior change.
 
 No data rewritten; `DomainEvent` stays append-only; existing deliveries keep their identity/history; only the delivery-planning + relay + scanner logic changed (plus docs + tests). Exact commands, totals and the 10× log are in the PR body.
