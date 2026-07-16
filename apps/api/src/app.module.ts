@@ -45,6 +45,7 @@ import { CompaniesService } from './orgs/companies.service';
 import { CompaniesController } from './orgs/companies.controller';
 import { OutboxRelay } from './platform/outbox/relay.service';
 import { OutboxBootstrap } from './platform/outbox/outbox.bootstrap';
+import { OutboxOperationsService } from './platform/outbox/outbox-operations.service';
 import { ModuleRegistryService } from './platform/module-registry/module-registry.service';
 import { ActivityParticipant } from './activities/activity.participant';
 import { InspectionParticipant } from './inspections/inspection.participant';
@@ -107,6 +108,7 @@ import { NodeInitParticipant } from './nodes/node-init.participant';
     NodesService,
     OutboxRelay,
     OutboxBootstrap,
+    OutboxOperationsService,
     ModuleRegistryService,
     // Task 7 — leaf workflow participants: each writes ONLY its owning module's tables,
     // so a cross-module atomic edge routes its foreign write through the owner (no

@@ -15,7 +15,9 @@
     "ensure-accounts": "tsx prisma/ensure-accounts.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "outbox:status": "tsx src/platform/outbox/outbox.cli.ts status",
+    "outbox:retry": "tsx src/platform/outbox/outbox.cli.ts retry"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
