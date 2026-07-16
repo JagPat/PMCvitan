@@ -46,18 +46,32 @@ describe('PR B — total delivery planning', () => {
     expect(push.deliveryFor(meta({ dispatchIntent: null }))).toEqual({ action: 'noop' });
   });
 
-  it('materializes one row per consumer: unordered no-op -> succeeded, ordered no-op -> pending, dispatch -> pending', async () => {
+  // The active set is read inside the emit transaction; a helper builds a tx mock returning the given
+  // active consumer names from `outboxConsumerCatalog.findMany`.
+  const txWith = (createMany: ReturnType<typeof vi.fn>, activeNames: string[]) =>
+    ({ outboxDelivery: { createMany }, outboxConsumerCatalog: { findMany: vi.fn().mockResolvedValue(activeNames.map((consumer) => ({ consumer }))) } }) as never;
+
+  it('materializes one row per ACTIVE consumer: unordered no-op -> succeeded, ordered no-op -> pending, dispatch -> pending', async () => {
     register({ name: 't.dispatch', kind: 'unordered', effect: 'external', catalogVersion: 1, deliveryFor: () => ({ action: 'dispatch', payload: { x: 1 } }), handle: async () => {} });
     register({ name: 't.noop.unordered', kind: 'unordered', effect: 'external', catalogVersion: 1, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} });
     register({ name: 't.noop.ordered', kind: 'ordered', effect: 'db', catalogVersion: 1, deliveryFor: () => ({ action: 'noop' }), handle: async () => {} });
     const createMany = vi.fn();
-    await materializeDeliveries({ outboxDelivery: { createMany } } as never, meta());
+    await materializeDeliveries(txWith(createMany, ['t.dispatch', 't.noop.unordered', 't.noop.ordered']), meta());
     const rows = createMany.mock.calls[0][0].data as Array<{ consumer: string; deliveryAction: string; status: string; payload?: unknown }>;
     const byName = Object.fromEntries(rows.map((r) => [r.consumer, r]));
     expect(byName['t.dispatch']).toMatchObject({ deliveryAction: 'dispatch', status: 'pending', payload: { x: 1 } });
     expect(byName['t.noop.unordered']).toMatchObject({ deliveryAction: 'noop', status: 'succeeded' });
     expect(byName['t.noop.ordered']).toMatchObject({ deliveryAction: 'noop', status: 'pending' });
     expect(byName['t.noop.unordered'].payload).toBeUndefined();
+  });
+
+  it('materializes NO row for a registered-but-inactive consumer (catalog.active authoritative)', async () => {
+    register({ name: 't.active', kind: 'unordered', effect: 'external', catalogVersion: 1, deliveryFor: () => ({ action: 'dispatch' }), handle: async () => {} });
+    register({ name: 't.inactive', kind: 'unordered', effect: 'external', catalogVersion: 1, deliveryFor: () => ({ action: 'dispatch' }), handle: async () => {} });
+    const createMany = vi.fn();
+    await materializeDeliveries(txWith(createMany, ['t.active']), meta()); // only t.active is active
+    const rows = createMany.mock.calls[0][0].data as Array<{ consumer: string }>;
+    expect(rows.map((r) => r.consumer)).toEqual(['t.active']); // the inactive contract accrues no row
   });
 });
 

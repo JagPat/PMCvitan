@@ -129,13 +129,24 @@ export function unregisterConsumer(name: string): void {
  * ordered consumer never waits behind a stream position for which no row exists. Totality (PR B):
  * a consumer returns `dispatch` or `noop`, never null. A no-op when the registry is empty (unit
  * tests without an app boot).
+ *
+ * `OutboxConsumerCatalog.active` is authoritative: a deactivated (or not-yet-synced) contract accrues
+ * NO new delivery. The active set is read inside the SAME transaction as the event, so a consumer
+ * disabled concurrently either sees the event or not, atomically — a deactivated consumer never
+ * silently starts receiving work. (Consistent with the `(consumer,consumerKind)` FK, which requires
+ * an existing catalog row anyway.)
  */
 export async function materializeDeliveries(
   tx: Prisma.TransactionClient,
   meta: EmittedEventMeta,
 ): Promise<void> {
+  const consumers = listConsumers();
+  if (!consumers.length) return; // no app boot (unit tests) — nothing to materialize, no catalog read
+  const activeRows = await tx.outboxConsumerCatalog.findMany({ where: { active: true }, select: { consumer: true } });
+  const active = new Set(activeRows.map((r) => r.consumer));
   const rows: Prisma.OutboxDeliveryCreateManyInput[] = [];
-  for (const c of listConsumers()) {
+  for (const c of consumers) {
+    if (!active.has(c.name)) continue; // deactivated / unsynced contract — no new obligation
     const plan = c.deliveryFor(meta);
     // An unordered no-op is already done (nothing to send). An ordered no-op stays `pending` so the
     // relay advances that consumer's cursor through this position in the same transaction as real

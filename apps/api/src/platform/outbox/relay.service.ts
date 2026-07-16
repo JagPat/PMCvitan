@@ -57,15 +57,20 @@ export class OutboxRelay implements OnModuleDestroy {
     this.timer = null;
   }
 
-  /** Drain all consumers until a full pass makes no further progress (bounded). */
+  /** Drain all ACTIVE consumers until a full pass makes no further progress (bounded). */
   async runOnce(): Promise<void> {
-    // Repair any missing delivery obligations FIRST (a newly-registered consumer, a rolling-deploy
-    // gap where an old instance emitted an event, or a crash between event commit and delivery
-    // creation) so the claim loop never misses a durable delivery. Idempotent + concurrent-safe.
+    // Repair a bounded batch of missing delivery obligations FIRST (a newly-registered consumer, a
+    // rolling-deploy gap where an old instance emitted an event, or a crash between event commit and
+    // delivery creation) so the claim loop never misses a durable delivery. Idempotent +
+    // concurrent-safe. Bounded per pass — a large backlog closes over successive ticks, never in one.
     await this.expandMissingDeliveries();
+    // catalog.active is authoritative: a deactivated contract is never claimed (its pending rows stay
+    // recoverable for reactivation). Read once per pass; the dispatch guard covers a mid-pass change.
+    const active = await this.activeConsumerNames();
     for (let guard = 0; guard < 1000; guard++) {
       let progressed = false;
       for (const consumer of listConsumers()) {
+        if (!active.has(consumer.name)) continue; // deactivated contract — do not claim
         const ids = await this.claim(consumer.name);
         for (const id of ids) {
           const outcome = await this.dispatchOne(id);
@@ -74,6 +79,12 @@ export class OutboxRelay implements OnModuleDestroy {
       }
       if (!progressed) return;
     }
+  }
+
+  /** The set of consumer names whose durable catalog contract is currently active. */
+  private async activeConsumerNames(): Promise<Set<string>> {
+    const rows = await this.prisma.outboxConsumerCatalog.findMany({ where: { active: true }, select: { consumer: true } });
+    return new Set(rows.map((r) => r.consumer));
   }
 
   /** Atomically lease up to CLAIM_BATCH due deliveries for a consumer, in stream order. */
@@ -99,6 +110,16 @@ export class OutboxRelay implements OnModuleDestroy {
   async dispatchOne(deliveryId: string): Promise<DispatchOutcome> {
     const delivery = await this.prisma.outboxDelivery.findUnique({ where: { id: deliveryId } });
     if (!delivery || delivery.status === 'succeeded' || delivery.status === 'dead') return 'skip';
+    // catalog.active is authoritative and guards the claim→handle race: a contract deactivated after
+    // this row was claimed is NOT processed — release the lease so the row stays `pending` and
+    // recoverable on reactivation. Never dead-lettered (a deactivation is not a delivery failure).
+    const cat = await this.prisma.outboxConsumerCatalog.findUnique({ where: { consumer: delivery.consumer }, select: { active: true } });
+    if (!cat || !cat.active) {
+      if (delivery.status === 'leased') {
+        await this.prisma.outboxDelivery.update({ where: { id: delivery.id }, data: { status: 'pending', leaseOwner: null, leaseExpiresAt: null } });
+      }
+      return 'skip';
+    }
     const consumer = getConsumer(delivery.consumer);
     if (!consumer) return this.deadLetter(delivery.id, delivery.attempts, `no consumer registered: ${delivery.consumer}`);
     const event = await this.prisma.domainEvent.findUnique({ where: { eventId: delivery.eventId } });
@@ -219,11 +240,15 @@ export class OutboxRelay implements OnModuleDestroy {
    * active-consumer × event pair gets exactly one delivery. It closes every timing window a boot-only
    * backfill missed — a new consumer registered after events exist, an old instance emitting during a
    * rolling deploy, a crash after catalog upsert but before delivery creation — because it runs on
-   * every relay pass (via `runOnce`), not once. Concurrent scanners are idempotent: each batch
-   * re-evaluates `NOT EXISTS`, the `@@unique(eventId, consumer)` is the backstop, and a lost create
-   * race (`P2002`) is ignored. A pre-intent legacy event (`dispatchIntent = null`) yields an external
-   * no-op — the outbox never invents a historical push. The catalog is the source of truth, so a
-   * deactivated consumer stops accruing new obligations without deleting existing deliveries.
+   * every relay pass (via `runOnce`), not once. It is BOUNDED: one invocation processes at most
+   * `batchSize` missing events PER active consumer — a fair, deterministic budget — so a huge upgraded
+   * database can never make bootstrap (or any single tick) drain the whole backlog before serving
+   * traffic. Successive relay ticks continue closing the gap until `NOT EXISTS` returns nothing.
+   * Concurrent scanners are idempotent: each pass re-evaluates `NOT EXISTS`, the `@@unique(eventId,
+   * consumer)` is the backstop, and a lost create race (`P2002`) is ignored. A pre-intent legacy event
+   * (`dispatchIntent = null`) yields an external no-op — the outbox never invents a historical push.
+   * The catalog is the source of truth, so a deactivated consumer stops accruing new obligations
+   * without deleting existing deliveries.
    */
   async expandMissingDeliveries(batchSize = 200): Promise<number> {
     let created = 0;
@@ -231,35 +256,33 @@ export class OutboxRelay implements OnModuleDestroy {
     for (const cat of catalog) {
       const consumer = getConsumer(cat.consumer);
       if (!consumer) continue; // an active contract whose code is absent in THIS instance — skip
-      for (;;) {
-        // earliest missing pairs first (ordered), a bounded batch — a crash just repeats safe work
-        const missing = await this.prisma.$queryRaw<{ eventId: string }[]>`
-          SELECT e."eventId" FROM "DomainEvent" e
-          WHERE NOT EXISTS (
-            SELECT 1 FROM "OutboxDelivery" d WHERE d."eventId" = e."eventId" AND d."consumer" = ${cat.consumer}
-          )
-          ORDER BY e."projectId", e."streamPosition"
-          LIMIT ${batchSize}`;
-        if (!missing.length) break;
-        const events = await this.prisma.domainEvent.findMany({ where: { eventId: { in: missing.map((m) => m.eventId) } } });
-        for (const event of events) {
-          const plan = consumer.deliveryFor(metaFromEvent(event));
-          const status = plan.action === 'dispatch' ? 'pending' : consumer.kind === 'unordered' ? 'succeeded' : 'pending';
-          try {
-            await this.prisma.outboxDelivery.create({
-              data: {
-                eventId: event.eventId, projectId: event.projectId, consumer: cat.consumer, consumerKind: consumer.kind,
-                streamPosition: event.streamPosition, deliveryAction: plan.action, status,
-                ...(plan.action === 'dispatch' && plan.payload !== undefined ? { payload: plan.payload } : {}),
-              },
-            });
-            created++;
-          } catch (err) {
-            // a concurrent scanner already created it (unique) — fine
-            if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')) throw err;
-          }
+      // ONE bounded batch per consumer per invocation: the earliest missing pairs first (ordered).
+      // Later relay ticks pick up where this left off; no unbounded inner drain.
+      const missing = await this.prisma.$queryRaw<{ eventId: string }[]>`
+        SELECT e."eventId" FROM "DomainEvent" e
+        WHERE NOT EXISTS (
+          SELECT 1 FROM "OutboxDelivery" d WHERE d."eventId" = e."eventId" AND d."consumer" = ${cat.consumer}
+        )
+        ORDER BY e."projectId", e."streamPosition"
+        LIMIT ${batchSize}`;
+      if (!missing.length) continue;
+      const events = await this.prisma.domainEvent.findMany({ where: { eventId: { in: missing.map((m) => m.eventId) } } });
+      for (const event of events) {
+        const plan = consumer.deliveryFor(metaFromEvent(event));
+        const status = plan.action === 'dispatch' ? 'pending' : consumer.kind === 'unordered' ? 'succeeded' : 'pending';
+        try {
+          await this.prisma.outboxDelivery.create({
+            data: {
+              eventId: event.eventId, projectId: event.projectId, consumer: cat.consumer, consumerKind: consumer.kind,
+              streamPosition: event.streamPosition, deliveryAction: plan.action, status,
+              ...(plan.action === 'dispatch' && plan.payload !== undefined ? { payload: plan.payload } : {}),
+            },
+          });
+          created++;
+        } catch (err) {
+          // a concurrent scanner already created it (unique) — fine
+          if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002')) throw err;
         }
-        if (missing.length < batchSize) break; // last (partial) batch — nothing more to scan
       }
     }
     return created;
