@@ -269,9 +269,10 @@ assert "the additive migration wrote NO receipts — a legacy client that sends 
 assert "the OutboxDelivery / ProcessedEvent / ProjectionCursor tables exist" \
   "SELECT ((to_regclass('\"OutboxDelivery\"') IS NOT NULL) AND (to_regclass('\"ProcessedEvent\"') IS NOT NULL) AND (to_regclass('\"ProjectionCursor\"') IS NOT NULL))::text;" \
   "true"
-assert "the delivery FK to DomainEvent + the (eventId, consumer) unique are database-enforced" \
-  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname='OutboxDelivery_eventId_fkey' AND contype='f')::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname='OutboxDelivery_eventId_consumer_key')::text;" \
-  "1|1"
+# (PR B replaces the event-only FK with the composite coordinate FK — asserted in the PR B block below.)
+assert "the (eventId, consumer) unique is database-enforced" \
+  "SELECT COUNT(*) FROM pg_indexes WHERE indexname='OutboxDelivery_eventId_consumer_key';" \
+  "1"
 assert "the delivery status / consumerKind / cursor-status CHECKs exist (NO ambiguous 'failed' status)" \
   "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('OutboxDelivery_status_check','OutboxDelivery_consumerKind_check','ProjectionCursor_status_check');" \
   "3"
@@ -287,6 +288,35 @@ assert "the seven referential edges (5/6/7) are now ON DELETE SET NULL (confdelt
 assert "the guarded/blocking edges stay NO ACTION ('a'): Decision node-guard + Inspection/GateOverride activity-block" \
   "SELECT string_agg(confdeltype, '' ORDER BY conname) FROM pg_constraint WHERE conname IN ('Decision_projectId_nodeId_fkey','GateOverride_projectId_activityId_fkey','Inspection_projectId_activityId_fkey');" \
   "aaa"
+
+# Phase 2 fix-forward PR B — durable outbox reliability. Additive + constraint-strengthening over a
+# legacy (event-free) DB: the durable consumer catalog, the composite coordinate FK binding a
+# delivery to its event's real coordinates, the catalog FK binding a delivery to a declared
+# contract, the dispatch/noop action, and the persisted dispatch intent. Row-free here.
+assert "the durable catalog / operator-action / cutover-state tables exist" \
+  "SELECT ((to_regclass('\"OutboxConsumerCatalog\"') IS NOT NULL) AND (to_regclass('\"OutboxOperatorAction\"') IS NOT NULL) AND (to_regclass('\"OutboxCutoverState\"') IS NOT NULL))::text;" \
+  "true"
+assert "the two existing consumer contracts were seeded (v1, unordered/external)" \
+  "SELECT string_agg(consumer || '=' || \"consumerKind\" || '/' || \"consumerEffect\" || '/v' || \"catalogVersion\", ',' ORDER BY consumer) FROM \"OutboxConsumerCatalog\";" \
+  "socket.invalidation=unordered/external/v1,webpush.notify=unordered/external/v1"
+assert "DomainEvent.dispatchIntent + OutboxDelivery.deliveryAction columns were added" \
+  "SELECT ((SELECT COUNT(*) FROM information_schema.columns WHERE table_name='DomainEvent' AND column_name='dispatchIntent')=1 AND (SELECT COUNT(*) FROM information_schema.columns WHERE table_name='OutboxDelivery' AND column_name='deliveryAction')=1)::text;" \
+  "true"
+assert "the event-only delivery FK was replaced by the composite (eventId, projectId, streamPosition) FK" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname='OutboxDelivery_eventId_fkey')::text || '|' || (SELECT COUNT(*) FROM pg_constraint WHERE conname='OutboxDelivery_eventId_projectId_streamPosition_fkey' AND contype='f')::text;" \
+  "0|1"
+assert "the DomainEvent composite candidate key backing that FK exists" \
+  "SELECT COUNT(*) FROM pg_indexes WHERE indexname='DomainEvent_eventId_projectId_streamPosition_key';" \
+  "1"
+assert "the (consumer, consumerKind) delivery-to-catalog FK is database-enforced" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname='OutboxDelivery_consumer_consumerKind_fkey' AND contype='f';" \
+  "1"
+assert "the deliveryAction / catalog kind-effect-pair / cutover-singleton CHECKs exist" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('OutboxDelivery_deliveryAction_check','OutboxConsumerCatalog_kind_effect_check','OutboxCutoverState_singleton_check');" \
+  "3"
+assert "PR B wrote NO deliveries over an event-free legacy DB (row-free capability add)" \
+  "SELECT COUNT(*) FROM \"OutboxDelivery\";" \
+  "0"
 
 echo ""
 if [ "$FAIL" = "0" ]; then
