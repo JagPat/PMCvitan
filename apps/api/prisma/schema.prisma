@@ -128,11 +128,20 @@ model DomainEvent {
   correlationId   String?
   causedByEventId String?
   payload         Json?
+  // Phase 2 fix-forward PR B — immutable dispatch metadata recorded at commit time: what external
+  // consequences (socket invalidate / push body+roles) the command requested. NOT a projection
+  // result and NEVER mutated after insert. NULL = a pre-intent legacy event (the scanner treats it
+  // as an external no-op; it never invents a historical push). PR C supplies the final per-command
+  // catalog; PR B persists a compatibility intent (effectKey 'compat.task6').
+  dispatchIntent  Json?
   // Composite tenant FK → Project(orgId, id): a forged organizationId (not the project's own
   // org) is rejected by the DB. RESTRICT — an append-only event outlives soft-deletes.
   tenant          Project  @relation(fields: [organizationId, projectId], references: [orgId, id], onDelete: Restrict, onUpdate: Cascade)
 
   @@unique([projectId, streamPosition])
+  // Candidate key the OutboxDelivery composite FK references (PR B) — a delivery's copied
+  // (projectId, streamPosition) can no longer disagree with its event's real coordinates.
+  @@unique([eventId, projectId, streamPosition])
   @@index([projectId, streamPosition])
   @@index([eventType])
   deliveries      OutboxDelivery[]
@@ -147,11 +156,18 @@ model DomainEvent {
 // is NO ambiguous 'failed'. Contract: at-least-once delivery, effectively-once DB effects.
 model OutboxDelivery {
   id             String      @id @default(uuid())
-  event          DomainEvent @relation(fields: [eventId], references: [eventId], onDelete: Cascade)
+  // PR B — the composite FK binds the copied (projectId, streamPosition) to the event's REAL
+  // coordinates, so a forged/mismatched delivery coordinate is rejected by PostgreSQL. Replaces
+  // the Task-6 event-only FK. Cascade delete only ever fires for a disposable TRUNCATE reset.
+  event          DomainEvent @relation(fields: [eventId, projectId, streamPosition], references: [eventId, projectId, streamPosition], onDelete: Cascade, onUpdate: Cascade)
   eventId        String
   projectId      String
   consumer       String
   consumerKind   String // 'ordered' | 'unordered'
+  // PR B — every registered consumer gets a row for every event: 'dispatch' invokes the consumer,
+  // 'noop' records the event was deliberately irrelevant (so an ordered cursor never waits behind
+  // a stream position for which no row exists). Closed set; no inferred representation.
+  deliveryAction String    @default("dispatch") // 'dispatch' | 'noop'
   streamPosition BigInt // copied from the event; ordered consumers checkpoint on it
   status         String    @default("pending") // 'pending' | 'leased' | 'succeeded' | 'dead'
   attempts       Int       @default(0)
@@ -162,10 +178,62 @@ model OutboxDelivery {
   payload        Json? // consumer-specific dispatch data (e.g. Web Push {body, roles})
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+  // PR B — a restrictive composite FK to the durable consumer catalog: a delivery's
+  // (consumer, consumerKind) must name a declared catalog contract, and a catalog row that still
+  // has deliveries cannot be deleted (Restrict). Deactivation stops new obligations, never deletes.
+  catalog        OutboxConsumerCatalog @relation(fields: [consumer, consumerKind], references: [consumer, consumerKind], onDelete: Restrict, onUpdate: Cascade)
 
   @@unique([eventId, consumer]) // exactly one delivery row per (event, consumer)
   @@index([consumer, status, nextAttemptAt]) // the relay's claim scan
   @@index([consumer, projectId, streamPosition]) // an ordered consumer's per-project stream
+}
+
+// Phase 2 fix-forward PR B — the DURABLE consumer catalog. The relational pair
+// (active OutboxConsumerCatalog row × DomainEvent row) is the obligation: exactly one
+// OutboxDelivery must exist for it. This survives a process crash / rolling deploy without mutating
+// the append-only DomainEvent — the scanner derives missing deliveries from this catalog. A changed
+// kind/effect/version is a startup error requiring an explicit migration (never a silent reinterpret).
+model OutboxConsumerCatalog {
+  consumer       String   @id
+  consumerKind   String // 'ordered' | 'unordered'
+  consumerEffect String // 'db' | 'external'
+  catalogVersion Int // the consumer CONTRACT version, not an app release
+  active         Boolean  @default(true)
+  registeredAt   DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deliveries     OutboxDelivery[]
+
+  @@unique([consumer, consumerKind]) // the composite the OutboxDelivery FK references
+}
+
+// Phase 2 fix-forward PR B — a durable audit row for every operator dead-letter action
+// (retry/redrive). Written IN THE SAME transaction as the action it records. Never stores event
+// payloads or secrets.
+model OutboxOperatorAction {
+  id               String   @id @default(uuid())
+  action           String // e.g. 'retry'
+  deliveryId       String?
+  consumer         String?
+  projectId        String?
+  eventId          String?
+  operatorIdentity String
+  reason           String
+  priorError       String?
+  at               DateTime @default(now())
+
+  @@index([at])
+}
+
+// Phase 2 fix-forward PR B — declared now, sealed in PR C. A singleton row (CHECK key='singleton')
+// records the external-effect coverage version that outbox-mode startup must match. PR B only
+// declares the table; the audited seal transaction and the null-intent rejection trigger land in PR C.
+model OutboxCutoverState {
+  key             String   @id // singleton — CHECK (key = 'singleton')
+  coverageVersion String
+  sealedAt        DateTime @default(now())
+  sealedBy        String
+  reason          String
+  updatedAt       DateTime @updatedAt
 }
 
 // Phase 2 Task 6 — a database consumer records one ProcessedEvent per (consumer, eventId) IN THE
