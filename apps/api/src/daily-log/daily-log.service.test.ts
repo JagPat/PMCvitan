@@ -3,6 +3,7 @@ import { DailyLogService } from './daily-log.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { RealtimeGateway } from '../realtime/realtime.gateway';
+import { ActivityParticipant } from '../activities/activity.participant';
 import type { AuthUser } from '../common/auth';
 
 const user: AuthUser = { sub: 'u1', role: 'engineer', projectId: 'p1' } as AuthUser;
@@ -24,7 +25,7 @@ describe('DailyLogService — latest-log selection', () => {
       $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
         typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
     };
-    const svc = new DailyLogService(prisma as unknown as PrismaService, {} as SnapshotService, {} as RealtimeGateway, { today: () => '2026-07-03' });
+    const svc = new DailyLogService(prisma as unknown as PrismaService, {} as SnapshotService, {} as RealtimeGateway, { today: () => '2026-07-03' }, new ActivityParticipant());
 
     await expect(svc.flagMismatch('p1', { decisionId: 'DL-1' }, user)).rejects.toThrow('No daily log');
 

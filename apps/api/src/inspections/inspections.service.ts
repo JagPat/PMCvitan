@@ -17,6 +17,7 @@ import type { CreateInspectionInput, DecideReviewInput, SubmitInspectionInput } 
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
+import { ActivityParticipant } from '../activities/activity.participant';
 
 /** Corrective work is executed by these roles — a reinspection assignee must hold one
  *  as an ACTIVE membership (a PMC may assign themselves EXPLICITLY; see decide()). */
@@ -32,6 +33,11 @@ export class InspectionsService {
     private readonly snapshot: SnapshotService,
     private readonly realtime: RealtimeGateway,
     @Inject(CLOCK) private readonly clock: Clock,
+    // Task 7 — the activities module's workflow participant: a CLOSING inspection's
+    // decision writes the linked activity's sign-off/revert THROUGH it (edges 2/3), so
+    // the Activity write stays in the activities module while this decision orchestrates
+    // it in ONE transaction with the inspection CAS.
+    private readonly activities: ActivityParticipant,
   ) {}
 
   /** PMC issues a stage checklist — becomes the engineer's current field checklist.
@@ -167,20 +173,11 @@ export class InspectionsService {
         });
         if (count === 0) throw new ConflictException('The inspection changed while deciding — reload and retry');
         if (activity) {
-          // approving the closing inspection IS the completion: awaiting_signoff → done,
-          // stamping the sign-off civil day. CAS — a concurrent reject cannot half-win.
-          const today = this.clock.today(project!.timeZone);
-          const done = await tx.activity.updateMany({
-            where: { id: activity.id, projectId, status: 'awaiting_signoff' },
-            data: { status: 'done', doneAt: fromIsoCivilDate(today) },
-          });
-          if (done.count === 0) {
-            // the one legitimate non-awaiting state: a LEGACY activity that was already
-            // done before sign-off control existed — record the sign-off day, never re-transition
-            const row = await tx.activity.findUnique({ where: { id: activity.id }, select: { status: true, doneAt: true } });
-            if (row?.status !== 'done') throw new ConflictException('The activity changed while signing off — reload and retry');
-            if (!row.doneAt) await tx.activity.update({ where: { id: activity.id }, data: { doneAt: fromIsoCivilDate(today) } });
-          }
+          // approving the closing inspection IS the completion (edge 2): awaiting_signoff
+          // → done, stamping the sign-off civil day, via the activities participant so the
+          // Activity write lives in its owning module. CAS — a concurrent reject cannot
+          // half-win; a legacy already-`done` activity just gets its sign-off day recorded.
+          await this.activities.applySignOff(tx, { projectId, activityId: activity.id, doneOn: fromIsoCivilDate(this.clock.today(project!.timeZone)) });
           await recordAudit(tx, { projectId, actor, action: 'activity.signoff', entity: 'Activity', entityId: activity.id, payload: { closingInspectionId: inspectionId } });
         }
         await tx.notification.create({ data: { projectId, text: pushBody, color: '#3F7A54', time: 'just now' } });
@@ -283,14 +280,11 @@ export class InspectionsService {
             },
           });
           if (activity) {
-            // rejecting the sign-off returns the activity to EXECUTION. `done` is included
-            // for legacy closings: reopening a pre-Task-5 done activity here is the PMC's
-            // attributable decision, never a migration guess.
-            const revert = await tx.activity.updateMany({
-              where: { id: activity.id, projectId, status: { in: ['awaiting_signoff', 'done'] } },
-              data: { status: 'in_progress', doneAt: null },
-            });
-            if (revert.count === 0) throw new ConflictException('The activity changed while rejecting the sign-off — reload and retry');
+            // rejecting the sign-off returns the activity to EXECUTION (edge 3), via the
+            // activities participant so the Activity write lives in its owning module.
+            // `done` is included for legacy closings: reopening a pre-Task-5 done activity
+            // here is the PMC's attributable decision, never a migration guess.
+            await this.activities.revertSignOff(tx, { projectId, activityId: activity.id });
             await recordAudit(tx, { projectId, actor, action: 'activity.signoff_rejected', entity: 'Activity', entityId: activity.id, payload: { closingInspectionId: inspectionId, reinspectionId: childId, assigneeId } });
           }
           await tx.notification.create({ data: { projectId, text: pushBody, color: '#B23A34', time: 'just now' } });

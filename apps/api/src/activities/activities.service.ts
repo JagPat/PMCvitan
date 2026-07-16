@@ -17,6 +17,7 @@ import type { CreateActivityInput, OverrideGateInput, UpdateActivityInput } from
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
+import { InspectionParticipant } from '../inspections/inspection.participant';
 
 @Injectable()
 export class ActivitiesService {
@@ -25,6 +26,10 @@ export class ActivitiesService {
     private readonly snapshot: SnapshotService,
     private readonly realtime: RealtimeGateway,
     @Inject(CLOCK) private readonly clock: Clock,
+    // Task 7 — the inspections module's workflow participant: completion (edge 1)
+    // creates the linked closing inspection THROUGH it, so the Inspection write stays
+    // in the inspections module while this activity workflow orchestrates it atomically.
+    private readonly inspections: InspectionParticipant,
   ) {}
 
   /** Planned civil dates for a write: prefer explicit ISO input; else derive from the
@@ -160,10 +165,12 @@ export class ActivitiesService {
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
     try {
-      // drawings reference activities through a NO ACTION composite FK — unlink
-      // first (a drawing outlives its planned activity), then delete atomically
+      // Task 7 (edge 5): a drawing outlives its planned activity — the
+      // Drawing(projectId, activityId) FK is now ON DELETE SET NULL (activityId), so the
+      // database unlinks governed drawings when the activity is deleted. No cross-module
+      // write here. Inspections/overrides keep their NO ACTION FKs and still BLOCK the
+      // delete (surfaced as the Conflict below), so a referenced activity is never lost.
       await this.prisma.$transaction(async (tx) => {
-        await tx.drawing.updateMany({ where: { projectId, activityId }, data: { activityId: null } });
         await tx.activity.delete({ where: { id: activityId } });
         await recordAudit(tx, { projectId, actor, action: 'activity.delete', entity: 'Activity', entityId: activityId });
         await emitEvent(tx, { projectId, actor, eventType: 'activity.deleted', entityType: 'Activity', entityId: activityId });
@@ -309,27 +316,16 @@ export class ActivitiesService {
           },
         });
         if (count === 0) throw new ConflictException('The activity changed while completing — reload and retry');
-        await tx.inspection.create({
-          // the closing inspection happens at the same place as the work it closes;
-          // ONE default item makes rejection possible (a zero-item review could only ever be approved)
-          data: {
-            id: closingId,
-            projectId,
-            kind: 'review',
-            closing: true,
-            activityId,
-            title: `Closing inspection: ${a.name}`,
-            zone: a.zone,
-            nodeId: a.nodeId,
-            date: ddMmmYyyy(fromIsoCivilDate(today)!),
-            inspectionDate: fromIsoCivilDate(today),
-            submitted: true,
-            decided: false,
-            by: actor.actorName,
-            submittedById: actor.actorId,
-            submittedByName: actor.actorName,
-            items: { create: [{ name: 'Work complete and acceptable', order: 0, photos: 0, note: '' }] },
-          },
+        // The closing inspection is an ATOMIC WORKFLOW participant (Task 7, edge 1):
+        // the inspections module owns the Inspection write, invoked here on THIS
+        // transaction so the claim + closing inspection commit or roll back together.
+        await this.inspections.createClosingInspection(tx, {
+          closingId,
+          projectId,
+          activity: { id: activityId, name: a.name, zone: a.zone, nodeId: a.nodeId },
+          actor,
+          inspectionDate: fromIsoCivilDate(today),
+          dateLabel: ddMmmYyyy(fromIsoCivilDate(today)!),
         });
         await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${a.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'activity.complete_requested', entity: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } });

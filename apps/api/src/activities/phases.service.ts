@@ -59,7 +59,9 @@ export class PhasesService {
     const p = await this.prisma.phase.findUnique({ where: { id: phaseId } });
     if (!p || p.projectId !== projectId) throw new NotFoundException('Phase not found');
     await this.prisma.$transaction(async (tx) => {
-      await tx.activity.updateMany({ where: { phaseId }, data: { phaseId: null } });
+      // Edge 6 (Task 7): the Activity(projectId, phaseId) FK is now ON DELETE SET NULL
+      // (phaseId), so deleting the phase detaches its activities in the database — no
+      // cross-module write here (they render in the flat list once unfiled).
       await tx.phase.delete({ where: { id: phaseId } });
       await recordAudit(tx, { projectId, actor, action: 'phase.delete', entity: 'Phase', entityId: phaseId });
       await emitEvent(tx, { projectId, actor, eventType: 'phase.removed', entityType: 'Phase', entityId: phaseId });

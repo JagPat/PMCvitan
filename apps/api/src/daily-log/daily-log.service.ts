@@ -13,6 +13,7 @@ import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { resolveActor } from '../common/actor';
+import { ActivityParticipant } from '../activities/activity.participant';
 
 @Injectable()
 export class DailyLogService {
@@ -21,6 +22,10 @@ export class DailyLogService {
     private readonly snapshot: SnapshotService,
     private readonly realtime: RealtimeGateway,
     @Inject(CLOCK) private readonly clock: Clock,
+    // Task 7 — the activities module's workflow participant: a material mismatch blocks
+    // the linked activities THROUGH it (edge 4), so the Activity write stays in the
+    // activities module while this flag orchestrates it under the readiness lock.
+    private readonly activities: ActivityParticipant,
   ) {}
 
   /** Flag a material as not matching its locked decision → block the linked activity.
@@ -41,11 +46,11 @@ export class DailyLogService {
       if (!mat) throw new NotFoundException(`No material linked to ${input.decisionId}`);
       matName = mat.name;
 
-      const activities = await tx.activity.findMany({ where: { projectId, decisionId: input.decisionId } });
       await tx.siteMaterial.update({ where: { id: mat.id }, data: { matched: false } });
-      for (const a of activities) {
-        await tx.activity.update({ where: { id: a.id }, data: { gateMaterial: 'fail', status: a.status === 'done' ? a.status : 'blocked', block: 'Material ≠ approved' } });
-      }
+      // Edge 4 (Task 7): the linked activities are blocked THROUGH the activities
+      // participant, in this same locked transaction — the Activity write lives in its
+      // owning module while this flag orchestrates the material→readiness workflow.
+      await this.activities.blockForMaterialMismatch(tx, { projectId, decisionId: input.decisionId });
       await tx.notification.create({ data: { projectId, text: `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, color: '#B23A34', time: 'just now' } });
       await recordAudit(tx, { projectId, actor, action: 'material.mismatch', entity: 'SiteMaterial', entityId: mat.id });
       await emitEvent(tx, { projectId, actor, eventType: 'material.mismatch_flagged', entityType: 'SiteMaterial', entityId: mat.id, payload: { decisionId: input.decisionId } });

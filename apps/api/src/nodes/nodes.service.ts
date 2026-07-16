@@ -109,18 +109,15 @@ export class NodesService {
     if (attached > 0) {
       throw new BadRequestException(`Move or remove the ${attached} decision(s) under this location before deleting it.`);
     }
-    // The (projectId, nodeId) FKs are NO ACTION (a composite SET NULL would null
-    // the owning projectId too), so unfiling is service-owned: clear every
-    // reference in the doomed subtree in the SAME transaction as the delete —
-    // the records stay, they just become unplaced (Codex gate finding 4).
-    const inSubtree = { projectId, nodeId: { in: subtree } };
+    // Edge 7 (Task 7): the (projectId, nodeId) FKs across the five placed domains
+    // (activity, inspection, media, drawing, siteMaterial) are now ON DELETE SET NULL
+    // (nodeId) — PostgreSQL nulls ONLY the nodeId (leaving the NOT-NULL tenant projectId
+    // intact) as each ProjectNode in the subtree is deleted, so the records stay and just
+    // become unplaced. No cross-module write here. Decisions are excluded on purpose:
+    // their FK stays NO ACTION and the count guard above refuses the delete instead of
+    // silently unfiling them.
     await this.prisma.$transaction(async (tx) => {
-      await tx.activity.updateMany({ where: inSubtree, data: { nodeId: null } });
-      await tx.inspection.updateMany({ where: inSubtree, data: { nodeId: null } });
-      await tx.media.updateMany({ where: inSubtree, data: { nodeId: null } });
-      await tx.drawing.updateMany({ where: inSubtree, data: { nodeId: null } });
-      await tx.siteMaterial.updateMany({ where: inSubtree, data: { nodeId: null } });
-      await tx.projectNode.delete({ where: { id: nodeId } }); // children cascade
+      await tx.projectNode.delete({ where: { id: nodeId } }); // children cascade; FKs unfile placed records
       await emitEvent(tx, { projectId, actor, eventType: 'node.removed', entityType: 'ProjectNode', entityId: nodeId });
     });
     return this.done(projectId, user);

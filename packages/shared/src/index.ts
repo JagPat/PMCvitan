@@ -12,5 +12,7 @@ export * from './domain/readiness';
 export * from './domain/policy';
 // Platform: the shared DomainEvent envelope + catalog (Phase 2 Task 4)
 export * from './platform/events';
+// Platform: the module registry contract — manifests + validator + enablement (Phase 2 Task 7)
+export * from './platform/module-registry';
 // i18n dictionaries
 export * from './i18n/dictionary';

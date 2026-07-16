@@ -81,22 +81,31 @@ type PushSig = string;
 // The PILLAR mutating services: each owns a domain, writes an EXACT multiset of
 // foreign models (model→count), and emits an EXACT ordered list of `changed`
 // signals. `orgs` is a pillar writer that emits nothing (push:[]).
+// Phase 2 Task 7 UPDATE: every cross-module edge in §1 has been REMOVED from its former
+// writer service — so each pillar service now writes EXACTLY its own domain (foreign: {}).
+// The atomic edges (1–4) route their foreign write through the owning module's leaf
+// WORKFLOW PARTICIPANT (activity.participant / inspection.participant), the referential
+// edges (5–7) became database ON DELETE SET NULL FK actions, and project-init (8) writes
+// through the owning modules' INITIALIZER participants. The manifest-driven boundary check
+// (platform/module-registry/boundary.test.ts) is what now enforces "no foreign write";
+// this classifier keeps the ordered `changed` push signatures + route signatures pinned
+// (both UNCHANGED by Task 7 — no notifyChanged or controller was touched).
 const SERVICES: Record<string, { domain: string; foreign: Record<string, number>; push: PushSig[] }> = {
   'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, push: ['client', 'client', 'pmc,contractor,engineer', 'silent', 'silent'] },
-  // activity completion creates the closing Inspection (1); activity delete unlinks a Drawing (1)
-  'activities/activities.service.ts': { domain: 'activities', foreign: { drawing: 1, inspection: 1 }, push: ['engineer,contractor', 'silent', 'silent', 'silent', 'pmc', 'engineer,contractor', 'silent'] },
-  // phase delete nulls Activity.phaseId (1)
-  'activities/phases.service.ts': { domain: 'phases', foreign: { activity: 1 }, push: ['silent', 'silent'] },
-  // approve writes Activity done+doneAt, reject reverts it, plus the sign-off audit path → 3 Activity writes
-  'inspections/inspections.service.ts': { domain: 'inspections', foreign: { activity: 3 }, push: ['engineer', 'silent', 'dynamic'] },
+  // edge 1 (closing inspection) → inspection.participant; edge 5 (drawing unlink) → FK SET NULL
+  'activities/activities.service.ts': { domain: 'activities', foreign: {}, push: ['engineer,contractor', 'silent', 'silent', 'silent', 'pmc', 'engineer,contractor', 'silent'] },
+  // edge 6 (phase→activity detach) → FK SET NULL (phaseId)
+  'activities/phases.service.ts': { domain: 'phases', foreign: {}, push: ['silent', 'silent'] },
+  // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
+  'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, push: ['engineer', 'silent', 'dynamic'] },
   'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, push: ['engineer,contractor', 'engineer,contractor', 'silent', 'pmc', 'silent'] },
-  // material mismatch writes the linked Activity's stored gate/status/block (1)
-  'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: { activity: 1 }, push: ['pmc,contractor', 'silent', 'silent', 'silent'] },
-  // node delete nulls the (projectId,nodeId) FK across five foreign domains (1 each)
-  'nodes/nodes.service.ts': { domain: 'nodes', foreign: { activity: 1, drawing: 1, inspection: 1, media: 1, siteMaterial: 1 }, push: ['silent'] },
+  // edge 4 (material mismatch block) → activity.participant.blockForMaterialMismatch
+  'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, push: ['pmc,contractor', 'silent', 'silent', 'silent'] },
+  // edge 7 (node unfiling across five domains) → FK SET NULL (nodeId); decisions stay a guarded NO ACTION
+  'nodes/nodes.service.ts': { domain: 'nodes', foreign: {}, push: ['silent'] },
   'media/media.service.ts': { domain: 'media', foreign: {}, push: ['silent', 'silent', 'silent'] },
-  // createProject instantiates structure by writing four foreign domains directly; emits no signal
-  'orgs/orgs.service.ts': { domain: 'orgs', foreign: { activity: 2, inspection: 2, phase: 2, projectNode: 3 }, push: [] },
+  // edge 8 (project-init structure) → node/activity/inspection init participants
+  'orgs/orgs.service.ts': { domain: 'orgs', foreign: {}, push: [] },
 };
 
 // Services that WRITE but are NOT pillar signal emitters. Documented so a new
@@ -123,6 +132,7 @@ const NO_WRITE_SERVICES: Record<string, string> = {
   'media/storage.service.ts': 'blob storage (S3 / dev stub; no DB write)',
   'prisma.service.ts': 'the PrismaClient itself',
   'snapshot/snapshot.service.ts': 'the read-side snapshot builder (no write)',
+  'platform/module-registry/module-registry.service.ts': 'Task 7 — validates the module registry at startup (no DB write)',
 };
 
 const WRITE = /\.(\w+)\.(create|createMany|update|updateMany|delete|deleteMany|upsert)\b/g;

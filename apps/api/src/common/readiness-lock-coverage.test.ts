@@ -46,17 +46,23 @@ const COVERAGE: Record<string, 'locked' | string> = {
     'exempt: membership.create provisions a BRAND-NEW user, who cannot appear in any frozen recipient set or claim',
   'orgs/orgs.service.ts':
     'exempt: writes rows only inside a project being CREATED in the same transaction (creator membership, template copies) — no start can race rows that commit with the project',
-  'nodes/nodes.service.ts':
-    'exempt: unfiles inspection/decision nodeId on node deletion — location is not a readiness input',
   'snapshot/snapshot.service.ts': 'exempt: read-only serialization — names the gates, writes nothing',
+  // Task 7 — the workflow participants are LEAF providers with no lock of their own:
+  // they write a readiness input on the CALLER'S transaction, and every readiness-
+  // affecting caller takes lockProjectReadiness before invoking them.
+  'activities/activity.participant.ts':
+    'exempt: writes gateMaterial/status on the CALLER\'s transaction — the readiness-affecting callers (inspections.decide sign-off/revert, daily-log.flagMismatch block) hold lockProjectReadiness first',
+  'inspections/inspection.participant.ts':
+    'exempt: createClosingInspection runs in activities.complete\'s transaction (unlocked, exactly as that closing-inspection create always was — the file-level tolerance below); createForInit runs during project creation (see the orgs exemption)',
 };
 
+/** service + Task-7 workflow-participant files (both can persist a readiness input). */
 function serviceFiles(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name);
     if (entry.isDirectory()) out.push(...serviceFiles(p));
-    else if (entry.name.endsWith('.service.ts') && !entry.name.includes('.test.')) out.push(p);
+    else if ((entry.name.endsWith('.service.ts') || entry.name.endsWith('.participant.ts')) && !entry.name.includes('.test.')) out.push(p);
   }
   return out;
 }

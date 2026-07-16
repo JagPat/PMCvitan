@@ -76,7 +76,7 @@ describe('project reference integrity (database constraints)', () => {
     expect(media.decisionId).toBe(decisionA.id);
   });
 
-  it('deleting an activity unlinks referencing drawings (service behavior with NO ACTION FKs)', async () => {
+  it('deleting an activity unlinks referencing drawings (Task 7 edge 5: ON DELETE SET NULL FK action)', async () => {
     const act = await t.prisma.activity.create({
       data: { id: uid('act'), projectId: f.projectA.id, name: 'Temp', zone: 'GF', plannedStart: 1, plannedEnd: 2, order: 9 },
     });
@@ -85,17 +85,29 @@ describe('project reference integrity (database constraints)', () => {
     });
     created.drawings.push(drawing.id);
 
-    // the raw delete is now blocked by the composite FK…
-    await expect(t.prisma.activity.delete({ where: { id: act.id } })).rejects.toMatchObject({ code: 'P2003' });
+    // Edge 5 (Task 7): the Drawing(projectId, activityId) FK is now ON DELETE SET NULL
+    // (activityId), so the RAW delete succeeds and the database unlinks the governed
+    // drawing (it survives, unplaced) — no service-owned nulling needed.
+    await t.prisma.activity.delete({ where: { id: act.id } });
+    const after = await t.prisma.drawing.findUnique({ where: { id: drawing.id }, select: { activityId: true, projectId: true } });
+    expect(after?.activityId, 'the drawing is unlinked from the deleted activity').toBeNull();
+    expect(after?.projectId, 'the drawing keeps its tenant projectId').toBe(f.projectA.id);
 
-    // …the service path unlinks first, then deletes
+    // the service DELETE endpoint drives the same FK action and returns 200
+    const act2 = await t.prisma.activity.create({
+      data: { id: uid('act'), projectId: f.projectA.id, name: 'Temp2', zone: 'GF', plannedStart: 1, plannedEnd: 2, order: 10 },
+    });
+    const dr2 = await t.prisma.drawing.create({
+      data: { id: uid('drawing'), projectId: f.projectA.id, number: 'A-904', title: 'Linked2', discipline: 'Architecture', activityId: act2.id },
+    });
+    created.drawings.push(dr2.id);
     const token = t.issueProjectToken(f.memberUser.id, f.projectA.id);
     const request = (await import('supertest')).default;
     await request(t.app.getHttpServer())
-      .delete(`/projects/${f.projectA.id}/activities/${act.id}`)
+      .delete(`/projects/${f.projectA.id}/activities/${act2.id}`)
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    const after = await t.prisma.drawing.findUnique({ where: { id: drawing.id }, select: { activityId: true } });
-    expect(after?.activityId).toBeNull();
+    const after2 = await t.prisma.drawing.findUnique({ where: { id: dr2.id }, select: { activityId: true } });
+    expect(after2?.activityId).toBeNull();
   });
 });
