@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { CLOCK, type Clock } from '../common/clock';
-import { addCivilDays, fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
+import { addCivilDays, fromIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
 import { lockUserCredential } from '../common/credential-lock';
@@ -14,6 +14,13 @@ import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { AuthUser } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
+import {
+  lockInitializationDisplayIds,
+  runSerializableProjectInit,
+  validateInitializationGraph,
+  type InitializationGraph,
+} from './project-initialization';
 
 /** A member of an org's admin roster (owner/admin/member). */
 export interface OrgMemberDto {
@@ -65,6 +72,43 @@ function anchorKindOf(payload: ModulePayload): string | null {
   if (roots.some((r) => r.kind === 'room')) return 'zone';
   return null;
 }
+
+type InitNodeKind = 'zone' | 'room' | 'element';
+type InitSelection = { moduleId: string; count: number; underZone?: string };
+
+interface PreparedInitSource {
+  label: string;
+  rootParentKind: InitNodeKind | null;
+  rootParentName?: string;
+  nodes: Array<{ key: string; parentKey: string | null; name: string; kind: InitNodeKind; order: number }>;
+  phases: Array<{ name: string; order: number; plannedStart: number; plannedEnd: number }>;
+  activities: Array<{
+    name: string;
+    zone: string;
+    plannedStart: number;
+    plannedEnd: number;
+    nodeKey?: string;
+    phaseName?: string;
+    order: number;
+    gateMaterial: string;
+    gateTeam: string;
+    gateInspection: string;
+  }>;
+  inspections: Array<{ title: string; zone: string; nodeKey?: string; items: string[] }>;
+}
+
+interface InitWriteState {
+  targetId: string;
+  userId: string;
+  targetAnchor: string | null;
+  today: string;
+  activityIds: string[];
+  inspectionIds: string[];
+  zoneIdByName: Map<string, string>;
+  phaseIdByName: Map<string, string>;
+}
+
+const normalizedPhaseName = (name: string): string => name.trim().toLocaleLowerCase('en-US');
 
 /**
  * Orgs (accounts) and the projects they own — the multi-tenant admin layer.
@@ -265,27 +309,28 @@ export class OrgsService {
     if (role !== 'owner' && role !== 'admin') {
       throw new ForbiddenException('Only an org owner or admin can create projects');
     }
-    // Resolve + validate EVERY starting-structure source before persisting anything — a
-    // rejected template, stale module pick, or foreign source must fail the whole request,
-    // never strand an orphaned blank project + membership (adversarial review, F1).
-    const selections = [
-      ...(input.templateId ? await this.templateSelections(orgId, input.templateId) : []),
-      ...(input.modules ?? []),
-    ];
-    if (selections.length) await this.assertPlaceable(orgId, selections);
-    if (input.structureFrom) await this.assertSourceProject(orgId, input.structureFrom);
-
     const id = `${slugify(input.short)}-${randomUUID().slice(0, 4)}`;
-    // Real civil dates (Task 6): a new project's schedule anchor defaults to TODAY in
-    // its time zone; templates/copies convert their relative offsets against it.
     const timeZone = input.timeZone ?? 'Asia/Kolkata';
     const scheduleStartDate = input.scheduleStartDate ?? this.clock.today(timeZone);
     const actor = await resolveActor(this.prisma, { sub: userId, role, projectId: id } as unknown as AuthUser);
-    // The project row, its PMC membership and the project.created event commit together — the
-    // AFTER INSERT trigger also creates the ProjectEventStream row in this same transaction, so
-    // a project can never exist without its tenant, its PMC or its event counter. (Copying
-    // structure / instantiating modules keep their own transactions after this core commit.)
-    const project = await this.prisma.$transaction(async (tx) => {
+    const explicitSelections = [...(input.modules ?? [])] as InitSelection[];
+    const targetAnchor = scheduleStartDate;
+    const today = ddMmmYyyy(new Date());
+
+    const project = await runSerializableProjectInit(this.prisma, async (tx) => {
+      const templateSelections = input.templateId ? await this.templateSelections(tx, orgId, input.templateId) : [];
+      const selections = [...templateSelections, ...explicitSelections];
+      const source = input.structureFrom ? await this.loadSourceStructure(tx, orgId, input.structureFrom) : null;
+      const modules = selections.length ? await this.loadModuleCopies(tx, orgId, selections) : [];
+      const sources = [...(source ? [source] : []), ...modules];
+
+      validateInitializationGraph('Project initialization', this.initializationGraph(sources));
+      await lockInitializationDisplayIds(tx);
+      const [allActivityIds, allInspectionIds] = await Promise.all([
+        tx.activity.findMany({ select: { id: true } }),
+        tx.inspection.findMany({ select: { id: true } }),
+      ]);
+
       const p = await tx.project.create({
         data: {
           id,
@@ -307,28 +352,36 @@ export class OrgsService {
       // the creator runs the project as its PMC
       await tx.membership.create({ data: { projectId: id, userId, role: 'pmc', status: 'active' } });
       await emitEvent(tx, { projectId: id, actor, eventType: 'project.created', entityType: 'Project', entityId: id, payload: { name: input.name } });
+
+      const state: InitWriteState = {
+        targetId: id,
+        userId,
+        targetAnchor,
+        today,
+        activityIds: allActivityIds.map((row) => row.id),
+        inspectionIds: allInspectionIds.map((row) => row.id),
+        zoneIdByName: new Map<string, string>(),
+        phaseIdByName: new Map<string, string>(),
+      };
+      await this.createInitializationPhases(tx, sources, state);
+      if (source) await this.copyStructure(tx, source, state);
+      if (modules.length) await this.instantiateModules(tx, modules, state);
       return p;
     });
-    // Templates Slice 1: optionally start from another project's structure instead of a blank slate
-    if (input.structureFrom) await this.copyStructure(orgId, input.structureFrom, id, userId);
-    // Templates Slice 2+3: compose from org modules — a named preset expands first, then any
-    // à-la-carte picks; all sources union (structureFrom included).
-    if (selections.length) await this.instantiateModules(orgId, id, userId, selections);
     return { id: project.id, name: project.name, short: project.short };
   }
 
   /** The Slice-1 source guard: a structure source must be an unarchived project in this org. */
-  private async assertSourceProject(orgId: string, sourceId: string): Promise<void> {
-    const source = await this.prisma.project.findUnique({ where: { id: sourceId }, select: { orgId: true, archivedAt: true } });
+  private async assertSourceProject(tx: Prisma.TransactionClient, orgId: string, sourceId: string): Promise<void> {
+    const source = await tx.project.findUnique({ where: { id: sourceId }, select: { orgId: true, archivedAt: true } });
     if (!source || source.orgId !== orgId || source.archivedAt) throw new NotFoundException('Source project not found in this org');
   }
 
   /** Every selection's module must be this org's, unarchived, and placeable at create time —
    *  checked BEFORE the project row exists, so a stale pick can never strand an orphan. */
-  private async assertPlaceable(orgId: string, selections: { moduleId: string }[]): Promise<void> {
-    const rows = await this.prisma.templateModule.findMany({
+  private async assertPlaceable(tx: Prisma.TransactionClient, orgId: string, selections: { moduleId: string }[]) {
+    const rows = await tx.templateModule.findMany({
       where: { id: { in: selections.map((s) => s.moduleId) } },
-      select: { id: true, orgId: true, archivedAt: true, anchorKind: true, name: true },
     });
     const byId = new Map(rows.map((r) => [r.id, r]));
     for (const s of selections) {
@@ -338,15 +391,113 @@ export class OrgsService {
         throw new BadRequestException(`"${m.name}" anchors to a room — element modules can't be placed at project creation yet`);
       }
     }
+    return byId;
   }
 
   // ── Templates Slice 3 — named presets (docs/TEMPLATES.md) ───────────────────
 
   /** A preset's module selection, ready for instantiation (org-checked, defaults filled). */
-  private async templateSelections(orgId: string, templateId: string) {
-    const t = await this.prisma.projectTemplate.findUnique({ where: { id: templateId } });
+  private async templateSelections(tx: Prisma.TransactionClient, orgId: string, templateId: string): Promise<InitSelection[]> {
+    const t = await tx.projectTemplate.findUnique({ where: { id: templateId } });
     if (!t || t.orgId !== orgId || t.archivedAt) throw new NotFoundException('Template not found in this org');
-    return z.array(moduleSelectionSchema).parse(t.items ?? []);
+    const parsed = z.array(moduleSelectionSchema).safeParse(t.items ?? []);
+    if (!parsed.success) throw new BadRequestException(`Project initialization: template "${templateId}" has invalid module selections`);
+    return parsed.data;
+  }
+
+  private async loadSourceStructure(tx: Prisma.TransactionClient, orgId: string, sourceId: string): Promise<PreparedInitSource> {
+    await this.assertSourceProject(tx, orgId, sourceId);
+    const [nodes, phases, activities, inspections] = await Promise.all([
+      tx.projectNode.findMany({ where: { projectId: sourceId }, orderBy: { createdAt: 'asc' } }),
+      tx.phase.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
+      tx.activity.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
+      tx.inspection.findMany({ where: { projectId: sourceId, kind: 'checklist' }, include: { items: { orderBy: { order: 'asc' } } } }),
+    ]);
+    const phaseNameById = new Map(phases.map((phase) => [phase.id, phase.name]));
+    return {
+      label: `source project "${sourceId}"`,
+      rootParentKind: null,
+      nodes: nodes.map((node) => ({ key: node.id, parentKey: node.parentId, name: node.name, kind: node.kind as InitNodeKind, order: node.order })),
+      phases: phases.map((phase) => ({ name: phase.name, order: phase.order, plannedStart: phase.plannedStart, plannedEnd: phase.plannedEnd })),
+      activities: activities.map((activity) => ({
+        name: activity.name,
+        zone: activity.zone,
+        plannedStart: activity.plannedStart,
+        plannedEnd: activity.plannedEnd,
+        ...(activity.nodeId ? { nodeKey: activity.nodeId } : {}),
+        ...(activity.phaseId ? { phaseName: phaseNameById.get(activity.phaseId) ?? `unresolved:${activity.phaseId}` } : {}),
+        order: activity.order,
+        gateMaterial: activity.gateMaterial === 'na' ? 'na' : 'wait',
+        gateTeam: activity.gateTeam === 'na' ? 'na' : 'wait',
+        gateInspection: activity.gateInspection === 'na' ? 'na' : 'wait',
+      })),
+      inspections: inspections.map((inspection) => ({
+        title: inspection.title,
+        zone: inspection.zone,
+        ...(inspection.nodeId ? { nodeKey: inspection.nodeId } : {}),
+        items: inspection.items.map((item) => item.name),
+      })),
+    };
+  }
+
+  private async loadModuleCopies(tx: Prisma.TransactionClient, orgId: string, selections: InitSelection[]): Promise<PreparedInitSource[]> {
+    const modulesById = await this.assertPlaceable(tx, orgId, selections);
+    const sources: PreparedInitSource[] = [];
+    for (const [selectionIndex, selection] of selections.entries()) {
+      const row = modulesById.get(selection.moduleId)!;
+      const parsed = modulePayloadSchema.safeParse(row.payload ?? {});
+      if (!parsed.success) throw new BadRequestException(`Project initialization: module "${row.name}" has an invalid payload`);
+      for (let copy = 1; copy <= selection.count; copy += 1) {
+        const suffix = selection.count > 1 ? ` ${copy}` : '';
+        const label = `module "${row.name}" selection ${selectionIndex + 1} copy ${copy}`;
+        sources.push({
+          label,
+          rootParentKind: row.anchorKind === 'zone' ? 'zone' : null,
+          ...(row.anchorKind === 'zone' ? { rootParentName: selection.underZone ?? 'Ground Floor' } : {}),
+          nodes: parsed.data.nodes.map((node) => ({
+            key: node.key,
+            parentKey: node.parentKey,
+            name: node.parentKey ? node.name : `${node.name}${suffix}`,
+            kind: node.kind,
+            order: node.order,
+          })),
+          phases: parsed.data.phases,
+          activities: parsed.data.activities.map((activity) => ({
+            ...activity,
+            name: `${activity.name}${suffix}`,
+            gateMaterial: 'wait',
+            gateTeam: 'wait',
+            gateInspection: 'wait',
+          })),
+          inspections: parsed.data.inspections.map((inspection) => ({ ...inspection, title: `${inspection.title}${suffix}` })),
+        });
+      }
+    }
+    return sources;
+  }
+
+  private initializationGraph(sources: PreparedInitSource[]): InitializationGraph {
+    return {
+      nodes: sources.flatMap((source) => source.nodes.map((node) => ({
+        source: source.label,
+        key: node.key,
+        parentKey: node.parentKey,
+        kind: node.kind,
+        ...(!node.parentKey ? { rootParentKind: source.rootParentKind } : {}),
+      }))),
+      phases: sources.flatMap((source) => source.phases.map((phase) => ({ source: source.label, ...phase }))),
+      activities: sources.flatMap((source) => source.activities.map((activity) => ({
+        source: source.label,
+        name: activity.name,
+        ...(activity.nodeKey ? { nodeKey: activity.nodeKey } : {}),
+        ...(activity.phaseName ? { phaseName: activity.phaseName } : {}),
+      }))),
+      inspections: sources.flatMap((source) => source.inspections.map((inspection) => ({
+        source: source.label,
+        title: inspection.title,
+        ...(inspection.nodeKey ? { nodeKey: inspection.nodeKey } : {}),
+      }))),
+    };
   }
 
   /** The org's named presets, with module names resolved for display (any org member). */
@@ -527,7 +678,7 @@ export class OrgsService {
 
   /** Build a module payload from a live project (same-org, unarchived) — see createModule. */
   private async extractPayload(orgId: string, sourceId: string, fromNodeId?: string): Promise<ModulePayload> {
-    await this.assertSourceProject(orgId, sourceId);
+    await this.assertSourceProject(this.prisma, orgId, sourceId);
 
     const allNodes = await this.prisma.projectNode.findMany({ where: { projectId: sourceId }, orderBy: { createdAt: 'asc' } });
     let nodes = allNodes;
@@ -597,131 +748,11 @@ export class OrgsService {
    * Everything lands as drafts authored by the creator, same as Slice 1.
    */
   private async instantiateModules(
-    orgId: string,
-    targetId: string,
-    userId: string,
-    selections: { moduleId: string; count: number; underZone?: string }[],
+    tx: Prisma.TransactionClient,
+    sources: PreparedInitSource[],
+    state: InitWriteState,
   ): Promise<void> {
-    // Task 6: same offset->date conversion as copyStructure (module payload ints are relative)
-    const target = await this.prisma.project.findUniqueOrThrow({ where: { id: targetId }, select: { scheduleStartDate: true } });
-    const targetAnchor = toIsoCivilDate(target.scheduleStartDate);
-    const datesFor = (start: number, end: number) =>
-      targetAnchor
-        ? { plannedStartDate: fromIsoCivilDate(addCivilDays(targetAnchor, start)), plannedEndDate: fromIsoCivilDate(addCivilDays(targetAnchor, end)) }
-        : {};
-    const [allActIds, allInspIds] = await Promise.all([
-      this.prisma.activity.findMany({ select: { id: true } }),
-      this.prisma.inspection.findMany({ select: { id: true } }),
-    ]);
-    const actIds = allActIds.map((a) => a.id);
-    const newActId = (): string => { const id = nextSeqId('ACT-', actIds); actIds.push(id); return id; };
-    const inspIds = allInspIds.map((i) => i.id);
-    const newInspId = (): string => { const id = nextSeqId('INSP-', inspIds); inspIds.push(id); return id; };
-    const today = ddMmmYyyy(new Date());
-
-    await this.prisma.$transaction(async (tx) => {
-      // zones already created into the target (by structureFrom, or a prior selection) — by name
-      const zoneIdByName = new Map<string, string>();
-      for (const z of await tx.projectNode.findMany({ where: { projectId: targetId, kind: 'zone' } })) {
-        zoneIdByName.set(z.name, z.id);
-      }
-      const zoneFor = async (name: string): Promise<string> => {
-        const existing = zoneIdByName.get(name);
-        if (existing) return existing;
-        const created = await this.nodeInit.createForInit(tx, {
-          data: { projectId: targetId, parentId: null, name, kind: 'zone', order: zoneIdByName.size, publishedAt: null, authorId: userId },
-        });
-        zoneIdByName.set(name, created.id);
-        return created.id;
-      };
-      const phaseIdByName = new Map<string, string>();
-
-      for (const sel of selections) {
-        const row = await this.prisma.templateModule.findUnique({ where: { id: sel.moduleId } });
-        if (!row || row.orgId !== orgId || row.archivedAt) throw new NotFoundException('Module not found in this org');
-        const payload = modulePayloadSchema.parse(row.payload ?? {});
-        if (row.anchorKind === 'room') {
-          throw new BadRequestException(`"${row.name}" anchors to a room — element modules can't be placed at project creation yet`);
-        }
-
-        for (let copy = 1; copy <= sel.count; copy++) {
-          const suffix = sel.count > 1 ? ` ${copy}` : '';
-          // root nodes graft to the top level (zone roots) or under the chosen zone (room roots)
-          const rootParentId = row.anchorKind === 'zone' ? await zoneFor(sel.underZone ?? 'Ground Floor') : null;
-
-          const keyToId = new Map<string, string>();
-          let remaining = [...payload.nodes];
-          while (remaining.length) {
-            const batch = remaining.filter((n) => !n.parentKey || keyToId.has(n.parentKey));
-            if (batch.length === 0) break; // malformed payload parentage — skip rather than loop
-            for (const n of batch) {
-              const created = await this.nodeInit.createForInit(tx, {
-                data: {
-                  projectId: targetId,
-                  parentId: n.parentKey ? (keyToId.get(n.parentKey) ?? null) : rootParentId,
-                  name: n.parentKey ? n.name : `${n.name}${suffix}`,
-                  kind: n.kind,
-                  order: n.order,
-                  publishedAt: null,
-                  authorId: userId,
-                },
-              });
-              keyToId.set(n.key, created.id);
-              if (n.kind === 'zone' && !n.parentKey) zoneIdByName.set(`${n.name}${suffix}`, created.id);
-            }
-            remaining = remaining.filter((n) => !keyToId.has(n.key));
-          }
-
-          for (const p of payload.phases) {
-            if (phaseIdByName.has(p.name)) continue; // phases merge by name across modules/copies
-            const created = await this.activityInit.createPhaseForInit(tx, {
-              data: { projectId: targetId, name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd, ...datesFor(p.plannedStart, p.plannedEnd) },
-            });
-            phaseIdByName.set(p.name, created.id);
-          }
-
-          for (const a of payload.activities) {
-            await this.activityInit.createForInit(tx, {
-              data: {
-                id: newActId(),
-                projectId: targetId,
-                name: `${a.name}${suffix}`,
-                zone: a.zone,
-                status: 'not_started',
-                plannedStart: a.plannedStart,
-                plannedEnd: a.plannedEnd,
-                ...datesFor(a.plannedStart, a.plannedEnd),
-                gateMaterial: 'wait',
-                gateTeam: 'wait',
-                gateInspection: 'wait',
-                decisionId: null,
-                phaseId: a.phaseName ? (phaseIdByName.get(a.phaseName) ?? null) : null,
-                nodeId: a.nodeKey ? (keyToId.get(a.nodeKey) ?? null) : null,
-                order: a.order,
-              },
-            });
-          }
-
-          for (const i of payload.inspections) {
-            await this.inspectionInit.createForInit(tx, {
-              data: {
-                id: newInspId(),
-                projectId: targetId,
-                kind: 'checklist',
-                title: `${i.title}${suffix}`,
-                zone: i.zone,
-                by: null,
-                date: today,
-                submitted: false,
-                decided: false,
-                nodeId: i.nodeKey ? (keyToId.get(i.nodeKey) ?? null) : null,
-                items: { create: i.items.map((name, idx) => ({ name, order: idx })) },
-              },
-            });
-          }
-        }
-      }
-    });
+    for (const source of sources) await this.writeInitializationSource(tx, source, state);
   }
 
   /**
@@ -741,111 +772,124 @@ export class OrgsService {
    * The source must be an unarchived project in the SAME org (the caller already proved
    * org owner/admin authority, and org admins can operate every org project).
    */
-  private async copyStructure(orgId: string, sourceId: string, targetId: string, userId: string): Promise<void> {
-    await this.assertSourceProject(orgId, sourceId);
-    // Task 6: legacy ints ARE relative offsets; the target's real dates come from ITS
-    // schedule anchor + offset — absolute source dates are never copied across projects.
-    const target = await this.prisma.project.findUniqueOrThrow({ where: { id: targetId }, select: { scheduleStartDate: true } });
-    const targetAnchor = toIsoCivilDate(target.scheduleStartDate);
+  private async copyStructure(tx: Prisma.TransactionClient, source: PreparedInitSource, state: InitWriteState): Promise<void> {
+    await this.writeInitializationSource(tx, source, state);
+  }
+
+  private async createInitializationPhases(tx: Prisma.TransactionClient, sources: PreparedInitSource[], state: InitWriteState): Promise<void> {
     const datesFor = (start: number, end: number) =>
-      targetAnchor
-        ? { plannedStartDate: fromIsoCivilDate(addCivilDays(targetAnchor, start)), plannedEndDate: fromIsoCivilDate(addCivilDays(targetAnchor, end)) }
+      state.targetAnchor
+        ? { plannedStartDate: fromIsoCivilDate(addCivilDays(state.targetAnchor, start)), plannedEndDate: fromIsoCivilDate(addCivilDays(state.targetAnchor, end)) }
         : {};
-
-    const [nodes, phases, activities, inspections, allActIds, allInspIds] = await Promise.all([
-      this.prisma.projectNode.findMany({ where: { projectId: sourceId }, orderBy: { createdAt: 'asc' } }),
-      this.prisma.phase.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
-      this.prisma.activity.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
-      this.prisma.inspection.findMany({ where: { projectId: sourceId, kind: 'checklist' }, include: { items: { orderBy: { order: 'asc' } } } }),
-      this.prisma.activity.findMany({ select: { id: true } }), // display ids are global (DATA-01) — allocate against ALL rows
-      this.prisma.inspection.findMany({ select: { id: true } }),
-    ]);
-
-    // Display ids (ACT-###/INSP-###) allocated up-front against the global sequence.
-    const actIds = allActIds.map((a) => a.id);
-    const newActId = (): string => { const id = nextSeqId('ACT-', actIds); actIds.push(id); return id; };
-    const inspIds = allInspIds.map((i) => i.id);
-    const newInspId = (): string => { const id = nextSeqId('INSP-', inspIds); inspIds.push(id); return id; };
-    const stripGate = (g: string): string => (g === 'na' ? 'na' : 'wait');
-    const today = ddMmmYyyy(new Date());
-
-    const nodeIdMap = new Map<string, string>();
-    const phaseIdMap = new Map<string, string>();
-
-    await this.prisma.$transaction(async (tx) => {
-      // Nodes parents-first so the parent FK always resolves; the copy lands as one draft
-      // branch (publish cascades reveal it zone-by-zone as the PMC firms it up).
-      let remaining = [...nodes];
-      while (remaining.length) {
-        const batch = remaining.filter((n) => !n.parentId || nodeIdMap.has(n.parentId));
-        if (batch.length === 0) break; // orphaned rows (shouldn't happen) — skip, never loop forever
-        for (const n of batch) {
-          const created = await this.nodeInit.createForInit(tx, {
-            data: {
-              projectId: targetId,
-              parentId: n.parentId ? (nodeIdMap.get(n.parentId) ?? null) : null,
-              name: n.name,
-              kind: n.kind,
-              order: n.order,
-              publishedAt: null, // the skeleton arrives as a private draft
-              authorId: userId,
-            },
-          });
-          nodeIdMap.set(n.id, created.id);
-        }
-        remaining = remaining.filter((n) => !nodeIdMap.has(n.id));
-      }
-
-      for (const p of phases) {
+    for (const source of sources) {
+      for (const phase of source.phases) {
+        const phaseKey = normalizedPhaseName(phase.name);
+        if (state.phaseIdByName.has(phaseKey)) continue;
         const created = await this.activityInit.createPhaseForInit(tx, {
-          data: { projectId: targetId, name: p.name, order: p.order, plannedStart: p.plannedStart, plannedEnd: p.plannedEnd, ...datesFor(p.plannedStart, p.plannedEnd) },
-        });
-        phaseIdMap.set(p.id, created.id);
-      }
-
-      for (const a of activities) {
-        await this.activityInit.createForInit(tx, {
           data: {
-            id: newActId(),
-            projectId: targetId,
-            name: a.name,
-            zone: a.zone,
-            status: 'not_started',
-            plannedStart: a.plannedStart,
-            plannedEnd: a.plannedEnd,
-            ...datesFor(a.plannedStart, a.plannedEnd),
-            actualStart: null,
-            actualEnd: null,
-            block: null,
-            gateMaterial: stripGate(a.gateMaterial) as never,
-            gateTeam: stripGate(a.gateTeam) as never,
-            gateInspection: stripGate(a.gateInspection) as never,
-            decisionId: null, // decisions aren't copied in Slice 1 — the D-gate derives as 'na'
-            phaseId: a.phaseId ? (phaseIdMap.get(a.phaseId) ?? null) : null,
-            nodeId: a.nodeId ? (nodeIdMap.get(a.nodeId) ?? null) : null,
-            order: a.order,
+            projectId: state.targetId,
+            name: phase.name,
+            order: phase.order,
+            plannedStart: phase.plannedStart,
+            plannedEnd: phase.plannedEnd,
+            ...datesFor(phase.plannedStart, phase.plannedEnd),
           },
         });
+        state.phaseIdByName.set(phaseKey, created.id);
       }
+    }
+  }
 
-      for (const i of inspections) {
-        await this.inspectionInit.createForInit(tx, {
+  private async writeInitializationSource(tx: Prisma.TransactionClient, source: PreparedInitSource, state: InitWriteState): Promise<void> {
+    const datesFor = (start: number, end: number) =>
+      state.targetAnchor
+        ? { plannedStartDate: fromIsoCivilDate(addCivilDays(state.targetAnchor, start)), plannedEndDate: fromIsoCivilDate(addCivilDays(state.targetAnchor, end)) }
+        : {};
+    const required = (map: Map<string, string>, key: string, kind: string): string => {
+      const id = map.get(key);
+      if (!id) throw new Error(`${source.label}: unresolved ${kind} "${key}" after graph validation`);
+      return id;
+    };
+    const zoneFor = async (name: string): Promise<string> => {
+      const existing = state.zoneIdByName.get(name);
+      if (existing) return existing;
+      const created = await this.nodeInit.createForInit(tx, {
+        data: { projectId: state.targetId, parentId: null, name, kind: 'zone', order: state.zoneIdByName.size, publishedAt: null, authorId: state.userId },
+      });
+      state.zoneIdByName.set(name, created.id);
+      return created.id;
+    };
+
+    const rootParentId = source.rootParentName ? await zoneFor(source.rootParentName) : null;
+    const nodeIdByKey = new Map<string, string>();
+    let remaining = [...source.nodes];
+    while (remaining.length) {
+      const batch = remaining.filter((node) => !node.parentKey || nodeIdByKey.has(node.parentKey));
+      if (!batch.length) throw new Error(`${source.label}: unresolved node creation state for "${remaining[0]!.key}"`);
+      for (const node of batch) {
+        const created = await this.nodeInit.createForInit(tx, {
           data: {
-            id: newInspId(),
-            projectId: targetId,
-            kind: 'checklist',
-            title: i.title,
-            zone: i.zone,
-            by: null,
-            date: today,
-            submitted: false,
-            decided: false,
-            nodeId: i.nodeId ? (nodeIdMap.get(i.nodeId) ?? null) : null,
-            items: { create: i.items.map((it, idx) => ({ name: it.name, order: idx })) },
+            projectId: state.targetId,
+            parentId: node.parentKey ? required(nodeIdByKey, node.parentKey, 'parent key') : rootParentId,
+            name: node.name,
+            kind: node.kind,
+            order: node.order,
+            publishedAt: null,
+            authorId: state.userId,
           },
         });
+        nodeIdByKey.set(node.key, created.id);
+        if (node.kind === 'zone') state.zoneIdByName.set(node.name, created.id);
       }
-    });
+      remaining = remaining.filter((node) => !nodeIdByKey.has(node.key));
+    }
+
+    for (const activity of source.activities) {
+      const id = nextSeqId('ACT-', state.activityIds);
+      state.activityIds.push(id);
+      await this.activityInit.createForInit(tx, {
+        data: {
+          id,
+          projectId: state.targetId,
+          name: activity.name,
+          zone: activity.zone,
+          status: 'not_started',
+          plannedStart: activity.plannedStart,
+          plannedEnd: activity.plannedEnd,
+          ...datesFor(activity.plannedStart, activity.plannedEnd),
+          actualStart: null,
+          actualEnd: null,
+          block: null,
+          gateMaterial: activity.gateMaterial as never,
+          gateTeam: activity.gateTeam as never,
+          gateInspection: activity.gateInspection as never,
+          decisionId: null,
+          phaseId: activity.phaseName ? required(state.phaseIdByName, normalizedPhaseName(activity.phaseName), 'phase name') : null,
+          nodeId: activity.nodeKey ? required(nodeIdByKey, activity.nodeKey, 'node key') : null,
+          order: activity.order,
+        },
+      });
+    }
+
+    for (const inspection of source.inspections) {
+      const id = nextSeqId('INSP-', state.inspectionIds);
+      state.inspectionIds.push(id);
+      await this.inspectionInit.createForInit(tx, {
+        data: {
+          id,
+          projectId: state.targetId,
+          kind: 'checklist',
+          title: inspection.title,
+          zone: inspection.zone,
+          by: null,
+          date: state.today,
+          submitted: false,
+          decided: false,
+          nodeId: inspection.nodeKey ? required(nodeIdByKey, inspection.nodeKey, 'node key') : null,
+          items: { create: inspection.items.map((name, index) => ({ name, order: index })) },
+        },
+      });
+    }
   }
 
   /** Edit a project's details (name/stage/dates…). The project's PMC or an org

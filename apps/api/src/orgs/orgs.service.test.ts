@@ -5,10 +5,121 @@ import { NodeInitParticipant } from '../nodes/node-init.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { PrismaService } from '../prisma.service';
+import { Prisma } from '@prisma/client';
 
 /** Task 7 — the project-init participants are leaf providers (no deps); a fresh instance
  *  per construction lets these unit tests drive createProject through the same mock tx. */
 const initParticipants = () => [new NodeInitParticipant(), new ActivityParticipant(), new InspectionParticipant()] as const;
+
+function makeAtomicProjectInit(throwFromInspection = false) {
+  const created = {
+    projects: [] as Record<string, unknown>[],
+    memberships: [] as Record<string, unknown>[],
+    streams: [] as Record<string, unknown>[],
+    events: [] as Record<string, unknown>[],
+    nodes: [] as Record<string, unknown>[],
+    phases: [] as Record<string, unknown>[],
+    activities: [] as Record<string, unknown>[],
+    inspections: [] as Record<string, unknown>[],
+  };
+  const sourceProject = { id: 'ambli', orgId: 'org1', archivedAt: null };
+  const sourceNodes = [{ id: 'z1', projectId: 'ambli', parentId: null, name: 'Ground Floor', kind: 'zone', order: 0 }];
+  const sourcePhases = [{ id: 'ph1', projectId: 'ambli', name: 'Structure', order: 1, plannedStart: 2, plannedEnd: 8 }];
+  const sourceActivities = [{ id: 'ACT-31', projectId: 'ambli', name: 'Source work', zone: 'GF', plannedStart: 2, plannedEnd: 8, gateMaterial: 'ok', gateTeam: 'wait', gateInspection: 'na', phaseId: 'ph1', nodeId: 'z1', order: 0 }];
+  const sourceInspections = [{ id: 'INSP-22', projectId: 'ambli', kind: 'checklist', title: 'Source QA', zone: 'GF', nodeId: 'z1', items: [{ name: 'Check', order: 0 }] }];
+  const module = {
+    id: 'mod-kitchen', orgId: 'org1', archivedAt: null, name: 'Kitchen', anchorKind: 'zone',
+    payload: { nodes: [{ key: 'k', parentKey: null, name: 'Kitchen', kind: 'room', order: 0 }], phases: [], activities: [], inspections: [] },
+  };
+  const template = { id: 'tpl-house', orgId: 'org1', archivedAt: null, items: [{ moduleId: 'mod-kitchen', count: 1, underZone: 'Ground Floor' }] };
+  let rowId = 0;
+
+  const tx = {
+    $executeRaw: vi.fn(async () => 0),
+    project: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => where.id === 'ambli' ? sourceProject : null),
+      findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1', scheduleStartDate: new Date('2026-07-03T00:00:00.000Z') })),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        created.projects.push(data);
+        created.streams.push({ projectId: data.id });
+        return data;
+      }),
+    },
+    membership: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.memberships.push(data); return data; }) },
+    projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
+    domainEvent: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { eventId: 'evt-test', ...data }; created.events.push(row); return row; }) },
+    projectTemplate: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => where.id === template.id ? template : null) },
+    templateModule: {
+      findMany: vi.fn(async () => [module]),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => where.id === module.id ? module : null),
+    },
+    projectNode: {
+      findMany: vi.fn(async ({ where }: { where: { projectId: string } }) => where.projectId === 'ambli' ? sourceNodes : created.nodes),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `node-${++rowId}`, ...data }; created.nodes.push(row); return row; }),
+    },
+    phase: {
+      findMany: vi.fn(async () => sourcePhases),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `phase-${++rowId}`, ...data }; created.phases.push(row); return row; }),
+    },
+    activity: {
+      findMany: vi.fn(async ({ where }: { where?: { projectId?: string } } = {}) => where?.projectId === 'ambli' ? sourceActivities : [{ id: 'ACT-40' }]),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.activities.push(data); return data; }),
+    },
+    inspection: {
+      findMany: vi.fn(async ({ where }: { where?: { projectId?: string } } = {}) => where?.projectId === 'ambli' ? sourceInspections : [{ id: 'INSP-22' }]),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.inspections.push(data); return data; }),
+    },
+  };
+
+  const topLevel = {
+    project: {
+      findUnique: vi.fn(async () => sourceProject),
+      findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1' })),
+    },
+    projectTemplate: { findUnique: vi.fn(async () => template) },
+    templateModule: {
+      findMany: vi.fn(async () => [module]),
+      findUnique: vi.fn(async () => module),
+    },
+    projectNode: { findMany: vi.fn(async () => sourceNodes) },
+    phase: { findMany: vi.fn(async () => sourcePhases) },
+    activity: { findMany: vi.fn(async () => sourceActivities) },
+    inspection: { findMany: vi.fn(async () => sourceInspections) },
+  };
+  const prisma = {
+    orgMembership: { findUnique: vi.fn(async () => ({ role: 'owner' })) },
+    user: { findUnique: vi.fn(async () => ({ name: 'Tester' })) },
+    ...topLevel,
+    $transaction: vi.fn(async (run: (client: typeof tx) => Promise<unknown>, options?: unknown) => {
+      const lengths = Object.fromEntries(Object.entries(created).map(([key, rows]) => [key, rows.length]));
+      try {
+        return await run(tx);
+      } catch (error) {
+        for (const [key, rows] of Object.entries(created)) rows.length = lengths[key]!;
+        throw error;
+      }
+    }),
+  };
+  const nodeInit = { createForInit: vi.fn((client, args) => client.projectNode.create(args)) };
+  const activityInit = {
+    createForInit: vi.fn((client, args) => client.activity.create(args)),
+    createPhaseForInit: vi.fn((client, args) => client.phase.create(args)),
+  };
+  const inspectionInit = {
+    createForInit: vi.fn(async (client, args) => {
+      if (throwFromInspection) throw new Error('injected inspection failure');
+      return client.inspection.create(args);
+    }),
+  };
+  const svc = new OrgsService(
+    prisma as unknown as PrismaService,
+    { today: () => '2026-07-03' },
+    nodeInit as unknown as NodeInitParticipant,
+    activityInit as unknown as ActivityParticipant,
+    inspectionInit as unknown as InspectionParticipant,
+  );
+  return { svc, prisma, tx, topLevel, created, participants: { nodeInit, activityInit, inspectionInit } };
+}
 
 function make(orgRole: string | null) {
   const projects: unknown[] = [];
@@ -38,6 +149,9 @@ function make(orgRole: string | null) {
     user: { findUnique: vi.fn(async () => ({ name: 'Tester' })) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    activity: { findMany: vi.fn(async () => []) },
+    inspection: { findMany: vi.fn(async () => []) },
+    $executeRaw: vi.fn(async () => 0),
     $transaction: vi.fn(async (arg: unknown) =>
       typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
   };
@@ -68,6 +182,56 @@ describe('OrgsService.createProject', () => {
     await expect(
       svc.createProject('org1', 'stranger', { name: 'X', short: 'X', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '' }),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('uses one Serializable transaction for every initialization read and participant write', async () => {
+    const { svc, prisma, tx, topLevel, participants } = makeAtomicProjectInit();
+
+    await svc.createProject('org1', 'u1', {
+      name: 'Atomic Villa', short: 'Atomic Villa', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '',
+      structureFrom: 'ambli', templateId: 'tpl-house',
+    } as never);
+
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
+    expect(prisma.$transaction.mock.calls[0]![1]).toEqual({ isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    for (const delegate of Object.values(topLevel)) {
+      for (const method of Object.values(delegate)) expect(method).not.toHaveBeenCalled();
+    }
+    expect(tx.project.findUnique).toHaveBeenCalled();
+    expect(tx.projectTemplate.findUnique).toHaveBeenCalled();
+    expect(tx.templateModule.findMany.mock.calls.length + tx.templateModule.findUnique.mock.calls.length).toBeGreaterThan(0);
+    expect(tx.activity.findMany).toHaveBeenCalled();
+    expect(tx.inspection.findMany).toHaveBeenCalled();
+    const projectWriteOrder = tx.project.create.mock.invocationCallOrder[0]!;
+    for (const readOrLock of [
+      tx.project.findUnique,
+      tx.projectTemplate.findUnique,
+      tx.templateModule.findMany,
+      tx.projectNode.findMany,
+      tx.phase.findMany,
+      tx.activity.findMany,
+      tx.inspection.findMany,
+      tx.$executeRaw,
+    ]) {
+      expect(Math.max(...readOrLock.mock.invocationCallOrder)).toBeLessThan(projectWriteOrder);
+    }
+    for (const participant of [participants.nodeInit, participants.activityInit, participants.inspectionInit]) {
+      for (const method of Object.values(participant)) {
+        for (const call of method.mock.calls) expect(call[0]).toBe(tx);
+      }
+    }
+  });
+
+  it('rolls back the project and every initialized collection when a participant throws after a node write', async () => {
+    const { svc, created } = makeAtomicProjectInit(true);
+    const originalLengths = Object.fromEntries(Object.entries(created).map(([key, rows]) => [key, rows.length]));
+
+    await expect(svc.createProject('org1', 'u1', {
+      name: 'Rollback Villa', short: 'Rollback Villa', descriptor: '', stage: 'Planning', siteCode: '', projStart: '', projEnd: '',
+      structureFrom: 'ambli', templateId: 'tpl-house',
+    } as never)).rejects.toThrow('injected inspection failure');
+
+    for (const [key, rows] of Object.entries(created)) expect(rows).toHaveLength(originalLengths[key]!);
   });
 });
 
@@ -444,13 +608,28 @@ function makeCopy(source: {
   const created = { nodes: [] as Record<string, unknown>[], phases: [] as Record<string, unknown>[], activities: [] as Record<string, unknown>[], inspections: [] as Record<string, unknown>[] };
   let cuid = 0;
   const tx = {
-    projectNode: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-n${++cuid}`, ...data }; created.nodes.push(row); return row; }) },
-    phase: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-p${++cuid}`, ...data }; created.phases.push(row); return row; }) },
-    activity: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.activities.push(data); return data; }) },
-    inspection: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.inspections.push(data); return data; }) },
-    // the createProject CORE transaction (project + PMC membership + project.created event, Task 4)
-    // runs through this same tx before copyStructure/instantiateModules do their own transactions
-    project: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data), findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1' })) },
+    $executeRaw: vi.fn(async () => 0),
+    projectNode: {
+      findMany: vi.fn(async () => source.nodes ?? []),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-n${++cuid}`, ...data }; created.nodes.push(row); return row; }),
+    },
+    phase: {
+      findMany: vi.fn(async () => source.phases ?? []),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-p${++cuid}`, ...data }; created.phases.push(row); return row; }),
+    },
+    activity: {
+      findMany: vi.fn(async ({ where }: { where?: { projectId?: string } } = {}) => where?.projectId ? (source.activities ?? []) : [{ id: 'ACT-31' }, { id: 'ACT-40' }]),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.activities.push(data); return data; }),
+    },
+    inspection: {
+      findMany: vi.fn(async ({ where }: { where?: { projectId?: string } } = {}) => where?.projectId ? (source.inspections ?? []) : [{ id: 'INSP-22' }]),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.inspections.push(data); return data; }),
+    },
+    project: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
+      findUnique: vi.fn(async () => (source.sourceProject === undefined ? { orgId: 'org1', archivedAt: null } : source.sourceProject)),
+      findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1' })),
+    },
     membership: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
@@ -571,18 +750,35 @@ function makeModules(opts: {
   const created = { nodes: [] as Record<string, unknown>[], phases: [] as Record<string, unknown>[], activities: [] as Record<string, unknown>[], inspections: [] as Record<string, unknown>[], modules: [] as Record<string, unknown>[] };
   let cuid = 0;
   const tx = {
+    $executeRaw: vi.fn(async () => 0),
     projectNode: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-n${++cuid}`, ...data }; created.nodes.push(row); return row; }),
-      findMany: vi.fn(async () => created.nodes.filter((n) => n.kind === 'zone')), // zones already in the target
+      findMany: vi.fn(async () => opts.sourceNodes ?? []),
     },
-    phase: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-p${++cuid}`, ...data }; created.phases.push(row); return row; }) },
-    activity: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.activities.push(data); return data; }) },
-    inspection: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.inspections.push(data); return data; }) },
-    // the createProject CORE transaction (project + PMC membership + project.created event, Task 4)
-    project: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data), findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1' })) },
+    phase: {
+      findMany: vi.fn(async () => []),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: `new-p${++cuid}`, ...data }; created.phases.push(row); return row; }),
+    },
+    activity: {
+      findMany: vi.fn(async () => []),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.activities.push(data); return data; }),
+    },
+    inspection: {
+      findMany: vi.fn(async ({ where }: { where?: { kind?: string } } = {}) => where?.kind === 'checklist' ? (opts.sourceInspections ?? []) : []),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.inspections.push(data); return data; }),
+    },
+    project: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
+      findUnique: vi.fn(async () => ({ orgId: 'org1', archivedAt: null })),
+      findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org1' })),
+    },
     membership: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    templateModule: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (opts.modules ?? []).find((m) => m.id === where.id) ?? null),
+      findMany: vi.fn(async () => opts.modules ?? []),
+    },
   };
   const prisma = {
     orgMembership: { findUnique: vi.fn(async () => (opts.orgRole === undefined ? { role: 'owner' } : opts.orgRole ? { role: opts.orgRole } : null)) },
