@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { NodesService } from './nodes.service';
+import { DecisionsQueryService } from '../decisions/decisions.query';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -60,7 +61,7 @@ function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
   const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-  const svc = new NodesService(prisma, snapshot, dispatcher);
+  const svc = new NodesService(prisma, snapshot, dispatcher, new DecisionsQueryService(prisma as unknown as PrismaService));
   const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
   return { svc, prisma, nodes, user };
 }

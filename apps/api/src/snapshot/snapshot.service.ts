@@ -1,12 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { deriveReadiness, type DecisionStatus, type ReadinessOverride } from '../domain/transitions';
+import { deriveReadiness, type ReadinessOverride } from '../domain/transitions';
 import { toIsoCivilDate } from '../common/civil-date';
+import { DecisionsQueryService } from '../decisions/decisions.query';
 import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice } from '../domain/notifications';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
-import type { ActivityDto, DecisionDto, PhaseDto, SnapshotDto } from './types';
+import type { ActivityDto, PhaseDto, SnapshotDto } from './types';
 
 const ACTIVITY_STATUS_OUT: Record<string, ActivityDto['status']> = {
   not_started: 'not-started',
@@ -22,6 +23,8 @@ export class SnapshotService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly signed: SignedUrlService,
+    // Task 8 — decisions are read through their module's query, never `prisma.decision` here.
+    private readonly decisionsQuery: DecisionsQueryService,
   ) {}
 
   /** Build the full project snapshot the frontend hydrates its store from.
@@ -31,13 +34,10 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisions, activities, inspections, dailyLog, notifications, siteMedia, drawings, phases, companies, nodes, allMaterials, activeMembers, gateOverrides] = await Promise.all([
-      this.prisma.decision.findMany({
-        where: { projectId },
-        // the OPEN change request travels with a reopened decision (Phase 1 Task 2)
-        include: { options: { orderBy: { order: 'asc' } }, changeRequests: { where: { status: 'open' }, take: 1 } },
-        orderBy: { id: 'desc' },
-      }),
+    const [decisionSlice, activities, inspections, dailyLog, notifications, siteMedia, drawings, phases, companies, nodes, allMaterials, activeMembers, gateOverrides] = await Promise.all([
+      // Task 8 — the decisions slice comes from the module's query (role-filtered DTOs + an
+      // id→status map for readiness), not a direct `prisma.decision` read.
+      this.decisionsQuery.snapshotSlice(projectId, role, userId),
       this.prisma.activity.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
       this.prisma.inspection.findMany({
         where: { projectId },
@@ -107,46 +107,13 @@ export class SnapshotService {
       kind: m.kind,
     }));
 
+    // Task 8 — the role-filtered decision DTOs + the unfiltered id→status map both come from the
+    // decisions query (the serialization moved there verbatim, so this slice is byte-identical).
+    const decisionDtos = decisionSlice.decisions;
+    const decisionStatuses = decisionSlice.statuses;
+    // pmc/client see pending decisions; every other role has them hidden — the same predicate also
+    // drops the pending-decision notice from the bell for those roles (AUTH-02, below).
     const hidePending = role !== 'pmc' && role !== 'client';
-    const decisionDtos: DecisionDto[] = decisions
-      .filter((d) => {
-        // Draft → Publish: an unpublished decision is author-private — it is delivered ONLY
-        // to its creator, never to the client or anyone else. Enforced here (server-side),
-        // not merely hidden in the UI, so a draft's title can't leak through any surface.
-        if (d.publishedAt === null) return !!userId && d.authorId === userId;
-        // AUTH-02: only pmc/client see published-but-pending decisions.
-        return !(hidePending && d.status === 'pending');
-      })
-      .map((d) => ({
-        id: d.id,
-        title: d.title,
-        room: d.room,
-        nodeId: d.nodeId ?? undefined,
-        status: d.status,
-        draft: d.publishedAt === null,
-        ageDays: d.ageDays ?? undefined,
-        photoSwatch: d.photoSwatch,
-        approvedOption: d.approvedOption ?? undefined,
-        material: d.material ?? undefined,
-        approver: d.approver ?? undefined,
-        onBehalfOf: d.onBehalfOf ?? undefined,
-        date: d.date ?? undefined,
-        cost: d.cost ?? undefined,
-        // a reopened decision carries its open request so every surface can show
-        // WHY it awaits re-approval (reason + impacts) without a second query
-        changeRequest: d.status === 'change' && d.changeRequests[0]
-          ? { reason: d.changeRequests[0].reason, costImpact: d.changeRequests[0].costImpact, timeImpactDays: d.changeRequests[0].timeImpactDays, requestedById: d.changeRequests[0].requestedById ?? undefined }
-          : undefined,
-        options: d.options.map((o) => ({
-          label: o.label,
-          key: o.optionKey,
-          material: o.material,
-          delta: o.delta,
-          swatch: o.swatch,
-          photoUrl: o.photoUrl ?? undefined,
-          recommended: o.recommended,
-        })),
-      }));
 
     // Readiness (Task 6): a gate dot is a CONCLUSION from explicit recorded
     // relationships — derived per activity from the rows already loaded above,
@@ -192,7 +159,7 @@ export class SnapshotService {
       gi: a.gateInspection,
       block: a.block ?? undefined,
       readiness: deriveReadiness(a.id, {
-        decisionStatus: a.decisionId ? ((decisions.find((d) => d.id === a.decisionId)?.status as DecisionStatus) ?? null) : null,
+        decisionStatus: a.decisionId ? (decisionStatuses.get(a.decisionId) ?? null) : null,
         gateMaterial: a.gateMaterial,
         gateTeam: a.gateTeam,
         inspections: readinessInspections,

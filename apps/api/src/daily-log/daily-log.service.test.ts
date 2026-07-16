@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { DailyLogService } from './daily-log.service';
+import { DecisionsQueryService } from '../decisions/decisions.query';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -25,7 +26,7 @@ describe('DailyLogService — latest-log selection', () => {
       $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
         typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
     };
-    const svc = new DailyLogService(prisma as unknown as PrismaService, {} as SnapshotService, { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher, { today: () => '2026-07-03' }, new ActivityParticipant());
+    const svc = new DailyLogService(prisma as unknown as PrismaService, {} as SnapshotService, new DecisionsQueryService(prisma as unknown as PrismaService), { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher, { today: () => '2026-07-03' }, new ActivityParticipant());
 
     await expect(svc.flagMismatch('p1', { decisionId: 'DL-1' }, user)).rejects.toThrow('No daily log');
 

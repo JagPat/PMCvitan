@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
+import { DecisionsQueryService } from '../decisions/decisions.query';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -20,6 +21,8 @@ export class DailyLogService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly snapshot: SnapshotService,
+    // Task 8 — a linked material's decision is validated through the decisions query.
+    private readonly decisions: DecisionsQueryService,
     // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
     private readonly dispatcher: ExternalEffectDispatcher,
     @Inject(CLOCK) private readonly clock: Clock,
@@ -91,8 +94,7 @@ export class DailyLogService {
     if (!log) throw new NotFoundException('No daily log for this project — start one first');
     if (log.submitted) throw new ConflictException('This log is already submitted — start a new day first');
     if (input.decisionId) {
-      const d = await this.prisma.decision.findUnique({ where: { id: input.decisionId } });
-      if (!d || d.projectId !== projectId) throw new BadRequestException('Unknown decision for this project');
+      if (!(await this.decisions.existsInProject(projectId, input.decisionId))) throw new BadRequestException('Unknown decision for this project');
     }
     // Location spine: validate the place this material was delivered to.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);

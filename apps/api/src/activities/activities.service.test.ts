@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ActivitiesService } from './activities.service';
+import { DecisionsQueryService } from '../decisions/decisions.query';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -102,7 +103,7 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({ ok: true })) } as unknown as SnapshotService;
   const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-  const svc = new ActivitiesService(prisma, snapshot, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant());
+  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService), dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant());
   const user = { sub: 'u-eng', role: 'engineer' } as AuthUser;
   return { svc, prisma, user, inspectionCreates, activityUpdates, audits, activity };
 }

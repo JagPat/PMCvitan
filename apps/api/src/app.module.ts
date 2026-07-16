@@ -17,6 +17,7 @@ import { PasswordCredentialsService } from './auth/password-credentials.service'
 import { SnapshotService } from './snapshot/snapshot.service';
 import { ProjectController } from './snapshot/project.controller';
 import { DecisionsService } from './decisions/decisions.service';
+import { DecisionsQueryService } from './decisions/decisions.query';
 import { DecisionsController } from './decisions/decisions.controller';
 import { ActivitiesService } from './activities/activities.service';
 import { ActivitiesController } from './activities/activities.controller';
@@ -93,6 +94,9 @@ import { NodeInitParticipant } from './nodes/node-init.participant';
     PasswordCredentialsService,
     SnapshotService,
     DecisionsService,
+    // Task 8 — the decisions module's public READ boundary; every other module's decision read goes
+    // through this query provider, never `prisma.decision` directly (the module owns its repository).
+    DecisionsQueryService,
     ActivitiesService,
     PhasesService,
     InspectionsService,

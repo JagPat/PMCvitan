@@ -11,6 +11,7 @@ import { emitEvent } from '../platform/events';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
+import { DecisionsQueryService } from '../decisions/decisions.query';
 import type { AuthUser } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
@@ -138,6 +139,8 @@ export class OrgsService {
     private readonly nodeInit: NodeInitParticipant,
     private readonly activityInit: ActivityParticipant,
     private readonly inspectionInit: InspectionParticipant,
+    // Task 8 — the portfolio's pending-decision tile count comes from the decisions query.
+    private readonly decisions: DecisionsQueryService,
   ) {}
 
   /** Org role of a user, or null if not a member. */
@@ -1051,7 +1054,7 @@ export class OrgsService {
         const [activities, openReviews, pendingDecisions, phaseCount] = await Promise.all([
           this.prisma.activity.findMany({ where: { projectId: project.id }, select: { status: true } }),
           this.prisma.inspection.count({ where: { projectId: project.id, submitted: true, decided: false } }),
-          canSeePending ? this.prisma.decision.count({ where: { projectId: project.id, status: 'pending' } }) : Promise.resolve(0),
+          canSeePending ? this.decisions.countPending(project.id) : Promise.resolve(0),
           this.prisma.phase.count({ where: { projectId: project.id } }),
         ]);
         const done = activities.filter((a) => a.status === 'done').length;
