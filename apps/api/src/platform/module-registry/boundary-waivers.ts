@@ -51,6 +51,13 @@ export const RAW_SQL_WRITE_WAIVERS: ReadonlyArray<RawSqlWriteWaiver> = [
     reason:
       'Atomic lease claim: UPDATE "OutboxDelivery" SET status=leased … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING id — SKIP LOCKED + RETURNING in one statement is not expressible via the Prisma delegate API. Own-module write (platform owns OutboxDelivery).',
   },
+  {
+    file: 'platform/outbox/relay.service.ts',
+    symbol: 'claimExternalRecovery',
+    owner: 'platform',
+    reason:
+      'Legacy/shadow external retry+recovery lease claim: the same atomic UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING id, filtered to due retries / expired leases / stranded fresh rows so the relay backstops the immediate dispatcher (at-least-once) without racing its happy path. SKIP LOCKED + RETURNING is not expressible via the delegate API. Own-module write (platform owns OutboxDelivery).',
+  },
 ];
 
 /** A reviewed, BOUNDED delegate write to another module's model. Keyed by (module, model). */

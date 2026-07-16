@@ -15,23 +15,18 @@ export type ConsumerKind = 'ordered' | 'unordered';
  *  `external` → socket/push, at-least-once, no ProcessedEvent. */
 export type ConsumerEffect = 'db' | 'external';
 
-/** The socket/push sender cutover (Task 6). `legacy` (default) keeps the OLD in-request
- *  `notifyChanged` as the sole sender; `shadow` records the outbox intent WITHOUT sending (old
- *  path still sends); `outbox` makes the outbox consumers the sole sender (old path goes silent).
- *  Exactly one path sends in every mode — that is the exactly-one-active-sender invariant. */
+/** The socket/push sender mode (Task 6 → PR C). The in-request `notifyChanged` is GONE; the outbox
+ *  consumers are the only senders in every mode. WHO invokes them is chosen before invocation:
+ *  `legacy` (default) and `shadow` → the immediate {@link ExternalEffectDispatcher} sends each
+ *  committed delivery post-commit (claiming its lease first), while the background relay owns only
+ *  retries/recovery; `outbox` → the background relay is the sole sender (the immediate path returns
+ *  early). `shadow` additionally logs a plan-vs-catalog comparison but still sends exactly once. The
+ *  delivery lease guarantees exactly one active sender per delivery — even across a mixed-mode fleet. */
 export type OutboxSenderMode = 'legacy' | 'shadow' | 'outbox';
 
 export function outboxSenderMode(): OutboxSenderMode {
   const m = process.env.OUTBOX_SENDER_MODE;
   return m === 'shadow' || m === 'outbox' ? m : 'legacy';
-}
-/** The OLD in-request `notifyChanged` sends in every mode except `outbox`. */
-export function legacyPathSends(): boolean {
-  return outboxSenderMode() !== 'outbox';
-}
-/** The outbox external consumers send ONLY at cutover. */
-export function outboxPathSends(): boolean {
-  return outboxSenderMode() === 'outbox';
 }
 
 /** Immutable dispatch metadata persisted on the event at commit time (PR B): what external

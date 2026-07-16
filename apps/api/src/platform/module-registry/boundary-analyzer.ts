@@ -49,10 +49,27 @@ export interface BoundaryFinding {
   readonly route?: string;
 }
 
-/** The Prisma delegate write methods (a call to one of these mutates rows). */
+/** The Prisma delegate write methods (a call to one of these mutates rows). Includes the
+ *  `*AndReturn` variants (Prisma ≥6, PostgreSQL, GA — no preview flag), which also insert/update. */
 export const WRITE_METHODS: ReadonlySet<string> = new Set([
   'create',
   'createMany',
+  'createManyAndReturn',
+  'update',
+  'updateMany',
+  'updateManyAndReturn',
+  'upsert',
+  'delete',
+  'deleteMany',
+]);
+
+/** Prisma NESTED write operations — inside a write's `data`/`create`/`update`, a relation field
+ *  keyed to one of these mutates the RELATED model's table (never a delegate call of its own), so the
+ *  analyzer must attribute the write to that related model or a cross-module nested write is invisible. */
+const NESTED_WRITE_OPS: ReadonlySet<string> = new Set([
+  'create',
+  'createMany',
+  'connectOrCreate',
   'update',
   'updateMany',
   'upsert',
@@ -94,6 +111,20 @@ export const DEFAULT_DIR_TO_MODULE: Readonly<Record<string, string>> = {
 /** Every Prisma model's delegate name (camelCase first letter), as `PrismaService` exposes it. */
 export function prismaModelDelegates(): Set<string> {
   return new Set(Prisma.dmmf.datamodel.models.map((m) => m.name.charAt(0).toLowerCase() + m.name.slice(1)));
+}
+
+/** `delegate (lower-first) -> { relationField -> related delegate (lower-first) }`, from the DMMF.
+ *  A Prisma NESTED write (`data: { <relation>: { create|update|delete|… } }`) mutates the RELATED
+ *  model's table, so the analyzer resolves the relation field to the foreign delegate through this. */
+export function prismaModelRelations(): Map<string, Map<string, string>> {
+  const toDelegate = (n: string): string => n.charAt(0).toLowerCase() + n.slice(1);
+  const out = new Map<string, Map<string, string>>();
+  for (const m of Prisma.dmmf.datamodel.models) {
+    const rels = new Map<string, string>();
+    for (const f of m.fields) if (f.kind === 'object') rels.set(f.name, toDelegate(f.type));
+    out.set(toDelegate(m.name), rels);
+  }
+  return out;
 }
 
 /** Compare the DMMF model set to the union of manifest `ownsModels` — exact equality required. */
@@ -187,6 +218,17 @@ export function analyzeRoutes(
   }
   for (const [route, ctrls] of derived) if (ctrls.length > 1) findings.push({ code: 'route-duplicate', message: `route '${route}' is declared by multiple controllers: ${ctrls.join(', ')}`, route });
   for (const [route, mods] of declared) if (mods.length > 1) findings.push({ code: 'route-duplicate', message: `route '${route}' is contributed by multiple manifests: ${mods.join(', ')}`, route });
+  // Param-name-insensitive collision: two routes with the same METHOD + structural path but different
+  // param names (`…/decisions/:id` vs `…/decisions/:decisionId`) are distinct strings yet collide at
+  // Nest runtime. Normalize every param to a positional placeholder and flag a structural duplicate.
+  const structural = new Map<string, Set<string>>();
+  for (const route of derived.keys()) {
+    const norm = route.replace(/:[A-Za-z0-9_]+/g, ':_');
+    (structural.get(norm) ?? structural.set(norm, new Set()).get(norm)!).add(route);
+  }
+  for (const routes of structural.values()) {
+    if (routes.size > 1) findings.push({ code: 'route-structural-duplicate', message: `routes collide structurally (same path, differing param names): ${[...routes].join(' / ')}`, route: [...routes][0] });
+  }
   for (const route of derived.keys()) if (!declared.has(route)) findings.push({ code: 'route-missing-owner', message: `controller route '${route}' is declared by no manifest`, route });
   for (const route of declared.keys()) if (!derived.has(route)) findings.push({ code: 'route-unexpected', message: `a manifest declares route '${route}' that no registered controller exposes`, route });
   return findings;
@@ -226,6 +268,9 @@ export interface PersistenceOptions {
   readonly rawWaivers?: readonly RawSqlWriteWaiver[];
   readonly crossWaivers?: readonly CrossModuleWriteWaiver[];
   readonly delegates?: Set<string>;
+  /** `delegate -> { relationField -> related delegate }` for NESTED-write attribution (defaults to
+   *  the live DMMF via {@link prismaModelRelations}). Fixtures inject a synthetic map. */
+  readonly relationsOf?: ReadonlyMap<string, ReadonlyMap<string, string>>;
 }
 
 export interface PersistenceResult {
@@ -239,9 +284,24 @@ const INSERT_RE = /\binsert\s+into\b/i;
 const DELETE_RE = /\bdelete\s+from\b/i;
 // A real UPDATE writes `UPDATE <table> SET …` (a `SELECT … FOR UPDATE` row lock has no SET).
 const UPDATE_RE = /\bupdate\s+(?:"[^"]+"|[a-z_][\w.]*)\s+set\b/i;
+// An UPDATE whose table was interpolated away (`UPDATE ${Prisma.raw(t)} SET …` → "UPDATE  SET …"
+// after the interpolation is gathered out): still a write, and must not slip past classification.
+const UPDATE_INTERP_RE = /\bupdate\s+set\b/i;
+const TRUNCATE_RE = /\btruncate\b/i;
+const MERGE_RE = /\bmerge\s+into\b/i;
+// COPY "<table>" FROM … loads rows (COPY … TO is a read; require FROM after COPY).
+const COPY_FROM_RE = /\bcopy\b[\s\S]*?\bfrom\b/i;
 
 function isWriteSql(sql: string): boolean {
-  return INSERT_RE.test(sql) || DELETE_RE.test(sql) || UPDATE_RE.test(sql);
+  return (
+    INSERT_RE.test(sql) ||
+    DELETE_RE.test(sql) ||
+    UPDATE_RE.test(sql) ||
+    UPDATE_INTERP_RE.test(sql) ||
+    TRUNCATE_RE.test(sql) ||
+    MERGE_RE.test(sql) ||
+    COPY_FROM_RE.test(sql)
+  );
 }
 
 /**
@@ -255,6 +315,7 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
   const rawWaivers = opts.rawWaivers ?? [];
   const crossWaivers = opts.crossWaivers ?? [];
   const delegates = opts.delegates ?? prismaModelDelegates();
+  const relationsOf = opts.relationsOf ?? prismaModelRelations();
   const checker = program.getTypeChecker();
   const moduleIds = new Set(kindOf.keys());
 
@@ -335,6 +396,81 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
     return sql.trim();
   };
 
+  // ── Nested-write attribution (a relation-keyed create/update/delete inside a write's payload) ──
+  const unwrapExpr = (e: ts.Expression): ts.Expression => {
+    let x: ts.Expression = e;
+    while (ts.isParenthesizedExpression(x) || ts.isAsExpression(x) || ts.isSatisfiesExpression(x)) x = x.expression;
+    return x;
+  };
+  const propKeyName = (n: ts.PropertyName): string | undefined =>
+    ts.isIdentifier(n) || ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) ? n.text : undefined;
+  const propValueOf = (obj: ts.ObjectLiteralExpression, key: string): ts.Expression | undefined => {
+    for (const p of obj.properties) if (ts.isPropertyAssignment(p) && propKeyName(p.name) === key) return p.initializer;
+    return undefined;
+  };
+  /** The object literal(s) an expression denotes: itself, each array element, or a variable's
+   *  object-literal initializer (one level) — so `data: rows` and `data: [ {…} ]` are both seen. */
+  const objectLiteralsOf = (expr: ts.Expression): ts.ObjectLiteralExpression[] => {
+    const e = unwrapExpr(expr);
+    if (ts.isObjectLiteralExpression(e)) return [e];
+    if (ts.isArrayLiteralExpression(e)) return e.elements.flatMap((el) => objectLiteralsOf(el));
+    if (ts.isIdentifier(e)) {
+      const decl = checker.getSymbolAtLocation(e)?.declarations?.[0];
+      if (decl && ts.isVariableDeclaration(decl) && decl.initializer) return objectLiteralsOf(decl.initializer);
+    }
+    return [];
+  };
+  /** The nested-write payload object literals reachable from one relation op's value — the value
+   *  itself and its `data`/`create`/`update` sub-objects — so deeper relation writes keep resolving. */
+  const innerPayloadsOf = (opValue: ts.Expression): ts.ObjectLiteralExpression[] => {
+    const out: ts.ObjectLiteralExpression[] = [];
+    for (const o of objectLiteralsOf(opValue)) {
+      out.push(o);
+      for (const sub of ['data', 'create', 'update']) {
+        const v = propValueOf(o, sub);
+        if (v) out.push(...objectLiteralsOf(v));
+      }
+    }
+    return out;
+  };
+  const recordModelWrite = (model: string, node: ts.Node, rel: string, mod: string): void => {
+    const owner = ownerOf.get(model);
+    writes.push({ file: rel, module: mod, model, owner, ownerKind: owner ? kindOf.get(owner) : undefined, symbol: enclosingSymbol(node) });
+  };
+  /** Walk a write payload in the context of `model`: any relation field whose value carries a nested
+   *  write op mutates the RELATED model — record it and recurse into that op's payload for deeper ones. */
+  const scanNestedWrites = (payload: ts.ObjectLiteralExpression, model: string, node: ts.Node, rel: string, mod: string, depth: number): void => {
+    if (depth > 8) return;
+    const rels = relationsOf.get(model);
+    if (!rels) return;
+    for (const p of payload.properties) {
+      if (!ts.isPropertyAssignment(p)) continue;
+      const key = propKeyName(p.name);
+      const target = key ? rels.get(key) : undefined;
+      if (!target) continue;
+      for (const opsObj of objectLiteralsOf(p.initializer)) {
+        for (const op of opsObj.properties) {
+          if (!ts.isPropertyAssignment(op)) continue;
+          const opKey = propKeyName(op.name);
+          if (!opKey || !NESTED_WRITE_OPS.has(opKey)) continue;
+          recordModelWrite(target, node, rel, mod);
+          for (const inner of innerPayloadsOf(op.initializer)) scanNestedWrites(inner, target, node, rel, mod, depth + 1);
+        }
+      }
+    }
+  };
+  /** Entry: scan a write call's top-level `data`/`create`/`update` payload(s) for nested writes. */
+  const scanCallNestedWrites = (node: ts.CallExpression, model: string, rel: string, mod: string): void => {
+    const arg0 = node.arguments[0];
+    if (!arg0) return;
+    for (const optsObj of objectLiteralsOf(arg0)) {
+      for (const payloadKey of ['data', 'create', 'update']) {
+        const payload = propValueOf(optsObj, payloadKey);
+        if (payload) for (const pObj of objectLiteralsOf(payload)) scanNestedWrites(pObj, model, node, rel, mod, 0);
+      }
+    }
+  };
+
   const moduleOf = (rel: string): string => {
     const top = rel.includes('/') ? rel.slice(0, rel.indexOf('/')) : '';
     return dirToModule[top] ?? 'platform';
@@ -353,6 +489,9 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
           else if (res?.kind === 'model') {
             const owner = ownerOf.get(res.model);
             writes.push({ file: rel, module: mod, model: res.model, owner, ownerKind: owner ? kindOf.get(owner) : undefined, symbol: enclosingSymbol(node) });
+            // Also attribute any NESTED writes in this call's payload (a relation-keyed create/update/
+            // delete mutates the related model's table without a delegate call of its own).
+            scanCallNestedWrites(node, res.model, rel, mod);
           }
         }
         if (RAW_METHOD_NAMES.includes(method)) {

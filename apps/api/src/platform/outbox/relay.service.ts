@@ -67,17 +67,22 @@ export class OutboxRelay implements OnModuleDestroy {
     // catalog.active is authoritative: a deactivated contract is never claimed (its pending rows stay
     // recoverable for reactivation). Read once per pass; the dispatch guard covers a mid-pass change.
     const active = await this.activeConsumerNames();
-    // PR C Task 2 — the background relay owns EXTERNAL dispatch only in `outbox` mode. In
-    // legacy/shadow the immediate ExternalEffectDispatcher is the sole external sender, so the relay
-    // must not also claim external deliveries (that would be a second active sender). Ordered `db`
-    // projection consumers are always the relay's to advance.
-    const relayOwnsExternal = outboxSenderMode() === 'outbox';
+    // PR C fix-forward — the delivery LEASE is the single arbiter of who sends. In `outbox` mode the
+    // relay owns ALL external dispatch. In `legacy`/`shadow` the immediate ExternalEffectDispatcher
+    // owns the FIRST attempt of a fresh delivery (it claims the lease before sending — see
+    // `claimOne`), and the relay owns only RETRIES (a failed immediate attempt, now due) and RECOVERY
+    // (a lease abandoned by a crashed sender, or a fresh row the dispatcher never reached). So a
+    // transient provider error is still re-attempted (at-least-once) and no fresh happy-path row is
+    // double-sent. Ordered `db` projection consumers are always the relay's to advance.
+    const mode = outboxSenderMode();
     for (let guard = 0; guard < 1000; guard++) {
       let progressed = false;
       for (const consumer of listConsumers()) {
         if (!active.has(consumer.name)) continue; // deactivated contract — do not claim
-        if (consumer.effect === 'external' && !relayOwnsExternal) continue; // dispatcher owns it
-        const ids = await this.claim(consumer.name);
+        const ids =
+          consumer.effect === 'external' && mode !== 'outbox'
+            ? await this.claimExternalRecovery(consumer.name) // the dispatcher owns fresh first attempts
+            : await this.claim(consumer.name);
         for (const id of ids) {
           const outcome = await this.dispatchOne(id);
           if (outcome === 'succeeded' || outcome === 'duplicate' || outcome === 'dead' || outcome === 'retry') progressed = true;
@@ -103,6 +108,46 @@ export class OutboxRelay implements OnModuleDestroy {
         WHERE "consumer" = ${consumer}
           AND ("status" = 'pending' OR ("status" = 'leased' AND "leaseExpiresAt" < now()))
           AND "nextAttemptAt" <= now()
+        ORDER BY "streamPosition" ASC
+        LIMIT ${CLAIM_BATCH}
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING "id"`;
+    return rows.map((r) => r.id);
+  }
+
+  /** Atomically lease ONE delivery by id IFF it is still `pending` — the immediate dispatcher's claim
+   *  BEFORE it sends. This makes the immediate path lease-coordinated with the background relay: in a
+   *  mixed-mode fleet (a rolling deploy across the cutover) an outbox-mode relay and a legacy/shadow
+   *  dispatcher compete for the same row through this lease, so exactly one sends it. Returns true iff
+   *  this caller won the row (and must send it); false means someone else owns it. */
+  async claimOne(deliveryId: string): Promise<boolean> {
+    const res = await this.prisma.outboxDelivery.updateMany({
+      where: { id: deliveryId, status: 'pending' },
+      data: { status: 'leased', leaseOwner: this.owner, leaseExpiresAt: new Date(Date.now() + LEASE_SECONDS * 1000) },
+    });
+    return res.count === 1;
+  }
+
+  /** Legacy/shadow: claim only external deliveries the immediate dispatcher has NOT already handled on
+   *  its first pass — a RETRY (attempted ≥1 and now due), a RECOVERY of a crashed sender's expired
+   *  lease, or a fresh row the dispatcher never reached (still `pending`, never attempted, older than
+   *  the lease window — a crash/DB-blip between commit and dispatch). A recent fresh row is LEFT to
+   *  the dispatcher's synchronous first attempt, so the relay never races the happy path (and the
+   *  socket "one invalidation per command" dedup is preserved). Together with `claimOne` this keeps
+   *  external delivery at-least-once in legacy mode too, not just after an outbox cutover. */
+  private async claimExternalRecovery(consumer: string): Promise<string[]> {
+    const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+      UPDATE "OutboxDelivery" SET "status" = 'leased', "leaseOwner" = ${this.owner},
+        "leaseExpiresAt" = now() + make_interval(secs => ${LEASE_SECONDS}), "updatedAt" = now()
+      WHERE "id" IN (
+        SELECT "id" FROM "OutboxDelivery"
+        WHERE "consumer" = ${consumer}
+          AND (
+            ("status" = 'pending' AND "attempts" >= 1 AND "nextAttemptAt" <= now())
+            OR ("status" = 'leased' AND "leaseExpiresAt" < now())
+            OR ("status" = 'pending' AND "attempts" = 0 AND "updatedAt" < now() - make_interval(secs => ${LEASE_SECONDS}))
+          )
         ORDER BY "streamPosition" ASC
         LIMIT ${CLAIM_BATCH}
         FOR UPDATE SKIP LOCKED
