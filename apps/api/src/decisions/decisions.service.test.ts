@@ -15,13 +15,16 @@ interface DecisionRow { id: string; projectId: string; title: string; publishedA
 const NAMES: Record<string, string> = { 'u-client': 'Asha Shah', 'u-arch': 'Ar. Meghna', 'u-eng': 'Ravi Iyer' };
 
 /** Minimal in-memory Prisma stand-in for the decision tables. $transaction supports both the
- *  array form and the interactive callback form (the callback receives this same stub). */
+ *  array form and the interactive callback form (the callback receives a distinct tx stub). */
 function make() {
   const decisions: DecisionRow[] = [];
-  const notifications: Array<{ text: string }> = [];
-  const notificationTxStates: boolean[] = [];
+  const notifications: Array<{ projectId: string; text: string; color: string; time: string }> = [];
   const events: Array<{ type: string }> = [];
-  let inCommandTx = false;
+  const rootNotificationCreate = vi.fn(async (_args: { data: { projectId: string; text: string; color: string; time: string } }) => ({}));
+  const txNotificationCreate = vi.fn(async (args: { data: { projectId: string; text: string; color: string; time: string } }) => {
+    notifications.push(args.data);
+    return args.data;
+  });
   const prisma = {
     user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (NAMES[where.id] ? { name: NAMES[where.id] } : null)) },
     decision: {
@@ -36,7 +39,7 @@ function make() {
     },
     decisionOption: { createMany: vi.fn(async () => ({ count: 0 })) },
     decisionEvent: { create: vi.fn((args: { data: { type: string } }) => { events.push(args.data); return Promise.resolve(args.data); }) },
-    notification: { create: vi.fn((args: { data: { text: string } }) => { notificationTxStates.push(inCommandTx); notifications.push(args.data); return Promise.resolve(args.data); }) },
+    notification: { create: rootNotificationCreate },
     auditLog: { create: vi.fn(async () => ({})) },
     // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its three steps
     project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
@@ -46,15 +49,11 @@ function make() {
     $executeRaw: vi.fn(async () => 1),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) => {
       if (typeof arg !== 'function') return Promise.all(arg);
-      inCommandTx = true;
-      try {
-        return await arg(prisma);
-      } finally {
-        inCommandTx = false;
-      }
+      const tx = { ...prisma, notification: { create: txNotificationCreate } } as unknown as PrismaService;
+      return await arg(tx);
     }),
   } as unknown as PrismaService;
-  return { prisma, decisions, notifications, notificationTxStates, events };
+  return { prisma, decisions, notifications, events, txNotificationCreate };
 }
 
 const snapshot = { build: vi.fn(async () => ({ ok: true })) } as unknown as SnapshotService;
@@ -98,14 +97,14 @@ describe('DecisionsService — draft → publish lifecycle', () => {
   });
 
   it('create with publish:true writes exactly one canonical notification inside the command transaction; drafts write none', async () => {
-    const { prisma, notificationTxStates, notifications } = make();
+    const { prisma, notifications, txNotificationCreate } = make();
     const realtime = { notifyChanged: vi.fn() } as unknown as RealtimeGateway;
     const svc = new DecisionsService(prisma, snapshot, realtime);
 
     await svc.create('proj-1', baseInput(true), user);
 
-    expect(prisma.notification.create).toHaveBeenCalledTimes(1);
-    expect(notificationTxStates).toEqual([true]);
+    expect(txNotificationCreate).toHaveBeenCalledTimes(1);
+    expect(prisma.notification.create).not.toHaveBeenCalled();
     expect(notifications).toEqual([{
       projectId: 'proj-1',
       text: pendingDecisionNotice('Kitchen counter top'),
@@ -117,7 +116,7 @@ describe('DecisionsService — draft → publish lifecycle', () => {
     const draftSvc = new DecisionsService(draft.prisma, snapshot, realtime);
     await draftSvc.create('proj-1', baseInput(false), user);
     expect(draft.prisma.notification.create).not.toHaveBeenCalled();
-    expect(draft.notificationTxStates).toEqual([]);
+    expect(draft.txNotificationCreate).not.toHaveBeenCalled();
   });
 
   it('publish() flips a draft live and fires the client notice; re-publishing conflicts', async () => {

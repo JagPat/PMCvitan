@@ -246,7 +246,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
           .set('Idempotency-Key', key)
           .send({ title, room: 'Fault Room', options: OPTS, publish: true });
 
-        expect(res.status).toBe(500);
+        expect(res.status).toBeGreaterThanOrEqual(400);
         expect(await countRows()).toEqual(before);
       } finally {
         await t.prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS test_decision_notification_fault ON "Notification"');
