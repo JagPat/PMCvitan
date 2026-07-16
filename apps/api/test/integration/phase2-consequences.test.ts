@@ -5,6 +5,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { RealtimeGateway } from '../../src/realtime/realtime.gateway';
 import { PushService } from '../../src/push/push.service';
+import { pendingDecisionNotice } from '../../src/domain/notifications';
 
 /**
  * Phase 2 Task 1 — CHARACTERIZATION (live PostgreSQL) of the EXACT per-mutation
@@ -203,6 +204,54 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       expect(await t.prisma.decisionEvent.count({ where: { decisionId: sk('p2c-dec-pub') } })).toBe(before);
       expectNoSignal();
       expectNoPush();
+    });
+
+    it('publish:create rolls back every canonical row when notification insertion fails', async () => {
+      const title = sk('p2c-dec-notify-fault');
+      const notice = pendingDecisionNotice(title);
+      const key = sk('p2c-idem-notify-fault');
+      const countRows = async () => ({
+        decision: await t.prisma.decision.count({ where: { projectId: pid } }),
+        option: await t.prisma.decisionOption.count({ where: { decision: { projectId: pid } } }),
+        event: await t.prisma.decisionEvent.count({ where: { decision: { projectId: pid } } }),
+        notification: await t.prisma.notification.count({ where: { projectId: pid } }),
+        audit: await t.prisma.auditLog.count({ where: { projectId: pid } }),
+        domainEvent: await t.prisma.domainEvent.count({ where: { projectId: pid } }),
+        outboxDelivery: await t.prisma.outboxDelivery.count({ where: { projectId: pid } }),
+        commandExecution: await t.prisma.commandExecution.count({ where: { projectId: pid } }),
+      });
+
+      await t.prisma.$executeRawUnsafe(`
+        CREATE FUNCTION test_decision_notification_fault() RETURNS trigger AS $$
+        BEGIN
+          IF NEW."text" = '${notice.replace(/'/g, "''")}' THEN
+            RAISE EXCEPTION 'decision notification fault';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+      `);
+      await t.prisma.$executeRawUnsafe(`
+        CREATE TRIGGER test_decision_notification_fault
+        BEFORE INSERT ON "Notification"
+        FOR EACH ROW
+        EXECUTE FUNCTION test_decision_notification_fault()
+      `);
+
+      const before = await countRows();
+      try {
+        const res = await request(t.app.getHttpServer())
+          .post(`/projects/${pid}/decisions`)
+          .set('Authorization', `Bearer ${token}`)
+          .set('Idempotency-Key', key)
+          .send({ title, room: 'Fault Room', options: OPTS, publish: true });
+
+        expect(res.status).toBeGreaterThanOrEqual(400);
+        expect(await countRows()).toEqual(before);
+      } finally {
+        await t.prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS test_decision_notification_fault ON "Notification"');
+        await t.prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS test_decision_notification_fault()');
+      }
     });
   });
 
