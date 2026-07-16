@@ -81,7 +81,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     // Fire N emits concurrently; the counter row-lock serializes them, so a transaction that
     // committed earlier gets the lower position and none is ever skipped past.
     const results = await Promise.all(Array.from({ length: N }, (_, i) => emit({ entityId: `D-conc-${i}` })));
-    const positions = results.map((r) => r.streamPosition).sort((a, b) => a - b);
+    const positions = results.map((r) => Number(r.streamPosition)).sort((a, b) => a - b);
     const expected = Array.from({ length: N }, (_, i) => Number(base) + i);
     expect(positions, 'positions are exactly the contiguous run — distinct, ordered, no gap').toEqual(expected);
     expect(new Set(positions).size).toBe(N);

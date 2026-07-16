@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import type { Actor } from '../common/actor';
 import type { DomainEventType } from '@vitan/shared';
-import { materializeDeliveries, type DispatchIntent as PersistedDispatchIntent } from './outbox/registry';
+import { materializeDeliveries, type DispatchIntent as PersistedDispatchIntent, type EmittedEventMeta } from './outbox/registry';
 import { buildDispatchIntent, type ExternalEffectKey, type DispatchInput } from './external-effects';
 
 /**
@@ -49,14 +49,16 @@ export interface EmitInput {
 }
 
 /**
- * Append one domain event inside the caller's transaction. Returns the new `eventId` +
- * `streamPosition` so a follow-on event in the same command can name it as `causedByEventId`.
+ * Append one domain event inside the caller's transaction. Returns the full {@link EmittedEventMeta}
+ * (a superset of `{ eventId, streamPosition }`) so a follow-on event in the same command can name it
+ * as `causedByEventId` AND the post-commit {@link ExternalEffectDispatcher} (PR C Task 2) can send
+ * this command's external effects from the committed metadata in causal order.
  *
  * Throws (P2025) if the project has no `ProjectEventStream` row — the invariant that a project
  * cannot exist without its counter (created in the project-creation transaction, backfilled for
  * legacy projects) means this only fires if that invariant was violated, never in normal flow.
  */
-export async function emitEvent(tx: EventDb, input: EmitInput): Promise<{ eventId: string; streamPosition: number }> {
+export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedEventMeta> {
   // Derive the tenant from the project itself — a forged organizationId is impossible.
   const { orgId } = await tx.project.findUniqueOrThrow({ where: { id: input.projectId }, select: { orgId: true } });
   // Lock + increment the per-project counter INSIDE this transaction: two concurrent commits on
@@ -93,10 +95,7 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<{ eventI
     },
     select: { eventId: true },
   });
-  // Task 6 — materialize one OutboxDelivery per registered consumer IN THIS transaction, so a
-  // committed event can never lack its durable delivery work. A no-op when no consumer is
-  // registered (unit tests without an app boot), so mocked-prisma services need no outbox stub.
-  await materializeDeliveries(tx, {
+  const meta: EmittedEventMeta = {
     eventId: event.eventId,
     eventType: input.eventType,
     projectId: input.projectId,
@@ -106,6 +105,10 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<{ eventI
     entityId: input.entityId,
     payload: input.payload ?? null,
     dispatchIntent,
-  });
-  return { eventId: event.eventId, streamPosition: Number(streamPosition) };
+  };
+  // Task 6 — materialize one OutboxDelivery per registered consumer IN THIS transaction, so a
+  // committed event can never lack its durable delivery work. A no-op when no consumer is
+  // registered (unit tests without an app boot), so mocked-prisma services need no outbox stub.
+  await materializeDeliveries(tx, meta);
+  return meta;
 }
