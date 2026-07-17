@@ -44,7 +44,7 @@ describe('Task 10 — the daily-log module implements its shared command/query c
   });
 
   it('the query service implements every declared query (reachable read surface)', () => {
-    for (const method of ['snapshotSlice', 'existsInProject', 'resolveRefInProject'] as const) {
+    for (const method of ['snapshotSlice', 'projectionSlice', 'moduleDailyLog', 'existsInProject', 'resolveRefInProject'] as const) {
       expect(typeof DailyLogQueryService.prototype[method]).toBe('function');
     }
   });

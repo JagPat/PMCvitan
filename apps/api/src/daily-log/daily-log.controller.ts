@@ -1,5 +1,6 @@
-import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { DailyLogService } from './daily-log.service';
+import { DailyLogQueryService } from './daily-log.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
@@ -8,7 +9,21 @@ import { addMaterialSchema, flagMismatchSchema, submitDailyLogSchema, type AddMa
 @Controller('projects/:projectId/daily-log')
 @UseGuards(JwtGuard, RolesGuard)
 export class DailyLogController {
-  constructor(private readonly dailyLog: DailyLogService) {}
+  constructor(
+    private readonly dailyLog: DailyLogService,
+    // Task 10 — the module-owned daily-log READ (served from the rebuildable projection, live fallback).
+    private readonly dailyLogQuery: DailyLogQueryService,
+  ) {}
+
+  /** Phase 2 Task 10 — the MODULE-OWNED daily-log read: the project's daily-log slice (latest log core
+   *  + every project material) served from the daily-log projection (with a live fallback while the
+   *  projection warms up). This is the read the web app fetches once the daily-log module is switched
+   *  off the full-snapshot slice (XOR read-ownership). Role-invariant; interactive session roles only. */
+  @Get()
+  @RolesFor('project.read')
+  read(@Param('projectId') projectId: string) {
+    return this.dailyLogQuery.moduleDailyLog(projectId);
+  }
 
   /** Start a fresh day's log (previous one must be submitted) — engineer (or PMC). */
   @Post('start')

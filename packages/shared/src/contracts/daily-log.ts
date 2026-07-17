@@ -21,6 +21,8 @@ export type DailyLogCommand = (typeof DAILY_LOG_COMMANDS)[number];
 /** The daily-log module's read queries (must equal the manifest `queries`). */
 export const DAILY_LOG_QUERIES = [
   'daily-log.snapshotSlice',
+  // Task 10 — the same slice served from the module's rebuildable projection (per-project read model)
+  'daily-log.projectionSlice',
   'daily-log.existsInProject',
   'daily-log.resolveRef',
 ] as const;

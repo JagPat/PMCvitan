@@ -425,8 +425,9 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
         event: 1,
         // PR B totality: every registered consumer gets one delivery per event — the one
         // `project.created` event yields a socket `dispatch` row + a push `noop` row (no push intent)
-        // + (Task 9) a `decisions.inbox` projection `noop` row (project.created is not a decision event).
-        delivery: 3,
+        // + (Task 9) a `decisions.inbox` projection `noop` row + (Task 10) a `daily-log.inbox`
+        // projection `noop` row (project.created is neither a decision nor a daily-log event).
+        delivery: 4,
         nodes: 1,
         phases: 1,
         activities: 1,

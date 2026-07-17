@@ -326,6 +326,26 @@ model DecisionProjection {
   @@index([generationId, projectId])
 }
 
+// Phase 2 Task 10 — the DAILY-LOG read-model projection (the daily-log module's rebuildable read
+// path). Unlike DecisionProjection (one row per decision), the daily-log slice is a per-PROJECT
+// composite — the latest log core (crew + its own materials) plus every project material — so a
+// generation holds exactly ONE row per project, keyed (generationId, projectId), storing the whole
+// serialized slice `computeDailyLogSlice` produces. The `daily-log.inbox` projection consumer
+// refreshes it from canonical state on every dailylog.*/material.* event. Generation-scoped:
+// `generationId` names the ProjectionGeneration the row belongs to (a plain column, not an FK — the
+// lifecycle is managed by the rebuilder + the consumer's dropGeneration hook). The slice carries NO
+// per-viewer visibility (every project viewer sees the same daily-log), so the read query serves the
+// ACTIVE generation's row with no query-time filter.
+model DailyLogProjection {
+  id           String   @id @default(uuid())
+  generationId String
+  projectId    String
+  dto          Json // the serialized DailyLogSlice: { dailyLog: DailyLogCore | null, materials: SiteMaterial[] }
+  updatedAt    DateTime @updatedAt
+
+  @@unique([generationId, projectId])
+}
+
 // Phase 2 Task 5 — the command-idempotency ledger. One receipt per (scope, actor, commandType,
 // idempotencyKey): a retried/duplicated command (offline replay, network retry, double-tap)
 // reserves→executes→commits its succeeded receipt in ONE transaction, so the effect happens
