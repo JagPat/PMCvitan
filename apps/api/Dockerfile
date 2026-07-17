@@ -10,6 +10,12 @@ RUN npm install -g pnpm@10.33.0
 WORKDIR /app
 COPY . .
 RUN pnpm install --frozen-lockfile
+# @vitan/shared is a BUILT workspace dependency: the API require()s its dist and
+# `tsc` needs its .d.ts. Its dist/ is gitignored (and .dockerignore excludes
+# **/dist), so it is never present in the checkout the container copies — it must
+# be built here, BEFORE the API build, or `tsc` fails with TS2307 across the API
+# sources. This mirrors the root `check:api` (pnpm build:shared → api build).
+RUN pnpm --filter @vitan/shared build
 RUN pnpm --filter api prisma:generate
 RUN pnpm --filter api build
 
