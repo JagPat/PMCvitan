@@ -32,6 +32,12 @@ export THROTTLE_DISABLED=true
 E2E_SENDER_MODE="${E2E_SENDER_MODE:-legacy}"
 export OUTBOX_RELAY_AUTOSTART=true
 
+# Phase 2 Task 10 (finding 5) — the daily-log module read-ownership mode the web app runs under. The
+# default 'snapshot' keeps the daily-log slice on the full snapshot (old behaviour); 'moduleQuery'
+# flips the web app onto the module-owned GET …/daily-log read (XOR). The Playwright config forwards
+# this to the vite webServer as VITE_DAILYLOG_READ; the daily-log module-query spec runs only under it.
+export E2E_DAILYLOG_READ="${E2E_DAILYLOG_READ:-snapshot}"
+
 pnpm --filter api prisma:migrate
 pnpm --filter api seed
 # the Playwright config serves the COMPILED api (node dist/main.js) — the same
@@ -52,5 +58,5 @@ else
   export OUTBOX_SENDER_MODE=legacy
 fi
 
-echo "API acceptance — sender mode: $E2E_SENDER_MODE (relay autostart: $OUTBOX_RELAY_AUTOSTART)"
+echo "API acceptance — sender mode: $E2E_SENDER_MODE · daily-log read: $E2E_DAILYLOG_READ (relay autostart: $OUTBOX_RELAY_AUTOSTART)"
 pnpm --filter web exec playwright test --config playwright.api.config.ts

@@ -50,12 +50,20 @@ export default defineConfig({
     {
       // the web app in API mode, pointed at the server above (invoke vite
       // directly: `pnpm dev -- --port` forwards the literal `--` and vite
-      // silently ignores the port flags)
+      // silently ignores the port flags). Phase 2 Task 9/10 (finding 5): the
+      // module read-ownership flags default to 'snapshot' and flip to
+      // 'moduleQuery' when the runner requests it, so the same acceptance suite
+      // proves BOTH the snapshot-owned and module-owned daily-log/decisions read.
       command: 'pnpm exec vite --port 4174 --strictPort',
       url: 'http://localhost:4174',
       reuseExistingServer: false,
       timeout: 90_000,
-      env: { ...process.env, VITE_API_URL: 'http://localhost:3000' },
+      env: {
+        ...process.env,
+        VITE_API_URL: 'http://localhost:3000',
+        VITE_DAILYLOG_READ: process.env.E2E_DAILYLOG_READ ?? 'snapshot',
+        VITE_DECISIONS_READ: process.env.E2E_DECISIONS_READ ?? 'snapshot',
+      },
     },
   ],
 });
