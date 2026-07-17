@@ -48,6 +48,7 @@ import { OutboxRelay } from './platform/outbox/relay.service';
 import { ExternalEffectDispatcher } from './platform/outbox/external-effect-dispatcher';
 import { OutboxBootstrap } from './platform/outbox/outbox.bootstrap';
 import { OutboxOperationsService } from './platform/outbox/outbox-operations.service';
+import { ProjectionRebuilder } from './platform/projections/rebuilder.service';
 import { ModuleRegistryService } from './platform/module-registry/module-registry.service';
 import { ActivityParticipant } from './activities/activity.participant';
 import { InspectionParticipant } from './inspections/inspection.participant';
@@ -117,6 +118,8 @@ import { NodeInitParticipant } from './nodes/node-init.participant';
     ExternalEffectDispatcher,
     OutboxBootstrap,
     OutboxOperationsService,
+    // Task 9 — the projection rebuild + final-activation-barrier protocol (generation swap).
+    ProjectionRebuilder,
     ModuleRegistryService,
     // Task 7 — leaf workflow participants: each writes ONLY its owning module's tables,
     // so a cross-module atomic edge routes its foreign write through the owner (no

@@ -2,6 +2,7 @@ import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma.service';
 import { getConsumer, listConsumers, outboxSenderMode, type EmittedEventMeta, type OutboxConsumer } from './registry';
+import { lockActiveGeneration } from '../projections/generation';
 
 /**
  * Phase 2 Task 6 — the outbox relay.
@@ -177,9 +178,14 @@ export class OutboxRelay implements OnModuleDestroy {
     if (!event) return this.deadLetter(delivery.id, delivery.attempts, 'event row missing');
     const meta = metaFromEvent(event);
     const ctxDelivery = { id: delivery.id, consumer: delivery.consumer, projectId: delivery.projectId, streamPosition: delivery.streamPosition, payload: delivery.payload };
-    return consumer.effect === 'db'
-      ? this.dispatchOrdered(delivery, consumer, meta, ctxDelivery)
-      : this.dispatchExternal(delivery, consumer, meta, ctxDelivery);
+    if (consumer.effect === 'db') {
+      // Task 9 — a PROJECTION consumer applies into its ACTIVE generation (generation-scoped,
+      // rebuildable). A plain ordered `db` consumer keeps the single-cursor path unchanged.
+      return consumer.projection
+        ? this.dispatchProjection(delivery, consumer, meta, ctxDelivery)
+        : this.dispatchOrdered(delivery, consumer, meta, ctxDelivery);
+    }
+    return this.dispatchExternal(delivery, consumer, meta, ctxDelivery);
   }
 
   /** An external (socket/push) consumer: at-least-once. Sends only at cutover; a throw retries. */
@@ -266,6 +272,69 @@ export class OutboxRelay implements OnModuleDestroy {
     return outcome;
   }
 
+  /**
+   * Task 9 — an ordered PROJECTION consumer: apply into the project's ACTIVE generation, advancing
+   * that generation's `appliedPosition` CONTIGUOUSLY, all in one transaction (effectively-once).
+   *
+   * Dedup is per generation on `(consumer, generation, streamPosition)`: within a generation
+   * `appliedPosition` is the contiguous high-water mark, and a generation has a SINGLE writer at any
+   * instant (the {@link ProjectionRebuilder} while it is `building`, the relay once it is `active`;
+   * the activation barrier hands off in one transaction). So a position already reflected by the
+   * generation — whether a crash re-delivered it or a rebuild replayed it — is `< nextExpected` and
+   * skipped as a `duplicate`, never a second effect. The active generation row is locked `FOR UPDATE`
+   * so two relay workers (and the barrier's atomic swap) serialize on it.
+   */
+  private async dispatchProjection(
+    delivery: { id: string; attempts: number; projectId: string; streamPosition: bigint; deliveryAction: string },
+    consumer: OutboxConsumer,
+    meta: EmittedEventMeta,
+    ctxDelivery: DispatchDeliveryCtx,
+  ): Promise<DispatchOutcome> {
+    let outcome: 'applied' | 'duplicate' | 'wait' | 'blocked';
+    try {
+      outcome = await this.prisma.$transaction(async (tx) => {
+        const gen = await lockActiveGeneration(tx, consumer.name, delivery.projectId);
+        const applied = gen.appliedPosition;
+        const nextExpected = applied === null ? 0n : applied + 1n;
+        const pos = delivery.streamPosition;
+
+        // already reflected by THIS generation (the checkpoint is past it) → effectively-once, no re-effect
+        if (pos < nextExpected) return 'duplicate';
+
+        if (pos > nextExpected) {
+          // not contiguous: is the position we're waiting on dead-lettered? then this generation blocks.
+          const blocker = await tx.outboxDelivery.findFirst({ where: { consumer: consumer.name, projectId: delivery.projectId, streamPosition: nextExpected, status: 'dead' } });
+          if (blocker) {
+            await tx.projectionGeneration.update({ where: { id: gen.id }, data: { cursorStatus: 'blocked' } });
+            return 'blocked';
+          }
+          return 'wait';
+        }
+
+        // pos === nextExpected → apply into the active generation + advance its checkpoint. A `dispatch`
+        // row invokes the projection handler (tagging its rows with this generation); an ordered `noop`
+        // row advances the checkpoint through this position WITHOUT invoking the handler.
+        if (delivery.deliveryAction === 'dispatch') {
+          await consumer.handle({
+            delivery: ctxDelivery, meta, senderMode: outboxSenderMode(), tx,
+            projection: { generationId: gen.id, generation: gen.generation, projectId: delivery.projectId },
+          });
+        }
+        await tx.projectionGeneration.update({ where: { id: gen.id }, data: { appliedPosition: pos, cursorStatus: 'live' } });
+        return 'applied';
+      });
+    } catch (e) {
+      return this.onFailure(delivery.id, delivery.attempts, e);
+    }
+
+    if (outcome === 'applied' || outcome === 'duplicate') {
+      await this.prisma.outboxDelivery.update({ where: { id: delivery.id }, data: { status: 'succeeded', leaseOwner: null, leaseExpiresAt: null, lastError: null } });
+      return outcome === 'applied' ? 'succeeded' : 'duplicate';
+    }
+    await this.prisma.outboxDelivery.update({ where: { id: delivery.id }, data: { status: 'pending', leaseOwner: null, leaseExpiresAt: null } });
+    return outcome;
+  }
+
   private async onFailure(id: string, attempts: number, err: unknown): Promise<DispatchOutcome> {
     const next = attempts + 1;
     const msg = (err as Error)?.message ?? String(err);
@@ -342,8 +411,10 @@ export class OutboxRelay implements OnModuleDestroy {
 
 /** Build the consumer-facing event meta from a DomainEvent row, including the persisted dispatch
  *  intent (null for a pre-intent legacy event). The single place the relay/scanner reconstruct the
- *  envelope, so external consumers always derive their plan from durable state. */
-function metaFromEvent(event: {
+ *  envelope, so external consumers always derive their plan from durable state. Exported so the
+ *  {@link ProjectionRebuilder} reconstructs the same envelope when it REPLAYS events into a
+ *  building generation (Task 9). */
+export function metaFromEvent(event: {
   eventId: string; eventType: string; projectId: string; organizationId: string;
   streamPosition: bigint; entityType: string; entityId: string;
   payload: Prisma.JsonValue | null; dispatchIntent: Prisma.JsonValue | null;

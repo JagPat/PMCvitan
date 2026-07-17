@@ -264,6 +264,42 @@ model ProjectionCursor {
   @@unique([consumer, projectId])
 }
 
+// Phase 2 Task 9 — a projection GENERATION: the rebuildable read-model instance a projection
+// consumer serves + advances. Each (consumer, projectId) has a monotone series of generations;
+// exactly ONE is 'active' at a time (a raw-SQL PARTIAL unique index — Prisma cannot express WHERE
+// — enforces `one active per (consumer, projectId)`, added in 20261101000000_phase2_projection_generations).
+//
+// The live relay applies each ordered `db` projection delivery into the ACTIVE generation,
+// advancing `appliedPosition` CONTIGUOUSLY (position N+1 waits for N; a `dead` earlier position
+// sets cursorStatus='blocked' — visible degradation, never a silent skip). An ONLINE REBUILD
+// builds a NEW 'building' generation from a consistent canonical snapshot + event replay, then a
+// final ACTIVATION BARRIER (per project: hold the ProjectEventStream lock, read the final position
+// H, apply through H, then atomically activate the new generation with appliedPosition=H and retire
+// the old one before releasing the lock) hands over with zero gap — every event allocated afterward
+// is > H and targets the new generation, so nothing commits into the retired one.
+//
+// Dedup is per generation on `(consumer, generation, streamPosition)`: within one generation
+// `appliedPosition` is the contiguous high-water mark, and a generation has a SINGLE writer at any
+// instant (the rebuilder while 'building', the relay once 'active' — the barrier hands off in one
+// transaction), so an event applied by both the relay and a rebuild replay is idempotent (the later
+// apply sees position ≤ appliedPosition and skips). Projection ROWS carry this `generation`'s id, so
+// a building generation is invisible to serving until it is activated and a retired one is dropped.
+model ProjectionGeneration {
+  id              String    @id @default(uuid())
+  consumer        String
+  projectId       String
+  generation      Int // monotone per (consumer, projectId); the highest is the newest
+  status          String    @default("building") // 'building' | 'active' | 'retired'
+  appliedPosition BigInt? // contiguous checkpoint INTO THIS generation (NULL = none applied yet)
+  cursorStatus    String    @default("live") // 'live' | 'blocked' (a dead earlier position blocks)
+  activatedAt     DateTime? // when this generation became 'active' (the barrier commit)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([consumer, projectId, generation])
+  @@index([consumer, projectId, status])
+}
+
 // Phase 2 Task 5 — the command-idempotency ledger. One receipt per (scope, actor, commandType,
 // idempotencyKey): a retried/duplicated command (offline replay, network retry, double-tap)
 // reserves→executes→commits its succeeded receipt in ONE transaction, so the effect happens
