@@ -124,6 +124,24 @@ export interface DailyLogSnapshotResult {
   readonly materials: readonly SiteMaterialView[];
 }
 
+/**
+ * `GET …/daily-log` — the MODULE-OWNED read the frontend fetches under XOR read-ownership (Task 10).
+ * The COMPLETE HTTP result, defined ONCE here so the API's `DailyLogQueryService.moduleDailyLog` and
+ * the web gateway model the SAME shape (no drifting duplicate). It is the {@link DailyLogSnapshotResult}
+ * slice (the photo-less {@link DailyLogCoreView} + project materials) PLUS two observability fields:
+ *  • `source` — which path served it: the rebuildable projection, or the live canonical fallback.
+ *  • `generation` — the served projection generation, non-null ONLY when served from a safe, caught-up
+ *    projection (finding 1); `null` on the live-fallback path.
+ * The `swatch` fields are open strings (the wire truth); the web narrows them to its `SwatchKey` set at
+ * the store boundary.
+ */
+export interface DailyLogModuleResult {
+  readonly dailyLog: DailyLogCoreView | null;
+  readonly materials: readonly SiteMaterialView[];
+  readonly source: 'projection' | 'live';
+  readonly generation: number | null;
+}
+
 /** `daily-log.existsInProject` / `daily-log.resolveRef` — validate a daily-log reference belongs to a project. */
 export interface DailyLogRefQuery {
   readonly projectId: string;

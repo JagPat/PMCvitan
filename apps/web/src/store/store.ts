@@ -47,6 +47,7 @@ import {
   type ProjectNode,
   type Photo,
   type Material,
+  type SwatchKey,
   type PlacedInspection,
   type ItemState,
   type Lang,
@@ -758,8 +759,20 @@ export const useStore = create<Store>()(
           s.dailyLog = snap.dailyLog ? { ...snap.dailyLog, photos: progressPhotos } : null;
           s.materials = snap.materials ?? [];
         } else if (dailyLogResult) {
-          s.dailyLog = dailyLogResult.dailyLog ? { ...dailyLogResult.dailyLog, photos: progressPhotos } : null;
-          s.materials = dailyLogResult.materials;
+          // The module read is the shared wire contract (DailyLogModuleResult, finding 5): its `swatch`
+          // fields are open strings and its arrays readonly. Narrow them to the store's DTO (SwatchKey,
+          // mutable) at this ONE boundary — the values are always valid swatch keys (a closed set).
+          const core = dailyLogResult.dailyLog;
+          s.dailyLog = core
+            ? {
+                date: core.date, logDate: core.logDate, checkedIn: core.checkedIn, checkinTime: core.checkinTime,
+                submitted: core.submitted, progress: core.progress,
+                crew: core.crew.map((c) => ({ trade: c.trade, count: c.count })),
+                materials: core.materials.map((m) => ({ name: m.name, decisionId: m.decisionId, qty: m.qty, zone: m.zone, matched: m.matched, swatch: m.swatch as SwatchKey, photo: m.photo })),
+                photos: progressPhotos,
+              }
+            : null;
+          s.materials = dailyLogResult.materials.map((m) => ({ id: m.id, name: m.name, qty: m.qty, zone: m.zone, matched: m.matched, swatch: m.swatch as SwatchKey, decisionId: m.decisionId, nodeId: m.nodeId }));
           s.dailyLogLoad = 'ready';
           s.dailyLogSource = dailyLogResult.source;
         } else if (dailyLogResult === null) {

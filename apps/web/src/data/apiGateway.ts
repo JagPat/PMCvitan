@@ -35,6 +35,7 @@ import type {
   PlacedInspection,
   Review,
   Role,
+  DailyLogModuleResult,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -290,14 +291,12 @@ export function dailyLogReadMode(): 'snapshot' | 'moduleQuery' {
 }
 
 /** Phase 2 Task 10 — the module-owned daily-log read payload (projection-served, with live fallback).
- *  The `dailyLog` core is PHOTO-LESS (media, not daily-log, owns progress photos — the store composes
- *  them from the snapshot), so it is the {@link DailyLog} without its `photos`. */
-export interface ModuleDailyLog {
-  dailyLog: Omit<DailyLog, 'photos'> | null;
-  materials: Material[];
-  source: 'projection' | 'live';
-  generation: number | null;
-}
+ *  The COMPLETE HTTP result is defined ONCE in `@vitan/shared` ({@link DailyLogModuleResult}) and
+ *  imported by BOTH the API's query service and this gateway, so the two cannot drift (finding 5). The
+ *  `dailyLog` core is PHOTO-LESS (media, not daily-log, owns progress photos — the store composes them
+ *  from the snapshot); its `swatch` fields are open strings on the wire, narrowed to `SwatchKey` at the
+ *  store boundary. This name is retained as the gateway alias so existing consumers keep importing it. */
+export type ModuleDailyLog = DailyLogModuleResult;
 
 /** Phase 2 Task 9 — the project-shell summary (identity + enabled modules + projection counts). */
 export interface ProjectShell {

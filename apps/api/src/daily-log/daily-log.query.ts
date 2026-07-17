@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import type { DailyLogModuleResult } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { MaterialDto } from '../snapshot/types';
 import { computeDailyLogSlice, type DailyLogCore, type DailyLogSlice } from './daily-log-serialize';
@@ -74,9 +75,7 @@ export class DailyLogQueryService {
    * legacy project never rebuilt) — additive and correct, never empty during warm-up. `source` tells
    * the client which path served it (observability; the slice is byte-identical either way).
    */
-  async moduleDailyLog(
-    projectId: string,
-  ): Promise<{ dailyLog: DailyLogCore | null; materials: MaterialDto[]; source: 'projection' | 'live'; generation: number | null }> {
+  async moduleDailyLog(projectId: string): Promise<DailyLogModuleResult> {
     const proj = await this.projectionSlice(projectId);
     if (proj.generation !== null) {
       return { dailyLog: proj.dailyLog, materials: proj.materials, source: 'projection', generation: proj.generation };

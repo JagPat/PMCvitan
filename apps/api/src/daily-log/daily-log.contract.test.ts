@@ -7,6 +7,7 @@ import {
   type SubmitDailyLogInput as SharedSubmitDailyLogInput,
   type DailyLogCoreView,
   type DailyLogSnapshotResult,
+  type DailyLogModuleResult,
 } from '@vitan/shared';
 import { dailyLogManifest } from './daily-log.manifest';
 import { DailyLogQueryService, type DailyLogCore } from './daily-log.query';
@@ -69,7 +70,10 @@ describe('Task 10 — the daily-log module implements its shared command/query c
     // the query results (the photo-less daily-log core + the snapshot slice) are the shared views
     const _core: DailyLogCoreView = {} as DailyLogCore;
     const _slice: DailyLogSnapshotResult = {} as Awaited<ReturnType<DailyLogQueryService['snapshotSlice']>>;
-    void [_add, _flag, _submit, _core, _slice];
+    // finding 5 — the module HTTP result is the ONE shared type; the API's moduleDailyLog return
+    // conforms to it exactly (the web gateway imports the same type, so the two cannot drift).
+    const _mod: DailyLogModuleResult = {} as Awaited<ReturnType<DailyLogQueryService['moduleDailyLog']>>;
+    void [_add, _flag, _submit, _core, _slice, _mod];
     expect(true).toBe(true);
   });
 });
