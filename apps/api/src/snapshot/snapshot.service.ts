@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma.service';
 import { deriveReadiness, type ReadinessOverride } from '../domain/transitions';
 import { toIsoCivilDate } from '../common/civil-date';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice } from '../domain/notifications';
 import { ddMmmYyyy } from '../domain/dates';
@@ -25,6 +26,8 @@ export class SnapshotService {
     private readonly signed: SignedUrlService,
     // Task 8 — decisions are read through their module's query, never `prisma.decision` here.
     private readonly decisionsQuery: DecisionsQueryService,
+    // Task 10 — the daily-log slice + project materials come from the daily-log module's query.
+    private readonly dailyLogQuery: DailyLogQueryService,
   ) {}
 
   /**
@@ -60,7 +63,7 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisionSlice, activities, inspections, dailyLog, notifications, siteMedia, drawings, phases, companies, nodes, allMaterials, activeMembers, gateOverrides] = await Promise.all([
+    const [decisionSlice, activities, inspections, dailyLogSlice, notifications, siteMedia, drawings, phases, companies, nodes, activeMembers, gateOverrides] = await Promise.all([
       // Task 8 — the decisions slice comes from the module's query (role-filtered DTOs + an
       // id→status map for readiness), not a direct `prisma.decision` read.
       this.decisionsQuery.snapshotSlice(projectId, role, userId),
@@ -75,12 +78,10 @@ export class SnapshotService {
           activity: { select: { name: true } },
         },
       }),
-      this.prisma.dailyLog.findFirst({
-        where: { projectId },
-        include: { crew: { orderBy: { order: 'asc' } }, materials: { orderBy: { order: 'asc' } } },
-        // real civil day first (Task 6); creation instant is only the tie-breaker
-        orderBy: [{ logDate: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
-      }),
+      // Task 10 — the daily-log slice (latest log core + project-wide materials) comes from the
+      // module's query, never a direct `prisma.dailyLog`/`prisma.siteMaterial` read. The progress
+      // PHOTOS remain the snapshot's to compose from media (below), so the DTO stays byte-identical.
+      this.dailyLogQuery.snapshotSlice(projectId),
       this.prisma.notification.findMany({ where: { projectId }, orderBy: { at: 'desc' } }),
       // Site-reality photos for the daily-log gallery AND the Place view. One query,
       // capped, newest first; carries nodeId so a photo can be shown at its location.
@@ -107,9 +108,6 @@ export class SnapshotService {
       this.prisma.phase.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
       this.prisma.projectCompany.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
-      // All materials across the project's daily logs (for the Site Map's "materials here"),
-      // not just the current day. Same visibility as the daily-log materials.
-      this.prisma.siteMaterial.findMany({ where: { dailyLog: { projectId } }, orderBy: { order: 'asc' } }),
       // Readiness inputs (Task 6): who is CURRENTLY active (drawing-gate active(P))
       // and every manual override (oldest first — the latest unexpired wins its gate)
       this.prisma.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
@@ -386,27 +384,9 @@ export class SnapshotService {
         : null,
       drawings: drawingDtos,
       phases: phaseDtos,
-      dailyLog: dailyLog
-        ? {
-            date: dailyLog.date,
-            logDate: toIsoCivilDate(dailyLog.logDate),
-            checkedIn: dailyLog.checkedIn,
-            checkinTime: dailyLog.checkinTime,
-            submitted: dailyLog.submitted,
-            progress: dailyLog.progress,
-            crew: dailyLog.crew.map((c) => ({ trade: c.trade, count: c.count })),
-            materials: dailyLog.materials.map((m) => ({
-              name: m.name,
-              decisionId: m.decisionId ?? '',
-              qty: m.qty,
-              zone: m.zone,
-              matched: m.matched,
-              swatch: m.swatch,
-              photo: m.photo,
-            })),
-            photos: progressPhotos,
-          }
-        : null,
+      // Task 10 — the daily-log core comes from the module query (byte-identical); the snapshot
+      // composes the media-sourced progress photos onto it (media is not daily-log's to own).
+      dailyLog: dailyLogSlice.dailyLog ? { ...dailyLogSlice.dailyLog, photos: progressPhotos } : null,
       // AUTH-02: a pending-decision notice ("Decision awaiting approval: …") is
       // pmc/client-only — drop it from the feed for roles that have pending decisions
       // hidden, so a decision's title can't leak through the bell.
@@ -430,17 +410,9 @@ export class SnapshotService {
         .map((n) => ({ id: n.id, parentId: n.parentId ?? null, name: n.name, kind: n.kind as 'zone' | 'room' | 'element', order: n.order, draft: n.publishedAt === null })),
       // The location spine's reality layer: placed (and unplaced) site photos for the Place view.
       photos: photoDtos,
-      // All materials delivered across the project, with their place — the Site Map's "materials here".
-      materials: allMaterials.map((m) => ({
-        id: m.id,
-        name: m.name,
-        qty: m.qty,
-        zone: m.zone,
-        matched: m.matched,
-        swatch: m.swatch,
-        decisionId: m.decisionId ?? undefined,
-        nodeId: m.nodeId ?? undefined,
-      })),
+      // All materials delivered across the project, with their place — the Site Map's "materials
+      // here" (Task 10 — served by the daily-log module query, not a direct `siteMaterial` read).
+      materials: dailyLogSlice.materials,
     };
   }
 }
