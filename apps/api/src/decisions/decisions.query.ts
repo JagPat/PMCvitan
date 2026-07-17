@@ -88,6 +88,24 @@ export class DecisionsQueryService {
     return { decisions, statuses, generation: gen.generation };
   }
 
+  /**
+   * Phase 2 Task 9 — the MODULE-OWNED decision read the frontend calls (the `GET …/decisions`
+   * endpoint). Serves from the rebuildable projection when it has an active generation; otherwise
+   * falls back to the live slice (a project whose decision events the relay has not applied yet, or a
+   * legacy project never rebuilt) — additive and correct, never empty during warm-up. `source` tells
+   * the client which path served it (observability; the DTOs are byte-identical either way).
+   */
+  async moduleDecisions(
+    projectId: string,
+    role: Role,
+    userId?: string,
+  ): Promise<{ decisions: DecisionDto[]; source: 'projection' | 'live'; generation: number | null }> {
+    const proj = await this.projectionSlice(projectId, role, userId);
+    if (proj.generation !== null) return { decisions: proj.decisions, source: 'projection', generation: proj.generation };
+    const live = await this.snapshotSlice(projectId, role, userId);
+    return { decisions: live.decisions, source: 'live', generation: null };
+  }
+
   /** Does decision `decisionId` exist in project `projectId`? The tenant-ownership check a consumer
    *  runs before storing a reference to it (activities' `assertRefs`, daily-log's material link). */
   async existsInProject(projectId: string, decisionId: string): Promise<boolean> {

@@ -7,7 +7,7 @@ import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice } from '../domain/notifications';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
-import type { ActivityDto, PhaseDto, SnapshotDto } from './types';
+import type { ActivityDto, PhaseDto, ProjectShellCounts, SnapshotDto } from './types';
 
 const ACTIVITY_STATUS_OUT: Record<string, ActivityDto['status']> = {
   not_started: 'not-started',
@@ -26,6 +26,32 @@ export class SnapshotService {
     // Task 8 — decisions are read through their module's query, never `prisma.decision` here.
     private readonly decisionsQuery: DecisionsQueryService,
   ) {}
+
+  /**
+   * Phase 2 Task 9 — the PROJECT-SHELL summary: project identity + module-driven projection counts,
+   * the light payload the app loads FIRST (before the full data) so the shell + nav render immediately.
+   * `enabledModules` is supplied by the caller (the module registry — the single enablement source).
+   * The `pendingDecisions` count is served from the decisions projection with the SAME role authz as
+   * the snapshot (non-pmc/client see 0), so the nav badge is projection-driven, never an RBAC bypass.
+   */
+  async shellSummary(projectId: string, role: Role, userId?: string): Promise<ProjectShellCounts> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, name: true, descriptor: true, stage: true, siteCode: true, org: { select: { id: true, name: true } } },
+    });
+    if (!project) throw new NotFoundException(`Project ${projectId} not found`);
+    const decisions = await this.decisionsQuery.projectionSlice(projectId, role, userId);
+    const pendingDecisions = decisions.decisions.filter((d) => d.status === 'pending' && !d.draft).length;
+    return {
+      id: project.id,
+      name: project.name,
+      descriptor: project.descriptor,
+      stage: project.stage,
+      siteCode: project.siteCode,
+      org: project.org ? { id: project.org.id, name: project.org.name } : null,
+      counts: { pendingDecisions, decisionsGeneration: decisions.generation },
+    };
+  }
 
   /** Build the full project snapshot the frontend hydrates its store from.
    *  Permission-filtered: only PMC & client see pending decisions; every other

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
@@ -174,5 +175,29 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     const s2 = await query.projectionSlice(p2, 'pmc', authorId);
     expect(s1.decisions.map((d) => d.id)).toEqual(['DL-A']);
     expect(s2.decisions.map((d) => d.id)).toEqual(['DL-B']);
+  });
+
+  // ── HTTP surface: the shell summary + the module-owned decisions read (Task 9 Step 3/4) ──
+  it('GET …/shell returns identity + enabledModules + projection counts; GET …/decisions serves the module read', async () => {
+    // projectA carries an active pmc membership for memberUser (the fixture) — hit the real routes.
+    const pid = f.projectA.id;
+    const token = t.issueProjectToken(f.memberUser.id, pid, 'pmc');
+    await t.prisma.decision.create({ data: { id: 'DL-HTTP', projectId: pid, title: 'Wired', room: 'GF', status: 'pending', ageDays: 1, photoSwatch: 'marble', publishedAt: new Date(), authorId: f.memberUser.id } });
+    await t.prisma.decisionOption.create({ data: { decisionId: 'DL-HTTP', label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 } });
+    try {
+      const shell = await request(t.app.getHttpServer()).get(`/projects/${pid}/shell`).set('Authorization', `Bearer ${token}`).expect(200);
+      expect(shell.body.id).toBe(pid);
+      expect(Array.isArray(shell.body.enabledModules)).toBe(true);
+      expect(shell.body.enabledModules).toContain('decisions');
+      expect(typeof shell.body.counts.pendingDecisions).toBe('number');
+
+      const dec = await request(t.app.getHttpServer()).get(`/projects/${pid}/decisions`).set('Authorization', `Bearer ${token}`).expect(200);
+      // no decisions.inbox generation for projectA yet → the module read falls back to the live slice
+      expect(dec.body.source).toBe('live');
+      expect(dec.body.decisions.map((d: { id: string }) => d.id)).toContain('DL-HTTP');
+    } finally {
+      await t.prisma.decisionOption.deleteMany({ where: { decisionId: 'DL-HTTP' } });
+      await t.prisma.decision.deleteMany({ where: { id: 'DL-HTTP' } });
+    }
   });
 });

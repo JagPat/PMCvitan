@@ -1,5 +1,6 @@
-import { Body, Controller, Headers, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
 import { DecisionsService } from './decisions.service';
+import { DecisionsQueryService } from './decisions.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
@@ -8,7 +9,21 @@ import { approveSchema, changeSchema, createDecisionSchema, type ApproveInput, t
 @Controller('projects/:projectId/decisions')
 @UseGuards(JwtGuard, RolesGuard)
 export class DecisionsController {
-  constructor(private readonly decisions: DecisionsService) {}
+  constructor(
+    private readonly decisions: DecisionsService,
+    // Task 9 — the module-owned decision READ (served from the rebuildable projection, role-filtered).
+    private readonly decisionsQuery: DecisionsQueryService,
+  ) {}
+
+  /** Phase 2 Task 9 — the MODULE-OWNED decisions read: the project's role-filtered decisions served
+   *  from the decisions projection (with a live fallback while the projection warms up). This is the
+   *  read the web app fetches once the decisions module is switched off the full-snapshot slice (XOR
+   *  read-ownership). Interactive session roles only, same as the snapshot read. */
+  @Get()
+  @RolesFor('project.read')
+  list(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.decisionsQuery.moduleDecisions(projectId, user.role, user.sub);
+  }
 
   /** Issue a new decision (title/room + options) — the PMC/architect's authority. The optional
    *  `Idempotency-Key` header makes a retried/replayed issue create the decision exactly once. */
