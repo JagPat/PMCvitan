@@ -14,5 +14,7 @@ export * from './domain/policy';
 export * from './platform/events';
 // Platform: the module registry contract — manifests + validator + enablement (Phase 2 Task 7)
 export * from './platform/module-registry';
+// Module contracts: the decisions command/query contract (Phase 2 Task 8 — first extracted module)
+export * from './contracts/decisions';
 // i18n dictionaries
 export * from './i18n/dictionary';

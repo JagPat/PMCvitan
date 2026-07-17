@@ -5,6 +5,7 @@ import { RequestMethod } from '@nestjs/common';
 import { PATH_METADATA, METHOD_METADATA, MODULE_METADATA } from '@nestjs/common/constants';
 import { Prisma } from '@prisma/client';
 import type { ModuleManifest } from '@vitan/shared';
+import { readEncapsulation } from '@vitan/shared';
 import { AppModule } from '../../app.module';
 import { MODULE_MANIFESTS } from './registry';
 import { RAW_SQL_WRITE_WAIVERS, CROSS_MODULE_WRITE_WAIVERS, type RawSqlWriteWaiver, type CrossModuleWriteWaiver } from './boundary-waivers';
@@ -75,6 +76,20 @@ const NESTED_WRITE_OPS: ReadonlySet<string> = new Set([
   'upsert',
   'delete',
   'deleteMany',
+]);
+
+/** The Prisma delegate READ methods (a call to one of these reads rows). Tracked only to enforce
+ *  READ-ENCAPSULATION (Task 8): a read of a read-encapsulated model from another module is a
+ *  `cross-module-read` finding. Non-encapsulated models' reads are ignored (the default). */
+export const READ_METHODS: ReadonlySet<string> = new Set([
+  'findUnique',
+  'findUniqueOrThrow',
+  'findFirst',
+  'findFirstOrThrow',
+  'findMany',
+  'count',
+  'aggregate',
+  'groupBy',
 ]);
 
 /** The Prisma raw-query methods (tagged-template or call form). */
@@ -271,6 +286,9 @@ export interface PersistenceOptions {
   /** `delegate -> { relationField -> related delegate }` for NESTED-write attribution (defaults to
    *  the live DMMF via {@link prismaModelRelations}). Fixtures inject a synthetic map. */
   readonly relationsOf?: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  /** `read-encapsulated model -> owning module id` (Task 8). A READ of one of these models from a
+   *  module other than its owner is a `cross-module-read` finding. Empty ⇒ reads are unrestricted. */
+  readonly readEncapsulatedBy?: ReadonlyMap<string, string>;
 }
 
 export interface PersistenceResult {
@@ -278,6 +296,8 @@ export interface PersistenceResult {
   readonly writes: DelegateWrite[];
   readonly rawWrites: RawWrite[];
   readonly dynamicWrites: DynamicWrite[];
+  /** Reads of read-encapsulated models, attributed to the reading module (Task 8). */
+  readonly reads: DelegateWrite[];
 }
 
 const INSERT_RE = /\binsert\s+into\b/i;
@@ -316,12 +336,14 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
   const crossWaivers = opts.crossWaivers ?? [];
   const delegates = opts.delegates ?? prismaModelDelegates();
   const relationsOf = opts.relationsOf ?? prismaModelRelations();
+  const readEncapsulatedBy = opts.readEncapsulatedBy ?? new Map<string, string>();
   const checker = program.getTypeChecker();
   const moduleIds = new Set(kindOf.keys());
 
   const writes: DelegateWrite[] = [];
   const rawWrites: RawWrite[] = [];
   const dynamicWrites: DynamicWrite[] = [];
+  const reads: DelegateWrite[] = [];
 
   const hasRaw = (t: ts.Type): boolean => RAW_METHOD_NAMES.some((m) => !!t.getProperty(m));
   const typeLooksPrisma = (t: ts.Type): boolean => {
@@ -494,6 +516,15 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
             scanCallNestedWrites(node, res.model, rel, mod);
           }
         }
+        // Task 8 — a READ of a read-encapsulated model. Only tracked for encapsulated models (the
+        // owning module reads its own; any other module reading it directly is a boundary crossing).
+        if (READ_METHODS.has(method) && readEncapsulatedBy.size > 0) {
+          const res = resolveDelegate(node.expression.expression);
+          if (res?.kind === 'model' && readEncapsulatedBy.has(res.model)) {
+            const owner = readEncapsulatedBy.get(res.model)!;
+            if (owner !== mod) reads.push({ file: rel, module: mod, model: res.model, owner, ownerKind: kindOf.get(owner), symbol: enclosingSymbol(node) });
+          }
+        }
         if (RAW_METHOD_NAMES.includes(method)) {
           const sql = collectSqlText(node);
           if (isWriteSql(sql)) rawWrites.push({ file: rel, module: mod, symbol: enclosingSymbol(node), sql });
@@ -550,7 +581,14 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
     if (!moduleIds.has(rw.owner)) findings.push({ code: 'raw-waiver-bad-owner', message: `raw-SQL waiver ${rw.file} names unknown owner module '${rw.owner}'`, file: rw.file });
   });
 
-  return { findings, writes, rawWrites, dynamicWrites };
+  // Task 8 — a read of a read-encapsulated model from any module other than its owner. There is NO
+  // read waiver: a cross-module read must be routed through the owning module's query contract (spec
+  // §6 permits a same-transaction query/validation, not a foreign direct read).
+  for (const r of reads) {
+    findings.push({ code: 'cross-module-read', message: `${r.file} (module '${r.module}', ${r.symbol}) reads read-encapsulated model '${r.model}' owned by '${r.owner}' — route it through ${r.owner}'s query contract`, file: r.file, model: r.model, symbol: r.symbol });
+  }
+
+  return { findings, writes, rawWrites, dynamicWrites, reads };
 }
 
 // ── Runtime program + the wired real check ────────────────────────────────────────────────
@@ -610,6 +648,7 @@ export function analyzeRuntimeBoundaries({ srcRoot, tsconfigPath }: { srcRoot: s
     rawWaivers: RAW_SQL_WRITE_WAIVERS,
     crossWaivers: CROSS_MODULE_WRITE_WAIVERS,
     delegates,
+    readEncapsulatedBy: readEncapsulation(MODULE_MANIFESTS),
   });
   return { delegates, ownershipFindings, routeFindings, persistence, runtimeFiles };
 }

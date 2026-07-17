@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
+import { DecisionsQueryService } from '../decisions/decisions.query';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { AuthUser } from '../common/auth';
 import type { CreateNodeInput, MoveNodeInput, RenameNodeInput } from '../contracts';
@@ -30,6 +31,8 @@ export class NodesService {
     private readonly snapshot: SnapshotService,
     // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
     private readonly dispatcher: ExternalEffectDispatcher,
+    // Task 8 — the "decisions filed under this location" guard goes through the decisions query.
+    private readonly decisions: DecisionsQueryService,
   ) {}
 
   /** Create a zone/room/element under the right kind of parent. */
@@ -107,7 +110,7 @@ export class NodesService {
     await this.requireNode(projectId, nodeId);
     const actor = await resolveActor(this.prisma, user);
     const subtree = await this.subtreeIds(nodeId);
-    const attached = await this.prisma.decision.count({ where: { nodeId: { in: subtree } } });
+    const attached = await this.decisions.countByNodeIds(subtree);
     if (attached > 0) {
       throw new BadRequestException(`Move or remove the ${attached} decision(s) under this location before deleting it.`);
     }

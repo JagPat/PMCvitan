@@ -45,6 +45,16 @@ export interface ModuleManifest {
    */
   readonly ownsModels: readonly string[];
   /**
+   * The subset of {@link ownsModels} whose READS are ALSO private to this module (Task 8 —
+   * a fully-extracted module). Once a model is read-encapsulated, no other module may read
+   * it directly (`prisma.<model>.findMany`/`count`/etc.) — every cross-module read must go through
+   * this module's query contract. The boundary analyzer enforces this: a foreign read of a
+   * read-encapsulated model is a `cross-module-read` finding. A model here MUST be in
+   * `ownsModels` (you can only encapsulate your own tables). Absent/empty ⇒ writes are
+   * private but reads are still open (the pre-extraction default for a not-yet-extracted module).
+   */
+  readonly readEncapsulated?: readonly string[];
+  /**
    * Module ids this module calls one-directionally — a typed query, a contract, or an
    * event subscription. The registry proves THIS graph is acyclic: an accidental mutual
    * reach between two modules is a boundary violation.
@@ -153,6 +163,15 @@ export function validateRegistry(
     }
   }
 
+  // a read-encapsulated model must be one the module actually owns (you can only make your
+  // own tables read-private; encapsulating a model you don't own is a manifest error)
+  for (const m of manifests) {
+    const owned = new Set(m.ownsModels);
+    for (const model of m.readEncapsulated ?? []) {
+      if (!owned.has(model)) errors.push({ code: 'read-encapsulated-unowned', message: `Module "${m.id}" read-encapsulates "${model}", which it does not own` });
+    }
+  }
+
   // unique command contributions across the registry. Commands are module-prefixed and
   // MUST be unique.
   const commandOwner = new Map<string, string>();
@@ -231,5 +250,13 @@ export function enabledModules(manifests: readonly ModuleManifest[]): string[] {
 export function modelOwnership(manifests: readonly ModuleManifest[]): Map<string, string> {
   const out = new Map<string, string>();
   for (const m of manifests) for (const model of m.ownsModels) out.set(model, m.id);
+  return out;
+}
+
+/** The `read-encapsulated model -> owning module id` map (Task 8). The boundary analyzer flags a
+ *  read of one of these models from any module other than its owner. */
+export function readEncapsulation(manifests: readonly ModuleManifest[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const m of manifests) for (const model of m.readEncapsulated ?? []) out.set(model, m.id);
   return out;
 }

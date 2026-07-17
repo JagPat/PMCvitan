@@ -5,6 +5,7 @@ import { StorageService } from './storage.service';
 import { SignedUrlService } from './signed-url.service';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { SnapshotService } from '../snapshot/snapshot.service';
+import { DecisionsQueryService } from '../decisions/decisions.query';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
@@ -32,6 +33,8 @@ export class MediaService {
     // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
     private readonly dispatcher: ExternalEffectDispatcher,
     private readonly snapshot: SnapshotService,
+    // Task 8 — a linked decision reference is validated through the decisions query.
+    private readonly decisions: DecisionsQueryService,
   ) {}
 
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
@@ -50,7 +53,7 @@ export class MediaService {
     // Location spine: validate the place tag belongs to this project before storing.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
     // Project-owned references: a photo may only point at THIS project's decision/log.
-    const decisionId = await resolveProjectRef(this.prisma, 'decision', projectId, input.decisionId, 'decisionId');
+    const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     const dailyLogId = await resolveProjectRef(this.prisma, 'dailyLog', projectId, input.dailyLogId, 'dailyLogId');
     // Evidence linkage (Task 4): the item requires ITS inspection — validated here for a
     // readable 400; the composite-FK chain + CHECK are the database backstop.

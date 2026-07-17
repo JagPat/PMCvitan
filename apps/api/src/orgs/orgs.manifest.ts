@@ -12,7 +12,7 @@ export const orgsManifest: ModuleManifest = {
   title: 'Organizations & Projects',
   kind: 'domain',
   ownsModels: ['org', 'orgMembership', 'membership', 'project', 'projectCompany', 'projectTemplate', 'templateModule', 'user', 'workerDevice'],
-  dependsOn: [],
+  dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: ['nodes', 'activities', 'inspections'],
   producesEvents: [
     'project.created',

@@ -2,8 +2,10 @@ import { BadRequestException } from '@nestjs/common';
 import type { PrismaService } from '../prisma.service';
 
 /** The project-owned models an optional reference may point at (exhaustive —
- *  never accept arbitrary model names from a caller). */
-export type ProjectRefModel = 'activity' | 'dailyLog' | 'decision' | 'inspection' | 'media' | 'node';
+ *  never accept arbitrary model names from a caller). `decision` is NOT here: it is
+ *  read-encapsulated (Task 8), so a decision reference is validated through the
+ *  decisions module's query (`DecisionsQueryService.resolveRefInProject`), not this helper. */
+export type ProjectRefModel = 'activity' | 'dailyLog' | 'inspection' | 'media' | 'node';
 
 /**
  * Resolve an OPTIONAL project-owned reference (Phase 0 Task 5): null/undefined
@@ -27,9 +29,6 @@ export async function resolveProjectRef(
       break;
     case 'dailyLog':
       row = await prisma.dailyLog.findFirst({ where: { id, projectId }, select: { id: true } });
-      break;
-    case 'decision':
-      row = await prisma.decision.findFirst({ where: { id, projectId }, select: { id: true } });
       break;
     case 'inspection':
       row = await prisma.inspection.findFirst({ where: { id, projectId }, select: { id: true } });

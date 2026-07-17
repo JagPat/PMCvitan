@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { MediaService } from './media.service';
+import { DecisionsQueryService } from '../decisions/decisions.query';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './storage.service';
 import type { SignedUrlService } from './signed-url.service';
@@ -63,6 +64,7 @@ function make(
     signed as unknown as SignedUrlService,
     dispatcher as unknown as ExternalEffectDispatcher,
     snapshot as unknown as SnapshotService,
+    new DecisionsQueryService(prisma as unknown as PrismaService),
   );
   return { svc, prisma, storage, signed, dispatcher, snapshot, created };
 }

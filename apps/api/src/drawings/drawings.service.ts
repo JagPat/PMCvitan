@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma.service';
 import { StorageService } from '../media/storage.service';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { SnapshotService } from '../snapshot/snapshot.service';
+import { DecisionsQueryService } from '../decisions/decisions.query';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import { ddMmmYyyy } from '../domain/dates';
@@ -44,6 +45,8 @@ export class DrawingsService {
     // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
     private readonly dispatcher: ExternalEffectDispatcher,
     private readonly snapshot: SnapshotService,
+    // Task 8 — a linked decision reference is validated through the decisions query.
+    private readonly decisions: DecisionsQueryService,
   ) {}
 
   /** A presigned direct-to-bucket upload target for a large drawing (Slice 3), or
@@ -85,7 +88,7 @@ export class DrawingsService {
     // Project-owned references: the linked activity/decision must be THIS project's
     // (the composite DB foreign keys are the backstop; this gives a readable error).
     const activityId = await resolveProjectRef(this.prisma, 'activity', projectId, input.activityId, 'activityId');
-    const decisionId = await resolveProjectRef(this.prisma, 'decision', projectId, input.decisionId, 'decisionId');
+    const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     let key: string;
     let data: Buffer | null;
     let sizeBytes: number;

@@ -6,7 +6,7 @@ export const drawingsManifest: ModuleManifest = {
   title: 'Drawing Control',
   kind: 'domain',
   ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck'],
-  dependsOn: [],
+  dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: [],
   producesEvents: [
     'drawing.issued',

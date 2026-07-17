@@ -12,7 +12,7 @@ export const nodesManifest: ModuleManifest = {
   title: 'Location Spine',
   kind: 'domain',
   ownsModels: ['projectNode'],
-  dependsOn: [],
+  dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: [],
   producesEvents: ['node.created', 'node.published', 'node.renamed', 'node.moved', 'node.removed'],
   consumesEvents: [],
