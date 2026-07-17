@@ -26,6 +26,7 @@ import { PhasesController } from './activities/phases.controller';
 import { InspectionsService } from './inspections/inspections.service';
 import { InspectionsController } from './inspections/inspections.controller';
 import { DailyLogService } from './daily-log/daily-log.service';
+import { DailyLogQueryService } from './daily-log/daily-log.query';
 import { DailyLogController } from './daily-log/daily-log.controller';
 import { RealtimeGateway } from './realtime/realtime.gateway';
 import { StorageService } from './media/storage.service';
@@ -102,6 +103,8 @@ import { NodeInitParticipant } from './nodes/node-init.participant';
     PhasesService,
     InspectionsService,
     DailyLogService,
+    // Task 10 — the daily-log module's public READ boundary (snapshot slice + tenant-ref check).
+    DailyLogQueryService,
     RealtimeGateway,
     StorageService,
     SignedUrlService,

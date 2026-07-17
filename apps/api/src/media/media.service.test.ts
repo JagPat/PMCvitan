@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { MediaService } from './media.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './storage.service';
 import type { SignedUrlService } from './signed-url.service';
@@ -65,6 +66,8 @@ function make(
     dispatcher as unknown as ExternalEffectDispatcher,
     snapshot as unknown as SnapshotService,
     new DecisionsQueryService(prisma as unknown as PrismaService),
+    // Task 10 — a linked daily-log reference is validated through the daily-log query (same prisma mock).
+    new DailyLogQueryService(prisma as unknown as PrismaService),
   );
   return { svc, prisma, storage, signed, dispatcher, snapshot, created };
 }

@@ -41,13 +41,17 @@ describe('Phase 2 Task 7 — module registry', () => {
   });
 
   it('the dependsOn graph is acyclic; the activity↔inspection atomic edge is a workflow participation (cycle-exempt)', () => {
-    // Task 8 — the FIRST one-directional dependencies: the six decision consumers declare
-    // `dependsOn: ['decisions']` (they reach it only through its query contract). `decisions` itself
-    // depends on nothing, so the graph stays ACYCLIC. The mutual activity↔inspection sign-off remains
-    // a workflow participation, NOT a dependsOn cycle.
-    const decisionConsumers = new Set(['activities', 'daily-log', 'nodes', 'orgs', 'drawings', 'media']);
+    // Task 8/10 — one-directional query-contract dependencies. The six decision consumers declare
+    // `dependsOn: ['decisions']`; Task 10 extracts `daily-log`, whose sole cross-module reader (media,
+    // the linked-`dailyLogId` check) additionally declares `daily-log`. `decisions` and `daily-log`
+    // depend on nothing that depends back, so the graph stays ACYCLIC. The mutual activity↔inspection
+    // sign-off remains a workflow participation, NOT a dependsOn cycle.
+    const expectedDependsOn: Record<string, string[]> = {
+      activities: ['decisions'], 'daily-log': ['decisions'], nodes: ['decisions'], orgs: ['decisions'], drawings: ['decisions'],
+      media: ['decisions', 'daily-log'],
+    };
     for (const m of MODULE_MANIFESTS) {
-      expect(m.dependsOn).toEqual(decisionConsumers.has(m.id) ? ['decisions'] : []);
+      expect(m.dependsOn, `${m.id} dependsOn`).toEqual(expectedDependsOn[m.id] ?? []);
     }
     const activities = MODULE_MANIFESTS.find((m) => m.id === 'activities')!;
     const inspections = MODULE_MANIFESTS.find((m) => m.id === 'inspections')!;

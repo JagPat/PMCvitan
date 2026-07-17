@@ -16,5 +16,7 @@ export * from './platform/events';
 export * from './platform/module-registry';
 // Module contracts: the decisions command/query contract (Phase 2 Task 8 — first extracted module)
 export * from './contracts/decisions';
+// Module contracts: the daily-log command/query contract (Phase 2 Task 10 — second extracted module)
+export * from './contracts/daily-log';
 // i18n dictionaries
 export * from './i18n/dictionary';
