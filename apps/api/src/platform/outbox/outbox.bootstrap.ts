@@ -5,6 +5,7 @@ import { PushService } from '../../push/push.service';
 import { OutboxRelay } from './relay.service';
 import { registerConsumer, syncConsumerCatalog, outboxSenderMode } from './registry';
 import { makeSocketConsumer, makePushConsumer } from './consumers';
+import { makeDecisionsProjectionConsumer } from '../../decisions/decisions.projection';
 import { effectCoverageVersion } from '../external-effects';
 
 /**
@@ -27,6 +28,12 @@ export class OutboxBootstrap implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     registerConsumer(makeSocketConsumer(this.realtime));
     registerConsumer(makePushConsumer(this.push));
+    // Task 9 — the first module's rebuildable read path: the decisions projection consumer maintains
+    // the DecisionProjection read model from `decision.*` events (ordered, effectively-once). Every
+    // event materializes its ordered delivery (dispatch for a decision event, noop otherwise), so the
+    // projection cursor advances contiguously. Additive: the live snapshot slice stays authoritative
+    // until the frontend is switched to the projection query (the capability-versioned XOR cutover).
+    registerConsumer(makeDecisionsProjectionConsumer());
     // PR B — persist each consumer's contract BEFORE the relay starts, so the (consumer,
     // consumerKind) delivery FK always resolves and the durable obligation is complete. A contract
     // drift or a failed sync ABORTS boot (never downgraded to a warning): an unsynced catalog would

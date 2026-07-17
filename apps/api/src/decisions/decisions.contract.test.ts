@@ -49,7 +49,7 @@ describe('Task 8 — the decisions module implements its shared command/query co
   });
 
   it('the query service implements every declared query (reachable read surface)', () => {
-    for (const method of ['snapshotSlice', 'existsInProject', 'resolveRefInProject', 'countByNodeIds', 'countPending'] as const) {
+    for (const method of ['snapshotSlice', 'projectionSlice', 'existsInProject', 'resolveRefInProject', 'countByNodeIds', 'countPending'] as const) {
       expect(typeof DecisionsQueryService.prototype[method]).toBe('function');
     }
   });

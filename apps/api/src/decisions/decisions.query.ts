@@ -3,6 +3,8 @@ import { PrismaService } from '../prisma.service';
 import type { DecisionStatus } from '../domain/transitions';
 import type { Role } from '../common/auth';
 import type { DecisionDto } from '../snapshot/types';
+import { serializeDecision, decisionVisibleToViewer } from './decision-serialize';
+import { DECISIONS_PROJECTION } from './decisions.projection';
 
 /**
  * Phase 2 Task 8 — the decisions module's PUBLIC READ boundary (its query contract).
@@ -42,48 +44,48 @@ export class DecisionsQueryService {
 
     const statuses = new Map<string, DecisionStatus>(rows.map((d) => [d.id, d.status as DecisionStatus]));
 
-    const hidePending = role !== 'pmc' && role !== 'client';
+    // The serialization + the per-viewer filter are the SAME functions the decisions projection uses
+    // (decision-serialize.ts), so the projection-served slice is byte-identical to this live slice.
     const decisions: DecisionDto[] = rows
-      .filter((d) => {
-        // Draft → Publish: an unpublished decision is author-private — it is delivered ONLY
-        // to its creator, never to the client or anyone else. Enforced here (server-side),
-        // not merely hidden in the UI, so a draft's title can't leak through any surface.
-        if (d.publishedAt === null) return !!userId && d.authorId === userId;
-        // AUTH-02: only pmc/client see published-but-pending decisions.
-        return !(hidePending && d.status === 'pending');
-      })
-      .map((d) => ({
-        id: d.id,
-        title: d.title,
-        room: d.room,
-        nodeId: d.nodeId ?? undefined,
-        status: d.status,
-        draft: d.publishedAt === null,
-        ageDays: d.ageDays ?? undefined,
-        photoSwatch: d.photoSwatch,
-        approvedOption: d.approvedOption ?? undefined,
-        material: d.material ?? undefined,
-        approver: d.approver ?? undefined,
-        onBehalfOf: d.onBehalfOf ?? undefined,
-        date: d.date ?? undefined,
-        cost: d.cost ?? undefined,
-        // a reopened decision carries its open request so every surface can show
-        // WHY it awaits re-approval (reason + impacts) without a second query
-        changeRequest: d.status === 'change' && d.changeRequests[0]
-          ? { reason: d.changeRequests[0].reason, costImpact: d.changeRequests[0].costImpact, timeImpactDays: d.changeRequests[0].timeImpactDays, requestedById: d.changeRequests[0].requestedById ?? undefined }
-          : undefined,
-        options: d.options.map((o) => ({
-          label: o.label,
-          key: o.optionKey,
-          material: o.material,
-          delta: o.delta,
-          swatch: o.swatch,
-          photoUrl: o.photoUrl ?? undefined,
-          recommended: o.recommended,
-        })),
-      }));
+      .filter((d) => decisionVisibleToViewer(d, role, userId))
+      .map(serializeDecision);
 
     return { decisions, statuses };
+  }
+
+  /**
+   * Phase 2 Task 9 — the decisions slice served from the REBUILDABLE PROJECTION (`decisions.inbox`)
+   * instead of the live join. Reads the project's ACTIVE generation's `DecisionProjection` rows (the
+   * pre-serialized `DecisionDto`s the projection consumer refreshed from canonical) and applies the
+   * SAME per-viewer authz filter as {@link snapshotSlice} (via `decisionVisibleToViewer`) — so a
+   * projection read is never an RBAC bypass, and the result is byte-identical to the live slice.
+   *
+   * `generation` is the served generation number (null when the projection has no active generation
+   * yet — a project whose decision events the relay has not applied, or which has never been rebuilt);
+   * the caller decides whether to fall back to the live slice while the projection warms up.
+   */
+  async projectionSlice(
+    projectId: string,
+    role: Role,
+    userId?: string,
+  ): Promise<{ decisions: DecisionDto[]; statuses: Map<string, DecisionStatus>; generation: number | null }> {
+    const gen = await this.prisma.projectionGeneration.findFirst({
+      where: { consumer: DECISIONS_PROJECTION, projectId, status: 'active' },
+      select: { id: true, generation: true },
+    });
+    if (!gen) return { decisions: [], statuses: new Map(), generation: null };
+
+    const rows = await this.prisma.decisionProjection.findMany({
+      where: { generationId: gen.id },
+      // the snapshot slice orders decisions by id descending — mirror it so the served array matches
+      orderBy: { decisionId: 'desc' },
+    });
+    // the readiness map is UNFILTERED (every decision's true status), exactly like snapshotSlice
+    const statuses = new Map<string, DecisionStatus>(rows.map((r) => [r.decisionId, r.status as DecisionStatus]));
+    const decisions = rows
+      .filter((r) => decisionVisibleToViewer({ publishedAt: r.publishedAt, authorId: r.authorId, status: r.status }, role, userId))
+      .map((r) => r.dto as unknown as DecisionDto);
+    return { decisions, statuses, generation: gen.generation };
   }
 
   /** Does decision `decisionId` exist in project `projectId`? The tenant-ownership check a consumer

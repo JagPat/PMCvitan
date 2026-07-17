@@ -300,6 +300,32 @@ model ProjectionGeneration {
   @@index([consumer, projectId, status])
 }
 
+// Phase 2 Task 9 — the DECISIONS read-model projection (the first module's rebuildable read path).
+// One row per (generation, decision): the decisions module's `decisions.inbox` projection consumer
+// refreshes it from the canonical Decision on every decision.* event, storing the SAME serialized
+// DecisionDto the live snapshot produces (via decision-serialize.ts) plus the columns the query
+// filters on. Generation-scoped: `generationId` names the ProjectionGeneration the row belongs to
+// (a plain column, not an FK — the generation lifecycle is managed by the rebuilder + the consumer's
+// dropGeneration hook, mirroring ProcessedEvent/ProjectionCursor), so a building generation is
+// invisible to serving until activated and a retired one is dropped wholesale. The read query serves
+// the ACTIVE generation's rows and applies the per-viewer authz filter at query time (a projection is
+// never an RBAC bypass) — `status`/`publishedAt`/`authorId` are duplicated out of `dto` as the filter
+// keys, and `dto` is the pre-serialized DecisionDto.
+model DecisionProjection {
+  id           String    @id @default(uuid())
+  generationId String
+  projectId    String
+  decisionId   String
+  status       String // 'pending' | 'approved' | 'change' — the readiness map + the pending filter
+  publishedAt  DateTime? // NULL = a private DRAFT (author-only visibility)
+  authorId     String? // the draft author (author-private visibility)
+  dto          Json // the serialized DecisionDto (options + open changeRequest inlined), unfiltered
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([generationId, decisionId])
+  @@index([generationId, projectId])
+}
+
 // Phase 2 Task 5 — the command-idempotency ledger. One receipt per (scope, actor, commandType,
 // idempotencyKey): a retried/duplicated command (offline replay, network retry, double-tap)
 // reserves→executes→commits its succeeded receipt in ONE transaction, so the effect happens
