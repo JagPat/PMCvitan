@@ -602,13 +602,13 @@ export class ApiGateway {
   createInspection(input: { title: string; zone: string; items: string[]; nodeId?: string }): Promise<ApiSnapshot> {
     return this.p('/inspections', input);
   }
-  /** Start a fresh day's daily log (engineer/PMC). */
-  startDailyLog(): Promise<ApiSnapshot> {
-    return this.p('/daily-log/start');
+  /** Start a fresh day's daily log (engineer/PMC). Keyed for replay-safety (Task 10 correction). */
+  startDailyLog(idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p('/daily-log/start', undefined, idempotencyKey);
   }
-  /** Record a material delivery on the open daily log (engineer/PMC). */
-  addSiteMaterial(input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }): Promise<ApiSnapshot> {
-    return this.p('/daily-log/materials', input);
+  /** Record a material delivery on the open daily log (engineer/PMC). Keyed for replay-safety. */
+  addSiteMaterial(input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p('/daily-log/materials', input, idempotencyKey);
   }
 
   private async req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -677,8 +677,8 @@ export class ApiGateway {
   completeActivity(activityId: string): Promise<ApiSnapshot> {
     return this.p(`/activities/${activityId}/complete`);
   }
-  flagMismatch(decisionId: string): Promise<ApiSnapshot> {
-    return this.p(`/daily-log/flag-mismatch`, { decisionId });
+  flagMismatch(decisionId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/daily-log/flag-mismatch`, { decisionId }, idempotencyKey);
   }
   submitInspection(inspectionId: string, items: Checklist['items']): Promise<ApiSnapshot> {
     return this.p(`/inspections/${inspectionId}/submit`, { items });
@@ -686,8 +686,8 @@ export class ApiGateway {
   decideReview(inspectionId: string, approve: boolean, rejectedItemIds: string[]): Promise<ApiSnapshot> {
     return this.p(`/inspections/${inspectionId}/decide`, { approve, rejectedItemIds });
   }
-  submitDailyLog(log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'>): Promise<ApiSnapshot> {
-    return this.p(`/daily-log/submit`, log);
+  submitDailyLog(log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'>, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/daily-log/submit`, log, idempotencyKey);
   }
 
   /** Upload a site photo; returns its id + resolvable URL. */
@@ -795,8 +795,9 @@ export type OutboxOp =
   | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemIds: string[] }
   | { t: 'startActivity'; activityId: string }
   | { t: 'completeActivity'; activityId: string }
-  | { t: 'flagMismatch'; decisionId: string }
-  | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'> }
+  // daily-log ops carry a stable idempotencyKey too (Task 10 correction, finding 3)
+  | { t: 'flagMismatch'; decisionId: string; idempotencyKey: string }
+  | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'>; idempotencyKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
@@ -842,9 +843,9 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
     case 'completeActivity':
       return gw.completeActivity(op.activityId);
     case 'flagMismatch':
-      return gw.flagMismatch(op.decisionId);
+      return gw.flagMismatch(op.decisionId, op.idempotencyKey);
     case 'submitDailyLog':
-      return gw.submitDailyLog(op.log);
+      return gw.submitDailyLog(op.log, op.idempotencyKey);
     case 'uploadMedia':
       // uploadMedia returns {id,url}, not a snapshot — refetch so the flush
       // reconciles dailyLog.photos (the real, server-stored photo replaces the

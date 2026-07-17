@@ -2217,14 +2217,18 @@ export const useStore = create<Store>()(
         get().flash('Starting a new log needs the server.');
         return;
       }
-      runRemote(() => gateway!.startDailyLog(), 'New daily log started — crew carried over at zero.');
+      // Task 10 correction (finding 3): a stable key, generated once, so a lost-response retry
+      // starts the day's log exactly once.
+      const key = newIdempotencyKey();
+      runRemote(() => gateway!.startDailyLog(key), 'New daily log started — crew carried over at zero.');
     },
     addSiteMaterial: (input) => {
       if (!gateway) {
         get().flash('Recording materials needs the server.');
         return;
       }
-      runRemote(() => gateway!.addSiteMaterial(input), `Material recorded: ${input.name}.`);
+      const key = newIdempotencyKey();
+      runRemote(() => gateway!.addSiteMaterial(input, key), `Material recorded: ${input.name}.`);
     },
     loadTeam: () => {
       if (!gateway) return Promise.resolve();
@@ -2488,7 +2492,10 @@ export const useStore = create<Store>()(
         return;
       }
       const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew };
-      if (runRemoteOrQueue({ t: 'submitDailyLog', log: logPayload }, 'Submit daily log', () => gateway!.submitDailyLog(logPayload), 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
+      // Task 10 correction (finding 3): the SAME key rides the online call AND the queued offline op,
+      // so a reload + replay submits exactly once.
+      const submitKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, 'Submit daily log', () => gateway!.submitDailyLog(logPayload, submitKey), 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
       set((s) => { if (s.dailyLog) s.dailyLog.submitted = true; });
       get().record('Daily log submit');
       get().flash(get().online ? 'Daily site log sent to PMC — attendance, materials & photos attached.' : 'Saved offline — log will upload to PMC when signal returns.');
@@ -2496,7 +2503,8 @@ export const useStore = create<Store>()(
     flagMismatch: (idx) => {
       const mat = get().dailyLog?.materials[idx];
       if (!mat) return; // no log, or a stale index against a replaced materials list
-      if (runRemoteOrQueue({ t: 'flagMismatch', decisionId: mat.decisionId }, 'Flag ' + mat.decisionId, () => gateway!.flagMismatch(mat.decisionId), 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
+      const flagKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'flagMismatch', decisionId: mat.decisionId, idempotencyKey: flagKey }, 'Flag ' + mat.decisionId, () => gateway!.flagMismatch(mat.decisionId, flagKey), 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
       set((s) => {
         const m = s.dailyLog?.materials[idx];
         if (m) m.matched = false;
