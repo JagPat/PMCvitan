@@ -1,21 +1,28 @@
 # Phase 2 Task 10 — daily-log CORRECTION ROUND 2 — Review Packet
 
-**HELD for the narrow Codex re-review — do not merge.** The independent Codex re-review of the merged
-daily-log correction (PR #170) returned **BLOCKED** with **two remaining P1 findings**, both
-independently reproduced. This branch is the focused fix-forward — one PR, from current `origin/main` —
-that fixes exactly those two. PR #170 is **not** rolled back. **Drawings (module 2) stays blocked** until
-this narrow re-review clears.
+**Awaiting the narrow Codex re-review.** The independent Codex re-review of the merged daily-log
+correction (PR #170) returned **BLOCKED** with **two remaining P1 findings**, both independently
+reproduced. This is the focused fix-forward — one PR, from `origin/main` — that fixes exactly those two;
+it was opened as a HELD draft and the maintainer merged it as **PR #171**. PR #170 is **not** rolled
+back. **Drawings (module 2) stays blocked** until this narrow re-review clears these two findings.
+
+**Immutable anchors (this round — the state Codex should re-review):**
 
 - **Base:** `origin/main` @ `8f44744de11d9b4d9c5e9b7ef2d983bc45b546f2` (the PR #170 merge).
-- **Reviewed head of the BLOCKED round:** `1e090d5` (PR #170's tip); **merge:** `8f44744`.
+- **Prior BLOCKED round (PR #170):** reviewed head `1e090d5295fc89419a121deee20087114f61979d`; merge `8f44744de11d9b4d9c5e9b7ef2d983bc45b546f2`.
 - **Branch:** `claude/phase2-task10-daily-log-fix2`.
-- **Head:** the tip of this branch at push (this packet's own commit is the last one).
+- **Reviewed head (this round):** `fef344dce1f4aee25d649e733e86a1cc8f110197` (the branch tip; this packet's commit is the last one).
+- **Merge (this round):** `be8245584c0ca3987dbdf38df779e08a13f913d0` (**PR #171** into `main`).
+- **Current `main` note:** one commit ahead of the merge — an unrelated, **Dockerfile-only** production
+  deploy hotfix (`1cff4d31ed6f1ce314ac13ecd043fce1ebefbcb4`, merge `6201223518811ca19916e522288cb9853ff82666`, PR #172)
+  that adds `RUN pnpm --filter @vitan/shared build` to the API image and touches **no** daily-log runtime.
+  The runtime under review is byte-identical at `be82455` and at current `main`.
 
 | SHA | Finding | Increment |
 |---|---|---|
 | `1c47d74` | 1 (P1) | write-ahead client outbox for all four daily-log commands |
 | `8731cd9` | 2 (P1) | failed module reconcile retains recovery + a Retry on retained last-good |
-| _(this commit)_ | — | round-2 correction review packet |
+| `fef344d` | — | round-2 correction review packet |
 
 ---
 
@@ -101,5 +108,5 @@ screen showed no Retry when last-good was retained).
 
 CI runs the same battery on head and merge; the branch's Actions run is linked from the PR.
 
-**HELD — do not merge.** Drawings (module 2) remains blocked until this narrow Codex re-review clears the
-two findings.
+**Merged as PR #171 (`be82455`); awaiting the narrow Codex re-review.** Drawings (module 2) remains
+blocked until this narrow re-review clears the two findings.
