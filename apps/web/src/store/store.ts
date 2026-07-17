@@ -366,7 +366,9 @@ export interface AppActions {
   flagMismatch: (idx: number) => void;
   record: (label: string) => void;
   toggleOnline: () => void;
-  flushOutbox: () => void;
+  /** Replay the durable outbox in order. `okMsg` (write-ahead command path) announces the command's
+   *  success on a clean flush instead of the batch "N synced" summary. */
+  flushOutbox: (opts?: { okMsg?: string }) => void;
   hydrateOutbox: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
@@ -645,6 +647,12 @@ export const useStore = create<Store>()(
       | { kind: 'command'; createdAfterSequence: number }
       | { kind: 'submit'; inspectionId: string; attempt: number; createdAfterSequence: number };
     let snapshotSeq = 0;
+    // Serialize outbox flushes (finding 1 — write-ahead commands can fire a flush per command while one
+    // is already in flight). At most one flush runs; a request made during a flush re-runs once after it
+    // settles, so a command persisted mid-flush is still sent. Idempotency keys make an overlap harmless,
+    // but serializing keeps ordering and avoids redundant sends.
+    let outboxFlushing = false;
+    let outboxFlushQueued = false;
     const scopeCoordinators = new Map<string, ScopeCoordinator>();
     const scopeKey = (scope: ProjectScope): string => `${scope.projectId}::${scope.generation}`;
     /** Drop coordinators for scopes we've LEFT that have no pull in flight — a scope
@@ -1126,6 +1134,31 @@ export const useStore = create<Store>()(
       });
       persistOutbox();
       get().flash(label + ' — saved offline, will sync when you reconnect.');
+      return true;
+    };
+
+    /**
+     * WRITE-AHEAD command path (Task 10 correction round 2, finding 1). Unlike `runRemoteOrQueue`
+     * (which only persists when OFFLINE and fires a bare network call when online), this ALWAYS
+     * persists the op — with its stable idempotency key — to the durable outbox BEFORE any network
+     * request, online or offline. Then:
+     *   • online  → flush immediately; `flushOutbox` reuses the persisted op's key, removes it only on
+     *     confirmed success/replay, KEEPS it (and its key) on a transient failure (network / timeout /
+     *     5xx) so a retry or a reload replays the SAME op, and drops it on a terminal 4xx — all
+     *     scope-guarded. The command's success toast fires via the reconcile's `okMsg`.
+     *   • offline → the op waits in the outbox and syncs on reconnect.
+     * So a lost/uncertain online response never strands a command without its key: the ledger applies
+     * it exactly once however many times it is retried. Returns true when handled (gateway present).
+     */
+    const runWriteAhead = (op: OutboxOp, label: string, okMsg: string): boolean => {
+      if (!gateway) return false;
+      set((s) => { s.outbox.push(op); if (!s.online) s.syncQueue.push(label); });
+      persistOutbox();
+      if (get().online) {
+        get().flushOutbox({ okMsg });
+      } else {
+        get().flash(label + ' — saved offline, will sync when you reconnect.');
+      }
       return true;
     };
 
@@ -2264,10 +2297,11 @@ export const useStore = create<Store>()(
         get().flash('Starting a new log needs the server.');
         return;
       }
-      // Task 10 correction (finding 3): a stable key, generated once, so a lost-response retry
-      // starts the day's log exactly once.
+      // Task 10 correction round 2 (finding 1): WRITE-AHEAD — the op + its key are persisted to the
+      // durable outbox before the network call (online or offline), so a lost/uncertain response never
+      // strands the command without its key; a retry or reload replays the SAME op under the SAME key.
       const key = newIdempotencyKey();
-      runRemote(() => gateway!.startDailyLog(key), 'New daily log started — crew carried over at zero.');
+      runWriteAhead({ t: 'startDailyLog', idempotencyKey: key }, 'New daily log', 'New daily log started — crew carried over at zero.');
     },
     addSiteMaterial: (input) => {
       if (!gateway) {
@@ -2275,7 +2309,7 @@ export const useStore = create<Store>()(
         return;
       }
       const key = newIdempotencyKey();
-      runRemote(() => gateway!.addSiteMaterial(input, key), `Material recorded: ${input.name}.`);
+      runWriteAhead({ t: 'addSiteMaterial', input, idempotencyKey: key }, 'Record material', `Material recorded: ${input.name}.`);
     },
     loadTeam: () => {
       if (!gateway) return Promise.resolve();
@@ -2539,10 +2573,10 @@ export const useStore = create<Store>()(
         return;
       }
       const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew };
-      // Task 10 correction (finding 3): the SAME key rides the online call AND the queued offline op,
-      // so a reload + replay submits exactly once.
+      // Task 10 correction round 2 (finding 1): WRITE-AHEAD — the op + its key are persisted before the
+      // network call (online too), so a lost response is retried under the SAME key, submitting once.
       const submitKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, 'Submit daily log', () => gateway!.submitDailyLog(logPayload, submitKey), 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
+      if (runWriteAhead({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, 'Submit daily log', 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
       set((s) => { if (s.dailyLog) s.dailyLog.submitted = true; });
       get().record('Daily log submit');
       get().flash(get().online ? 'Daily site log sent to PMC — attendance, materials & photos attached.' : 'Saved offline — log will upload to PMC when signal returns.');
@@ -2551,7 +2585,9 @@ export const useStore = create<Store>()(
       const mat = get().dailyLog?.materials[idx];
       if (!mat) return; // no log, or a stale index against a replaced materials list
       const flagKey = newIdempotencyKey();
-      if (runRemoteOrQueue({ t: 'flagMismatch', decisionId: mat.decisionId, idempotencyKey: flagKey }, 'Flag ' + mat.decisionId, () => gateway!.flagMismatch(mat.decisionId, flagKey), 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
+      // finding 1: WRITE-AHEAD — persist the op + key before the call; a lost response replays the SAME
+      // key, flagging exactly once.
+      if (runWriteAhead({ t: 'flagMismatch', decisionId: mat.decisionId, idempotencyKey: flagKey }, 'Flag ' + mat.decisionId, 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
       set((s) => {
         const m = s.dailyLog?.materials[idx];
         if (m) m.matched = false;
@@ -2588,8 +2624,14 @@ export const useStore = create<Store>()(
         get().flash(n + ' offline update' + (n > 1 ? 's' : '') + ' synced to server.');
       }
     },
-    flushOutbox: async () => {
+    flushOutbox: async (opts) => {
       if (!gateway) return;
+      // finding 1 — serialize flushes: a write-ahead command fires a flush per command, so one may be
+      // in flight already. Coalesce (mark + return); the in-flight flush re-runs once after it settles,
+      // so a command persisted mid-flush is still sent. Idempotency keys make an overlap harmless.
+      if (outboxFlushing) { outboxFlushQueued = true; return; }
+      outboxFlushing = true;
+      try {
       const ops = get().outbox.slice();
       if (ops.length === 0) return;
       // gate round-2 finding 2: the flush is about to change the durable truth
@@ -2686,16 +2728,28 @@ export const useStore = create<Store>()(
         reconcileSubmission(s);
       });
       persistOutbox();
-      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), undefined, flushLease.scope);
+      // finding 1 — a write-ahead command passes its own success toast (`okMsg`); the reconcile
+      // announces it on `applied`. In that case suppress the batch "N synced" line below (the okMsg
+      // already reported success), but still surface the error parts (dropped / still-pending).
+      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), opts?.okMsg, flushLease.scope);
 
       const parts: string[] = [];
-      if (synced > 0) parts.push(`${synced} offline update${synced > 1 ? 's' : ''} synced`);
+      if (synced > 0 && !opts?.okMsg) parts.push(`${synced} offline update${synced > 1 ? 's' : ''} synced`);
       if (dropped > 0) parts.push(`${dropped} could not be applied and ${dropped > 1 ? 'were' : 'was'} discarded`);
       if (remaining.length > 0) parts.push(`${remaining.length} still pending — will retry when you reconnect`);
       if (parts.length) get().flash(parts.join('; ') + '.');
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
       // to FAILED; an op kept alive by a failed dead-letter write stays covered
       void reconcileEvidence();
+      } finally {
+        outboxFlushing = false;
+        // a command persisted DURING this flush was not replayed here — flush it now (plain, no okMsg,
+        // so its success shows via the batch summary). Bounded: the rerun fires at most once per settle.
+        if (outboxFlushQueued) {
+          outboxFlushQueued = false;
+          if (get().online && get().outbox.length > 0) void get().flushOutbox();
+        }
+      }
     },
     hydrateOutbox: () => {
       try {
