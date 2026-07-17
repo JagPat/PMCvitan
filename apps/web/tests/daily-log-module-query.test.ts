@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import type { ApiGateway, ApiSnapshot, ModuleDailyLog } from '@/data/apiGateway';
 import { enabledScreensFor, SCREEN_MODULE } from '@/lib/screens';
-import type { DailyLog, Material } from '@vitan/shared';
+import type { DailyLog, Material, DailyLogCoreView } from '@vitan/shared';
 
 /**
  * Phase 2 Task 10 — the frontend cutover for the daily-log module: manifest-driven nav + the
@@ -129,7 +129,9 @@ function deferred<T>() {
   return { promise, release, reject };
 }
 const moduleRead = (progress: number, matName: string, source: 'live' | 'projection' = 'projection', gen: number | null = 3): ModuleDailyLog =>
-  ({ dailyLog: core(progress), materials: [mat(matName)], source, generation: source === 'live' ? null : gen });
+  // the wire view's `logDate` is `string | null` (never undefined) and its arrays readonly — core()
+  // always sets a concrete logDate, so it satisfies the shared DailyLogCoreView at this boundary.
+  ({ dailyLog: core(progress) as DailyLogCoreView, materials: [mat(matName)], source, generation: source === 'live' ? null : gen });
 const poisonSnap = (progress = 99) => makeSnapshot({ ...core(progress), photos: [] } as DailyLog, [mat('POISON-MAT')]);
 
 describe('Task 10 (correction, finding 2) — module-aware post-command reconciliation', () => {

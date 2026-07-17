@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { render, cleanup, fireEvent, type RenderResult } from '@testing-library/react';
+import { render, cleanup, fireEvent } from '@testing-library/react';
 import type { DailyLog } from '@vitan/shared';
 
 /**
@@ -24,7 +24,7 @@ import type { DailyLog } from '@vitan/shared';
 const fullLog = (over: Partial<DailyLog> = {}): DailyLog => ({
   date: '01 Jun 2026', logDate: '2026-06-01', checkedIn: true, checkinTime: '09:00', submitted: false, progress: 3,
   crew: [{ trade: 'Mason', count: 2 }],
-  materials: [{ id: 'm1', name: 'Cement', qty: '10 bags', zone: 'GF', matched: true, decisionId: 'DL-1', swatch: 'tile' }],
+  materials: [{ name: 'Cement', decisionId: 'DL-1', qty: '10 bags', zone: 'GF', matched: true, swatch: 'tile', photo: false }],
   photos: [],
   ...over,
 });
