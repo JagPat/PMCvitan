@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { DRAWINGS_COMMANDS, DRAWINGS_QUERIES, type DrawingsModuleResult } from '@vitan/shared';
 import { drawingsManifest } from './drawings.manifest';
 import { DrawingsQueryService } from './drawings.query';
+import { DrawingsService } from './drawings.service';
 
 /**
  * Phase 2 Task 10 — the drawings module is reachable ONLY through its shared contract (commands +
@@ -45,6 +46,17 @@ describe('Task 10 — the drawings module implements its shared command/query co
     for (const method of ['snapshotSlice', 'projectionSlice', 'moduleDrawings', 'readinessSlice', 'existsInProject', 'resolveRefInProject'] as const) {
       expect(typeof DrawingsQueryService.prototype[method]).toBe('function');
     }
+  });
+
+  // ── Task 5 — every command carries the idempotency key as its trailing argument ──
+  it('every command accepts the idempotency key as its trailing argument', () => {
+    const _issue: Parameters<DrawingsService['issue']>[3] = 'k' as string | undefined;
+    const _publish: Parameters<DrawingsService['publish']>[3] = 'k' as string | undefined;
+    const _ack: Parameters<DrawingsService['acknowledge']>[3] = 'k' as string | undefined;
+    const _setNode: Parameters<DrawingsService['setNode']>[4] = 'k' as string | undefined;
+    const _remove: Parameters<DrawingsService['remove']>[3] = 'k' as string | undefined;
+    void [_issue, _publish, _ack, _setNode, _remove];
+    expect(true).toBe(true);
   });
 
   // ── Compile-time contract conformance (only type-checks if the shapes line up) ──

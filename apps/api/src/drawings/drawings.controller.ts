@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, Headers, NotFoundException, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { DrawingsService } from './drawings.service';
 import { DrawingsQueryService } from './drawings.query';
@@ -36,8 +36,9 @@ export class DrawingsController {
     @Param('projectId') projectId: string,
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(issueDrawingSchema)) body: IssueDrawingInput,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.drawings.issue(projectId, user, body);
+    return this.drawings.issue(projectId, user, body, idempotencyKey);
   }
 
   /** Publish a private draft drawing → issue it to the build team (PMC only). */
@@ -48,8 +49,9 @@ export class DrawingsController {
     @Param('projectId') projectId: string,
     @Param('drawingId') drawingId: string,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.drawings.publish(projectId, drawingId, user);
+    return this.drawings.publish(projectId, drawingId, user, idempotencyKey);
   }
 
   /** Presigned direct-to-bucket upload target for a large drawing (PMC only, Slice 3). */
@@ -73,8 +75,9 @@ export class DrawingsController {
     @Param('projectId') projectId: string,
     @Param('revId') revId: string,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.drawings.acknowledge(projectId, revId, user);
+    return this.drawings.acknowledge(projectId, revId, user, idempotencyKey);
   }
 
   /** Re-file a drawing onto a location-tree node (or null to unfile). PMC only — the
@@ -87,8 +90,9 @@ export class DrawingsController {
     @Param('drawingId') drawingId: string,
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(setNodeSchema)) body: SetNodeInput,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.drawings.setNode(drawingId, projectId, body.nodeId, user);
+    return this.drawings.setNode(drawingId, projectId, body.nodeId, user, idempotencyKey);
   }
 
   /**
@@ -117,8 +121,12 @@ export class DrawingsController {
   @Delete('drawings/:id')
   @UseGuards(JwtGuard, RolesGuard)
   @RolesFor('drawing.delete')
-  async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean }> {
-    const ok = await this.drawings.remove(id, user.projectId, user);
+  async remove(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<{ ok: boolean }> {
+    const ok = await this.drawings.remove(id, user.projectId, user, idempotencyKey);
     if (!ok) throw new NotFoundException('Drawing not found');
     return { ok: true };
   }
