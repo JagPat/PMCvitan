@@ -60,7 +60,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, decisionsReadMode, type ModuleDecisions } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, decisionsReadMode, dailyLogReadMode, type ModuleDecisions, type ModuleDailyLog } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 
@@ -157,6 +157,11 @@ export interface AppState {
   // the projection or its live fallback served the current data.
   decisionsLoad: 'idle' | 'loading' | 'ready' | 'error';
   decisionsSource: 'projection' | 'live' | null;
+  // Phase 2 Task 10 — the daily-log XOR read-ownership state, mirroring decisions. When
+  // dailyLogReadMode() === 'moduleQuery', `dailyLog` + `materials` are owned by the module-owned read;
+  // these track its explicit load state for the daily-log surfaces ('idle' in snapshot mode).
+  dailyLogLoad: 'idle' | 'loading' | 'ready' | 'error';
+  dailyLogSource: 'projection' | 'live' | null;
   // Phase 2 Task 9 — the enabled module ids from the project-shell summary (the single enablement
   // source). Drives manifest-driven nav: a screen whose module is disabled is hidden. Empty = not yet
   // loaded → the nav shows every role screen (no flash), matching today's behaviour.
@@ -532,6 +537,8 @@ export function getInitialState(): AppState {
     decisions: structuredClone(SEED_DECISIONS),
     decisionsLoad: 'idle',
     decisionsSource: null,
+    dailyLogLoad: 'idle',
+    dailyLogSource: null,
     enabledModules: [],
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
@@ -669,7 +676,7 @@ export const useStore = create<Store>()(
      *  DIRECTLY — only `acceptSnapshot` may, after the ordering checks. A source-scan
      *  test (`snapshot-ordering.test.ts`) enforces the single call site so an
      *  unsequenced apply cannot be reintroduced. */
-    const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null): void => {
+    const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null): void => {
       set((s) => {
         s.projectLoadState = 'ready'; // the active project's data has landed
         s.projectLoadError = null;
@@ -734,16 +741,30 @@ export const useStore = create<Store>()(
         // Placed site photos come back as signed API-relative serve paths — resolve
         // them against the API base so the Place view's <img src> hits the API.
         s.photos = (snap.photos ?? []).map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
-        s.materials = snap.materials ?? [];
+        // (s.materials + s.dailyLog are set together under the daily-log XOR below)
         // pmc/engineer get the placed inspections; other roles get [] from the server
         s.placedInspections = snap.placedInspections ?? [];
         s.phases = snap.phases ?? [];
-        // Progress photos come back as signed, API-relative serve paths
-        // (/media/:id?t=…); resolve them against the API base so the <img src>
-        // hits the API, not the SPA origin. Drawings resolve at render time.
-        s.dailyLog = snap.dailyLog
-          ? { ...snap.dailyLog, photos: snap.dailyLog.photos.map((p) => ({ ...p, url: resolveMediaUrl(p.url) })) }
-          : null;
+        // Phase 2 Task 10 — XOR read-ownership for the daily-log slice (log core + crew + materials),
+        // mirroring decisions. The media progress PHOTOS are ALWAYS composed from the snapshot (media,
+        // not daily-log, owns them) — they come back as signed API-relative serve paths (/media/:id?t=…)
+        // resolved against the API base — so both modes attach the identical `progressPhotos`; only the
+        // log CORE + materials switch ownership. 'snapshot' mode (default): the snapshot slice owns them
+        // (unchanged). 'moduleQuery' mode: a `dailyLogResult` (fetched under THIS same scope lease) owns
+        // them (ready); `null` = the module fetch FAILED (keep last-good, expose an error boundary);
+        // `undefined` = no fetch accompanied this apply (a command's own snapshot) — leave untouched.
+        const progressPhotos = (snap.dailyLog?.photos ?? []).map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
+        if (dailyLogReadMode() === 'snapshot') {
+          s.dailyLog = snap.dailyLog ? { ...snap.dailyLog, photos: progressPhotos } : null;
+          s.materials = snap.materials ?? [];
+        } else if (dailyLogResult) {
+          s.dailyLog = dailyLogResult.dailyLog ? { ...dailyLogResult.dailyLog, photos: progressPhotos } : null;
+          s.materials = dailyLogResult.materials;
+          s.dailyLogLoad = 'ready';
+          s.dailyLogSource = dailyLogResult.source;
+        } else if (dailyLogResult === null) {
+          s.dailyLogLoad = 'error';
+        }
         s.notifications = snap.notifications;
         s.companies = snap.companies ?? [];
         s.name = snap.project.name;
@@ -771,17 +792,17 @@ export const useStore = create<Store>()(
      *  then applies. The result MUST be consumed; success is announced only for
      *  `applied`. `superseded` / `scope-moved` are silent no-ops; `invalid-project`
      *  never reports success and the caller requests a fresh snapshot to recover. */
-    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease, decisionsResult?: ModuleDecisions | null): SnapshotApplyResult => {
+    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null): SnapshotApplyResult => {
       const st = get();
       if (!isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, lease.scope)) return 'scope-moved';
       // newest-owner is checked against THIS lease's own scope, so a stale lease in a
       // scope we've left can never mark a live scope's response superseded (round 12).
       if (lease.sequence !== coordinatorFor(lease.scope).newestLeaseSeq) return 'superseded';
       if (snap.project.id !== lease.scope.projectId) return 'invalid-project';
-      // Task 9 — the module decisions (if any) rode the SAME lease as the snapshot, so it passes the
-      // identical scope/newest-owner ordering checks: a stale decisions response is dropped with its
-      // snapshot, never applied over a newer scope's data.
-      applySnapshotCore(snap, decisionsResult);
+      // Task 9/10 — the module decisions + daily-log reads (if any) rode the SAME lease as the snapshot,
+      // so they pass the identical scope/newest-owner ordering checks: a stale module response is dropped
+      // with its snapshot, never applied over a newer scope's data.
+      applySnapshotCore(snap, decisionsResult, dailyLogResult);
       return 'applied';
     };
 
@@ -816,18 +837,25 @@ export const useStore = create<Store>()(
       if (decisionsReadMode() === 'moduleQuery' && scopeStillCurrent(scope) && get().decisionsLoad !== 'ready') {
         set((s) => { s.decisionsLoad = 'loading'; });
       }
+      // Task 10 — same for the daily-log module read.
+      if (dailyLogReadMode() === 'moduleQuery' && scopeStillCurrent(scope) && get().dailyLogLoad !== 'ready') {
+        set((s) => { s.dailyLogLoad = 'loading'; });
+      }
       try {
-        // Task 9 — in 'moduleQuery' mode fetch the module-owned decisions ALONGSIDE the snapshot, under
-        // the SAME lease. The decisions fetch is resilient: a failure yields `null` (an explicit error
-        // state that keeps the last-good decisions) rather than failing the whole pull, so the rest of
-        // the project still loads. In 'snapshot' mode no extra fetch happens (undefined → unchanged).
-        const [snap, decisionsResult] = await Promise.all([
+        // Task 9/10 — in 'moduleQuery' mode fetch the module-owned decisions and/or daily-log ALONGSIDE
+        // the snapshot, under the SAME lease. Each module fetch is resilient: a failure yields `null` (an
+        // explicit error state that keeps the last-good data) rather than failing the whole pull, so the
+        // rest of the project still loads. In 'snapshot' mode no extra fetch happens (undefined → unchanged).
+        const [snap, decisionsResult, dailyLogResult] = await Promise.all([
           g.snapshot(),
           decisionsReadMode() === 'moduleQuery'
             ? g.decisions().then((d): ModuleDecisions | null => d).catch((): ModuleDecisions | null => null)
             : Promise.resolve(undefined as ModuleDecisions | undefined),
+          dailyLogReadMode() === 'moduleQuery'
+            ? g.dailyLog().then((d): ModuleDailyLog | null => d).catch((): ModuleDailyLog | null => null)
+            : Promise.resolve(undefined as ModuleDailyLog | undefined),
         ]);
-        const result = acceptSnapshot(snap, lease, decisionsResult);
+        const result = acceptSnapshot(snap, lease, decisionsResult, dailyLogResult);
         if (result === 'applied') {
           // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a
           // pull that BEGAN AFTER an obligation's threshold can satisfy it (round 13,

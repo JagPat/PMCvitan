@@ -276,6 +276,29 @@ export interface ModuleDecisions {
   generation: number | null;
 }
 
+/**
+ * Phase 2 Task 10 — the daily-log read-ownership mode (XOR), mirroring `decisionsReadMode`. `'snapshot'`
+ * (the DEFAULT) keeps the daily-log slice (log + crew + materials) owned by the full-snapshot slice —
+ * old behaviour, unchanged. `'moduleQuery'` flips ownership to the module-owned `GET …/daily-log` read
+ * (served from the rebuildable projection): the snapshot's daily-log slice is then IGNORED and the
+ * module fetch — carried under the SAME snapshot scope lease — owns `s.dailyLog` (its media progress
+ * PHOTOS are still composed from the snapshot, which owns media) and `s.materials`. Additive: the
+ * endpoint ships first, the old frontend still works, and the flip is a config change once proven.
+ */
+export function dailyLogReadMode(): 'snapshot' | 'moduleQuery' {
+  return import.meta.env.VITE_DAILYLOG_READ === 'moduleQuery' ? 'moduleQuery' : 'snapshot';
+}
+
+/** Phase 2 Task 10 — the module-owned daily-log read payload (projection-served, with live fallback).
+ *  The `dailyLog` core is PHOTO-LESS (media, not daily-log, owns progress photos — the store composes
+ *  them from the snapshot), so it is the {@link DailyLog} without its `photos`. */
+export interface ModuleDailyLog {
+  dailyLog: Omit<DailyLog, 'photos'> | null;
+  materials: Material[];
+  source: 'projection' | 'live';
+  generation: number | null;
+}
+
 /** Phase 2 Task 9 — the project-shell summary (identity + enabled modules + projection counts). */
 export interface ProjectShell {
   id: string;
@@ -625,6 +648,12 @@ export class ApiGateway {
    *  under the snapshot's scope lease when `DECISIONS_READ_MODE === 'moduleQuery'` (XOR read-ownership). */
   decisions(): Promise<ModuleDecisions> {
     return this.req<ModuleDecisions>(`/projects/${this.projectId}/decisions`);
+  }
+
+  /** Phase 2 Task 10 — the MODULE-OWNED daily-log read (projection-served, live fallback). Fetched
+   *  under the snapshot's scope lease when `DAILYLOG_READ_MODE === 'moduleQuery'` (XOR read-ownership). */
+  dailyLog(): Promise<ModuleDailyLog> {
+    return this.req<ModuleDailyLog>(`/projects/${this.projectId}/daily-log`);
   }
 
   /** Phase 2 Task 9 — the project-shell summary (identity + enabledModules + projection counts). */
