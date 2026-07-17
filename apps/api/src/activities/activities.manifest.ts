@@ -12,7 +12,7 @@ export const activitiesManifest: ModuleManifest = {
   title: 'Site Activity Spine',
   kind: 'domain',
   ownsModels: ['activity', 'gateOverride', 'phase'],
-  dependsOn: [],
+  dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: ['inspections'],
   producesEvents: [
     'activity.created',

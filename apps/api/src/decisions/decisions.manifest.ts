@@ -6,6 +6,10 @@ export const decisionsManifest: ModuleManifest = {
   title: 'Client Decision Log',
   kind: 'domain',
   ownsModels: ['decision', 'decisionOption', 'decisionEvent', 'changeRequest'],
+  // Task 8 — the FIRST fully-extracted backend module: its models are read-encapsulated, so no
+  // other module reads decision persistence directly (the boundary check enforces it); every
+  // cross-module read goes through the queries below (DecisionsQueryService).
+  readEncapsulated: ['decision', 'decisionOption', 'decisionEvent', 'changeRequest'],
   dependsOn: [],
   workflowParticipants: [],
   producesEvents: [
@@ -18,7 +22,7 @@ export const decisionsManifest: ModuleManifest = {
   ],
   consumesEvents: [],
   commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange'],
-  queries: [],
+  queries: ['decisions.snapshotSlice', 'decisions.existsInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending'],
   routes: [
     'POST /projects/:projectId/decisions',
     'POST /projects/:projectId/decisions/:decisionId/publish',

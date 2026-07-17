@@ -41,9 +41,14 @@ describe('Phase 2 Task 7 — module registry', () => {
   });
 
   it('the dependsOn graph is acyclic; the activity↔inspection atomic edge is a workflow participation (cycle-exempt)', () => {
-    // no module declares a one-directional dependency (contracts/queries land in Task 8);
-    // the mutual sign-off edge is declared as a workflow participation, NOT a dependsOn cycle.
-    for (const m of MODULE_MANIFESTS) expect(m.dependsOn).toEqual([]);
+    // Task 8 — the FIRST one-directional dependencies: the six decision consumers declare
+    // `dependsOn: ['decisions']` (they reach it only through its query contract). `decisions` itself
+    // depends on nothing, so the graph stays ACYCLIC. The mutual activity↔inspection sign-off remains
+    // a workflow participation, NOT a dependsOn cycle.
+    const decisionConsumers = new Set(['activities', 'daily-log', 'nodes', 'orgs', 'drawings', 'media']);
+    for (const m of MODULE_MANIFESTS) {
+      expect(m.dependsOn).toEqual(decisionConsumers.has(m.id) ? ['decisions'] : []);
+    }
     const activities = MODULE_MANIFESTS.find((m) => m.id === 'activities')!;
     const inspections = MODULE_MANIFESTS.find((m) => m.id === 'inspections')!;
     expect(activities.workflowParticipants).toContain('inspections');

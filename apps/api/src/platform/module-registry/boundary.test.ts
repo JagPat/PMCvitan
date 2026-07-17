@@ -89,6 +89,10 @@ const FIXTURE_RELATIONS = new Map<string, Map<string, string>>([
   ['activity', new Map([['inspections', 'inspection']])],
 ]);
 
+// Synthetic read-encapsulation for the fixtures: `decision` is read-private to the `decisions` module
+// (Task 8), exactly as the live manifest declares. A foreign read of it is a `cross-module-read`.
+const FIXTURE_READ_ENCAPSULATION = new Map<string, string>([['decision', 'decisions']]);
+
 /** Compile in-memory fixture files and run the persistence analyzer over them. */
 function analyzeFixture(files: Record<string, string>, waivers: FixtureWaivers = {}): BoundaryFinding[] {
   const dir = mkdtempSync(join(tmpdir(), 'boundary-fx-'));
@@ -114,6 +118,7 @@ function analyzeFixture(files: Record<string, string>, waivers: FixtureWaivers =
       kindOf: KIND,
       delegates: DELEGATES,
       relationsOf: FIXTURE_RELATIONS,
+      readEncapsulatedBy: FIXTURE_READ_ENCAPSULATION,
       rawWaivers: waivers.rawWaivers ?? [],
       crossWaivers: waivers.crossWaivers ?? [],
     }).findings;
@@ -160,6 +165,20 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     ]);
     // and no un-analyzable dynamic delegate exists in runtime code
     expect(analysis.persistence.dynamicWrites).toEqual([]);
+    // Task 8 — no module outside `decisions` reads a read-encapsulated decision model directly
+    // (every cross-module decision read goes through the decisions query contract)
+    expect(analysis.persistence.reads).toEqual([]);
+  });
+
+  it('the decisions module is read-encapsulated (Task 8 — first fully-extracted backend module)', () => {
+    const decisions = MODULE_MANIFESTS.find((m) => m.id === 'decisions');
+    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionEvent', 'changeRequest']);
+    // it declares the queries other modules reach it through, and depends on nothing
+    expect(decisions?.queries.length).toBeGreaterThan(0);
+    // and every module that reads decisions now declares the dependency
+    for (const id of ['activities', 'daily-log', 'nodes', 'orgs', 'drawings', 'media']) {
+      expect(MANIFEST_BY_ID.get(id)?.dependsOn, `${id} must depend on decisions`).toContain('decisions');
+    }
   });
 
   it('every workflow/init participant writes ONLY its owning module\'s tables', () => {
@@ -251,6 +270,22 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
       expect(f).toHaveLength(1);
       expect(f[0].code).toBe('cross-module-write');
       expect(f[0].model).toBe('activity');
+    });
+
+    it('a foreign module READING a read-encapsulated model → cross-module-read (Task 8)', () => {
+      const f = analyzeFixture({
+        'activities/evil-read.ts': `export async function evilRead(prisma: PrismaLike) { await prisma.decision.findFirst({ where: {} }); }`,
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('the OWNING module reading its own read-encapsulated model is NOT a finding', () => {
+      const f = analyzeFixture({
+        'decisions/own-read.ts': `export async function ownRead(prisma: PrismaLike) { await prisma.decision.count({ where: {} }); }`,
+      });
+      expect(f).toEqual([]);
     });
 
     it('a raw TRUNCATE of a foreign table with no waiver → raw-write-unwaived', () => {

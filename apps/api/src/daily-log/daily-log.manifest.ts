@@ -11,7 +11,7 @@ export const dailyLogManifest: ModuleManifest = {
   title: 'Daily Site Log',
   kind: 'domain',
   ownsModels: ['dailyLog', 'crewRow', 'siteMaterial'],
-  dependsOn: [],
+  dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: ['activities'],
   producesEvents: ['dailylog.started', 'dailylog.submitted', 'material.added', 'material.mismatch_flagged'],
   consumesEvents: [],

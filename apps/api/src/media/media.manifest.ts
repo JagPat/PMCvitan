@@ -6,7 +6,7 @@ export const mediaManifest: ModuleManifest = {
   title: 'Site Media',
   kind: 'domain',
   ownsModels: ['media'],
-  dependsOn: [],
+  dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: [],
   producesEvents: ['media.uploaded', 'media.refiled', 'media.removed'],
   consumesEvents: [],
