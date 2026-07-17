@@ -876,14 +876,27 @@ export const useStore = create<Store>()(
             ? g.dailyLog().then((d): ModuleDailyLog | null => d).catch((): ModuleDailyLog | null => null)
             : Promise.resolve(undefined as ModuleDailyLog | undefined),
         ]);
+        // Round 2 finding 2: a command reconcile is CONFIRMED only when the snapshot applied AND every
+        // REQUIRED module-owned read (Task 9 decisions / Task 10 daily-log, when in 'moduleQuery' mode)
+        // actually succeeded. A module read that failed came back `null` — its committed change is NOT
+        // reflected in `s.decisions` / `s.dailyLog`, so clearing the obligation here would strand the
+        // user on stale data with no recovery. In 'snapshot' mode the result is `undefined` (not
+        // required). `!= null` is true only for a real, non-failed module payload.
+        const moduleReadsOk =
+          (decisionsReadMode() !== 'moduleQuery' || decisionsResult != null) &&
+          (dailyLogReadMode() !== 'moduleQuery' || dailyLogResult != null);
         const result = acceptSnapshot(snap, lease, decisionsResult, dailyLogResult);
         if (result === 'applied') {
           // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a
           // pull that BEGAN AFTER an obligation's threshold can satisfy it (round 13,
           // semantic 2) — a stale in-flight refresh can't disarm it.
-          if (c.commandAfterSequence !== null && lease.sequence > c.commandAfterSequence) {
-            c.commandAfterSequence = null; // the committed command's change is now in this applied snapshot
+          if (c.commandAfterSequence !== null && lease.sequence > c.commandAfterSequence && moduleReadsOk) {
+            c.commandAfterSequence = null; // the committed command's change is now in this applied snapshot AND its module reads
           }
+          // If the snapshot applied but a required module read FAILED, the obligation is RETAINED (not
+          // cleared): the module read's own error state (dailyLogLoad/decisionsLoad='error', last-good
+          // kept) exposes a Retry that re-runs this pull. Bounded — no auto-loop re-queues it, and the
+          // project itself is fresh, so no project-level error boundary is raised.
           if (c.submit && lease.sequence > c.submit.createdAfterSequence) {
             if (!submitStillPending(c.submit)) {
               c.submit = null; // the EXACT submit is confirmed; its freeze has retired
