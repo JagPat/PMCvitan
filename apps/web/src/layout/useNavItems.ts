@@ -1,6 +1,6 @@
 import { useStore } from '@/store/store';
 import { selectActionItems, selectDraftDecisions, selectDraftDrawings, selectReviewPending } from '@/store/selectors';
-import { screensFor, type ScreenMeta } from '@/lib/screens';
+import { enabledScreensFor, type ScreenMeta } from '@/lib/screens';
 
 export interface NavItem extends ScreenMeta {
   badge: number;
@@ -16,8 +16,11 @@ export function useNavItems(): NavItem[] {
   const reviewPending = useStore(selectReviewPending);
   const actionCount = useStore((s) => selectActionItems(s).length);
   const draftCount = useStore((s) => selectDraftDecisions(s).length + selectDraftDrawings(s).length);
+  // Task 9 — manifest-driven: filter the role's screens by the shell's enabled modules (a no-op until
+  // the shell lands / in the local demo, so nav never flashes).
+  const enabledModules = useStore((s) => s.enabledModules);
 
-  return screensFor(role).map((m) => {
+  return enabledScreensFor(role, enabledModules).map((m) => {
     let badge = 0;
     if (m.key === 'inbox') badge = actionCount;
     if (m.key === 'drafts') badge = draftCount;

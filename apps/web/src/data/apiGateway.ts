@@ -257,6 +257,37 @@ export const PROJECT_ID = 'ambli';
  */
 export const DEV_AUTH: boolean = import.meta.env.VITE_ALLOW_DEV_AUTH === 'true' || !API_BASE;
 
+/**
+ * Phase 2 Task 9 — the decisions read mode (capability-versioned XOR cutover). `'snapshot'` (the
+ * DEFAULT) keeps decisions owned by the full-snapshot slice — old behaviour, unchanged. `'moduleQuery'`
+ * flips ownership to the module-owned `GET …/decisions` read (served from the rebuildable projection):
+ * the snapshot's decision slice is then IGNORED and the module fetch — carried under the SAME snapshot
+ * scope lease — owns `s.decisions`. Additive: backend endpoints ship first, the old frontend still
+ * works, and the flip is a config change once proven (mirrors the outbox legacy→outbox cutover).
+ */
+export function decisionsReadMode(): 'snapshot' | 'moduleQuery' {
+  return import.meta.env.VITE_DECISIONS_READ === 'moduleQuery' ? 'moduleQuery' : 'snapshot';
+}
+
+/** Phase 2 Task 9 — the module-owned decisions read payload (projection-served, with live fallback). */
+export interface ModuleDecisions {
+  decisions: Decision[];
+  source: 'projection' | 'live';
+  generation: number | null;
+}
+
+/** Phase 2 Task 9 — the project-shell summary (identity + enabled modules + projection counts). */
+export interface ProjectShell {
+  id: string;
+  name: string;
+  descriptor: string;
+  stage: string;
+  siteCode: string;
+  org: { id: string; name: string } | null;
+  enabledModules: string[];
+  counts: { pendingDecisions: number; decisionsGeneration: number | null };
+}
+
 /** Result of a real sign-in (phone OTP / worker token / password). */
 export interface AuthResult {
   token: string;
@@ -588,6 +619,17 @@ export class ApiGateway {
 
   snapshot(): Promise<ApiSnapshot> {
     return this.req<ApiSnapshot>(`/projects/${this.projectId}/snapshot`);
+  }
+
+  /** Phase 2 Task 9 — the MODULE-OWNED decisions read (projection-served, role-filtered). Fetched
+   *  under the snapshot's scope lease when `DECISIONS_READ_MODE === 'moduleQuery'` (XOR read-ownership). */
+  decisions(): Promise<ModuleDecisions> {
+    return this.req<ModuleDecisions>(`/projects/${this.projectId}/decisions`);
+  }
+
+  /** Phase 2 Task 9 — the project-shell summary (identity + enabledModules + projection counts). */
+  shell(): Promise<ProjectShell> {
+    return this.req<ProjectShell>(`/projects/${this.projectId}/shell`);
   }
 
   approveDecision(decisionId: string, optionIndex: number, idempotencyKey?: string): Promise<ApiSnapshot> {

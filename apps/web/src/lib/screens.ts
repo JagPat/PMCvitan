@@ -45,6 +45,46 @@ export const SCREEN_META: Record<ScreenKey, ScreenMeta> = {
   'team-access': { key: 'team-access', label: 'Team Access & Login', short: 'Access', path: '/access', icon: LogIn },
 };
 
+/**
+ * Phase 2 Task 9 — the domain MODULE each screen belongs to (for manifest-driven nav). `null` marks a
+ * cross-cutting shell surface (the For-You inbox, Dashboard, Drafts workspace, project health,
+ * Portfolio, Team, Team Access) that is always present regardless of which domain modules are enabled.
+ * A screen whose module is DISABLED (absent from the shell's `enabledModules`) is hidden.
+ */
+export const SCREEN_MODULE: Record<ScreenKey, string | null> = {
+  inbox: null,
+  dashboard: null,
+  drafts: null,
+  'site-schedule': 'activities',
+  'decision-log': 'decisions',
+  'inspect-review': 'inspections',
+  'client-decisions': 'decisions',
+  'client-health': null,
+  'daily-log': 'daily-log',
+  'engineer-check': 'inspections',
+  drawings: 'drawings',
+  places: 'nodes',
+  team: 'orgs',
+  portfolio: null,
+  'team-access': null,
+};
+
+/**
+ * Manifest-driven nav (Task 9): the role's screens filtered by the ENABLED modules from the shell
+ * summary. An empty `enabledModules` (not yet loaded, or the pure local demo) applies NO filter, so the
+ * full role list shows — behaviour-preserving until the shell lands. A shell-surface screen (module
+ * `null`) is always kept.
+ */
+export function enabledScreensFor(role: Role, enabledModules: readonly string[]): ScreenMeta[] {
+  const screens = screensFor(role);
+  if (!enabledModules.length) return screens;
+  const enabled = new Set(enabledModules);
+  return screens.filter((m) => {
+    const mod = SCREEN_MODULE[m.key];
+    return mod === null || enabled.has(mod);
+  });
+}
+
 /** Permission-filtered screen list per role (mirrors the prototype's screensFor). */
 export function screensFor(role: Role): ScreenMeta[] {
   // 'inbox' ("For You") is the home for every role — a live, cross-cutting to-do list, first
