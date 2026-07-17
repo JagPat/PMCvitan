@@ -606,7 +606,7 @@ export class ApiGateway {
     return this.p('/daily-log/start', undefined, idempotencyKey);
   }
   /** Record a material delivery on the open daily log (engineer/PMC). Keyed for replay-safety. */
-  addSiteMaterial(input: { name: string; qty: string; zone?: string; decisionId?: string; swatch?: string; nodeId?: string }, idempotencyKey?: string): Promise<ApiSnapshot> {
+  addSiteMaterial(input: AddSiteMaterialInput, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p('/daily-log/materials', input, idempotencyKey);
   }
 
@@ -782,6 +782,16 @@ export function newIdempotencyKey(): string {
   return globalThis.crypto?.randomUUID?.() ?? `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** The validated body of `daily-log.addMaterial` (the gateway + the write-ahead outbox op share it). */
+export interface AddSiteMaterialInput {
+  name: string;
+  qty: string;
+  zone?: string;
+  decisionId?: string;
+  swatch?: string;
+  nodeId?: string;
+}
+
 export type OutboxOp =
   // the decision-pillar ops carry a stable idempotencyKey (Phase 2 Task 5): a queued op replayed
   // on reconnect reaches the server under the SAME key it was first sent with, so a lost-response
@@ -794,7 +804,12 @@ export type OutboxOp =
   | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemIds: string[] }
   | { t: 'startActivity'; activityId: string }
   | { t: 'completeActivity'; activityId: string }
-  // daily-log ops carry a stable idempotencyKey too (Task 10 correction, finding 3)
+  // ALL FOUR daily-log commands carry a stable idempotencyKey and are WRITE-AHEAD to the durable
+  // outbox before the first network request — online OR offline (Task 10 correction round 2, finding
+  // 1). A lost/uncertain online response leaves the op (and its key) persisted, so a retry or a reload
+  // replays the SAME op under the SAME key and the command-ledger applies it exactly once.
+  | { t: 'startDailyLog'; idempotencyKey: string }
+  | { t: 'addSiteMaterial'; input: AddSiteMaterialInput; idempotencyKey: string }
   | { t: 'flagMismatch'; decisionId: string; idempotencyKey: string }
   | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'>; idempotencyKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
@@ -841,6 +856,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.startActivity(op.activityId);
     case 'completeActivity':
       return gw.completeActivity(op.activityId);
+    case 'startDailyLog':
+      return gw.startDailyLog(op.idempotencyKey);
+    case 'addSiteMaterial':
+      return gw.addSiteMaterial(op.input, op.idempotencyKey);
     case 'flagMismatch':
       return gw.flagMismatch(op.decisionId, op.idempotencyKey);
     case 'submitDailyLog':

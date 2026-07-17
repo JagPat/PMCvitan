@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import type { DailyLog } from '@vitan/shared';
 
 /**
@@ -102,6 +102,33 @@ describe('finding 4 — DailyLogScreen honest module-read states (moduleQuery)',
     expect(r.getByTestId('submit-daily-log')).toBeDisabled();
     expect(r.getByTestId('add-material')).toBeDisabled();
     expect(r.getByTestId('flag-DL-1')).toBeDisabled();
+  });
+
+  // ── Round 2 finding 2: a failed reconcile that RETAINS last-good must expose a stale warning + Retry ──
+  it('round2 finding 2: error WITH last-good shows a visible stale/unavailable warning AND a Retry', async () => {
+    const { DailyLogScreen } = await loadScreen('moduleQuery', { dailyLog: fullLog(), dailyLogLoad: 'error' });
+    const r = render(<DailyLogScreen />);
+    // NOT left silently on stale data with dead controls — a warning + Retry are visible…
+    expect(r.getByTestId('daily-log-stale-warning')).toBeInTheDocument();
+    expect(r.getByTestId('daily-log-retry')).toBeInTheDocument();
+    // …and the mutating commands stay locked until it refreshes
+    expect(r.getByTestId('submit-daily-log')).toBeDisabled();
+    expect(r.getByTestId('add-material')).toBeDisabled();
+  });
+
+  it('round2 finding 2: Retry re-runs the module read; a successful refresh clears the warning and re-enables actions', async () => {
+    const { useStore, DailyLogScreen } = await loadScreen('moduleQuery', { dailyLog: fullLog(), dailyLogLoad: 'error' });
+    const refetch = vi.fn();
+    useStore.setState({ requestFreshSnapshot: refetch });
+    const r = render(<DailyLogScreen />);
+    // clicking Retry re-runs the scope-guarded module read
+    fireEvent.click(r.getByTestId('daily-log-retry'));
+    expect(refetch).toHaveBeenCalledTimes(1);
+    // when the read SUCCEEDS (dailyLogLoad → ready), the warning is gone and the actions unlock
+    act(() => { useStore.setState({ dailyLogLoad: 'ready' }); });
+    expect(r.queryByTestId('daily-log-stale-warning')).not.toBeInTheDocument();
+    expect(r.getByTestId('submit-daily-log')).not.toBeDisabled();
+    expect(r.getByTestId('add-material')).not.toBeDisabled();
   });
 
   it('loading WITH last-good: the log shows but the commands stay locked until the read settles', async () => {

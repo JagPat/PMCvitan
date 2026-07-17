@@ -115,6 +115,21 @@ export function DailyLogScreen() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       <div className={styles.mobileScreen} style={{ flex: 1, paddingBottom: 20 }}>
+        {/* Round 2 finding 2: the module read FAILED but last-good data is retained — show an explicit
+            stale/unavailable warning + Retry (not silent stale data with dead controls). Retry re-runs
+            the scope-guarded module read; on success it applies fresh data, clears dailyLogLoad→ready
+            and re-enables the actions locked below. */}
+        {unavailable && (
+          <div data-testid="daily-log-stale-warning" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px', marginBottom: 12 }}>
+            <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
+            <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>
+              Showing the last-known log — the latest couldn't load. Actions are paused until it refreshes.
+            </span>
+            <button onClick={requestFreshSnapshot} data-testid="daily-log-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <RefreshCw size={12} /> Retry
+            </button>
+          </div>
+        )}
         <div style={{ padding: '10px 0 12px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <Eyebrow size={9}>DAILY SITE LOG</Eyebrow>

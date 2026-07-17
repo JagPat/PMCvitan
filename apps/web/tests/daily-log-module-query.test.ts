@@ -287,3 +287,76 @@ describe('Task 10 (correction, finding 2) — module-aware post-command reconcil
     expect(s().materials.map((m) => m.name)).toEqual(['SNAP-MAT']);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Round 2 finding 2 — a post-command reconcile whose snapshot SUCCEEDS but whose module read FAILS
+// must NOT clear recovery: the module read stays 'error' with last-good retained, and a Retry recovers.
+// A retry that lands after a scope switch mutates nothing in the new scope.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Task 10 correction round 2 (finding 2) — failed module reconcile retains recovery', () => {
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    vi.stubEnv('VITE_DAILYLOG_READ', 'moduleQuery');
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; });
+  });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('snapshot applies but the module read FAILS: last-good is kept, dailyLogLoad=error, and Retry recovers', async () => {
+    let dl = 0;
+    const gw = {
+      startDailyLog: vi.fn().mockResolvedValue(poisonSnap()),
+      snapshot: vi.fn().mockResolvedValue(poisonSnap()),
+      dailyLog: vi.fn().mockImplementation(() => {
+        dl += 1;
+        if (dl === 1) return Promise.resolve(moduleRead(1, 'SEED-MAT'));        // seed read
+        if (dl === 2) return Promise.reject(new Error('module read down'));     // the post-command reconcile FAILS
+        return Promise.resolve(moduleRead(7, 'FRESH-MAT'));                      // the user's Retry succeeds
+      }),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    await s().requestFreshSnapshot();
+    await flush();
+    expect(s().dailyLog?.progress).toBe(1); // seeded, ready
+    expect(s().dailyLogLoad).toBe('ready');
+
+    // a committed command → its reconcile fetches the module read, which FAILS
+    s().startDailyLog();
+    await settles(() => s().dailyLogLoad === 'error'); // recovery EXPOSED, not silently cleared
+    expect(s().dailyLog?.progress).toBe(1);            // last-good retained (not blanked, not falsely fresh)
+
+    // Retry → the module read succeeds → fresh data, ready, actions recoverable
+    s().requestFreshSnapshot();
+    await settles(() => s().dailyLogLoad === 'ready' && s().dailyLog?.progress === 7);
+    expect(s().dailyLog?.progress).toBe(7);
+  });
+
+  it('project switch DURING a Retry: the stale retry response mutates NOTHING in the new scope', async () => {
+    const heldSnap = deferred<ApiSnapshot>();
+    const gwA = {
+      snapshot: vi.fn().mockImplementation(() => heldSnap.promise),
+      dailyLog: vi.fn().mockResolvedValue(moduleRead(7, 'A-FRESH')),
+    };
+    const gwB = { snapshot: vi.fn(), dailyLog: vi.fn() };
+    s()._setGateway(gwA as unknown as ApiGateway);
+    useStore.setState((st) => { st.dailyLog = { ...core(1), photos: [] } as DailyLog; st.dailyLogLoad = 'error'; st.dailyLogSource = 'projection'; });
+
+    // user clicks Retry — the scope-guarded module-read pull begins (held)
+    s().requestFreshSnapshot();
+    await settles(() => gwA.snapshot.mock.calls.length === 1);
+
+    // switch to project B mid-retry
+    useStore.setState((st) => {
+      st.activeProjectId = 'B'; st.projectScopeGeneration = 2; st.toast = 'B-TOAST';
+      st.dailyLog = { ...core(500), photos: [] } as DailyLog; st.dailyLogLoad = 'ready';
+    });
+    s()._setGateway(gwB as unknown as ApiGateway);
+
+    heldSnap.release(poisonSnap()); // A's retry resolves AFTER the switch → scope-moved, dropped
+    await flush(); await flush();
+    expect(s().toast).toBe('B-TOAST');           // no stale toast into B
+    expect(s().dailyLog?.progress).toBe(500);    // B's data untouched by A's retry
+    expect(s().dailyLogLoad).toBe('ready');      // B's load state not corrupted to A's error
+    expect(gwB.dailyLog).not.toHaveBeenCalled(); // A's retry never fetched B
+  });
+});
