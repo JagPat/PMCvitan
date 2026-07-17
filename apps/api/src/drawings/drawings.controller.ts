@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { DrawingsService } from './drawings.service';
+import { DrawingsQueryService } from './drawings.query';
 import { SignedUrlService } from '../media/signed-url.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { issueDrawingSchema, presignDrawingSchema, setNodeSchema, type IssueDrawingInput, type PresignDrawingInput, type SetNodeInput } from '../contracts';
@@ -11,8 +12,20 @@ import { Public, RolesFor, RolesGuard } from '../common/roles';
 export class DrawingsController {
   constructor(
     private readonly drawings: DrawingsService,
+    private readonly drawingsQuery: DrawingsQueryService,
     private readonly signed: SignedUrlService,
   ) {}
+
+  /** Phase 2 Task 10 — the MODULE-OWNED drawings read (XOR read-ownership): the frontend fetches the
+   *  register HERE (from the rebuildable projection, else the live fallback) instead of the snapshot
+   *  slice when `VITE_DRAWINGS_READ=moduleQuery`. Role-invariant read (`project.read`); the register is
+   *  baked for the caller (draft-author visibility + their ack/recipient state). */
+  @Get('projects/:projectId/drawings')
+  @UseGuards(JwtGuard, RolesGuard)
+  @RolesFor('project.read')
+  read(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.drawingsQuery.moduleDrawings(projectId, user.sub);
+  }
 
   /** Issue a drawing (new register entry, or a new revision that supersedes the prior).
    *  PMC only — issuing controlled drawings is the architect's authority. */

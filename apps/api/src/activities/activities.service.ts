@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { DrawingsQueryService } from '../drawings/drawings.query';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { deriveReadiness, gateReady, readinessReady, type ActivityReadiness, type DecisionStatus, type GateState } from '../domain/transitions';
 import { resolveProjectNode } from '../nodes/node-scope';
@@ -28,6 +29,9 @@ export class ActivitiesService {
     private readonly snapshot: SnapshotService,
     // Task 8 — a linked decision gate is validated through the decisions query.
     private readonly decisions: DecisionsQueryService,
+    // Task 10 — the drawing gate's readiness input comes from the drawings query (read-encapsulation),
+    // never a direct `db.drawing` read; runs inside the start command's transaction.
+    private readonly drawingsQuery: DrawingsQueryService,
     // PR C Task 2 — the single external-effect sender (replaces the in-request RealtimeGateway).
     private readonly dispatcher: ExternalEffectDispatcher,
     @Inject(CLOCK) private readonly clock: Clock,
@@ -202,10 +206,7 @@ export class ActivitiesService {
         where: { projectId, activityId: activity.id },
         include: { items: { select: { rejected: true, result: true } } },
       }),
-      db.drawing.findMany({
-        where: { projectId, activityId: activity.id },
-        include: { revisions: { include: { recipients: { select: { userId: true } }, acks: { select: { userId: true } } } } },
-      }),
+      this.drawingsQuery.readinessSlice(projectId, { activityId: activity.id, tx: db }),
       db.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
       db.gateOverride.findMany({ where: { projectId, activityId: activity.id }, orderBy: { createdAt: 'asc' } }),
     ]);
@@ -214,12 +215,7 @@ export class ActivitiesService {
       gateMaterial: activity.gateMaterial,
       gateTeam: activity.gateTeam,
       inspections: inspections.map((i) => ({ id: i.id, activityId: i.activityId, closing: i.closing, submitted: i.submitted, decided: i.decided, reinspectionOfId: i.reinspectionOfId, items: i.items })),
-      drawings: drawings.map((d) => ({
-        number: d.number,
-        activityId: d.activityId,
-        draft: d.publishedAt === null,
-        revisions: d.revisions.map((r) => ({ status: r.status, recipientsFrozenAt: r.recipientsFrozenAt, recipientIds: r.recipients.map((x) => x.userId), ackedIds: r.acks.map((x) => x.userId) })),
-      })),
+      drawings,
       activeMemberIds: activeMembers.map((m) => m.userId),
       overrides: overrides.map((o) => ({ gate: o.gate as OverrideGateInput['gate'], state: o.state, reason: o.reason, expiresAt: o.expiresAt })),
       now: new Date(),

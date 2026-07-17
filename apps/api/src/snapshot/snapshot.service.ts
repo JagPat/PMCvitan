@@ -4,6 +4,7 @@ import { deriveReadiness, type ReadinessOverride } from '../domain/transitions';
 import { toIsoCivilDate } from '../common/civil-date';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
+import { DrawingsQueryService } from '../drawings/drawings.query';
 import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice } from '../domain/notifications';
 import { ddMmmYyyy } from '../domain/dates';
@@ -28,6 +29,8 @@ export class SnapshotService {
     private readonly decisionsQuery: DecisionsQueryService,
     // Task 10 — the daily-log slice + project materials come from the daily-log module's query.
     private readonly dailyLogQuery: DailyLogQueryService,
+    // Task 10 — the drawings register + the drawing-gate readiness input come from the drawings query.
+    private readonly drawingsQuery: DrawingsQueryService,
   ) {}
 
   /**
@@ -63,7 +66,7 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisionSlice, activities, inspections, dailyLogSlice, notifications, siteMedia, drawings, phases, companies, nodes, activeMembers, gateOverrides] = await Promise.all([
+    const [decisionSlice, activities, inspections, dailyLogSlice, notifications, siteMedia, drawingDtos, phases, companies, nodes, activeMembers, gateOverrides, readinessDrawings] = await Promise.all([
       // Task 8 — the decisions slice comes from the module's query (role-filtered DTOs + an
       // id→status map for readiness), not a direct `prisma.decision` read.
       this.decisionsQuery.snapshotSlice(projectId, role, userId),
@@ -91,20 +94,10 @@ export class SnapshotService {
         take: 300,
         select: { id: true, kind: true, url: true, takenAt: true, nodeId: true },
       }),
-      this.prisma.drawing.findMany({
-        where: { projectId },
-        include: {
-          revisions: {
-            orderBy: { createdAt: 'desc' },
-            include: {
-              acks: { orderBy: { at: 'asc' } },
-              // the frozen distribution (Phase 1 Task 3) + each recipient's display name
-              recipients: { include: { membership: { include: { user: { select: { name: true } } } } } },
-            },
-          },
-        },
-        orderBy: [{ discipline: 'asc' }, { number: 'asc' }],
-      }),
+      // Task 10 — the drawings register comes from the module's query (the baked per-viewer register:
+      // draft-author visibility + the viewer's ack/recipient state + fresh signed urls), never a direct
+      // `prisma.drawing` read. Byte-identical to the pre-extraction inline shaping.
+      this.drawingsQuery.snapshotSlice(projectId, userId),
       this.prisma.phase.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
       this.prisma.projectCompany.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
@@ -112,6 +105,9 @@ export class SnapshotService {
       // and every manual override (oldest first — the latest unexpired wins its gate)
       this.prisma.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
       this.prisma.gateOverride.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
+      // Task 10 — the drawing-gate readiness input (per-revision recipients/acks) also comes from the
+      // drawings query, so the snapshot reads NO drawing persistence directly (read-encapsulation).
+      this.drawingsQuery.readinessSlice(projectId),
     ]);
 
     // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
@@ -147,10 +143,6 @@ export class SnapshotService {
     const readinessInspections = inspections.map((i) => ({
       id: i.id, activityId: i.activityId, closing: i.closing, submitted: i.submitted, decided: i.decided, reinspectionOfId: i.reinspectionOfId,
       items: i.items.map((it) => ({ rejected: it.rejected, result: it.result })),
-    }));
-    const readinessDrawings = drawings.map((d) => ({
-      number: d.number, activityId: d.activityId, draft: d.publishedAt === null,
-      revisions: d.revisions.map((r) => ({ status: r.status, recipientsFrozenAt: r.recipientsFrozenAt, recipientIds: r.recipients.map((x) => x.userId), ackedIds: r.acks.map((x) => x.userId) })),
     }));
     const overridesByActivity = new Map<string, typeof gateOverrides>();
     for (const o of gateOverrides) {
@@ -260,60 +252,10 @@ export class SnapshotService {
         }))
       : [];
 
-    // Drawings register: each entry with its full revision history (newest first)
-    // and the GOVERNING revision the field builds from — the latest non-superseded
-    // for_construction, or null (a drawing whose only revisions are review copies
-    // never governs; the register labels it "In review — not for construction").
-    // Draft → Publish: an unpublished drawing is author-private — delivered ONLY to its
-    // creator, never to the build team or anyone else (server-enforced, like decisions).
-    const drawingDtos = drawings
-      .filter((d) => d.publishedAt !== null || (Boolean(userId) && d.authorId === userId))
-      .map((d) => {
-      const revs = d.revisions.map((r) => ({
-        id: r.id,
-        rev: r.rev,
-        status: r.status,
-        mime: r.mime,
-        // private delivery: short-lived signed serve path (never a public bucket URL)
-        url: this.signed.drawingPath(r.id),
-        sizeBytes: r.sizeBytes,
-        note: r.note,
-        issuedBy: r.issuedBy,
-        issuedAt: r.issuedAt,
-        acks: r.acks.map((a) => ({ userName: a.userName, role: a.role, at: ddMmmYyyy(a.at) })),
-        // the frozen distribution: WHO this revision was issued to + whether they acked.
-        // null recipientsFrozenAt = legacy (predates snapshots), [] = frozen empty.
-        recipientsFrozenAt: r.recipientsFrozenAt ? r.recipientsFrozenAt.toISOString() : null,
-        recipients: r.recipients.map((rc) => ({
-          userName: rc.membership.user.name,
-          role: rc.roleAtIssue,
-          acked: r.acks.some((a) => a.userId === rc.userId),
-        })),
-      }));
-      const current = revs.find((r) => r.status === 'for_construction') ?? null;
-      const currentRow = current ? d.revisions.find((r) => r.id === current.id) : undefined;
-      return {
-        id: d.id,
-        number: d.number,
-        title: d.title,
-        discipline: d.discipline,
-        zone: d.zone,
-        activityId: d.activityId,
-        decisionId: d.decisionId,
-        nodeId: d.nodeId ?? undefined, // location spine: the place this drawing governs
-        draft: d.publishedAt === null, // private, unpublished — only in its author's snapshot
-        current,
-        ackedByMe: Boolean(userId) && (currentRow?.acks ?? []).some((a) => a.userId === userId),
-        // Is the VIEWER on the governing revision's frozen distribution? Emitted ONLY
-        // when a snapshot actually ran (recipientsFrozenAt set) — a LEGACY revision
-        // (null) OMITS the field entirely so the client's everyone-builds fallback
-        // engages, and Task 6's truth table keeps its legacy discriminator (finding 4).
-        ...(currentRow && currentRow.recipientsFrozenAt !== null
-          ? { recipientOfCurrent: Boolean(userId) && currentRow.recipients.some((rc) => rc.userId === userId) }
-          : {}),
-        revisions: revs,
-      };
-    });
+    // Task 10 — the drawings register (`drawingDtos`) is served from the drawings module's query
+    // (`this.drawingsQuery.snapshotSlice`, destructured above), which bakes the same per-viewer register
+    // the inline shaping used to: draft-author visibility, the governing revision, the viewer's
+    // ackedByMe/recipientOfCurrent, and each revision's fresh short-lived signed url — byte-identical.
 
     // Phase rollups: each phase's activities counted by status so the schedule
     // and portfolio can show phase-level progress (done/total → donePct).

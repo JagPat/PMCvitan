@@ -47,7 +47,10 @@ describe('Phase 2 Task 7 — module registry', () => {
     // depend on nothing that depends back, so the graph stays ACYCLIC. The mutual activity↔inspection
     // sign-off remains a workflow participation, NOT a dependsOn cycle.
     const expectedDependsOn: Record<string, string[]> = {
-      activities: ['decisions'], 'daily-log': ['decisions'], nodes: ['decisions'], orgs: ['decisions'], drawings: ['decisions'],
+      // Task 10 — `activities` additionally reads the DRAWING gate through the drawings query
+      // (read-encapsulation), so it declares `drawings` too; `drawings` depends only on `decisions`,
+      // so activities→drawings→decisions stays ACYCLIC (drawings never depends back on activities).
+      activities: ['decisions', 'drawings'], 'daily-log': ['decisions'], nodes: ['decisions'], orgs: ['decisions'], drawings: ['decisions'],
       media: ['decisions', 'daily-log'],
     };
     for (const m of MODULE_MANIFESTS) {

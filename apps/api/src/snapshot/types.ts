@@ -1,5 +1,6 @@
 /** API response shapes — aligned with the frontend domain model so the client
  *  hydrates its store directly from a snapshot. */
+import type { Drawing } from '@vitan/shared';
 
 /** Phase 2 Task 9 — the project-shell summary (identity + projection counts), the light payload the
  *  app loads first. `enabledModules` is added by the controller from the module registry. */
@@ -317,7 +318,10 @@ export interface SnapshotDto {
   /** @deprecated first pending review — kept for back-compat; use `reviews`. */
   review: ReviewDto | null;
   reinspectionCreated: boolean;
-  drawings: DrawingDto[];
+  // Task 10 — the drawings register is the shared `Drawing` type, served by the drawings module's
+  // query (`DrawingsQueryService.snapshotSlice`). Byte-identical wire shape to the retired `DrawingDto`
+  // (kept below for the characterization test's shape descriptor).
+  drawings: Drawing[];
   /** Project phases with per-phase activity rollups (empty when none are defined —
    *  the schedule then renders a flat list, unchanged). */
   phases: PhaseDto[];
