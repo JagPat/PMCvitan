@@ -1,11 +1,12 @@
 import { useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
+import { dailyLogReadMode } from '@/data/apiGateway';
 import { selectTotalWorkers } from '@/store/selectors';
 import { EmptyState, Eyebrow, Swatch, PhotoViewer, Modal, Button } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
-import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin } from '@/lib/icons';
+import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
 import { can, SW, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -26,6 +27,17 @@ export function DailyLogScreen() {
   const submitDailyLog = useStore((s) => s.submitDailyLog);
   const role = useStore((s) => s.role);
   const startDailyLog = useStore((s) => s.startDailyLog);
+  // Phase 2 Task 10 (correction, finding 4): under module read-ownership the daily-log read is a
+  // SEPARATE async surface from the project snapshot, with its own honest load state. Never claim
+  // "No daily log started" until a read has actually SUCCEEDED with null; while it loads show a
+  // loading state; on failure show an unavailable/Retry boundary; and lock the mutating commands
+  // until it settles. In snapshot mode `dailyLogLoad` stays 'idle' and these gates never trigger.
+  const dailyLogLoad = useStore((s) => s.dailyLogLoad);
+  const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
+  const moduleOwned = dailyLogReadMode() === 'moduleQuery';
+  const reading = moduleOwned && (dailyLogLoad === 'idle' || dailyLogLoad === 'loading');
+  const unavailable = moduleOwned && dailyLogLoad === 'error';
+  const actionsLocked = reading || unavailable; // don't mutate a log whose read hasn't settled
   // live project identity — never the seeded Ambli copy (Phase 0 Task 7)
   const short = useStore((s) => s.short);
   const location = useStore((s) => s.location);
@@ -54,8 +66,36 @@ export function DailyLogScreen() {
 
   const sectionLabel: React.CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '.2em', color: 'var(--faint)', margin: '22px 0 10px' };
 
-  // honest absence: no daily log exists for this project — offer to start one instead
-  // of rendering a fabricated blank log
+  // finding 4 — under module ownership, the module read's honest state gates the screen so a
+  // still-loading or failed read is NEVER shown as an empty "No daily log started". These only
+  // fire when there is no last-good log to show; a failed refresh that RETAINS last-good data
+  // (finding 1) falls through to the log below with its mutating actions locked.
+  if (reading && !dailyLog) {
+    return (
+      <EmptyState
+        title="Loading today's log…"
+        detail="Fetching this project's daily site log."
+      />
+    );
+  }
+  if (unavailable && !dailyLog) {
+    return (
+      <EmptyState
+        icon={<WifiOff size={26} />}
+        title="Daily log unavailable"
+        detail="We couldn't load this project's site log. Check your connection and access, then retry."
+        action={
+          <Button variant="ink" onClick={requestFreshSnapshot} data-testid="daily-log-retry">
+            <RefreshCw size={15} /> Retry
+          </Button>
+        }
+      />
+    );
+  }
+
+  // honest absence: a read has SUCCEEDED and there is no daily log for this project (or we're in
+  // snapshot mode where the snapshot slice is authoritative) — offer to start one instead of
+  // rendering a fabricated blank log
   if (!dailyLog) {
     return (
       <EmptyState
@@ -82,7 +122,7 @@ export function DailyLogScreen() {
             <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{dailyLog.date}</div>
           </div>
           {dailyLog.submitted && can('dailyLog.start', role) && (
-            <Button variant="outline" onClick={startDailyLog} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
+            <Button variant="outline" onClick={startDailyLog} disabled={actionsLocked} data-testid="start-new-day" style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 12.5, whiteSpace: 'nowrap' }}>
               <Plus size={15} /> Start new day
             </Button>
           )}
@@ -156,7 +196,7 @@ export function DailyLogScreen() {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                   <div style={{ fontWeight: 600, fontSize: 13.5 }}>{m.name}</div>
                   {m.matched && (
-                    <button onClick={() => flagMismatch(i)} data-testid={`flag-${m.decisionId}`} style={{ background: 'transparent', border: 'none', color: 'var(--red-solid)', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap', padding: 0, display: 'flex', alignItems: 'center', gap: 3 }}>
+                    <button onClick={() => flagMismatch(i)} disabled={actionsLocked} data-testid={`flag-${m.decisionId}`} style={{ background: 'transparent', border: 'none', color: 'var(--red-solid)', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 600, cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1, whiteSpace: 'nowrap', padding: 0, display: 'flex', alignItems: 'center', gap: 3 }}>
                       <TriangleAlert size={11} /> Flag mismatch
                     </button>
                   )}
@@ -170,7 +210,7 @@ export function DailyLogScreen() {
           ))}
         </div>
         {can('dailyLog.addMaterial', role) && (
-          <button onClick={() => setAddingMaterial(true)} data-testid="add-material" style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+          <button onClick={() => setAddingMaterial(true)} disabled={actionsLocked} data-testid="add-material" style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
             <Plus size={16} /> Record material delivery
           </button>
         )}
@@ -221,8 +261,9 @@ export function DailyLogScreen() {
       <div className={styles.stickyFoot} style={{ padding: '12px 16px 20px', borderTop: '1px solid rgba(35,33,28,.1)', background: 'var(--panel)' }}>
         <button
           onClick={submitDailyLog}
+          disabled={actionsLocked}
           data-testid="submit-daily-log"
-          style={{ width: '100%', maxWidth: 460, margin: '0 auto', display: 'block', padding: 15, borderRadius: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, cursor: 'pointer', border: 'none', background: dailyLog.submitted ? 'var(--green-chip)' : 'var(--ink)', color: dailyLog.submitted ? 'var(--green-text)' : 'var(--sidebar-text)' }}
+          style={{ width: '100%', maxWidth: 460, margin: '0 auto', display: 'block', padding: 15, borderRadius: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.6 : 1, border: 'none', background: dailyLog.submitted ? 'var(--green-chip)' : 'var(--ink)', color: dailyLog.submitted ? 'var(--green-text)' : 'var(--sidebar-text)' }}
         >
           {dailyLog.submitted ? 'Submitted ✓ — sent to PMC' : 'Submit Daily Log to PMC'}
         </button>

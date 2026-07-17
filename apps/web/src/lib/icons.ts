@@ -28,6 +28,7 @@ export {
   MapPin,
   Wifi,
   WifiOff,
+  RefreshCw,
   TriangleAlert,
   X,
   Volume2,

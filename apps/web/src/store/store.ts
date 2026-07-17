@@ -57,7 +57,7 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
-import { emptyProjectData, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
+import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, decisionsReadMode, dailyLogReadMode, type ModuleDecisions, type ModuleDailyLog } from '@/data/apiGateway';
@@ -1154,11 +1154,13 @@ export const useStore = create<Store>()(
             s.stage = '';
             s.siteCode = '';
             Object.assign(s, emptyProjectData());
+            Object.assign(s, emptyModuleReadState()); // finding 4: a new project's reads start fresh, not stale-'ready'
           }
         } else if (!wasPending) {
           // same-project re-authentication: the previous identity's records are not
           // this identity's truth — clear and let the post-auth refresh refetch them
           Object.assign(s, emptyProjectData());
+          Object.assign(s, emptyModuleReadState()); // finding 4: the new identity's module reads are not yet loaded
         }
         // in every branch the project data is now empty — awaiting this identity's snapshot
         s.projectLoadState = 'loading';
@@ -1249,6 +1251,7 @@ export const useStore = create<Store>()(
         // replies still in flight — nothing survives for the next identity to see.
         s.projectScopeGeneration += 1;
         Object.assign(s, emptyProjectData());
+        Object.assign(s, emptyModuleReadState()); // finding 4: sign-out tears down the module read state too
         s.projectLoadState = 'idle';
         s.projectLoadError = null;
         s.pendingProjectId = null;
@@ -1927,6 +1930,7 @@ export const useStore = create<Store>()(
         s.stage = '';
         s.siteCode = '';
         Object.assign(s, emptyProjectData());
+        Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
       });
       return gateway
         .switchProject(projectId)
