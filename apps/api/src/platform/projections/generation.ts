@@ -58,3 +58,42 @@ export async function lockActiveGeneration(
     throw e;
   }
 }
+
+export interface ServableGenerationRow {
+  id: string;
+  generation: number;
+}
+
+/**
+ * Phase 2 Task 10 (correction, finding 1) — the active generation IFF it is SAFE TO SERVE a read from.
+ *
+ * A projection read must NEVER present a generation as authoritative unless its rows actually reflect
+ * the project's current canonical state. An active generation is servable only when it is
+ *  - HEALTHY: `cursorStatus = 'live'` (a `blocked` generation stalled on a dead earlier position); AND
+ *  - CAUGHT UP: `appliedPosition` has reached the project's committed stream head
+ *    (`appliedPosition >= nextPosition - 1`) — so every event through head (including the no-ops that
+ *    merely advance the ordered cursor) has been applied.
+ *
+ * A generation that a no-op delivery only BOOTSTRAPPED (`appliedPosition = null`, no rows yet), one
+ * whose checkpoint LAGS the stream (a write committed but the relay has not applied it), or a BLOCKED
+ * one returns `null` here — the caller falls back to the canonical live read, which is always current.
+ * This closes the bug where an unrelated no-op event created an active generation with no projection
+ * row and the read served an empty slice as `source: 'projection'`, hiding real canonical data.
+ */
+export async function readServableGeneration(
+  client: Prisma.TransactionClient,
+  consumer: string,
+  projectId: string,
+): Promise<ServableGenerationRow | null> {
+  const gen = await client.projectionGeneration.findFirst({
+    where: { consumer, projectId, status: 'active' },
+    select: { id: true, generation: true, appliedPosition: true, cursorStatus: true },
+  });
+  if (!gen) return null; // no active generation — never rebuilt / no deliveries yet
+  if (gen.cursorStatus !== 'live') return null; // blocked on a dead earlier position — stale
+  if (gen.appliedPosition === null) return null; // bootstrapped only, nothing applied
+  const stream = await client.projectEventStream.findUnique({ where: { projectId }, select: { nextPosition: true } });
+  const head = stream ? stream.nextPosition - 1n : -1n;
+  if (gen.appliedPosition < head) return null; // checkpoint lags the committed stream — not current
+  return { id: gen.id, generation: gen.generation };
+}

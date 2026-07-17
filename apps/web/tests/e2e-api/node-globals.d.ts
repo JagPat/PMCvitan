@@ -10,3 +10,5 @@ declare const Buffer: {
   from(data: string, encoding?: string): Buffer;
   alloc(size: number, fill?: number): Buffer;
 };
+// The daily-log module-query spec reads the runner's read-mode flag off the environment.
+declare const process: { env: Record<string, string | undefined> };

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
 import { DailyLogService } from './daily-log.service';
 import { DailyLogQueryService } from './daily-log.query';
 import { ZodPipe } from '../common/zod.pipe';
@@ -25,43 +25,53 @@ export class DailyLogController {
     return this.dailyLogQuery.moduleDailyLog(projectId);
   }
 
-  /** Start a fresh day's log (previous one must be submitted) — engineer (or PMC). */
+  /** Start a fresh day's log (previous one must be submitted) — engineer (or PMC). The optional
+   *  `Idempotency-Key` header makes a retried/replayed start create the day's log exactly once. */
   @Post('start')
   @RolesFor('dailyLog.start')
-  start(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
-    return this.dailyLog.start(projectId, user);
+  start(
+    @Param('projectId') projectId: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.dailyLog.start(projectId, user, idempotencyKey);
   }
 
-  /** Record a material delivery on the open log — engineer (or PMC). */
+  /** Record a material delivery on the open log — engineer (or PMC). A retry with the same
+   *  `Idempotency-Key` records the material exactly once. */
   @Post('materials')
   @RolesFor('dailyLog.addMaterial')
   addMaterial(
     @Param('projectId') projectId: string,
     @Body(new ZodPipe(addMaterialSchema)) body: AddMaterialInput,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.dailyLog.addMaterial(projectId, body, user);
+    return this.dailyLog.addMaterial(projectId, body, user, idempotencyKey);
   }
 
-  /** Flag a material mismatch against the plan — the site engineer (or PMC). */
+  /** Flag a material mismatch against the plan — the site engineer (or PMC). Keyed for replay-safety. */
   @Post('flag-mismatch')
   @RolesFor('dailyLog.flagMismatch')
   flag(
     @Param('projectId') projectId: string,
     @Body(new ZodPipe(flagMismatchSchema)) body: FlagMismatchInput,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.dailyLog.flagMismatch(projectId, body, user);
+    return this.dailyLog.flagMismatch(projectId, body, user, idempotencyKey);
   }
 
-  /** Submit the daily site log (attendance, crew, materials, photos) — the site engineer (or PMC). */
+  /** Submit the daily site log (attendance, crew, materials, photos) — the site engineer (or PMC). A
+   *  retry with the same `Idempotency-Key` applies the submission exactly once. */
   @Post('submit')
   @RolesFor('dailyLog.submit')
   submit(
     @Param('projectId') projectId: string,
     @Body(new ZodPipe(submitDailyLogSchema)) body: SubmitDailyLogInput,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.dailyLog.submit(projectId, body, user);
+    return this.dailyLog.submit(projectId, body, user, idempotencyKey);
   }
 }

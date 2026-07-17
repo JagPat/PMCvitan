@@ -1,8 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import type { DailyLogModuleResult } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { MaterialDto } from '../snapshot/types';
 import { computeDailyLogSlice, type DailyLogCore, type DailyLogSlice } from './daily-log-serialize';
 import { DAILY_LOG_PROJECTION } from './daily-log.projection';
+import { readServableGeneration } from '../platform/projections/generation';
 
 // Re-export the module's read-model core type so consumers keep importing it from the query boundary.
 export type { DailyLogCore } from './daily-log-serialize';
@@ -41,24 +43,28 @@ export class DailyLogQueryService {
    * no per-viewer authz there is nothing to re-filter (a projection is never an RBAC bypass; here it
    * has no visibility rule to bypass).
    *
-   * `generation` is the served generation number (null when the projection has no active generation
-   * yet); the caller decides whether to fall back to the live slice while the projection warms up. An
-   * active generation with no row yet (a project with no daily log) is the empty slice — matching live.
+   * `generation` is the served generation number, non-null ONLY when the projection is SAFE TO SERVE:
+   * its active generation is healthy (`cursorStatus='live'`) AND caught up to the project's committed
+   * stream head (finding 1), AND its row actually exists. A generation that a no-op merely bootstrapped
+   * (no row yet), one whose checkpoint lags a just-committed write, or a blocked one returns
+   * `generation: null` — the caller then falls back to the canonical live slice, which is always
+   * current. This closes the bug where an unrelated no-op created an active generation with no row and
+   * the read served an empty slice as authoritative projection data, hiding real canonical data.
    */
   async projectionSlice(
     projectId: string,
   ): Promise<{ dailyLog: DailyLogCore | null; materials: MaterialDto[]; generation: number | null }> {
-    const gen = await this.prisma.projectionGeneration.findFirst({
-      where: { consumer: DAILY_LOG_PROJECTION, projectId, status: 'active' },
-      select: { id: true, generation: true },
-    });
+    // Serve only from a HEALTHY, CAUGHT-UP active generation (else signal fallback to canonical).
+    const gen = await readServableGeneration(this.prisma, DAILY_LOG_PROJECTION, projectId);
     if (!gen) return { dailyLog: null, materials: [], generation: null };
 
     const row = await this.prisma.dailyLogProjection.findUnique({
       where: { generationId_projectId: { generationId: gen.id, projectId } },
       select: { dto: true },
     });
-    const slice = (row?.dto as unknown as DailyLogSlice | undefined) ?? { dailyLog: null, materials: [] };
+    // A caught-up generation with NO row yet is not authoritative empty data — fall back to canonical.
+    if (!row) return { dailyLog: null, materials: [], generation: null };
+    const slice = row.dto as unknown as DailyLogSlice;
     return { dailyLog: slice.dailyLog, materials: slice.materials, generation: gen.generation };
   }
 
@@ -69,9 +75,7 @@ export class DailyLogQueryService {
    * legacy project never rebuilt) — additive and correct, never empty during warm-up. `source` tells
    * the client which path served it (observability; the slice is byte-identical either way).
    */
-  async moduleDailyLog(
-    projectId: string,
-  ): Promise<{ dailyLog: DailyLogCore | null; materials: MaterialDto[]; source: 'projection' | 'live'; generation: number | null }> {
+  async moduleDailyLog(projectId: string): Promise<DailyLogModuleResult> {
     const proj = await this.projectionSlice(projectId);
     if (proj.generation !== null) {
       return { dailyLog: proj.dailyLog, materials: proj.materials, source: 'projection', generation: proj.generation };

@@ -62,14 +62,11 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
     return id;
   };
 
-  /** Seed a canonical daily log (crew + its own materials) and emit its lifecycle event, so the
-   *  projection consumer has a delivery to apply. The handler refreshes the WHOLE project slice, so a
-   *  single emitted event captures the seeded canonical state. */
-  const makeDailyLog = async (
-    projectId: string,
-    id: string,
-    opts: { logDate?: string; submitted?: boolean; progress?: number; crew?: { trade: string; count: number }[]; materials?: { name: string; qty: string; zone?: string; matched?: boolean; swatch?: string }[] } = {},
-  ): Promise<void> => {
+  type LogOpts = { logDate?: string; submitted?: boolean; progress?: number; crew?: { trade: string; count: number }[]; materials?: { name: string; qty: string; zone?: string; matched?: boolean; swatch?: string }[] };
+
+  /** Seed CANONICAL daily-log rows (crew + its own materials) WITHOUT emitting any event — the legacy /
+   *  pre-projection shape the finding-1 probe needs (real data, no daily-log delivery to apply). */
+  const seedCanonicalLog = async (projectId: string, id: string, opts: LogOpts = {}): Promise<void> => {
     await t.prisma.dailyLog.create({
       data: { id, projectId, date: '01 Jun 2026', logDate: opts.logDate ? new Date(opts.logDate) : new Date('2026-06-01'), submitted: opts.submitted ?? true, checkedIn: true, checkinTime: '09:00', progress: opts.progress ?? 40 },
     });
@@ -81,6 +78,12 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
     for (const m of opts.materials ?? [{ name: 'Cement', qty: '20 bags', zone: 'GF' }]) {
       await t.prisma.siteMaterial.create({ data: { projectId, dailyLogId: id, name: m.name, qty: m.qty, zone: m.zone ?? '', matched: m.matched ?? true, swatch: m.swatch ?? 'tile', order: order++ } });
     }
+  };
+
+  /** Seed a canonical daily log AND emit its lifecycle event, so the projection consumer has a delivery
+   *  to apply. The handler refreshes the WHOLE project slice, so a single emitted event captures it. */
+  const makeDailyLog = async (projectId: string, id: string, opts: LogOpts = {}): Promise<void> => {
+    await seedCanonicalLog(projectId, id, opts);
     await t.prisma.$transaction((tx) => emitEvent(tx, { projectId, actor: human, eventType: 'dailylog.submitted', entityType: 'DailyLog', entityId: id, effectKey: 'dailylog.submitted', dispatch: {} }));
   };
 
@@ -115,19 +118,62 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
     expect(proj.generation).toBe(1); // served from an ACTIVE generation
   });
 
-  it('a project with an active generation but no daily log serves the EMPTY slice (matches live)', async () => {
+  // ── Finding 1 (correction): serve a generation ONLY when healthy, caught up AND its row exists ──
+
+  it('finding 1: legacy canonical data + only a no-op delivery serves LIVE, never authoritative-empty projection', async () => {
     const p = await freshProject();
-    // emit a non-daily-log event so the ordered cursor bootstraps generation 1 via a noop
+    // canonical daily-log data exists, but NO daily-log event was ever emitted (legacy / pre-projection)
+    await seedCanonicalLog(p, 'DLOG-LEGACY', { progress: 33, materials: [{ name: 'Rebar', qty: '3 t', zone: 'GF' }] });
+    // only an UNRELATED no-op event fires → bootstraps an active generation with NO DailyLogProjection row
     await t.prisma.$transaction((tx) => emitEvent(tx, { projectId: p, actor: human, eventType: 'project.created', entityType: 'Project', entityId: p, effectKey: 'project.created', dispatch: {} }));
     await applyProjection(p);
+    // an active, caught-up generation now exists — but it has no row for this project
+    const gen = await t.prisma.projectionGeneration.findFirst({ where: { consumer: DAILY_LOG_PROJECTION, projectId: p, status: 'active' } });
+    expect(gen).not.toBeNull();
+    // the module read MUST fall back to canonical LIVE, not serve the empty projection (the bug)
+    const mod = await query.moduleDailyLog(p);
+    expect(mod.source).toBe('live');
+    expect(mod.dailyLog?.progress).toBe(33);
+    expect(mod.materials.map((m) => m.name)).toEqual(['Rebar']);
+    // projectionSlice signals not-servable (row missing) so the caller falls back
+    expect((await query.projectionSlice(p)).generation).toBeNull();
+  });
 
+  it('finding 1: no daily log AND only a no-op falls back to live (empty, generation null)', async () => {
+    const p = await freshProject();
+    await t.prisma.$transaction((tx) => emitEvent(tx, { projectId: p, actor: human, eventType: 'project.created', entityType: 'Project', entityId: p, effectKey: 'project.created', dispatch: {} }));
+    await applyProjection(p);
     const proj = await query.projectionSlice(p);
-    const live = await query.snapshotSlice(p);
-    expect(proj.generation).toBe(1); // an active generation exists…
-    expect(proj.dailyLog).toBeNull(); // …but no row yet → the empty slice, identical to live
-    expect(proj.materials).toEqual([]);
-    expect(proj.dailyLog).toEqual(live.dailyLog);
-    expect(proj.materials).toEqual(live.materials);
+    expect(proj.generation).toBeNull(); // caught-up generation but no row → not servable → fallback
+    const mod = await query.moduleDailyLog(p);
+    expect(mod.source).toBe('live');
+    expect(mod.dailyLog).toBeNull();
+    expect(mod.materials).toEqual([]);
+  });
+
+  it('finding 1: a LAGGING checkpoint (a committed write not yet applied) serves live', async () => {
+    const p = await freshProject();
+    await makeDailyLog(p, 'DLOG-A', { progress: 10, materials: [{ name: 'A', qty: '1', zone: 'GF' }] });
+    await applyProjection(p);
+    expect((await query.projectionSlice(p)).generation).toBe(1); // fully applied → servable
+    // a SECOND committed daily-log write whose delivery is NOT yet applied — checkpoint now lags head
+    await makeDailyLog(p, 'DLOG-B', { progress: 20, materials: [{ name: 'B', qty: '2', zone: 'GF' }] });
+    const proj = await query.projectionSlice(p);
+    expect(proj.generation).toBeNull(); // appliedPosition < stream head → not current → fallback
+    const mod = await query.moduleDailyLog(p);
+    expect(mod.source).toBe('live');
+    expect(mod.dailyLog?.progress).toBe(20); // live reflects the newest canonical state
+  });
+
+  it('finding 1: a BLOCKED generation serves live', async () => {
+    const p = await freshProject();
+    await makeDailyLog(p, 'DLOG-BL', { progress: 15, materials: [{ name: 'Blk', qty: '1', zone: 'GF' }] });
+    await applyProjection(p);
+    expect((await query.projectionSlice(p)).generation).toBe(1);
+    // a dead earlier position degrades the generation to 'blocked' live; force that state here
+    await t.prisma.projectionGeneration.updateMany({ where: { consumer: DAILY_LOG_PROJECTION, projectId: p, status: 'active' }, data: { cursorStatus: 'blocked' } });
+    expect((await query.projectionSlice(p)).generation).toBeNull(); // blocked → not served → fallback
+    expect((await query.moduleDailyLog(p)).source).toBe('live');
   });
 
   it('live == rebuild: a rebuild activates a new generation (checkpoint == H) whose slice matches the live one', async () => {

@@ -344,7 +344,8 @@ describe('Phase 7b write-cutover — API mode routes mutations through the gatew
     s()._setGateway(flagGw as unknown as ApiGateway);
     s().flagMismatch(0);
     await flush();
-    expect(flagGw.flagMismatch).toHaveBeenCalledWith('DL-014');
+    // Task 10 correction (finding 3): flagMismatch now carries a stable idempotency key (2nd arg).
+    expect(flagGw.flagMismatch).toHaveBeenCalledWith('DL-014', expect.any(String));
   });
 
   it('without a gateway (default), confirmApprove still mutates the local store', () => {

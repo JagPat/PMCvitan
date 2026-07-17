@@ -7,9 +7,11 @@ import {
   type SubmitDailyLogInput as SharedSubmitDailyLogInput,
   type DailyLogCoreView,
   type DailyLogSnapshotResult,
+  type DailyLogModuleResult,
 } from '@vitan/shared';
 import { dailyLogManifest } from './daily-log.manifest';
 import { DailyLogQueryService, type DailyLogCore } from './daily-log.query';
+import { DailyLogService } from './daily-log.service';
 import type { AddMaterialInput, FlagMismatchInput, SubmitDailyLogInput } from '../contracts';
 
 /**
@@ -17,8 +19,8 @@ import type { AddMaterialInput, FlagMismatchInput, SubmitDailyLogInput } from '.
  * queries) + its events. This test pins that contract against the implementation: the manifest's
  * command/query lists equal the shared contract's, the API's request DTOs match the shared command
  * inputs, the query results match the shared views, and the query service implements every declared
- * query. Unlike decisions, daily-log commands do NOT carry a Task-5 idempotency key (their POST
- * handlers take no key), so this test pins only what the module actually implements.
+ * query. Every command carries the Task-5 idempotency key (correction finding 3 — migrated onto the
+ * CommandExecution ledger), the same replay/409 contract as decisions.
  */
 describe('Task 10 — the daily-log module implements its shared command/query contract', () => {
   it('the manifest commands EQUAL the shared command contract', () => {
@@ -49,6 +51,16 @@ describe('Task 10 — the daily-log module implements its shared command/query c
     }
   });
 
+  // ── Finding 3 (correction): every command carries the Task-5 idempotency key (trailing arg) ──
+  it('every command accepts the idempotency key as its trailing argument', () => {
+    const _start: Parameters<DailyLogService['start']>[2] = 'k' as string | undefined;
+    const _add: Parameters<DailyLogService['addMaterial']>[3] = 'k' as string | undefined;
+    const _flag: Parameters<DailyLogService['flagMismatch']>[3] = 'k' as string | undefined;
+    const _submit: Parameters<DailyLogService['submit']>[3] = 'k' as string | undefined;
+    void [_start, _add, _flag, _submit];
+    expect(true).toBe(true);
+  });
+
   // ── Compile-time contract conformance (these only type-check if the shapes line up) ──
   it('the API request DTOs conform to the shared command inputs, and the query results match', () => {
     // the API's validated request bodies are valid shared command inputs
@@ -58,7 +70,10 @@ describe('Task 10 — the daily-log module implements its shared command/query c
     // the query results (the photo-less daily-log core + the snapshot slice) are the shared views
     const _core: DailyLogCoreView = {} as DailyLogCore;
     const _slice: DailyLogSnapshotResult = {} as Awaited<ReturnType<DailyLogQueryService['snapshotSlice']>>;
-    void [_add, _flag, _submit, _core, _slice];
+    // finding 5 — the module HTTP result is the ONE shared type; the API's moduleDailyLog return
+    // conforms to it exactly (the web gateway imports the same type, so the two cannot drift).
+    const _mod: DailyLogModuleResult = {} as Awaited<ReturnType<DailyLogQueryService['moduleDailyLog']>>;
+    void [_add, _flag, _submit, _core, _slice, _mod];
     expect(true).toBe(true);
   });
 });

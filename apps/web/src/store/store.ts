@@ -47,6 +47,7 @@ import {
   type ProjectNode,
   type Photo,
   type Material,
+  type SwatchKey,
   type PlacedInspection,
   type ItemState,
   type Lang,
@@ -57,7 +58,7 @@ import {
   type Worker,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
-import { emptyProjectData, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
+import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, decisionsReadMode, dailyLogReadMode, type ModuleDecisions, type ModuleDailyLog } from '@/data/apiGateway';
@@ -758,8 +759,20 @@ export const useStore = create<Store>()(
           s.dailyLog = snap.dailyLog ? { ...snap.dailyLog, photos: progressPhotos } : null;
           s.materials = snap.materials ?? [];
         } else if (dailyLogResult) {
-          s.dailyLog = dailyLogResult.dailyLog ? { ...dailyLogResult.dailyLog, photos: progressPhotos } : null;
-          s.materials = dailyLogResult.materials;
+          // The module read is the shared wire contract (DailyLogModuleResult, finding 5): its `swatch`
+          // fields are open strings and its arrays readonly. Narrow them to the store's DTO (SwatchKey,
+          // mutable) at this ONE boundary — the values are always valid swatch keys (a closed set).
+          const core = dailyLogResult.dailyLog;
+          s.dailyLog = core
+            ? {
+                date: core.date, logDate: core.logDate, checkedIn: core.checkedIn, checkinTime: core.checkinTime,
+                submitted: core.submitted, progress: core.progress,
+                crew: core.crew.map((c) => ({ trade: c.trade, count: c.count })),
+                materials: core.materials.map((m) => ({ name: m.name, decisionId: m.decisionId, qty: m.qty, zone: m.zone, matched: m.matched, swatch: m.swatch as SwatchKey, photo: m.photo })),
+                photos: progressPhotos,
+              }
+            : null;
+          s.materials = dailyLogResult.materials.map((m) => ({ id: m.id, name: m.name, qty: m.qty, zone: m.zone, matched: m.matched, swatch: m.swatch as SwatchKey, decisionId: m.decisionId, nodeId: m.nodeId }));
           s.dailyLogLoad = 'ready';
           s.dailyLogSource = dailyLogResult.source;
         } else if (dailyLogResult === null) {
@@ -929,27 +942,56 @@ export const useStore = create<Store>()(
       else void requestFreshSnapshot(scope);
     };
 
+    /** Is ANY read surface module-owned right now (Task 9 decisions / Task 10 daily-log
+     *  in 'moduleQuery' mode)? Under module ownership a command's OWN snapshot response
+     *  deliberately does NOT carry the module slice (applySnapshotCore leaves it
+     *  untouched to preserve the XOR), so a committed command needs a follow-up module
+     *  refresh to become visible — see the reconcile in `consumeSnapshotResult`. */
+    const anyModuleOwnedRead = (): boolean =>
+      decisionsReadMode() === 'moduleQuery' || dailyLogReadMode() === 'moduleQuery';
+
     /** Consume an `acceptSnapshot` result on a COMMAND path (a user-initiated
      *  mutation: approve, publish, issue, evidence upload…). The command's success
      *  is independent of the snapshot ORDERING race: the mutation committed on the
      *  server the moment its call resolved. So announce success whenever the reply
-     *  landed in the CURRENT scope — `applied` (this snapshot is freshest) OR
+     *  landed in the CAPTURED scope — `applied` (this snapshot is freshest) OR
      *  `superseded` (a newer same-scope refresh, almost always the mutation's OWN
-     *  `changed` broadcast, already carries the committed truth). On `superseded` also
-     *  record a required reconcile (round 13): the newer refresh may fail, and the
-     *  committed change must land or a Retry be exposed — never silently absent.
-     *  Suppress only when the scope MOVED (a switch / re-auth — no stale toast into the
-     *  new context) or the payload was `invalid-project` (never claim success; recover). */
-    const consumeSnapshotResult = (result: SnapshotApplyResult, okMsg?: string): void => {
-      if (result === 'applied' || result === 'superseded') { if (okMsg) get().flash(okMsg); }
-      if (result === 'superseded') scheduleReconcile(currentScope(), { kind: 'command', createdAfterSequence: snapshotSeq });
-      else if (result === 'invalid-project') void requestFreshSnapshot();
+     *  `changed` broadcast, already carries the committed truth).
+     *
+     *  A committed command must then be reflected in the reads the user actually sees:
+     *   • `superseded` NEVER ran applySnapshotCore — the store is stale in EVERY mode —
+     *     so a reconcile is always required (round 13): the newer refresh may fail, and
+     *     the committed change must land or a Retry be exposed — never silently absent.
+     *   • `applied` ran applySnapshotCore, which refreshes the snapshot-owned reads. But
+     *     under MODULE ownership (Task 9/10 correction, finding 2) the command's own
+     *     snapshot carries no module slice, so applySnapshotCore left `decisions` /
+     *     `dailyLog` untouched — the module read is now stale. Schedule the same
+     *     scope-guarded reconcile so `requestFreshSnapshot` refetches the module-owned
+     *     read under the SAME captured scope; finding-1's servability gate falls a
+     *     lagging/blocked projection back to canonical, so the committed change is never
+     *     hidden. In pure 'snapshot' mode an `applied` command already carried its slice,
+     *     so no extra reconcile is scheduled.
+     *
+     *  The reconcile is pinned to the command's CAPTURED scope, and `scheduleReconcile`
+     *  drops it if that scope has since MOVED — a stale continuation never mutates data,
+     *  load state or toast in the new scope. Suppress the toast only when the scope moved
+     *  (a switch / re-auth) or the payload was `invalid-project` (never claim success;
+     *  recover under the captured scope). */
+    const consumeSnapshotResult = (result: SnapshotApplyResult, okMsg?: string, scope: ProjectScope = currentScope()): void => {
+      if (result === 'applied' || result === 'superseded') {
+        if (okMsg) get().flash(okMsg);
+        if (result === 'superseded' || anyModuleOwnedRead()) {
+          scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+        }
+      } else if (result === 'invalid-project') {
+        void requestFreshSnapshot(scope);
+      }
     };
 
     const runRemote = (call: () => Promise<ApiSnapshot>, okMsg: string): void => {
       const lease = beginSnapshotLease(currentScope()); // capture BEFORE the request
       call()
-        .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), okMsg))
+        .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), okMsg, lease.scope))
         .catch(() => { if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.'); });
     };
 
@@ -1125,11 +1167,13 @@ export const useStore = create<Store>()(
             s.stage = '';
             s.siteCode = '';
             Object.assign(s, emptyProjectData());
+            Object.assign(s, emptyModuleReadState()); // finding 4: a new project's reads start fresh, not stale-'ready'
           }
         } else if (!wasPending) {
           // same-project re-authentication: the previous identity's records are not
           // this identity's truth — clear and let the post-auth refresh refetch them
           Object.assign(s, emptyProjectData());
+          Object.assign(s, emptyModuleReadState()); // finding 4: the new identity's module reads are not yet loaded
         }
         // in every branch the project data is now empty — awaiting this identity's snapshot
         s.projectLoadState = 'loading';
@@ -1220,6 +1264,7 @@ export const useStore = create<Store>()(
         // replies still in flight — nothing survives for the next identity to see.
         s.projectScopeGeneration += 1;
         Object.assign(s, emptyProjectData());
+        Object.assign(s, emptyModuleReadState()); // finding 4: sign-out tears down the module read state too
         s.projectLoadState = 'idle';
         s.projectLoadError = null;
         s.pendingProjectId = null;
@@ -1424,7 +1469,7 @@ export const useStore = create<Store>()(
         // the snapshot is actually `applied` (never on a superseded / wrong-project one).
         const lease = beginSnapshotLease(scope);
         const snap = await gateway.snapshot();
-        consumeSnapshotResult(acceptSnapshot(snap, lease), 'Evidence photo uploaded and linked to the item.');
+        consumeSnapshotResult(acceptSnapshot(snap, lease), 'Evidence photo uploaded and linked to the item.', lease.scope);
       } catch {
         // the failure belongs to the scope the capture was made in — a moved
         // scope (gate round-4 finding 3) hears nothing
@@ -1898,6 +1943,7 @@ export const useStore = create<Store>()(
         s.stage = '';
         s.siteCode = '';
         Object.assign(s, emptyProjectData());
+        Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
       });
       return gateway
         .switchProject(projectId)
@@ -2065,6 +2111,7 @@ export const useStore = create<Store>()(
             input.publish
               ? `Decision issued: ${input.title} — the client has been asked to choose.`
               : `Draft saved: ${input.title} — visible only to you until you publish it.`,
+            lease.scope,
           );
         } catch {
           // gate round 12: a failure that lands after a project switch must not toast
@@ -2217,14 +2264,18 @@ export const useStore = create<Store>()(
         get().flash('Starting a new log needs the server.');
         return;
       }
-      runRemote(() => gateway!.startDailyLog(), 'New daily log started — crew carried over at zero.');
+      // Task 10 correction (finding 3): a stable key, generated once, so a lost-response retry
+      // starts the day's log exactly once.
+      const key = newIdempotencyKey();
+      runRemote(() => gateway!.startDailyLog(key), 'New daily log started — crew carried over at zero.');
     },
     addSiteMaterial: (input) => {
       if (!gateway) {
         get().flash('Recording materials needs the server.');
         return;
       }
-      runRemote(() => gateway!.addSiteMaterial(input), `Material recorded: ${input.name}.`);
+      const key = newIdempotencyKey();
+      runRemote(() => gateway!.addSiteMaterial(input, key), `Material recorded: ${input.name}.`);
     },
     loadTeam: () => {
       if (!gateway) return Promise.resolve();
@@ -2488,7 +2539,10 @@ export const useStore = create<Store>()(
         return;
       }
       const logPayload = { checkedIn: dl.checkedIn, checkinTime: dl.checkinTime, progress: dl.progress, crew: dl.crew };
-      if (runRemoteOrQueue({ t: 'submitDailyLog', log: logPayload }, 'Submit daily log', () => gateway!.submitDailyLog(logPayload), 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
+      // Task 10 correction (finding 3): the SAME key rides the online call AND the queued offline op,
+      // so a reload + replay submits exactly once.
+      const submitKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'submitDailyLog', log: logPayload, idempotencyKey: submitKey }, 'Submit daily log', () => gateway!.submitDailyLog(logPayload, submitKey), 'Daily site log sent to PMC — attendance, materials & photos attached.')) return;
       set((s) => { if (s.dailyLog) s.dailyLog.submitted = true; });
       get().record('Daily log submit');
       get().flash(get().online ? 'Daily site log sent to PMC — attendance, materials & photos attached.' : 'Saved offline — log will upload to PMC when signal returns.');
@@ -2496,7 +2550,8 @@ export const useStore = create<Store>()(
     flagMismatch: (idx) => {
       const mat = get().dailyLog?.materials[idx];
       if (!mat) return; // no log, or a stale index against a replaced materials list
-      if (runRemoteOrQueue({ t: 'flagMismatch', decisionId: mat.decisionId }, 'Flag ' + mat.decisionId, () => gateway!.flagMismatch(mat.decisionId), 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
+      const flagKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'flagMismatch', decisionId: mat.decisionId, idempotencyKey: flagKey }, 'Flag ' + mat.decisionId, () => gateway!.flagMismatch(mat.decisionId, flagKey), 'Mismatch flagged — PMC alerted and the linked activity is now blocked.')) return;
       set((s) => {
         const m = s.dailyLog?.materials[idx];
         if (m) m.matched = false;
@@ -2631,7 +2686,7 @@ export const useStore = create<Store>()(
         reconcileSubmission(s);
       });
       persistOutbox();
-      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease));
+      if (lastSnap) consumeSnapshotResult(acceptSnapshot(lastSnap, flushLease), undefined, flushLease.scope);
 
       const parts: string[] = [];
       if (synced > 0) parts.push(`${synced} offline update${synced > 1 ? 's' : ''} synced`);

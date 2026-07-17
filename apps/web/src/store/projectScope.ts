@@ -74,6 +74,26 @@ export function emptyProjectData(): ProjectDataState {
   };
 }
 
+/**
+ * The module-owned READ metadata (Phase 2 Task 9/10 XOR reads): the per-module load
+ * status and the source that served the current data. These are NOT project data —
+ * they describe the in-flight read — but they must be TORN DOWN alongside
+ * `emptyProjectData()` on every scope teardown (a project switch, a re-auth, or a
+ * sign-out). Left stale, a fresh/blank scope inherits the previous project's `ready`
+ * status over its now-empty data, so the screen renders "loaded and empty" ("No daily
+ * log started") instead of "loading" — the dishonest state finding 4 fixes. Reset to
+ * 'idle'; the scope's first `requestFreshSnapshot` re-derives 'loading' from there.
+ */
+export interface ModuleReadState {
+  decisionsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  decisionsSource: 'projection' | 'live' | null;
+  dailyLogLoad: 'idle' | 'loading' | 'ready' | 'error';
+  dailyLogSource: 'projection' | 'live' | null;
+}
+export function emptyModuleReadState(): ModuleReadState {
+  return { decisionsLoad: 'idle', decisionsSource: null, dailyLogLoad: 'idle', dailyLogSource: null };
+}
+
 export function isCurrentProjectScope(
   currentProjectId: string,
   currentGeneration: number,
