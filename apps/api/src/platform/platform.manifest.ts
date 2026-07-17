@@ -25,6 +25,7 @@ export const platformManifest: ModuleManifest = {
     'outboxDelivery',
     'processedEvent',
     'projectionCursor',
+    'projectionGeneration',
     'outboxConsumerCatalog',
     'outboxOperatorAction',
     'outboxCutoverState',

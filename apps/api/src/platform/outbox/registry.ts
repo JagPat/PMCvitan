@@ -69,15 +69,43 @@ export interface NotificationIntent {
  *  There is no `null`: a missing row can no longer be silently "not relevant". */
 export type DeliveryPlan = { action: 'dispatch'; payload?: Prisma.InputJsonValue } | { action: 'noop' };
 
+/** Where a PROJECTION consumer must write (Task 9): the specific rebuildable generation instance its
+ *  rows belong to. The live relay passes the ACTIVE generation; a rebuild passes the BUILDING one.
+ *  A projection tags every row it writes with `generationId`, so a building generation is invisible
+ *  to serving until it is activated and a retired one can be dropped wholesale. */
+export interface ProjectionTarget {
+  generationId: string;
+  generation: number;
+  projectId: string;
+}
+
+/** Task 9 — the rebuild hooks that make an ordered `db` consumer a rebuildable PROJECTION. A consumer
+ *  whose `projection` field is set is applied by the relay into its ACTIVE generation (contiguously,
+ *  effectively-once) and rebuilt by the {@link ProjectionRebuilder} into a fresh generation swapped
+ *  in behind a final activation barrier. Both hooks are OPTIONAL: a projection with no `rebuildSeed`
+ *  rebuilds purely by replaying events from position 0. */
+export interface ProjectionSpec {
+  /** Seed a rebuild's replacement generation from the module's CONSISTENT CANONICAL snapshot, tagging
+   *  every row with `target.generationId`, and return the `streamPosition` that snapshot reflects (so
+   *  replay resumes at the next position). Return `null` to replay purely from events (position 0).
+   *  Runs in its own transaction before the event replay. */
+  rebuildSeed?(tx: Prisma.TransactionClient, target: ProjectionTarget): Promise<bigint | null>;
+  /** Drop a RETIRED generation's rows after a successful activation swap (best-effort cleanup). */
+  dropGeneration?(tx: Prisma.TransactionClient, target: ProjectionTarget): Promise<void>;
+}
+
 /** What a consumer receives to dispatch one delivery. `tx` is present ONLY for `db` consumers —
  *  the relay's apply transaction, in which the consumer writes its projection so the side effect
  *  and its ProcessedEvent/cursor commit atomically. `external` consumers get no tx and send
- *  (socket/push) only when `senderMode === 'outbox'`. */
+ *  (socket/push) only when `senderMode === 'outbox'`. `projection` is present ONLY for a PROJECTION
+ *  consumer — the generation its rows must be tagged with (the active generation for a live delivery,
+ *  the building generation for a rebuild replay). */
 export interface DispatchContext {
   delivery: { id: string; consumer: string; projectId: string; streamPosition: bigint; payload: Prisma.JsonValue | null };
   meta: EmittedEventMeta;
   senderMode: OutboxSenderMode;
   tx?: Prisma.TransactionClient;
+  projection?: ProjectionTarget;
 }
 
 export interface OutboxConsumer {
@@ -95,6 +123,11 @@ export interface OutboxConsumer {
   deliveryFor(meta: EmittedEventMeta): DeliveryPlan;
   /** Dispatch one delivery. Throw to signal a retryable failure (the relay backs off / dead-letters). */
   handle(ctx: DispatchContext): Promise<void>;
+  /** Task 9 — set on an ordered `db` consumer to make it a rebuildable PROJECTION: the relay applies
+   *  its deliveries into the ACTIVE generation (advancing that generation's checkpoint contiguously)
+   *  and the {@link ProjectionRebuilder} rebuilds it behind a final activation barrier. Absent → the
+   *  consumer stays a plain ordered `db` consumer on a single `ProjectionCursor` (unchanged). */
+  projection?: ProjectionSpec;
 }
 
 const registry = new Map<string, OutboxConsumer>();

@@ -60,7 +60,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, decisionsReadMode, type ModuleDecisions } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 
@@ -150,6 +150,17 @@ export interface AppState {
   toast: string | null;
   modal: ModalState;
   decisions: Decision[];
+  // Phase 2 Task 9 — when decisionsReadMode() === 'moduleQuery', `decisions` is owned by the
+  // module-owned read (XOR), and these track its explicit load state for the decision surfaces:
+  // 'idle' (snapshot-owned, the default mode), 'loading', 'ready', or 'error' (fetch failed — the
+  // last-good decisions are kept and a Retry boundary is exposed). `decisionsSource` records whether
+  // the projection or its live fallback served the current data.
+  decisionsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  decisionsSource: 'projection' | 'live' | null;
+  // Phase 2 Task 9 — the enabled module ids from the project-shell summary (the single enablement
+  // source). Drives manifest-driven nav: a screen whose module is disabled is hidden. Empty = not yet
+  // loaded → the nav shows every role screen (no flash), matching today's behaviour.
+  enabledModules: string[];
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
@@ -278,6 +289,7 @@ export interface AppActions {
   // multi-project + team
   loadOrgData: () => void;
   loadPortfolio: () => void;
+  loadShell: () => void;
   /** Atomically re-scope to another project. Empties project data BEFORE the auth
    *  request; adopts the SERVER-returned project on success. Resolves true only when
    *  the switch was authenticated. `targetScreen` survives the switch when the new
@@ -518,6 +530,9 @@ export function getInitialState(): AppState {
     toast: null,
     modal: { type: null },
     decisions: structuredClone(SEED_DECISIONS),
+    decisionsLoad: 'idle',
+    decisionsSource: null,
+    enabledModules: [],
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
@@ -654,12 +669,26 @@ export const useStore = create<Store>()(
      *  DIRECTLY — only `acceptSnapshot` may, after the ordering checks. A source-scan
      *  test (`snapshot-ordering.test.ts`) enforces the single call site so an
      *  unsequenced apply cannot be reintroduced. */
-    const applySnapshotCore = (snap: ApiSnapshot): void => {
+    const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null): void => {
       set((s) => {
         s.projectLoadState = 'ready'; // the active project's data has landed
         s.projectLoadError = null;
         s.pendingProjectId = null;
-        s.decisions = snap.decisions;
+        // Phase 2 Task 9 — XOR read-ownership for decisions. In 'snapshot' mode (default) the snapshot
+        // slice OWNS `s.decisions` (unchanged). In 'moduleQuery' mode the module-owned read owns it and
+        // the snapshot's slice is IGNORED: a `decisionsResult` (fetched under THIS same scope lease)
+        // sets it (ready); a `null` result means the module fetch FAILED — keep the last-good decisions
+        // and expose an error boundary; `undefined` means no fetch accompanied this apply (a command's
+        // own snapshot response) — leave `s.decisions` untouched until the follow-up module refresh.
+        if (decisionsReadMode() === 'snapshot') {
+          s.decisions = snap.decisions;
+        } else if (decisionsResult) {
+          s.decisions = decisionsResult.decisions;
+          s.decisionsLoad = 'ready';
+          s.decisionsSource = decisionsResult.source;
+        } else if (decisionsResult === null) {
+          s.decisionsLoad = 'error';
+        }
         s.activities = snap.activities;
         // The snapshot is the whole truth for its project. checklist/dailyLog are
         // assigned DIRECTLY, including null — absence means "this project has none",
@@ -742,14 +771,17 @@ export const useStore = create<Store>()(
      *  then applies. The result MUST be consumed; success is announced only for
      *  `applied`. `superseded` / `scope-moved` are silent no-ops; `invalid-project`
      *  never reports success and the caller requests a fresh snapshot to recover. */
-    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease): SnapshotApplyResult => {
+    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease, decisionsResult?: ModuleDecisions | null): SnapshotApplyResult => {
       const st = get();
       if (!isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, lease.scope)) return 'scope-moved';
       // newest-owner is checked against THIS lease's own scope, so a stale lease in a
       // scope we've left can never mark a live scope's response superseded (round 12).
       if (lease.sequence !== coordinatorFor(lease.scope).newestLeaseSeq) return 'superseded';
       if (snap.project.id !== lease.scope.projectId) return 'invalid-project';
-      applySnapshotCore(snap);
+      // Task 9 — the module decisions (if any) rode the SAME lease as the snapshot, so it passes the
+      // identical scope/newest-owner ordering checks: a stale decisions response is dropped with its
+      // snapshot, never applied over a newer scope's data.
+      applySnapshotCore(snap, decisionsResult);
       return 'applied';
     };
 
@@ -779,9 +811,23 @@ export const useStore = create<Store>()(
       // initial load / retry surfaces 'loading'; a background refresh (already
       // 'ready') stays ready — stale-while-revalidate, no flash on every socket ping.
       if (scopeStillCurrent(scope) && get().projectLoadState !== 'ready') set((s) => { s.projectLoadState = 'loading'; });
+      // Task 9 — in 'moduleQuery' mode surface the decisions module's own loading state for its
+      // surfaces (guarded by scope, like the project load state), while snapshot mode leaves it idle.
+      if (decisionsReadMode() === 'moduleQuery' && scopeStillCurrent(scope) && get().decisionsLoad !== 'ready') {
+        set((s) => { s.decisionsLoad = 'loading'; });
+      }
       try {
-        const snap = await g.snapshot();
-        const result = acceptSnapshot(snap, lease);
+        // Task 9 — in 'moduleQuery' mode fetch the module-owned decisions ALONGSIDE the snapshot, under
+        // the SAME lease. The decisions fetch is resilient: a failure yields `null` (an explicit error
+        // state that keeps the last-good decisions) rather than failing the whole pull, so the rest of
+        // the project still loads. In 'snapshot' mode no extra fetch happens (undefined → unchanged).
+        const [snap, decisionsResult] = await Promise.all([
+          g.snapshot(),
+          decisionsReadMode() === 'moduleQuery'
+            ? g.decisions().then((d): ModuleDecisions | null => d).catch((): ModuleDecisions | null => null)
+            : Promise.resolve(undefined as ModuleDecisions | undefined),
+        ]);
+        const result = acceptSnapshot(snap, lease, decisionsResult);
         if (result === 'applied') {
           // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a
           // pull that BEGAN AFTER an obligation's threshold can satisfy it (round 13,
@@ -1792,6 +1838,15 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       const tok = get().sessionToken; // session-scoped: drop replies after sign-out / re-auth
       gateway.getPortfolio().then((p) => set((s) => { if (s.sessionToken === tok) s.portfolio = p; })).catch(() => {});
+    },
+    // Phase 2 Task 9 — the project-shell summary: populate `enabledModules` for the manifest-driven
+    // nav. Project-scoped — a reply that lands after a switch / re-auth is dropped (guarded by scope).
+    loadShell: () => {
+      if (!gateway) return;
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      gateway.shell().then((shell) => set((s) => {
+        if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) s.enabledModules = shell.enabledModules;
+      })).catch(() => {});
     },
     switchProject: (projectId, targetScreen) => {
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);

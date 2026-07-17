@@ -27,6 +27,8 @@ export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 /** The decisions module's read queries (must equal the manifest `queries`). */
 export const DECISION_QUERIES = [
   'decisions.snapshotSlice',
+  // Task 9 — the same decision slice served from the module's rebuildable projection (query-time authz)
+  'decisions.projectionSlice',
   'decisions.existsInProject',
   'decisions.resolveRef',
   'decisions.countByNodeIds',

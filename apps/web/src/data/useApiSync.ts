@@ -60,6 +60,8 @@ export function useApiSync(): void {
       // load the projects the user can switch between + their orgs + portfolio rollup
       useStore.getState().loadOrgData();
       useStore.getState().loadPortfolio();
+      // Task 9 — the project-shell summary (enabledModules) for the manifest-driven nav
+      useStore.getState().loadShell();
 
       // web push: register this browser if permission is already granted (best-effort)
       void subscribeToPush(gw);

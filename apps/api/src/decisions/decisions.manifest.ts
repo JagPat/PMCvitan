@@ -5,11 +5,13 @@ export const decisionsManifest: ModuleManifest = {
   id: 'decisions',
   title: 'Client Decision Log',
   kind: 'domain',
-  ownsModels: ['decision', 'decisionOption', 'decisionEvent', 'changeRequest'],
+  // Task 9 — `decisionProjection` is the module's own rebuildable read-model table, written only by
+  // its `decisions.inbox` projection consumer and read only by its projection query.
+  ownsModels: ['decision', 'decisionOption', 'decisionEvent', 'changeRequest', 'decisionProjection'],
   // Task 8 — the FIRST fully-extracted backend module: its models are read-encapsulated, so no
   // other module reads decision persistence directly (the boundary check enforces it); every
   // cross-module read goes through the queries below (DecisionsQueryService).
-  readEncapsulated: ['decision', 'decisionOption', 'decisionEvent', 'changeRequest'],
+  readEncapsulated: ['decision', 'decisionOption', 'decisionEvent', 'changeRequest', 'decisionProjection'],
   dependsOn: [],
   workflowParticipants: [],
   producesEvents: [
@@ -22,7 +24,7 @@ export const decisionsManifest: ModuleManifest = {
   ],
   consumesEvents: [],
   commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange'],
-  queries: ['decisions.snapshotSlice', 'decisions.existsInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending'],
+  queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending'],
   routes: [
     'POST /projects/:projectId/decisions',
     'POST /projects/:projectId/decisions/:decisionId/publish',

@@ -1,6 +1,22 @@
 /** API response shapes — aligned with the frontend domain model so the client
  *  hydrates its store directly from a snapshot. */
 
+/** Phase 2 Task 9 — the project-shell summary (identity + projection counts), the light payload the
+ *  app loads first. `enabledModules` is added by the controller from the module registry. */
+export interface ProjectShellCounts {
+  id: string;
+  name: string;
+  descriptor: string;
+  stage: string;
+  siteCode: string;
+  org: { id: string; name: string } | null;
+  counts: { pendingDecisions: number; decisionsGeneration: number | null };
+}
+export interface ProjectShellDto extends ProjectShellCounts {
+  /** the single enablement source (all compiled registry modules — finding 7) */
+  enabledModules: string[];
+}
+
 export interface OptionDto {
   label: string;
   key: string;
