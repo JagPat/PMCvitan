@@ -457,31 +457,41 @@ describe('snapshot coordinator — guaranteed reconcile after supersession (roun
 
 describe('snapshot coordinator — drawing issue/ack scope guards (round 12, finding 3)', () => {
   it('issue: a resolve after a project switch neither toasts nor refreshes the new project', async () => {
-    const holdIssueA = deferred<void>();
-    const gwA = { issueDrawing: vi.fn().mockImplementation(() => holdIssueA.promise) };
-    const gwB = { snapshot: vi.fn() };
+    // Task 10 correction — issue is now prepare-ONCE + a retryable submit. Hold the SUBMIT so it
+    // resolves after the switch; the scope guard on the submit continuation must drop it.
+    const holdSubmitA = deferred<void>();
+    const gwA = {
+      prepareIssue: vi.fn().mockImplementation(async (i: unknown) => ({ ...(i as object), contentSha256: 'x' })),
+      submitIssue: vi.fn().mockImplementation(() => holdSubmitA.promise),
+    };
+    const gwB = { snapshot: vi.fn(), drawings: vi.fn() };
     s()._setGateway(gwA as unknown as ApiGateway);
     useStore.setState((st) => { st.activeProjectId = 'A'; st.projectScopeGeneration = 1; });
 
-    s().issueDrawing(drawingInput('A-101'));            // held
-    await settles(() => gwA.issueDrawing.mock.calls.length === 1);
+    s().issueDrawing(drawingInput('A-101'));            // prepare resolves; submit held
+    await settles(() => gwA.submitIssue.mock.calls.length === 1);
 
     switchTo('B', 2, gwB);
     useStore.setState((st) => { st.toast = 'B-TOAST'; });
-    holdIssueA.release();                                // A's issue resolves after the switch
+    holdSubmitA.release();                               // A's submit resolves after the switch
     await drainMicrotasks();
     expect(s().toast).toBe('B-TOAST');                   // no "Drawing issued: A-101" leaked into B
     expect(gwB.snapshot).not.toHaveBeenCalled();         // A's continuation did NOT refresh B
   });
 
   it('issue: a same-scope resolve toasts and refreshes as before', async () => {
-    const gwA = { issueDrawing: vi.fn().mockResolvedValue(undefined), snapshot: vi.fn().mockResolvedValue(snapFor('A')) };
+    const gwA = {
+      prepareIssue: vi.fn().mockImplementation(async (i: unknown) => ({ ...(i as object), contentSha256: 'x' })),
+      submitIssue: vi.fn().mockResolvedValue({ drawingId: 'D', revisionId: 'R' }),
+      snapshot: vi.fn().mockResolvedValue(snapFor('A')),
+    };
     s()._setGateway(gwA as unknown as ApiGateway);
     useStore.setState((st) => { st.activeProjectId = 'A'; st.projectScopeGeneration = 1; st.projectLoadState = 'ready'; });
 
     s().issueDrawing(drawingInput('A-101'));
     await settles(() => (s().toast ?? '').match(/Drawing issued: A-101/i) !== null);
     await settles(() => gwA.snapshot.mock.calls.length === 1); // it did refresh THIS scope
+    expect(gwA.submitIssue.mock.calls[0][1]).toEqual(expect.any(String)); // carried the stable key
   });
 
   it('ack: a resolve after a project switch neither toasts nor refreshes the new project', async () => {

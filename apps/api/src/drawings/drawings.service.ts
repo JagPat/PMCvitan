@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { StorageService } from '../media/storage.service';
@@ -89,11 +90,20 @@ export class DrawingsService {
     // a keyed REPLAY short-circuits BEFORE any validation or file upload (the reference resolution +
     // storage.put stay outside `run`, so a replay neither re-validates nor re-uploads bytes).
     const scope: CommandScope = { scopeKind: 'project', projectId };
+    // Content-bound command identity (Task 10 correction): the request hash binds to a SHA-256 of the
+    // actual file CONTENT, never merely its length. Inline path → the server recomputes the digest from
+    // the decoded bytes (authoritative, so a lying client can't spoof it); presigned path → the client-
+    // supplied `contentSha256` is the only content identity (the server never sees the bytes, and the
+    // schema requires it there). A same-key/same-metadata retry with DIFFERENT same-length bytes now
+    // hashes differently → a 409, instead of silently replaying the first file.
+    const contentSha256 = input.data
+      ? createHash('sha256').update(Buffer.from(input.data, 'base64')).digest('hex')
+      : (input.contentSha256 ?? null);
     const requestHash = hashRequest({
       number: input.number, title: input.title, discipline: input.discipline, rev: input.rev, status: input.status,
       mime: input.mime, note: input.note ?? '', zone: input.zone ?? null, activityId: input.activityId ?? null,
       decisionId: input.decisionId ?? null, nodeId: input.nodeId ?? null, publish: !!input.publish,
-      storageKey: input.storageKey ?? null, sizeBytes: input.sizeBytes ?? null, dataLen: input.data ? input.data.length : null,
+      storageKey: input.storageKey ?? null, sizeBytes: input.sizeBytes ?? null, contentSha256,
     });
     if (await peekReplay(this.prisma, scope, actor.actorId, 'drawings.issue', idempotencyKey, requestHash)) {
       // replay: the drawing + this revision already exist (same key + payload) — return their ids

@@ -71,7 +71,15 @@ export function useApiSync(): void {
       // disconnecting this socket (which leaves its room) and joining the new one,
       // so notifications for the old project stop refreshing the new view.
       socket = io(API_BASE, { transports: ['websocket', 'polling'] });
-      socket.on('connect', () => socket?.emit('join', { projectId: activeProjectId }));
+      socket.on('connect', () => {
+        // Join the ACTIVE project's room, then request FRESH state (Task 10 correction). `connect`
+        // fires on the initial connect AND on every RECONNECT — while the socket was down we may have
+        // missed `changed` pings, so a plain rejoin would leave the register stale. Refetching after
+        // the join closes that gap (coalesced by the coordinator, so the first-connect double-pull with
+        // the initial load above is harmless).
+        socket?.emit('join', { projectId: activeProjectId });
+        if (!cancelled) refresh();
+      });
       socket.on('changed', () => {
         if (!cancelled) refresh();
       });

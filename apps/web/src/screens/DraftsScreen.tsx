@@ -1,10 +1,10 @@
 import { type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore } from '@/store/store';
+import { useStore, drawingMutationsBlocked } from '@/store/store';
 import { selectDraftDecisions, selectDraftDrawings } from '@/store/selectors';
-import { resolveDrawingUrl } from '@/data/apiGateway';
+import { resolveDrawingUrl, drawingsReadMode } from '@/data/apiGateway';
 import { Eyebrow, Button, Swatch } from '@/components';
-import { Lock, ArrowUpRight, FileEdit, FileText } from '@/lib/icons';
+import { Lock, ArrowUpRight, FileEdit, FileText, WifiOff, RefreshCw } from '@/lib/icons';
 import { type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -23,6 +23,16 @@ export function DraftsScreen() {
   const publishAllDrafts = useStore((s) => s.publishAllDrafts);
   const total = decisions.length + drawings.length;
   const empty = total === 0;
+  // Task 10 correction (C3) — under module read-ownership the draft DRAWINGS come from the module-owned
+  // register; never publish from it while its read hasn't settled. Expose an honest loading/stale state
+  // and disable publishing (both per-drawing and Publish-all when drawings are in the batch) — the SAME
+  // shared predicate the store defensively enforces. In snapshot mode this is always false.
+  const drawingsBlocked = useStore(drawingMutationsBlocked);
+  const drawingsLoad = useStore((s) => s.drawingsLoad);
+  const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
+  const moduleOwned = drawingsReadMode() === 'moduleQuery';
+  const drawingsReading = moduleOwned && (drawingsLoad === 'idle' || drawingsLoad === 'loading');
+  const drawingsUnavailable = moduleOwned && drawingsLoad === 'error';
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
@@ -33,7 +43,7 @@ export function DraftsScreen() {
           <Lock size={13} /> Work in progress, visible only to you. Keep feeding data — nothing reaches the client or the team until you <b>Publish</b>.
         </div>
         {total >= 2 && (
-          <Button variant="ink" onClick={publishAllDrafts} data-testid="publish-all" style={{ marginLeft: 'auto', flex: 'none', padding: '9px 14px', fontSize: 13 }}>
+          <Button variant="ink" onClick={publishAllDrafts} disabled={drawings.length > 0 && drawingsBlocked} data-testid="publish-all" style={{ marginLeft: 'auto', flex: 'none', padding: '9px 14px', fontSize: 13, cursor: drawings.length > 0 && drawingsBlocked ? 'not-allowed' : 'pointer', opacity: drawings.length > 0 && drawingsBlocked ? 0.6 : 1 }}>
             Publish all {total} <ArrowUpRight size={15} />
           </Button>
         )}
@@ -82,8 +92,27 @@ export function DraftsScreen() {
             </Group>
           )}
 
-          {drawings.length > 0 && (
+          {(drawings.length > 0 || drawingsReading || drawingsUnavailable) && (
             <Group label="Drawings">
+              {/* Task 10 correction (C3) — honest register state: never let the user publish drawing drafts
+                  read off an unsettled module read. While it loads, say so; on failure show a stale/Retry
+                  banner and pause publishing (the per-draft buttons + Publish-all are disabled). */}
+              {drawingsReading && (
+                <div data-testid="drafts-drawings-loading" style={{ fontSize: 12.5, color: 'var(--muted)', padding: '10px 12px', border: '1px dashed var(--hairline)', borderRadius: 11 }}>
+                  Loading the drawing register…
+                </div>
+              )}
+              {drawingsUnavailable && (
+                <div data-testid="drafts-drawings-stale" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px' }}>
+                  <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
+                  <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>
+                    The drawing register couldn’t load — showing the last-known drafts. Publishing is paused until it refreshes.
+                  </span>
+                  <button onClick={() => requestFreshSnapshot()} data-testid="drafts-drawings-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <RefreshCw size={12} /> Retry
+                  </button>
+                </div>
+              )}
               {drawings.map((d) => {
                 const cur = d.current;
                 const ready = Boolean(cur);
@@ -105,9 +134,9 @@ export function DraftsScreen() {
                     </div>
                     <div style={{ marginTop: 12 }}>
                       <Foot
-                        ready={ready}
+                        ready={ready && !drawingsBlocked}
                         readyLabel="Ready to issue"
-                        notReadyLabel="Attach a file before issuing"
+                        notReadyLabel={drawingsBlocked ? 'Register still loading — publishing paused' : 'Attach a file before issuing'}
                         cta="Publish to team"
                         testid={`publish-${d.id}`}
                         onPublish={() => publishDrawing(d.id)}

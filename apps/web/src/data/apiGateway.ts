@@ -239,6 +239,18 @@ export interface IssueDrawingInput {
   publish?: boolean;
 }
 
+/** The FINAL, retryable issue POST body (Task 10 correction). Prepared ONCE from an
+ *  {@link IssueDrawingInput}: the file's content digest is computed, and a large file is uploaded
+ *  direct-to-bucket so the body carries `storageKey`+`sizeBytes` instead of inline `data`. A bounded
+ *  same-key retry re-POSTs THIS exact body, so it never re-presigns a new key or re-uploads bytes. The
+ *  `contentSha256` binds the command identity to the actual file content (not its length). */
+export interface PreparedIssueBody extends Omit<IssueDrawingInput, 'data'> {
+  data?: string; // inline path: the base64 bytes
+  storageKey?: string; // presigned path: the bucket pointer (mutually exclusive with `data`)
+  sizeBytes?: number; // presigned path: the uploaded byte length
+  contentSha256: string; // lowercase hex SHA-256 of the original file bytes (always present)
+}
+
 /** Base64 payloads above this length (~3 MB file) are uploaded direct-to-bucket
  *  via a presigned PUT instead of through the API body (Slice 3). */
 const PRESIGN_MIN_DATA_LEN = 4_000_000;
@@ -368,6 +380,13 @@ export function resolveMediaUrl(url: string): string {
 export function resolveDrawingUrl(url: string): string {
   if (url && url.startsWith('/') && API_BASE) return `${API_BASE}${url}`;
   return url;
+}
+
+/** Lowercase-hex SHA-256 of a byte buffer via the Web Crypto SubtleCrypto API. Used to bind a drawing
+ *  issue's command identity to the actual file CONTENT (Task 10 correction) — not merely its length. */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes as unknown as BufferSource);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export class ApiGateway {
@@ -752,32 +771,42 @@ export class ApiGateway {
    * otherwise the base64 body is posted (dev stub / small files). The snapshot
    * then reconciles via the realtime `changed`.
    */
-  async issueDrawing(input: IssueDrawingInput, idempotencyKey?: string): Promise<{ drawingId: string; revisionId: string }> {
-    // An optional `idempotencyKey` becomes the `Idempotency-Key` header (Phase 2 Task 5): the
-    // command-ledger reserves→executes→receipts under it, so a lost-response retry or offline replay
-    // of the SAME key issues the revision exactly once and returns the same ids. The presigned PUT
-    // itself is a plain bucket upload (no key); only the register-write POST carries the key.
-    const keyHeader = idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined;
+  /**
+   * PHASE 1 of an issue (Task 10 correction — prepare ONCE). Decode the file, compute its content
+   * digest, and — for a large file — upload the bytes direct-to-bucket via a presigned PUT. Returns the
+   * FINAL, retryable POST body: `{storageKey,sizeBytes,contentSha256}` (presigned) or `{data,
+   * contentSha256}` (inline, when small or presign unavailable). The caller runs this once, then retries
+   * only PHASE 2 with the same body + same key — so a lost-response retry never re-presigns a new key or
+   * re-uploads the bytes, and the content digest binds the command identity to the actual file content.
+   */
+  async prepareIssue(input: IssueDrawingInput): Promise<PreparedIssueBody> {
+    const bytes = Uint8Array.from(atob(input.data), (c) => c.charCodeAt(0));
+    const contentSha256 = await sha256Hex(bytes);
     if (input.data.length >= PRESIGN_MIN_DATA_LEN) {
       const presigned = await this.presignDrawing(input.mime).catch(() => null);
       if (presigned && 'uploadUrl' in presigned) {
-        const bytes = Uint8Array.from(atob(input.data), (c) => c.charCodeAt(0));
         const put = await fetch(presigned.uploadUrl, { method: 'PUT', headers: { 'Content-Type': input.mime }, body: bytes });
         if (put.ok) {
           const { data: _drop, ...meta } = input;
-          return this.req(`/projects/${this.projectId}/drawings`, {
-            method: 'POST',
-            body: JSON.stringify({ ...meta, storageKey: presigned.storageKey, sizeBytes: bytes.length }),
-            ...(keyHeader ? { headers: keyHeader } : {}),
-          });
+          return { ...meta, storageKey: presigned.storageKey, sizeBytes: bytes.length, contentSha256 };
         }
-        // presigned PUT failed → fall through to the base64 body path
+        // presigned PUT failed → fall back to the inline body path (the digest is already computed)
       }
     }
+    return { ...input, contentSha256 };
+  }
+
+  /**
+   * PHASE 2 of an issue (Task 10 correction — the retryable register-write). POSTs the prepared body
+   * under the stable `Idempotency-Key`. Safe to retry: the command-ledger replays the ONE success for a
+   * repeated key, so a lost/uncertain response is recovered by re-calling this with the SAME prepared
+   * body + SAME key — never a duplicate revision.
+   */
+  submitIssue(prepared: PreparedIssueBody, idempotencyKey: string): Promise<{ drawingId: string; revisionId: string }> {
     return this.req<{ drawingId: string; revisionId: string }>(`/projects/${this.projectId}/drawings`, {
       method: 'POST',
-      body: JSON.stringify(input),
-      ...(keyHeader ? { headers: keyHeader } : {}),
+      body: JSON.stringify(prepared),
+      headers: { 'Idempotency-Key': idempotencyKey },
     });
   }
 
@@ -847,6 +876,11 @@ export type OutboxOp =
   // replayed on reconnect reaches the server under the SAME key it was first sent with, so a
   // lost-response retry records the acknowledgement exactly once (actor-scoped).
   | { t: 'ackDrawing'; revisionId: string; idempotencyKey: string }
+  // the small drawing commands (publish, re-file/unfile) are WRITE-AHEAD to the durable outbox with a
+  // stable key (Task 10 correction): a lost/uncertain response replays the SAME op under the SAME key,
+  // so the command-ledger applies it exactly once and the reconcile snapshot restores truth.
+  | { t: 'publishDrawing'; drawingId: string; idempotencyKey: string }
+  | { t: 'setDrawingNode'; drawingId: string; nodeId: string | null; idempotencyKey: string }
   | { t: 'submitInspection'; inspectionId: string; items: Checklist['items'] }
   | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemIds: string[] }
   | { t: 'startActivity'; activityId: string }
@@ -895,6 +929,12 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       // the server ack is idempotent under the command-ledger (same key ⇒ recorded once,
       // actor-scoped); it returns {ok,ackCount}, so refetch to reconcile the register
       return gw.acknowledgeDrawing(op.revisionId, op.idempotencyKey).then(() => gw.snapshot());
+    case 'publishDrawing':
+      // the publish returns the fresh snapshot directly (same key ⇒ published exactly once)
+      return gw.publishDrawing(op.drawingId, op.idempotencyKey);
+    case 'setDrawingNode':
+      // the re-file/unfile returns the fresh snapshot directly (same key ⇒ re-filed exactly once)
+      return gw.setDrawingNode(op.drawingId, op.nodeId, op.idempotencyKey);
     case 'submitInspection':
       return gw.submitInspection(op.inspectionId, op.items);
     case 'decideReview':
