@@ -36,6 +36,7 @@ import type {
   Review,
   Role,
   DailyLogModuleResult,
+  DrawingsModuleResult,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -297,6 +298,28 @@ export function dailyLogReadMode(): 'snapshot' | 'moduleQuery' {
  *  from the snapshot); its `swatch` fields are open strings on the wire, narrowed to `SwatchKey` at the
  *  store boundary. This name is retained as the gateway alias so existing consumers keep importing it. */
 export type ModuleDailyLog = DailyLogModuleResult;
+
+/**
+ * Phase 2 Task 10 (Module 2 — Drawings) — the drawings read-ownership mode (XOR), mirroring
+ * `decisionsReadMode`/`dailyLogReadMode`. `'snapshot'` (the DEFAULT) keeps the drawing register owned by
+ * the full-snapshot slice — old behaviour, unchanged. `'moduleQuery'` flips ownership to the
+ * module-owned `GET …/drawings` read (served from the rebuildable projection, live fallback): the
+ * snapshot's drawings slice is then IGNORED and the module fetch — carried under the SAME snapshot scope
+ * lease — owns `s.drawings`. The register is baked FOR THE CALLER (draft-author visibility + their
+ * per-revision ack/recipient state + a fresh signed file URL), so the read is viewer-scoped by
+ * construction. Additive: the endpoint ships first, the old frontend still works, and the flip is a
+ * config change once proven.
+ */
+export function drawingsReadMode(): 'snapshot' | 'moduleQuery' {
+  return import.meta.env.VITE_DRAWINGS_READ === 'moduleQuery' ? 'moduleQuery' : 'snapshot';
+}
+
+/** Phase 2 Task 10 — the module-owned drawings read payload (projection-served, live fallback). The
+ *  COMPLETE HTTP result is defined ONCE in `@vitan/shared` ({@link DrawingsModuleResult}) and imported by
+ *  BOTH the API's query service and this gateway, so the two cannot drift (finding 5). The register is
+ *  baked per-viewer at read time (author-visible drafts, `ackedByMe`/`recipientOfCurrent`, a fresh
+ *  time-limited signed `url`) — it can never be served from a cross-viewer cache. */
+export type ModuleDrawings = DrawingsModuleResult;
 
 /** Phase 2 Task 9 — the project-shell summary (identity + enabled modules + projection counts). */
 export interface ProjectShell {
@@ -655,6 +678,13 @@ export class ApiGateway {
     return this.req<ModuleDailyLog>(`/projects/${this.projectId}/daily-log`);
   }
 
+  /** Phase 2 Task 10 (Module 2 — Drawings) — the MODULE-OWNED drawings read (projection-served, live
+   *  fallback, baked per-viewer). Fetched under the snapshot's scope lease when
+   *  `DRAWINGS_READ_MODE === 'moduleQuery'` (XOR read-ownership). */
+  drawings(): Promise<ModuleDrawings> {
+    return this.req<ModuleDrawings>(`/projects/${this.projectId}/drawings`);
+  }
+
   /** Phase 2 Task 9 — the project-shell summary (identity + enabledModules + projection counts). */
   shell(): Promise<ProjectShell> {
     return this.req<ProjectShell>(`/projects/${this.projectId}/shell`);
@@ -705,11 +735,14 @@ export class ApiGateway {
     });
   }
 
-  /** Re-file a drawing onto a location-tree node (null = unfile). Returns the fresh snapshot. */
-  setDrawingNode(drawingId: string, nodeId: string | null): Promise<ApiSnapshot> {
+  /** Re-file a drawing onto a location-tree node (null = unfile). Returns the fresh snapshot.
+   *  An optional `idempotencyKey` becomes the `Idempotency-Key` header (Phase 2 Task 5): a network
+   *  retry or offline replay under the SAME key re-files exactly once. */
+  setDrawingNode(drawingId: string, nodeId: string | null, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.req<ApiSnapshot>(`/projects/${this.projectId}/drawings/${drawingId}/node`, {
       method: 'PATCH',
       body: JSON.stringify({ nodeId }),
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
     });
   }
 
@@ -719,7 +752,12 @@ export class ApiGateway {
    * otherwise the base64 body is posted (dev stub / small files). The snapshot
    * then reconciles via the realtime `changed`.
    */
-  async issueDrawing(input: IssueDrawingInput): Promise<{ drawingId: string; revisionId: string }> {
+  async issueDrawing(input: IssueDrawingInput, idempotencyKey?: string): Promise<{ drawingId: string; revisionId: string }> {
+    // An optional `idempotencyKey` becomes the `Idempotency-Key` header (Phase 2 Task 5): the
+    // command-ledger reserves→executes→receipts under it, so a lost-response retry or offline replay
+    // of the SAME key issues the revision exactly once and returns the same ids. The presigned PUT
+    // itself is a plain bucket upload (no key); only the register-write POST carries the key.
+    const keyHeader = idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined;
     if (input.data.length >= PRESIGN_MIN_DATA_LEN) {
       const presigned = await this.presignDrawing(input.mime).catch(() => null);
       if (presigned && 'uploadUrl' in presigned) {
@@ -730,6 +768,7 @@ export class ApiGateway {
           return this.req(`/projects/${this.projectId}/drawings`, {
             method: 'POST',
             body: JSON.stringify({ ...meta, storageKey: presigned.storageKey, sizeBytes: bytes.length }),
+            ...(keyHeader ? { headers: keyHeader } : {}),
           });
         }
         // presigned PUT failed → fall through to the base64 body path
@@ -738,12 +777,14 @@ export class ApiGateway {
     return this.req<{ drawingId: string; revisionId: string }>(`/projects/${this.projectId}/drawings`, {
       method: 'POST',
       body: JSON.stringify(input),
+      ...(keyHeader ? { headers: keyHeader } : {}),
     });
   }
 
-  /** Publish a private draft drawing (PMC) → issue it to the build team. */
-  publishDrawing(drawingId: string): Promise<ApiSnapshot> {
-    return this.p(`/drawings/${drawingId}/publish`, {});
+  /** Publish a private draft drawing (PMC) → issue it to the build team.
+   *  An optional `idempotencyKey` becomes the `Idempotency-Key` header (publishes exactly once). */
+  publishDrawing(drawingId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/drawings/${drawingId}/publish`, {}, idempotencyKey);
   }
 
   /** Request a presigned direct-to-bucket upload target for a drawing (S3 mode). */
@@ -751,10 +792,13 @@ export class ApiGateway {
     return this.req(`/projects/${this.projectId}/drawings/presign`, { method: 'POST', body: JSON.stringify({ mime }) });
   }
 
-  /** Acknowledge building to a drawing revision ("building to Rev C"). */
-  acknowledgeDrawing(revisionId: string): Promise<{ ok: boolean; ackCount: number }> {
+  /** Acknowledge building to a drawing revision ("building to Rev C"). An optional `idempotencyKey`
+   *  becomes the `Idempotency-Key` header (Phase 2 Task 5): a lost-response retry or offline replay
+   *  under the SAME key records the acknowledgement exactly once (actor-scoped) and replays the count. */
+  acknowledgeDrawing(revisionId: string, idempotencyKey?: string): Promise<{ ok: boolean; ackCount: number }> {
     return this.req<{ ok: boolean; ackCount: number }>(`/projects/${this.projectId}/drawings/rev/${revisionId}/ack`, {
       method: 'POST',
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
     });
   }
 
@@ -799,7 +843,10 @@ export type OutboxOp =
   | { t: 'approve'; decisionId: string; optionIndex: number; idempotencyKey: string }
   | { t: 'change'; decisionId: string; reason: string; costImpact: number; timeImpactDays: number; idempotencyKey: string }
   | { t: 'changeWithdraw'; decisionId: string; idempotencyKey: string }
-  | { t: 'ackDrawing'; revisionId: string }
+  // the drawing acknowledgement carries a stable idempotencyKey (Phase 2 Task 10): a queued ack
+  // replayed on reconnect reaches the server under the SAME key it was first sent with, so a
+  // lost-response retry records the acknowledgement exactly once (actor-scoped).
+  | { t: 'ackDrawing'; revisionId: string; idempotencyKey: string }
   | { t: 'submitInspection'; inspectionId: string; items: Checklist['items'] }
   | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemIds: string[] }
   | { t: 'startActivity'; activityId: string }
@@ -845,9 +892,9 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
     case 'changeWithdraw':
       return gw.withdrawChange(op.decisionId, op.idempotencyKey);
     case 'ackDrawing':
-      // the server ack is an idempotent upsert on (revisionId, userId) — the model
-      // replayable op; it returns {ok,ackCount}, so refetch to reconcile the register
-      return gw.acknowledgeDrawing(op.revisionId).then(() => gw.snapshot());
+      // the server ack is idempotent under the command-ledger (same key ⇒ recorded once,
+      // actor-scoped); it returns {ok,ackCount}, so refetch to reconcile the register
+      return gw.acknowledgeDrawing(op.revisionId, op.idempotencyKey).then(() => gw.snapshot());
     case 'submitInspection':
       return gw.submitInspection(op.inspectionId, op.items);
     case 'decideReview':

@@ -4,10 +4,12 @@ import { selectActionItems } from '@/store/selectors';
 import { replayOutboxOp, type ApiGateway, type ApiSnapshot, type OutboxOp } from '@/data/apiGateway';
 
 /**
- * Phase 1 Task 3 — controlled drawings on the web side. Acknowledgements queue
- * offline (the server ack is an idempotent upsert, so replay is safe), and the
- * unacked-Inbox nudge is RECIPIENT-aware: only someone on the governing
- * revision's frozen distribution is asked to acknowledge.
+ * Phase 1 Task 3 / Phase 2 Task 10 — controlled drawings on the web side. Acknowledgements are
+ * WRITE-AHEAD to the durable outbox with a STABLE idempotency key (online too, Task-10 finding-1
+ * discipline): the op + its key are persisted before any network call, so a lost/uncertain response
+ * is replayed under the SAME key and the command-ledger records the acknowledgement exactly once. The
+ * unacked-Inbox nudge is RECIPIENT-aware: only someone on the governing revision's frozen distribution
+ * is asked to acknowledge.
  */
 
 const s = () => useStore.getState();
@@ -41,8 +43,8 @@ beforeEach(() => {
   s()._setGateway(null);
 });
 
-describe('acknowledgeDrawing — offline queueing (Phase 1 Task 3)', () => {
-  it('offline: queues an ackDrawing op, marks ackedByMe optimistically, replays on reconnect', async () => {
+describe('acknowledgeDrawing — write-ahead + idempotency key (Phase 2 Task 10)', () => {
+  it('offline: write-aheads an ackDrawing op WITH a stable key, marks ackedByMe optimistically, replays on reconnect under the SAME key', async () => {
     const gw = {
       acknowledgeDrawing: vi.fn().mockResolvedValue({ ok: true, ackCount: 1 }),
       snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
@@ -52,17 +54,19 @@ describe('acknowledgeDrawing — offline queueing (Phase 1 Task 3)', () => {
 
     s().acknowledgeDrawing('DWG-2'); // seeded, unacked, current rev S-101-A
     expect(gw.acknowledgeDrawing).not.toHaveBeenCalled();
-    expect(s().outbox).toEqual([{ t: 'ackDrawing', revisionId: 'S-101-A' }]);
+    expect(s().outbox).toEqual([{ t: 'ackDrawing', revisionId: 'S-101-A', idempotencyKey: expect.any(String) }]);
+    const queuedKey = (s().outbox[0] as { idempotencyKey: string }).idempotencyKey;
     expect(s().drawings.find((d) => d.id === 'DWG-2')?.ackedByMe).toBe(true); // optimistic
 
     s().toggleOnline();
     await flush();
-    expect(gw.acknowledgeDrawing).toHaveBeenCalledWith('S-101-A');
+    // replayed under the SAME key the op was persisted with (exactly-once on the ledger)
+    expect(gw.acknowledgeDrawing).toHaveBeenCalledWith('S-101-A', queuedKey);
     expect(gw.snapshot).toHaveBeenCalled(); // refetched to reconcile the register
     expect(s().outbox).toHaveLength(0);
   });
 
-  it('online: calls the gateway directly (nothing queued)', async () => {
+  it('online: write-aheads then flushes immediately — the gateway is called WITH a key and the queue drains', async () => {
     const gw = {
       acknowledgeDrawing: vi.fn().mockResolvedValue({ ok: true, ackCount: 1 }),
       snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
@@ -70,18 +74,18 @@ describe('acknowledgeDrawing — offline queueing (Phase 1 Task 3)', () => {
     s()._setGateway(gw as unknown as ApiGateway);
     s().acknowledgeDrawing('DWG-2');
     await flush();
-    expect(gw.acknowledgeDrawing).toHaveBeenCalledWith('S-101-A');
+    expect(gw.acknowledgeDrawing).toHaveBeenCalledWith('S-101-A', expect.any(String));
     expect(s().outbox).toHaveLength(0);
   });
 
-  it('replayOutboxOp maps ackDrawing to acknowledge-then-refetch', async () => {
+  it('replayOutboxOp maps ackDrawing to acknowledge(revId, key)-then-refetch', async () => {
     const gw = {
       acknowledgeDrawing: vi.fn().mockResolvedValue({ ok: true, ackCount: 2 }),
       snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
     };
-    const op: OutboxOp = { t: 'ackDrawing', revisionId: 'rev-42' };
+    const op: OutboxOp = { t: 'ackDrawing', revisionId: 'rev-42', idempotencyKey: 'k-42' };
     await replayOutboxOp(gw as unknown as ApiGateway, op);
-    expect(gw.acknowledgeDrawing).toHaveBeenCalledWith('rev-42');
+    expect(gw.acknowledgeDrawing).toHaveBeenCalledWith('rev-42', 'k-42');
     expect(gw.snapshot).toHaveBeenCalled();
   });
 });

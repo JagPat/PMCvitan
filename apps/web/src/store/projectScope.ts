@@ -89,9 +89,18 @@ export interface ModuleReadState {
   decisionsSource: 'projection' | 'live' | null;
   dailyLogLoad: 'idle' | 'loading' | 'ready' | 'error';
   dailyLogSource: 'projection' | 'live' | null;
+  drawingsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  drawingsSource: 'projection' | 'live' | null;
 }
 export function emptyModuleReadState(): ModuleReadState {
-  return { decisionsLoad: 'idle', decisionsSource: null, dailyLogLoad: 'idle', dailyLogSource: null };
+  return {
+    decisionsLoad: 'idle',
+    decisionsSource: null,
+    dailyLogLoad: 'idle',
+    dailyLogSource: null,
+    drawingsLoad: 'idle',
+    drawingsSource: null,
+  };
 }
 
 export function isCurrentProjectScope(

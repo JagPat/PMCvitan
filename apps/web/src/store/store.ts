@@ -61,7 +61,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, decisionsReadMode, dailyLogReadMode, type ModuleDecisions, type ModuleDailyLog } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, decisionsReadMode, dailyLogReadMode, drawingsReadMode, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 
@@ -163,6 +163,11 @@ export interface AppState {
   // these track its explicit load state for the daily-log surfaces ('idle' in snapshot mode).
   dailyLogLoad: 'idle' | 'loading' | 'ready' | 'error';
   dailyLogSource: 'projection' | 'live' | null;
+  // Phase 2 Task 10 (Module 2 — Drawings) — the drawings XOR read-ownership state, mirroring decisions.
+  // When drawingsReadMode() === 'moduleQuery', `drawings` is owned by the module-owned read (baked
+  // per-viewer); these track its explicit load state for the drawing surfaces ('idle' in snapshot mode).
+  drawingsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  drawingsSource: 'projection' | 'live' | null;
   // Phase 2 Task 9 — the enabled module ids from the project-shell summary (the single enablement
   // source). Drives manifest-driven nav: a screen whose module is disabled is hidden. Empty = not yet
   // loaded → the nav shows every role screen (no flash), matching today's behaviour.
@@ -542,6 +547,8 @@ export function getInitialState(): AppState {
     decisionsSource: null,
     dailyLogLoad: 'idle',
     dailyLogSource: null,
+    drawingsLoad: 'idle',
+    drawingsSource: null,
     enabledModules: [],
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
@@ -685,7 +692,7 @@ export const useStore = create<Store>()(
      *  DIRECTLY — only `acceptSnapshot` may, after the ordering checks. A source-scan
      *  test (`snapshot-ordering.test.ts`) enforces the single call site so an
      *  unsequenced apply cannot be reintroduced. */
-    const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null): void => {
+    const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null): void => {
       set((s) => {
         s.projectLoadState = 'ready'; // the active project's data has landed
         s.projectLoadError = null;
@@ -746,7 +753,22 @@ export const useStore = create<Store>()(
         s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
         s.reinspectionCreated = snap.reinspectionCreated;
-        s.drawings = snap.drawings ?? [];
+        // Phase 2 Task 10 (Module 2 — Drawings) — XOR read-ownership for the drawing register, mirroring
+        // decisions/daily-log. 'snapshot' mode (default): the snapshot slice OWNS `s.drawings` (unchanged).
+        // 'moduleQuery' mode: the module-owned read (baked PER-VIEWER — author-visible drafts, this
+        // caller's ack/recipient state, a fresh time-limited signed url — under THIS same scope lease)
+        // owns it, and the snapshot's slice is IGNORED. A `drawingsResult` sets it (ready); `null` = the
+        // module fetch FAILED (keep last-good, expose an error boundary); `undefined` = no fetch
+        // accompanied this apply (a command's own snapshot) — leave untouched until the follow-up refresh.
+        if (drawingsReadMode() === 'snapshot') {
+          s.drawings = snap.drawings ?? [];
+        } else if (drawingsResult) {
+          s.drawings = [...drawingsResult.drawings];
+          s.drawingsLoad = 'ready';
+          s.drawingsSource = drawingsResult.source;
+        } else if (drawingsResult === null) {
+          s.drawingsLoad = 'error';
+        }
         // Placed site photos come back as signed API-relative serve paths — resolve
         // them against the API base so the Place view's <img src> hits the API.
         s.photos = (snap.photos ?? []).map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
@@ -813,17 +835,17 @@ export const useStore = create<Store>()(
      *  then applies. The result MUST be consumed; success is announced only for
      *  `applied`. `superseded` / `scope-moved` are silent no-ops; `invalid-project`
      *  never reports success and the caller requests a fresh snapshot to recover. */
-    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null): SnapshotApplyResult => {
+    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null): SnapshotApplyResult => {
       const st = get();
       if (!isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, lease.scope)) return 'scope-moved';
       // newest-owner is checked against THIS lease's own scope, so a stale lease in a
       // scope we've left can never mark a live scope's response superseded (round 12).
       if (lease.sequence !== coordinatorFor(lease.scope).newestLeaseSeq) return 'superseded';
       if (snap.project.id !== lease.scope.projectId) return 'invalid-project';
-      // Task 9/10 — the module decisions + daily-log reads (if any) rode the SAME lease as the snapshot,
-      // so they pass the identical scope/newest-owner ordering checks: a stale module response is dropped
-      // with its snapshot, never applied over a newer scope's data.
-      applySnapshotCore(snap, decisionsResult, dailyLogResult);
+      // Task 9/10 — the module decisions + daily-log + drawings reads (if any) rode the SAME lease as the
+      // snapshot, so they pass the identical scope/newest-owner ordering checks: a stale module response is
+      // dropped with its snapshot, never applied over a newer scope's data.
+      applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult);
       return 'applied';
     };
 
@@ -862,12 +884,16 @@ export const useStore = create<Store>()(
       if (dailyLogReadMode() === 'moduleQuery' && scopeStillCurrent(scope) && get().dailyLogLoad !== 'ready') {
         set((s) => { s.dailyLogLoad = 'loading'; });
       }
+      // Task 10 (Module 2 — Drawings) — same for the drawings module read.
+      if (drawingsReadMode() === 'moduleQuery' && scopeStillCurrent(scope) && get().drawingsLoad !== 'ready') {
+        set((s) => { s.drawingsLoad = 'loading'; });
+      }
       try {
         // Task 9/10 — in 'moduleQuery' mode fetch the module-owned decisions and/or daily-log ALONGSIDE
         // the snapshot, under the SAME lease. Each module fetch is resilient: a failure yields `null` (an
         // explicit error state that keeps the last-good data) rather than failing the whole pull, so the
         // rest of the project still loads. In 'snapshot' mode no extra fetch happens (undefined → unchanged).
-        const [snap, decisionsResult, dailyLogResult] = await Promise.all([
+        const [snap, decisionsResult, dailyLogResult, drawingsResult] = await Promise.all([
           g.snapshot(),
           decisionsReadMode() === 'moduleQuery'
             ? g.decisions().then((d): ModuleDecisions | null => d).catch((): ModuleDecisions | null => null)
@@ -875,17 +901,21 @@ export const useStore = create<Store>()(
           dailyLogReadMode() === 'moduleQuery'
             ? g.dailyLog().then((d): ModuleDailyLog | null => d).catch((): ModuleDailyLog | null => null)
             : Promise.resolve(undefined as ModuleDailyLog | undefined),
+          drawingsReadMode() === 'moduleQuery'
+            ? g.drawings().then((d): ModuleDrawings | null => d).catch((): ModuleDrawings | null => null)
+            : Promise.resolve(undefined as ModuleDrawings | undefined),
         ]);
         // Round 2 finding 2: a command reconcile is CONFIRMED only when the snapshot applied AND every
-        // REQUIRED module-owned read (Task 9 decisions / Task 10 daily-log, when in 'moduleQuery' mode)
-        // actually succeeded. A module read that failed came back `null` — its committed change is NOT
-        // reflected in `s.decisions` / `s.dailyLog`, so clearing the obligation here would strand the
-        // user on stale data with no recovery. In 'snapshot' mode the result is `undefined` (not
-        // required). `!= null` is true only for a real, non-failed module payload.
+        // REQUIRED module-owned read (Task 9 decisions / Task 10 daily-log + drawings, when in
+        // 'moduleQuery' mode) actually succeeded. A module read that failed came back `null` — its
+        // committed change is NOT reflected in `s.decisions` / `s.dailyLog` / `s.drawings`, so clearing
+        // the obligation here would strand the user on stale data with no recovery. In 'snapshot' mode the
+        // result is `undefined` (not required). `!= null` is true only for a real, non-failed payload.
         const moduleReadsOk =
           (decisionsReadMode() !== 'moduleQuery' || decisionsResult != null) &&
-          (dailyLogReadMode() !== 'moduleQuery' || dailyLogResult != null);
-        const result = acceptSnapshot(snap, lease, decisionsResult, dailyLogResult);
+          (dailyLogReadMode() !== 'moduleQuery' || dailyLogResult != null) &&
+          (drawingsReadMode() !== 'moduleQuery' || drawingsResult != null);
+        const result = acceptSnapshot(snap, lease, decisionsResult, dailyLogResult, drawingsResult);
         if (result === 'applied') {
           // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a
           // pull that BEGAN AFTER an obligation's threshold can satisfy it (round 13,
@@ -969,7 +999,7 @@ export const useStore = create<Store>()(
      *  untouched to preserve the XOR), so a committed command needs a follow-up module
      *  refresh to become visible — see the reconcile in `consumeSnapshotResult`. */
     const anyModuleOwnedRead = (): boolean =>
-      decisionsReadMode() === 'moduleQuery' || dailyLogReadMode() === 'moduleQuery';
+      decisionsReadMode() === 'moduleQuery' || dailyLogReadMode() === 'moduleQuery' || drawingsReadMode() === 'moduleQuery';
 
     /** Consume an `acceptSnapshot` result on a COMMAND path (a user-initiated
      *  mutation: approve, publish, issue, evidence upload…). The command's success
@@ -1752,8 +1782,13 @@ export const useStore = create<Store>()(
         // this, an issue that resolves after a project switch flashed "Drawing issued"
         // into project B and refreshed B through its gateway (finding 3).
         const scope = currentScope();
+        // Phase 2 Task 10 (Module 2 — Drawings) — a stable idempotency key so the command-ledger records
+        // this issue EXACTLY ONCE; a network-layer retry of the same call reuses the key (no duplicate
+        // register entry). Issue carries a large file payload, so it is a direct keyed call, NOT
+        // write-ahead persisted like the small field commands.
+        const key = newIdempotencyKey();
         gateway
-          .issueDrawing(input)
+          .issueDrawing(input, key)
           .then(() => {
             if (!scopeStillCurrent(scope)) return; // resolved after a switch — B is not ours to touch
             get().flash(`Drawing issued: ${input.number} Rev ${input.rev} — team notified.`);
@@ -1814,7 +1849,9 @@ export const useStore = create<Store>()(
       if (!d) return;
       // API mode: the server flips publishedAt, notifies the build team, returns a snapshot.
       if (gateway) {
-        runRemote(() => gateway!.publishDrawing(drawingId), `Published: ${d.number} — the build team has been notified.`);
+        // Task 10 — a stable idempotency key so a retried publish flips the draft live exactly once.
+        const key = newIdempotencyKey();
+        runRemote(() => gateway!.publishDrawing(drawingId, key), `Published: ${d.number} — the build team has been notified.`);
         return;
       }
       // Demo (no server): flip the draft live locally + raise the build-team notification.
@@ -1839,7 +1876,7 @@ export const useStore = create<Store>()(
         void (async () => {
           try {
             for (const id of decIds) await gw.publishDecision(id, newIdempotencyKey());
-            for (const id of dwgIds) await gw.publishDrawing(id);
+            for (const id of dwgIds) await gw.publishDrawing(id, newIdempotencyKey());
             // gate round 11: capture the lease before the reconcile fetch. The
             // publishes committed on the server, so announce success once the reply
             // lands in the current scope — `applied` OR `superseded` (a newer
@@ -1882,31 +1919,20 @@ export const useStore = create<Store>()(
       if (!drawing?.current || drawing.ackedByMe) return;
       const rev = drawing.current;
       if (gateway) {
-        // Offline-queueable (Phase 1 Task 3): the server ack is an idempotent upsert
-        // on (revisionId, userId), so replaying the queued op is safe. Mark ackedByMe
-        // optimistically so the register reflects the field's intent immediately.
-        if (!get().online) {
-          set((s) => {
-            s.outbox.push({ t: 'ackDrawing', revisionId: rev.id });
-            s.syncQueue.push('Acknowledge ' + drawing.number);
-            const d = s.drawings.find((x) => x.id === drawingId);
-            if (d) d.ackedByMe = true;
-          });
-          persistOutbox();
-          get().flash(`Acknowledge ${drawing.number} — saved offline, will sync when you reconnect.`);
-          return;
-        }
-        // gate round 12: capture + guard the scope on every continuation, so an ack
-        // that resolves after a project switch neither toasts nor refreshes project B.
-        const scope = currentScope();
-        gateway
-          .acknowledgeDrawing(rev.id)
-          .then(() => {
-            if (!scopeStillCurrent(scope)) return;
-            get().flash(`Acknowledged — building to ${drawing.number} Rev ${rev.rev}.`);
-            requestFreshSnapshot(scope); // one coalesced, coordinator-ordered refresh for THIS scope
-          })
-          .catch(() => { if (scopeStillCurrent(scope)) get().flash('Could not record the acknowledgement — please try again.'); });
+        // Phase 2 Task 10 (Module 2 — Drawings; finding-1 write-ahead discipline): persist the ack
+        // op + its stable idempotency key to the durable outbox BEFORE any network request (online
+        // too), then flush. A lost/uncertain online response leaves the op (and its key) persisted,
+        // so a retry or a reload replays the SAME op under the SAME key and the command-ledger
+        // records the acknowledgement EXACTLY ONCE (actor-scoped). Mark `ackedByMe` optimistically
+        // so the field reflects the intent immediately; the reconcile snapshot (the ack replay
+        // refetches it) restores the truthful register. The success toast fires via the reconcile.
+        const ackKey = newIdempotencyKey();
+        set((s) => { const d = s.drawings.find((x) => x.id === drawingId); if (d) d.ackedByMe = true; });
+        runWriteAhead(
+          { t: 'ackDrawing', revisionId: rev.id, idempotencyKey: ackKey },
+          'Acknowledge ' + drawing.number,
+          `Acknowledged — building to ${drawing.number} Rev ${rev.rev}.`,
+        );
         return;
       }
       // local demo: mark building-to on the current rev
@@ -1924,7 +1950,9 @@ export const useStore = create<Store>()(
     },
     fileDrawing: (drawingId, nodeId) => {
       if (gateway) {
-        runRemote(() => gateway!.setDrawingNode(drawingId, nodeId), nodeId ? 'Drawing filed to location.' : 'Drawing unfiled.');
+        // Task 10 — a stable idempotency key so a retried re-file applies exactly once.
+        const key = newIdempotencyKey();
+        runRemote(() => gateway!.setDrawingNode(drawingId, nodeId, key), nodeId ? 'Drawing filed to location.' : 'Drawing unfiled.');
         return;
       }
       set((s) => {
