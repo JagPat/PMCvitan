@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type {
-  Checklist, ChecklistItem, InspectionResult, ItemState, PlacedInspection, Review, ReviewItem, Role, SwatchKey,
+  Checklist, ChecklistItem, InspectionResult, ItemState, PlacedInspection, Review, ReviewItem, SwatchKey,
 } from '@vitan/shared';
 
 /**
@@ -124,7 +124,9 @@ export async function computeInspectionsBase(
  */
 export function bakeInspections(
   base: InspectionsBase,
-  opts: { role: Role; evidencePath: (mediaId: string) => string },
+  // `role` is the viewer's role as a string (the API `Role` includes 'worker', wider than the shared
+  // `Role`) — the AUTH-02 gating is a plain equality check, so a string keeps both sides compatible.
+  opts: { role: string; evidencePath: (mediaId: string) => string },
 ): InspectionsSlices {
   const { role, evidencePath } = opts;
   const isPmc = role === 'pmc';

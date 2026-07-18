@@ -5,6 +5,7 @@ import { toIsoCivilDate } from '../common/civil-date';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import { DrawingsQueryService } from '../drawings/drawings.query';
+import { InspectionsQueryService } from '../inspections/inspections.query';
 import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice } from '../domain/notifications';
 import { ddMmmYyyy } from '../domain/dates';
@@ -31,6 +32,9 @@ export class SnapshotService {
     private readonly dailyLogQuery: DailyLogQueryService,
     // Task 10 — the drawings register + the drawing-gate readiness input come from the drawings query.
     private readonly drawingsQuery: DrawingsQueryService,
+    // Task 10 (Module 3) — the five inspection slices + the inspection-gate readiness input come from the
+    // inspections module's query, never a direct `prisma.inspection` read.
+    private readonly inspectionsQuery: InspectionsQueryService,
   ) {}
 
   /**
@@ -66,21 +70,17 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisionSlice, activities, inspections, dailyLogSlice, notifications, siteMedia, drawingDtos, phases, companies, nodes, activeMembers, gateOverrides, readinessDrawings] = await Promise.all([
+    const [decisionSlice, activities, inspectionSlices, readinessInspections, dailyLogSlice, notifications, siteMedia, drawingDtos, phases, companies, nodes, activeMembers, gateOverrides, readinessDrawings] = await Promise.all([
       // Task 8 — the decisions slice comes from the module's query (role-filtered DTOs + an
       // id→status map for readiness), not a direct `prisma.decision` read.
       this.decisionsQuery.snapshotSlice(projectId, role, userId),
       this.prisma.activity.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
-      this.prisma.inspection.findMany({
-        where: { projectId },
-        include: {
-          items: { orderBy: { order: 'asc' } },
-          // linked evidence rows (Task 4) — serialized as signed serve paths per item
-          media: { select: { id: true, inspectionItemId: true }, orderBy: { createdAt: 'asc' } },
-          // the activity a CLOSING inspection signs off (Task 5) — labels the review queue
-          activity: { select: { name: true } },
-        },
-      }),
+      // Task 10 (Module 3) — the five role-gated inspection slices come from the module's query (the same
+      // per-viewer/role serialization moved there verbatim, so byte-identical), never a direct read.
+      this.inspectionsQuery.snapshotSlice(projectId, role),
+      // Task 10 (Module 3) — the inspection-gate readiness input also comes from the module's query, so the
+      // snapshot reads NO inspection persistence directly (read-encapsulation).
+      this.inspectionsQuery.readinessSlice(projectId),
       // Task 10 — the daily-log slice (latest log core + project-wide materials) comes from the
       // module's query, never a direct `prisma.dailyLog`/`prisma.siteMaterial` read. The progress
       // PHOTOS remain the snapshot's to compose from media (below), so the DTO stays byte-identical.
@@ -140,10 +140,8 @@ export class SnapshotService {
     // never from a stored flag (material/team excepted and labeled 'stored').
     const now = new Date();
     const activeMemberIds = activeMembers.map((m) => m.userId);
-    const readinessInspections = inspections.map((i) => ({
-      id: i.id, activityId: i.activityId, closing: i.closing, submitted: i.submitted, decided: i.decided, reinspectionOfId: i.reinspectionOfId,
-      items: i.items.map((it) => ({ rejected: it.rejected, result: it.result })),
-    }));
+    // Task 10 (Module 3) — `readinessInspections` is the inspection-gate input from the module query
+    // (destructured above), not an inline `prisma.inspection` read.
     const overridesByActivity = new Map<string, typeof gateOverrides>();
     for (const o of gateOverrides) {
       const list = overridesByActivity.get(o.activityId) ?? [];
@@ -190,67 +188,11 @@ export class SnapshotService {
         .map((o) => ({ id: o.id, gate: o.gate as ReadinessOverride['gate'], state: o.state, reason: o.reason, actorName: o.actorName, expiresAt: o.expiresAt.toISOString(), evidenceMediaId: o.evidenceMediaId ?? undefined })),
     }));
 
-    // The engineer keeps seeing their checklist (as "submitted ✓") after they send
-    // it; it ALSO enters the PMC review queue below — two role-views of one inspection.
-    // The engineer's CURRENT checklist: prefer an open (unsubmitted) one — a freshly
-    // issued checklist supersedes an already-submitted earlier one in the field view.
-    const checklistRow = inspections.find((i) => i.kind === 'checklist' && !i.submitted) ?? inspections.find((i) => i.kind === 'checklist');
-    // The review queue: any submitted-but-undecided inspection, whatever its kind
-    // (a submitted checklist, the seeded review, an auto-created closing inspection).
-    // A checklist item's pass/fail/na `state` maps to a review PASS/FAIL result.
-    // AUTH-02: the queue is the PMC's internal sign-off surface — it is serialized
-    // ONLY for the pmc role; clients/contractors/engineers get an empty list, so
-    // hiding the screen in the UI is backed by the API response itself.
-    const isPmc = role === 'pmc';
-    const reviews = inspections
-      .filter((i) => i.submitted && !i.decided)
-      .sort((a, b) => a.id.localeCompare(b.id))
-      .map((i) => ({
-        id: i.id,
-        title: i.title,
-        zone: i.zone,
-        nodeId: i.nodeId ?? undefined, // location spine: where this check happens
-        by: i.by ?? '',
-        date: i.date,
-        decided: i.decided,
-        // Task 4: a reinspection is labeled by its predecessor in the review queue
-        reinspectionOfId: i.reinspectionOfId ?? undefined,
-        // Task 5: a CLOSING inspection is labeled with the activity it signs off —
-        // approving it is what completes that activity
-        ...(i.closing ? { closing: true, activityId: i.activityId ?? undefined, activityName: i.activity?.name } : {}),
-        items: i.items.map((it) => ({
-          id: it.id, // gate finding 3: rejection addresses THIS row, labels are not unique
-          name: it.name,
-          result: (it.result ?? (it.state === 'fail' ? 'FAIL' : 'PASS')) as 'PASS' | 'FAIL',
-          swatch: it.swatch ?? 'concrete',
-          note: it.note,
-          rejected: it.rejected,
-          // the ACTUAL evidence photos for this item (signed serve paths, Task 4)
-          evidence: i.media.filter((m) => m.inspectionItemId === it.id).map((m) => this.signed.mediaPath(m.id)),
-        })),
-      }));
-    // any inspection already decided with a rejected/failed item ⇒ re-inspection exists
-    const reinspectionCreated = inspections.some(
-      (i) => i.decided && i.items.some((it) => it.rejected || it.result === 'FAIL'),
-    );
-
-    // Location spine: every inspection with its place, for the Site Map's "inspections here".
-    // AUTH-02: inspections are an internal sign-off surface — serialized ONLY for the roles
-    // that run them (pmc/engineer); client/contractor/consultant get an empty list, so the
-    // Place view can't surface an inspection to them even though it shares the location tree.
-    const canSeeInspections = role === 'pmc' || role === 'engineer';
-    const placedInspections = canSeeInspections
-      ? inspections.map((i) => ({
-          id: i.id,
-          title: i.title,
-          zone: i.zone,
-          nodeId: i.nodeId ?? undefined,
-          kind: i.kind,
-          submitted: i.submitted,
-          decided: i.decided,
-          failedItems: i.items.filter((it) => it.rejected || it.result === 'FAIL').length,
-        }))
-      : [];
+    // Task 10 (Module 3) — the five role-gated inspection slices (`checklist`, `reviews`, `review`,
+    // `reinspectionCreated`, `placedInspections`) come from `inspectionSlices` (the inspections module's
+    // query, destructured above), which bakes the SAME per-viewer/role serialization the inline shaping
+    // used to: the engineer's current checklist (all roles), the PMC review queue (pmc only), and the
+    // Site-Map placement (pmc/engineer), each item's evidence as fresh signed serve paths — byte-identical.
 
     // Task 10 — the drawings register (`drawingDtos`) is served from the drawings module's query
     // (`this.drawingsQuery.snapshotSlice`, destructured above), which bakes the same per-viewer register
@@ -302,28 +244,11 @@ export class SnapshotService {
       },
       decisions: decisionDtos,
       activities: activityDtos,
-      placedInspections,
-      reviews: isPmc ? reviews : [],
-      review: isPmc ? (reviews[0] ?? null) : null, // deprecated single (first pending) — back-compat
-      reinspectionCreated: isPmc ? reinspectionCreated : false,
-      checklist: checklistRow
-        ? {
-            id: checklistRow.id,
-            title: checklistRow.title,
-            zone: checklistRow.zone,
-            nodeId: checklistRow.nodeId ?? undefined, // location spine
-            date: checklistRow.date,
-            submitted: checklistRow.submitted,
-            items: checklistRow.items.map((it) => ({
-              id: it.id, // the capture flow links evidence uploads to THIS item (Task 4)
-              name: it.name,
-              state: it.state,
-              photos: it.photos,
-              note: it.note,
-              evidence: checklistRow.media.filter((m) => m.inspectionItemId === it.id).map((m) => this.signed.mediaPath(m.id)),
-            })),
-          }
-        : null,
+      placedInspections: inspectionSlices.placedInspections,
+      reviews: inspectionSlices.reviews,
+      review: inspectionSlices.review, // deprecated single (first pending) — back-compat
+      reinspectionCreated: inspectionSlices.reinspectionCreated,
+      checklist: inspectionSlices.checklist,
       drawings: drawingDtos,
       phases: phaseDtos,
       // Task 10 — the daily-log core comes from the module query (byte-identical); the snapshot

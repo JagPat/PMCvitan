@@ -8,6 +8,7 @@ import { makeSocketConsumer, makePushConsumer } from './consumers';
 import { makeDecisionsProjectionConsumer } from '../../decisions/decisions.projection';
 import { makeDailyLogProjectionConsumer } from '../../daily-log/daily-log.projection';
 import { makeDrawingsProjectionConsumer } from '../../drawings/drawings.projection';
+import { makeInspectionsProjectionConsumer } from '../../inspections/inspections.projection';
 import { effectCoverageVersion } from '../external-effects';
 
 /**
@@ -46,6 +47,11 @@ export class OutboxBootstrap implements OnModuleInit {
     // once). Same additive cutover — the live snapshot slice stays authoritative until the frontend
     // switches to the module query (the capability-versioned XOR read-ownership).
     registerConsumer(makeDrawingsProjectionConsumer());
+    // Task 10 (Module 3) — the inspections module's rebuildable read path: the inspections projection
+    // consumer maintains the per-project InspectionsProjection base from `inspection.*` events (ordered,
+    // effectively-once). Same additive cutover — the live snapshot slice stays authoritative until the
+    // frontend switches to the module query (the capability-versioned XOR read-ownership).
+    registerConsumer(makeInspectionsProjectionConsumer());
     // PR B — persist each consumer's contract BEFORE the relay starts, so the (consumer,
     // consumerKind) delivery FK always resolves and the durable obligation is complete. A contract
     // drift or a failed sync ABORTS boot (never downgraded to a warning): an unsynced catalog would

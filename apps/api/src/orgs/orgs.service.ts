@@ -12,6 +12,7 @@ import { NodeInitParticipant } from '../nodes/node-init.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { InspectionsQueryService } from '../inspections/inspections.query';
 import type { AuthUser } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
 import { z } from 'zod';
@@ -141,6 +142,9 @@ export class OrgsService {
     private readonly inspectionInit: InspectionParticipant,
     // Task 8 — the portfolio's pending-decision tile count comes from the decisions query.
     private readonly decisions: DecisionsQueryService,
+    // Task 10 (Module 3) — the source-copy checklist reads, the init id scan, and the portfolio's
+    // open-inspection count all route through the inspections query (inspection is read-encapsulated).
+    private readonly inspections: InspectionsQueryService,
   ) {}
 
   /** Org role of a user, or null if not a member. */
@@ -342,7 +346,7 @@ export class OrgsService {
       await lockInitializationDisplayIds(tx);
       const [allActivityIds, allInspectionIds] = await Promise.all([
         tx.activity.findMany({ select: { id: true } }),
-        tx.inspection.findMany({ select: { id: true } }),
+        this.inspections.allIds(tx),
       ]);
 
       const p = await tx.project.create({
@@ -373,7 +377,7 @@ export class OrgsService {
         targetAnchor,
         today,
         activityIds: allActivityIds.map((row) => row.id),
-        inspectionIds: allInspectionIds.map((row) => row.id),
+        inspectionIds: allInspectionIds,
         zoneIdByName: new Map<string, string>(),
         phaseIdByIdentity: new Map<string, string>(),
         phaseIdByDefinition: new Map<string, string>(),
@@ -426,7 +430,7 @@ export class OrgsService {
       tx.projectNode.findMany({ where: { projectId: sourceId }, orderBy: { createdAt: 'asc' } }),
       tx.phase.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
       tx.activity.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
-      tx.inspection.findMany({ where: { projectId: sourceId, kind: 'checklist' }, include: { items: { orderBy: { order: 'asc' } } } }),
+      this.inspections.checklistStructures(sourceId, { tx }),
     ]);
     return {
       label: `source project "${sourceId}"`,
@@ -456,7 +460,7 @@ export class OrgsService {
         title: inspection.title,
         zone: inspection.zone,
         ...(inspection.nodeId ? { nodeKey: inspection.nodeId } : {}),
-        items: inspection.items.map((item) => item.name),
+        items: inspection.items,
       })),
     };
   }
@@ -726,10 +730,7 @@ export class OrgsService {
     }
     const nodeIds = new Set(nodes.map((n) => n.id));
 
-    const inspections = await this.prisma.inspection.findMany({
-      where: fromNodeId ? { projectId: sourceId, kind: 'checklist', nodeId: { in: [...nodeIds] } } : { projectId: sourceId, kind: 'checklist' },
-      include: { items: { orderBy: { order: 'asc' } } },
-    });
+    const inspections = await this.inspections.checklistStructures(sourceId, fromNodeId ? { nodeIds: [...nodeIds] } : {});
     // phases + planned activities only travel for a whole-project extraction — a space
     // module is spatial; the schedule shape belongs to schedule/whole-project modules
     const [phases, activities] = fromNodeId
@@ -762,7 +763,7 @@ export class OrgsService {
         title: i.title,
         zone: i.zone,
         nodeKey: i.nodeId && nodeIds.has(i.nodeId) ? i.nodeId : undefined,
-        items: i.items.map((it) => it.name),
+        items: i.items,
       })),
     });
   }
@@ -1053,7 +1054,7 @@ export class OrgsService {
         const canSeePending = role === 'pmc' || role === 'client';
         const [activities, openReviews, pendingDecisions, phaseCount] = await Promise.all([
           this.prisma.activity.findMany({ where: { projectId: project.id }, select: { status: true } }),
-          this.prisma.inspection.count({ where: { projectId: project.id, submitted: true, decided: false } }),
+          this.inspections.openInspectionCount(project.id),
           canSeePending ? this.decisions.countPending(project.id) : Promise.resolve(0),
           this.prisma.phase.count({ where: { projectId: project.id } }),
         ]);

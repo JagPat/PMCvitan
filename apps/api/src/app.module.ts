@@ -24,6 +24,7 @@ import { ActivitiesController } from './activities/activities.controller';
 import { PhasesService } from './activities/phases.service';
 import { PhasesController } from './activities/phases.controller';
 import { InspectionsService } from './inspections/inspections.service';
+import { InspectionsQueryService } from './inspections/inspections.query';
 import { InspectionsController } from './inspections/inspections.controller';
 import { DailyLogService } from './daily-log/daily-log.service';
 import { DailyLogQueryService } from './daily-log/daily-log.query';
@@ -103,6 +104,9 @@ import { NodeInitParticipant } from './nodes/node-init.participant';
     ActivitiesService,
     PhasesService,
     InspectionsService,
+    // Task 10 (Module 3) — the inspections module's public READ boundary (snapshot slices + readiness
+    // input + projection read + tenant-ref check).
+    InspectionsQueryService,
     DailyLogService,
     // Task 10 — the daily-log module's public READ boundary (snapshot slice + tenant-ref check).
     DailyLogQueryService,

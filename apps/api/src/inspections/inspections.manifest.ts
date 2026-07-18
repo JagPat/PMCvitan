@@ -1,4 +1,4 @@
-import type { ModuleManifest } from '@vitan/shared';
+import { INSPECTIONS_COMMANDS, INSPECTIONS_QUERIES, type ModuleManifest } from '@vitan/shared';
 
 /**
  * Stage-wise Quality Inspections. A CLOSING inspection's decide is the sign-off half of
@@ -15,7 +15,11 @@ export const inspectionsManifest: ModuleManifest = {
   id: 'inspections',
   title: 'Quality Inspections',
   kind: 'domain',
-  ownsModels: ['inspection', 'inspectionItem'],
+  // Task 10 (Module 3) — a fully-extracted module: it read-encapsulates every model it owns (incl. its
+  // rebuildable projection), so no other module reads inspection persistence directly — every cross-module
+  // read routes through the InspectionsQueryService contract (the boundary check enforces it).
+  ownsModels: ['inspection', 'inspectionItem', 'inspectionsProjection'],
+  readEncapsulated: ['inspection', 'inspectionItem', 'inspectionsProjection'],
   dependsOn: [],
   workflowParticipants: ['activities'],
   producesEvents: [
@@ -28,8 +32,8 @@ export const inspectionsManifest: ModuleManifest = {
     'activity.signoff_rejected',
   ],
   consumesEvents: [],
-  commands: ['inspections.create', 'inspections.submit', 'inspections.decide'],
-  queries: [],
+  commands: [...INSPECTIONS_COMMANDS],
+  queries: [...INSPECTIONS_QUERIES],
   routes: [
     'POST /projects/:projectId/inspections',
     'POST /projects/:projectId/inspections/:inspectionId/submit',

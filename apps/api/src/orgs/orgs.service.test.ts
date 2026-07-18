@@ -2,10 +2,12 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { InspectionsQueryService } from '../inspections/inspections.query';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import type { PrismaService } from '../prisma.service';
+import type { SignedUrlService } from '../media/signed-url.service';
 import { Prisma } from '@prisma/client';
 import { registerConsumer, unregisterConsumer } from '../platform/outbox/registry';
 
@@ -13,9 +15,20 @@ const PROJECT_INIT_TEST_CONSUMER = 'project-init.unit-test';
 
 afterEach(() => unregisterConsumer(PROJECT_INIT_TEST_CONSUMER));
 
+/** A minimal SignedUrlService stub — the inspections query's copy/count/id methods used in these tests
+ *  never mint a signed path (only its read-slice bakers do), so it is never called. */
+const signedStub = { mediaPath: (id: string) => id } as unknown as SignedUrlService;
+
 /** Task 7 — the project-init participants are leaf providers (no deps); a fresh instance
- *  per construction lets these unit tests drive createProject through the same mock tx. */
-const initParticipants = (prisma: unknown) => [new NodeInitParticipant(), new ActivityParticipant(), new InspectionParticipant(), new DecisionsQueryService(prisma as unknown as PrismaService)] as const;
+ *  per construction lets these unit tests drive createProject through the same mock tx. Task 10 (Module 3)
+ *  adds the inspections query, through which the source-copy + init id-scan reads now route. */
+const initParticipants = (prisma: unknown) => [
+  new NodeInitParticipant(),
+  new ActivityParticipant(),
+  new InspectionParticipant(),
+  new DecisionsQueryService(prisma as unknown as PrismaService),
+  new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),
+] as const;
 
 function makeAtomicProjectInit(throwFromInspection = false) {
   const created = {
@@ -149,6 +162,7 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     activityInit as unknown as ActivityParticipant,
     inspectionInit as unknown as InspectionParticipant,
     new DecisionsQueryService(prisma as unknown as PrismaService),
+    new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),
   );
   registerConsumer({
     name: PROJECT_INIT_TEST_CONSUMER,

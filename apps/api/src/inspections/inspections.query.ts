@@ -1,11 +1,21 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { InspectionsModuleResult, ReadinessInspection, Role } from '@vitan/shared';
+import type { InspectionsModuleResult, ReadinessInspection } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { SignedUrlService } from '../media/signed-url.service';
 import { bakeInspections, computeInspectionsBase, type InspectionsBase, type InspectionsSlices } from './inspections-serialize';
 import { INSPECTIONS_PROJECTION } from './inspections.projection';
 import { readServableGeneration } from '../platform/projections/generation';
+import { nextSeqId } from '../domain/ids';
+
+/** The CHECKLIST-definition structure a project-copy/module-extract reads from a source project through
+ *  the inspections boundary: title + place + ordered item names (never results — reviews aren't structure). */
+export interface InspectionChecklistStructure {
+  title: string;
+  zone: string;
+  nodeId: string | null;
+  items: string[];
+}
 
 /**
  * Phase 2 Task 10 (Module 3) — the INSPECTIONS module's PUBLIC READ boundary (its query contract).
@@ -33,7 +43,7 @@ export class InspectionsQueryService {
    * placedInspections), baked for `role` (PMC-only review queue, pmc/engineer placement) with each item's
    * evidence as fresh signed serve paths. Served from LIVE canonical state.
    */
-  async snapshotSlice(projectId: string, role: Role): Promise<InspectionsSlices> {
+  async snapshotSlice(projectId: string, role: string): Promise<InspectionsSlices> {
     const base = await computeInspectionsBase(this.prisma, projectId);
     return bakeInspections(base, { role, evidencePath: this.evidencePath });
   }
@@ -50,7 +60,7 @@ export class InspectionsQueryService {
    * no-op-bootstrapped (no row), lagging or blocked generation returns `generation: null` and the caller
    * falls back to the canonical live slice.
    */
-  async projectionSlice(projectId: string, role: Role): Promise<{ slices: InspectionsSlices; generation: number | null }> {
+  async projectionSlice(projectId: string, role: string): Promise<{ slices: InspectionsSlices; generation: number | null }> {
     const gen = await readServableGeneration(this.prisma, INSPECTIONS_PROJECTION, projectId);
     const empty: InspectionsSlices = { checklist: null, reviews: [], review: null, reinspectionCreated: false, placedInspections: [] };
     if (!gen) return { slices: empty, generation: null };
@@ -72,7 +82,7 @@ export class InspectionsQueryService {
    * rebuilt) — additive and correct, never empty during warm-up. `source` tells the client which path
    * served it (the slices are byte-identical either way).
    */
-  async moduleInspections(projectId: string, role: Role): Promise<InspectionsModuleResult> {
+  async moduleInspections(projectId: string, role: string): Promise<InspectionsModuleResult> {
     const proj = await this.projectionSlice(projectId, role);
     if (proj.generation !== null) {
       return { ...proj.slices, source: 'projection', generation: proj.generation };
@@ -108,6 +118,71 @@ export class InspectionsQueryService {
       reinspectionOfId: i.reinspectionOfId,
       items: i.items.map((it) => ({ rejected: it.rejected, result: it.result })),
     }));
+  }
+
+  /**
+   * Every existing inspection id across ALL projects (DATA-01: `INSP-N` ids are globally unique, so the
+   * scan is global). Project initialization reads this ONCE to seed its id-minting cursor before it copies
+   * a source's checklist definitions — it reads through THIS boundary instead of `prisma.inspection`
+   * directly, so no other module scans inspection persistence.
+   */
+  async allIds(tx?: Prisma.TransactionClient): Promise<string[]> {
+    const db = tx ?? this.prisma;
+    const existing = await db.inspection.findMany({ select: { id: true } });
+    return existing.map((i) => i.id);
+  }
+
+  /**
+   * Mint the next globally-unique `INSP-N` id. The ONLY place another module needs to allocate an
+   * inspection id is the activities `complete` workflow (edge 1, the closing inspection created THROUGH
+   * this module's participant in the same transaction) — it allocates the id HERE instead of reading
+   * `prisma.inspection` directly, keeping the read behind the module boundary.
+   */
+  async nextInspectionId(tx?: Prisma.TransactionClient): Promise<string> {
+    return nextSeqId('INSP-', await this.allIds(tx));
+  }
+
+  /**
+   * The CHECKLIST-definition structure a project-copy/module-extract reads from a SOURCE project (title +
+   * place + item names, undecided by construction). Reviews and closing inspections are results, not
+   * structure, so only `kind: 'checklist'` travels. `nodeIds` (when given) restricts to inspections placed
+   * on those location-tree nodes — a spatial module extraction copies only the subtree it spans. The
+   * project-initialization copy and the module-payload extractor both read source inspections through THIS
+   * boundary instead of `prisma.inspection` directly.
+   */
+  async checklistStructures(
+    projectId: string,
+    opts: { nodeIds?: readonly string[]; tx?: Prisma.TransactionClient } = {},
+  ): Promise<InspectionChecklistStructure[]> {
+    const db = opts.tx ?? this.prisma;
+    const rows = await db.inspection.findMany({
+      where: { projectId, kind: 'checklist', ...(opts.nodeIds ? { nodeId: { in: [...opts.nodeIds] } } : {}) },
+      include: { items: { orderBy: { order: 'asc' } } },
+    });
+    return rows.map((i) => ({ title: i.title, zone: i.zone, nodeId: i.nodeId, items: i.items.map((it) => it.name) }));
+  }
+
+  /**
+   * The portfolio's OPEN-inspection count for a project (submitted-but-undecided — the PMC review backlog).
+   * The org portfolio rollup reads this through the boundary instead of `prisma.inspection.count` directly.
+   */
+  async openInspectionCount(projectId: string): Promise<number> {
+    return this.prisma.inspection.count({ where: { projectId, submitted: true, decided: false } });
+  }
+
+  /**
+   * Validate a media evidence upload's inspection linkage before the media row stores it: the inspection
+   * must belong to `projectId`, and (when present) `inspectionItemId` must belong to THAT inspection. The
+   * tenant + integrity check a media upload runs at this boundary instead of reading `prisma.inspection` /
+   * `prisma.inspectionItem` directly — the composite-FK chain + CHECK are the database backstop.
+   */
+  async assertEvidenceTarget(projectId: string, inspectionId: string, inspectionItemId?: string | null): Promise<void> {
+    const insp = await this.prisma.inspection.findUnique({ where: { id: inspectionId }, select: { projectId: true } });
+    if (!insp || insp.projectId !== projectId) throw new BadRequestException('Unknown inspection for this project');
+    if (inspectionItemId) {
+      const item = await this.prisma.inspectionItem.findUnique({ where: { id: inspectionItemId }, select: { inspectionId: true } });
+      if (!item || item.inspectionId !== inspectionId) throw new BadRequestException('The item does not belong to that inspection');
+    }
   }
 
   /** Does inspection `inspectionId` exist in project `projectId`? The tenant-ownership check a consumer

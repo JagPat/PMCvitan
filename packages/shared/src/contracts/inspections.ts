@@ -29,9 +29,8 @@ export const INSPECTIONS_QUERIES = [
   'inspections.snapshotSlice',
   // Task 10 — the same slices served from the module's rebuildable projection.
   'inspections.projectionSlice',
-  // the derived inspection-gate READINESS input the activity-start command + snapshot evaluate
-  'inspections.readinessSlice',
   'inspections.existsInProject',
+  'inspections.resolveRef',
 ] as const;
 export type InspectionsQuery = (typeof INSPECTIONS_QUERIES)[number];
 
