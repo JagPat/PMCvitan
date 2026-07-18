@@ -229,6 +229,12 @@ export const issueDrawingSchema = z
     data: z.string().min(1).max(MAX_DRAWING_BASE64, 'file too large for inline upload').optional(),
     storageKey: z.string().min(1).optional(),
     sizeBytes: z.number().int().nonnegative().max(MAX_DRAWING_BYTES, 'file too large').optional(),
+    // Content-bound command identity (Task 10 correction): a lowercase hex SHA-256 of the ORIGINAL
+    // file bytes. For the inline path the server recomputes it from `data` (authoritative); for the
+    // presigned path the server never sees the bytes, so the client-supplied digest is the ONLY content
+    // identity — the command hash binds to it so a same-key/same-metadata retry with DIFFERENT bytes is
+    // a 409, not a silent replay of the wrong file. Required on the presigned path (see refine below).
+    contentSha256: z.string().regex(/^[a-f0-9]{64}$/, 'contentSha256 must be a lowercase hex SHA-256').optional(),
     note: z.string().optional(),
     zone: z.string().optional(),
     activityId: z.string().optional(),
@@ -243,6 +249,13 @@ export const issueDrawingSchema = z
   })
   .refine((v) => Boolean(v.data) !== Boolean(v.storageKey), {
     message: 'Provide exactly one of data (base64) or storageKey (presigned upload)',
+  })
+  // Content-bound identity: the presigned path carries no bytes for the server to hash, so the client
+  // MUST supply the content digest — otherwise the command hash could not distinguish two different
+  // files uploaded under the same key + metadata.
+  .refine((v) => !v.storageKey || Boolean(v.contentSha256), {
+    message: 'contentSha256 is required for a presigned (storageKey) upload',
+    path: ['contentSha256'],
   });
 export type IssueDrawingInput = z.infer<typeof issueDrawingSchema>;
 

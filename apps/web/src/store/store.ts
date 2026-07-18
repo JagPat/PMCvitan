@@ -418,6 +418,16 @@ export interface AppActions {
 
 export type Store = AppState & AppActions;
 
+/** Task 10 correction — the SINGLE drawing-mutation readiness predicate, used BOTH to disable the
+ *  controls in the UI and to defensively reject the command in the store (belt-and-braces). Under module
+ *  read-ownership a drawing mutation must never run against a register whose module read hasn't settled
+ *  ('idle'/'loading'/'error') — the store would be acting on stale or absent data. In the default
+ *  'snapshot' mode the snapshot slice is authoritative, so mutations are never blocked (`drawingsLoad`
+ *  stays 'idle' there and this returns false). */
+export function drawingMutationsBlocked(s: Pick<AppState, 'drawingsLoad'>): boolean {
+  return drawingsReadMode() === 'moduleQuery' && s.drawingsLoad !== 'ready';
+}
+
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** A pristine access-flow state (used to init and to reset after sign-out). */
@@ -1777,24 +1787,53 @@ export const useStore = create<Store>()(
     // ---- drawings register ----
     issueDrawing: (input) => {
       if (gateway) {
-        // gate round 12: capture the scope BEFORE the request and guard EVERY
-        // continuation on it — success toast, refresh AND the failure toast. Without
-        // this, an issue that resolves after a project switch flashed "Drawing issued"
-        // into project B and refreshed B through its gateway (finding 3).
+        // Task 10 correction (C3) — never issue against a register whose module read hasn't settled.
+        if (drawingMutationsBlocked(get())) { get().flash('The drawing register is still loading — try again once it settles.'); return; }
+        const gw = gateway;
+        // gate round 12: capture the scope BEFORE the request and guard EVERY continuation on it.
         const scope = currentScope();
-        // Phase 2 Task 10 (Module 2 — Drawings) — a stable idempotency key so the command-ledger records
-        // this issue EXACTLY ONCE; a network-layer retry of the same call reuses the key (no duplicate
-        // register entry). Issue carries a large file payload, so it is a direct keyed call, NOT
-        // write-ahead persisted like the small field commands.
+        // Task 10 correction (C1/C2) — a stable key + a payload PREPARED ONCE. The command-ledger records
+        // the issue EXACTLY ONCE under this key; a bounded retry re-POSTs the SAME prepared body under the
+        // SAME key, so a committed-but-unacked response replays the one success (no duplicate revision).
         const key = newIdempotencyKey();
-        gateway
-          .issueDrawing(input, key)
-          .then(() => {
-            if (!scopeStillCurrent(scope)) return; // resolved after a switch — B is not ours to touch
+        void (async () => {
+          let prepared;
+          try {
+            // PHASE 1 (once): compute the content digest + (large file) upload the bytes to the bucket. A
+            // retry NEVER re-runs this — it would re-presign a new storageKey / re-upload the bytes.
+            prepared = await gw.prepareIssue(input);
+          } catch {
+            if (scopeStillCurrent(scope)) get().flash('Could not prepare the drawing for upload — check your connection and try again.');
+            return;
+          }
+          // PHASE 2 (bounded same-key retry): the register-write. A transient failure (network / 5xx /
+          // timeout) is retried under the SAME key + SAME prepared body; a business-rule 4xx is terminal.
+          let committed = false;
+          for (let attempt = 0; attempt < 2 && !committed; attempt++) {
+            if (!scopeStillCurrent(scope)) return; // a switch mid-retry — B is not ours to touch
+            try {
+              await gw.submitIssue(prepared, key);
+              committed = true;
+            } catch (err) {
+              if (isTerminalOutboxError(err)) {
+                if (scopeStillCurrent(scope)) get().flash('The drawing was rejected — check the details and try again.');
+                return;
+              }
+              // transient — keep the SAME key + prepared body and retry
+            }
+          }
+          if (!scopeStillCurrent(scope)) return;
+          if (committed) {
             get().flash(`Drawing issued: ${input.number} Rev ${input.rev} — team notified.`);
             requestFreshSnapshot(scope); // one coalesced, coordinator-ordered refresh for THIS scope
-          })
-          .catch(() => { if (scopeStillCurrent(scope)) get().flash('Could not issue the drawing — please try again.'); });
+            return;
+          }
+          // STILL uncertain after the bounded retry — the command MAY have committed under our key. RECONCILE
+          // from fresh state BEFORE any failure message (never a premature "please try again"): the ledger
+          // dedupes, so if it landed the register now shows the ONE revision; if it truly never committed it
+          // simply isn't there and the user can re-issue. No false-failure toast either way.
+          requestFreshSnapshot(scope);
+        })();
         return;
       }
       // local demo: add to the register (or add a rev + supersede the prior)
@@ -1849,9 +1888,17 @@ export const useStore = create<Store>()(
       if (!d) return;
       // API mode: the server flips publishedAt, notifies the build team, returns a snapshot.
       if (gateway) {
-        // Task 10 — a stable idempotency key so a retried publish flips the draft live exactly once.
+        // Task 10 correction (C3) — don't publish against a register whose module read hasn't settled.
+        if (drawingMutationsBlocked(get())) { get().flash('The drawing register is still loading — try again once it settles.'); return; }
+        // Task 10 correction (C2) — WRITE-AHEAD: persist the publish op + stable key BEFORE the network
+        // call, so a lost/uncertain response replays the SAME op under the SAME key (published exactly
+        // once) and the reconcile snapshot restores truth.
         const key = newIdempotencyKey();
-        runRemote(() => gateway!.publishDrawing(drawingId, key), `Published: ${d.number} — the build team has been notified.`);
+        runWriteAhead(
+          { t: 'publishDrawing', drawingId, idempotencyKey: key },
+          'Publish ' + d.number,
+          `Published: ${d.number} — the build team has been notified.`,
+        );
         return;
       }
       // Demo (no server): flip the draft live locally + raise the build-team notification.
@@ -1871,6 +1918,9 @@ export const useStore = create<Store>()(
       const done = () => get().flash(`Published ${total} draft${total === 1 ? '' : 's'} — the team has been notified.`);
       // API mode: publish each in turn, then reconcile once from a fresh snapshot.
       if (gateway) {
+        // Task 10 correction (C3) — when drawing drafts are in the batch, don't publish from a register
+        // whose module read hasn't settled (we'd be publishing stale/absent drawing data).
+        if (dwgIds.length > 0 && drawingMutationsBlocked(get())) { get().flash('The drawing register is still loading — publish drafts once it settles.'); return; }
         const gw = gateway;
         const scope = currentScope();
         void (async () => {
@@ -1919,6 +1969,8 @@ export const useStore = create<Store>()(
       if (!drawing?.current || drawing.ackedByMe) return;
       const rev = drawing.current;
       if (gateway) {
+        // Task 10 correction (C3) — don't acknowledge against a register whose module read hasn't settled.
+        if (drawingMutationsBlocked(get())) { get().flash('The drawing register is still loading — try again once it settles.'); return; }
         // Phase 2 Task 10 (Module 2 — Drawings; finding-1 write-ahead discipline): persist the ack
         // op + its stable idempotency key to the durable outbox BEFORE any network request (online
         // too), then flush. A lost/uncertain online response leaves the op (and its key) persisted,
@@ -1950,9 +2002,16 @@ export const useStore = create<Store>()(
     },
     fileDrawing: (drawingId, nodeId) => {
       if (gateway) {
-        // Task 10 — a stable idempotency key so a retried re-file applies exactly once.
+        // Task 10 correction (C3) — don't re-file/unfile against a register whose module read hasn't settled.
+        if (drawingMutationsBlocked(get())) { get().flash('The drawing register is still loading — try again once it settles.'); return; }
+        // Task 10 correction (C2) — WRITE-AHEAD: persist the re-file op + stable key BEFORE the network
+        // call, so a lost/uncertain response replays the SAME op under the SAME key (applied exactly once).
         const key = newIdempotencyKey();
-        runRemote(() => gateway!.setDrawingNode(drawingId, nodeId, key), nodeId ? 'Drawing filed to location.' : 'Drawing unfiled.');
+        runWriteAhead(
+          { t: 'setDrawingNode', drawingId, nodeId, idempotencyKey: key },
+          nodeId ? 'File drawing' : 'Unfile drawing',
+          nodeId ? 'Drawing filed to location.' : 'Drawing unfiled.',
+        );
         return;
       }
       set((s) => {

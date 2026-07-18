@@ -1,6 +1,6 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore } from '@/store/store';
+import { useStore, drawingMutationsBlocked } from '@/store/store';
 import { resolveDrawingUrl, drawingsReadMode, type IssueDrawingInput } from '@/data/apiGateway';
 import { Eyebrow, Button, Modal } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
@@ -44,9 +44,11 @@ export function DrawingsScreen() {
   const drawingsLoad = useStore((s) => s.drawingsLoad);
   const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
   const moduleOwned = drawingsReadMode() === 'moduleQuery';
-  const reading = moduleOwned && (drawingsLoad === 'idle' || drawingsLoad === 'loading');
-  const unavailable = moduleOwned && drawingsLoad === 'error';
-  const actionsLocked = reading || unavailable; // don't issue/ack against a register whose read hasn't settled
+  const reading = moduleOwned && (drawingsLoad === 'idle' || drawingsLoad === 'loading'); // display: loading boundary
+  const unavailable = moduleOwned && drawingsLoad === 'error'; // display: unavailable/stale boundary
+  // the SINGLE mutation-readiness predicate (Task 10 correction, C3): the same guard the store's actions
+  // defensively enforce — Issue/Acknowledge are disabled while the module read is unsettled.
+  const actionsLocked = useStore(drawingMutationsBlocked);
   // hold the open drawing by id so the viewer always reflects live store state
   // (e.g. an acknowledgement) rather than a stale snapshot captured on click.
   const [openId, setOpenId] = useState<string | null>(null);
@@ -198,10 +200,9 @@ const ROLE_SHORT: Record<string, string> = { pmc: 'PMC', client: 'Client', engin
 function AckBlock({ drawing }: { drawing: Drawing }) {
   const role = useStore((s) => s.role);
   const acknowledgeDrawing = useStore((s) => s.acknowledgeDrawing);
-  // finding 4 — the ack is a mutating command; don't record it against a register whose module read
-  // hasn't settled (loading or failed). In snapshot mode `drawingsLoad` is 'idle' → never locked.
-  const drawingsLoad = useStore((s) => s.drawingsLoad);
-  const ackLocked = drawingsReadMode() === 'moduleQuery' && (drawingsLoad === 'idle' || drawingsLoad === 'loading' || drawingsLoad === 'error');
+  // finding 4 / Task 10 correction (C3) — the ack is a mutating command; don't record it against a
+  // register whose module read hasn't settled. The SINGLE shared predicate the store also enforces.
+  const ackLocked = useStore(drawingMutationsBlocked);
   const rev = drawing.current;
   // Reads the shared policy so the button appears for exactly the roles the API accepts
   // (pmc/engineer/contractor) — previously omitted pmc, who the server allows.
