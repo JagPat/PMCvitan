@@ -422,14 +422,16 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
       expect({ membership, stream, event, delivery, nodes, phases, activities, inspections, items }).toEqual({
         membership: 1,
         stream: 1,
-        event: 1,
-        // PR B totality: every registered consumer gets one delivery per event — the one
-        // `project.created` event yields a socket `dispatch` row + a push `noop` row (no push intent)
-        // + (Task 9) a `decisions.inbox` projection `noop` row + (Task 10) a `daily-log.inbox`
-        // projection `noop` row + (Task 10 Module 2) a `drawings.inbox` projection `noop` row
-        // + (Task 10 Module 3) an `inspections.inbox` projection `noop` row (project.created is
-        // neither a decision, a daily-log, a drawing, nor an inspection event).
-        delivery: 6,
+        // Task 10 (Module 3) correction — init now emits TWO events: `project.created` AND the
+        // `inspection.created` the inspections participant appends for the one starting checklist
+        // (so the inspections.inbox projection MATERIALIZES from init events, not the live fallback).
+        event: 2,
+        // PR B totality: every registered consumer gets one delivery per event. There are SIX consumers
+        // (socket `dispatch` + push + decisions.inbox + daily-log.inbox + drawings.inbox +
+        // inspections.inbox), so two events yield 2 × 6 = 12 deliveries. For `project.created` the
+        // inspections.inbox delivery is a `noop` (not an inspection event); for `inspection.created`
+        // it is a real projection refresh while the other five are `noop`.
+        delivery: 12,
         nodes: 1,
         phases: 1,
         activities: 1,

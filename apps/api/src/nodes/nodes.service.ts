@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { InspectionParticipant } from '../inspections/inspection.participant';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { AuthUser } from '../common/auth';
 import type { CreateNodeInput, MoveNodeInput, RenameNodeInput } from '../contracts';
@@ -33,6 +34,9 @@ export class NodesService {
     private readonly dispatcher: ExternalEffectDispatcher,
     // Task 8 — the "decisions filed under this location" guard goes through the decisions query.
     private readonly decisions: DecisionsQueryService,
+    // Task 10 (Module 3) correction — deleting a node unfiles placed inspections through the participant
+    // (in-tx), which appends `inspection.unfiled` so the projection observes the location change.
+    private readonly inspectionParticipant: InspectionParticipant,
   ) {}
 
   /** Create a zone/room/element under the right kind of parent. */
@@ -121,11 +125,16 @@ export class NodesService {
     // become unplaced. No cross-module write here. Decisions are excluded on purpose:
     // their FK stays NO ACTION and the count guard above refuses the delete instead of
     // silently unfiling them.
-    const ev = await this.prisma.$transaction(async (tx) => {
-      await tx.projectNode.delete({ where: { id: nodeId } }); // children cascade; FKs unfile placed records
-      return emitEvent(tx, { projectId, actor, eventType: 'node.removed', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.removed', dispatch: {} });
+    const events = await this.prisma.$transaction(async (tx) => {
+      // Task 10 (Module 3) correction — unfile placed inspections in the deleted subtree FIRST, through the
+      // participant, which appends `inspection.unfiled` when any row changed, so the inspections.inbox
+      // projection observes the location change (the ON DELETE SET NULL FK below stays as the DB backstop).
+      const unfiledEv = await this.inspectionParticipant.unfileForDeletedNodes(tx, { projectId, actor, nodeIds: subtree });
+      await tx.projectNode.delete({ where: { id: nodeId } }); // children cascade; FKs unfile remaining placed records
+      const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'node.removed', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.removed', dispatch: {} });
+      return unfiledEv ? [unfiledEv, removedEv] : [removedEv];
     });
-    return this.done(projectId, user, [ev]);
+    return this.done(projectId, user, events);
   }
 
   // ---- helpers ----

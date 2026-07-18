@@ -762,8 +762,10 @@ export class ApiGateway {
   submitInspection(inspectionId: string, items: Checklist['items']): Promise<ApiSnapshot> {
     return this.p(`/inspections/${inspectionId}/submit`, { items });
   }
-  decideReview(inspectionId: string, approve: boolean, rejectedItemIds: string[]): Promise<ApiSnapshot> {
-    return this.p(`/inspections/${inspectionId}/decide`, { approve, rejectedItemIds });
+  decideReview(inspectionId: string, approve: boolean, rejectedItemIds: string[], idempotencyKey?: string): Promise<ApiSnapshot> {
+    // Task 10 (Module 3) correction — the decide command carries the Task-5 idempotency key, so a
+    // lost-response retry (or an offline replay) records the decision exactly once under the ledger.
+    return this.p(`/inspections/${inspectionId}/decide`, { approve, rejectedItemIds }, idempotencyKey);
   }
   submitDailyLog(log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'>, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/daily-log/submit`, log, idempotencyKey);
@@ -913,7 +915,9 @@ export type OutboxOp =
   | { t: 'publishDrawing'; drawingId: string; idempotencyKey: string }
   | { t: 'setDrawingNode'; drawingId: string; nodeId: string | null; idempotencyKey: string }
   | { t: 'submitInspection'; inspectionId: string; items: Checklist['items'] }
-  | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemIds: string[] }
+  // Task 10 (Module 3) correction — the decide command carries a stable idempotencyKey (optional so a
+  // pre-upgrade persisted op without one still replays; the server treats a missing key as unkeyed).
+  | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemIds: string[]; idempotencyKey?: string }
   | { t: 'startActivity'; activityId: string }
   | { t: 'completeActivity'; activityId: string }
   // ALL FOUR daily-log commands carry a stable idempotencyKey and are WRITE-AHEAD to the durable
@@ -969,7 +973,7 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
     case 'submitInspection':
       return gw.submitInspection(op.inspectionId, op.items);
     case 'decideReview':
-      return gw.decideReview(op.inspectionId, op.approve, op.rejectedItemIds);
+      return gw.decideReview(op.inspectionId, op.approve, op.rejectedItemIds, op.idempotencyKey);
     case 'startActivity':
       return gw.startActivity(op.activityId);
     case 'completeActivity':

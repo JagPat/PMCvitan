@@ -37,7 +37,14 @@ async function main(): Promise<void> {
   // reset for a disposable database (this seed is destructive by contract). CommandExecution
   // (Task 5) and ProjectEventStream cascade with the Project delete, but clearing the events
   // here is what lets that Project delete run at all when a prior run left events behind.
-  await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+  // Task 10 (Module 3) correction — the rebuildable READ MODELS reset with the event store. A destructive
+  // reseed restarts every project's stream at 0, so a surviving ProjectionGeneration (whose appliedPosition
+  // can exceed the fresh, shorter stream head) would claim to be CURRENT while its projection rows still
+  // hold the PREVIOUS run's state — a stale-served projection by construction. Truncate the generations and
+  // every projection table alongside the events/cursors so each run rebuilds its read models from ITS data.
+  await prisma.$executeRawUnsafe(
+    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection"',
+  );
   await prisma.gateOverride.deleteMany();
   await prisma.drawingRecipient.deleteMany();
   await prisma.passwordCredentialChallenge.deleteMany();

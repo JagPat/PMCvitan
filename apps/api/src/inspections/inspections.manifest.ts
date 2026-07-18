@@ -16,10 +16,12 @@ export const inspectionsManifest: ModuleManifest = {
   title: 'Quality Inspections',
   kind: 'domain',
   // Task 10 (Module 3) — a fully-extracted module: it read-encapsulates every model it owns (incl. its
-  // rebuildable projection), so no other module reads inspection persistence directly — every cross-module
-  // read routes through the InspectionsQueryService contract (the boundary check enforces it).
-  ownsModels: ['inspection', 'inspectionItem', 'inspectionsProjection'],
-  readEncapsulated: ['inspection', 'inspectionItem', 'inspectionsProjection'],
+  // rebuildable projection AND the inspection-owned `inspectionEvidence` link — added by the correction so
+  // item evidence is an inspection fact, not a live Media read), so no other module reads inspection
+  // persistence directly — every cross-module read routes through the InspectionsQueryService contract
+  // (the boundary check enforces it).
+  ownsModels: ['inspection', 'inspectionItem', 'inspectionsProjection', 'inspectionEvidence'],
+  readEncapsulated: ['inspection', 'inspectionItem', 'inspectionsProjection', 'inspectionEvidence'],
   dependsOn: [],
   workflowParticipants: ['activities'],
   producesEvents: [
@@ -28,6 +30,14 @@ export const inspectionsManifest: ModuleManifest = {
     'inspection.approved',
     'inspection.rejected',
     'inspection.reinspection_created',
+    // Task 10 (Module 3) correction — the five inspection-owned signal events a FOREIGN command appends
+    // (through this module's participant) so the ordered inspections.inbox projection refreshes when a
+    // foreign mutation touches an inspection-owned serialized field. Signal-only (no push).
+    'inspection.closing_created',
+    'inspection.evidence_added',
+    'inspection.evidence_removed',
+    'inspection.relabeled',
+    'inspection.unfiled',
     'activity.signed_off',
     'activity.signoff_rejected',
   ],

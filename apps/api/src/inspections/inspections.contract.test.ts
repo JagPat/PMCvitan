@@ -28,9 +28,12 @@ describe('Task 10 — the inspections module implements its shared command/query
     expect(inspectionsManifest.ownsModels).toContain('inspectionsProjection');
     expect(inspectionsManifest.ownsModels).toContain('inspection');
     expect(inspectionsManifest.ownsModels).toContain('inspectionItem');
+    // Task 10 (Module 3) correction — the inspection-owned evidence link is owned + read-encapsulated too,
+    // so item evidence is an inspection fact (not a live Media read) and no foreign module reads it directly.
+    expect(inspectionsManifest.ownsModels).toContain('inspectionEvidence');
   });
 
-  it('the manifest publishes the inspection lifecycle + the caused activity sign-off events', () => {
+  it('the manifest publishes the inspection lifecycle + correction signals + the caused activity sign-off events', () => {
     expect([...inspectionsManifest.producesEvents].sort()).toEqual(
       [
         'inspection.created',
@@ -38,6 +41,14 @@ describe('Task 10 — the inspections module implements its shared command/query
         'inspection.approved',
         'inspection.rejected',
         'inspection.reinspection_created',
+        // Task 10 (Module 3) correction — the five signal-only events a FOREIGN command appends through
+        // this module's participant so the ordered inspections.inbox projection refreshes on a foreign
+        // mutation to an inspection-owned serialized field.
+        'inspection.closing_created',
+        'inspection.evidence_added',
+        'inspection.evidence_removed',
+        'inspection.relabeled',
+        'inspection.unfiled',
         // the sign-off events are CAUSED by a closing inspection's decision (emitted here, same tx)
         'activity.signed_off',
         'activity.signoff_rejected',

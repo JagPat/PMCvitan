@@ -5,6 +5,7 @@ import { DecisionsQueryService } from '../decisions/decisions.query';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
+import type { InspectionParticipant } from '../inspections/inspection.participant';
 
 interface Node { id: string; projectId: string; parentId: string | null; name: string; kind: string; order: number; publishedAt?: Date | null; authorId?: string | null }
 
@@ -61,7 +62,10 @@ function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({})) } as unknown as SnapshotService;
   const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-  const svc = new NodesService(prisma, snapshot, dispatcher, new DecisionsQueryService(prisma as unknown as PrismaService));
+  // Task 10 (Module 3) correction — remove() routes node-deletion unfiling through the inspections
+  // participant; the unit under test doesn't exercise the DB, so a null-returning stub suffices.
+  const inspectionParticipant = { unfileForDeletedNodes: vi.fn(async () => null) } as unknown as InspectionParticipant;
+  const svc = new NodesService(prisma, snapshot, dispatcher, new DecisionsQueryService(prisma as unknown as PrismaService), inspectionParticipant);
   const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
   return { svc, prisma, nodes, user };
 }

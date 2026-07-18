@@ -57,6 +57,15 @@ export const DOMAIN_EVENT_TYPES = [
   'inspection.approved',
   'inspection.rejected',
   'inspection.reinspection_created',
+  // Phase 2 Task 10 (Module 3) correction — inspection-owned events for changes to the projection's
+  // serialized fields that formerly rode ONLY a foreign module's event (so the inspection projection
+  // could not observe them). Each is appended by the inspections workflow participant IN the foreign
+  // mutation's transaction, so the inspections.inbox cursor refreshes the row. All signal-only.
+  'inspection.closing_created', // the closing inspection an activity-completion claim creates (edge 1)
+  'inspection.evidence_added', // item evidence linked by a media upload
+  'inspection.evidence_removed', // item evidence unlinked by a media delete
+  'inspection.relabeled', // the inspection-owned activity label updated when the linked activity is renamed
+  'inspection.unfiled', // the inspection's location cleared when its placed node is deleted
   // drawings
   'drawing.issued',
   'drawing.revised',
