@@ -332,6 +332,11 @@ function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
   const role = useStore((s) => s.role);
   const fileDrawing = useStore((s) => s.fileDrawing);
   const canFile = can('drawing.file', role);
+  // Task 10 correction (C2b) — re-file / unfile are drawing MUTATIONS: never run them against a register
+  // whose module read hasn't settled. The SINGLE shared predicate the store also defensively enforces;
+  // it's reactive, so if the register goes idle/loading/error while the location editor is OPEN, the
+  // picker + Unfile disable immediately and every location mutation command is prevented until 'ready'.
+  const locked = useStore(drawingMutationsBlocked);
   const place = pathOf(nodes, drawing.nodeId).join(' › ');
   const [editing, setEditing] = useState(false);
 
@@ -346,7 +351,7 @@ function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
             {place || 'Not filed to a location (project-wide)'}
           </span>
           {canFile && (
-            <button onClick={() => setEditing(true)} data-testid="drawing-refile" style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid var(--hairline)', borderRadius: 8, padding: '5px 10px', fontSize: 12, cursor: 'pointer', color: 'var(--accent)' }}>
+            <button onClick={() => { if (!locked) setEditing(true); }} disabled={locked} data-testid="drawing-refile" style={{ marginLeft: 'auto', background: 'transparent', border: '1px solid var(--hairline)', borderRadius: 8, padding: '5px 10px', fontSize: 12, cursor: locked ? 'not-allowed' : 'pointer', opacity: locked ? 0.5 : 1, color: 'var(--accent)' }}>
               {place ? 'Move' : 'File to a location'}
             </button>
           )}
@@ -354,10 +359,19 @@ function DrawingLocationBlock({ drawing }: { drawing: Drawing }) {
       )}
       {editing && canFile && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <LocationPicker value={drawing.nodeId ?? null} onChange={(id) => { fileDrawing(drawing.id, id); }} idPrefix="dwg-refile" />
+          {locked && (
+            <div data-testid="drawing-location-paused" style={{ fontSize: 12, color: 'var(--amber-text)', background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 9, padding: '7px 10px' }}>
+              The drawing register is still loading — location changes are paused until it refreshes.
+            </div>
+          )}
+          {/* the picker is inert while locked: pointer-events off + a guarded onChange (belt-and-braces
+              with the store's own defensive fileDrawing guard) */}
+          <div style={{ pointerEvents: locked ? 'none' : 'auto', opacity: locked ? 0.5 : 1 }} aria-disabled={locked}>
+            <LocationPicker value={drawing.nodeId ?? null} onChange={(id) => { if (locked) return; fileDrawing(drawing.id, id); }} idPrefix="dwg-refile" />
+          </div>
           <div style={{ display: 'flex', gap: 8 }}>
             {drawing.nodeId && (
-              <Button variant="outline" onClick={() => { fileDrawing(drawing.id, null); setEditing(false); }} style={{ padding: '7px 12px', fontSize: 12 }}>Unfile</Button>
+              <Button variant="outline" disabled={locked} onClick={() => { if (locked) return; fileDrawing(drawing.id, null); setEditing(false); }} data-testid="drawing-unfile" style={{ padding: '7px 12px', fontSize: 12, cursor: locked ? 'not-allowed' : 'pointer', opacity: locked ? 0.5 : 1 }}>Unfile</Button>
             )}
             <Button variant="ink" onClick={() => setEditing(false)} style={{ padding: '7px 12px', fontSize: 12, marginLeft: 'auto' }}>Done</Button>
           </div>

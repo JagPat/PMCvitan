@@ -1916,33 +1916,62 @@ export const useStore = create<Store>()(
       const total = decIds.length + dwgIds.length;
       if (total === 0) return;
       const done = () => get().flash(`Published ${total} draft${total === 1 ? '' : 's'} — the team has been notified.`);
-      // API mode: publish each in turn, then reconcile once from a fresh snapshot.
+      // API mode: decisions publish directly (preserved); DRAWINGS are write-ahead + drained by the flush.
       if (gateway) {
         // Task 10 correction (C3) — when drawing drafts are in the batch, don't publish from a register
         // whose module read hasn't settled (we'd be publishing stale/absent drawing data).
         if (dwgIds.length > 0 && drawingMutationsBlocked(get())) { get().flash('The drawing register is still loading — publish drafts once it settles.'); return; }
         const gw = gateway;
         const scope = currentScope();
+        // Task 10 correction (C2b) — the DRAWING publishes are WRITE-AHEAD to the durable outbox with a
+        // stable key EACH, persisted BEFORE any network request, then drained by the SAME flush/reconcile
+        // machinery every other write-ahead command uses (`runWriteAhead`). The flush is triggered HERE,
+        // synchronously in THIS scope: it pins its (project, generation) + gateway before any await, so a
+        // project switch mid-flight leaves these ops queued for THIS project and never crosses scopes nor
+        // supersedes another scope's live pull. A lost response / reload / replay reuses each op's ORIGINAL
+        // key and publishes exactly once — never a direct `gw.publishDrawing` with a freshly-minted key.
+        let flushDone: Promise<unknown> = Promise.resolve();
+        if (dwgIds.length > 0) {
+          set((s) => {
+            for (const id of dwgIds) {
+              const number = s.drawings.find((x) => x.id === id)?.number ?? id;
+              s.outbox.push({ t: 'publishDrawing', drawingId: id, idempotencyKey: newIdempotencyKey() });
+              if (!s.online) s.syncQueue.push('Publish ' + number);
+            }
+          });
+          persistOutbox();
+          if (get().online) flushDone = get().flushOutbox() ?? Promise.resolve();
+        }
         void (async () => {
-          try {
-            for (const id of decIds) await gw.publishDecision(id, newIdempotencyKey());
-            for (const id of dwgIds) await gw.publishDrawing(id, newIdempotencyKey());
-            // gate round 11: capture the lease before the reconcile fetch. The
-            // publishes committed on the server, so announce success once the reply
-            // lands in the current scope — `applied` OR `superseded` (a newer
-            // same-scope refresh already carries the published state). Suppress on a
-            // wrong-project payload (recover) or a scope move (no stale toast leak).
-            const lease = beginSnapshotLease(scope);
-            const result = acceptSnapshot(await gw.snapshot(), lease);
-            // gate round 12: the publishes committed; announce on applied/superseded
-            // (the mutation landed in the current scope), reconcile a superseded reply
-            // since the newer refresh may fail, recover a wrong-project one. Silent if
-            // the scope moved (no stale toast into another project).
-            if (result === 'applied' || result === 'superseded') done();
-            if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
-            else if (result === 'invalid-project') void requestFreshSnapshot();
-          } catch {
-            if (scopeStillCurrent(scope)) get().flash('Could not publish every draft — some may still be drafts. Please try again.');
+          // Decisions: the existing direct publish + reconcile (behavior preserved). Drawings are handled
+          // entirely by the write-ahead flush above; the flush reconciles the register on its own.
+          let decOk = true;
+          if (decIds.length > 0) {
+            try {
+              for (const id of decIds) await gw.publishDecision(id, newIdempotencyKey());
+              const lease = beginSnapshotLease(scope);
+              const result = acceptSnapshot(await gw.snapshot(), lease);
+              if (result === 'superseded') scheduleReconcile(scope, { kind: 'command', createdAfterSequence: snapshotSeq });
+              else if (result === 'invalid-project') void requestFreshSnapshot();
+            } catch {
+              decOk = false;
+            }
+          }
+          // Let the drawing flush finish draining before judging success, so "Published N" is only ever
+          // announced once the drawing ops have actually left the queue.
+          await flushDone.catch(() => {});
+          if (!scopeStillCurrent(scope)) return;
+          // NEVER claim complete success while any drawing publish op is still queued (offline, or a
+          // transient failure kept it): report the honest partial state instead of "Published N".
+          const pendingDwg = get().outbox.some((o) => o.t === 'publishDrawing');
+          if (decOk && !pendingDwg) {
+            done();
+          } else if (pendingDwg) {
+            get().flash(get().online
+              ? 'Publishing… drawing drafts are still syncing and will finish shortly.'
+              : 'Saved — drawing drafts will publish when you reconnect.');
+          } else {
+            get().flash('Could not publish every draft — some may still be drafts. Please try again.');
           }
         })();
         return;
