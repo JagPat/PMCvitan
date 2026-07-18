@@ -64,6 +64,7 @@ export default defineConfig({
         VITE_DAILYLOG_READ: process.env.E2E_DAILYLOG_READ ?? 'snapshot',
         VITE_DECISIONS_READ: process.env.E2E_DECISIONS_READ ?? 'snapshot',
         VITE_DRAWINGS_READ: process.env.E2E_DRAWINGS_READ ?? 'snapshot',
+        VITE_INSPECTIONS_READ: process.env.E2E_INSPECTIONS_READ ?? 'snapshot',
       },
     },
   ],

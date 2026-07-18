@@ -61,7 +61,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, decisionsReadMode, dailyLogReadMode, drawingsReadMode, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 
@@ -182,6 +182,12 @@ export interface AppState {
   // per-viewer); these track its explicit load state for the drawing surfaces ('idle' in snapshot mode).
   drawingsLoad: 'idle' | 'loading' | 'ready' | 'error';
   drawingsSource: 'projection' | 'live' | null;
+  // Phase 2 Task 10 (Module 3 — Inspections) — the inspections XOR read-ownership state, mirroring
+  // drawings. When inspectionsReadMode() === 'moduleQuery', the inspection slices (checklist / reviews /
+  // review / reinspectionCreated / placedInspections) are owned by the module-owned read (baked per-
+  // viewer/role); these track its explicit load state for the inspection surfaces ('idle' in snapshot mode).
+  inspectionsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  inspectionsSource: 'projection' | 'live' | null;
   // Phase 2 Task 9 — the enabled module ids from the project-shell summary (the single enablement
   // source). Drives manifest-driven nav: a screen whose module is disabled is hidden. Empty = not yet
   // loaded → the nav shows every role screen (no flash), matching today's behaviour.
@@ -575,6 +581,8 @@ export function getInitialState(): AppState {
     dailyLogSource: null,
     drawingsLoad: 'idle',
     drawingsSource: null,
+    inspectionsLoad: 'idle',
+    inspectionsSource: null,
     enabledModules: [],
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
@@ -718,7 +726,7 @@ export const useStore = create<Store>()(
      *  DIRECTLY — only `acceptSnapshot` may, after the ordering checks. A source-scan
      *  test (`snapshot-ordering.test.ts`) enforces the single call site so an
      *  unsequenced apply cannot be reintroduced. */
-    const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null): void => {
+    const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null): void => {
       set((s) => {
         s.projectLoadState = 'ready'; // the active project's data has landed
         s.projectLoadError = null;
@@ -742,7 +750,25 @@ export const useStore = create<Store>()(
         // The snapshot is the whole truth for its project. checklist/dailyLog are
         // assigned DIRECTLY, including null — absence means "this project has none",
         // never "keep the previous project's".
-        s.checklist = snap.checklist ?? null;
+        // Phase 2 Task 10 (Module 3 — Inspections) — XOR read-ownership for the inspection slices
+        // (checklist / reviews / reinspectionCreated / placedInspections), mirroring drawings. 'snapshot'
+        // mode (default): the snapshot slices OWN them (unchanged). 'moduleQuery' mode: the module-owned
+        // read (baked PER-VIEWER/ROLE — the PMC-only review queue, fresh signed evidence paths — under THIS
+        // same scope lease) owns them, and the snapshot's slices are IGNORED. A result sets them (ready);
+        // `null` = the module fetch FAILED (keep last-good, expose an error boundary); `undefined` = no
+        // fetch accompanied this apply (a command's own snapshot) — leave untouched until the follow-up
+        // refresh. The engineer's unsubmitted per-field marks + the submission freeze are re-applied below
+        // to whatever checklist now owns the slot, so mark preservation is source-independent.
+        const inspModule = inspectionsReadMode() === 'moduleQuery';
+        if (!inspModule) {
+          s.checklist = snap.checklist ?? null;
+        } else if (inspectionsResult) {
+          s.checklist = inspectionsResult.checklist ?? null;
+          s.inspectionsLoad = 'ready';
+          s.inspectionsSource = inspectionsResult.source;
+        } else if (inspectionsResult === null) {
+          s.inspectionsLoad = 'error';
+        }
         // gate round 6: overlay the engineer's UNSUBMITTED per-field edits back
         // onto the fresh server checklist. This is the ONE place marks survive a
         // refresh — the upload's own snapshot AND every background useApiSync
@@ -776,9 +802,17 @@ export const useStore = create<Store>()(
         // must keep the checklist frozen; a reload rebuilds a queued submit's
         // freeze; a server-confirmed submit idles the pending status.
         reconcileSubmission(s);
-        s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
+        // XOR (Task 10 Module 3): the review queue + reinspection flag follow the same ownership as the
+        // checklist above. moduleQuery + result → module slices; moduleQuery + null/undefined → keep
+        // last-good (the checklist block already set the load/error state for this apply).
+        if (!inspModule) {
+          s.reviews = snap.reviews ?? (snap.review ? [snap.review] : []);
+          s.reinspectionCreated = snap.reinspectionCreated;
+        } else if (inspectionsResult) {
+          s.reviews = [...inspectionsResult.reviews];
+          s.reinspectionCreated = inspectionsResult.reinspectionCreated;
+        }
         if (s.activeReviewId && !s.reviews.some((r) => r.id === s.activeReviewId)) s.activeReviewId = null;
-        s.reinspectionCreated = snap.reinspectionCreated;
         // Phase 2 Task 10 (Module 2 — Drawings) — XOR read-ownership for the drawing register, mirroring
         // decisions/daily-log. 'snapshot' mode (default): the snapshot slice OWNS `s.drawings` (unchanged).
         // 'moduleQuery' mode: the module-owned read (baked PER-VIEWER — author-visible drafts, this
@@ -800,7 +834,12 @@ export const useStore = create<Store>()(
         s.photos = (snap.photos ?? []).map((p) => ({ ...p, url: resolveMediaUrl(p.url) }));
         // (s.materials + s.dailyLog are set together under the daily-log XOR below)
         // pmc/engineer get the placed inspections; other roles get [] from the server
-        s.placedInspections = snap.placedInspections ?? [];
+        // XOR (Task 10 Module 3): the Site-Map inspection placements follow the same ownership.
+        if (!inspModule) {
+          s.placedInspections = snap.placedInspections ?? [];
+        } else if (inspectionsResult) {
+          s.placedInspections = [...inspectionsResult.placedInspections];
+        }
         s.phases = snap.phases ?? [];
         // Phase 2 Task 10 — XOR read-ownership for the daily-log slice (log core + crew + materials),
         // mirroring decisions. The media progress PHOTOS are ALWAYS composed from the snapshot (media,
@@ -861,17 +900,17 @@ export const useStore = create<Store>()(
      *  then applies. The result MUST be consumed; success is announced only for
      *  `applied`. `superseded` / `scope-moved` are silent no-ops; `invalid-project`
      *  never reports success and the caller requests a fresh snapshot to recover. */
-    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null): SnapshotApplyResult => {
+    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null): SnapshotApplyResult => {
       const st = get();
       if (!isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, lease.scope)) return 'scope-moved';
       // newest-owner is checked against THIS lease's own scope, so a stale lease in a
       // scope we've left can never mark a live scope's response superseded (round 12).
       if (lease.sequence !== coordinatorFor(lease.scope).newestLeaseSeq) return 'superseded';
       if (snap.project.id !== lease.scope.projectId) return 'invalid-project';
-      // Task 9/10 — the module decisions + daily-log + drawings reads (if any) rode the SAME lease as the
-      // snapshot, so they pass the identical scope/newest-owner ordering checks: a stale module response is
-      // dropped with its snapshot, never applied over a newer scope's data.
-      applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult);
+      // Task 9/10 — the module decisions + daily-log + drawings + inspections reads (if any) rode the SAME
+      // lease as the snapshot, so they pass the identical scope/newest-owner ordering checks: a stale module
+      // response is dropped with its snapshot, never applied over a newer scope's data.
+      applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult);
       return 'applied';
     };
 
@@ -914,12 +953,16 @@ export const useStore = create<Store>()(
       if (drawingsReadMode() === 'moduleQuery' && scopeStillCurrent(scope) && get().drawingsLoad !== 'ready') {
         set((s) => { s.drawingsLoad = 'loading'; });
       }
+      // Task 10 (Module 3 — Inspections) — same for the inspections module read.
+      if (inspectionsReadMode() === 'moduleQuery' && scopeStillCurrent(scope) && get().inspectionsLoad !== 'ready') {
+        set((s) => { s.inspectionsLoad = 'loading'; });
+      }
       try {
         // Task 9/10 — in 'moduleQuery' mode fetch the module-owned decisions and/or daily-log ALONGSIDE
         // the snapshot, under the SAME lease. Each module fetch is resilient: a failure yields `null` (an
         // explicit error state that keeps the last-good data) rather than failing the whole pull, so the
         // rest of the project still loads. In 'snapshot' mode no extra fetch happens (undefined → unchanged).
-        const [snap, decisionsResult, dailyLogResult, drawingsResult] = await Promise.all([
+        const [snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult] = await Promise.all([
           g.snapshot(),
           decisionsReadMode() === 'moduleQuery'
             ? g.decisions().then((d): ModuleDecisions | null => d).catch((): ModuleDecisions | null => null)
@@ -930,6 +973,9 @@ export const useStore = create<Store>()(
           drawingsReadMode() === 'moduleQuery'
             ? g.drawings().then((d): ModuleDrawings | null => d).catch((): ModuleDrawings | null => null)
             : Promise.resolve(undefined as ModuleDrawings | undefined),
+          inspectionsReadMode() === 'moduleQuery'
+            ? g.inspections().then((d): ModuleInspections | null => d).catch((): ModuleInspections | null => null)
+            : Promise.resolve(undefined as ModuleInspections | undefined),
         ]);
         // Round 2 finding 2: a command reconcile is CONFIRMED only when the snapshot applied AND every
         // REQUIRED module-owned read (Task 9 decisions / Task 10 daily-log + drawings, when in
@@ -940,8 +986,9 @@ export const useStore = create<Store>()(
         const moduleReadsOk =
           (decisionsReadMode() !== 'moduleQuery' || decisionsResult != null) &&
           (dailyLogReadMode() !== 'moduleQuery' || dailyLogResult != null) &&
-          (drawingsReadMode() !== 'moduleQuery' || drawingsResult != null);
-        const result = acceptSnapshot(snap, lease, decisionsResult, dailyLogResult, drawingsResult);
+          (drawingsReadMode() !== 'moduleQuery' || drawingsResult != null) &&
+          (inspectionsReadMode() !== 'moduleQuery' || inspectionsResult != null);
+        const result = acceptSnapshot(snap, lease, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult);
         if (result === 'applied') {
           // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a
           // pull that BEGAN AFTER an obligation's threshold can satisfy it (round 13,
@@ -1025,7 +1072,7 @@ export const useStore = create<Store>()(
      *  untouched to preserve the XOR), so a committed command needs a follow-up module
      *  refresh to become visible — see the reconcile in `consumeSnapshotResult`. */
     const anyModuleOwnedRead = (): boolean =>
-      decisionsReadMode() === 'moduleQuery' || dailyLogReadMode() === 'moduleQuery' || drawingsReadMode() === 'moduleQuery';
+      decisionsReadMode() === 'moduleQuery' || dailyLogReadMode() === 'moduleQuery' || drawingsReadMode() === 'moduleQuery' || inspectionsReadMode() === 'moduleQuery';
 
     /** Consume an `acceptSnapshot` result on a COMMAND path (a user-initiated
      *  mutation: approve, publish, issue, evidence upload…). The command's success

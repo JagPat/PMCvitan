@@ -37,6 +37,7 @@ import type {
   Role,
   DailyLogModuleResult,
   DrawingsModuleResult,
+  InspectionsModuleResult,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -332,6 +333,29 @@ export function drawingsReadMode(): 'snapshot' | 'moduleQuery' {
  *  baked per-viewer at read time (author-visible drafts, `ackedByMe`/`recipientOfCurrent`, a fresh
  *  time-limited signed `url`) — it can never be served from a cross-viewer cache. */
 export type ModuleDrawings = DrawingsModuleResult;
+
+/**
+ * Phase 2 Task 10 (Module 3 — Inspections) — the inspections read-ownership mode (XOR), mirroring
+ * `decisionsReadMode`/`drawingsReadMode`. `'snapshot'` (the DEFAULT) keeps the inspection slices
+ * (checklist / reviews / review / reinspectionCreated / placedInspections) owned by the full-snapshot
+ * slice — old behaviour, unchanged. `'moduleQuery'` flips ownership to the module-owned
+ * `GET …/inspections` read (served from the rebuildable projection, live fallback): the snapshot's
+ * inspection slices are then IGNORED and the module fetch — carried under the SAME snapshot scope lease —
+ * owns them. The slices are baked FOR THE CALLER'S ROLE (the PMC-only review queue, pmc/engineer
+ * placement) with fresh signed evidence paths, exactly as the snapshot slice, so the read is never an
+ * RBAC bypass. Additive: the endpoint ships first, the old frontend still works, and the flip is a config
+ * change once proven.
+ */
+export function inspectionsReadMode(): 'snapshot' | 'moduleQuery' {
+  return import.meta.env.VITE_INSPECTIONS_READ === 'moduleQuery' ? 'moduleQuery' : 'snapshot';
+}
+
+/** Phase 2 Task 10 (Module 3) — the module-owned inspections read payload (projection-served, live
+ *  fallback). The COMPLETE HTTP result is defined ONCE in `@vitan/shared` ({@link InspectionsModuleResult})
+ *  and imported by BOTH the API's query service and this gateway, so the two cannot drift (finding 5). The
+ *  slices are baked per-viewer/role at read time (the PMC-only review queue, each item's fresh signed
+ *  evidence paths) — they can never be served from a cross-viewer cache. */
+export type ModuleInspections = InspectionsModuleResult;
 
 /** Phase 2 Task 9 — the project-shell summary (identity + enabled modules + projection counts). */
 export interface ProjectShell {
@@ -702,6 +726,13 @@ export class ApiGateway {
    *  `DRAWINGS_READ_MODE === 'moduleQuery'` (XOR read-ownership). */
   drawings(): Promise<ModuleDrawings> {
     return this.req<ModuleDrawings>(`/projects/${this.projectId}/drawings`);
+  }
+
+  /** Phase 2 Task 10 (Module 3 — Inspections) — the MODULE-OWNED inspections read (projection-served,
+   *  live fallback, baked per-viewer/role). Fetched under the snapshot's scope lease when
+   *  `INSPECTIONS_READ_MODE === 'moduleQuery'` (XOR read-ownership). */
+  inspections(): Promise<ModuleInspections> {
+    return this.req<ModuleInspections>(`/projects/${this.projectId}/inspections`);
   }
 
   /** Phase 2 Task 9 — the project-shell summary (identity + enabledModules + projection counts). */
