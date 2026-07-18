@@ -8,6 +8,7 @@ import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { InspectionParticipant } from '../inspections/inspection.participant';
+import { InspectionsQueryService } from '../inspections/inspections.query';
 import type { AuthUser } from '../common/auth';
 
 /**
@@ -111,7 +112,11 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
   // stub: readiness needs no file URLs.
   const signed = { drawingPath: (id: string) => `/drawings/rev/${id}` } as unknown as SignedUrlService;
   const drawingsQuery = new DrawingsQueryService(prisma as unknown as PrismaService, signed);
-  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService), drawingsQuery, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant());
+  // Task 10 (Module 3) — the inspection gate's readiness input + the closing-inspection id come from the
+  // inspections query (read-encapsulation); a real instance over the SAME mocked prisma reads
+  // `inspection.findMany` exactly as the prior direct reads did (readiness needs no signed paths).
+  const inspectionsQuery = new InspectionsQueryService(prisma as unknown as PrismaService, signed as unknown as import('../media/signed-url.service').SignedUrlService);
+  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService), drawingsQuery, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant(), inspectionsQuery);
   const user = { sub: 'u-eng', role: 'engineer' } as AuthUser;
   return { svc, prisma, user, inspectionCreates, activityUpdates, audits, activity };
 }
