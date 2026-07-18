@@ -38,6 +38,13 @@ export OUTBOX_RELAY_AUTOSTART=true
 # this to the vite webServer as VITE_DAILYLOG_READ; the daily-log module-query spec runs only under it.
 export E2E_DAILYLOG_READ="${E2E_DAILYLOG_READ:-snapshot}"
 
+# Phase 2 Task 10 (Module 2 — Drawings) — the drawings module read-ownership mode the web app runs
+# under, mirroring the daily-log flag. The default 'snapshot' keeps the drawing register on the full
+# snapshot (old behaviour); 'moduleQuery' flips the web app onto the module-owned GET …/drawings read
+# (XOR). The Playwright config forwards this to the vite webServer as VITE_DRAWINGS_READ; the drawings
+# module-query spec runs only under it.
+export E2E_DRAWINGS_READ="${E2E_DRAWINGS_READ:-snapshot}"
+
 pnpm --filter api prisma:migrate
 pnpm --filter api seed
 # the Playwright config serves the COMPILED api (node dist/main.js) — the same
@@ -58,5 +65,5 @@ else
   export OUTBOX_SENDER_MODE=legacy
 fi
 
-echo "API acceptance — sender mode: $E2E_SENDER_MODE · daily-log read: $E2E_DAILYLOG_READ (relay autostart: $OUTBOX_RELAY_AUTOSTART)"
+echo "API acceptance — sender mode: $E2E_SENDER_MODE · daily-log read: $E2E_DAILYLOG_READ · drawings read: $E2E_DRAWINGS_READ (relay autostart: $OUTBOX_RELAY_AUTOSTART)"
 pnpm --filter web exec playwright test --config playwright.api.config.ts

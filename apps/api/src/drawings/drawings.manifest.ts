@@ -1,11 +1,15 @@
-import type { ModuleManifest } from '@vitan/shared';
+import { DRAWINGS_COMMANDS, DRAWINGS_QUERIES, type ModuleManifest } from '@vitan/shared';
 
-/** Governing drawing revisions with frozen recipients and acknowledgements (Phase 1). */
+/** Governing drawing revisions with frozen recipients and acknowledgements (Phase 1). Task 10 — a
+ *  fully-extracted module: it read-encapsulates every model it owns (incl. its rebuildable projection),
+ *  so no other module reads drawing persistence directly — every cross-module read routes through the
+ *  DrawingsQueryService contract (the boundary check enforces it). */
 export const drawingsManifest: ModuleManifest = {
   id: 'drawings',
   title: 'Drawing Control',
   kind: 'domain',
-  ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck'],
+  ownsModels: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection'],
+  readEncapsulated: ['drawing', 'drawingRevision', 'drawingRecipient', 'drawingAck', 'drawingsProjection'],
   dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: [],
   producesEvents: [
@@ -18,8 +22,8 @@ export const drawingsManifest: ModuleManifest = {
     'drawing.removed',
   ],
   consumesEvents: [],
-  commands: ['drawings.issue', 'drawings.publish', 'drawings.presign', 'drawings.acknowledge', 'drawings.setNode', 'drawings.remove'],
-  queries: [],
+  commands: [...DRAWINGS_COMMANDS],
+  queries: [...DRAWINGS_QUERIES],
   routes: [
     'POST /projects/:projectId/drawings',
     'POST /projects/:projectId/drawings/:drawingId/publish',

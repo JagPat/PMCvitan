@@ -15,6 +15,7 @@ import type { SnapshotDto } from '../snapshot/types';
 import type { IssueDrawingInput } from '../contracts';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
+import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 
 export interface IssuedDrawing {
@@ -81,8 +82,26 @@ export class DrawingsService {
     await emitEvent(tx, { projectId, actor, eventType: 'drawing.recipients_frozen', entityType: 'DrawingRevision', entityId: revisionId, payload: { recipients: members.length }, effectKey: 'drawing.recipients_frozen', dispatch: {} });
   }
 
-  async issue(projectId: string, user: AuthUser, input: IssueDrawingInput): Promise<IssuedDrawing> {
+  async issue(projectId: string, user: AuthUser, input: IssueDrawingInput, idempotencyKey?: string): Promise<IssuedDrawing> {
     const actor = await resolveActor(this.prisma, user);
+    // Idempotent under `idempotencyKey` (Task 5): a retried issue/revise (network retry / offline
+    // replay / double-tap) reserves→creates→receipts in ONE transaction, so it applies exactly once and
+    // a keyed REPLAY short-circuits BEFORE any validation or file upload (the reference resolution +
+    // storage.put stay outside `run`, so a replay neither re-validates nor re-uploads bytes).
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({
+      number: input.number, title: input.title, discipline: input.discipline, rev: input.rev, status: input.status,
+      mime: input.mime, note: input.note ?? '', zone: input.zone ?? null, activityId: input.activityId ?? null,
+      decisionId: input.decisionId ?? null, nodeId: input.nodeId ?? null, publish: !!input.publish,
+      storageKey: input.storageKey ?? null, sizeBytes: input.sizeBytes ?? null, dataLen: input.data ? input.data.length : null,
+    });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'drawings.issue', idempotencyKey, requestHash)) {
+      // replay: the drawing + this revision already exist (same key + payload) — return their ids
+      // (the client refetches the snapshot anyway; the ids are best-effort for the retry's response).
+      const d = await this.prisma.drawing.findFirst({ where: { projectId, number: input.number }, select: { id: true } });
+      const r = d ? await this.prisma.drawingRevision.findFirst({ where: { projectId, drawingId: d.id, rev: input.rev }, orderBy: { createdAt: 'desc' }, select: { id: true } }) : null;
+      return { drawingId: d?.id ?? '', revisionId: r?.id ?? '' };
+    }
     // Location spine: validate the place this drawing governs belongs to this project.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
     // Project-owned references: the linked activity/decision must be THIS project's
@@ -141,7 +160,13 @@ export class DrawingsService {
     let published = false;
     let isRevise = false;
     try {
-      await this.prisma.$transaction(async (tx) => {
+      const outcome = await executeCommand(this.prisma, {
+        scope,
+        actor,
+        commandType: 'drawings.issue',
+        idempotencyKey,
+        requestHash,
+        run: async (tx) => {
         // a new revision/publication moves the drawing gate (gate finding 1) —
         // the readiness lock comes FIRST, before the row lock below (uniform order)
         await lockProjectReadiness(tx, projectId);
@@ -231,7 +256,12 @@ export class DrawingsService {
           payload: { number: input.number, rev: input.rev, status: input.status },
         });
         issued = await emitEvent(tx, { projectId, actor, eventType: isRevise ? 'drawing.revised' : 'drawing.issued', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: input.number, rev: input.rev, status: input.status }, effectKey: published ? (isRevise ? 'drawing.revised' : 'drawing.issued') : (isRevise ? 'drawing.revised_draft' : 'drawing.issued_draft'), dispatch: published ? { push: { body: `Drawing issued: ${input.number} Rev ${input.rev} — ${input.title}` } } : {} });
+          // A draft notifies no one — its intent is weightless. Only a published issue|revise carries the
+          // push-bearing event to the sender; the recipients-frozen events are weightless no-ops.
+          return { resultRef: revisionId, events: issued ? [issued] : [] };
+        },
       });
+      if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     } catch (e) {
       // a unique fired: the (drawingId, rev) label, a concurrent same-number create,
       // or the one-construction-per-drawing backstop — all mean "someone else won"
@@ -240,10 +270,6 @@ export class DrawingsService {
       }
       throw e;
     }
-
-    // A draft notifies no one — its persisted intent is weightless, so the sender is a no-op.
-    // Only a published issue|revise reaches the people who build from it.
-    await this.dispatcher.dispatchCommitted(issued ? [issued] : []);
     return { drawingId, revisionId };
   }
 
@@ -252,49 +278,77 @@ export class DrawingsService {
    *  frozen now (for every revision that never had a snapshot). Re-publishing conflicts —
    *  and the publish is serialized on the drawing row + CAS-guarded, so a concurrent
    *  duplicate can never publish (or audit/notify) twice (gate finding 2). */
-  async publish(projectId: string, drawingId: string, user: AuthUser): Promise<SnapshotDto> {
+  async publish(projectId: string, drawingId: string, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
     const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ drawingId });
+    // Idempotent (Task 5): a keyed retry of the same publish replays the snapshot; a fresh publish
+    // reserves→CAS→receipts in one transaction (the CAS on publishedAt is the concurrency backstop).
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'drawings.publish', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
     const d = await this.prisma.drawing.findUnique({ where: { id: drawingId } });
     if (!d || d.projectId !== projectId) throw new NotFoundException('Drawing not found');
     if (d.publishedAt) throw new ConflictException('Drawing is already published');
 
-    const ev = await this.prisma.$transaction(async (tx) => {
-      // publication activates the frozen distribution — a readiness write (finding 1)
-      await lockProjectReadiness(tx, projectId);
-      // lock the drawing row, then CAS on publishedAt STILL null — the loser of a
-      // concurrent publish (or a racing one-step issue) gets a clean 409, not a
-      // second publication with duplicate audit/notification
-      await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Drawing" WHERE "id" = ${drawingId} FOR UPDATE`);
-      const { count } = await tx.drawing.updateMany({
-        where: { id: drawingId, projectId, publishedAt: null },
-        data: { publishedAt: new Date() },
-      });
-      if (count === 0) throw new ConflictException('Drawing is already published');
-      const unfrozen = await tx.drawingRevision.findMany({
-        where: { drawingId, status: { not: 'superseded' }, recipientsFrozenAt: null },
-        select: { id: true },
-      });
-      for (const rev of unfrozen) await this.freezeRecipients(tx, actor, projectId, rev.id);
-      await recordAudit(tx, { projectId, actor, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } });
-      return emitEvent(tx, { projectId, actor, eventType: 'drawing.published', entityType: 'Drawing', entityId: drawingId, payload: { number: d.number }, effectKey: 'drawing.published', dispatch: { push: { body: `Drawing issued: ${d.number} — ${d.title}` } } });
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'drawings.publish',
+      idempotencyKey,
+      requestHash,
+      run: async (tx) => {
+        // publication activates the frozen distribution — a readiness write (finding 1)
+        await lockProjectReadiness(tx, projectId);
+        // lock the drawing row, then CAS on publishedAt STILL null — the loser of a
+        // concurrent publish (or a racing one-step issue) gets a clean 409, not a
+        // second publication with duplicate audit/notification
+        await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Drawing" WHERE "id" = ${drawingId} FOR UPDATE`);
+        const { count } = await tx.drawing.updateMany({
+          where: { id: drawingId, projectId, publishedAt: null },
+          data: { publishedAt: new Date() },
+        });
+        if (count === 0) throw new ConflictException('Drawing is already published');
+        const unfrozen = await tx.drawingRevision.findMany({
+          where: { drawingId, status: { not: 'superseded' }, recipientsFrozenAt: null },
+          select: { id: true },
+        });
+        for (const rev of unfrozen) await this.freezeRecipients(tx, actor, projectId, rev.id);
+        await recordAudit(tx, { projectId, actor, action: 'drawing.publish', entity: 'Drawing', entityId: drawingId, payload: { number: d.number } });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'drawing.published', entityType: 'Drawing', entityId: drawingId, payload: { number: d.number }, effectKey: 'drawing.published', dispatch: { push: { body: `Drawing issued: ${d.number} — ${d.title}` } } });
+        return { resultRef: drawingId, events: [ev] };
+      },
     });
-    await this.dispatcher.dispatchCommitted([ev]);
+    if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
   /** Re-file a drawing onto a location-tree node (or null to unfile). Scoped to the
    *  caller's project. Returns the fresh snapshot so the client reconciles. Location spine. */
-  async setNode(id: string, projectId: string, nodeId: string | null, user: AuthUser): Promise<SnapshotDto> {
+  async setNode(id: string, projectId: string, nodeId: string | null, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
     const drawing = await this.prisma.drawing.findUnique({ where: { id } });
     if (!drawing || drawing.projectId !== projectId) throw new NotFoundException('Drawing not found');
     const resolved = await resolveProjectNode(this.prisma, projectId, nodeId);
     const actor = await resolveActor(this.prisma, user);
-    const ev = await this.prisma.$transaction(async (tx) => {
-      await tx.drawing.update({ where: { id }, data: { nodeId: resolved } });
-      await recordAudit(tx, { projectId, actor, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } });
-      return emitEvent(tx, { projectId, actor, eventType: 'drawing.refiled', entityType: 'Drawing', entityId: id, payload: { nodeId: resolved }, effectKey: 'drawing.refiled', dispatch: {} });
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ id, nodeId: resolved });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'drawings.setNode', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'drawings.setNode',
+      idempotencyKey,
+      requestHash,
+      run: async (tx) => {
+        await tx.drawing.update({ where: { id }, data: { nodeId: resolved } });
+        await recordAudit(tx, { projectId, actor, action: 'drawing.refile', entity: 'Drawing', entityId: id, payload: { nodeId: resolved } });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'drawing.refiled', entityType: 'Drawing', entityId: id, payload: { nodeId: resolved }, effectKey: 'drawing.refiled', dispatch: {} });
+        return { resultRef: id, events: [ev] };
+      },
     });
-    await this.dispatcher.dispatchCommitted([ev]);
+    if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -306,39 +360,45 @@ export class DrawingsService {
    * NOTHING new and just returns the current count. Ack and audit are atomic —
    * neither can exist without the other. Client can't acknowledge (they don't build).
    */
-  async acknowledge(projectId: string, revisionId: string, user: AuthUser): Promise<{ ok: boolean; ackCount: number }> {
+  async acknowledge(projectId: string, revisionId: string, user: AuthUser, idempotencyKey?: string): Promise<{ ok: boolean; ackCount: number }> {
     if (user.role === 'client') throw new ForbiddenException('Only the build team acknowledges drawings');
     const rev = await this.prisma.drawingRevision.findUnique({ where: { id: revisionId }, include: { drawing: true } });
     if (!rev || rev.drawing.projectId !== projectId) throw new NotFoundException('Drawing revision not found');
 
     const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ revisionId });
 
-    let firstAck = false;
-    let ackEvent: EmittedEventMeta | undefined;
+    // Idempotent as a command BOTH ways: the (revisionId, userId) unique makes the underlying ack
+    // effectively-once, and the Task-5 key makes a keyed retry (the write-ahead outbox re-sending)
+    // replay the SAME success. A keyed replay (executeCommand short-circuits) or a same-user re-ack
+    // (existing row) records nothing new and announces nothing.
     try {
-      await this.prisma.$transaction(async (tx) => {
-        // an acknowledgement can complete the frozen set — a readiness write (finding 1)
-        await lockProjectReadiness(tx, projectId);
-        const existing = await tx.drawingAck.findUnique({ where: { revisionId_userId: { revisionId, userId: user.sub } } });
-        if (existing) return; // replay — the fact is already recorded and audited
-        await tx.drawingAck.create({ data: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role } });
-        await recordAudit(tx, { projectId, actor, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } });
-        ackEvent = await emitEvent(tx, { projectId, actor, eventType: 'drawing.acknowledged', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev }, effectKey: 'drawing.acknowledged', dispatch: { push: { body: `${actor.actorName} is building to ${rev.drawing.number} Rev ${rev.rev}` } } });
-        firstAck = true;
+      const outcome = await executeCommand(this.prisma, {
+        scope,
+        actor,
+        commandType: 'drawings.acknowledge',
+        idempotencyKey,
+        requestHash,
+        run: async (tx) => {
+          // an acknowledgement can complete the frozen set — a readiness write (finding 1)
+          await lockProjectReadiness(tx, projectId);
+          const existing = await tx.drawingAck.findUnique({ where: { revisionId_userId: { revisionId, userId: user.sub } } });
+          if (existing) return { resultRef: revisionId, events: [] }; // replay — the fact is already recorded and audited
+          await tx.drawingAck.create({ data: { revisionId, userId: user.sub, userName: actor.actorName, role: user.role } });
+          await recordAudit(tx, { projectId, actor, action: 'drawing.ack', entity: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev } });
+          const ackEvent = await emitEvent(tx, { projectId, actor, eventType: 'drawing.acknowledged', entityType: 'DrawingRevision', entityId: revisionId, payload: { number: rev.drawing.number, rev: rev.rev }, effectKey: 'drawing.acknowledged', dispatch: { push: { body: `${actor.actorName} is building to ${rev.drawing.number} Rev ${rev.rev}` } } });
+          return { resultRef: revisionId, events: [ackEvent] };
+        },
       });
+      // only the FIRST acknowledgement announces — a replay / existing-ack returns no events to dispatch
+      if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     } catch (e) {
-      // a concurrent duplicate slipped past the read — the unique makes it a replay
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-        firstAck = false;
-      } else {
-        throw e;
-      }
+      // a concurrent duplicate slipped past the read — the unique makes it a replay (announce nothing)
+      if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002')) throw e;
     }
 
     const ackCount = await this.prisma.drawingAck.count({ where: { revisionId } });
-    // only the FIRST acknowledgement announces — a replay repeats nothing (its emit rolled back
-    // on the unique conflict, so there is no committed event to dispatch)
-    if (firstAck && ackEvent) await this.dispatcher.dispatchCommitted([ackEvent]);
     return { ok: true, ackCount };
   }
 
@@ -356,19 +416,32 @@ export class DrawingsService {
   }
 
   /** Delete a whole drawing (all revisions + files), scoped to the project. Audited. */
-  async remove(id: string, projectId: string, user: AuthUser): Promise<boolean> {
+  async remove(id: string, projectId: string, user: AuthUser, idempotencyKey?: string): Promise<boolean> {
     const drawing = await this.prisma.drawing.findUnique({ where: { id }, include: { revisions: true } });
     if (!drawing || drawing.projectId !== projectId) return false;
     const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ id });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'drawings.remove', idempotencyKey, requestHash)) {
+      return true; // already removed under this key
+    }
     await Promise.all(drawing.revisions.map((r) => (r.storageKey ? this.storage.remove(r.storageKey).catch(() => {}) : Promise.resolve())));
-    const ev = await this.prisma.$transaction(async (tx) => {
-      // deleting a linked drawing changes the aggregated gate (finding 1)
-      await lockProjectReadiness(tx, projectId);
-      await tx.drawing.delete({ where: { id } }); // revisions + recipients cascade
-      await recordAudit(tx, { projectId, actor, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } });
-      return emitEvent(tx, { projectId, actor, eventType: 'drawing.removed', entityType: 'Drawing', entityId: id, payload: { number: drawing.number }, effectKey: 'drawing.removed', dispatch: {} });
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'drawings.remove',
+      idempotencyKey,
+      requestHash,
+      run: async (tx) => {
+        // deleting a linked drawing changes the aggregated gate (finding 1)
+        await lockProjectReadiness(tx, projectId);
+        await tx.drawing.delete({ where: { id } }); // revisions + recipients cascade
+        await recordAudit(tx, { projectId, actor, action: 'drawing.remove', entity: 'Drawing', entityId: id, payload: { number: drawing.number } });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'drawing.removed', entityType: 'Drawing', entityId: id, payload: { number: drawing.number }, effectKey: 'drawing.removed', dispatch: {} });
+        return { resultRef: id, events: [ev] };
+      },
     });
-    await this.dispatcher.dispatchCommitted([ev]);
+    if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     return true;
   }
 }

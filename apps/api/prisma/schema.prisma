@@ -346,6 +346,27 @@ model DailyLogProjection {
   @@unique([generationId, projectId])
 }
 
+// Phase 2 Task 10 — the DRAWINGS read-model projection (the drawings module's rebuildable read path).
+// Like DailyLogProjection (one row per project, not per entity), the drawings register is a per-PROJECT
+// composite — every drawing with its revision history + governing-revision distribution facts — so a
+// generation holds exactly ONE row per project, keyed (generationId, projectId), storing the whole
+// serialized VIEWER-INDEPENDENT base `computeDrawingsBase` produces (drawings-serialize.ts). The
+// `drawings.inbox` projection consumer refreshes it from canonical state on every drawing.* event. The
+// per-viewer fields (draft-author visibility, the viewer's ack/recipient state) and each revision's
+// short-lived signed `url` are baked at READ time — the base is neither per-viewer nor time-limited, so
+// the stored row is safe to reuse across viewers and never holds an expiring token. Generation-scoped:
+// `generationId` names the ProjectionGeneration the row belongs to (a plain column, not an FK — the
+// lifecycle is managed by the rebuilder + the consumer's dropGeneration hook).
+model DrawingsProjection {
+  id           String   @id @default(uuid())
+  generationId String
+  projectId    String
+  dto          Json // the serialized DrawingsBase (viewer-independent register; url + viewer fields baked at read)
+  updatedAt    DateTime @updatedAt
+
+  @@unique([generationId, projectId])
+}
+
 // Phase 2 Task 5 — the command-idempotency ledger. One receipt per (scope, actor, commandType,
 // idempotencyKey): a retried/duplicated command (offline replay, network retry, double-tap)
 // reserves→executes→commits its succeeded receipt in ONE transaction, so the effect happens

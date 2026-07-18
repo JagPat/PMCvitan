@@ -1,11 +1,11 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { resolveDrawingUrl, type IssueDrawingInput } from '@/data/apiGateway';
+import { resolveDrawingUrl, drawingsReadMode, type IssueDrawingInput } from '@/data/apiGateway';
 import { Eyebrow, Button, Modal } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
-import { Download, FileText, History, ChevronRight, X, Plus, Lock, Check, HardHat, MapPin } from '@/lib/icons';
+import { Download, FileText, History, ChevronRight, X, Plus, Lock, Check, HardHat, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
 import { can, drawingDisciplineFor, type Discipline, type Drawing, type DrawingRevision } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -36,6 +36,17 @@ export function DrawingsScreen() {
   const role = useStore((s) => s.role);
   const memberships = useStore(useShallow((s) => s.memberships));
   const activeProjectId = useStore((s) => s.activeProjectId);
+  // Phase 2 Task 10 (Module 2 — Drawings; finding 4): under module read-ownership the drawing register
+  // is a SEPARATE async surface from the project snapshot, with its own honest load state. Never claim
+  // "No drawings issued yet" until a read has actually SUCCEEDED empty; while it loads show a loading
+  // line; on failure show an unavailable/Retry boundary (or a stale banner + paused actions when
+  // last-good drawings are retained). In snapshot mode `drawingsLoad` stays 'idle' — gates never fire.
+  const drawingsLoad = useStore((s) => s.drawingsLoad);
+  const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
+  const moduleOwned = drawingsReadMode() === 'moduleQuery';
+  const reading = moduleOwned && (drawingsLoad === 'idle' || drawingsLoad === 'loading');
+  const unavailable = moduleOwned && drawingsLoad === 'error';
+  const actionsLocked = reading || unavailable; // don't issue/ack against a register whose read hasn't settled
   // hold the open drawing by id so the viewer always reflects live store state
   // (e.g. an acknowledgement) rather than a stale snapshot captured on click.
   const [openId, setOpenId] = useState<string | null>(null);
@@ -67,11 +78,28 @@ export function DrawingsScreen() {
           </div>
         </div>
         {can('drawing.issue', role) && (
-          <Button variant="ink" onClick={() => setIssuing(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 15px', fontSize: 13 }}>
+          <Button variant="ink" onClick={() => setIssuing(true)} disabled={actionsLocked} data-testid="issue-drawing" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 15px', fontSize: 13, cursor: actionsLocked ? 'not-allowed' : 'pointer', opacity: actionsLocked ? 0.6 : 1 }}>
             <Plus size={16} /> Issue drawing
           </Button>
         )}
       </div>
+
+      {/* finding 4 — the module read FAILED but last-good drawings are retained: show an explicit
+          stale/unavailable warning + Retry (never silent stale data with a live Issue button). Retry
+          re-runs the scope-guarded module read; on success it applies fresh data, clears
+          drawingsLoad→ready and re-enables the paused actions. Only shows when there IS a register to
+          keep — an empty failed read falls to the unavailable boundary below. */}
+      {unavailable && drawings.length > 0 && (
+        <div data-testid="drawings-stale-warning" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px', marginTop: 14 }}>
+          <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
+          <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>
+            Showing the last-known register — the latest couldn't load. Actions are paused until it refreshes.
+          </span>
+          <button onClick={() => requestFreshSnapshot()} data-testid="drawings-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <RefreshCw size={12} /> Retry
+          </button>
+        </div>
+      )}
 
       {/* consultant discipline scope — their set by default, one tap to see everything */}
       {scopeKey && (
@@ -84,7 +112,25 @@ export function DrawingsScreen() {
         </div>
       )}
 
-      {drawings.length === 0 && (
+      {/* finding 4 — under module read-ownership the register is a SEPARATE async surface: never claim
+          "No drawings issued yet" until a read has SUCCEEDED empty. While it loads show a loading line;
+          on failure with no last-good register show an unavailable/Retry boundary. In snapshot mode
+          `reading`/`unavailable` are false and only the honest-empty branch renders. */}
+      {reading && drawings.length === 0 && (
+        <div data-testid="drawings-loading" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the drawing register…</div>
+      )}
+      {unavailable && drawings.length === 0 && (
+        <div data-testid="drawings-unavailable" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><WifiOff size={18} /> Drawing register unavailable.</div>
+          <div style={{ fontSize: 12.5, marginTop: 6 }}>Check your connection and access, then retry.</div>
+          <div style={{ marginTop: 14 }}>
+            <Button variant="ink" onClick={() => requestFreshSnapshot()} data-testid="drawings-retry-empty" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <RefreshCw size={15} /> Retry
+            </Button>
+          </div>
+        </div>
+      )}
+      {!reading && !unavailable && drawings.length === 0 && (
         <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>No drawings issued yet.</div>
       )}
 
@@ -152,6 +198,10 @@ const ROLE_SHORT: Record<string, string> = { pmc: 'PMC', client: 'Client', engin
 function AckBlock({ drawing }: { drawing: Drawing }) {
   const role = useStore((s) => s.role);
   const acknowledgeDrawing = useStore((s) => s.acknowledgeDrawing);
+  // finding 4 — the ack is a mutating command; don't record it against a register whose module read
+  // hasn't settled (loading or failed). In snapshot mode `drawingsLoad` is 'idle' → never locked.
+  const drawingsLoad = useStore((s) => s.drawingsLoad);
+  const ackLocked = drawingsReadMode() === 'moduleQuery' && (drawingsLoad === 'idle' || drawingsLoad === 'loading' || drawingsLoad === 'error');
   const rev = drawing.current;
   // Reads the shared policy so the button appears for exactly the roles the API accepts
   // (pmc/engineer/contractor) — previously omitted pmc, who the server allows.
@@ -196,7 +246,7 @@ function AckBlock({ drawing }: { drawing: Drawing }) {
             <Check size={16} /> You’re building to Rev {rev.rev}
           </div>
         ) : (
-          <Button variant="ink" onClick={() => acknowledgeDrawing(drawing.id)} data-testid="ack-drawing" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 15px', fontSize: 13 }}>
+          <Button variant="ink" onClick={() => acknowledgeDrawing(drawing.id)} disabled={ackLocked} data-testid="ack-drawing" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '10px 15px', fontSize: 13, cursor: ackLocked ? 'not-allowed' : 'pointer', opacity: ackLocked ? 0.6 : 1 }}>
             <HardHat size={15} /> I’m building to Rev {rev.rev}
           </Button>
         )

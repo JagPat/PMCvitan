@@ -34,6 +34,7 @@ import { SignedUrlService } from './media/signed-url.service';
 import { MediaService } from './media/media.service';
 import { MediaController } from './media/media.controller';
 import { DrawingsService } from './drawings/drawings.service';
+import { DrawingsQueryService } from './drawings/drawings.query';
 import { NodesService } from './nodes/nodes.service';
 import { NodesController } from './nodes/nodes.controller';
 import { DrawingsController } from './drawings/drawings.controller';
@@ -110,6 +111,7 @@ import { NodeInitParticipant } from './nodes/node-init.participant';
     SignedUrlService,
     MediaService,
     DrawingsService,
+    DrawingsQueryService,
     PushService,
     OrgsService,
     MembersService,

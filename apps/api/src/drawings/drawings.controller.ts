@@ -1,6 +1,7 @@
-import { Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, ForbiddenException, Get, Headers, NotFoundException, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { DrawingsService } from './drawings.service';
+import { DrawingsQueryService } from './drawings.query';
 import { SignedUrlService } from '../media/signed-url.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { issueDrawingSchema, presignDrawingSchema, setNodeSchema, type IssueDrawingInput, type PresignDrawingInput, type SetNodeInput } from '../contracts';
@@ -11,8 +12,20 @@ import { Public, RolesFor, RolesGuard } from '../common/roles';
 export class DrawingsController {
   constructor(
     private readonly drawings: DrawingsService,
+    private readonly drawingsQuery: DrawingsQueryService,
     private readonly signed: SignedUrlService,
   ) {}
+
+  /** Phase 2 Task 10 — the MODULE-OWNED drawings read (XOR read-ownership): the frontend fetches the
+   *  register HERE (from the rebuildable projection, else the live fallback) instead of the snapshot
+   *  slice when `VITE_DRAWINGS_READ=moduleQuery`. Role-invariant read (`project.read`); the register is
+   *  baked for the caller (draft-author visibility + their ack/recipient state). */
+  @Get('projects/:projectId/drawings')
+  @UseGuards(JwtGuard, RolesGuard)
+  @RolesFor('project.read')
+  read(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.drawingsQuery.moduleDrawings(projectId, user.sub);
+  }
 
   /** Issue a drawing (new register entry, or a new revision that supersedes the prior).
    *  PMC only — issuing controlled drawings is the architect's authority. */
@@ -23,8 +36,9 @@ export class DrawingsController {
     @Param('projectId') projectId: string,
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(issueDrawingSchema)) body: IssueDrawingInput,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.drawings.issue(projectId, user, body);
+    return this.drawings.issue(projectId, user, body, idempotencyKey);
   }
 
   /** Publish a private draft drawing → issue it to the build team (PMC only). */
@@ -35,8 +49,9 @@ export class DrawingsController {
     @Param('projectId') projectId: string,
     @Param('drawingId') drawingId: string,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.drawings.publish(projectId, drawingId, user);
+    return this.drawings.publish(projectId, drawingId, user, idempotencyKey);
   }
 
   /** Presigned direct-to-bucket upload target for a large drawing (PMC only, Slice 3). */
@@ -60,8 +75,9 @@ export class DrawingsController {
     @Param('projectId') projectId: string,
     @Param('revId') revId: string,
     @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.drawings.acknowledge(projectId, revId, user);
+    return this.drawings.acknowledge(projectId, revId, user, idempotencyKey);
   }
 
   /** Re-file a drawing onto a location-tree node (or null to unfile). PMC only — the
@@ -74,8 +90,9 @@ export class DrawingsController {
     @Param('drawingId') drawingId: string,
     @CurrentUser() user: AuthUser,
     @Body(new ZodPipe(setNodeSchema)) body: SetNodeInput,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    return this.drawings.setNode(drawingId, projectId, body.nodeId, user);
+    return this.drawings.setNode(drawingId, projectId, body.nodeId, user, idempotencyKey);
   }
 
   /**
@@ -104,8 +121,12 @@ export class DrawingsController {
   @Delete('drawings/:id')
   @UseGuards(JwtGuard, RolesGuard)
   @RolesFor('drawing.delete')
-  async remove(@Param('id') id: string, @CurrentUser() user: AuthUser): Promise<{ ok: boolean }> {
-    const ok = await this.drawings.remove(id, user.projectId, user);
+  async remove(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<{ ok: boolean }> {
+    const ok = await this.drawings.remove(id, user.projectId, user, idempotencyKey);
     if (!ok) throw new NotFoundException('Drawing not found');
     return { ok: true };
   }
