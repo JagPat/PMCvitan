@@ -12,7 +12,10 @@ export const activitiesManifest: ModuleManifest = {
   title: 'Site Activity Spine',
   kind: 'domain',
   ownsModels: ['activity', 'gateOverride', 'phase'],
-  dependsOn: ['decisions', 'drawings'], // Task 8/10 — reads decisions + the drawing gate via their query contracts
+  // Task 8/10 — reads decisions + the drawing gate + the inspection-gate readiness/next-id via their query
+  // contracts (InspectionsQueryService.readinessSlice/nextInspectionId). The reverse inspections→activities
+  // edge is a workflow participant (cycle-exempt), so this dependsOn graph stays acyclic.
+  dependsOn: ['decisions', 'drawings', 'inspections'],
   workflowParticipants: ['inspections'],
   producesEvents: [
     'activity.created',

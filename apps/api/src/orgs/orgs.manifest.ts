@@ -12,7 +12,9 @@ export const orgsManifest: ModuleManifest = {
   title: 'Organizations & Projects',
   kind: 'domain',
   ownsModels: ['org', 'orgMembership', 'membership', 'project', 'projectCompany', 'projectTemplate', 'templateModule', 'user', 'workerDevice'],
-  dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
+  // Task 8 reads decisions; Task 10 reads the existing inspection ids at init via the inspections query
+  // (InspectionsQueryService.allIds) — both through their query contracts.
+  dependsOn: ['decisions', 'inspections'],
   workflowParticipants: ['nodes', 'activities', 'inspections'],
   producesEvents: [
     'project.created',

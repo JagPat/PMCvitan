@@ -66,6 +66,16 @@ export const EXTERNAL_EFFECTS = {
   'inspection.approved': { eventType: 'inspection.approved', invalidate: true, push: ['contractor', 'client'] },
   'inspection.rejected': { eventType: 'inspection.rejected', invalidate: true, push: null },
   'inspection.reinspection_created': { eventType: 'inspection.reinspection_created', invalidate: true, push: ['engineer'] },
+  // Phase 2 Task 10 (Module 3) correction — inspection-owned events appended by the workflow participant in
+  // a FOREIGN mutation's transaction, so the inspections.inbox projection observes changes to its serialized
+  // fields that formerly rode only another module's event. Signal-only: the invalidation deduplicates with
+  // the foreign command's own invalidation (one socket signal per project), and none carries a push (the
+  // foreign command owns any push body).
+  'inspection.closing_created': { eventType: 'inspection.closing_created', invalidate: true, push: null },
+  'inspection.evidence_added': { eventType: 'inspection.evidence_added', invalidate: true, push: null },
+  'inspection.evidence_removed': { eventType: 'inspection.evidence_removed', invalidate: true, push: null },
+  'inspection.relabeled': { eventType: 'inspection.relabeled', invalidate: true, push: null },
+  'inspection.unfiled': { eventType: 'inspection.unfiled', invalidate: true, push: null },
   // ── drawings ───────────────────────────────────────────────────────────────────────────────
   'drawing.issued': { eventType: 'drawing.issued', invalidate: true, push: ['engineer', 'contractor'] },
   // a draft issue emits the same event type but reaches no one (private).

@@ -1809,7 +1809,10 @@ export const useStore = create<Store>()(
       const msg = review.closing
         ? `Signed off: ${review.activityName ?? review.title} is complete.`
         : 'Inspection approved. Contractor and client notified.';
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [] }, 'Approve inspection', () => gateway!.decideReview(review.id, true, []), msg)) return;
+      // Task 10 (Module 3) correction — one stable idempotency key for this decision: the online send
+      // and any offline replay reach the server under it, so a lost-response retry decides once.
+      const approveReviewKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: true, rejectedItemIds: [], idempotencyKey: approveReviewKey }, 'Approve inspection', () => gateway!.decideReview(review.id, true, [], approveReviewKey), msg)) return;
       set((s) => {
         const j = s.reviews.findIndex((r) => r.id === review.id);
         if (j >= 0) s.reviews[j].decided = true;
@@ -1832,7 +1835,9 @@ export const useStore = create<Store>()(
       }
       // gate finding 3: rejection names exact ROWS by server id (labels are not unique)
       const rejectedIds = review.items.filter((it) => it.rejected && it.id).map((it) => it.id!);
-      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedIds), n + ' re-inspection task(s) created with due dates.')) return;
+      // Task 10 (Module 3) correction — the rejection decision carries its own stable idempotency key.
+      const rejectReviewKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'decideReview', inspectionId: review.id, approve: false, rejectedItemIds: rejectedIds, idempotencyKey: rejectReviewKey }, 'Send re-inspection', () => gateway!.decideReview(review.id, false, rejectedIds, rejectReviewKey), n + ' re-inspection task(s) created with due dates.')) return;
       set((s) => {
         s.reinspectionCreated = true;
         const j = s.reviews.findIndex((r) => r.id === review.id);

@@ -160,14 +160,21 @@ export class ActivitiesService {
       'plannedStartDate' in data ? (data.plannedStartDate as Date | null) : a.plannedStartDate,
       'plannedEndDate' in data ? (data.plannedEndDate as Date | null) : a.plannedEndDate,
     );
-    const ev = await this.prisma.$transaction(async (tx) => {
+    const events = await this.prisma.$transaction(async (tx) => {
       // stored material/team flags and the decision link move readiness (finding 1)
       await lockProjectReadiness(tx, projectId);
       await tx.activity.update({ where: { id: activityId }, data });
+      // Task 10 (Module 3) correction — a rename re-stamps the INSPECTION-OWNED activity label on every
+      // linked inspection through the participant, which appends `inspection.relabeled` so the projection's
+      // `activityName` tracks the rename (it read `Activity.name` live before). No-op (null) when unchanged.
+      const relabelEv = input.name !== undefined && input.name !== a.name
+        ? await this.inspections.relabelForActivity(tx, { projectId, actor, activityId, name: input.name })
+        : null;
       await recordAudit(tx, { projectId, actor, action: 'activity.update', entity: 'Activity', entityId: activityId });
-      return emitEvent(tx, { projectId, actor, eventType: 'activity.updated', entityType: 'Activity', entityId: activityId, effectKey: 'activity.updated', dispatch: {} });
+      const updatedEv = await emitEvent(tx, { projectId, actor, eventType: 'activity.updated', entityType: 'Activity', entityId: activityId, effectKey: 'activity.updated', dispatch: {} });
+      return relabelEv ? [relabelEv, updatedEv] : [updatedEv];
     });
-    await this.dispatcher.dispatchCommitted([ev]);
+    await this.dispatcher.dispatchCommitted(events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -293,9 +300,9 @@ export class ActivitiesService {
     // (INSP-<activityId>-close) is RETIRED; `closing` + `activityId` are the facts. Task 10 (Module 3):
     // the id is allocated by the inspections module's query, not a direct `prisma.inspection` read.
     const closingId = await this.inspectionsQuery.nextInspectionId();
-    let ev: EmittedEventMeta;
+    let events: EmittedEventMeta[];
     try {
-      ev = await this.prisma.$transaction(async (tx) => {
+      events = await this.prisma.$transaction(async (tx) => {
         // The claim must be attributable to a member who is ACTIVE AT COMMIT TIME
         // (Codex Task 5 gate P1): the membership row is read LOCKED inside THIS
         // transaction, so a concurrent removal has a defined order — it either
@@ -324,7 +331,10 @@ export class ActivitiesService {
         // The closing inspection is an ATOMIC WORKFLOW participant (Task 7, edge 1):
         // the inspections module owns the Inspection write, invoked here on THIS
         // transaction so the claim + closing inspection commit or roll back together.
-        await this.inspections.createClosingInspection(tx, {
+        // Task 10 (Module 3) correction — the participant creates the closing inspection AND appends the
+        // inspection-owned `inspection.closing_created` event in THIS transaction, so the projection
+        // observes the new review. Both this event and the completion event are dispatched after commit.
+        const closingEv = await this.inspections.createClosingInspection(tx, {
           closingId,
           projectId,
           activity: { id: activityId, name: a.name, zone: a.zone, nodeId: a.nodeId },
@@ -334,7 +344,8 @@ export class ActivitiesService {
         });
         await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${a.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'activity.complete_requested', entity: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } });
-        return emitEvent(tx, { projectId, actor, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId }, effectKey: 'activity.completion_requested', dispatch: { push: { body: `Sign-off requested: ${a.name}` } } });
+        const completionEv = await emitEvent(tx, { projectId, actor, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId }, effectKey: 'activity.completion_requested', dispatch: { push: { body: `Sign-off requested: ${a.name}` } } });
+        return [closingEv, completionEv];
       });
     } catch (e) {
       // a concurrent inspection create took the sequential id — a plain retry resolves it
@@ -344,7 +355,7 @@ export class ActivitiesService {
       throw e;
     }
     // the sign-off is the PMC's decision to make
-    await this.dispatcher.dispatchCommitted([ev]);
+    await this.dispatcher.dispatchCommitted(events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 

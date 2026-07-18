@@ -377,6 +377,28 @@ model InspectionsProjection {
   @@unique([generationId, projectId])
 }
 
+// Phase 2 Task 10 (Module 3) correction — the INSPECTION-OWNED evidence link. Item-level photo evidence
+// was formerly read off the Media table by the inspections serializer (a cross-module read the projection
+// could not observe when a photo was uploaded/removed). Each row is an inspection-owned link from an
+// inspection item to a media identity, maintained by the inspections participant inside the media
+// create/remove transaction (which also appends an inspection event, so the projection refreshes). The
+// legacy Media linkage columns are RETAINED for compatibility; this table is the serializer's source.
+// Standalone (no Prisma relations, mirroring InspectionsProjection); the FK backstops live in the
+// correction migration. Backfilled from existing linked Media rows.
+model InspectionEvidence {
+  id               String   @id @default(uuid())
+  projectId        String
+  inspectionId     String
+  inspectionItemId String
+  mediaId          String
+  createdAt        DateTime @default(now())
+
+  @@unique([inspectionItemId, mediaId]) // one link per (item, media)
+  @@index([projectId])
+  @@index([mediaId])
+  @@index([inspectionId])
+}
+
 // Phase 2 Task 5 — the command-idempotency ledger. One receipt per (scope, actor, commandType,
 // idempotencyKey): a retried/duplicated command (offline replay, network retry, double-tap)
 // reserves→executes→commits its succeeded receipt in ONE transaction, so the effect happens
@@ -1032,6 +1054,12 @@ model Inspection {
   // Composite FK — a cross-project edge is impossible even on a direct write.
   activity   Activity? @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   activityId String?
+  // Phase 2 Task 10 (Module 3) correction — the INSPECTION-OWNED activity label. A closing inspection's
+  // serialized `activityName` was formerly read live off `Activity.name` (a cross-module read the projection
+  // could not observe). It is now stored here: set when the closing inspection is created, updated by the
+  // inspections participant when the activity is renamed (both append an inspection event), and backfilled
+  // from the linked Activity in the correction migration. Null for inspections with no linked activity.
+  activityName String?
   // A reinspection names its predecessor and inherits its activityId. AT MOST ONE
   // direct child per rejected inspection — partial unique index
   // "Inspection_one_reinspection_child" ON ("reinspectionOfId") WHERE NOT NULL

@@ -8,6 +8,7 @@ import { SnapshotService } from '../snapshot/snapshot.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
+import { InspectionParticipant } from '../inspections/inspection.participant';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
@@ -41,6 +42,9 @@ export class MediaService {
     private readonly dailyLog: DailyLogQueryService,
     // Task 10 (Module 3) — an evidence upload's inspection linkage is validated through the inspections query.
     private readonly inspections: InspectionsQueryService,
+    // Task 10 (Module 3) correction — item evidence is linked through the inspections participant (in-tx),
+    // which appends the inspection-owned evidence event so the projection observes the change.
+    private readonly inspectionParticipant: InspectionParticipant,
   ) {}
 
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
@@ -79,7 +83,7 @@ export class MediaService {
     const actor = await resolveActor(this.prisma, user);
 
     let row;
-    let ev: EmittedEventMeta | undefined;
+    let events: EmittedEventMeta[] = [];
     try {
       // the row and its `media.uploaded` event commit together (a replay of the same
       // clientKey lands on the unique below and records NO second event)
@@ -105,7 +109,15 @@ export class MediaService {
             clientKey: input.clientKey ?? null,
           },
         });
-        ev = await emitEvent(tx, { projectId, actor, eventType: 'media.uploaded', entityType: 'Media', entityId: created.id, payload: { kind: input.kind }, effectKey: 'media.uploaded', dispatch: {} });
+        const uploadedEv = await emitEvent(tx, { projectId, actor, eventType: 'media.uploaded', entityType: 'Media', entityId: created.id, payload: { kind: input.kind }, effectKey: 'media.uploaded', dispatch: {} });
+        const evs: EmittedEventMeta[] = [uploadedEv];
+        // Task 10 (Module 3) correction — ITEM-LEVEL evidence (both ids present) links through the
+        // inspections participant, which writes the inspection-owned InspectionEvidence row AND appends
+        // `inspection.evidence_added`, so the inspections.inbox projection observes the new evidence.
+        if (input.inspectionId && input.inspectionItemId) {
+          evs.push(await this.inspectionParticipant.addEvidence(tx, { projectId, actor, inspectionId: input.inspectionId, inspectionItemId: input.inspectionItemId, mediaId: created.id }));
+        }
+        events = evs;
         return created;
       });
     } catch (e) {
@@ -122,7 +134,7 @@ export class MediaService {
     }
 
     // a fresh upload signals its project once; a replay (P2002 return above) never reaches here
-    if (ev) await this.dispatcher.dispatchCommitted([ev]);
+    if (events.length) await this.dispatcher.dispatchCommitted(events);
     // a short-lived, signed path resolved against the API base by the frontend
     return { id: row.id, url: this.signed.mediaPath(row.id) };
   }
@@ -170,11 +182,16 @@ export class MediaService {
     if (!row || row.projectId !== projectId) return false;
     if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
     const actor = await resolveActor(this.prisma, user);
-    const ev = await this.prisma.$transaction(async (tx) => {
+    const events = await this.prisma.$transaction(async (tx) => {
+      // Task 10 (Module 3) correction — unlink any inspection-owned evidence FIRST (participant appends
+      // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
+      // observes the removal. `null` when this media was not item-level evidence.
+      const evidenceEv = await this.inspectionParticipant.removeEvidence(tx, { projectId, actor, mediaId: id });
       await tx.media.delete({ where: { id } });
-      return emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id, effectKey: 'media.removed', dispatch: {} });
+      const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id, effectKey: 'media.removed', dispatch: {} });
+      return evidenceEv ? [evidenceEv, removedEv] : [removedEv];
     });
-    await this.dispatcher.dispatchCommitted([ev]);
+    await this.dispatcher.dispatchCommitted(events);
     return true;
   }
 }

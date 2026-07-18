@@ -10,9 +10,14 @@ import { test, expect, type Page } from '@playwright/test';
  * It proves the module path end-to-end:
  *   • the inspection slices are populated by the module-owned `GET …/inspections` (not the snapshot),
  *     fetched under the same scope lease as the snapshot on load;
- *   • when a review is present, the PMC's decide command carries the Task-5 `Idempotency-Key` header
- *     and the module-owned read is REFETCHED under the same scope (finding 2), so the committed change
- *     becomes visible without a page reload.
+ *   • the PMC's decide command carries the Task-5 `Idempotency-Key` header and the module-owned read is
+ *     REFETCHED under the same scope (finding 2), so the committed change becomes visible WITHOUT a page
+ *     reload — the decided review LEAVES the queue.
+ *
+ * Task 10 (Module 3) CORRECTION — this proof is now DETERMINISTIC and UNCONDITIONAL. The pending review is
+ * a hard seed fixture (`SEED_INSPECTIONS` INSP-21 "Waterproofing Ponding Test", submitted + undecided, the
+ * ONLY pending review on project A), so the decide flow always runs — the earlier `if (approve.count())`
+ * guard (which let an empty queue silently skip the whole assertion) is removed.
  *
  * Seed accounts (scripts/test-api-e2e.sh): `test-pmc@vitan.in` is a PMC on project A `ambli`.
  */
@@ -59,19 +64,26 @@ test.describe('inspections module-owned read (moduleQuery)', () => {
       .poll(() => inspectionGETs.length, { message: 'the inspection slices are served by the module read, not the snapshot' })
       .toBeGreaterThan(0);
 
-    // onto the Inspection Review screen (PMC review queue). If a review is present, decide it and prove
-    // the command carries an Idempotency-Key + reconciles the module read; otherwise the load-path proof
-    // above is sufficient (an empty queue is a valid seed state).
+    // onto the Inspection Review screen (PMC review queue). The seeded pending review (INSP-21) is
+    // ALWAYS present, so we decide it unconditionally and prove the module path end-to-end.
     await page.getByRole('button', { name: 'Inspection Review' }).click();
     const approve = page.getByRole('button', { name: 'Approve Inspection' });
-    if (await approve.count()) {
-      const getsBefore = inspectionGETs.length;
-      const decideDone = page.waitForResponse((r) => r.url().includes(`/projects/${A}/inspections/`) && r.url().endsWith('/decide') && r.request().method() === 'POST' && r.status() < 400);
-      await approve.first().click();
-      await decideDone;
-      expect(decidePOSTs.length).toBeGreaterThan(0);
-      expect(decidePOSTs[0].idem, 'the decide command carries an Idempotency-Key header').toBeTruthy();
-      await expect.poll(() => inspectionGETs.length, { message: 'a post-command module refetch must fire' }).toBeGreaterThan(getsBefore);
-    }
+    // deterministic: the seed guarantees a pending review, so the decide control is present (no guard).
+    await expect(approve, 'the seeded pending review (INSP-21) is in the PMC queue').toBeVisible();
+
+    const getsBefore = inspectionGETs.length;
+    const decideDone = page.waitForResponse((r) => r.url().includes(`/projects/${A}/inspections/`) && r.url().endsWith('/decide') && r.request().method() === 'POST' && r.status() < 400);
+    await approve.click();
+    await decideDone;
+
+    // the decide command executed and carried the Task-5 Idempotency-Key
+    expect(decidePOSTs.length, 'the decide POST executed').toBeGreaterThan(0);
+    expect(decidePOSTs[0].idem, 'the decide command carries an Idempotency-Key header').toBeTruthy();
+
+    // a post-command module refetch fires under the same scope (finding 2 reconcile)…
+    await expect.poll(() => inspectionGETs.length, { message: 'a post-command module refetch must fire' }).toBeGreaterThan(getsBefore);
+    // …and the decided review LEAVES the queue without a page reload — the ONLY pending review is gone,
+    // so the module-owned read now serves the empty state (the decision is visible, not stale).
+    await expect(page.getByText('No inspections awaiting review.')).toBeVisible();
   });
 });

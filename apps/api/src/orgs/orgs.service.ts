@@ -6,7 +6,7 @@ import { addCivilDays, fromIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
 import { lockUserCredential } from '../common/credential-lock';
-import { resolveActor } from '../common/actor';
+import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
@@ -110,6 +110,9 @@ interface PreparedInitSource {
 interface InitWriteState {
   targetId: string;
   userId: string;
+  // Task 10 (Module 3) correction — the resolved attribution for the init transaction, threaded so
+  // InspectionParticipant.createForInit can append `inspection.created` (materializing the projection).
+  actor: Actor;
   targetAnchor: string | null;
   today: string;
   activityIds: string[];
@@ -374,6 +377,7 @@ export class OrgsService {
       const state: InitWriteState = {
         targetId: id,
         userId,
+        actor,
         targetAnchor,
         today,
         activityIds: allActivityIds.map((row) => row.id),
@@ -913,21 +917,27 @@ export class OrgsService {
     for (const inspection of source.inspections) {
       const id = nextSeqId('INSP-', state.inspectionIds);
       state.inspectionIds.push(id);
-      await this.inspectionInit.createForInit(tx, {
-        data: {
-          id,
-          projectId: state.targetId,
-          kind: 'checklist',
-          title: inspection.title,
-          zone: inspection.zone,
-          by: null,
-          date: state.today,
-          submitted: false,
-          decided: false,
-          nodeId: inspection.nodeKey ? required(nodeIdByKey, inspection.nodeKey, 'node key') : null,
-          items: { create: inspection.items.map((name, index) => ({ name, order: index })) },
+      await this.inspectionInit.createForInit(
+        tx,
+        {
+          data: {
+            id,
+            projectId: state.targetId,
+            kind: 'checklist',
+            title: inspection.title,
+            zone: inspection.zone,
+            by: null,
+            date: state.today,
+            submitted: false,
+            decided: false,
+            nodeId: inspection.nodeKey ? required(nodeIdByKey, inspection.nodeKey, 'node key') : null,
+            items: { create: inspection.items.map((name, index) => ({ name, order: index })) },
+          },
         },
-      });
+        // Task 10 (Module 3) correction — append `inspection.created` in the init tx so the
+        // inspections.inbox projection MATERIALIZES from init events (no indefinite live fallback).
+        { projectId: state.targetId, actor: state.actor },
+      );
     }
   }
 

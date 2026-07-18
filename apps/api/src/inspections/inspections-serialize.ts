@@ -75,16 +75,28 @@ export async function computeInspectionsBase(
   client: Prisma.TransactionClient,
   projectId: string,
 ): Promise<InspectionsBase> {
+  // Task 10 (Module 3) correction — read ONLY inspection-owned facts. `activityName` is the inspection's
+  // OWN column (was a live `Activity.name` read); item evidence is the inspection-owned `InspectionEvidence`
+  // link (was a read of the Media table). Neither the `activity` nor the `media` relation is included here,
+  // so every serialized field is owned by this module and refreshed by an `inspection.*` event — the
+  // boundary source-scan test enforces their absence.
   const inspections = await client.inspection.findMany({
     where: { projectId },
-    include: {
-      items: { orderBy: { order: 'asc' } },
-      // linked evidence rows (Task 4) — id + item, so bake can mint a signed path per row.
-      media: { select: { id: true, inspectionItemId: true }, orderBy: { createdAt: 'asc' } },
-      // the activity a CLOSING inspection signs off (Task 5) — labels the review queue.
-      activity: { select: { name: true } },
-    },
+    include: { items: { orderBy: { order: 'asc' } } },
   });
+  // Inspection-owned evidence links (createdAt asc — the same stable order the Media read used), grouped
+  // per item so bake mints one signed path per linked media row.
+  const evidence = await client.inspectionEvidence.findMany({
+    where: { projectId },
+    select: { inspectionItemId: true, mediaId: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  const mediaIdsByItem = new Map<string, string[]>();
+  for (const e of evidence) {
+    const list = mediaIdsByItem.get(e.inspectionItemId);
+    if (list) list.push(e.mediaId);
+    else mediaIdsByItem.set(e.inspectionItemId, [e.mediaId]);
+  }
   return {
     inspections: inspections.map((i) => ({
       id: i.id,
@@ -98,7 +110,7 @@ export async function computeInspectionsBase(
       decided: i.decided,
       closing: i.closing,
       activityId: i.activityId,
-      activityName: i.activity?.name ?? null,
+      activityName: i.activityName, // inspection-owned label (Task 10 Module 3 correction)
       reinspectionOfId: i.reinspectionOfId,
       items: i.items.map((it) => ({
         id: it.id,
@@ -110,8 +122,8 @@ export async function computeInspectionsBase(
         result: it.result,
         swatch: it.swatch,
         rejected: it.rejected,
-        // evidence linkage in canonical (createdAt asc) order — signed at read time.
-        mediaIds: i.media.filter((m) => m.inspectionItemId === it.id).map((m) => m.id),
+        // inspection-owned evidence linkage in canonical (createdAt asc) order — signed at read time.
+        mediaIds: mediaIdsByItem.get(it.id) ?? [],
       })),
     })),
   };

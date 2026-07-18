@@ -3,6 +3,8 @@ import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { MediaService } from './media.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
+import type { InspectionsQueryService } from '../inspections/inspections.query';
+import type { InspectionParticipant } from '../inspections/inspection.participant';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './storage.service';
 import type { SignedUrlService } from './signed-url.service';
@@ -59,6 +61,14 @@ function make(
   const signed = { mediaPath: vi.fn((id: string) => `/media/${id}?t=tok`) };
   const dispatcher = { dispatchCommitted: vi.fn() };
   const snapshot = { build: vi.fn(async () => ({ ok: true })) };
+  // Task 10 (Module 3) — an evidence target is validated through the inspections query, and item evidence
+  // is linked/unlinked through the inspections participant; the unit under test doesn't upload item
+  // evidence, so null-returning stubs suffice (remove() just proceeds with its own media.removed event).
+  const inspections = { assertEvidenceTarget: vi.fn(async () => {}) } as unknown as InspectionsQueryService;
+  const inspectionParticipant = {
+    addEvidence: vi.fn(async () => ({ eventId: 'ev-add' })),
+    removeEvidence: vi.fn(async () => null),
+  } as unknown as InspectionParticipant;
   const svc = new MediaService(
     prisma as unknown as PrismaService,
     storage as unknown as StorageService,
@@ -68,6 +78,8 @@ function make(
     new DecisionsQueryService(prisma as unknown as PrismaService),
     // Task 10 — a linked daily-log reference is validated through the daily-log query (same prisma mock).
     new DailyLogQueryService(prisma as unknown as PrismaService),
+    inspections,
+    inspectionParticipant,
   );
   return { svc, prisma, storage, signed, dispatcher, snapshot, created };
 }

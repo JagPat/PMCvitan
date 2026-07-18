@@ -203,3 +203,130 @@ extraction touches neither sender path.)_
 **HELD for review — do not merge.** Per the one-module-per-PR review stop, the activities module (module 4)
 does not start until this module's contract, boundary, tenant, projection, idempotency and frontend
 evidence clears independent review.
+
+---
+
+# CORRECTION ROUND — owner-aligned inspection facts (PR #178 independent review: BLOCKED narrowly)
+
+PR #178 merged at `main` `0591d9c160679bfaa60dfaafc9e5e4342867084b` (the reviewed merge; this correction's
+base). Verdict: **BLOCKED narrowly** — no rollback, no Activities start, ONE additive fix-forward
+correction PR (this change) containing runtime, tests, manifest corrections and this packet update
+together, then a stop for one narrow review.
+
+## Root cause (confirmed reproductions A/B)
+
+`computeInspectionsBase` — the ONE serializer both the live slice and the projection share — read
+**foreign-owned** data: the `media` relation (item evidence), the `activity` relation (`Activity.name` for
+a closing review's label), and `Inspection.nodeId` is changed by a **node deletion's** `ON DELETE SET NULL`
+FK. But the `inspections.inbox` consumer dispatches only on `inspection.*`: `media.uploaded/removed`,
+`activity.completion_requested`, `activity.updated` and `node.removed` were **no-ops that advanced the
+ordered cursor without recomputing the base**. `readServableGeneration` therefore reported "current" while
+the projection served stale slices — a silently-stale caught-up projection.
+
+## The owner-aligned fix (rejected quick fix: subscribing to foreign events while keeping foreign reads —
+that would hide bidirectional dependencies and contradict the acyclic boundary design)
+
+Every foreign mutation that touches an inspection-owned serialized field now routes through
+**`InspectionParticipant`** on the foreign command's OWN transaction, which (a) mutates the
+inspection-owned rows and (b) **appends an inspection-owned signal event** — so the ordered cursor
+refreshes the base from canonical state. The serializer reads **ONLY inspection-owned facts**.
+
+| # | Mutation | Inspection-owned fact | Participant method (same tx) | Event appended |
+|---|---|---|---|---|
+| 1 | activities `complete` (closing review) | the closing Inspection row + its `activityName` stamp | `createClosingInspection` | `inspection.closing_created` |
+| 2 | activities `update` rename | `Inspection.activityName` re-stamped on linked inspections | `relabelForActivity` | `inspection.relabeled` (only when a row changed) |
+| 3 | media `create` (item evidence) | new **`InspectionEvidence`** link row | `addEvidence` (idempotent upsert) | `inspection.evidence_added` |
+| 4 | media `remove` | `InspectionEvidence` links deleted BEFORE the media row | `removeEvidence` | `inspection.evidence_removed` (only when a link existed) |
+| 5 | nodes `remove` | `Inspection.nodeId` nulled for the deleted subtree (FK stays as backstop) | `unfileForDeletedNodes` | `inspection.unfiled` (only when a row changed) |
+| 6 | orgs project-init | init-created inspections materialize the projection | `createForInit(tx, args, emitCtx)` | `inspection.created` (payload `{init:true}`) |
+
+- **Schema (additive, forward-only)** — `20261120000000_phase2_inspections_owned_facts`:
+  `Inspection.activityName TEXT` (backfilled from the linked `Activity.name` — exactly the value the
+  serializer read live, so the baked slice is identical the instant the column exists) + the standalone
+  **`InspectionEvidence`** link model (`(inspectionItemId, mediaId)` unique; project/inspection/item/media
+  FK backstops, all CASCADE), backfilled from item-level linked Media (`ON CONFLICT DO NOTHING` —
+  idempotent on redeploy). **DIAGNOSTIC ABORT** (never guess a repair): a legacy `Media` row carrying an
+  `inspectionItemId` with a NULL `inspectionId` (the one containment gap MATCH SIMPLE lets past the
+  composite FK) aborts the migration naming the count; the operator repairs and redeploys. Legacy Media
+  linkage columns are RETAINED.
+- **Serializer** — `computeInspectionsBase` no longer includes the `activity`/`media` relations: it reads
+  `activityName` (own column) and `inspectionEvidence` links (own model, `createdAt asc` — the same stable
+  order the Media read had). `inspections-serialize.boundary.test.ts` is the source-scan regression guard
+  (no foreign relation/delegate read may return; the inspection-owned reads must remain).
+- **Events/catalog** — five new signal-only `DomainEventType`s + external-effect keys (`invalidate: true`,
+  `push: null`): `inspection.closing_created` / `evidence_added` / `evidence_removed` / `relabeled` /
+  `unfiled`. Socket invalidation stays deduplicated per project; no push. Adding keys changes
+  `effectCoverageVersion()` — an outbox-mode deploy resedes per the PR C cutover discipline (the seal is
+  operator-applied, not in migrations).
+- **Web decide command carries its idempotency key** (exposed by the deterministic browser proof — see
+  below): `gateway.decideReview(..., idempotencyKey)`, minted in `approveInspection`/`sendReinspection`,
+  persisted on the `decideReview` outbox op (optional, so a pre-upgrade persisted op still replays).
+
+## Manifest truth (acyclic preserved)
+
+The real query/workflow edges are now declared and pinned exactly
+(`module-registry.test.ts` pins both maps; `inspections.contract.test.ts` pins ownership + events):
+
+- `inspections.ownsModels`/`readEncapsulated` **+= `inspectionEvidence`**; `producesEvents` += the five
+  signal events. `dependsOn` stays `[]`.
+- `activities.dependsOn` += `inspections` (reads `readinessSlice`/`nextInspectionId`);
+  `media.dependsOn` += `inspections` (reads `assertEvidenceTarget`); `orgs.dependsOn` += `inspections`
+  (reads `allIds` at init). Every X→inspections edge is one-directional (inspections depends on nothing),
+  so **dependsOn stays acyclic**.
+- The reverse (inspection-owned consequence) edges are **workflowParticipants** (cycle-exempt):
+  `media.workflowParticipants = ['inspections']`, `nodes.workflowParticipants = ['inspections']`
+  (activities/orgs already declared theirs). The structural boundary analyzer stays green — the
+  participant writes only inspection-owned tables.
+
+## Red-at-base → green evidence (`test/integration/inspections-owned-facts.test.ts`, live PostgreSQL, real
+services end-to-end)
+
+Each probe drives the REAL command path, drains the `inspections.inbox` deliveries, and asserts the
+projection is **current AND equal to the live read** (evidence tokens normalized) — at the PR #178 base the
+generation stayed "current" while `slices ≠ live` (the exact defect):
+
+1. activity completion → the closing review (with `activityName`) is visible in the caught-up projection;
+2. evidence upload is visible; evidence removal disappears; projection == live throughout;
+3. node deletion → the projected `nodeId` is null; projection == live;
+4. activity rename → the projected `activityName` tracks the rename (title stays stored); projection == live;
+5. project init (template module) → the projection MATERIALIZES (active generation + row) without live fallback;
+6. two-project isolation across foreign-driven refreshes;
+7. rebuild == live after a mix of all foreign mutations.
+
+Migration proof — `apps/api/scripts/inspections-owned-facts-abort-proof.sh` (exit 0): builds the pre-fix
+DB, plants the un-linkable containment row (dropping the app-era CHECK to model a legacy DB), proves the
+migration **ABORTS** with the diagnostic (single-transaction rollback leaves no half-applied schema),
+repairs ONLY the offending row, **redeploys successfully**, and asserts the `activityName` +
+`InspectionEvidence` backfills.
+
+## Deterministic browser acceptance (the conditional is GONE)
+
+`inspections-module-query.spec.ts` now runs the decision flow **unconditionally** against the seeded
+pending review (`SEED_INSPECTIONS` INSP-21 — the only pending review on project A), asserting ALL of:
+module-owned GET executed · decide POST executed · **`Idempotency-Key` present** · post-command module
+refetch under the same scope · the decided review **leaves the queue without a reload** (the empty state
+renders). Removing the `if (approve.count())` guard immediately exposed **two real defects** the
+conditional had been hiding:
+1. the web `decideReview` command sent **no idempotency key** (fixed above);
+2. the destructive e2e seed truncated events/cursors but **left `ProjectionGeneration` + the projection
+   rows behind** — a stale generation from the previous run (appliedPosition beyond the fresh, shorter
+   stream head) claimed to be CURRENT and served the PREVIOUS run's slices (a stale-served projection by
+   construction). The seed now truncates `ProjectionGeneration` + all four projection tables with the
+   event store, so every run rebuilds its read models from its own data.
+
+## Correction gates (actual exit codes, this container; CI re-runs everything)
+
+| Gate | Exit | Detail |
+|---|---|---|
+| Focused inspections + registry + boundary + graph unit tests | **0** | 118 passed (incl. the new serializer source-boundary suite) |
+| `pnpm check` (web lint/typecheck/test/build + api typecheck/test/build) | **0** | web 388 · api 567 |
+| Full live-PostgreSQL integration suite | **0** | 37 files, 327 passed (incl. the 7 new owned-facts probes; init pin now 2 events × 6 consumers = 12 deliveries) |
+| `upgrade-proof.sh` (all migrations incl. `20261120000000` over the legacy fixture) | **0** | PASSED |
+| `inspections-owned-facts-abort-proof.sh` (abort → repair → redeploy) | **0** | PASSED |
+| `pnpm test:e2e` (demo Playwright) | **0** | 21 passed |
+| `pnpm test:e2e:api:inspections` (deterministic decide lifecycle, moduleQuery) | **0** | 22 passed |
+| `pnpm test:e2e:api` (default snapshot mode) | **0** | 21 passed (one prior run hit the known pillar-chain picker-navigation env flake — untouched by this PR; CI authoritative) |
+| Race/idempotency battery ×3 (`inspections-idempotency` + `closing-signoff` + `inspection-evidence` + `start-readiness-race`) | **0 / 0 / 0** | 31 passed each run |
+
+**HELD for narrow review — do not merge.** Activities (module 4) stays blocked until this correction
+clears the narrow Codex review.
