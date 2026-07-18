@@ -7,6 +7,7 @@ import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dis
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
+import { InspectionsQueryService } from '../inspections/inspections.query';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
@@ -38,6 +39,8 @@ export class MediaService {
     private readonly decisions: DecisionsQueryService,
     // Task 10 — a linked daily-log reference is validated through the daily-log query.
     private readonly dailyLog: DailyLogQueryService,
+    // Task 10 (Module 3) — an evidence upload's inspection linkage is validated through the inspections query.
+    private readonly inspections: InspectionsQueryService,
   ) {}
 
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
@@ -59,18 +62,13 @@ export class MediaService {
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     // Task 10 — a daily-log reference is validated through the daily-log module's query, not `project-ref`.
     const dailyLogId = await this.dailyLog.resolveRefInProject(projectId, input.dailyLogId, 'dailyLogId');
-    // Evidence linkage (Task 4): the item requires ITS inspection — validated here for a
-    // readable 400; the composite-FK chain + CHECK are the database backstop.
+    // Evidence linkage (Task 4): the item requires ITS inspection — validated through the inspections
+    // module's query (Task 10) for a readable 400; the composite-FK chain + CHECK are the database backstop.
     if (input.inspectionItemId && !input.inspectionId) {
       throw new BadRequestException('inspectionItemId requires its inspectionId');
     }
     if (input.inspectionId) {
-      const insp = await this.prisma.inspection.findUnique({ where: { id: input.inspectionId }, select: { projectId: true } });
-      if (!insp || insp.projectId !== projectId) throw new BadRequestException('Unknown inspection for this project');
-      if (input.inspectionItemId) {
-        const item = await this.prisma.inspectionItem.findUnique({ where: { id: input.inspectionItemId }, select: { inspectionId: true } });
-        if (!item || item.inspectionId !== input.inspectionId) throw new BadRequestException('The item does not belong to that inspection');
-      }
+      await this.inspections.assertEvidenceTarget(projectId, input.inspectionId, input.inspectionItemId);
     }
     const bytes = Buffer.from(input.data, 'base64');
     const key = this.storage.keyFor(projectId, input.kind, input.mime);

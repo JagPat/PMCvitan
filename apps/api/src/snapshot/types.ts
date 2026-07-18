@@ -1,6 +1,6 @@
 /** API response shapes — aligned with the frontend domain model so the client
  *  hydrates its store directly from a snapshot. */
-import type { Drawing } from '@vitan/shared';
+import type { Drawing, Checklist, Review, PlacedInspection } from '@vitan/shared';
 
 /** Phase 2 Task 9 — the project-shell summary (identity + projection counts), the light payload the
  *  app loads first. `enabledModules` is added by the controller from the module registry. */
@@ -309,14 +309,18 @@ export interface SnapshotDto {
   project: ProjectMetaDto;
   decisions: DecisionDto[];
   activities: ActivityDto[];
+  // Task 10 (Module 3) — the inspection slices are the shared `Checklist`/`Review`/`PlacedInspection`
+  // types, served by the inspections module's query (`InspectionsQueryService.snapshotSlice`).
+  // Byte-identical wire shape to the retired `*Dto`s (kept below for the characterization test's shape
+  // descriptor).
   /** every inspection with its place, for the Site Map (pmc/engineer only; empty otherwise) */
-  placedInspections: PlacedInspectionDto[];
-  checklist: ChecklistDto | null;
+  placedInspections: PlacedInspection[];
+  checklist: Checklist | null;
   /** The PMC review queue: every submitted-but-undecided inspection (a submitted
    *  checklist, the seeded review, an auto-created closing inspection), oldest first. */
-  reviews: ReviewDto[];
+  reviews: Review[];
   /** @deprecated first pending review — kept for back-compat; use `reviews`. */
-  review: ReviewDto | null;
+  review: Review | null;
   reinspectionCreated: boolean;
   // Task 10 — the drawings register is the shared `Drawing` type, served by the drawings module's
   // query (`DrawingsQueryService.snapshotSlice`). Byte-identical wire shape to the retired `DrawingDto`

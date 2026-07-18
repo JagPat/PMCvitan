@@ -6,7 +6,7 @@ import { Eyebrow, ResultChip, Button, Modal } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { X, Plus, Minus } from '@/lib/icons';
 import { swatch as swatchGradient, can, type Review } from '@vitan/shared';
-import { resolveMediaUrl } from '@/data/apiGateway';
+import { resolveMediaUrl, inspectionsReadMode } from '@/data/apiGateway';
 import styles from './responsive.module.css';
 
 export function InspectionReviewScreen() {
@@ -16,6 +16,38 @@ export function InspectionReviewScreen() {
   const toggleReject = useStore((s) => s.toggleReject);
   const approveInspection = useStore((s) => s.approveInspection);
   const sendReinspection = useStore((s) => s.sendReinspection);
+  // Phase 2 Task 10 (Module 3 — Inspections): under module read-ownership the inspection slices are a
+  // SEPARATE async surface from the project snapshot, with their own honest load state. Never claim "No
+  // inspections awaiting review" until a read has actually SUCCEEDED; while it loads show a loading state;
+  // on failure show an unavailable/Retry boundary. In snapshot mode `inspectionsLoad` stays 'idle' and
+  // these gates never trigger.
+  const inspectionsLoad = useStore((s) => s.inspectionsLoad);
+  const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
+  const moduleOwned = inspectionsReadMode() === 'moduleQuery';
+  const reading = moduleOwned && (inspectionsLoad === 'idle' || inspectionsLoad === 'loading');
+  const unavailable = moduleOwned && inspectionsLoad === 'error';
+
+  // finding-4 parity — these fire only when there is no last-good review to show; a failed refresh that
+  // RETAINS a last-good queue falls through to the review below.
+  if (!active && reading) {
+    return (
+      <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-loading">
+        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading inspections…</div>
+      </div>
+    );
+  }
+  if (!active && unavailable) {
+    return (
+      <div className={`${styles.screen} ${styles.mid}`} data-testid="inspections-unavailable">
+        <Eyebrow>INSPECTION REVIEW</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
+          <span>Couldn't load inspections — check your connection and access.</span>
+          <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+        </div>
+      </div>
+    );
+  }
 
   if (!active) {
     return (

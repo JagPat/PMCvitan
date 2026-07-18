@@ -1,8 +1,9 @@
 import { useRef, type CSSProperties } from 'react';
 import { useStore, checklistFrozen } from '@/store/store';
-import { EmptyState, Eyebrow, StatTile } from '@/components';
+import { EmptyState, Eyebrow, StatTile, Button } from '@/components';
 import { Camera } from '@/lib/icons';
 import type { ItemState } from '@vitan/shared';
+import { inspectionsReadMode } from '@/data/apiGateway';
 import styles from './responsive.module.css';
 
 const toggleBase: CSSProperties = {
@@ -35,6 +36,12 @@ export function EngineerChecklistScreen() {
   const pendingEvidenceCount = useStore((s) => s.pendingEvidenceCount);
   const retryFailedEvidence = useStore((s) => s.retryFailedEvidence);
   const deleteFailedEvidence = useStore((s) => s.deleteFailedEvidence);
+  // Task 10 (Module 3) — the module read's honest load state gates the honest-absence empty below.
+  const inspectionsLoad = useStore((s) => s.inspectionsLoad);
+  const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
+  const moduleOwned = inspectionsReadMode() === 'moduleQuery';
+  const reading = inspectionsLoad === 'idle' || inspectionsLoad === 'loading';
+  const unavailable = inspectionsLoad === 'error';
   // one hidden file input, re-targeted per item (Task 4: photos are REAL evidence rows)
   const fileRef = useRef<HTMLInputElement>(null);
   const targetIdx = useRef(0);
@@ -50,6 +57,20 @@ export function EngineerChecklistScreen() {
     if (fileRef.current) fileRef.current.value = '';
   };
 
+  // Phase 2 Task 10 (Module 3 — Inspections): under module read-ownership the checklist is a SEPARATE
+  // async surface — never claim "No checklist issued" until a read has actually SUCCEEDED. While it loads
+  // show a loading state; on failure show an unavailable/Retry boundary. In snapshot mode these are inert.
+  if (!checklist && moduleOwned && reading) {
+    return <EmptyState title="Loading checklist…" detail="Fetching this project's current inspection checklist." />;
+  }
+  if (!checklist && moduleOwned && unavailable) {
+    return (
+      <div data-testid="inspections-unavailable" style={{ display: 'grid', gap: 14, justifyItems: 'center', padding: 40, textAlign: 'center', color: 'var(--muted)' }}>
+        <span>Couldn't load the checklist — check your connection and access.</span>
+        <Button data-testid="inspections-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+      </div>
+    );
+  }
   // honest absence: no fabricated blank checklist — the PMC simply hasn't issued one
   if (!checklist) {
     return (
