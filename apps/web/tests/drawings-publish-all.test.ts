@@ -126,6 +126,53 @@ describe('Task 10 correction (C2b) — publishAllDrafts drawing publishes are du
     expect(s().drawings.find((d) => d.id === 'DWG-1')?.draft).toBe(false); // exactly one published drawing
   });
 
+  const terminal422 = () => Object.assign(new Error('unprocessable entity'), { status: 422 });
+
+  it('a TERMINAL 422 leaves the drawing a draft and reports an explicit rejection — never a false "Published"', async () => {
+    // C2c: the flush DISCARDS a terminally-rejected 4xx op, so an empty queue does NOT prove publication.
+    // The terminal drop triggers a reconcile from fresh server truth, which still shows DWG-1 a DRAFT
+    // (its publish was rejected) — so the register correctly keeps it unpublished.
+    const gw = { publishDrawing: vi.fn().mockRejectedValue(terminal422()), publishDecision: vi.fn(), snapshot: vi.fn().mockResolvedValue(makeSnapshot([dwg('DWG-1', 'A-1', true)])) };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.drawings = [dwg('DWG-1', 'A-1', true)]; });
+
+    s().publishAllDrafts();
+    await settles(() => gw.publishDrawing.mock.calls.length >= 1);          // the flush tried the replay → 422 → dropped
+    await settles(() => /rejected and not published/i.test(s().toast ?? '')); // …and the honest completion message landed
+
+    // the op was discarded (queue empty) YET the drawing was NEVER published…
+    expect(publishDrawingOps()).toHaveLength(0);
+    expect(s().drawings.find((d) => d.id === 'DWG-1')?.draft).toBe(true); // still a draft
+    // …so the toast is an explicit rejection, NEVER "Published 1 draft"
+    expect(s().toast ?? '').not.toMatch(/Published 1 draft/i);
+    expect(s().toast ?? '').toMatch(/rejected and not published/i);
+  });
+
+  it('partial: one drawing succeeds and one is terminally rejected → the success sticks, no complete-success, partial failure reported', async () => {
+    const published = makeSnapshot([dwg('DWG-1', 'A-1', false), dwg('DWG-2', 'A-2', true)]);
+    const gw = {
+      publishDrawing: vi.fn().mockImplementation((id: string) =>
+        id === 'DWG-2' ? Promise.reject(terminal422()) : Promise.resolve(published)),
+      publishDecision: vi.fn(),
+      snapshot: vi.fn().mockResolvedValue(published),
+    };
+    s()._setGateway(gw as unknown as ApiGateway);
+    useStore.setState((st) => { st.drawings = [dwg('DWG-1', 'A-1', true), dwg('DWG-2', 'A-2', true)]; });
+
+    s().publishAllDrafts();
+    await settles(() => gw.publishDrawing.mock.calls.length >= 2);
+    await settles(() => publishDrawingOps().length === 0);                  // both processed (one synced, one dropped)
+    await settles(() => /rejected and not published/i.test(s().toast ?? '')); // the partial-failure message landed
+
+    // the successful drawing is published; the rejected one stays a draft
+    expect(s().drawings.find((d) => d.id === 'DWG-1')?.draft).toBe(false);
+    expect(s().drawings.find((d) => d.id === 'DWG-2')?.draft).toBe(true);
+    // NO complete-success — an explicit PARTIAL failure instead
+    expect(s().toast ?? '').not.toMatch(/Published 2 drafts/i);
+    expect(s().toast ?? '').toMatch(/rejected and not published/i);
+    expect(s().toast ?? '').toMatch(/the rest/i);
+  });
+
   it('mixed batch: decisions publish directly (preserved) while drawings go through the durable outbox (stable key)', async () => {
     const gw = { publishDecision: vi.fn().mockResolvedValue(makeSnapshot([])), publishDrawing: vi.fn().mockResolvedValue(makeSnapshot([dwg('DWG-1', 'A-1', false)])), snapshot: vi.fn().mockResolvedValue(makeSnapshot([])) };
     s()._setGateway(gw as unknown as ApiGateway);

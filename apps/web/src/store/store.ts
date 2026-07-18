@@ -143,6 +143,20 @@ export interface SnapshotLease {
   sequence: number;
 }
 
+/** Structured outcome of a durable-outbox flush, keyed by each processed op's idempotency key.
+ *  Queue ABSENCE alone never proves success (a terminal 4xx also removes the op), so a caller that
+ *  needs to confirm ITS OWN commands classifies by these keys: `succeededKeys` (replayed OK),
+ *  `droppedKeys` (terminally rejected — a 4xx, discarded), `pendingKeys` (still queued: transient
+ *  stop / scope-moved remainder / offline). `ran` is false when this call coalesced behind an
+ *  in-flight flush (deferred to that flush's rerun) or there was no gateway / nothing to flush. */
+export interface OutboxFlushResult {
+  ran: boolean;
+  scopeMoved: boolean;
+  succeededKeys: string[];
+  droppedKeys: string[];
+  pendingKeys: string[];
+}
+
 export interface AppState {
   role: Role;
   screen: ScreenKey;
@@ -372,8 +386,10 @@ export interface AppActions {
   record: (label: string) => void;
   toggleOnline: () => void;
   /** Replay the durable outbox in order. `okMsg` (write-ahead command path) announces the command's
-   *  success on a clean flush instead of the batch "N synced" summary. */
-  flushOutbox: (opts?: { okMsg?: string }) => void;
+   *  success on a clean flush instead of the batch "N synced" summary. Resolves a structured
+   *  `OutboxFlushResult` so a caller can confirm ITS OWN ops by key (queue absence ≠ success — a
+   *  terminal 4xx also removes the op). */
+  flushOutbox: (opts?: { okMsg?: string }) => Promise<OutboxFlushResult>;
   hydrateOutbox: () => void;
   // team access
   accWho: (who: Exclude<AccessWho, null>) => void;
@@ -1930,17 +1946,22 @@ export const useStore = create<Store>()(
         // project switch mid-flight leaves these ops queued for THIS project and never crosses scopes nor
         // supersedes another scope's live pull. A lost response / reload / replay reuses each op's ORIGINAL
         // key and publishes exactly once — never a direct `gw.publishDrawing` with a freshly-minted key.
-        let flushDone: Promise<unknown> = Promise.resolve();
+        // Precompute each drawing publish op's STABLE key so completion is judged by classifying EXACTLY
+        // the ops THIS call created — never "any publishDrawing op left in the queue". Queue absence alone
+        // can't tell a published draft from a terminally-rejected 4xx (the flush removes both), so success
+        // is confirmed only when every targeted key is reported succeeded by the flush.
+        const drawingKeys = dwgIds.map(() => newIdempotencyKey());
+        let flushDone: Promise<OutboxFlushResult | undefined> = Promise.resolve(undefined);
         if (dwgIds.length > 0) {
           set((s) => {
-            for (const id of dwgIds) {
+            dwgIds.forEach((id, i) => {
               const number = s.drawings.find((x) => x.id === id)?.number ?? id;
-              s.outbox.push({ t: 'publishDrawing', drawingId: id, idempotencyKey: newIdempotencyKey() });
+              s.outbox.push({ t: 'publishDrawing', drawingId: id, idempotencyKey: drawingKeys[i] });
               if (!s.online) s.syncQueue.push('Publish ' + number);
-            }
+            });
           });
           persistOutbox();
-          if (get().online) flushDone = get().flushOutbox() ?? Promise.resolve();
+          if (get().online) flushDone = get().flushOutbox();
         }
         void (async () => {
           // Decisions: the existing direct publish + reconcile (behavior preserved). Drawings are handled
@@ -1957,21 +1978,32 @@ export const useStore = create<Store>()(
               decOk = false;
             }
           }
-          // Let the drawing flush finish draining before judging success, so "Published N" is only ever
-          // announced once the drawing ops have actually left the queue.
-          await flushDone.catch(() => {});
+          // Let the drawing flush finish draining before judging success.
+          const flushRes = await flushDone.catch(() => undefined);
           if (!scopeStillCurrent(scope)) return;
-          // NEVER claim complete success while any drawing publish op is still queued (offline, or a
-          // transient failure kept it): report the honest partial state instead of "Published N".
-          const pendingDwg = get().outbox.some((o) => o.t === 'publishDrawing');
-          if (decOk && !pendingDwg) {
-            done();
-          } else if (pendingDwg) {
+          // Classify ONLY the drawing ops THIS call created, by their keys:
+          //  • dropped  — the flush terminally REJECTED it (a 4xx); the drawing stays a draft.
+          //  • pending  — still sitting in the durable queue (offline, transient stop, coalesced flush).
+          //  • succeeded — replayed OK (neither dropped nor still queued).
+          const targeted = new Set(drawingKeys);
+          const droppedMine = flushRes ? flushRes.droppedKeys.filter((k) => targeted.has(k)) : [];
+          const dwgPending = get().outbox.some((o) => o.t === 'publishDrawing' && targeted.has(o.idempotencyKey));
+          if (droppedMine.length > 0) {
+            // A terminal rejection is NEVER overwritten by "Published N": report the honest (partial) failure.
+            const n = droppedMine.length;
+            get().flash(n === dwgIds.length
+              ? `${n === 1 ? 'The drawing draft was' : `All ${n} drawing drafts were`} rejected and not published — please review and try again.`
+              : `${n} drawing draft${n === 1 ? '' : 's'} ${n === 1 ? 'was' : 'were'} rejected and not published — the rest went through. Please review and retry.`);
+          } else if (!decOk) {
+            get().flash('Could not publish every draft — some may still be drafts. Please try again.');
+          } else if (dwgPending) {
+            // NEVER claim complete success while a targeted drawing op is still queued (offline, transient).
             get().flash(get().online
               ? 'Publishing… drawing drafts are still syncing and will finish shortly.'
               : 'Saved — drawing drafts will publish when you reconnect.');
           } else {
-            get().flash('Could not publish every draft — some may still be drafts. Please try again.');
+            // decisions OK AND every targeted drawing op confirmed succeeded (or there were no drawings).
+            done();
           }
         })();
         return;
@@ -2754,15 +2786,18 @@ export const useStore = create<Store>()(
       }
     },
     flushOutbox: async (opts) => {
-      if (!gateway) return;
+      // A flush that did not actually process this call's ops (no gateway, coalesced, or empty) reports
+      // `ran:false`/empty so a caller confirming its own ops never mistakes "not run" for "succeeded".
+      const notRun = (): OutboxFlushResult => ({ ran: false, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] });
+      if (!gateway) return notRun();
       // finding 1 — serialize flushes: a write-ahead command fires a flush per command, so one may be
       // in flight already. Coalesce (mark + return); the in-flight flush re-runs once after it settles,
       // so a command persisted mid-flush is still sent. Idempotency keys make an overlap harmless.
-      if (outboxFlushing) { outboxFlushQueued = true; return; }
+      if (outboxFlushing) { outboxFlushQueued = true; return notRun(); }
       outboxFlushing = true;
       try {
       const ops = get().outbox.slice();
-      if (ops.length === 0) return;
+      if (ops.length === 0) return { ran: true, scopeMoved: false, succeededKeys: [], droppedKeys: [], pendingKeys: [] };
       // gate round-2 finding 2: the flush is about to change the durable truth
       // (confirmed uploads delete rows, terminal failures dead-letter them) — any
       // reconciliation already in flight read the PRE-flush world and must not apply
@@ -2787,6 +2822,11 @@ export const useStore = create<Store>()(
       // never re-runs an op that already succeeded. A permanently-rejected op (terminal
       // 4xx) is dropped instead of wedging the queue forever; a transient failure stops
       // the flush and keeps that op (and everything after it) for the next reconnect.
+      // Track each op's OUTCOME by idempotency key (when it has one) so the caller can classify its own
+      // commands: queue absence alone can't tell a succeeded op from a terminally-dropped 4xx.
+      const keyOf = (op: OutboxOp): string | undefined => ('idempotencyKey' in op ? op.idempotencyKey : undefined);
+      const succeededKeys: string[] = [];
+      const droppedKeys: string[] = [];
       let lastSnap: ApiSnapshot | null = null;
       let synced = 0;
       let dropped = 0;
@@ -2804,9 +2844,11 @@ export const useStore = create<Store>()(
         try {
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
+          const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
         } catch (err) {
           if (isTerminalOutboxError(err)) {
             dropped += 1; // server will never accept this one — discard and keep going
+            const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             continue;
           }
           stoppedAt = i; // transient — retry this op and the rest on the next reconnect
@@ -2823,6 +2865,7 @@ export const useStore = create<Store>()(
       }
 
       const remaining = stoppedAt >= 0 ? ops.slice(stoppedAt) : [];
+      const pendingKeys = remaining.map(keyOf).filter((k): k is string => !!k);
       if (scopeMoved) {
         // The in-memory outbox now belongs to the NEW scope (hydrateOutbox swapped
         // it) — don't touch it. Persist the un-replayed remainder (plus anything the
@@ -2841,7 +2884,7 @@ export const useStore = create<Store>()(
         } catch {
           /* storage unavailable — the persisted queue simply keeps its pre-flush state */
         }
-        return;
+        return { ran: true, scopeMoved: true, succeededKeys, droppedKeys, pendingKeys };
       }
 
       // Preserve anything queued while we were awaiting (shouldn't happen once online, but
@@ -2870,6 +2913,7 @@ export const useStore = create<Store>()(
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
       // to FAILED; an op kept alive by a failed dead-letter write stays covered
       void reconcileEvidence();
+      return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };
       } finally {
         outboxFlushing = false;
         // a command persisted DURING this flush was not replayed here — flush it now (plain, no okMsg,
