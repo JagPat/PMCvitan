@@ -261,7 +261,7 @@ export class DrawingsService {
           return { resultRef: revisionId, events: issued ? [issued] : [] };
         },
       });
-      if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+      if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     } catch (e) {
       // a unique fired: the (drawingId, rev) label, a concurrent same-number create,
       // or the one-construction-per-drawing backstop — all mean "someone else won"
@@ -319,7 +319,7 @@ export class DrawingsService {
         return { resultRef: drawingId, events: [ev] };
       },
     });
-    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -348,7 +348,7 @@ export class DrawingsService {
         return { resultRef: id, events: [ev] };
       },
     });
-    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -392,7 +392,7 @@ export class DrawingsService {
         },
       });
       // only the FIRST acknowledgement announces — a replay / existing-ack returns no events to dispatch
-      if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+      if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     } catch (e) {
       // a concurrent duplicate slipped past the read — the unique makes it a replay (announce nothing)
       if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002')) throw e;
@@ -441,7 +441,7 @@ export class DrawingsService {
         return { resultRef: id, events: [ev] };
       },
     });
-    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     return true;
   }
 }

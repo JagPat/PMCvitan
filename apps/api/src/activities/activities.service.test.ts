@@ -2,6 +2,8 @@ import { describe, it, expect, vi, type Mock } from 'vitest';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ActivitiesService } from './activities.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { DrawingsQueryService } from '../drawings/drawings.query';
+import type { SignedUrlService } from '../media/signed-url.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -103,7 +105,13 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
   } as unknown as PrismaService;
   const snapshot = { build: vi.fn(async () => ({ ok: true })) } as unknown as SnapshotService;
   const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService), dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant());
+  // Task 10 — the drawing readiness gate reads through the drawings query (read-encapsulation), so the
+  // service takes a real DrawingsQueryService over the SAME mocked prisma (its `readinessSlice` reads
+  // `drawing.findMany` — `opts.linkedDrawings` — exactly as the prior direct read did). The signer is a
+  // stub: readiness needs no file URLs.
+  const signed = { drawingPath: (id: string) => `/drawings/rev/${id}` } as unknown as SignedUrlService;
+  const drawingsQuery = new DrawingsQueryService(prisma as unknown as PrismaService, signed);
+  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService), drawingsQuery, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant());
   const user = { sub: 'u-eng', role: 'engineer' } as AuthUser;
   return { svc, prisma, user, inspectionCreates, activityUpdates, audits, activity };
 }
