@@ -45,6 +45,13 @@ export E2E_DAILYLOG_READ="${E2E_DAILYLOG_READ:-snapshot}"
 # module-query spec runs only under it.
 export E2E_DRAWINGS_READ="${E2E_DRAWINGS_READ:-snapshot}"
 
+# Phase 2 Task 10 (Module 3 — Inspections) — the inspections module read-ownership mode, mirroring the
+# drawings flag. The default 'snapshot' keeps the inspection slices on the full snapshot (old behaviour);
+# 'moduleQuery' flips the web app onto the module-owned GET …/inspections read (XOR). The Playwright config
+# forwards this to the vite webServer as VITE_INSPECTIONS_READ; the inspections module-query spec runs only
+# under it.
+export E2E_INSPECTIONS_READ="${E2E_INSPECTIONS_READ:-snapshot}"
+
 pnpm --filter api prisma:migrate
 pnpm --filter api seed
 # the Playwright config serves the COMPILED api (node dist/main.js) — the same
