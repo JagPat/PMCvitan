@@ -367,6 +367,16 @@ model DrawingsProjection {
   @@unique([generationId, projectId])
 }
 
+model InspectionsProjection {
+  id           String   @id @default(uuid())
+  generationId String
+  projectId    String
+  dto          Json // the serialized InspectionsBase (viewer-independent; role gating + signed evidence baked at read)
+  updatedAt    DateTime @updatedAt
+
+  @@unique([generationId, projectId])
+}
+
 // Phase 2 Task 5 — the command-idempotency ledger. One receipt per (scope, actor, commandType,
 // idempotencyKey): a retried/duplicated command (offline replay, network retry, double-tap)
 // reserves→executes→commits its succeeded receipt in ONE transaction, so the effect happens
