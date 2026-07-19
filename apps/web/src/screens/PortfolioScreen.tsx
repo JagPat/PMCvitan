@@ -119,7 +119,7 @@ export function PortfolioScreen() {
                   { v: p.openReviews, l: 'to review', c: 'var(--amber-text)' },
                   { v: p.pendingDecisions, l: 'decisions', c: 'var(--accent)' },
                 ].filter((x) => x.v > 0).map((x) => (
-                  <span key={x.l} style={{ ...statChip, color: x.c }}>{x.v} {x.l}</span>
+                  <span key={x.l} data-testid={`portfolio-${p.projectId}-${x.l.replace(/\s+/g, '-')}`} style={{ ...statChip, color: x.c }}>{x.v} {x.l}</span>
                 ))}
                 {p.inProgress + p.blocked + p.openReviews + p.pendingDecisions === 0 && (
                   <span style={{ ...statChip, color: 'var(--green-text)' }}>on track</span>

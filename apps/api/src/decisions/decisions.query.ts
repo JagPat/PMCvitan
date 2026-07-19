@@ -5,6 +5,7 @@ import type { Role } from '../common/auth';
 import type { DecisionDto } from '../snapshot/types';
 import { serializeDecision, decisionVisibleToViewer } from './decision-serialize';
 import { DECISIONS_PROJECTION } from './decisions.projection';
+import { readServableGeneration } from '../platform/projections/generation';
 
 /**
  * Phase 2 Task 8 — the decisions module's PUBLIC READ boundary (its query contract).
@@ -71,19 +72,19 @@ export class DecisionsQueryService {
    * SAME per-viewer authz filter as {@link snapshotSlice} (via `decisionVisibleToViewer`) — so a
    * projection read is never an RBAC bypass, and the result is byte-identical to the live slice.
    *
-   * `generation` is the served generation number (null when the projection has no active generation
-   * yet — a project whose decision events the relay has not applied, or which has never been rebuilt);
-   * the caller decides whether to fall back to the live slice while the projection warms up.
+   * `generation` is the served generation number — null when there is no generation SAFE to serve.
+   * Task 10 finalization: this read now applies the same {@link readServableGeneration} currency
+   * discipline as every other module (daily-log/drawings/inspections/activities) — a generation that
+   * is blocked, merely bootstrapped, or whose checkpoint lags the committed stream head returns
+   * `generation: null`, so the caller falls back to the always-current live slice instead of serving
+   * a stale-but-active generation as authoritative.
    */
   async projectionSlice(
     projectId: string,
     role: Role,
     userId?: string,
   ): Promise<{ decisions: DecisionDto[]; statuses: Map<string, DecisionStatus>; generation: number | null }> {
-    const gen = await this.prisma.projectionGeneration.findFirst({
-      where: { consumer: DECISIONS_PROJECTION, projectId, status: 'active' },
-      select: { id: true, generation: true },
-    });
+    const gen = await readServableGeneration(this.prisma, DECISIONS_PROJECTION, projectId);
     if (!gen) return { decisions: [], statuses: new Map(), generation: null };
 
     const rows = await this.prisma.decisionProjection.findMany({
@@ -144,8 +145,11 @@ export class DecisionsQueryService {
   }
 
   /** How many of a project's decisions are still pending — the portfolio tile count (the caller gates
-   *  this on the viewer's role: only PMC/client may see it). */
+   *  this on the viewer's role: only PMC/client may see it). Task 10 finalization: a DRAFT
+   *  (`publishedAt` null) is weightless — it is not awaiting the client, and counting it here leaked
+   *  an author-private draft into every PMC/client member's portfolio rollup while the shell,
+   *  dashboard and inbox surfaces all excluded it (cross-surface disagreement + a privacy leak). */
   countPending(projectId: string): Promise<number> {
-    return this.prisma.decision.count({ where: { projectId, status: 'pending' } });
+    return this.prisma.decision.count({ where: { projectId, status: 'pending', publishedAt: { not: null } } });
   }
 }
