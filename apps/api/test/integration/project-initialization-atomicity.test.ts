@@ -422,16 +422,18 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
       expect({ membership, stream, event, delivery, nodes, phases, activities, inspections, items }).toEqual({
         membership: 1,
         stream: 1,
-        // Task 10 (Module 3) correction — init now emits TWO events: `project.created` AND the
-        // `inspection.created` the inspections participant appends for the one starting checklist
-        // (so the inspections.inbox projection MATERIALIZES from init events, not the live fallback).
-        event: 2,
-        // PR B totality: every registered consumer gets one delivery per event. There are SIX consumers
-        // (socket `dispatch` + push + decisions.inbox + daily-log.inbox + drawings.inbox +
-        // inspections.inbox), so two events yield 2 × 6 = 12 deliveries. For `project.created` the
-        // inspections.inbox delivery is a `noop` (not an inspection event); for `inspection.created`
-        // it is a real projection refresh while the other five are `noop`.
-        delivery: 12,
+        // Task 10 (Modules 3+4) — init now emits FOUR events: `project.created`, the
+        // `inspection.created` the inspections participant appends for the one starting checklist,
+        // and the `phase.created` + `activity.created` the activities participant appends for the one
+        // starting phase/activity (so BOTH module projections MATERIALIZE from init events, not the
+        // live fallback).
+        event: 4,
+        // PR B totality: every registered consumer gets one delivery per event. There are SEVEN
+        // consumers (socket `dispatch` + push + decisions.inbox + daily-log.inbox + drawings.inbox +
+        // inspections.inbox + activities.schedule), so four events yield 4 × 7 = 28 deliveries. Each
+        // projection consumer dispatches only its own module's events (its deliveries for the others
+        // are `noop`s that still advance the ordered cursor).
+        delivery: 28,
         nodes: 1,
         phases: 1,
         activities: 1,

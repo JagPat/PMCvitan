@@ -50,8 +50,10 @@ export const activitiesManifest: ModuleManifest = {
   consumesEvents: [],
   commands: [...ACTIVITIES_COMMANDS],
   queries: [...ACTIVITIES_QUERIES],
+  // routes lists the MUTATING command routes only (the boundary check derives them from the Nest
+  // controllers); the module-owned `GET /projects/:projectId/activities` read is declared by
+  // `queries` above, not here.
   routes: [
-    'GET /projects/:projectId/activities',
     'POST /projects/:projectId/activities',
     'PATCH /projects/:projectId/activities/:activityId',
     'DELETE /projects/:projectId/activities/:activityId',

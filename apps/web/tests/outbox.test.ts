@@ -68,7 +68,8 @@ describe('Phase 8 offline outbox', () => {
     await flush();
 
     expect(gw.approveDecision).toHaveBeenCalledWith('DL-014', 1, expect.any(String));
-    expect(gw.startActivity).toHaveBeenCalledWith('ACT-31');
+    // Task 10 (Module 4): the queued op replays under its minted, stable idempotency key
+    expect(gw.startActivity).toHaveBeenCalledWith('ACT-31', expect.any(String));
     expect(s().outbox).toHaveLength(0);
     expect(s().syncQueue).toHaveLength(0);
     expect(s().notifications[0].text).toBe('SERVER applied'); // snapshot reconciled
@@ -276,8 +277,8 @@ describe('Phase 8 outbox — failure handling (replay poisoning fix)', () => {
     expect(gw.startActivity).toHaveBeenCalledTimes(1);
     expect(gw.completeActivity).not.toHaveBeenCalled();
     expect(s().outbox).toEqual([
-      { t: 'startActivity', activityId: 'ACT-31' },
-      { t: 'completeActivity', activityId: 'ACT-31' },
+      { t: 'startActivity', activityId: 'ACT-31', idempotencyKey: expect.any(String) },
+      { t: 'completeActivity', activityId: 'ACT-31', idempotencyKey: expect.any(String) },
     ]);
 
     // Reconnect again: the retained ops replay, the already-synced approve is NOT re-run.

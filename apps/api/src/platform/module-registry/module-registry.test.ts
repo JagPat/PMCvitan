@@ -68,7 +68,9 @@ describe('Phase 2 Task 7 — module registry', () => {
       activities: ['inspections'], // completion creates the closing inspection (edge 1) + relabel
       'daily-log': ['activities'], // material-mismatch blocks the activity's readiness (edge 4)
       media: ['inspections'], // evidence add/remove (edges via the media create/remove tx)
-      nodes: ['inspections'], // node deletion unfiles placed inspections
+      // Task 10 Module 4: node deletion unfiles placed inspections AND filed activities (each
+      // through its owning module's participant, appending inspection.unfiled / activity.unfiled)
+      nodes: ['inspections', 'activities'],
       orgs: ['nodes', 'activities', 'inspections'], // project-init instantiates each owning module
       inspections: ['activities'], // the closing-inspection decide writes the activity sign-off
     };
