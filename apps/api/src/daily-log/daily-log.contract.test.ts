@@ -37,7 +37,9 @@ describe('Task 10 — the daily-log module implements its shared command/query c
 
   it('the manifest publishes exactly the daily-log lifecycle events', () => {
     expect([...dailyLogManifest.producesEvents].sort()).toEqual(
-      ['dailylog.started', 'dailylog.submitted', 'material.added', 'material.mismatch_flagged'].sort(),
+      // `material.unfiled` — Module 4 correction, the owner-aligned SET NULL signal appended by
+      // DailyLogParticipant on the foreign nodes.remove transaction.
+      ['dailylog.started', 'dailylog.submitted', 'material.added', 'material.mismatch_flagged', 'material.unfiled'].sort(),
     );
     // the module reads decisions through the decisions query contract; the material-mismatch flag is a
     // WORKFLOW participation with activities (edge 4), NOT a persistence dependency.

@@ -36,6 +36,10 @@ describe('Task 10 — the drawings module implements its shared command/query co
         'drawing.refiled',
         'drawing.removed',
         'drawing.revised',
+        // Module 4 correction — owner-aligned SET NULL signals appended by DrawingParticipant on the
+        // foreign deleting transaction (activities.remove / nodes.remove).
+        'drawing.activity_unlinked',
+        'drawing.unfiled',
       ].sort(),
     );
     // the module reads decisions through the decisions query contract (a linked decisionId is validated).

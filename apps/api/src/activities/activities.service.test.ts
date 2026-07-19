@@ -8,6 +8,7 @@ import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { InspectionParticipant } from '../inspections/inspection.participant';
+import type { DrawingParticipant } from '../drawings/drawing.participant';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import type { AuthUser } from '../common/auth';
 
@@ -119,7 +120,10 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
   // inspections query (read-encapsulation); a real instance over the SAME mocked prisma reads
   // `inspection.findMany` exactly as the prior direct reads did (readiness needs no signed paths).
   const inspectionsQuery = new InspectionsQueryService(prisma as unknown as PrismaService, signed as unknown as import('../media/signed-url.service').SignedUrlService);
-  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService), drawingsQuery, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant(), inspectionsQuery);
+  // Module 4 correction — activity removal routes the drawing unlink through the drawings
+  // participant (owner-aligned signal); unit tests exercise no linked drawings, so a null stub.
+  const drawingParticipant = { unlinkFromDeletedActivity: vi.fn(async () => null) } as unknown as DrawingParticipant;
+  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService), drawingsQuery, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant(), inspectionsQuery, drawingParticipant);
   const user = { sub: 'u-eng', role: 'engineer' } as AuthUser;
   return { svc, prisma, user, inspectionCreates, activityUpdates, audits, activity };
 }

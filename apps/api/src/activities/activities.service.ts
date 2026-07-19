@@ -22,6 +22,7 @@ import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { InspectionParticipant } from '../inspections/inspection.participant';
+import { DrawingParticipant } from '../drawings/drawing.participant';
 
 @Injectable()
 export class ActivitiesService {
@@ -43,6 +44,10 @@ export class ActivitiesService {
     // Task 10 (Module 3) — the inspection-gate readiness input + the closing-inspection id come from the
     // inspections module's query, so activities reads NO inspection persistence directly.
     private readonly inspectionsQuery: InspectionsQueryService,
+    // Task 10 (Module 4) correction — removing an activity unlinks governed drawings through the
+    // drawings participant (in-tx), which appends `drawing.activity_unlinked` so the drawings.inbox
+    // projection observes the unlink (never the silent SET NULL alone).
+    private readonly drawingParticipant: DrawingParticipant,
   ) {}
 
   /** Planned civil dates for a write: prefer explicit ISO input; else derive from the
@@ -218,17 +223,20 @@ export class ActivitiesService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'activities.remove', idempotencyKey, requestHash,
       run: async (tx) => {
-        // Task 7 (edge 5): a drawing outlives its planned activity — the
-        // Drawing(projectId, activityId) FK is now ON DELETE SET NULL (activityId), so the
-        // database unlinks governed drawings when the activity is deleted. No cross-module
-        // write here. Inspections/overrides keep their NO ACTION FKs and still BLOCK the
-        // delete (surfaced as the Conflict below), so a referenced activity is never lost.
+        // Task 7 (edge 5) + Module-4 correction: a drawing outlives its planned activity. The
+        // governed-drawing unlink is now performed EXPLICITLY through the drawings workflow
+        // participant BEFORE the delete — which also appends the drawing-owned
+        // `drawing.activity_unlinked` signal, so the drawings.inbox projection observes the
+        // unlink instead of the silent ON DELETE SET NULL (the FK stays as the DB backstop).
+        // Inspections/overrides keep their NO ACTION FKs and still BLOCK the delete (surfaced
+        // as the Conflict below), so a referenced activity is never lost.
+        const unlinkedEv = await this.drawingParticipant.unlinkFromDeletedActivity(tx, { projectId, actor, activityId });
         await tx.activity.delete({ where: { id: activityId } }).catch(() => {
           throw new ConflictException('This activity has linked records (inspections/materials) — it can no longer be deleted');
         });
         await recordAudit(tx, { projectId, actor, action: 'activity.delete', entity: 'Activity', entityId: activityId });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'activity.deleted', entityType: 'Activity', entityId: activityId, effectKey: 'activity.deleted', dispatch: {} });
-        return { resultRef: activityId, events: [ev] };
+        return { resultRef: activityId, events: unlinkedEv ? [unlinkedEv, ev] : [ev] };
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);

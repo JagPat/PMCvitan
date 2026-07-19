@@ -493,10 +493,14 @@ export const createActivitySchema = z
     // legacy offsets are derived from the project's schedule anchor
     plannedStartDate: isoCivilDateSchema.optional(),
     plannedEndDate: isoCivilDateSchema.optional(),
-    phaseId: z.string().optional(),
-    decisionId: z.string().optional(),
+    // null == "no link" (the same convention the update schema documents): the web contract
+    // (`NewActivityInput`) sends `phaseId/decisionId/nodeId: null` when unset, and the service
+    // normalizes with `?? null` — rejecting null here 400'd every UI plan without a phase,
+    // decision or location (caught by the activities module-read e2e).
+    phaseId: z.string().nullable().optional(),
+    decisionId: z.string().nullable().optional(),
     // Location spine: the place this work happens (a location-tree node).
-    nodeId: z.string().trim().min(1).optional(),
+    nodeId: z.string().trim().min(1).nullable().optional(),
     // material/team stay STORED site flags (Phases 3/4 derive them); the
     // inspection and drawing gates are DERIVED from explicit links (Task 6) —
     // gateInspection left the write contracts entirely (deprecated column)

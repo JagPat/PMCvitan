@@ -4,6 +4,8 @@ import { SnapshotService } from '../snapshot/snapshot.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
+import { DrawingParticipant } from '../drawings/drawing.participant';
+import { DailyLogParticipant } from '../daily-log/daily-log.participant';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { AuthUser } from '../common/auth';
 import type { CreateNodeInput, MoveNodeInput, RenameNodeInput } from '../contracts';
@@ -41,6 +43,11 @@ export class NodesService {
     // Task 10 (Module 4) — the same for filed activities: unfiled through the activities participant
     // (in-tx), which appends `activity.unfiled` so the activities.schedule projection observes it.
     private readonly activityParticipant: ActivityParticipant,
+    // Task 10 (Module 4) correction — the same for filed drawings (`drawing.unfiled`) and staged
+    // materials (`material.unfiled`): their locations are serialized into the drawings.inbox /
+    // daily-log.inbox bases, so a node delete must produce an owner-aligned signal for each.
+    private readonly drawingParticipant: DrawingParticipant,
+    private readonly dailyLogParticipant: DailyLogParticipant,
   ) {}
 
   /** Create a zone/room/element under the right kind of parent. */
@@ -130,15 +137,19 @@ export class NodesService {
     // their FK stays NO ACTION and the count guard above refuses the delete instead of
     // silently unfiling them.
     const events = await this.prisma.$transaction(async (tx) => {
-      // Task 10 (Modules 3+4) — unfile the placed inspections AND filed activities in the deleted subtree
-      // FIRST, through each owning module's participant, which appends `inspection.unfiled` /
-      // `activity.unfiled` when any row changed, so both ordered projections observe the location change
-      // (the ON DELETE SET NULL FKs below stay as the DB backstop).
+      // Task 10 (Modules 3+4 + correction) — unfile EVERY placed record whose location is serialized
+      // into a module projection FIRST, through each owning module's participant, which appends its
+      // owner-aligned signal (`inspection.unfiled` / `activity.unfiled` / `drawing.unfiled` /
+      // `material.unfiled`) when any row changed, so every ordered projection observes the location
+      // change (the ON DELETE SET NULL FKs below stay as the DB backstop). Media stays FK-only: no
+      // module projection serializes `Media.nodeId` (the snapshot's photo layer is a live read).
       const unfiledEv = await this.inspectionParticipant.unfileForDeletedNodes(tx, { projectId, actor, nodeIds: subtree });
       const unfiledActEv = await this.activityParticipant.unfileForDeletedNodes(tx, { projectId, actor, nodeIds: subtree });
+      const unfiledDrawEv = await this.drawingParticipant.unfileForDeletedNodes(tx, { projectId, actor, nodeIds: subtree });
+      const unfiledMatEv = await this.dailyLogParticipant.unfileMaterialsForDeletedNodes(tx, { projectId, actor, nodeIds: subtree });
       await tx.projectNode.delete({ where: { id: nodeId } }); // children cascade; FKs unfile remaining placed records
       const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'node.removed', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.removed', dispatch: {} });
-      return [unfiledEv, unfiledActEv, removedEv].filter((e): e is EmittedEventMeta => e !== null);
+      return [unfiledEv, unfiledActEv, unfiledDrawEv, unfiledMatEv, removedEv].filter((e): e is EmittedEventMeta => e !== null);
     });
     return this.done(projectId, user, events);
   }
