@@ -7,7 +7,7 @@ import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dis
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { resolveProjectNode } from '../nodes/node-scope';
-import { resolveProjectRef } from '../common/project-ref';
+import { rethrowActivityRefViolation } from '../common/project-ref';
 import { ddMmmYyyy } from '../domain/dates';
 import { resolveActor, type Actor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -114,9 +114,12 @@ export class DrawingsService {
     }
     // Location spine: validate the place this drawing governs belongs to this project.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
-    // Project-owned references: the linked activity/decision must be THIS project's
-    // (the composite DB foreign keys are the backstop; this gives a readable error).
-    const activityId = await resolveProjectRef(this.prisma, 'activity', projectId, input.activityId, 'activityId');
+    // Project-owned references: the linked activity/decision must be THIS project's. The decision is
+    // validated through its module's query; the ACTIVITY reference (Task 10 Module 4: activity is
+    // read-encapsulated, and drawings sits UPSTREAM of activities in dependsOn) is validated by the
+    // composite `(projectId, activityId)` tenant FK — translated to the same readable 400 in the
+    // catch below (`rethrowActivityRefViolation`).
+    const activityId = input.activityId ?? null;
     const decisionId = await this.decisions.resolveRefInProject(projectId, input.decisionId, 'decisionId');
     let key: string;
     let data: Buffer | null;
@@ -273,6 +276,8 @@ export class DrawingsService {
       });
       if (!outcome.replayed && outcome.events.length > 0) await this.dispatcher.dispatchCommitted(outcome.events);
     } catch (e) {
+      // Task 10 (Module 4): a foreign/unknown activityId trips the composite tenant FK → readable 400
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') rethrowActivityRefViolation(e);
       // a unique fired: the (drawingId, rev) label, a concurrent same-number create,
       // or the one-construction-per-drawing backstop — all mean "someone else won"
       if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {

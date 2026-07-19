@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { deriveReadiness, type ReadinessOverride } from '../domain/transitions';
 import { toIsoCivilDate } from '../common/civil-date';
+import { ActivitiesQueryService } from '../activities/activities.query';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import { DrawingsQueryService } from '../drawings/drawings.query';
@@ -10,16 +10,7 @@ import { SignedUrlService } from '../media/signed-url.service';
 import { isPendingDecisionNotice } from '../domain/notifications';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
-import type { ActivityDto, PhaseDto, ProjectShellCounts, SnapshotDto } from './types';
-
-const ACTIVITY_STATUS_OUT: Record<string, ActivityDto['status']> = {
-  not_started: 'not-started',
-  in_progress: 'in-progress',
-  // a completion CLAIM awaiting the PMC's closing sign-off (Phase 1 Task 5)
-  awaiting_signoff: 'awaiting-signoff',
-  done: 'done',
-  blocked: 'blocked',
-};
+import type { ProjectShellCounts, SnapshotDto } from './types';
 
 @Injectable()
 export class SnapshotService {
@@ -35,6 +26,10 @@ export class SnapshotService {
     // Task 10 (Module 3) — the five inspection slices + the inspection-gate readiness input come from the
     // inspections module's query, never a direct `prisma.inspection` read.
     private readonly inspectionsQuery: InspectionsQueryService,
+    // Task 10 (Module 4) — the activity spine (`activities` + `phases`, with readiness baked fresh)
+    // comes from the activities module's query, never a direct `prisma.activity`/`gateOverride`/
+    // `prisma.phase` read.
+    private readonly activitiesQuery: ActivitiesQueryService,
   ) {}
 
   /**
@@ -70,17 +65,20 @@ export class SnapshotService {
     const project = await this.prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
 
-    const [decisionSlice, activities, inspectionSlices, readinessInspections, dailyLogSlice, notifications, siteMedia, drawingDtos, phases, companies, nodes, activeMembers, gateOverrides, readinessDrawings] = await Promise.all([
-      // Task 8 — the decisions slice comes from the module's query (role-filtered DTOs + an
-      // id→status map for readiness), not a direct `prisma.decision` read.
-      this.decisionsQuery.snapshotSlice(projectId, role, userId),
-      this.prisma.activity.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
+    // Task 8 — the decisions slice comes from the module's query (role-filtered DTOs + an
+    // id→status map for readiness), not a direct `prisma.decision` read.
+    const decisionSlicePromise = this.decisionsQuery.snapshotSlice(projectId, role, userId);
+    const [decisionSlice, activitySlices, inspectionSlices, dailyLogSlice, notifications, siteMedia, drawingDtos, companies, nodes] = await Promise.all([
+      decisionSlicePromise,
+      // Task 10 (Module 4) — the activity spine (`activities` + `phases`) comes from the activities
+      // module's query, never a direct `prisma.activity`/`gateOverride`/`prisma.phase` read. It bakes
+      // each activity's five-gate readiness FRESH through the decisions/inspections/drawings query
+      // contracts; the snapshot chains its already-fetched id→status decision map in so the decision
+      // read never happens twice (identical data — the bake result cannot differ).
+      decisionSlicePromise.then((s) => this.activitiesQuery.snapshotSlice(projectId, { decisionStatuses: s.statuses })),
       // Task 10 (Module 3) — the five role-gated inspection slices come from the module's query (the same
       // per-viewer/role serialization moved there verbatim, so byte-identical), never a direct read.
       this.inspectionsQuery.snapshotSlice(projectId, role),
-      // Task 10 (Module 3) — the inspection-gate readiness input also comes from the module's query, so the
-      // snapshot reads NO inspection persistence directly (read-encapsulation).
-      this.inspectionsQuery.readinessSlice(projectId),
       // Task 10 — the daily-log slice (latest log core + project-wide materials) comes from the
       // module's query, never a direct `prisma.dailyLog`/`prisma.siteMaterial` read. The progress
       // PHOTOS remain the snapshot's to compose from media (below), so the DTO stays byte-identical.
@@ -98,16 +96,8 @@ export class SnapshotService {
       // draft-author visibility + the viewer's ack/recipient state + fresh signed urls), never a direct
       // `prisma.drawing` read. Byte-identical to the pre-extraction inline shaping.
       this.drawingsQuery.snapshotSlice(projectId, userId),
-      this.prisma.phase.findMany({ where: { projectId }, orderBy: { order: 'asc' } }),
       this.prisma.projectCompany.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.projectNode.findMany({ where: { projectId }, orderBy: [{ order: 'asc' }, { createdAt: 'asc' }] }),
-      // Readiness inputs (Task 6): who is CURRENTLY active (drawing-gate active(P))
-      // and every manual override (oldest first — the latest unexpired wins its gate)
-      this.prisma.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
-      this.prisma.gateOverride.findMany({ where: { projectId }, orderBy: { createdAt: 'asc' } }),
-      // Task 10 — the drawing-gate readiness input (per-revision recipients/acks) also comes from the
-      // drawings query, so the snapshot reads NO drawing persistence directly (read-encapsulation).
-      this.drawingsQuery.readinessSlice(projectId),
     ]);
 
     // Private delivery: a short-lived signed serve path (never a public bucket URL). Only
@@ -127,66 +117,18 @@ export class SnapshotService {
       kind: m.kind,
     }));
 
-    // Task 8 — the role-filtered decision DTOs + the unfiltered id→status map both come from the
-    // decisions query (the serialization moved there verbatim, so this slice is byte-identical).
+    // Task 8 — the role-filtered decision DTOs come from the decisions query (the serialization moved
+    // there verbatim, so this slice is byte-identical).
     const decisionDtos = decisionSlice.decisions;
-    const decisionStatuses = decisionSlice.statuses;
     // pmc/client see pending decisions; every other role has them hidden — the same predicate also
     // drops the pending-decision notice from the bell for those roles (AUTH-02, below).
     const hidePending = role !== 'pmc' && role !== 'client';
 
-    // Readiness (Task 6): a gate dot is a CONCLUSION from explicit recorded
-    // relationships — derived per activity from the rows already loaded above,
-    // never from a stored flag (material/team excepted and labeled 'stored').
-    const now = new Date();
-    const activeMemberIds = activeMembers.map((m) => m.userId);
-    // Task 10 (Module 3) — `readinessInspections` is the inspection-gate input from the module query
-    // (destructured above), not an inline `prisma.inspection` read.
-    const overridesByActivity = new Map<string, typeof gateOverrides>();
-    for (const o of gateOverrides) {
-      const list = overridesByActivity.get(o.activityId) ?? [];
-      list.push(o);
-      overridesByActivity.set(o.activityId, list);
-    }
-
-    const activityDtos: ActivityDto[] = activities.map((a) => ({
-      id: a.id,
-      name: a.name,
-      zone: a.zone,
-      decisionId: a.decisionId,
-      phaseId: a.phaseId,
-      nodeId: a.nodeId ?? undefined, // location spine: where this work happens
-
-      ps: a.plannedStart,
-      pe: a.plannedEnd,
-      as: a.actualStart,
-      ae: a.actualEnd,
-      // Task 6: real civil dates (canonical); the ints above are the legacy compat timeline
-      plannedStartDate: toIsoCivilDate(a.plannedStartDate),
-      plannedEndDate: toIsoCivilDate(a.plannedEndDate),
-      actualStartDate: toIsoCivilDate(a.actualStartDate),
-      actualEndDate: toIsoCivilDate(a.actualEndDate),
-      status: ACTIVITY_STATUS_OUT[a.status],
-      // legacy stored flags (deprecated display fields; `readiness` is the truth)
-      gm: a.gateMaterial,
-      gt: a.gateTeam,
-      gi: a.gateInspection,
-      block: a.block ?? undefined,
-      readiness: deriveReadiness(a.id, {
-        decisionStatus: a.decisionId ? (decisionStatuses.get(a.decisionId) ?? null) : null,
-        gateMaterial: a.gateMaterial,
-        gateTeam: a.gateTeam,
-        inspections: readinessInspections,
-        drawings: readinessDrawings,
-        activeMemberIds,
-        overrides: (overridesByActivity.get(a.id) ?? []).map((o) => ({ gate: o.gate as ReadinessOverride['gate'], state: o.state, reason: o.reason, expiresAt: o.expiresAt, actorName: o.actorName })),
-        now,
-      }),
-      // the ACTIVE manual exceptions, surfaced for the override UI (revoke + expiry)
-      overrides: (overridesByActivity.get(a.id) ?? [])
-        .filter((o) => o.expiresAt.getTime() > now.getTime())
-        .map((o) => ({ id: o.id, gate: o.gate as ReadinessOverride['gate'], state: o.state, reason: o.reason, actorName: o.actorName, expiresAt: o.expiresAt.toISOString(), evidenceMediaId: o.evidenceMediaId ?? undefined })),
-    }));
+    // Task 10 (Module 4) — the activity spine (`activities` + `phases`, `activitySlices` above) is served
+    // by the activities module's query, which bakes the SAME serialization the inline shaping used to:
+    // per-activity five-gate readiness derived fresh (decision status map + inspection/drawing readiness
+    // inputs + active members + unexpired overrides at `now`), the stored→wire status remap, the ACTIVE
+    // override list for the UI, and the phase rollups computed from the baked activities — byte-identical.
 
     // Task 10 (Module 3) — the five role-gated inspection slices (`checklist`, `reviews`, `review`,
     // `reinspectionCreated`, `placedInspections`) come from `inspectionSlices` (the inspections module's
@@ -198,31 +140,6 @@ export class SnapshotService {
     // (`this.drawingsQuery.snapshotSlice`, destructured above), which bakes the same per-viewer register
     // the inline shaping used to: draft-author visibility, the governing revision, the viewer's
     // ackedByMe/recipientOfCurrent, and each revision's fresh short-lived signed url — byte-identical.
-
-    // Phase rollups: each phase's activities counted by status so the schedule
-    // and portfolio can show phase-level progress (done/total → donePct).
-    const phaseDtos: PhaseDto[] = phases.map((p) => {
-      const acts = activityDtos.filter((a) => a.phaseId === p.id);
-      const done = acts.filter((a) => a.status === 'done').length;
-      const inProgress = acts.filter((a) => a.status === 'in-progress').length;
-      const blocked = acts.filter((a) => a.status === 'blocked').length;
-      const notStarted = acts.filter((a) => a.status === 'not-started').length;
-      return {
-        id: p.id,
-        name: p.name,
-        order: p.order,
-        plannedStart: p.plannedStart,
-        plannedEnd: p.plannedEnd,
-        plannedStartDate: toIsoCivilDate(p.plannedStartDate),
-        plannedEndDate: toIsoCivilDate(p.plannedEndDate),
-        activityTotal: acts.length,
-        done,
-        inProgress,
-        blocked,
-        notStarted,
-        donePct: acts.length ? Math.round((done / acts.length) * 100) : 0,
-      };
-    });
 
     return {
       project: {
@@ -243,14 +160,14 @@ export class SnapshotService {
         milestonePct: project.milestonePct,
       },
       decisions: decisionDtos,
-      activities: activityDtos,
+      activities: activitySlices.activities,
       placedInspections: inspectionSlices.placedInspections,
       reviews: inspectionSlices.reviews,
       review: inspectionSlices.review, // deprecated single (first pending) — back-compat
       reinspectionCreated: inspectionSlices.reinspectionCreated,
       checklist: inspectionSlices.checklist,
       drawings: drawingDtos,
-      phases: phaseDtos,
+      phases: activitySlices.phases,
       // Task 10 — the daily-log core comes from the module query (byte-identical); the snapshot
       // composes the media-sourced progress photos onto it (media is not daily-log's to own).
       dailyLog: dailyLogSlice.dailyLog ? { ...dailyLogSlice.dailyLog, photos: progressPhotos } : null,

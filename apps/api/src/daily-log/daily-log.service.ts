@@ -64,11 +64,13 @@ export class DailyLogService {
         // Edge 4 (Task 7): the linked activities are blocked THROUGH the activities
         // participant, in this same locked transaction — the Activity write lives in its
         // owning module while this flag orchestrates the material→readiness workflow.
-        await this.activities.blockForMaterialMismatch(tx, { projectId, decisionId: input.decisionId });
+        // Task 10 (Module 4): the participant also appends `activity.material_blocked` (an
+        // activity-owned signal) so the activities.schedule projection observes the block.
+        const blocked = await this.activities.blockForMaterialMismatch(tx, { projectId, decisionId: input.decisionId, actor });
         await tx.notification.create({ data: { projectId, text: `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}`, color: '#B23A34', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'material.mismatch', entity: 'SiteMaterial', entityId: mat.id });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'material.mismatch_flagged', entityType: 'SiteMaterial', entityId: mat.id, payload: { decisionId: input.decisionId }, effectKey: 'material.mismatch_flagged', dispatch: { push: { body: `Material mismatch: ${mat.name} ≠ approved ${input.decisionId}` } } });
-        return { resultRef: mat.id, events: [ev] };
+        return { resultRef: mat.id, events: blocked ? [ev, blocked] : [ev] };
       },
     });
     // material mismatch blocks work — alert PMC (resolves it) and contractor (supplied it)

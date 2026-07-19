@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { resolveProjectNode } from '../nodes/node-scope';
-import { resolveProjectRef } from '../common/project-ref';
+import { rethrowActivityRefViolation } from '../common/project-ref';
 import { resolveActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { ddMmmYyyy } from '../domain/dates';
@@ -60,8 +60,11 @@ export class InspectionsService {
     }
     // Location spine: validate the place this check happens belongs to this project.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
-    // The requirement edge must name THIS project's activity (composite FK is the backstop).
-    const activityId = await resolveProjectRef(this.prisma, 'activity', projectId, input.activityId, 'activityId');
+    // The requirement edge must name THIS project's activity. Task 10 (Module 4): activity is
+    // read-encapsulated and this module sits UPSTREAM of activities in dependsOn, so the composite
+    // `(projectId, activityId)` tenant FK is the validation authority — its violation is translated
+    // to the same readable 400 below (`rethrowActivityRefViolation`).
+    const activityId = input.activityId ?? null;
     // DATA-01: ids are globally unique — scan every project, not just this one (see decisions.service).
     const existing = await this.prisma.inspection.findMany({ select: { id: true } });
     const id = nextSeqId('INSP-', existing.map((i) => i.id));
@@ -72,9 +75,10 @@ export class InspectionsService {
       run: async (tx) => {
         // a LINKED requirement appears the moment it exists — a readiness write (finding 1)
         await lockProjectReadiness(tx, projectId);
+        // a foreign/unknown activityId trips the composite tenant FK — translated to the readable 400
         await tx.inspection.create({
           data: { id, projectId, kind: 'checklist', title: input.title, zone: input.zone, nodeId, activityId, date: ddMmmYyyy(fromIsoCivilDate(today)!), inspectionDate: fromIsoCivilDate(today), submitted: false, decided: false },
-        });
+        }).catch((e) => rethrowActivityRefViolation(e));
         for (const [i, name] of input.items.entries()) {
           await tx.inspectionItem.create({ data: { inspectionId: id, name, order: i, photos: 0, note: '' } });
         }
@@ -190,22 +194,22 @@ export class InspectionsService {
     if (!insp.submitted) throw new BadRequestException('This inspection has not been submitted yet.');
     if (insp.decided) throw new BadRequestException('This inspection has already been decided.');
 
-    // the activity a CLOSING inspection signs off (null for ordinary inspections)
+    // The activity a CLOSING inspection signs off (null for ordinary inspections) — read through the
+    // activities WORKFLOW PARTICIPANT (Task 10 Module 4: inspections never reads `prisma.activity`
+    // directly; the participant is the cycle-exempt channel). The name here is fast pre-validation
+    // display only — the in-transaction sign-off methods return the authoritative TX-CURRENT name.
     const activity = insp.closing && insp.activityId
-      ? await this.prisma.activity.findUnique({ where: { id: insp.activityId } })
+      ? await this.activities.signOffTarget(this.prisma, { projectId, activityId: insp.activityId })
       : null;
     // The push body still drives the in-transaction Notification row + the emit dispatch body; the
-    // TARGET ROLES now come from the external-effect catalog (per effectKey), not a local variable.
-    let pushBody: string;
+    // TARGET ROLES come from the external-effect catalog (per effectKey), not a local variable. The
+    // approve branch builds its body INSIDE the transaction (tx-current activity name).
     // Every emit this command commits, in causal order, handed to the single sender post-commit. A
     // multi-event decide (approve+signoff, reject+reinspection+signoff-reversal) invalidates the
     // socket ONCE (the dispatcher dedups per project) and pushes exactly the one body-bearing event.
     let events: EmittedEventMeta[];
 
     if (input.approve) {
-      pushBody = activity
-        ? `Signed off: ${activity.name} is complete.`
-        : 'Inspection approved. Contractor and client notified.';
       const project = activity ? await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } }) : null;
       const outcome = await executeCommand(this.prisma, {
         scope, actor, commandType: 'inspections.decide', idempotencyKey, requestHash,
@@ -217,20 +221,25 @@ export class InspectionsService {
             data: { decided: true, decidedById: actor.actorId, decidedByName: actor.actorName },
           });
           if (count === 0) throw new ConflictException('The inspection changed while deciding — reload and retry');
+          // the body the notification + push carry — for a closing sign-off it is rebuilt from the
+          // TX-CURRENT activity name the participant returns (R2-F2 pattern: never a stale
+          // pre-transaction read)
+          let body = 'Inspection approved. Contractor and client notified.';
           if (activity) {
             // approving the closing inspection IS the completion (edge 2): awaiting_signoff
             // → done, stamping the sign-off civil day, via the activities participant so the
             // Activity write lives in its owning module. CAS — a concurrent reject cannot
             // half-win; a legacy already-`done` activity just gets its sign-off day recorded.
-            await this.activities.applySignOff(tx, { projectId, activityId: activity.id, doneOn: fromIsoCivilDate(this.clock.today(project!.timeZone)) });
+            const signedOff = await this.activities.applySignOff(tx, { projectId, activityId: activity.id, doneOn: fromIsoCivilDate(this.clock.today(project!.timeZone)) });
+            body = `Signed off: ${signedOff.name} is complete.`;
             await recordAudit(tx, { projectId, actor, action: 'activity.signoff', entity: 'Activity', entityId: activity.id, payload: { closingInspectionId: inspectionId } });
           }
-          await tx.notification.create({ data: { projectId, text: pushBody, color: '#3F7A54', time: 'just now' } });
+          await tx.notification.create({ data: { projectId, text: body, color: '#3F7A54', time: 'just now' } });
           await recordAudit(tx, { projectId, actor, action: 'inspection.approve', entity: 'Inspection', entityId: inspectionId });
-          const approved = await emitEvent(tx, { projectId, actor, eventType: 'inspection.approved', entityType: 'Inspection', entityId: inspectionId, effectKey: 'inspection.approved', dispatch: activity ? {} : { push: { body: 'Inspection approved. Contractor and client notified.' } } });
+          const approved = await emitEvent(tx, { projectId, actor, eventType: 'inspection.approved', entityType: 'Inspection', entityId: inspectionId, effectKey: 'inspection.approved', dispatch: activity ? {} : { push: { body } } });
           const localEvents: EmittedEventMeta[] = [approved];
           // A CLOSING inspection's approval CAUSES the activity sign-off — one causal chain.
-          if (activity) localEvents.push(await emitEvent(tx, { projectId, actor, eventType: 'activity.signed_off', entityType: 'Activity', entityId: activity.id, causedByEventId: approved.eventId, payload: { closingInspectionId: inspectionId }, effectKey: 'activity.signed_off', dispatch: { push: { body: `Signed off: ${activity.name} is complete.` } } }));
+          if (activity) localEvents.push(await emitEvent(tx, { projectId, actor, eventType: 'activity.signed_off', entityType: 'Activity', entityId: activity.id, causedByEventId: approved.eventId, payload: { closingInspectionId: inspectionId }, effectKey: 'activity.signed_off', dispatch: { push: { body } } }));
           return { resultRef: inspectionId, events: localEvents };
         },
       });
@@ -272,7 +281,7 @@ export class InspectionsService {
       // gets the default sign-off item (an inspection without items cannot be submitted)
       const childItems = rejectedItems.length > 0 ? rejectedItems.map((it) => it.name) : ['Work complete and acceptable'];
 
-      pushBody = `Re-inspection ${childId} created for ${childItems.length} item(s) — due ${ddMmmYyyy(dueDate)}.`;
+      const pushBody = `Re-inspection ${childId} created for ${childItems.length} item(s) — due ${ddMmmYyyy(dueDate)}.`;
 
       const outcome = await executeCommand(this.prisma, {
         scope, actor, commandType: 'inspections.decide', idempotencyKey, requestHash,

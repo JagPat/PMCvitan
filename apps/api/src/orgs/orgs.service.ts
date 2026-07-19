@@ -11,6 +11,7 @@ import { emitEvent } from '../platform/events';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
+import { ActivitiesQueryService } from '../activities/activities.query';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import type { AuthUser } from '../common/auth';
@@ -148,6 +149,10 @@ export class OrgsService {
     // Task 10 (Module 3) — the source-copy checklist reads, the init id scan, and the portfolio's
     // open-inspection count all route through the inspections query (inspection is read-encapsulated).
     private readonly inspections: InspectionsQueryService,
+    // Task 10 (Module 4) — the source-copy schedule reads, the init id scan, and the portfolio's
+    // activity-status rollup all route through the activities query (activity/phase/gateOverride are
+    // read-encapsulated).
+    private readonly activitiesQuery: ActivitiesQueryService,
   ) {}
 
   /** Org role of a user, or null if not a member. */
@@ -348,7 +353,7 @@ export class OrgsService {
       validateInitializationGraph('Project initialization', this.initializationGraph(sources));
       await lockInitializationDisplayIds(tx);
       const [allActivityIds, allInspectionIds] = await Promise.all([
-        tx.activity.findMany({ select: { id: true } }),
+        this.activitiesQuery.allIds(tx),
         this.inspections.allIds(tx),
       ]);
 
@@ -380,7 +385,7 @@ export class OrgsService {
         actor,
         targetAnchor,
         today,
-        activityIds: allActivityIds.map((row) => row.id),
+        activityIds: allActivityIds,
         inspectionIds: allInspectionIds,
         zoneIdByName: new Map<string, string>(),
         phaseIdByIdentity: new Map<string, string>(),
@@ -430,17 +435,18 @@ export class OrgsService {
 
   private async loadSourceStructure(tx: Prisma.TransactionClient, orgId: string, sourceId: string): Promise<PreparedInitSource> {
     await this.assertSourceProject(tx, orgId, sourceId);
-    const [nodes, phases, activities, inspections] = await Promise.all([
+    const [nodes, schedule, inspections] = await Promise.all([
       tx.projectNode.findMany({ where: { projectId: sourceId }, orderBy: { createdAt: 'asc' } }),
-      tx.phase.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
-      tx.activity.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
+      // Task 10 (Module 4) — the source schedule (phases + activities as PLANNED structure) comes from
+      // the activities module's query, never a direct `prisma.phase`/`prisma.activity` read.
+      this.activitiesQuery.scheduleStructures(sourceId, { tx }),
       this.inspections.checklistStructures(sourceId, { tx }),
     ]);
     return {
       label: `source project "${sourceId}"`,
       rootParentKind: null,
       nodes: nodes.map((node) => ({ key: node.id, parentKey: node.parentId, name: node.name, kind: node.kind as InitNodeKind, order: node.order })),
-      phases: phases.map((phase) => ({
+      phases: schedule.phases.map((phase) => ({
         identity: phase.id,
         coalesceByName: false,
         name: phase.name,
@@ -448,7 +454,7 @@ export class OrgsService {
         plannedStart: phase.plannedStart,
         plannedEnd: phase.plannedEnd,
       })),
-      activities: activities.map((activity) => ({
+      activities: schedule.activities.map((activity) => ({
         name: activity.name,
         zone: activity.zone,
         plannedStart: activity.plannedStart,
@@ -737,12 +743,10 @@ export class OrgsService {
     const inspections = await this.inspections.checklistStructures(sourceId, fromNodeId ? { nodeIds: [...nodeIds] } : {});
     // phases + planned activities only travel for a whole-project extraction — a space
     // module is spatial; the schedule shape belongs to schedule/whole-project modules
-    const [phases, activities] = fromNodeId
-      ? [[], []]
-      : await Promise.all([
-          this.prisma.phase.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
-          this.prisma.activity.findMany({ where: { projectId: sourceId }, orderBy: { order: 'asc' } }),
-        ]);
+    // (Task 10 Module 4 — read through the activities query, never `prisma.phase`/`prisma.activity`).
+    const { phases, activities } = fromNodeId
+      ? { phases: [], activities: [] }
+      : await this.activitiesQuery.scheduleStructures(sourceId);
     const phaseName = new Map(phases.map((p) => [p.id, p.name]));
 
     return modulePayloadSchema.parse({
@@ -826,6 +830,7 @@ export class OrgsService {
         state.phaseIdByIdentity.set(identityKey, coalescedId);
         continue;
       }
+      // the participant appends `phase.created` {init:true} so the activities projection materializes
       const created = await this.activityInit.createPhaseForInit(tx, {
         data: {
           projectId: state.targetId,
@@ -835,7 +840,7 @@ export class OrgsService {
           plannedEnd: phase.plannedEnd,
           ...datesFor(phase.plannedStart, phase.plannedEnd),
         },
-      });
+      }, { projectId: state.targetId, actor: state.actor });
       state.phaseIdByIdentity.set(identityKey, created.id);
       if (!state.phaseIdByDefinition.has(definitionKey)) state.phaseIdByDefinition.set(definitionKey, created.id);
     }
@@ -911,7 +916,8 @@ export class OrgsService {
           nodeId: activity.nodeKey ? required(nodeIdByKey, activity.nodeKey, 'node key') : null,
           order: activity.order,
         },
-      });
+        // the participant appends `activity.created` {init:true} so the activities projection materializes
+      }, { projectId: state.targetId, actor: state.actor });
     }
 
     for (const inspection of source.inspections) {
@@ -1062,16 +1068,14 @@ export class OrgsService {
     return Promise.all(
       scoped.map(async ({ project, role }) => {
         const canSeePending = role === 'pmc' || role === 'client';
-        const [activities, openReviews, pendingDecisions, phaseCount] = await Promise.all([
-          this.prisma.activity.findMany({ where: { projectId: project.id }, select: { status: true } }),
+        // Task 10 (Module 4) — the activity-status rollup + phase count come from the activities query,
+        // never a direct `prisma.activity.findMany`/`prisma.phase.count` read.
+        const [statusCounts, openReviews, pendingDecisions] = await Promise.all([
+          this.activitiesQuery.statusCounts(project.id),
           this.inspections.openInspectionCount(project.id),
           canSeePending ? this.decisions.countPending(project.id) : Promise.resolve(0),
-          this.prisma.phase.count({ where: { projectId: project.id } }),
         ]);
-        const done = activities.filter((a) => a.status === 'done').length;
-        const inProgress = activities.filter((a) => a.status === 'in_progress').length;
-        const blocked = activities.filter((a) => a.status === 'blocked').length;
-        const notStarted = activities.filter((a) => a.status === 'not_started').length;
+        const { total: activityTotal, done, inProgress, blocked, notStarted, phaseCount } = statusCounts;
         return {
           projectId: project.id,
           name: project.name,
@@ -1079,12 +1083,12 @@ export class OrgsService {
           stage: project.stage,
           role,
           orgName: project.org?.name ?? null,
-          activityTotal: activities.length,
+          activityTotal,
           done,
           inProgress,
           blocked,
           notStarted,
-          donePct: activities.length ? Math.round((done / activities.length) * 100) : 0,
+          donePct: activityTotal ? Math.round((done / activityTotal) * 100) : 0,
           openReviews,
           pendingDecisions,
           phaseCount,

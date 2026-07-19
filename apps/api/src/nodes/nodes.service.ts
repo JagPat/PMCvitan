@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionParticipant } from '../inspections/inspection.participant';
+import { ActivityParticipant } from '../activities/activity.participant';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { AuthUser } from '../common/auth';
 import type { CreateNodeInput, MoveNodeInput, RenameNodeInput } from '../contracts';
@@ -37,6 +38,9 @@ export class NodesService {
     // Task 10 (Module 3) correction — deleting a node unfiles placed inspections through the participant
     // (in-tx), which appends `inspection.unfiled` so the projection observes the location change.
     private readonly inspectionParticipant: InspectionParticipant,
+    // Task 10 (Module 4) — the same for filed activities: unfiled through the activities participant
+    // (in-tx), which appends `activity.unfiled` so the activities.schedule projection observes it.
+    private readonly activityParticipant: ActivityParticipant,
   ) {}
 
   /** Create a zone/room/element under the right kind of parent. */
@@ -126,13 +130,15 @@ export class NodesService {
     // their FK stays NO ACTION and the count guard above refuses the delete instead of
     // silently unfiling them.
     const events = await this.prisma.$transaction(async (tx) => {
-      // Task 10 (Module 3) correction — unfile placed inspections in the deleted subtree FIRST, through the
-      // participant, which appends `inspection.unfiled` when any row changed, so the inspections.inbox
-      // projection observes the location change (the ON DELETE SET NULL FK below stays as the DB backstop).
+      // Task 10 (Modules 3+4) — unfile the placed inspections AND filed activities in the deleted subtree
+      // FIRST, through each owning module's participant, which appends `inspection.unfiled` /
+      // `activity.unfiled` when any row changed, so both ordered projections observe the location change
+      // (the ON DELETE SET NULL FKs below stay as the DB backstop).
       const unfiledEv = await this.inspectionParticipant.unfileForDeletedNodes(tx, { projectId, actor, nodeIds: subtree });
+      const unfiledActEv = await this.activityParticipant.unfileForDeletedNodes(tx, { projectId, actor, nodeIds: subtree });
       await tx.projectNode.delete({ where: { id: nodeId } }); // children cascade; FKs unfile remaining placed records
       const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'node.removed', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.removed', dispatch: {} });
-      return unfiledEv ? [unfiledEv, removedEv] : [removedEv];
+      return [unfiledEv, unfiledActEv, removedEv].filter((e): e is EmittedEventMeta => e !== null);
     });
     return this.done(projectId, user, events);
   }

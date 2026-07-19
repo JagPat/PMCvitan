@@ -377,6 +377,21 @@ model InspectionsProjection {
   @@unique([generationId, projectId])
 }
 
+// Phase 2 Task 10 (Module 4) — the activities module's rebuildable read model (`activities.schedule`).
+// ONE row per (generation, project): the serialized ACTIVITY-OWNED base (activities + overrides + phases
+// as stored facts). Derived readiness is NEVER stored here — it depends on foreign modules' state
+// (decisions/inspections/drawings) whose events this projection does not consume, so a stored conclusion
+// could go silently stale; it is baked FRESH at read time through those modules' query contracts.
+model ActivitiesProjection {
+  id           String   @id @default(uuid())
+  generationId String
+  projectId    String
+  dto          Json // the serialized ActivitiesBase (activity-owned facts only; readiness baked at read)
+  updatedAt    DateTime @updatedAt
+
+  @@unique([generationId, projectId])
+}
+
 // Phase 2 Task 10 (Module 3) correction — the INSPECTION-OWNED evidence link. Item-level photo evidence
 // was formerly read off the Media table by the inspections serializer (a cross-module read the projection
 // could not observe when a photo was uploaded/removed). Each row is an inspection-owned link from an
