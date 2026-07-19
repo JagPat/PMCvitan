@@ -53,11 +53,18 @@ test.describe('activities module-owned read (moduleQuery)', () => {
 
     await page.goto('/');
     await signIn(page, 'test-pmc@vitan.in');
-    // switch to Project A (the PMC's home may be B) if the switcher isn't already there
+    // switch to Project A (the PMC's home may be B) if the switcher isn't already there. Wait for a
+    // REAL project name first (hydration), then retry the open-and-pick as one unit: a post-sign-in
+    // re-render can close the dropdown between the two clicks, which strands a single-shot sequence
+    // waiting on an option that no longer exists (observed deterministically on slow containers).
     const switcher = page.getByTestId('project-switcher');
+    await expect(switcher).toContainText(/Residence at Ambli|Test Empty Site/);
     if (!(await switcher.textContent())?.includes('Residence at Ambli')) {
-      await switcher.click();
-      await page.getByRole('button', { name: /Residence at Ambli/ }).click();
+      const option = page.getByRole('button', { name: /Residence at Ambli/ });
+      await expect(async () => {
+        if (!(await option.isVisible())) await switcher.click();
+        await option.click({ timeout: 2000 });
+      }).toPass();
     }
     await expect(switcher).toContainText('Residence at Ambli');
 
