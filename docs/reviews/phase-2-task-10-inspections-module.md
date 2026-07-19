@@ -330,3 +330,81 @@ conditional had been hiding:
 
 **HELD for narrow review — do not merge.** Activities (module 4) stays blocked until this correction
 clears the narrow Codex review.
+
+---
+
+# CORRECTION ROUND 2 — PR #179 narrow re-review (BLOCKED on exactly two findings)
+
+PR #179 merged at `main` `2feab59` (this round's base). Verdict: BLOCKED on two findings; one focused
+fix-forward correction PR (this change); the owner-aligned architecture is NOT reopened; the merged
+`20261120000000` migration checksum is NOT modified; Activities stays blocked.
+
+## F1 — cross-project InspectionEvidence media reference
+
+The original backstop was the id-only FK `InspectionEvidence(mediaId) → Media(id)`, which accepted a link
+whose `projectId` was project A while its `mediaId` belonged to project B. New forward migration
+**`20261125000000_phase2_inspection_evidence_tenant_fk`**:
+
+1. **Diagnose** — JOIN links to media on `mediaId`; any `ie.projectId <> m.projectId` **ABORTS** the
+   migration naming the count AND the affected `InspectionEvidence` ids (no guessed repair).
+2. **Drop** `InspectionEvidence_media_fkey` (the id-only backstop).
+3. **Add** `FOREIGN KEY ("projectId","mediaId") REFERENCES "Media"("projectId","id") ON DELETE CASCADE
+   ON UPDATE NO ACTION` — backed by the existing `Media_projectId_id_key` unique identity (the same
+   composite shape GateOverride already uses).
+
+Evidence:
+- **Adversarial live-PG raw-SQL probes** (`test/integration/inspections-correction-r2.test.ts` F1): a
+  project-A link naming project-B's media is REJECTED by PostgreSQL (`violates foreign key constraint`);
+  a same-project link succeeds; zero cross-project rows persist. **RED at PR #179** (the id-only FK
+  accepted the forgery), green now.
+- **Abort → repair → redeploy proof** (`apps/api/scripts/inspection-evidence-tenant-fk-abort-proof.sh`,
+  exit 0): builds the pre-round-2 DB, plants the forged cross-project link (which the id-only FK permits),
+  proves the migration ABORTS naming `IE-forged` (single-transaction rollback leaves the original FK
+  intact), repairs ONLY the forged row, redeploys successfully, then proves the composite FK rejects a
+  fresh forgery and accepts a same-project link.
+- The round-1 abort proof (`inspections-owned-facts-abort-proof.sh`) now holds back its target migration
+  **and every successor** when building its baseline (the round-2 migration presumes the round-1 table),
+  and still passes.
+
+## F2 — activity completion used stale pre-transaction values
+
+`ActivitiesService.complete` read the Activity BEFORE its transaction and passed that stale
+name/zone/nodeId to `createClosingInspection` (and into the notification text + push body). Fix, exactly
+per the finding:
+
+1. the early read stays as **fast validation only** (404/409 fast paths);
+2. **inside** the completion transaction, **after** the status CAS took the row lock, the Activity is
+   **re-read through the transaction** (`tx.activity.findUniqueOrThrow`);
+3. the transaction-current `name`/`zone`/`nodeId` go to `InspectionParticipant.createClosingInspection`;
+4. the **same** transaction-current name is used for the notification text and the completion event's
+   push body (the audit/event payloads carry ids only, unchanged);
+5. the membership `FOR UPDATE` lock and the completion CAS are untouched.
+
+**Deterministic barrier tests, both orderings** (`inspections-correction-r2.test.ts` F2; run ×5 + the
+battery ×3):
+- **A** — a barrier holds `complete()` at the moment its pre-transaction read returns; a real
+  rename + re-zone + re-file (`activities.update`) COMMITS in the window; released, the completion
+  transaction continues. The closing inspection carries the NEW name/zone/nodeId and the notification uses
+  the NEW name. **RED at PR #179** (the stale pre-read values were stamped), green now.
+- **B** — a `$transaction`-wrapper barrier holds the completion transaction OPEN at its in-tx re-read
+  (row lock held); the rename dispatched in that window blocks behind the lock and applies AFTER the
+  commit. Final facts converge: `Activity.name` = new, status `awaiting_signoff` (the CAS survived), the
+  closing keeps its as-created title while its inspection-owned `activityName` is RELABELED to the new
+  name by the participant.
+- Both prove **projection == live** (token-normalized) after the relay drain.
+
+## Round-2 gates (actual exit codes, this container; CI re-runs everything)
+
+| Gate | Exit | Detail |
+|---|---|---|
+| `pnpm check` (web lint/typecheck/test/build + api typecheck/test/build) | **0** | web 388 · api 567 (the activities unit mock gained `findUniqueOrThrow` for the F2 in-tx re-read) |
+| Full live-PostgreSQL integration suite | **0** | 38 files, 330 passed (incl. the 3 new round-2 probes) |
+| Round-2 correction tests repeated | **0 ×5** | 3 passed each run |
+| Race/idempotency battery ×3 (idempotency + closing-signoff + evidence + start-race + round-2) | **0 / 0 / 0** | 34 passed each run |
+| `upgrade-proof.sh` (all migrations incl. `20261125000000` over the legacy fixture) | **0** | PASSED |
+| `inspections-owned-facts-abort-proof.sh` (round 1, tail-aware baseline) | **0** | PASSED |
+| `inspection-evidence-tenant-fk-abort-proof.sh` (round 2) | **0** | PASSED |
+| `pnpm test:e2e:api:inspections` (deterministic decide lifecycle, moduleQuery) | **0** | 22 passed |
+
+**HELD for the mechanical narrow review — do not merge.** Activities (module 4) stays blocked until that
+review clears.

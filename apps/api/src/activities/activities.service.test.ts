@@ -55,6 +55,9 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
     user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (NAMES[where.id] ? { name: NAMES[where.id] } : null)) },
     activity: {
       findUnique: vi.fn(async () => activity),
+      // correction round 2 (F2) — complete() re-reads the Activity through the tx after the CAS; the
+      // shared mock activity object reflects any CAS-applied data, so the re-read serves current state.
+      findUniqueOrThrow: vi.fn(async () => activity),
       update: vi.fn((args: { data: Record<string, unknown> }) => {
         activityUpdates.push(args.data);
         return Promise.resolve({});
