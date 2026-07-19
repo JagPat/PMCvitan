@@ -7,6 +7,8 @@ import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import type { InspectionParticipant } from '../inspections/inspection.participant';
 import type { ActivityParticipant } from '../activities/activity.participant';
+import type { DrawingParticipant } from '../drawings/drawing.participant';
+import type { DailyLogParticipant } from '../daily-log/daily-log.participant';
 
 interface Node { id: string; projectId: string; parentId: string | null; name: string; kind: string; order: number; publishedAt?: Date | null; authorId?: string | null }
 
@@ -68,7 +70,11 @@ function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
   const inspectionParticipant = { unfileForDeletedNodes: vi.fn(async () => null) } as unknown as InspectionParticipant;
   // Task 10 (Module 4) — node deletion also unfiles filed activities through the activities participant
   const activityParticipant = { unfileForDeletedNodes: vi.fn(async () => null) } as unknown as ActivityParticipant;
-  const svc = new NodesService(prisma, snapshot, dispatcher, new DecisionsQueryService(prisma as unknown as PrismaService), inspectionParticipant, activityParticipant);
+  // Module 4 correction — node deletion also unfiles drawings and site materials through their
+  // owning modules' participants (owner-aligned SET NULL signals); null stubs (no filed rows).
+  const drawingParticipant = { unfileForDeletedNodes: vi.fn(async () => null) } as unknown as DrawingParticipant;
+  const dailyLogParticipant = { unfileMaterialsForDeletedNodes: vi.fn(async () => null) } as unknown as DailyLogParticipant;
+  const svc = new NodesService(prisma, snapshot, dispatcher, new DecisionsQueryService(prisma as unknown as PrismaService), inspectionParticipant, activityParticipant, drawingParticipant, dailyLogParticipant);
   const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;
   return { svc, prisma, nodes, user };
 }

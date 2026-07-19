@@ -57,6 +57,8 @@ import { ModuleRegistryService } from './platform/module-registry/module-registr
 import { ActivityParticipant } from './activities/activity.participant';
 import { InspectionParticipant } from './inspections/inspection.participant';
 import { NodeInitParticipant } from './nodes/node-init.participant';
+import { DrawingParticipant } from './drawings/drawing.participant';
+import { DailyLogParticipant } from './daily-log/daily-log.participant';
 
 @Module({
   imports: [
@@ -140,6 +142,10 @@ import { NodeInitParticipant } from './nodes/node-init.participant';
     ActivityParticipant,
     InspectionParticipant,
     NodeInitParticipant,
+    // Module 4 correction — owner-aligned signals for ON DELETE SET NULL columns
+    // serialized into module projections (drawings.inbox, daily-log.inbox).
+    DrawingParticipant,
+    DailyLogParticipant,
   ],
 })
 export class AppModule {}

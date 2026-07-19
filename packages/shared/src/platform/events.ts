@@ -80,11 +80,20 @@ export const DOMAIN_EVENT_TYPES = [
   'drawing.acknowledged',
   'drawing.refiled',
   'drawing.removed',
+  // Phase 2 Task 10 (Module 4) correction — drawing-owned signal events for changes to the drawings
+  // projection's serialized fields that formerly happened ONLY through an ON DELETE SET NULL FK (so the
+  // drawings.inbox cursor could not observe them). Each is appended by the drawings workflow participant
+  // IN the deleting command's transaction. Signal-only (invalidate, no push).
+  'drawing.activity_unlinked', // the drawing's governed-activity link cleared when that activity is deleted
+  'drawing.unfiled', // the drawing's location cleared when its filed node is deleted
   // daily-log
   'dailylog.started',
   'dailylog.submitted',
   'material.added',
   'material.mismatch_flagged',
+  // Phase 2 Task 10 (Module 4) correction — same owner-aligned discipline for the daily-log projection's
+  // serialized material location (formerly mutated only by the SET NULL FK on a node delete).
+  'material.unfiled', // the material's staging place cleared when its filed node is deleted
   // nodes (location spine)
   'node.created',
   'node.published',

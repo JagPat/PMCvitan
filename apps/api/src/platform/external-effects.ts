@@ -94,11 +94,16 @@ export const EXTERNAL_EFFECTS = {
   'drawing.acknowledged': { eventType: 'drawing.acknowledged', invalidate: true, push: ['pmc'] },
   'drawing.refiled': { eventType: 'drawing.refiled', invalidate: true, push: null },
   'drawing.removed': { eventType: 'drawing.removed', invalidate: true, push: null },
+  // Task 10 (Module 4) correction — drawing-owned SET-NULL signals (invalidate only, never push)
+  'drawing.activity_unlinked': { eventType: 'drawing.activity_unlinked', invalidate: true, push: null },
+  'drawing.unfiled': { eventType: 'drawing.unfiled', invalidate: true, push: null },
   // ── daily-log ──────────────────────────────────────────────────────────────────────────────
   'dailylog.started': { eventType: 'dailylog.started', invalidate: true, push: null },
   'dailylog.submitted': { eventType: 'dailylog.submitted', invalidate: true, push: null },
   'material.added': { eventType: 'material.added', invalidate: true, push: null },
   'material.mismatch_flagged': { eventType: 'material.mismatch_flagged', invalidate: true, push: ['pmc', 'contractor'] },
+  // Task 10 (Module 4) correction — the daily-log-owned SET-NULL signal (invalidate only, never push)
+  'material.unfiled': { eventType: 'material.unfiled', invalidate: true, push: null },
   // ── nodes (location spine) — signal only, never a push ───────────────────────────────────────
   'node.created': { eventType: 'node.created', invalidate: true, push: null },
   'node.published': { eventType: 'node.published', invalidate: true, push: null },
