@@ -34,15 +34,18 @@ echo "=== inspections-abort-proof: rebuilding scratch database '$DB' ==="
 $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB;" || exit 1
 $PSQL_ADMIN -c "CREATE DATABASE $DB;" || exit 1
 
-echo "=== applying every migration EXCEPT the correction ($MIG) ==="
+echo "=== applying every migration BEFORE the correction ($MIG) ==="
+# Hold back the correction AND everything after it (a later migration — e.g. the round-2 tenant FK —
+# presumes the correction's InspectionEvidence table exists, so the baseline stops just before it).
 applied=0
 for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   name="$(basename "$d")"
-  [ "$name" = "$MIG" ] && continue
+  stamp="${name%%_*}"
+  if [ "$name" != "0_init" ] && [ "$stamp" -ge "${MIG%%_*}" ] 2>/dev/null; then continue; fi
   $PSQL -f "$d/migration.sql" >/dev/null || { echo "baseline migration failed: $name"; exit 1; }
   applied=$((applied + 1))
 done
-echo "applied $applied migrations (the correction held back)"
+echo "applied $applied migrations (the correction + its successors held back)"
 
 echo "=== planting a legacy fixture with the un-linkable containment gap ==="
 $PSQL <<'SQL' || { echo "fixture failed"; exit 1; }

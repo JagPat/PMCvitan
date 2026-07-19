@@ -328,6 +328,11 @@ export class ActivitiesService {
           },
         });
         if (count === 0) throw new ConflictException('The activity changed while completing — reload and retry');
+        // Correction round 2 (F2) — the pre-transaction read above is a FAST VALIDATION only; a rename
+        // (or re-file) can commit between it and the CAS. The CAS row lock is now held, so re-read the
+        // Activity THROUGH THIS TRANSACTION and stamp the transaction-current name/zone/nodeId onto the
+        // closing inspection, the notification, and the push — never the stale pre-read values.
+        const fresh = await tx.activity.findUniqueOrThrow({ where: { id: activityId }, select: { name: true, zone: true, nodeId: true } });
         // The closing inspection is an ATOMIC WORKFLOW participant (Task 7, edge 1):
         // the inspections module owns the Inspection write, invoked here on THIS
         // transaction so the claim + closing inspection commit or roll back together.
@@ -337,14 +342,14 @@ export class ActivitiesService {
         const closingEv = await this.inspections.createClosingInspection(tx, {
           closingId,
           projectId,
-          activity: { id: activityId, name: a.name, zone: a.zone, nodeId: a.nodeId },
+          activity: { id: activityId, name: fresh.name, zone: fresh.zone, nodeId: fresh.nodeId },
           actor,
           inspectionDate: fromIsoCivilDate(today),
           dateLabel: ddMmmYyyy(fromIsoCivilDate(today)!),
         });
-        await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${a.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now' } });
+        await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${fresh.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'activity.complete_requested', entity: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } });
-        const completionEv = await emitEvent(tx, { projectId, actor, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId }, effectKey: 'activity.completion_requested', dispatch: { push: { body: `Sign-off requested: ${a.name}` } } });
+        const completionEv = await emitEvent(tx, { projectId, actor, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId }, effectKey: 'activity.completion_requested', dispatch: { push: { body: `Sign-off requested: ${fresh.name}` } } });
         return [closingEv, completionEv];
       });
     } catch (e) {
