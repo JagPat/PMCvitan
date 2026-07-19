@@ -45,7 +45,10 @@ export class SnapshotService {
       select: { id: true, name: true, descriptor: true, stage: true, siteCode: true, org: { select: { id: true, name: true } } },
     });
     if (!project) throw new NotFoundException(`Project ${projectId} not found`);
-    const decisions = await this.decisionsQuery.projectionSlice(projectId, role, userId);
+    // Task 10 finalization — the shell count uses the projection-OR-LIVE module read: with the
+    // decisions projection now servability-gated (readServableGeneration), a lagging/blocked
+    // generation must fall back to the always-current live slice rather than serving zero counts.
+    const decisions = await this.decisionsQuery.moduleDecisions(projectId, role, userId);
     const pendingDecisions = decisions.decisions.filter((d) => d.status === 'pending' && !d.draft).length;
     return {
       id: project.id,
