@@ -16,7 +16,10 @@ Branch `claude/phase2-task10-activities` (from `main` @ `161e574`, the CLEARED P
 |---|---|
 | `91c0d9b` | backend extraction: shared contract, ONE canonical serializer (base/bake), `ActivitiesQueryService` read boundary, `activities.schedule` rebuildable projection + additive migration, participant signal events, all 9 commands onto the ledger, every foreign activity read rerouted |
 | `35459f1` | the module-owned frontend query under XOR (`VITE_ACTIVITIES_READ`) + honest load states + command idempotency keys + e2e runner wiring |
-| _(this packet's commit)_ | contract/projection/idempotency/XOR tests, pin updates (init fan-out 6 → 7 consumers, 2 → 4 events; nodes participants; boundary ownership), review packet |
+| `9c8818c` | pin/fixture updates (init fan-out 4 events × 7 consumers = 28 deliveries; nodes participants; FK-simulating unit mocks; keyed web ops) + this packet |
+| `1a6e749` | `activities-module-query.test.ts` (web XOR) + the gated `activities-module-query.spec.ts` e2e |
+| `17e49ae` | `activities.contract.test.ts` + live-PG `activities-projection` / `activities-idempotency` suites |
+| _(final)_ | packet verification table filled from the green gate runs |
 
 ---
 
@@ -194,13 +197,13 @@ inert in snapshot mode.
 
 | Gate | Result |
 |---|---|
-| `pnpm check` (lint + typecheck + test + build, web + api) | TBD |
-| API unit suite | TBD |
-| Web unit suite | TBD |
-| Full integration suite (live PostgreSQL) | TBD |
-| `activities-projection` + `activities-idempotency` (live PG) | TBD |
-| `apps/api/scripts/upgrade-proof.sh` (all migrations over the legacy fixture) | TBD |
-| Abort proofs (`inspections-owned-facts` + `inspection-evidence-tenant-fk`) | TBD |
+| `pnpm check` (lint + typecheck + test + build, web + api) | **exit 0** |
+| API unit suite | **574 passed** |
+| Web unit suite | **396 passed** |
+| Full integration suite (live PostgreSQL) | **354 passed** (40 files) |
+| `activities-projection` + `activities-idempotency` (live PG) | **24 passed** (10 + 14); contract pin **7 passed** |
+| `scripts/upgrade-proof.sh` (all migrations over the legacy fixture) | **PASSED** |
+| Abort proofs (`inspections-owned-facts` + `inspection-evidence-tenant-fk`) | **PASSED** (both) |
 
 _(CI runs the API e2e in both `legacy` and `outbox` sender modes and in the module-query read modes; the
 new `test:e2e:api:activities(:outbox)` scripts add the activities read mode to that matrix.)_
