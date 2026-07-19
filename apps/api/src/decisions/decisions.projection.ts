@@ -6,9 +6,11 @@ import { serializeDecision, type DecisionRow } from './decision-serialize';
  * Phase 2 Task 9 — the DECISIONS read-model projection consumer (`decisions.inbox`).
  *
  * The first module's read path moves onto a rebuildable projection. This ordered `db` projection
- * consumer subscribes to the six `decision.*` events; on each it REFRESHES the affected decision's
- * generation-scoped `DecisionProjection` row from the CANONICAL Decision (a same-module read — the
- * decisions module owns `decision`), storing the exact `DecisionDto` `serializeDecision` produces. A
+ * consumer subscribes to the six `decision.*` events; on each it REFRESHES the project's WHOLE
+ * generation-scoped `DecisionProjection` row set from the CANONICAL decisions (a same-module read —
+ * the decisions module owns `decision`), storing the exact `DecisionDto`s `serializeDecision`
+ * produces — the same full-refresh discipline as the four later module consumers, so a caught-up
+ * generation is complete by construction even when it lazily bootstrapped over pre-stream rows. A
  * non-decision event is a `noop` delivery, so the projection's ordered cursor still advances through
  * every stream position contiguously.
  *
@@ -71,14 +73,19 @@ export function makeDecisionsProjectionConsumer(): OutboxConsumer {
     handle: async (ctx) => {
       if (!ctx.tx) throw new Error('decisions projection needs a transaction');
       if (!ctx.projection) throw new Error('decisions projection needs a target generation');
-      const decisionId = ctx.meta.entityId;
-      const d = await ctx.tx.decision.findUnique({ where: { id: decisionId }, include: DECISION_INCLUDE });
-      // Decisions are never deleted today; if one is ever absent, drop its stale projection row.
-      if (!d) {
-        await ctx.tx.decisionProjection.deleteMany({ where: { generationId: ctx.projection.generationId, decisionId } });
-        return;
-      }
-      await upsertRow(ctx.tx, ctx.projection.generationId, d);
+      // Task 10 finalization — refresh the WHOLE project's decision set, not just the event's
+      // decision (the discipline every later module consumer adopted). A generation that lazily
+      // bootstraps MID-LIFE (its first applied event arriving over rows that predate the event
+      // stream — a direct import, the seed) would otherwise contain ONLY the decisions with
+      // post-bootstrap events while presenting as the complete, servable register: the Decision Log
+      // then silently hides every earlier decision. Deriving the full set from canonical on every
+      // applied event makes any caught-up generation complete by construction; rows for decisions
+      // that no longer exist are dropped.
+      const rows = await ctx.tx.decision.findMany({ where: { projectId: ctx.meta.projectId }, include: DECISION_INCLUDE });
+      for (const d of rows) await upsertRow(ctx.tx, ctx.projection.generationId, d);
+      await ctx.tx.decisionProjection.deleteMany({
+        where: { generationId: ctx.projection.generationId, decisionId: { notIn: rows.map((r) => r.id) } },
+      });
     },
   };
 }

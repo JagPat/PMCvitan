@@ -59,14 +59,20 @@ async function signIn(page: Page, email: string): Promise<void> {
   await page.getByTestId('login-submit').click();
 }
 
-/** Sign in and land on the CHAIN project (switch from the user's home). */
+/** Sign in and land on the CHAIN project (switch from the user's home). The open-and-pick retries
+ *  as one unit: a post-sign-in re-render can close the just-opened dropdown before the option is
+ *  clicked (deterministic on slow containers, amplified when every module read fetches on load). */
 async function signInToChain(page: Page, email: string, chainName: string): Promise<void> {
   await page.goto('/');
   await signIn(page, email);
-  await expect(page.getByTestId('project-switcher')).toBeVisible();
-  await page.getByTestId('project-switcher').click();
-  await page.getByRole('button', { name: new RegExp(chainName) }).first().click();
-  await expect(page.getByTestId('project-switcher')).toContainText(chainName);
+  const switcher = page.getByTestId('project-switcher');
+  await expect(switcher).toBeVisible();
+  const option = page.getByRole('button', { name: new RegExp(chainName) }).first();
+  await expect(async () => {
+    if (!(await option.isVisible())) await switcher.click();
+    await option.click({ timeout: 2000 });
+  }).toPass();
+  await expect(switcher).toContainText(chainName);
 }
 
 // ── chain state shared across the serial tests ──────────────────────────────

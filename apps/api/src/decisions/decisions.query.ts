@@ -92,6 +92,15 @@ export class DecisionsQueryService {
       // the snapshot slice orders decisions by id descending — mirror it so the served array matches
       orderBy: { decisionId: 'desc' },
     });
+    // The per-decision-row analogue of the composite modules' row-exists check: a generation that
+    // only NOOP deliveries advanced (bootstrapped over pre-stream rows, no decision event applied
+    // yet) is caught-up but HOLLOW — zero rows while canonical decisions exist. Serving it would
+    // hide the whole register; fall back to live instead. A genuinely decision-less project serves
+    // projection-empty (the cheap existence probe confirms it).
+    if (rows.length === 0) {
+      const any = await this.prisma.decision.findFirst({ where: { projectId }, select: { id: true } });
+      if (any) return { decisions: [], statuses: new Map(), generation: null };
+    }
     // the readiness map is UNFILTERED (every decision's true status), exactly like snapshotSlice
     const statuses = new Map<string, DecisionStatus>(rows.map((r) => [r.decisionId, r.status as DecisionStatus]));
     const decisions = rows
