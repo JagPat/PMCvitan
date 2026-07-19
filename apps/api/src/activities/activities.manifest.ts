@@ -30,7 +30,9 @@ export const activitiesManifest: ModuleManifest = {
   // why the UPSTREAM modules that store an `activityId` (inspections, drawings) validate it via the
   // composite tenant FK instead of a query edge here.
   dependsOn: ['decisions', 'drawings', 'inspections'],
-  workflowParticipants: ['inspections'],
+  // Module 4 correction — `remove` also routes the drawing unlink (Drawing.activityId, previously
+  // ON DELETE SET NULL only) through the drawings participant on the same transaction.
+  workflowParticipants: ['inspections', 'drawings'],
   producesEvents: [
     'activity.created',
     'activity.updated',

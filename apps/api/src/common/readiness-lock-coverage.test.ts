@@ -56,6 +56,9 @@ const COVERAGE: Record<string, 'locked' | string> = {
     'exempt: writes gateMaterial/status on the CALLER\'s transaction — the readiness-affecting callers (inspections.decide sign-off/revert, daily-log.flagMismatch block) hold lockProjectReadiness first',
   'inspections/inspection.participant.ts':
     'exempt: createClosingInspection runs in activities.complete\'s transaction (unlocked, exactly as that closing-inspection create always was — the file-level tolerance below); createForInit runs during project creation (see the orgs exemption)',
+  // Module 4 correction — the SET NULL owner-signal participant.
+  'drawings/drawing.participant.ts':
+    'exempt: unlinkFromDeletedActivity clears Drawing.activityId ONLY for drawings linked to the activity DELETED in the same transaction (no surviving activity\'s drawing gate can observe the unlink); unfileForDeletedNodes writes Drawing.nodeId, which is not a readiness input (the gate reads the activityId link + revisions/recipients/acks)',
 };
 
 /** service + Task-7 workflow-participant files (both can persist a readiness input). */

@@ -65,12 +65,15 @@ describe('Phase 2 Task 7 — module registry', () => {
     // The reverse (inspection-owned) consequences are workflow participations, not dependsOn edges —
     // pin the exact participant edges the Module-3 correction relies on so a boundary can't drift.
     const expectedParticipants: Record<string, string[]> = {
-      activities: ['inspections'], // completion creates the closing inspection (edge 1) + relabel
+      // completion creates the closing inspection (edge 1) + relabel; the Module-4 correction adds
+      // the drawings participant: activity deletion unlinks governed drawings (drawing.activity_unlinked)
+      activities: ['inspections', 'drawings'],
       'daily-log': ['activities'], // material-mismatch blocks the activity's readiness (edge 4)
       media: ['inspections'], // evidence add/remove (edges via the media create/remove tx)
-      // Task 10 Module 4: node deletion unfiles placed inspections AND filed activities (each
-      // through its owning module's participant, appending inspection.unfiled / activity.unfiled)
-      nodes: ['inspections', 'activities'],
+      // Task 10 Module 4 (+ correction): node deletion unfiles placed inspections, filed activities,
+      // filed drawings AND staged site materials — each through its owning module's participant,
+      // appending inspection.unfiled / activity.unfiled / drawing.unfiled / material.unfiled
+      nodes: ['inspections', 'activities', 'drawings', 'daily-log'],
       orgs: ['nodes', 'activities', 'inspections'], // project-init instantiates each owning module
       inspections: ['activities'], // the closing-inspection decide writes the activity sign-off
     };

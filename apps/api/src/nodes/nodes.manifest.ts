@@ -2,10 +2,12 @@ import type { ModuleManifest } from '@vitan/shared';
 
 /**
  * The project location spine (zones → rooms → elements). Removing a node UNFILES the
- * records placed at it across five domains — declared now as a database
- * `ON DELETE SET NULL (nodeId)` FK action (edge 7), not a service-owned cross-module
- * write, so `remove` writes only its own ProjectNode rows. Decisions are the one
- * reference `remove` refuses to unfile (a guard, backed by a NO ACTION FK).
+ * records placed at it across five domains (edge 7) — each unfile is routed through the
+ * OWNING module's workflow participant on the same transaction (an explicit update + an
+ * owner-aligned signal event), with the `ON DELETE SET NULL (nodeId)` FK actions kept as
+ * the database backstop; Media stays FK-only because no module projection serializes
+ * Media.nodeId. Decisions are the one reference `remove` refuses to unfile (a guard,
+ * backed by a NO ACTION FK).
  */
 export const nodesManifest: ModuleManifest = {
   id: 'nodes',
@@ -13,12 +15,12 @@ export const nodesManifest: ModuleManifest = {
   kind: 'domain',
   ownsModels: ['projectNode'],
   dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
-  // Task 10 (Modules 3+4) — before deleting a subtree, `remove` unfiles the placed inspections AND the
-  // filed activities through each module's participant (unfileForDeletedNodes) in the same transaction, so
-  // both projections observe the location change (the ON DELETE SET NULL FKs stay as the database
-  // backstop). No query read here, so nodes has no dependsOn edge to either — only workflow-participant
-  // edges.
-  workflowParticipants: ['inspections', 'activities'],
+  // Task 10 (Modules 3+4 + correction) — before deleting a subtree, `remove` unfiles the placed
+  // inspections, filed activities, filed drawings AND staged site materials through each owning
+  // module's participant in the same transaction, so every projection that serializes a nodeId
+  // observes the location change (the ON DELETE SET NULL FKs stay as the database backstop). No
+  // query read here, so nodes has no dependsOn edge to any of them — only workflow-participant edges.
+  workflowParticipants: ['inspections', 'activities', 'drawings', 'daily-log'],
   producesEvents: ['node.created', 'node.published', 'node.renamed', 'node.moved', 'node.removed'],
   consumesEvents: [],
   commands: ['nodes.create', 'nodes.rename', 'nodes.move', 'nodes.publish', 'nodes.remove'],

@@ -20,6 +20,11 @@ export const drawingsManifest: ModuleManifest = {
     'drawing.acknowledged',
     'drawing.refiled',
     'drawing.removed',
+    // Module 4 correction — owner-aligned SET NULL signals, appended by DrawingParticipant on the
+    // FOREIGN deleting transaction (activities.remove / nodes.remove) so the drawings.inbox cursor
+    // observes base changes previously performed only by the ON DELETE SET NULL FK action.
+    'drawing.activity_unlinked',
+    'drawing.unfiled',
   ],
   consumesEvents: [],
   commands: [...DRAWINGS_COMMANDS],

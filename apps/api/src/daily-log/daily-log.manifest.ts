@@ -19,7 +19,10 @@ export const dailyLogManifest: ModuleManifest = {
   readEncapsulated: ['dailyLog', 'crewRow', 'siteMaterial', 'dailyLogProjection'],
   dependsOn: ['decisions'], // Task 8 — reads decisions via its query contract
   workflowParticipants: ['activities'],
-  producesEvents: ['dailylog.started', 'dailylog.submitted', 'material.added', 'material.mismatch_flagged'],
+  // `material.unfiled` is the Module-4-correction owner-aligned SET NULL signal, appended by
+  // DailyLogParticipant on the FOREIGN nodes.remove transaction so the daily-log.inbox cursor
+  // observes the SiteMaterial.nodeId change previously performed only by the FK action.
+  producesEvents: ['dailylog.started', 'dailylog.submitted', 'material.added', 'material.mismatch_flagged', 'material.unfiled'],
   consumesEvents: [],
   commands: ['daily-log.start', 'daily-log.addMaterial', 'daily-log.flagMismatch', 'daily-log.submit'],
   queries: ['daily-log.snapshotSlice', 'daily-log.projectionSlice', 'daily-log.existsInProject', 'daily-log.resolveRef'],
