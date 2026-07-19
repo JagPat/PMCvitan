@@ -7,7 +7,7 @@ import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
 import { dayLabel, gateColor, can, diffCivilDays, formatCivilDate, type Activity, type Phase, type Gate } from '@vitan/shared';
 import type { AppState } from '@/store/store';
-import type { NewActivityInput } from '@/data/apiGateway';
+import { activitiesReadMode, type NewActivityInput } from '@/data/apiGateway';
 import styles from './responsive.module.css';
 
 function ActionButton({ a, ready }: { a: Activity; ready: boolean }) {
@@ -256,6 +256,16 @@ export function ScheduleScreen() {
   const elapsedPct = useStore((s) => s.elapsedPct);
   const role = useStore((s) => s.role);
   const deletePhase = useStore((s) => s.deletePhase);
+  // Phase 2 Task 10 (Module 4 — Activities): under module read-ownership the activity spine is a
+  // SEPARATE async surface from the project snapshot, with its own honest load state. Never claim an
+  // empty schedule until a read has actually SUCCEEDED; while it loads show a loading state; on failure
+  // show an unavailable/Retry boundary. In snapshot mode `activitiesLoad` stays 'idle' and these gates
+  // never trigger.
+  const activitiesLoad = useStore((s) => s.activitiesLoad);
+  const requestFreshSnapshot = useStore((s) => s.requestFreshSnapshot);
+  const moduleOwned = activitiesReadMode() === 'moduleQuery';
+  const reading = moduleOwned && (activitiesLoad === 'idle' || activitiesLoad === 'loading');
+  const unavailable = moduleOwned && activitiesLoad === 'error';
   const todayPct = pctOf(todayDay);
   const canPlan = can('activity.manage', role);
   const [plan, setPlan] = useState<'new' | Activity | null>(null);
@@ -271,6 +281,28 @@ export function ScheduleScreen() {
     { c: gateColor.wait, label: 'Waiting' },
     { c: gateColor.fail, label: 'Failed' },
   ];
+
+  // finding-4 parity — these fire only when there is no last-good schedule to show; a failed refresh
+  // that RETAINS a last-good spine falls through to the timeline below.
+  if (activities.length === 0 && reading) {
+    return (
+      <div className={`${styles.screen} ${styles.wide}`} data-testid="activities-loading">
+        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the schedule…</div>
+      </div>
+    );
+  }
+  if (activities.length === 0 && unavailable) {
+    return (
+      <div className={`${styles.screen} ${styles.wide}`} data-testid="activities-unavailable">
+        <Eyebrow>SITE ACTIVITY SCHEDULE</Eyebrow>
+        <div style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14, display: 'grid', gap: 12, justifyItems: 'center' }}>
+          <span>Couldn't load the schedule — check your connection and access.</span>
+          <Button data-testid="activities-retry" onClick={() => void requestFreshSnapshot()}>Retry</Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`${styles.screen} ${styles.wide}`}>

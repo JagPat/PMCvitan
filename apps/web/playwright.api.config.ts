@@ -65,6 +65,7 @@ export default defineConfig({
         VITE_DECISIONS_READ: process.env.E2E_DECISIONS_READ ?? 'snapshot',
         VITE_DRAWINGS_READ: process.env.E2E_DRAWINGS_READ ?? 'snapshot',
         VITE_INSPECTIONS_READ: process.env.E2E_INSPECTIONS_READ ?? 'snapshot',
+        VITE_ACTIVITIES_READ: process.env.E2E_ACTIVITIES_READ ?? 'snapshot',
       },
     },
   ],

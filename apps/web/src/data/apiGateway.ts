@@ -35,6 +35,7 @@ import type {
   PlacedInspection,
   Review,
   Role,
+  ActivitiesModuleResult,
   DailyLogModuleResult,
   DrawingsModuleResult,
   InspectionsModuleResult,
@@ -357,6 +358,26 @@ export function inspectionsReadMode(): 'snapshot' | 'moduleQuery' {
  *  evidence paths) — they can never be served from a cross-viewer cache. */
 export type ModuleInspections = InspectionsModuleResult;
 
+/**
+ * Phase 2 Task 10 (Module 4 — Activities) — the activities read-ownership mode (XOR), mirroring
+ * `decisionsReadMode`/`inspectionsReadMode`. `'snapshot'` (the DEFAULT) keeps the activity spine
+ * (`activities` + `phases`) owned by the full-snapshot slice — old behaviour, unchanged. `'moduleQuery'`
+ * flips ownership to the module-owned `GET …/activities` read (served from the rebuildable projection,
+ * live fallback): the snapshot's activity/phase slices are then IGNORED and the module fetch — carried
+ * under the SAME snapshot scope lease — owns them. Each activity's five-gate readiness is baked FRESH
+ * from the decisions/inspections/drawings query contracts on BOTH paths, so a projection read is never a
+ * stale conclusion. Additive: the endpoint ships first, the old frontend still works, and the flip is a
+ * config change once proven.
+ */
+export function activitiesReadMode(): 'snapshot' | 'moduleQuery' {
+  return import.meta.env.VITE_ACTIVITIES_READ === 'moduleQuery' ? 'moduleQuery' : 'snapshot';
+}
+
+/** Phase 2 Task 10 (Module 4) — the module-owned activities read payload (projection-served, live
+ *  fallback). The COMPLETE HTTP result is defined ONCE in `@vitan/shared` ({@link ActivitiesModuleResult})
+ *  and imported by BOTH the API's query service and this gateway, so the two cannot drift (finding 5). */
+export type ModuleActivities = ActivitiesModuleResult;
+
 /** Phase 2 Task 9 — the project-shell summary (identity + enabled modules + projection counts). */
 export interface ProjectShell {
   id: string;
@@ -635,33 +656,46 @@ export class ApiGateway {
   deleteNode(nodeId: string): Promise<ApiSnapshot> {
     return this.req(`/projects/${this.projectId}/nodes/${nodeId}`, { method: 'DELETE' });
   }
-  /** Plan a new schedule activity (PMC). */
-  createActivity(input: NewActivityInput): Promise<ApiSnapshot> {
-    return this.p('/activities', input);
+  /** Plan a new schedule activity (PMC). Keyed for replay-safety (Task 10 Module 4). */
+  createActivity(input: NewActivityInput, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p('/activities', input, idempotencyKey);
   }
-  /** Edit a planned activity (PMC) — only provided fields change. */
-  updateActivity(activityId: string, input: Partial<NewActivityInput>): Promise<ApiSnapshot> {
-    return this.req(`/projects/${this.projectId}/activities/${activityId}`, { method: 'PATCH', body: JSON.stringify(input) });
+  /** Edit a planned activity (PMC) — only provided fields change. Keyed for replay-safety. */
+  updateActivity(activityId: string, input: Partial<NewActivityInput>, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/activities/${activityId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    });
   }
-  /** Remove a planned activity (PMC). */
-  deleteActivity(activityId: string): Promise<ApiSnapshot> {
-    return this.req(`/projects/${this.projectId}/activities/${activityId}`, { method: 'DELETE' });
+  /** Remove a planned activity (PMC). Keyed for replay-safety. */
+  deleteActivity(activityId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/activities/${activityId}`, {
+      method: 'DELETE',
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    });
   }
-  /** Record a manual readiness exception on one gate (PMC, Task 6). */
-  overrideGate(activityId: string, input: OverrideGateInput): Promise<ApiSnapshot> {
-    return this.p(`/activities/${activityId}/override`, input);
+  /** Record a manual readiness exception on one gate (PMC, Task 6). Keyed for replay-safety. */
+  overrideGate(activityId: string, input: OverrideGateInput, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/activities/${activityId}/override`, input, idempotencyKey);
   }
-  /** Revoke an override early (PMC) — the derivation rules again. */
-  revokeOverride(activityId: string, overrideId: string): Promise<ApiSnapshot> {
-    return this.req(`/projects/${this.projectId}/activities/${activityId}/override/${overrideId}`, { method: 'DELETE' });
+  /** Revoke an override early (PMC) — the derivation rules again. Keyed for replay-safety. */
+  revokeOverride(activityId: string, overrideId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/activities/${activityId}/override/${overrideId}`, {
+      method: 'DELETE',
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    });
   }
-  /** Add a schedule phase (PMC). */
-  createPhase(input: { name: string; plannedStart?: number; plannedEnd?: number }): Promise<ApiSnapshot> {
-    return this.p('/phases', input);
+  /** Add a schedule phase (PMC). Keyed for replay-safety. */
+  createPhase(input: { name: string; plannedStart?: number; plannedEnd?: number }, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p('/phases', input, idempotencyKey);
   }
-  /** Remove a phase (PMC) — its activities become unphased. */
-  deletePhase(phaseId: string): Promise<ApiSnapshot> {
-    return this.req(`/projects/${this.projectId}/phases/${phaseId}`, { method: 'DELETE' });
+  /** Remove a phase (PMC) — its activities become unphased. Keyed for replay-safety. */
+  deletePhase(phaseId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.req(`/projects/${this.projectId}/phases/${phaseId}`, {
+      method: 'DELETE',
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    });
   }
   /** Issue a stage checklist (PMC) — becomes the engineer's current field checklist. */
   createInspection(input: { title: string; zone: string; items: string[]; nodeId?: string }): Promise<ApiSnapshot> {
@@ -735,6 +769,13 @@ export class ApiGateway {
     return this.req<ModuleInspections>(`/projects/${this.projectId}/inspections`);
   }
 
+  /** Phase 2 Task 10 (Module 4 — Activities) — the MODULE-OWNED activities read (projection-served,
+   *  live fallback, readiness baked fresh on both paths). Fetched under the snapshot's scope lease when
+   *  `ACTIVITIES_READ_MODE === 'moduleQuery'` (XOR read-ownership). */
+  activities(): Promise<ModuleActivities> {
+    return this.req<ModuleActivities>(`/projects/${this.projectId}/activities`);
+  }
+
   /** Phase 2 Task 9 — the project-shell summary (identity + enabledModules + projection counts). */
   shell(): Promise<ProjectShell> {
     return this.req<ProjectShell>(`/projects/${this.projectId}/shell`);
@@ -750,11 +791,13 @@ export class ApiGateway {
   withdrawChange(decisionId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/decisions/${decisionId}/change/withdraw`, undefined, idempotencyKey);
   }
-  startActivity(activityId: string): Promise<ApiSnapshot> {
-    return this.p(`/activities/${activityId}/start`);
+  /** Keyed for replay-safety (Task 10 Module 4): a lost-response retry starts exactly once. */
+  startActivity(activityId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/activities/${activityId}/start`, undefined, idempotencyKey);
   }
-  completeActivity(activityId: string): Promise<ApiSnapshot> {
-    return this.p(`/activities/${activityId}/complete`);
+  /** Keyed for replay-safety: a lost-response retry claims completion exactly once. */
+  completeActivity(activityId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/activities/${activityId}/complete`, undefined, idempotencyKey);
   }
   flagMismatch(decisionId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/daily-log/flag-mismatch`, { decisionId }, idempotencyKey);
@@ -918,8 +961,10 @@ export type OutboxOp =
   // Task 10 (Module 3) correction — the decide command carries a stable idempotencyKey (optional so a
   // pre-upgrade persisted op without one still replays; the server treats a missing key as unkeyed).
   | { t: 'decideReview'; inspectionId: string; approve: boolean; rejectedItemIds: string[]; idempotencyKey?: string }
-  | { t: 'startActivity'; activityId: string }
-  | { t: 'completeActivity'; activityId: string }
+  // Task 10 (Module 4) — the activity commands carry a stable idempotencyKey (optional so a
+  // pre-upgrade persisted op without one still replays; the server treats a missing key as unkeyed).
+  | { t: 'startActivity'; activityId: string; idempotencyKey?: string }
+  | { t: 'completeActivity'; activityId: string; idempotencyKey?: string }
   // ALL FOUR daily-log commands carry a stable idempotencyKey and are WRITE-AHEAD to the durable
   // outbox before the first network request — online OR offline (Task 10 correction round 2, finding
   // 1). A lost/uncertain online response leaves the op (and its key) persisted, so a retry or a reload
@@ -975,9 +1020,9 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
     case 'decideReview':
       return gw.decideReview(op.inspectionId, op.approve, op.rejectedItemIds, op.idempotencyKey);
     case 'startActivity':
-      return gw.startActivity(op.activityId);
+      return gw.startActivity(op.activityId, op.idempotencyKey);
     case 'completeActivity':
-      return gw.completeActivity(op.activityId);
+      return gw.completeActivity(op.activityId, op.idempotencyKey);
     case 'startDailyLog':
       return gw.startDailyLog(op.idempotencyKey);
     case 'addSiteMaterial':

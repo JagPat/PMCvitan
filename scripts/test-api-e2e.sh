@@ -52,6 +52,13 @@ export E2E_DRAWINGS_READ="${E2E_DRAWINGS_READ:-snapshot}"
 # under it.
 export E2E_INSPECTIONS_READ="${E2E_INSPECTIONS_READ:-snapshot}"
 
+# Phase 2 Task 10 (Module 4 — Activities) — the activities module read-ownership mode, mirroring the
+# inspections flag. The default 'snapshot' keeps the activity spine on the full snapshot (old behaviour);
+# 'moduleQuery' flips the web app onto the module-owned GET …/activities read (XOR). The Playwright config
+# forwards this to the vite webServer as VITE_ACTIVITIES_READ; the activities module-query spec runs only
+# under it.
+export E2E_ACTIVITIES_READ="${E2E_ACTIVITIES_READ:-snapshot}"
+
 pnpm --filter api prisma:migrate
 pnpm --filter api seed
 # the Playwright config serves the COMPILED api (node dist/main.js) — the same
