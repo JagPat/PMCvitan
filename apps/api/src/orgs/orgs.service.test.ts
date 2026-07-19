@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException, ForbiddenException, NotFoundExc
 import { OrgsService } from './orgs.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
+import { ActivitiesQueryService } from '../activities/activities.query';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
@@ -21,13 +22,16 @@ const signedStub = { mediaPath: (id: string) => id } as unknown as SignedUrlServ
 
 /** Task 7 — the project-init participants are leaf providers (no deps); a fresh instance
  *  per construction lets these unit tests drive createProject through the same mock tx. Task 10 (Module 3)
- *  adds the inspections query, through which the source-copy + init id-scan reads now route. */
+ *  adds the inspections query, through which the source-copy + init id-scan reads now route; Module 4 adds
+ *  the activities query the same way (its foreign bake deps are never exercised by the orgs paths — the
+ *  init id-scan, schedule-structure copy and portfolio rollup are all activity-owned reads). */
 const initParticipants = (prisma: unknown) => [
   new NodeInitParticipant(),
   new ActivityParticipant(),
   new InspectionParticipant(),
   new DecisionsQueryService(prisma as unknown as PrismaService),
   new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),
+  new ActivitiesQueryService(prisma as unknown as PrismaService, undefined as never, undefined as never, undefined as never),
 ] as const;
 
 function makeAtomicProjectInit(throwFromInspection = false) {
@@ -163,6 +167,7 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     inspectionInit as unknown as InspectionParticipant,
     new DecisionsQueryService(prisma as unknown as PrismaService),
     new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),
+    new ActivitiesQueryService(prisma as unknown as PrismaService, undefined as never, undefined as never, undefined as never),
   );
   registerConsumer({
     name: PROJECT_INIT_TEST_CONSUMER,

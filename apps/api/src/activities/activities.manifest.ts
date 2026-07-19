@@ -1,20 +1,34 @@
-import type { ModuleManifest } from '@vitan/shared';
+import { ACTIVITIES_COMMANDS, ACTIVITIES_QUERIES, type ModuleManifest } from '@vitan/shared';
 
 /**
  * The Site Activity spine (activities + phases + gate overrides). Completion is an
  * ATOMIC WORKFLOW with inspections (edge 1): `complete` invokes the inspections
  * participant to create the closing inspection in one transaction. The activity's OWN
  * sign-off writes are exposed as this module's `ActivityParticipant` for the inspections
- * decide workflow (edges 2–3) and the daily-log material-mismatch block (edge 4).
+ * decide workflow (edges 2–3), the daily-log material-mismatch block (edge 4), the
+ * nodes-delete unfile, and project initialization (edge 8).
+ *
+ * The sign-off events (`activity.signed_off` / `activity.signoff_rejected`) are emitted by
+ * INSPECTIONS (the cause is the inspection decision); this module's `activities.schedule`
+ * projection consumes them by prefix. The participant signal events below
+ * (`material_blocked`/`unfiled` + the init `created` events) are appended by foreign
+ * commands THROUGH this module's participant, so every foreign mutation of an
+ * activity-owned serialized fact reaches the ordered projection cursor.
  */
 export const activitiesManifest: ModuleManifest = {
   id: 'activities',
   title: 'Site Activity Spine',
   kind: 'domain',
-  ownsModels: ['activity', 'gateOverride', 'phase'],
+  // Task 10 (Module 4) — a fully-extracted module: it read-encapsulates every model it owns (incl. its
+  // rebuildable projection), so no other module reads activity persistence directly — every cross-module
+  // read routes through the ActivitiesQueryService contract (the boundary check enforces it).
+  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection'],
+  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection'],
   // Task 8/10 — reads decisions + the drawing gate + the inspection-gate readiness/next-id via their query
-  // contracts (InspectionsQueryService.readinessSlice/nextInspectionId). The reverse inspections→activities
-  // edge is a workflow participant (cycle-exempt), so this dependsOn graph stays acyclic.
+  // contracts (the readiness BAKE consumes all three at read time). The reverse inspections→activities
+  // edge is a workflow participant (cycle-exempt), so this dependsOn graph stays acyclic — which is also
+  // why the UPSTREAM modules that store an `activityId` (inspections, drawings) validate it via the
+  // composite tenant FK instead of a query edge here.
   dependsOn: ['decisions', 'drawings', 'inspections'],
   workflowParticipants: ['inspections'],
   producesEvents: [
@@ -25,22 +39,20 @@ export const activitiesManifest: ModuleManifest = {
     'activity.completion_requested',
     'activity.override_granted',
     'activity.override_revoked',
+    // Task 10 (Module 4) — the activity-owned signal events a FOREIGN command appends (through this
+    // module's participant) so the ordered activities.schedule projection refreshes when a foreign
+    // mutation touches an activity-owned serialized fact. Signal-only (no push).
+    'activity.material_blocked',
+    'activity.unfiled',
     'phase.created',
     'phase.removed',
   ],
   consumesEvents: [],
-  commands: [
-    'activities.create',
-    'activities.update',
-    'activities.remove',
-    'activities.start',
-    'activities.complete',
-    'activities.override',
-    'activities.revokeOverride',
-    'phases.create',
-    'phases.remove',
-  ],
-  queries: [],
+  commands: [...ACTIVITIES_COMMANDS],
+  queries: [...ACTIVITIES_QUERIES],
+  // routes lists the MUTATING command routes only (the boundary check derives them from the Nest
+  // controllers); the module-owned `GET /projects/:projectId/activities` read is declared by
+  // `queries` above, not here.
   routes: [
     'POST /projects/:projectId/activities',
     'PATCH /projects/:projectId/activities/:activityId',

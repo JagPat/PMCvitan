@@ -61,6 +61,12 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
         return include ? d : { ...d, revisions: undefined };
       }),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> & { revisions: { create: Omit<Rev, 'id' | 'drawingId'> } } }) => {
+        // the composite `(projectId, activityId)` tenant FK, in miniature (Task 10 Module 4: the FK is
+        // the activity-reference validation authority — a forged/foreign id trips P2003, translated to
+        // the readable 400 by rethrowActivityRefViolation)
+        if (data.activityId && !(refs.activities ?? []).some((r) => r.id === data.activityId && r.projectId === data.projectId)) {
+          throw new Prisma.PrismaClientKnownRequestError('Foreign key constraint violated', { code: 'P2003', clientVersion: 'test', meta: { constraint: 'Drawing_projectId_activityId_fkey' } });
+        }
         const id = `d${++dseq}`;
         // real Prisma: nullable columns come back null, and a nested create inherits
         // the composite-FK scalars (projectId, drawingId) from its parent drawing
@@ -71,6 +77,10 @@ function make(storagePutUrl: string | null = null, nodes: NodeRow[] = [], refs: 
       }),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
         const d = draws.find((x) => x.id === where.id)!;
+        // the composite tenant FK also guards a revise that re-links the activity
+        if (data.activityId && !(refs.activities ?? []).some((r) => r.id === data.activityId && r.projectId === d.projectId)) {
+          throw new Prisma.PrismaClientKnownRequestError('Foreign key constraint violated', { code: 'P2003', clientVersion: 'test', meta: { constraint: 'Drawing_projectId_activityId_fkey' } });
+        }
         Object.assign(d, data);
         return d;
       }),

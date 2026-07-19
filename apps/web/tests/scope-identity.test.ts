@@ -189,7 +189,7 @@ describe('outbox replay is pinned to the scope that queued it (finding 1)', () =
     expect(gw.startActivity).not.toHaveBeenCalled();
     // the un-replayed remainder is persisted under AMBLI's key, not B's
     const persistedA = JSON.parse(globalThis.localStorage.getItem(aKey) ?? '[]');
-    expect(persistedA).toEqual([{ t: 'startActivity', activityId: 'ACT-31' }]);
+    expect(persistedA).toEqual([{ t: 'startActivity', activityId: 'ACT-31', idempotencyKey: expect.any(String) }]);
     // B's in-memory queue stays untouched
     expect(s().outbox).toEqual([]);
     expect(globalThis.localStorage.getItem('vitan.outbox.anon.project-b')).toBeNull();

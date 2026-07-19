@@ -20,6 +20,7 @@ import { DecisionsService } from './decisions/decisions.service';
 import { DecisionsQueryService } from './decisions/decisions.query';
 import { DecisionsController } from './decisions/decisions.controller';
 import { ActivitiesService } from './activities/activities.service';
+import { ActivitiesQueryService } from './activities/activities.query';
 import { ActivitiesController } from './activities/activities.controller';
 import { PhasesService } from './activities/phases.service';
 import { PhasesController } from './activities/phases.controller';
@@ -102,6 +103,9 @@ import { NodeInitParticipant } from './nodes/node-init.participant';
     // through this query provider, never `prisma.decision` directly (the module owns its repository).
     DecisionsQueryService,
     ActivitiesService,
+    // Task 10 (Module 4) — the activities module's public READ boundary (snapshot spine slices with
+    // fresh-baked readiness + projection read + init/copy structures + portfolio rollup).
+    ActivitiesQueryService,
     PhasesService,
     InspectionsService,
     // Task 10 (Module 3) — the inspections module's public READ boundary (snapshot slices + readiness

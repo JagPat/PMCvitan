@@ -55,6 +55,11 @@ export const EXTERNAL_EFFECTS = {
   'activity.override_revoked': { eventType: 'activity.override_revoked', invalidate: true, push: null },
   'activity.signed_off': { eventType: 'activity.signed_off', invalidate: true, push: ['contractor', 'client'] },
   'activity.signoff_rejected': { eventType: 'activity.signoff_rejected', invalidate: true, push: null },
+  // Task 10 (Module 4) — the activity-owned signal events a FOREIGN command appends through the activities
+  // participant (daily-log material-mismatch block; node-deletion unfiling). Signal-only: they refresh the
+  // activities projection and dedupe with the foreign command's own socket invalidation; no push.
+  'activity.material_blocked': { eventType: 'activity.material_blocked', invalidate: true, push: null },
+  'activity.unfiled': { eventType: 'activity.unfiled', invalidate: true, push: null },
   // ── phases ─────────────────────────────────────────────────────────────────────────────────
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },

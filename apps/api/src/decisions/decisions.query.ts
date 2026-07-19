@@ -54,6 +54,17 @@ export class DecisionsQueryService {
   }
 
   /**
+   * Phase 2 Task 10 — the UNFILTERED `id → status` map alone (no DTO serialization). The activities
+   * module bakes each activity's readiness from this at read time (readiness must see the true decision
+   * status regardless of a role's visibility); the snapshot instead passes the `statuses` it already got
+   * from {@link snapshotSlice} so it never reads twice.
+   */
+  async statusMap(projectId: string): Promise<Map<string, DecisionStatus>> {
+    const rows = await this.prisma.decision.findMany({ where: { projectId }, select: { id: true, status: true } });
+    return new Map(rows.map((d) => [d.id, d.status as DecisionStatus]));
+  }
+
+  /**
    * Phase 2 Task 9 — the decisions slice served from the REBUILDABLE PROJECTION (`decisions.inbox`)
    * instead of the live join. Reads the project's ACTIVE generation's `DecisionProjection` rows (the
    * pre-serialized `DecisionDto`s the projection consumer refreshed from canonical) and applies the

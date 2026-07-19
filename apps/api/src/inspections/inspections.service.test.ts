@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, type Mock } from 'vitest';
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { InspectionsService } from './inspections.service';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
@@ -40,6 +41,17 @@ function make(insp: Insp, opts: { members?: Member[]; evidence?: string[]; activ
       }),
     },
     activity: {
+      // Task 10 (Module 4) — the pre-command sign-off target read now goes through the activities
+      // WORKFLOW PARTICIPANT (signOffTarget → findFirst scoped by (id, projectId)); the participant's
+      // in-transaction methods re-read the TX-CURRENT name via findUniqueOrThrow after the CAS.
+      findFirst: vi.fn(async ({ where }: { where: { id: string; projectId: string } }) =>
+        (opts.activity && opts.activity.id === where.id && opts.activity.projectId === where.projectId
+          ? { id: opts.activity.id, name: opts.activity.name, completionRequestedById: opts.activity.completionRequestedById ?? null }
+          : null)),
+      findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => {
+        if (!opts.activity || opts.activity.id !== where.id) throw new Error(`activity ${where.id} not found`);
+        return { name: opts.activity.name };
+      }),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
         (opts.activity && opts.activity.id === where.id ? { doneAt: null, completionRequestedById: null, ...opts.activity } : null)),
       // CAS transitions on the signed-off activity (status may be exact or an { in } set)
@@ -109,19 +121,27 @@ describe('InspectionsService.submit — state-machine guards (P2-3)', () => {
 });
 
 describe('InspectionsService.create — location spine (nodeId)', () => {
-  function makeCreate(nodes: Array<{ id: string; projectId: string }>) {
+  function makeCreate(nodes: Array<{ id: string; projectId: string }>, activities: Array<{ id: string; projectId: string }> = []) {
     const created: Array<Record<string, unknown>> = [];
     const prisma = {
       user: { findUnique: vi.fn(async () => ({ name: 'Ar. Meghna' })) },
       inspection: {
         findMany: vi.fn(async () => []),
-        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { created.push(data); return { id: data.id }; }),
+        // the composite `(projectId, activityId)` tenant FK, in miniature (Task 10 Module 4: the FK is
+        // the activity-reference validation authority — a forged/foreign id trips P2003, translated to
+        // the readable 400 by rethrowActivityRefViolation)
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          if (data.activityId && !activities.some((a) => a.id === data.activityId && a.projectId === data.projectId)) {
+            throw new Prisma.PrismaClientKnownRequestError('Foreign key constraint violated', { code: 'P2003', clientVersion: 'test', meta: { constraint: 'Inspection_projectId_activityId_fkey' } });
+          }
+          created.push(data);
+          return { id: data.id };
+        }),
       },
       inspectionItem: { create: vi.fn(async () => ({})) },
       notification: { create: vi.fn(async () => ({})) },
       auditLog: { create: vi.fn(async () => ({})) },
       projectNode: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => nodes.find((n) => n.id === where.id) ?? null) },
-      activity: { findFirst: vi.fn(async () => null) },
       project: { findUniqueOrThrow: vi.fn(async () => ({ timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z'), orgId: 'org-test' })) },
       projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
       domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },

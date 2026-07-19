@@ -48,6 +48,12 @@ export const DOMAIN_EVENT_TYPES = [
   'activity.override_revoked',
   'activity.signed_off',
   'activity.signoff_rejected',
+  // Task 10 (Module 4) — the two activity-owned SIGNAL events a FOREIGN command appends through the
+  // activities participant so the ordered activities projection refreshes when a foreign mutation touches
+  // an activity-owned serialized field (the Module-3 owner-aligned pattern): the daily-log material
+  // mismatch failing the stored material gate + blocking, and a node deletion unfiling placed activities.
+  'activity.material_blocked',
+  'activity.unfiled',
   // phases
   'phase.created',
   'phase.removed',

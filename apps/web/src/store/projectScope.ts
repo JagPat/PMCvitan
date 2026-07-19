@@ -93,6 +93,8 @@ export interface ModuleReadState {
   drawingsSource: 'projection' | 'live' | null;
   inspectionsLoad: 'idle' | 'loading' | 'ready' | 'error';
   inspectionsSource: 'projection' | 'live' | null;
+  activitiesLoad: 'idle' | 'loading' | 'ready' | 'error';
+  activitiesSource: 'projection' | 'live' | null;
 }
 export function emptyModuleReadState(): ModuleReadState {
   return {
@@ -104,6 +106,8 @@ export function emptyModuleReadState(): ModuleReadState {
     drawingsSource: null,
     inspectionsLoad: 'idle',
     inspectionsSource: null,
+    activitiesLoad: 'idle',
+    activitiesSource: null,
   };
 }
 

@@ -46,7 +46,9 @@ const COVERAGE: Record<string, 'locked' | string> = {
     'exempt: membership.create provisions a BRAND-NEW user, who cannot appear in any frozen recipient set or claim',
   'orgs/orgs.service.ts':
     'exempt: writes rows only inside a project being CREATED in the same transaction (creator membership, template copies) — no start can race rows that commit with the project',
-  'snapshot/snapshot.service.ts': 'exempt: read-only serialization — names the gates, writes nothing',
+  // (snapshot/snapshot.service.ts no longer names a gate: Task 10 Module 4 moved the activity-spine
+  // serialization into the activities module — activities-serialize.ts is read-only bake code outside
+  // this tripwire's writer scan, and the query service reads under no lock by design.)
   // Task 7 — the workflow participants are LEAF providers with no lock of their own:
   // they write a readiness input on the CALLER'S transaction, and every readiness-
   // affecting caller takes lockProjectReadiness before invoking them.

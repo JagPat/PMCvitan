@@ -20,7 +20,7 @@ import type { CreateActivityInput, OverrideGateInput, UpdateActivityInput } from
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
-import type { EmittedEventMeta } from '../platform/outbox/registry';
+import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 
 @Injectable()
@@ -81,9 +81,22 @@ export class ActivitiesService {
     await resolveProjectNode(this.prisma, projectId, nodeId);
   }
 
-  /** PMC plans a new activity (name, zone, planned window, gates, phase/decision links). */
-  async create(projectId: string, input: CreateActivityInput, user: AuthUser): Promise<SnapshotDto> {
+  /** PMC plans a new activity (name, zone, planned window, gates, phase/decision links).
+   *  Task 10 (Module 4): idempotent under `Idempotency-Key` (Task 5 ledger) — a retried plan
+   *  (network retry / offline replay / double-tap) applies exactly once; a keyed REPLAY
+   *  short-circuits BEFORE any validation or id-mint. */
+  async create(projectId: string, input: CreateActivityInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
     const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({
+      name: input.name, zone: input.zone, plannedStart: input.plannedStart, plannedEnd: input.plannedEnd,
+      plannedStartDate: input.plannedStartDate ?? null, plannedEndDate: input.plannedEndDate ?? null,
+      phaseId: input.phaseId ?? null, decisionId: input.decisionId ?? null, nodeId: input.nodeId ?? null,
+      gateMaterial: input.gateMaterial, gateTeam: input.gateTeam,
+    });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'activities.create', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
     await this.assertRefs(projectId, input.phaseId, input.decisionId, input.nodeId);
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     const anchor = toIsoCivilDate(project.scheduleStartDate);
@@ -97,36 +110,46 @@ export class ActivitiesService {
     const order = existing.reduce((m, a) => Math.max(m, a.order), 0) + 1;
     const dates = this.plannedDates(anchor, { start: input.plannedStartDate, end: input.plannedEndDate }, { start: input.plannedStart, end: input.plannedEnd });
     this.assertOrderedWindow(dates.plannedStartDate, dates.plannedEndDate);
-    const ev = await this.prisma.$transaction(async (tx) => {
-      await tx.activity.create({
-        data: {
-          id,
-          projectId,
-          name: input.name,
-          zone: input.zone,
-          plannedStart: input.plannedStart,
-          plannedEnd: input.plannedEnd,
-          ...dates,
-          phaseId: input.phaseId ?? null,
-          decisionId: input.decisionId ?? null,
-          nodeId: input.nodeId ?? null,
-          gateMaterial: input.gateMaterial,
-          gateTeam: input.gateTeam,
-          // gateInspection left the write contracts (Task 6): the inspection gate
-          // is DERIVED from linked inspections; the column stays at its default
-          order,
-        },
-      });
-      await recordAudit(tx, { projectId, actor, action: 'activity.create', entity: 'Activity', entityId: id });
-      return emitEvent(tx, { projectId, actor, eventType: 'activity.created', entityType: 'Activity', entityId: id, payload: { name: input.name }, effectKey: 'activity.created', dispatch: { push: { body: `Schedule updated: ${input.name} planned` } } });
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'activities.create', idempotencyKey, requestHash,
+      run: async (tx) => {
+        await tx.activity.create({
+          data: {
+            id,
+            projectId,
+            name: input.name,
+            zone: input.zone,
+            plannedStart: input.plannedStart,
+            plannedEnd: input.plannedEnd,
+            ...dates,
+            phaseId: input.phaseId ?? null,
+            decisionId: input.decisionId ?? null,
+            nodeId: input.nodeId ?? null,
+            gateMaterial: input.gateMaterial,
+            gateTeam: input.gateTeam,
+            // gateInspection left the write contracts (Task 6): the inspection gate
+            // is DERIVED from linked inspections; the column stays at its default
+            order,
+          },
+        });
+        await recordAudit(tx, { projectId, actor, action: 'activity.create', entity: 'Activity', entityId: id });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'activity.created', entityType: 'Activity', entityId: id, payload: { name: input.name }, effectKey: 'activity.created', dispatch: { push: { body: `Schedule updated: ${input.name} planned` } } });
+        return { resultRef: id, events: [ev] };
+      },
     });
-    await this.dispatcher.dispatchCommitted([ev]);
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
-  /** PMC edits the plan — only provided fields change; explicit null clears a link. */
-  async update(projectId: string, activityId: string, input: UpdateActivityInput, user: AuthUser): Promise<SnapshotDto> {
+  /** PMC edits the plan — only provided fields change; explicit null clears a link.
+   *  Task 10 (Module 4): idempotent under `Idempotency-Key` (a keyed replay returns the snapshot). */
+  async update(projectId: string, activityId: string, input: UpdateActivityInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
     const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ activityId, patch: input });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'activities.update', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
     const ps = input.plannedStart ?? a.plannedStart;
@@ -160,45 +183,55 @@ export class ActivitiesService {
       'plannedStartDate' in data ? (data.plannedStartDate as Date | null) : a.plannedStartDate,
       'plannedEndDate' in data ? (data.plannedEndDate as Date | null) : a.plannedEndDate,
     );
-    const events = await this.prisma.$transaction(async (tx) => {
-      // stored material/team flags and the decision link move readiness (finding 1)
-      await lockProjectReadiness(tx, projectId);
-      await tx.activity.update({ where: { id: activityId }, data });
-      // Task 10 (Module 3) correction — a rename re-stamps the INSPECTION-OWNED activity label on every
-      // linked inspection through the participant, which appends `inspection.relabeled` so the projection's
-      // `activityName` tracks the rename (it read `Activity.name` live before). No-op (null) when unchanged.
-      const relabelEv = input.name !== undefined && input.name !== a.name
-        ? await this.inspections.relabelForActivity(tx, { projectId, actor, activityId, name: input.name })
-        : null;
-      await recordAudit(tx, { projectId, actor, action: 'activity.update', entity: 'Activity', entityId: activityId });
-      const updatedEv = await emitEvent(tx, { projectId, actor, eventType: 'activity.updated', entityType: 'Activity', entityId: activityId, effectKey: 'activity.updated', dispatch: {} });
-      return relabelEv ? [relabelEv, updatedEv] : [updatedEv];
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'activities.update', idempotencyKey, requestHash,
+      run: async (tx) => {
+        // stored material/team flags and the decision link move readiness (finding 1)
+        await lockProjectReadiness(tx, projectId);
+        await tx.activity.update({ where: { id: activityId }, data });
+        // Task 10 (Module 3) correction — a rename re-stamps the INSPECTION-OWNED activity label on every
+        // linked inspection through the participant, which appends `inspection.relabeled` so the projection's
+        // `activityName` tracks the rename (it read `Activity.name` live before). No-op (null) when unchanged.
+        const relabelEv = input.name !== undefined && input.name !== a.name
+          ? await this.inspections.relabelForActivity(tx, { projectId, actor, activityId, name: input.name })
+          : null;
+        await recordAudit(tx, { projectId, actor, action: 'activity.update', entity: 'Activity', entityId: activityId });
+        const updatedEv = await emitEvent(tx, { projectId, actor, eventType: 'activity.updated', entityType: 'Activity', entityId: activityId, effectKey: 'activity.updated', dispatch: {} });
+        return { resultRef: activityId, events: relabelEv ? [relabelEv, updatedEv] : [updatedEv] };
+      },
     });
-    await this.dispatcher.dispatchCommitted(events);
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
-  /** PMC removes a planned activity. Refused once field records reference it. */
-  async remove(projectId: string, activityId: string, user: AuthUser): Promise<SnapshotDto> {
+  /** PMC removes a planned activity. Refused once field records reference it.
+   *  Task 10 (Module 4): idempotent under `Idempotency-Key` (a keyed replay returns the snapshot). */
+  async remove(projectId: string, activityId: string, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
     const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ activityId });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'activities.remove', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
-    let ev: EmittedEventMeta;
-    try {
-      // Task 7 (edge 5): a drawing outlives its planned activity — the
-      // Drawing(projectId, activityId) FK is now ON DELETE SET NULL (activityId), so the
-      // database unlinks governed drawings when the activity is deleted. No cross-module
-      // write here. Inspections/overrides keep their NO ACTION FKs and still BLOCK the
-      // delete (surfaced as the Conflict below), so a referenced activity is never lost.
-      ev = await this.prisma.$transaction(async (tx) => {
-        await tx.activity.delete({ where: { id: activityId } });
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'activities.remove', idempotencyKey, requestHash,
+      run: async (tx) => {
+        // Task 7 (edge 5): a drawing outlives its planned activity — the
+        // Drawing(projectId, activityId) FK is now ON DELETE SET NULL (activityId), so the
+        // database unlinks governed drawings when the activity is deleted. No cross-module
+        // write here. Inspections/overrides keep their NO ACTION FKs and still BLOCK the
+        // delete (surfaced as the Conflict below), so a referenced activity is never lost.
+        await tx.activity.delete({ where: { id: activityId } }).catch(() => {
+          throw new ConflictException('This activity has linked records (inspections/materials) — it can no longer be deleted');
+        });
         await recordAudit(tx, { projectId, actor, action: 'activity.delete', entity: 'Activity', entityId: activityId });
-        return emitEvent(tx, { projectId, actor, eventType: 'activity.deleted', entityType: 'Activity', entityId: activityId, effectKey: 'activity.deleted', dispatch: {} });
-      });
-    } catch {
-      throw new ConflictException('This activity has linked records (inspections/materials) — it can no longer be deleted');
-    }
-    await this.dispatcher.dispatchCommitted([ev]);
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'activity.deleted', entityType: 'Activity', entityId: activityId, effectKey: 'activity.deleted', dispatch: {} });
+        return { resultRef: activityId, events: [ev] };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -242,43 +275,54 @@ export class ActivitiesService {
    *  takes (see common/readiness-lock.ts). A concurrent start loses the CAS
    *  (409, no duplicate audit); a concurrent gate flip lands strictly before
    *  (this start refuses it) or strictly after (it waits for this commit). */
-  async start(projectId: string, activityId: string, user: AuthUser): Promise<SnapshotDto> {
+  async start(projectId: string, activityId: string, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
     const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ activityId });
+    // A keyed replay returns the current snapshot without re-running the state-machine guards — a retry
+    // of an already-committed start replays cleanly instead of hitting "not in a startable state".
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'activities.start', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     // the actual start is TODAY in the project's time zone — a real civil date,
     // never the prototype's todayDay counter
     const today = this.clock.today(project.timeZone);
     const anchor = toIsoCivilDate(project.scheduleStartDate);
-    const ev = await this.prisma.$transaction(async (tx) => {
-      await lockProjectReadiness(tx, projectId);
-      const a = await tx.activity.findUnique({ where: { id: activityId }, include: { decision: true } });
-      if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
-      if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'activities.start', idempotencyKey, requestHash,
+      run: async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        const a = await tx.activity.findUnique({ where: { id: activityId }, include: { decision: true } });
+        if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
+        if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
 
-      const readiness = await this.loadReadiness(projectId, a, tx);
-      if (!readinessReady(readiness)) {
-        const blocking = (Object.entries(readiness) as Array<[string, { v: GateState; reason: string }]>)
-          .filter(([, g]) => !gateReady(g.v))
-          .map(([gate, g]) => `${gate}: ${g.reason}`)
-          .join('; ');
-        throw new ConflictException(`Readiness gates are not aligned — cannot start this activity (${blocking})`);
-      }
+        const readiness = await this.loadReadiness(projectId, a, tx);
+        if (!readinessReady(readiness)) {
+          const blocking = (Object.entries(readiness) as Array<[string, { v: GateState; reason: string }]>)
+            .filter(([, g]) => !gateReady(g.v))
+            .map(([gate, g]) => `${gate}: ${g.reason}`)
+            .join('; ');
+          throw new ConflictException(`Readiness gates are not aligned — cannot start this activity (${blocking})`);
+        }
 
-      // CAS belt on top of the lock: exactly one start can move the status
-      const { count } = await tx.activity.updateMany({
-        where: { id: activityId, projectId, status: 'not_started' },
-        data: {
-          status: 'in_progress',
-          actualStartDate: fromIsoCivilDate(today),
-          // legacy offset kept coherent for the compat timeline (derived from real dates)
-          actualStart: anchor ? diffCivilDays(anchor, today) : null,
-        },
-      });
-      if (count === 0) throw new ConflictException('Activity is not in a startable state');
-      await recordAudit(tx, { projectId, actor, action: 'activity.start', entity: 'Activity', entityId: activityId });
-      return emitEvent(tx, { projectId, actor, eventType: 'activity.started', entityType: 'Activity', entityId: activityId, effectKey: 'activity.started', dispatch: {} });
+        // CAS belt on top of the lock: exactly one start can move the status
+        const { count } = await tx.activity.updateMany({
+          where: { id: activityId, projectId, status: 'not_started' },
+          data: {
+            status: 'in_progress',
+            actualStartDate: fromIsoCivilDate(today),
+            // legacy offset kept coherent for the compat timeline (derived from real dates)
+            actualStart: anchor ? diffCivilDays(anchor, today) : null,
+          },
+        });
+        if (count === 0) throw new ConflictException('Activity is not in a startable state');
+        await recordAudit(tx, { projectId, actor, action: 'activity.start', entity: 'Activity', entityId: activityId });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'activity.started', entityType: 'Activity', entityId: activityId, effectKey: 'activity.started', dispatch: {} });
+        return { resultRef: activityId, events: [ev] };
+      },
     });
-    await this.dispatcher.dispatchCommitted([ev]);
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
@@ -287,12 +331,19 @@ export class ActivitiesService {
    *  attributable, membership-validated fact) and creates the LINKED closing
    *  inspection — with a default sign-off item, so it CAN be rejected. Only the
    *  PMC's approval of that closing inspection (inspections.decide) writes `done`. */
-  async complete(projectId: string, activityId: string, user: AuthUser): Promise<SnapshotDto> {
+  async complete(projectId: string, activityId: string, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ activityId });
+    // A keyed replay returns the current snapshot without re-running the state-machine guards — a retry
+    // of an already-committed claim replays cleanly instead of hitting "only a running activity".
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'activities.complete', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
     if (a.status !== 'in_progress') throw new ConflictException('Only a running activity can be marked complete');
 
-    const actor = await resolveActor(this.prisma, user);
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     const today = this.clock.today(project.timeZone);
     const anchor = toIsoCivilDate(project.scheduleStartDate);
@@ -300,9 +351,10 @@ export class ActivitiesService {
     // (INSP-<activityId>-close) is RETIRED; `closing` + `activityId` are the facts. Task 10 (Module 3):
     // the id is allocated by the inspections module's query, not a direct `prisma.inspection` read.
     const closingId = await this.inspectionsQuery.nextInspectionId();
-    let events: EmittedEventMeta[];
-    try {
-      events = await this.prisma.$transaction(async (tx) => {
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'activities.complete', idempotencyKey, requestHash,
+      run: async (tx) => {
+       try {
         // The claim must be attributable to a member who is ACTIVE AT COMMIT TIME
         // (Codex Task 5 gate P1): the membership row is read LOCKED inside THIS
         // transaction, so a concurrent removal has a defined order — it either
@@ -350,24 +402,37 @@ export class ActivitiesService {
         await tx.notification.create({ data: { projectId, text: `Sign-off requested: ${fresh.name} — awaiting the PMC's closing inspection`, color: '#C08A2D', time: 'just now' } });
         await recordAudit(tx, { projectId, actor, action: 'activity.complete_requested', entity: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId } });
         const completionEv = await emitEvent(tx, { projectId, actor, eventType: 'activity.completion_requested', entityType: 'Activity', entityId: activityId, payload: { closingInspectionId: closingId }, effectKey: 'activity.completion_requested', dispatch: { push: { body: `Sign-off requested: ${fresh.name}` } } });
-        return [closingEv, completionEv];
-      });
-    } catch (e) {
-      // a concurrent inspection create took the sequential id — a plain retry resolves it
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-        throw new ConflictException('A concurrent update took this inspection id — retry the completion');
-      }
-      throw e;
-    }
+        return { resultRef: activityId, events: [closingEv, completionEv] };
+       } catch (e) {
+        // a concurrent inspection create took the sequential id — a plain retry resolves it. Converted
+        // to the domain 409 INSIDE `run`, so the ledger's own reservation-P2002 handling (a different
+        // index) never mistakes this for a concurrent-key conflict.
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+          throw new ConflictException('A concurrent update took this inspection id — retry the completion');
+        }
+        throw e;
+       }
+      },
+    });
     // the sign-off is the PMC's decision to make
-    await this.dispatcher.dispatchCommitted(events);
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
   /** PMC records a MANUAL readiness exception (Task 6): one gate, one reason,
    *  optional same-project photo evidence, and an expiry that is ALWAYS in the
    *  future — expiry (or early revocation) restores the derivation. Audited. */
-  async override(projectId: string, activityId: string, input: OverrideGateInput, user: AuthUser): Promise<SnapshotDto> {
+  async override(projectId: string, activityId: string, input: OverrideGateInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({
+      activityId, gate: input.gate, state: input.state, reason: input.reason,
+      expiresAt: input.expiresAt, evidenceMediaId: input.evidenceMediaId ?? null,
+    });
+    // A keyed replay returns the current snapshot without minting a SECOND override row.
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'activities.override', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
     const a = await this.prisma.activity.findUnique({ where: { id: activityId } });
     if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
     const expiresAt = new Date(input.expiresAt);
@@ -376,36 +441,49 @@ export class ActivitiesService {
     }
     // supporting evidence must be THIS project's photo (composite FK is the backstop)
     const evidenceMediaId = await resolveProjectRef(this.prisma, 'media', projectId, input.evidenceMediaId, 'evidenceMediaId');
-    const actor = await resolveActor(this.prisma, user);
-    const ev = await this.prisma.$transaction(async (tx) => {
-      // an override moves a gate the moment it exists (finding 1)
-      await lockProjectReadiness(tx, projectId);
-      await tx.gateOverride.create({
-        data: { projectId, activityId, gate: input.gate, state: input.state, reason: input.reason, actorId: actor.actorId, actorName: actor.actorName, evidenceMediaId, expiresAt },
-      });
-      await recordAudit(tx, { projectId, actor, action: 'activity.override', entity: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state, reason: input.reason, expiresAt: expiresAt.toISOString(), evidenceMediaId } });
-      return emitEvent(tx, { projectId, actor, eventType: 'activity.override_granted', entityType: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state }, effectKey: 'activity.override_granted', dispatch: { push: { body: `Gate override on ${a.name}: ${input.gate} → ${input.state} (expires ${ddMmmYyyy(expiresAt)})` } } });
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'activities.override', idempotencyKey, requestHash,
+      run: async (tx) => {
+        // an override moves a gate the moment it exists (finding 1)
+        await lockProjectReadiness(tx, projectId);
+        const created = await tx.gateOverride.create({
+          data: { projectId, activityId, gate: input.gate, state: input.state, reason: input.reason, actorId: actor.actorId, actorName: actor.actorName, evidenceMediaId, expiresAt },
+        });
+        await recordAudit(tx, { projectId, actor, action: 'activity.override', entity: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state, reason: input.reason, expiresAt: expiresAt.toISOString(), evidenceMediaId } });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'activity.override_granted', entityType: 'Activity', entityId: activityId, payload: { gate: input.gate, state: input.state }, effectKey: 'activity.override_granted', dispatch: { push: { body: `Gate override on ${a.name}: ${input.gate} → ${input.state} (expires ${ddMmmYyyy(expiresAt)})` } } });
+        return { resultRef: created.id, events: [ev] };
+      },
     });
-    await this.dispatcher.dispatchCommitted([ev]);
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
   /** PMC revokes an override EARLY — the derivation rules again immediately.
    *  The audit trail keeps the full record of both the override and its end. */
-  async revokeOverride(projectId: string, activityId: string, overrideId: string, user: AuthUser): Promise<SnapshotDto> {
+  async revokeOverride(projectId: string, activityId: string, overrideId: string, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest({ activityId, overrideId });
+    // A keyed replay returns the current snapshot instead of a 404 for the already-deleted row.
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'activities.revokeOverride', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
     const row = await this.prisma.gateOverride.findUnique({ where: { id: overrideId } });
     if (!row || row.projectId !== projectId || row.activityId !== activityId) {
       throw new NotFoundException(`Override ${overrideId} not found`);
     }
-    const actor = await resolveActor(this.prisma, user);
-    const ev = await this.prisma.$transaction(async (tx) => {
-      // revoking restores the derivation instantly — a readiness write (finding 1)
-      await lockProjectReadiness(tx, projectId);
-      await tx.gateOverride.delete({ where: { id: overrideId } });
-      await recordAudit(tx, { projectId, actor, action: 'activity.override_revoke', entity: 'Activity', entityId: activityId, payload: { overrideId, gate: row.gate, state: row.state, reason: row.reason } });
-      return emitEvent(tx, { projectId, actor, eventType: 'activity.override_revoked', entityType: 'Activity', entityId: activityId, effectKey: 'activity.override_revoked', dispatch: {} });
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'activities.revokeOverride', idempotencyKey, requestHash,
+      run: async (tx) => {
+        // revoking restores the derivation instantly — a readiness write (finding 1)
+        await lockProjectReadiness(tx, projectId);
+        await tx.gateOverride.delete({ where: { id: overrideId } });
+        await recordAudit(tx, { projectId, actor, action: 'activity.override_revoke', entity: 'Activity', entityId: activityId, payload: { overrideId, gate: row.gate, state: row.state, reason: row.reason } });
+        const ev = await emitEvent(tx, { projectId, actor, eventType: 'activity.override_revoked', entityType: 'Activity', entityId: activityId, effectKey: 'activity.override_revoked', dispatch: {} });
+        return { resultRef: overrideId, events: [ev] };
+      },
     });
-    await this.dispatcher.dispatchCommitted([ev]);
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

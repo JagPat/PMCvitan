@@ -61,7 +61,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
-import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
+import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 
@@ -188,6 +188,12 @@ export interface AppState {
   // viewer/role); these track its explicit load state for the inspection surfaces ('idle' in snapshot mode).
   inspectionsLoad: 'idle' | 'loading' | 'ready' | 'error';
   inspectionsSource: 'projection' | 'live' | null;
+  // Phase 2 Task 10 (Module 4 — Activities) — the activities XOR read-ownership state, mirroring
+  // inspections. When activitiesReadMode() === 'moduleQuery', the activity spine (`activities` +
+  // `phases`) is owned by the module-owned read (readiness baked fresh on both paths); these track its
+  // explicit load state for the schedule surfaces ('idle' in snapshot mode).
+  activitiesLoad: 'idle' | 'loading' | 'ready' | 'error';
+  activitiesSource: 'projection' | 'live' | null;
   // Phase 2 Task 9 — the enabled module ids from the project-shell summary (the single enablement
   // source). Drives manifest-driven nav: a screen whose module is disabled is hidden. Empty = not yet
   // loaded → the nav shows every role screen (no flash), matching today's behaviour.
@@ -583,6 +589,8 @@ export function getInitialState(): AppState {
     drawingsSource: null,
     inspectionsLoad: 'idle',
     inspectionsSource: null,
+    activitiesLoad: 'idle',
+    activitiesSource: null,
     enabledModules: [],
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
@@ -726,7 +734,7 @@ export const useStore = create<Store>()(
      *  DIRECTLY — only `acceptSnapshot` may, after the ordering checks. A source-scan
      *  test (`snapshot-ordering.test.ts`) enforces the single call site so an
      *  unsequenced apply cannot be reintroduced. */
-    const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null): void => {
+    const applySnapshotCore = (snap: ApiSnapshot, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null, activitiesResult?: ModuleActivities | null): void => {
       set((s) => {
         s.projectLoadState = 'ready'; // the active project's data has landed
         s.projectLoadError = null;
@@ -746,7 +754,23 @@ export const useStore = create<Store>()(
         } else if (decisionsResult === null) {
           s.decisionsLoad = 'error';
         }
-        s.activities = snap.activities;
+        // Phase 2 Task 10 (Module 4 — Activities) — XOR read-ownership for the activity spine
+        // (`activities` here, `phases` below), mirroring inspections. 'snapshot' mode (default): the
+        // snapshot slices OWN them (unchanged). 'moduleQuery' mode: the module-owned read (readiness
+        // baked FRESH from the foreign query contracts on both paths, fetched under THIS same scope
+        // lease) owns them, and the snapshot's slices are IGNORED. A result sets them (ready); `null` =
+        // the module fetch FAILED (keep last-good, expose an error boundary); `undefined` = no fetch
+        // accompanied this apply (a command's own snapshot) — leave untouched until the follow-up refresh.
+        const actModule = activitiesReadMode() === 'moduleQuery';
+        if (!actModule) {
+          s.activities = snap.activities;
+        } else if (activitiesResult) {
+          s.activities = structuredClone(activitiesResult.activities) as typeof s.activities;
+          s.activitiesLoad = 'ready';
+          s.activitiesSource = activitiesResult.source;
+        } else if (activitiesResult === null) {
+          s.activitiesLoad = 'error';
+        }
         // The snapshot is the whole truth for its project. checklist/dailyLog are
         // assigned DIRECTLY, including null — absence means "this project has none",
         // never "keep the previous project's".
@@ -840,7 +864,14 @@ export const useStore = create<Store>()(
         } else if (inspectionsResult) {
           s.placedInspections = [...inspectionsResult.placedInspections];
         }
-        s.phases = snap.phases ?? [];
+        // XOR (Task 10 Module 4): the phases follow the same ownership as the activities above.
+        // moduleQuery + result → module slice; moduleQuery + null/undefined → keep last-good (the
+        // activities block already set the load/error state for this apply).
+        if (!actModule) {
+          s.phases = snap.phases ?? [];
+        } else if (activitiesResult) {
+          s.phases = structuredClone(activitiesResult.phases) as typeof s.phases;
+        }
         // Phase 2 Task 10 — XOR read-ownership for the daily-log slice (log core + crew + materials),
         // mirroring decisions. The media progress PHOTOS are ALWAYS composed from the snapshot (media,
         // not daily-log, owns them) — they come back as signed API-relative serve paths (/media/:id?t=…)
@@ -900,17 +931,17 @@ export const useStore = create<Store>()(
      *  then applies. The result MUST be consumed; success is announced only for
      *  `applied`. `superseded` / `scope-moved` are silent no-ops; `invalid-project`
      *  never reports success and the caller requests a fresh snapshot to recover. */
-    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null): SnapshotApplyResult => {
+    const acceptSnapshot = (snap: ApiSnapshot, lease: SnapshotLease, decisionsResult?: ModuleDecisions | null, dailyLogResult?: ModuleDailyLog | null, drawingsResult?: ModuleDrawings | null, inspectionsResult?: ModuleInspections | null, activitiesResult?: ModuleActivities | null): SnapshotApplyResult => {
       const st = get();
       if (!isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, lease.scope)) return 'scope-moved';
       // newest-owner is checked against THIS lease's own scope, so a stale lease in a
       // scope we've left can never mark a live scope's response superseded (round 12).
       if (lease.sequence !== coordinatorFor(lease.scope).newestLeaseSeq) return 'superseded';
       if (snap.project.id !== lease.scope.projectId) return 'invalid-project';
-      // Task 9/10 — the module decisions + daily-log + drawings + inspections reads (if any) rode the SAME
-      // lease as the snapshot, so they pass the identical scope/newest-owner ordering checks: a stale module
-      // response is dropped with its snapshot, never applied over a newer scope's data.
-      applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult);
+      // Task 9/10 — the module decisions + daily-log + drawings + inspections + activities reads (if any)
+      // rode the SAME lease as the snapshot, so they pass the identical scope/newest-owner ordering checks:
+      // a stale module response is dropped with its snapshot, never applied over a newer scope's data.
+      applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
       return 'applied';
     };
 
@@ -957,12 +988,16 @@ export const useStore = create<Store>()(
       if (inspectionsReadMode() === 'moduleQuery' && scopeStillCurrent(scope) && get().inspectionsLoad !== 'ready') {
         set((s) => { s.inspectionsLoad = 'loading'; });
       }
+      // Task 10 (Module 4 — Activities) — same for the activities module read.
+      if (activitiesReadMode() === 'moduleQuery' && scopeStillCurrent(scope) && get().activitiesLoad !== 'ready') {
+        set((s) => { s.activitiesLoad = 'loading'; });
+      }
       try {
         // Task 9/10 — in 'moduleQuery' mode fetch the module-owned decisions and/or daily-log ALONGSIDE
         // the snapshot, under the SAME lease. Each module fetch is resilient: a failure yields `null` (an
         // explicit error state that keeps the last-good data) rather than failing the whole pull, so the
         // rest of the project still loads. In 'snapshot' mode no extra fetch happens (undefined → unchanged).
-        const [snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult] = await Promise.all([
+        const [snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult] = await Promise.all([
           g.snapshot(),
           decisionsReadMode() === 'moduleQuery'
             ? g.decisions().then((d): ModuleDecisions | null => d).catch((): ModuleDecisions | null => null)
@@ -976,6 +1011,9 @@ export const useStore = create<Store>()(
           inspectionsReadMode() === 'moduleQuery'
             ? g.inspections().then((d): ModuleInspections | null => d).catch((): ModuleInspections | null => null)
             : Promise.resolve(undefined as ModuleInspections | undefined),
+          activitiesReadMode() === 'moduleQuery'
+            ? g.activities().then((d): ModuleActivities | null => d).catch((): ModuleActivities | null => null)
+            : Promise.resolve(undefined as ModuleActivities | undefined),
         ]);
         // Round 2 finding 2: a command reconcile is CONFIRMED only when the snapshot applied AND every
         // REQUIRED module-owned read (Task 9 decisions / Task 10 daily-log + drawings, when in
@@ -987,8 +1025,9 @@ export const useStore = create<Store>()(
           (decisionsReadMode() !== 'moduleQuery' || decisionsResult != null) &&
           (dailyLogReadMode() !== 'moduleQuery' || dailyLogResult != null) &&
           (drawingsReadMode() !== 'moduleQuery' || drawingsResult != null) &&
-          (inspectionsReadMode() !== 'moduleQuery' || inspectionsResult != null);
-        const result = acceptSnapshot(snap, lease, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult);
+          (inspectionsReadMode() !== 'moduleQuery' || inspectionsResult != null) &&
+          (activitiesReadMode() !== 'moduleQuery' || activitiesResult != null);
+        const result = acceptSnapshot(snap, lease, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
         if (result === 'applied') {
           // COMMAND and SUBMIT obligations clear INDEPENDENTLY (gate round 14). Only a
           // pull that BEGAN AFTER an obligation's threshold can satisfy it (round 13,
@@ -1072,7 +1111,7 @@ export const useStore = create<Store>()(
      *  untouched to preserve the XOR), so a committed command needs a follow-up module
      *  refresh to become visible — see the reconcile in `consumeSnapshotResult`. */
     const anyModuleOwnedRead = (): boolean =>
-      decisionsReadMode() === 'moduleQuery' || dailyLogReadMode() === 'moduleQuery' || drawingsReadMode() === 'moduleQuery' || inspectionsReadMode() === 'moduleQuery';
+      decisionsReadMode() === 'moduleQuery' || dailyLogReadMode() === 'moduleQuery' || drawingsReadMode() === 'moduleQuery' || inspectionsReadMode() === 'moduleQuery' || activitiesReadMode() === 'moduleQuery';
 
     /** Consume an `acceptSnapshot` result on a COMMAND path (a user-initiated
      *  mutation: approve, publish, issue, evidence upload…). The command's success
@@ -2453,21 +2492,21 @@ export const useStore = create<Store>()(
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.createActivity(input), `Planned: ${input.name}.`);
+      runRemote(() => gateway!.createActivity(input, newIdempotencyKey()), `Planned: ${input.name}.`);
     },
     updateActivity: (activityId, input) => {
       if (!gateway) {
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.updateActivity(activityId, input), 'Schedule updated.');
+      runRemote(() => gateway!.updateActivity(activityId, input, newIdempotencyKey()), 'Schedule updated.');
     },
     deleteActivity: (activityId) => {
       if (!gateway) {
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.deleteActivity(activityId), 'Activity removed from the plan.');
+      runRemote(() => gateway!.deleteActivity(activityId, newIdempotencyKey()), 'Activity removed from the plan.');
     },
     // Task 6: a manual readiness exception — attributable, reasoned, expiring (server records it)
     overrideGate: (activityId, input) => {
@@ -2475,28 +2514,28 @@ export const useStore = create<Store>()(
         get().flash('Gate overrides need the server.');
         return;
       }
-      runRemote(() => gateway!.overrideGate(activityId, input), 'Override recorded — it expires automatically.');
+      runRemote(() => gateway!.overrideGate(activityId, input, newIdempotencyKey()), 'Override recorded — it expires automatically.');
     },
     revokeOverride: (activityId, overrideId) => {
       if (!gateway) {
         get().flash('Gate overrides need the server.');
         return;
       }
-      runRemote(() => gateway!.revokeOverride(activityId, overrideId), 'Override revoked — derived readiness applies again.');
+      runRemote(() => gateway!.revokeOverride(activityId, overrideId, newIdempotencyKey()), 'Override revoked — derived readiness applies again.');
     },
     createPhase: (name) => {
       if (!gateway) {
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.createPhase({ name }), `Phase added: ${name}.`);
+      runRemote(() => gateway!.createPhase({ name }, newIdempotencyKey()), `Phase added: ${name}.`);
     },
     deletePhase: (phaseId) => {
       if (!gateway) {
         get().flash('Planning needs the server.');
         return;
       }
-      runRemote(() => gateway!.deletePhase(phaseId), 'Phase removed — its activities stay in the flat list.');
+      runRemote(() => gateway!.deletePhase(phaseId, newIdempotencyKey()), 'Phase removed — its activities stay in the flat list.');
     },
     issueChecklist: (input) => {
       if (!gateway) {
@@ -2634,7 +2673,10 @@ export const useStore = create<Store>()(
 
     // ---- schedule ----
     startActivity: (id) => {
-      if (runRemoteOrQueue({ t: 'startActivity', activityId: id }, 'Start ' + id, () => gateway!.startActivity(id), 'Activity started — planned dates now tracking against actual.')) return;
+      // Task 10 (Module 4): one key for the online call AND the queued op — a lost-response retry or
+      // an offline replay reaches the ledger under the SAME key, so the start applies exactly once.
+      const startKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'startActivity', activityId: id, idempotencyKey: startKey }, 'Start ' + id, () => gateway!.startActivity(id, startKey), 'Activity started — planned dates now tracking against actual.')) return;
       set((s) => {
         const a = s.activities.find((x) => x.id === id);
         if (a) {
@@ -2647,7 +2689,8 @@ export const useStore = create<Store>()(
     completeActivity: (id) => {
       // Task 5: completion is a CLAIM — the activity parks in awaiting-signoff and
       // only the PMC's approval of the linked closing inspection makes it done
-      if (runRemoteOrQueue({ t: 'completeActivity', activityId: id }, 'Complete ' + id, () => gateway!.completeActivity(id), 'Completion claimed — the PMC’s closing sign-off will mark it done.')) return;
+      const completeKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'completeActivity', activityId: id, idempotencyKey: completeKey }, 'Complete ' + id, () => gateway!.completeActivity(id, completeKey), 'Completion claimed — the PMC’s closing sign-off will mark it done.')) return;
       const act = get().activities.find((a) => a.id === id);
       set((s) => {
         const a = s.activities.find((x) => x.id === id);

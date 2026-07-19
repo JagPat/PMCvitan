@@ -334,7 +334,7 @@ describe('Phase 7b write-cutover — API mode routes mutations through the gatew
     s()._setGateway(startGw as unknown as ApiGateway);
     s().startActivity('ACT-31');
     await flush();
-    expect(startGw.startActivity).toHaveBeenCalledWith('ACT-31');
+    expect(startGw.startActivity).toHaveBeenCalledWith('ACT-31', expect.any(String));
 
     // flagMismatch resolves the material index to its decisionId (DL-014).
     // Fresh seeded state: the startActivity snapshot above carried dailyLog:null,
