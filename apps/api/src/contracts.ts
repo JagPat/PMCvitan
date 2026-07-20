@@ -635,3 +635,30 @@ export const correctInvitationEmailSchema = z.object({
   email: z.string().trim().email().transform((value) => value.toLowerCase()),
 });
 export type CorrectInvitationEmailInput = z.infer<typeof correctInvitationEmailSchema>;
+
+// ── Phase 3 Task 1 — the ActivityRequirement demand contract (plan §§B/F) ──────────────
+// Quantities travel as DECIMAL STRINGS (never floats); the service canonicalizes via the
+// shared parseQuantity and refuses anything that does not round-trip numeric(18,6).
+const requirementSpecShape = {
+  activityId: z.string().trim().min(1),
+  materialCategory: z.string().trim().min(1),
+  make: z.string().trim().min(1),
+  grade: z.string().trim().min(1),
+  attributes: z.string().trim().default(''),
+  baseUom: z.string().trim().min(1),
+  qty: z.string().trim().min(1),
+  requiredBy: isoCivilDateSchema,
+  decisionId: z.string().trim().min(1).nullish(),
+  decisionVersion: z.number().int().min(1).nullish(),
+  optionKey: z.string().trim().min(1).nullish(),
+  responsibleId: z.string().trim().min(1).nullish(),
+  criticality: z.enum(['normal', 'critical']).default('normal'),
+  tolerance: z.string().trim().min(1).nullish(),
+};
+export const createRequirementSchema = z.object(requirementSpecShape);
+export type CreateRequirementInput = z.infer<typeof createRequirementSchema>;
+// a revision restates the full specification (append-only; CAS on the expected revision)
+export const reviseRequirementSchema = z.object({ ...requirementSpecShape, expectedRevision: z.number().int().min(1) });
+export type ReviseRequirementInput = z.infer<typeof reviseRequirementSchema>;
+export const cancelRequirementSchema = z.object({ expectedRevision: z.number().int().min(1), reason: z.string().trim().min(1) });
+export type CancelRequirementInput = z.infer<typeof cancelRequirementSchema>;

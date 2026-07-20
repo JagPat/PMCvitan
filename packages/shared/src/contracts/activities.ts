@@ -32,6 +32,10 @@ export const ACTIVITIES_COMMANDS = [
   'activities.revokeOverride',
   'phases.create',
   'phases.remove',
+  // Phase 3 Task 1 — the ActivityRequirement demand contract (append-only revisions; pmc authority).
+  'requirements.create',
+  'requirements.revise',
+  'requirements.cancel',
 ] as const;
 export type ActivitiesCommand = (typeof ACTIVITIES_COMMANDS)[number];
 
@@ -42,6 +46,8 @@ export const ACTIVITIES_QUERIES = [
   'activities.projectionSlice',
   'activities.existsInProject',
   'activities.resolveRef',
+  // Phase 3 Task 1 — the module-owned requirements read (capability-gated; 404 on non-pilot projects).
+  'requirements.list',
 ] as const;
 export type ActivitiesQuery = (typeof ACTIVITIES_QUERIES)[number];
 

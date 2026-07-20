@@ -14,6 +14,8 @@ export const platformManifest: ModuleManifest = {
   title: 'Platform Kernel',
   kind: 'platform',
   ownsModels: [
+    // Phase 3 Task 1 — project-scoped capability activation (plan §D); readable by any module's gate
+    'projectCapability',
     'auditLog',
     'notification',
     'pushSubscription',

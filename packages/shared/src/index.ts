@@ -10,6 +10,7 @@ export * from './domain/seed';
 export * from './domain/readiness';
 // Authorization policy (single source of truth for role → action)
 export * from './domain/policy';
+export * from './domain/material-spec';
 // Platform: the shared DomainEvent envelope + catalog (Phase 2 Task 4)
 export * from './platform/events';
 // Platform: the module registry contract — manifests + validator + enablement (Phase 2 Task 7)

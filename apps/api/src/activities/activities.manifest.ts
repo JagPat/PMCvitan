@@ -22,8 +22,8 @@ export const activitiesManifest: ModuleManifest = {
   // Task 10 (Module 4) — a fully-extracted module: it read-encapsulates every model it owns (incl. its
   // rebuildable projection), so no other module reads activity persistence directly — every cross-module
   // read routes through the ActivitiesQueryService contract (the boundary check enforces it).
-  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection'],
-  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection'],
+  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement'],
+  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement'],
   // Task 8/10 — reads decisions + the drawing gate + the inspection-gate readiness/next-id via their query
   // contracts (the readiness BAKE consumes all three at read time). The reverse inspections→activities
   // edge is a workflow participant (cycle-exempt), so this dependsOn graph stays acyclic — which is also
@@ -48,6 +48,12 @@ export const activitiesManifest: ModuleManifest = {
     'activity.unfiled',
     'phase.created',
     'phase.removed',
+    // Phase 3 Task 1 — the ActivityRequirement demand contract (§G: created/revised/cancelled
+    // ONLY; derived satisfaction never becomes a domain event). Emitted only on pilot projects
+    // (§D capability gate).
+    'requirement.created',
+    'requirement.revised',
+    'requirement.cancelled',
   ],
   consumesEvents: [],
   commands: [...ACTIVITIES_COMMANDS],
@@ -66,6 +72,10 @@ export const activitiesManifest: ModuleManifest = {
     // phases.controller (this module owns Phase too)
     'POST /projects/:projectId/phases',
     'DELETE /projects/:projectId/phases/:phaseId',
+    // requirements.controller (Phase 3 Task 1 — capability-gated, pmc-only)
+    'POST /projects/:projectId/requirements',
+    'POST /projects/:projectId/requirements/:requirementId/revise',
+    'POST /projects/:projectId/requirements/:requirementId/cancel',
   ],
   permissions: ['pmc', 'engineer'],
 };

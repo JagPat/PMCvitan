@@ -93,6 +93,8 @@ model Project {
   // Composite identity the DomainEvent tenant FK references (Phase 2 Task 4) — proves an
   // event's (organizationId, projectId) is the project's REAL org, so org cannot be forged.
   @@unique([orgId, id])
+  capabilities ProjectCapability[]
+  requirements ActivityRequirement[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -859,6 +861,75 @@ model ProjectNode {
   @@index([parentId])
 }
 
+// ── Phase 3 Task 1 — pilot activation + the ActivityRequirement demand contract ─────────────
+
+// Project-scoped capability activation (plan §D). A Phase-3 surface exists for a project ONLY
+// when its capability row exists — non-pilot projects keep today's behavior byte-for-byte
+// (routes 404, no Phase-3 events, stored gateMaterial semantics unchanged). Platform-owned.
+model ProjectCapability {
+  project     Project  @relation(fields: [projectId], references: [id])
+  projectId   String
+  capability  String // 'materials' (Stage 1)
+  enabledAt   DateTime @default(now())
+  enabledById String
+
+  @@id([projectId, capability])
+}
+
+enum RequirementType {
+  material
+  labour
+  equipment
+  decision
+  drawing
+  inspection
+}
+
+// The §11 demand contract (plan §§B/F). APPEND-ONLY: a change writes a NEW row with the same
+// requirementId and revision+1 — no row is ever updated; the current state of a requirement is
+// its highest revision. The MaterialSpecificationRef is flattened onto the row: TECHNICAL
+// identity (category/make/grade/attributes/baseUom + specFingerprint, hashed WITHOUT
+// provenance) and PROVENANCE (decisionId/decisionVersion/optionKey, never hashed). Owned by
+// the activities module; only type 'material' is produced in Phase 3 Task 1.
+model ActivityRequirement {
+  id            String          @id @default(cuid()) // row id (one per revision)
+  project       Project         @relation(fields: [projectId], references: [id])
+  projectId     String
+  requirementId String // stable identity across revisions
+  revision      Int // 1-based, monotone per requirementId
+  activity      Activity        @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId    String
+  type          RequirementType @default(material)
+
+  // MaterialSpecificationRef — technical identity (fingerprinted)
+  materialCategory     String
+  make                 String
+  grade                String
+  normalizedAttributes String
+  baseUom              String
+  specFingerprint      String
+  // MaterialSpecificationRef — decision provenance (NOT fingerprinted)
+  decision        Decision? @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId      String?
+  decisionVersion Int?
+  optionKey       String?
+
+  requiredQty   Decimal   @db.Decimal(18, 6)
+  requiredBy    DateTime
+  responsibleId String?
+  criticality   String    @default("normal") // 'normal' | 'critical'
+  tolerance     Decimal?  @db.Decimal(18, 6)
+  status        String    @default("open") // 'open' | 'cancelled' (a cancel APPENDS a revision)
+  createdAt     DateTime  @default(now())
+  createdById   String
+
+  @@unique([requirementId, revision])
+  // composite identity so later phases can carry (projectId, rowId) FKs (Phase 0 Task 5 pattern)
+  @@unique([projectId, id])
+  @@index([projectId, activityId])
+  @@index([projectId, specFingerprint])
+}
+
 model Decision {
   id             String           @id // e.g. "DL-014"
   project        Project          @relation(fields: [projectId], references: [id])
@@ -888,6 +959,7 @@ model Decision {
 
   options        DecisionOption[]
   events         DecisionEvent[]
+  requirements   ActivityRequirement[]
   changeRequests ChangeRequest[]
   activities     Activity[]
   materials      SiteMaterial[]
@@ -1003,6 +1075,7 @@ model Activity {
 
   @@unique([projectId, id])
   @@index([nodeId])
+  requirements ActivityRequirement[]
 }
 
 // A manual readiness exception (Phase 1 Task 6): the PMC overrides ONE gate's

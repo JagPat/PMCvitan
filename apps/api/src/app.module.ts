@@ -24,6 +24,9 @@ import { ActivitiesQueryService } from './activities/activities.query';
 import { ActivitiesController } from './activities/activities.controller';
 import { PhasesService } from './activities/phases.service';
 import { PhasesController } from './activities/phases.controller';
+import { RequirementsController } from './activities/requirements.controller';
+import { RequirementsService } from './activities/requirements.service';
+import { CapabilitiesService } from './platform/capabilities.service';
 import { InspectionsService } from './inspections/inspections.service';
 import { InspectionsQueryService } from './inspections/inspections.query';
 import { InspectionsController } from './inspections/inspections.controller';
@@ -78,6 +81,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     DecisionsController,
     ActivitiesController,
     PhasesController,
+    RequirementsController,
     InspectionsController,
     DailyLogController,
     MediaController,
@@ -89,6 +93,8 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     NodesController,
   ],
   providers: [
+    RequirementsService,
+    CapabilitiesService,
     JwtGuard,
     ProjectAccessService,
     { provide: CLOCK, useClass: SystemClock },
