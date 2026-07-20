@@ -11,9 +11,9 @@ No user flow changed. The application remains one deployable modular monolith.
 
 **Branch:** `claude/phase2-task10-finalize` (from `main` @ `2c4d4ee`), merged as PR #183 @ `main`
 `c94aee3`. The final independent review returned **BLOCKED narrowly** with ONE production
-upgrade-path finding (P1); its focused fix-forward correction is §10 (branch
-`claude/phase2-finalize-correction` from `main` @ `c94aee3`). **This packet is the evidence record
-for the final independent Phase-2 review.**
+upgrade-path finding (P1); its focused fix-forward correction is §10 (PR #184, merged @ `main`
+`5505656`). The narrow re-review of that correction returned **GREEN SIGNAL — PHASE 2 CLEARED**.
+**This packet is the closed evidence record of the final independent Phase-2 review.**
 
 ## 1. Immutable SHA record
 
@@ -43,12 +43,13 @@ for the final independent Phase-2 review.**
 | `92973aa` | decisions projection completeness (full-refresh consumer + hollow-generation guard) + switcher spec hardening |
 | `f12c515` | this packet (consolidated for the final review stop) |
 
-### The final-review P1 correction (this PR — §10)
+### The final-review P1 correction (PR #184, merged @ `5505656` — §10)
 
 | Commit | Increment |
 |---|---|
 | `6e4d105` | all-five operator rebuild registry + decisions row-set diagnostic + reproduce-first upgrade probe (RED @ `c94aee3`) + state coverage |
-| _(final)_ | RUNBOOK all-five rebuild step + this packet section |
+| `a2b8ecb` | RUNBOOK all-five rebuild step + packet §10 + ROADMAP/CLAUDE.md status truth |
+| `592d11a` | one-unit `toPass()` retry on the four remaining one-shot switcher picks (test-only; PR head) |
 
 ## 2. Migration record (additive, forward-only; checksums from `_prisma_migrations`)
 
@@ -219,8 +220,13 @@ repair it either: `decisions.inbox` was not in `REBUILDABLE_PROJECTIONS` (`diagn
 default `run()` covered only `drawings.inbox` + `daily-log.inbox`) and the runbook rebuilt only
 those two.
 
-**Immutable SHAs:** base `main` @ `c94aee3` (the merge of #183) · implementation `6e4d105` on
-`claude/phase2-finalize-correction` · merge SHA recorded on merge.
+**Immutable SHAs:** base `main` @ `c94aee3` (the merge of #183) · runtime implementation commit
+`6e4d105` · full PR head `592d11a` (docs `a2b8ecb` + the test-only switcher hardening) · merged as
+PR #184 @ `main` `5505656`.
+
+**Final verdict:** the narrow independent re-review of this correction returned **GREEN SIGNAL —
+PHASE 2 CLEARED**. Phase 2 is complete; Phase 3 planning is unblocked (implementation begins only
+after the Phase-3 plan's own independent architecture review and explicit approval).
 
 **The correction (one focused fix-forward; no rollback, no re-opened extraction):**
 
