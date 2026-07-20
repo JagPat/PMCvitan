@@ -1,11 +1,14 @@
 # Phase 3 — Material Readiness Pilot
 
-**Status: PLANNING — corrected per the round-1 independent architecture review (CONDITIONAL
-NO-GO, eight findings). Implementation remains BLOCKED until the narrow re-review of the eight
-decisions clears with explicit approval; Task 1 is then immediately cleared to begin.**
-Canonical spec: `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
-(§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; correction baseline:
-`main` @ `6fa019b` (the merged plan PR #186 the review examined).
+**Status: PLANNING — corrected per the round-1 architecture review (CONDITIONAL NO-GO, eight
+findings; §§D/H cleared in round 2) and the round-2 mechanical review (BLOCKED NARROWLY, five
+internal inconsistencies, resolved below). Implementation remains BLOCKED until the mechanical
+verification of the five round-2 corrections clears; a clean result immediately grants GO for
+Task 1.** Canonical spec:
+`docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
+(§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
+merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:
+`main` @ `9a84442`.
 
 ## Independent Architecture Review Corrections (round 1 — how each finding is resolved)
 
@@ -35,13 +38,42 @@ Canonical spec: `docs/superpowers/specs/2026-07-12-modular-construction-control-
 7. **[P2] Dependency/event cycle** → §G: activities owns `ActivityRequirement`, material
    readiness and the `gm` mapping; inventory owns physical coverage and exposes
    `coverageFor(requirements, tx)`; PO-line validation via a transaction-bound procurement
-   participant; requirement events shrink to created/revised/cancelled; derived satisfaction is
-   `material.readiness_changed`; full producer/consumer/payload/rebuild table.
+   participant; requirement events shrink to created/revised/cancelled; full
+   producer/consumer/payload/rebuild table. (Round 2 supersedes the round-1
+   `material.readiness_changed` event: derived verdicts produce NO domain event at all — §G.)
 8. **[P2] Vendor tenancy + authorization unresolved** → §H: `Vendor(orgId, id)` + project
    assignment records with composite containment; org-admin vs project-procurement permission
    matrix on existing roles; removed-member and cross-scope probes; the "promotion without
    migration" claim is REPLACED by the stable-party/additive-binding design.
 
+## Round-2 Mechanical Review Corrections (five inconsistencies — how each is resolved)
+
+1. **[P1] Fingerprint mixed identity with provenance** → §B: `specFingerprint` hashes ONLY the
+   normalized TECHNICAL identity (material/category, make, grade, attributes, base UOM);
+   decision/version/option remain on `MaterialSpecificationRef` as un-hashed PROVENANCE —
+   identical material approved by two decisions pools as one stock identity.
+2. **[P1] Allocation double-counting** → §F: three SEPARATE allocation chains, each with its
+   own bound (requirement→requisition ≤ required; requisition→PO ≤ requisition remaining;
+   receipts ≤ ordered + bounded `approvedOverage`); over-ordering demands a requirement
+   revision or the bounded overage field — never a generic override.
+3. **[P1] Bucket math inconsistent** → §C: explicit buckets `quarantine`, `acceptedOnHand`,
+   `reserved`, derived `freeAvailable = acceptedOnHand − reserved`, `rejected`,
+   `issuedToActivity`, with per-transaction equations (acceptance increases `acceptedOnHand`;
+   issue decreases `acceptedOnHand` and `reserved` while increasing `issuedToActivity`;
+   consumption reduces only `issuedToActivity`).
+4. **[P1] Projection producing a canonical event** → §G: `material.readiness_changed` is
+   REMOVED. Inbox, Dashboard and the readiness projection consume the canonical
+   requirement/procurement/inventory/mismatch events directly and recompute; projection
+   rebuilds emit NO domain events and NO notifications; user notifications are an idempotent
+   consumer effect keyed to the original source event and suppressed during rebuild.
+5. **[P2] Task sequencing vs lock coverage** → §A lock-coverage table + tripwire; probes
+   re-homed: Task 1 = capability/revisions/identity/decimal-UOM only; Task 2 =
+   requirement→requisition allocation; Task 3 = requisition→PO allocation; Task 4 = receipt
+   overage bound; Task 5 = ledger/reservation/issue/mismatch; Task 6 = ALL `start()`
+   concurrency races. §E: a mismatch resolution closes exactly ONE observation and unblocks
+   only when no unresolved mismatch remains.
+
+§§D (pilot activation) and H (vendor tenancy/permissions) cleared review and are unchanged.
 The modular-monolith strategy, additive migrations, the seven-task execution sequence and all
 Phase-2 infrastructure are preserved unchanged. Nothing in Phases 0–2 is redesigned.
 
@@ -86,10 +118,26 @@ tree; transaction-bound owner-aligned participant methods (the Module-3/4 patter
 `activities.start` (and any command whose guard consults `gm`) calls inventory's
 `coverageFor(requirements, tx)` on the SAME transaction client, after taking
 `lockProjectReadiness(tx, projectId)` — the identical protocol every readiness-affecting write
-already follows. Every Phase-3 write that can change coverage takes the same lock in its own
-transaction: reservation create/release, stock acceptance/adjustment/issue/return/wastage,
-requirement create/revise/cancel, delivery-commitment revise. The rebuildable readiness
-projection (§G) feeds UI, Inbox, Dashboard and forecast ONLY.
+already follows. The rebuildable readiness projection (§G) feeds UI, Inbox, Dashboard and
+forecast ONLY.
+
+**Lock-coverage table** — every command below takes `lockProjectReadiness` in its own
+transaction; the existing lock-coverage tripwire
+(`apps/api/src/common/readiness-lock-coverage.test.ts`) is EXTENDED to enumerate exactly this
+set, so an uncovered new command is a failing test, not a review finding:
+
+| Coverage-affecting command | Module | Lock |
+|---|---|---|
+| `activities.start` (reads coverage in-tx) | activities | ✓ |
+| requirement create / revise / cancel | activities | ✓ |
+| substitution approve / revoke | activities | ✓ |
+| delivery-commitment commit / revise / default | procurement | ✓ |
+| receipt acceptance / rejection | inventory | ✓ |
+| transfer | inventory | ✓ |
+| reservation create / release | inventory | ✓ |
+| issue / site-return / consumption / wastage | inventory | ✓ |
+| audited adjustment | inventory | ✓ |
+| mismatch resolution | daily-log | ✓ |
 
 Truth mapping (extends the Phase-1 first-match truth tables; worst-wins across an activity's
 material requirements; existing evidenced/expiring overrides apply unchanged):
@@ -102,47 +150,56 @@ material requirements; existing evidenced/expiring overrides apply unchanged):
 | `not-required` | no material requirement exists for the activity | `na` |
 
 An activity with zero material requirements maps to `na`; the legacy mismatch block remains a
-`fail` row evaluated BEFORE coverage (first-match). Race probes (Tasks 5–6, live PG, both
-orderings under concurrency): reservation release vs `start`; audited stock adjustment vs
-`start`; requirement revision vs `start`; issue vs reservation release — each proves either
+`fail` row evaluated BEFORE coverage (first-match). Race probes (ALL in Task 6 — after Task 6
+connects canonical coverage to `start()`; live PG, both orderings under concurrency):
+reservation release vs `start`; audited stock adjustment vs `start`; requirement revision vs
+`start`; substitution revocation vs `start`; issue vs reservation release — each proves either
 order serializes under the lock and the losing transaction observes the winner's state.
 
 ### §B. Canonical material identity + units (finding 2)
 
 | Element | Definition |
 |---|---|
-| `MaterialSpecificationRef` (immutable value object, stored on every demand/supply row) | `{ decisionId, decisionVersion, optionKey, specFingerprint, make, grade, baseUom }` — written once at row creation, never updated; a spec change produces a NEW ref via a requirement revision (§F) |
-| `specFingerprint` | SHA-256 over the normalized specification tuple (decision id + version + option + make + grade + normalized attribute text) — computed by ONE shared pure function in `@vitan/shared`, identical on API and web |
+| `MaterialSpecificationRef` (immutable value object, stored on every demand/supply row) | TECHNICAL IDENTITY `{ materialCategory, make, grade, normalizedAttributes, baseUom, specFingerprint }` + PROVENANCE `{ decisionId, decisionVersion, optionKey }` — written once at row creation, never updated; a spec change produces a NEW ref via a requirement revision (§F) |
+| `specFingerprint` | SHA-256 over ONLY the normalized technical identity tuple (materialCategory + make + grade + normalizedAttributes + baseUom) — computed by ONE shared pure function in `@vitan/shared`, identical on API and web. Provenance (decision/version/option) is NOT hashed: identical material approved by two different decisions has ONE fingerprint and pools as one stock identity, while every row still carries which decision approved it |
 | Quantities | `Decimal` (Prisma `Decimal`/PostgreSQL `numeric(18,6)`) everywhere — never strings, never floats |
 | UOM | every quantity column carries its UOM; each material has ONE `baseUom`; purchase rows store `purchaseUom` + `conversionToBase: Decimal` fixed at PO issuance (frozen with the PO snapshot); ledger and coverage arithmetic run in base UOM only |
-| Satisfaction rule | stock satisfies a requirement ONLY when `specFingerprint` matches exactly, OR an `ApprovedSubstitution { requirementId, fromFingerprint, toFingerprint, approvedById, reason, at }` exists (pmc authority, audited, event-bearing) |
+| Satisfaction rule | stock satisfies a requirement ONLY when `specFingerprint` matches exactly, OR an ACTIVE `ApprovedSubstitution { requirementId, fromFingerprint, toFingerprint, approvedById, reason, at, revokedAt?, revokedById?, revokeReason? }` exists (pmc authority, audited, event-bearing). Revocation is an audited, lock-covered command (§A) that never deletes the record — coverage re-derives without the substitution from that point on |
 
 ### §C. Stock ledger conservation (finding 3)
 
 Stock key = `(projectId, storeLocation, stockLotId)`; every lot carries its
-`MaterialSpecificationRef`. Buckets per stock key: `quarantine`, `available`, `reserved`
-(a claim WITHIN available, never additive to it), `issuedToActivity` (custody left the store,
-not yet consumed). All bucket values are DERIVATIONS over the append-only `StockTransaction`
-ledger — no current-quantity column exists anywhere.
+`MaterialSpecificationRef`. Buckets per stock key — ALL derivations over the append-only
+`StockTransaction` ledger, no current-quantity column exists anywhere:
 
-| Transaction | Source bucket | Destination bucket | Invariants |
-|---|---|---|---|
-| `receipt` | — (vendor) | `quarantine` | references PO line + delivery commitment; qty in base UOM via the PO's frozen conversion |
-| `acceptance` | `quarantine` | `available` | quality result + evidence required; partial acceptance allowed |
-| `rejection` | `quarantine` | — (rejected custody, awaiting vendor return) | evidence required |
-| `vendor-return` | rejected custody | — (vendor) | closes the rejection |
-| `transfer` | `available`@A | `available`@B | same project, store↔staging |
-| `reservation` | — | `reserved` ↑ | `reserved ≤ available`; no on-hand change |
-| `reservation-release` | `reserved` ↓ | — | on cancel/revise/start-consumed |
-| `issue` | `available` ↓ (and `reserved` ↓ by the reserved portion) | `issuedToActivity` ↑ | must reference activity + location; store on-hand decreases HERE and only here |
-| `consumption` | `issuedToActivity` ↓ | — (consumed) | NEVER touches store buckets — the double-count guard |
-| `site-return` | `issuedToActivity` ↓ | `available` ↑ | material physically back in store |
-| `wastage` | `issuedToActivity` ↓ | — (written off) | pmc authority + reason + evidence |
-| `adjustment` | any | any | audited, reasoned, pmc authority; the ONLY free-form movement |
+| Bucket | Meaning |
+|---|---|
+| `quarantine` | received, quality decision pending |
+| `acceptedOnHand` | accepted stock physically in the store/staging location |
+| `reserved` | the portion of `acceptedOnHand` claimed for upcoming activities |
+| `freeAvailable` | **derived, never stored:** `freeAvailable = acceptedOnHand − reserved` |
+| `rejected` | failed quality, awaiting vendor return |
+| `issuedToActivity` | custody left the store for an activity, not yet consumed/returned/written off |
+
+| Transaction | Equation | Guards / notes |
+|---|---|---|
+| `receipt` | `quarantine ↑` | references PO line + delivery commitment; qty in base UOM via the PO's frozen conversion; `Σ accepted+quarantined per PO line ≤ ordered + approvedOverage` (§F) |
+| `acceptance` | `quarantine ↓ → acceptedOnHand ↑` | quality result + evidence required; partial acceptance allowed |
+| `rejection` | `quarantine ↓ → rejected ↑` | evidence required |
+| `vendor-return` | `rejected ↓` → (vendor) | closes the rejection |
+| `transfer` | `acceptedOnHand@A ↓ → acceptedOnHand@B ↑` | same project, store↔staging; guard `freeAvailable@A ≥ qty` (reservations do not travel) |
+| `reservation` | `reserved ↑` | guard `freeAvailable ≥ qty`; `acceptedOnHand` unchanged |
+| `reservation-release` | `reserved ↓` | on cancel/revise/consumed-start |
+| `issue` | `acceptedOnHand ↓`, `reserved ↓` (by the activity's reserved portion, floor 0), `issuedToActivity ↑` | must reference activity + location; guard `qty ≤ freeAvailable + reservedForThisActivity`; the ONLY transaction that decreases store on-hand for work |
+| `consumption` | `issuedToActivity ↓` | ONLY `issuedToActivity` — never a store bucket (the double-count guard) |
+| `site-return` | `issuedToActivity ↓ → acceptedOnHand ↑` | material physically back in store |
+| `wastage` | `issuedToActivity ↓` | written off; pmc authority + reason + evidence |
+| `adjustment` | any → any | audited, reasoned, pmc authority; the ONLY free-form movement |
 
 Rules: (i) every balance-affecting command re-derives the affected key's buckets inside its
 transaction while holding a per-stock-key `SELECT … FOR UPDATE` on the lot row, and REFUSES any
-transaction that would drive a bucket negative; (ii) each ledger row records its source action
+transaction that would drive ANY bucket (including derived `freeAvailable`) negative — so
+`reserved ≤ acceptedOnHand` always holds; (ii) each ledger row records its source action
 (`commandId` from the idempotency ledger) — replays are idempotent by construction; (iii) no
 row is ever updated or deleted — corrections append explicit reversal transactions referencing
 the reversed row.
@@ -174,8 +231,11 @@ nothing is copied into `SiteMaterial`, no row is fabricated, and deleting/correc
 can never orphan a daily-log row. Consumption, site-return and wastage are recorded AGAINST the
 referenced `MaterialIssue` (§C buckets). A historical mismatch (`matched: false` observation)
 is resolved by an explicit, audited `MismatchResolution { siteMaterialId, resolution,
-resolvedById, reason, at }` record + event that clears the block — the original observation row
-is never edited.
+resolvedById, reason, at }` record + event — the original observation row is never edited.
+A resolution closes EXACTLY ONE observation (`siteMaterialId` is UNIQUE on the resolution
+table); the activity's mismatch block clears ONLY when NO unresolved mismatch observation
+remains for it — §A's `fail` row evaluates "any unresolved mismatch", not "a resolution
+exists".
 
 ### §F. Requirement + procurement state machines (finding 6)
 
@@ -183,10 +243,19 @@ is never edited.
 immutable — a change appends a new `revision` (monotone int; same requirement id) with the
 prior revision retained; downstream lines pin `(requirementId, revision)`. Cancelling a
 revision with open downstream lines demands an explicit disposition (cancel lines or re-point
-to the new revision — pmc authority, audited). **Allocation:** requisition/PO lines allocate
-quantities against a requirement revision; `Σ allocations ≤ required qty` per revision is
-enforced in-transaction (FOR UPDATE on the requirement row); splits and partial orders are the
-normal case, over-allocation demands an audited override.
+to the new revision — pmc authority, audited). **Allocation — three SEPARATE chains, each with its own bound** (a requisition and its PO
+never count against the same ceiling, so requisition 100 followed by PO 100 is allocation 100,
+not 200). Each guard is enforced in-transaction with FOR UPDATE on the parent row; splits and
+partial orders are the normal case:
+
+| Chain | Bound (in base UOM, per fingerprint) |
+|---|---|
+| requirement revision → requisition lines | `Σ requisition-line allocations ≤ required qty` of that revision |
+| approved requisition line → PO lines | `Σ PO-line allocations ≤ requisition-line remaining qty` |
+| PO line → receipts | `Σ received qty ≤ ordered qty + approvedOverage` — `approvedOverage` is a bounded `Decimal` field on the PO line (default 0), set only by pmc at issuance/amendment with reason |
+
+Ordering more than these bounds allow requires a REQUIREMENT REVISION (which raises the first
+ceiling attributably) or the bounded `approvedOverage` — never a generic override.
 
 Transitions (CAS on `(id, status)` — the Phase-1 concurrency discipline; every transition is a
 ledgered, audited command):
@@ -234,13 +303,26 @@ canonical read a projection replays from):
 | `delivery.committed` / `revised` / `defaulted` | procurement | readiness projection (at-risk), forecast | commitmentId, poLineId, promisedDate history tail | procurement: commitment promises |
 | `stock.transacted` | inventory | readiness projection, store view, forecast | txId, type (§C), stockKey, qty, sourceCommandId | inventory: ledger by project |
 | `issue.recorded` | inventory | daily-log screen read model, readiness projection | issueId, activityId, locationId, qty | inventory: issues by project |
-| `material.readiness_changed` | activities (derived — NOT `requirement.satisfied`) | Inbox, Dashboard, Notifications | activityId, requirementId, verdict, forecastImpact | derived: §A truth over `coverageFor` |
-| `mismatch.resolved` | daily-log | activities participant (unblock), readiness projection | siteMaterialId, resolution, authority | daily-log: resolutions |
+| `mismatch.resolved` | daily-log | readiness projection, notification consumer | siteMaterialId, resolution, authority | daily-log: resolutions |
 
-The UI readiness projection (activities-owned consumer) replays these to maintain the
-Inbox/Dashboard/forecast view; it joins `REBUILDABLE_PROJECTIONS` + `docs/RUNBOOK.md` in the
-SAME PR that creates it (standing rule from Phase-2 packet §10), with a stored/canonical
-diagnostic through the owning module's serializer.
+**There is NO `material.readiness_changed` (or `requirement.satisfied`) domain event.** A
+derived verdict is not a canonical fact, and a rebuildable projection must never produce
+domain events, notifications or loops when rebuilt. Instead:
+
+- The UI readiness projection (activities-owned consumer), Inbox and Dashboard each consume
+  the CANONICAL events above (`requirement.*`, `po.*`, `delivery.*`, `stock.transacted`,
+  `issue.recorded`, `mismatch.resolved`) and RECOMPUTE verdicts via the §A truth over
+  `coverageFor` — recomputation is idempotent and rebuild-safe by construction.
+- Projection rebuilds emit NO domain events and NO notifications: the rebuild replay drives
+  `db`-effect projection consumers only (the established Phase-2 rebuild discipline — external
+  sends ride persisted external-effect intents, which replays never dispatch).
+- Any user notification for a readiness change is an IDEMPOTENT effect of the separate
+  notification consumer, keyed to the ORIGINAL source event id (effectively-once via the
+  processed-event record) and therefore suppressed during any rebuild.
+
+The readiness projection joins `REBUILDABLE_PROJECTIONS` + `docs/RUNBOOK.md` in the SAME PR
+that creates it (standing rule from Phase-2 packet §10), with a stored/canonical diagnostic
+through the owning module's serializer.
 
 ### §H. Vendor tenancy + authorization (finding 8)
 
@@ -276,35 +358,49 @@ and 7.** Migration slots `20261205+_phase3_*`, additive only.
 
 1. **Task 1 — pilot activation + ActivityRequirement + characterization baseline.**
    `ProjectCapability` (§D) + `ActivityRequirement` with revisions + `MaterialSpecificationRef`
-   (§B) + requirement events (§G). Acceptance: the §D OFF-column proof (two projects, one org,
-   byte-identical non-pilot pins); revision immutability + allocation-guard probes; decimal/UOM
-   round-trip probes. STOP if any existing surface changes for a non-pilot project.
+   (§B) + requirement events (§G). Acceptance (capability, revisions, identity and decimal/UOM
+   ONLY — allocation probes live with the tasks that build allocations): the §D OFF-column
+   proof (two projects, one org, byte-identical non-pilot pins); requirement revision
+   immutability; specification-identity probes (identical material from two decisions → ONE
+   fingerprint, pooled; provenance retained per row); decimal/UOM round-trip probes. STOP if
+   any existing surface changes for a non-pilot project.
 2. **Task 2 — procurement module: vendors, requisitions, RFQs, quotes, comparison.** §H tenancy
    tables + matrix; §F transitions through comparison approval with CAS probes; quote
    normalization fields. Acceptance: non-lowest selection demands justification; removed-member
-   + cross-scope refusals.
+   + cross-scope refusals; the requirement→requisition allocation chain (§F bound 1) under
+   concurrency (two requisitions racing one revision cannot exceed the required qty).
 3. **Task 3 — purchase orders + delivery commitments.** §F PO versioning (frozen snapshots incl.
    UOM conversion + `committedAmountBase`), amendment/cancel/close-short, appended promise
    history; `po.*`/`delivery.*` events. Acceptance: amendment preserves the prior frozen
-   snapshot verbatim; promise history is append-only. **Review stop.**
+   snapshot verbatim; promise history is append-only; the requisition→PO allocation chain
+   (§F bound 2) under concurrency; `approvedOverage` recorded only at issuance/amendment with
+   reason. **Review stop.**
 4. **Task 4 — inventory module: receipts, acceptance, StockLot, immutable ledger.** §C buckets +
    equations + per-key locking + reversal transactions; the `ProcurementParticipant` PO-line
-   lock (§G). Acceptance: adversarial probes — concurrent receipts on one PO line; acceptance
+   lock (§G). Acceptance: adversarial probes — concurrent receipts on one PO line; the receipt
+   bound (§F bound 3: `Σ received ≤ ordered + approvedOverage`) under concurrency; acceptance
    vs adjustment both-orders; a negative-balance attempt REFUSES; a replayed command appends
    nothing. STOP if any code path mutates a quantity outside a ledger append.
 5. **Task 5 — reservations, issues, consumption/returns/wastage, Daily-Log read.** §C
    reservation/issue/consumption rows (consumption never touches store buckets); §E daily-log
    integration (inventory query read; no SiteMaterial writes) + `MismatchResolution`.
-   Acceptance: the §A race probes involving reservations/issues; the double-count guard; a
-   mismatch resolution never edits the observation. **Review stop.**
+   Acceptance (ledger, reservation, issue and mismatch BEHAVIOR — the `start()` races belong
+   to Task 6, after canonical coverage connects to `start`): §C bucket equations for
+   reservation/issue/consumption/site-return/wastage incl. the double-count guard
+   (consumption never touches store buckets) and `freeAvailable ≥ 0` refusals; a mismatch
+   resolution closes exactly ONE observation and never edits it; the block clears only when
+   no unresolved mismatch remains. **Review stop.**
 6. **Task 6 — canonical coverage authority + readiness projection + operator rebuild.**
    `coverageFor(requirements, tx)`; `activities.start` in-tx integration under
    `lockProjectReadiness` with the §A mapping (worst-wins, overrides unchanged); the UI
-   readiness projection + `material.readiness_changed` + SIXTH `REBUILDABLE_PROJECTIONS` entry
-   + runbook in the same PR. Acceptance: the remaining §A both-ordering races (requirement
-   revision vs start, adjustment vs start); projection lag NEVER changes a start verdict
-   (probe: stale projection + current canonical → start follows canonical); live == projection
-   == rebuild + the packet-§10 legacy-generation upgrade probe pattern.
+   readiness projection (recompute-only, §G — no derived domain events) + SIXTH
+   `REBUILDABLE_PROJECTIONS` entry + runbook in the same PR. Acceptance: ALL §A both-ordering
+   races (reservation release, stock adjustment, requirement revision, substitution
+   revocation, issue — each vs `start`); the §A lock-coverage tripwire extension
+   (`readiness-lock-coverage.test.ts` enumerates every §A command); projection lag NEVER
+   changes a start verdict (probe: stale projection + current canonical → start follows
+   canonical); a projection REBUILD emits zero domain events and zero notifications; live ==
+   projection == rebuild + the packet-§10 legacy-generation upgrade probe pattern.
 7. **Task 7 — frontend surfaces + pilot acceptance suite + Phase-3 review packet.** Module-owned
    screens (pilot-gated), shortage Inbox actions + forecast impact, the e2e pilot chain
    (requirement → requisition → comparison → PO → commitment → receipt → acceptance → stock →
