@@ -35,11 +35,14 @@ import { randomUUID } from 'node:crypto';
  * material-only specification lives in the revision-owned `MaterialRequirementSpec`. A future
  * labour/equipment type is a revision row with no material spec — no fake material values.
  *
- * AUTHORITATIVE PROVENANCE (finding 1): a material spec referencing a decision pins the
- * SERVER-resolved `decisions.approvedRef` — a real approved/reapproved version counter and the
- * decision's own selected option, resolved inside the command transaction through the decisions
- * query contract. Pending/draft/reopened decisions refuse; caller-authored version/option
- * inputs do not exist (the request schema is strict). Provenance is all-or-none (database CHECK).
+ * AUTHORITATIVE PROVENANCE (finding 1; round-2 finding 2): a material spec referencing a
+ * decision pins the SERVER-resolved `decisions.approvedRef` — the head row of the decision's
+ * IMMUTABLE `DecisionApprovalRevision` register, resolved inside the command transaction
+ * through the decisions query contract. Pending/draft/reopened decisions refuse; approved
+ * decisions with no register row (unrepaired ambiguous legacy) refuse; caller-authored
+ * version/option inputs do not exist (the request schema is strict). Provenance is all-or-none
+ * (database CHECK) and the triple FKs onto the register itself, so a forged reference is
+ * unrepresentable.
  *
  * CAPABILITY GATE (§D) and LOCK PROTOCOL (§A) as shipped in Task 1: every entry point asserts
  * the `materials` capability first (404 on non-pilot projects) and every command takes
@@ -49,14 +52,16 @@ import { randomUUID } from 'node:crypto';
 type SpecRow = Prisma.MaterialRequirementSpecGetPayload<Record<string, never>>;
 type Row = Prisma.ActivityRequirementGetPayload<{ include: { materialSpec: true } }>;
 
-function serializeSpec(s: SpecRow | null): RequirementSpecRef | null {
+/** Round-2 finding 4: the unit of measure lives ONCE, on the revision row — the served spec
+ *  reference carries the revision's unit, so the two can never disagree. */
+function serializeSpec(s: SpecRow | null, revisionBaseUom: string): RequirementSpecRef | null {
   if (!s) return null;
   return {
     materialCategory: s.materialCategory,
     make: s.make,
     grade: s.grade,
     normalizedAttributes: s.normalizedAttributes,
-    baseUom: s.baseUom,
+    baseUom: revisionBaseUom,
     specFingerprint: s.specFingerprint,
     decisionId: s.decisionId,
     decisionVersion: s.decisionVersion,
@@ -71,7 +76,7 @@ function serializeRequirement(r: Row): RequirementDto {
     revision: r.revision,
     activityId: r.activityId,
     type: r.type,
-    spec: serializeSpec(r.materialSpec),
+    spec: serializeSpec(r.materialSpec, r.baseUom),
     qty: r.requiredQty.toString(),
     baseUom: r.baseUom,
     requiredBy: toIsoCivilDate(r.requiredBy) ?? '',
@@ -91,7 +96,7 @@ function eventPayload(r: Row, reason?: string): RequirementEventPayload {
     requirementId: r.requirementId,
     revision: r.revision,
     activityId: r.activityId,
-    specRef: serializeSpec(r.materialSpec),
+    specRef: serializeSpec(r.materialSpec, r.baseUom),
     qty: r.requiredQty.toString(),
     baseUom: r.baseUom,
     requiredBy: toIsoCivilDate(r.requiredBy) ?? '',
@@ -110,8 +115,10 @@ export class RequirementsService {
     private readonly dispatcher: ExternalEffectDispatcher,
   ) {}
 
-  /** Validate + normalize the TYPE-NEUTRAL revision columns (§11 common contract). */
-  private async neutralColumns(projectId: string, input: CreateRequirementInput) {
+  /** Validate + normalize the TYPE-NEUTRAL revision columns (§11 common contract). Pure input
+   *  normalization only — the accountable-party check is transactional state and runs INSIDE
+   *  the readiness-locked command transaction (`assertResponsibleActive`, round-2 finding 5). */
+  private neutralColumns(input: CreateRequirementInput) {
     if (!isBaseUom(input.baseUom)) throw new BadRequestException('baseUom must be one of the supported base units');
     const qty = parseQuantity(input.qty);
     if (!qty) throw new BadRequestException('qty must be a positive decimal with at most 6 fractional digits');
@@ -119,17 +126,6 @@ export class RequirementsService {
     if (input.tolerance != null && !tolerance) throw new BadRequestException('tolerance must be a positive decimal with at most 6 fractional digits');
     const requiredBy = fromIsoCivilDate(input.requiredBy);
     if (!requiredBy) throw new BadRequestException('requiredBy must be an ISO civil date');
-    // the accountable party must be an ACTIVE same-project membership in an eligible role
-    // (§H matrix: the material execution roles) — the composite FK is the database backstop
-    if (input.responsibleId) {
-      const m = await this.prisma.membership.findUnique({
-        where: { projectId_userId: { projectId, userId: input.responsibleId } },
-        select: { status: true, role: true },
-      });
-      if (!m || m.status !== 'active' || !(ROLE_POLICY['requirement.read'] as readonly string[]).includes(m.role)) {
-        throw new BadRequestException('responsibleId must be an active pmc/engineer member of this project');
-      }
-    }
     return {
       requiredQty: new Prisma.Decimal(qty),
       baseUom: input.baseUom,
@@ -138,6 +134,23 @@ export class RequirementsService {
       criticality: input.criticality,
       tolerance: tolerance ? new Prisma.Decimal(tolerance) : null,
     };
+  }
+
+  /** Round-2 finding 5: the accountable party must be an ACTIVE same-project membership in an
+   *  eligible role (§H matrix), validated INSIDE the readiness-locked command transaction with
+   *  the membership row locked FOR UPDATE — a concurrent removal serializes against this
+   *  command: removal-then-create REFUSES; create-then-removal commits first and the removed
+   *  membership row (removals are status flips, never row deletes — and the composite FK
+   *  blocks a hard delete) keeps the requirement historically attributable. */
+  private async assertResponsibleActive(tx: Prisma.TransactionClient, projectId: string, responsibleId: string | null) {
+    if (!responsibleId) return;
+    const rows = await tx.$queryRaw<Array<{ status: string; role: string }>>`
+      SELECT "status", "role" FROM "Membership"
+      WHERE "projectId" = ${projectId} AND "userId" = ${responsibleId} FOR UPDATE`;
+    const m = rows[0];
+    if (!m || m.status !== 'active' || !(ROLE_POLICY['requirement.read'] as readonly string[]).includes(m.role)) {
+      throw new BadRequestException('responsibleId must be an active pmc/engineer member of this project');
+    }
   }
 
   /** Build the material spec columns: fingerprinted technical identity + AUTHORITATIVE
@@ -154,7 +167,10 @@ export class RequirementsService {
     const provenance = input.decisionId
       ? await this.decisionsQuery.approvedRef(projectId, input.decisionId, tx)
       : { decisionId: null, decisionVersion: null, optionKey: null };
-    return { ...identity, specFingerprint, ...provenance };
+    // the unit stays part of the fingerprinted §B identity but is stored ONCE, on the revision
+    // row — the spec record has no baseUom column to disagree with (round-2 finding 4)
+    const { baseUom: _uomOnRevisionRow, ...columns } = identity;
+    return { ...columns, specFingerprint, ...provenance };
   }
 
   /** Lock the requirement ROOT (the revision-lineage serialization point) and return the head. */
@@ -177,13 +193,15 @@ export class RequirementsService {
     const requestHash = hashRequest(input);
     const activity = await this.prisma.activity.findFirst({ where: { id: input.activityId, projectId }, select: { id: true } });
     if (!activity) throw new BadRequestException('activityId does not belong to this project');
-    const neutral = await this.neutralColumns(projectId, input);
+    const neutral = this.neutralColumns(input);
     const requirementId = randomUUID();
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'requirements.create', idempotencyKey, requestHash,
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
-        // provenance resolves INSIDE the transaction — the approval it pins is transactionally real
+        // the accountable party and the provenance both resolve INSIDE the locked transaction —
+        // the membership and the approval this row pins are transactionally real (finding 5)
+        await this.assertResponsibleActive(tx, projectId, neutral.responsibleId);
         const spec = await this.specColumns(projectId, input, tx);
         await tx.activityRequirementRoot.create({ data: { id: requirementId, projectId, createdById: actor.actorId } });
         const created = await tx.activityRequirement.create({
@@ -212,7 +230,7 @@ export class RequirementsService {
     const requestHash = hashRequest({ requirementId, ...input });
     const activity = await this.prisma.activity.findFirst({ where: { id: input.activityId, projectId }, select: { id: true } });
     if (!activity) throw new BadRequestException('activityId does not belong to this project');
-    const neutral = await this.neutralColumns(projectId, input);
+    const neutral = this.neutralColumns(input);
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'requirements.revise', idempotencyKey, requestHash,
       run: async (tx) => {
@@ -221,6 +239,7 @@ export class RequirementsService {
         // CAS — two concurrent revisions serialize on the root lock; the loser conflicts
         if (head.revision !== input.expectedRevision) throw new ConflictException(`Requirement is at revision ${head.revision}, not ${input.expectedRevision}`);
         if (head.status === 'cancelled') throw new BadRequestException('A cancelled requirement cannot be revised');
+        await this.assertResponsibleActive(tx, projectId, neutral.responsibleId);
         const spec = await this.specColumns(projectId, input, tx);
         const created = await tx.activityRequirement.create({
           data: { projectId, requirementId, revision: head.revision + 1, activityId: input.activityId, type: 'material', createdById: actor.actorId, ...neutral },
@@ -268,7 +287,7 @@ export class RequirementsService {
             data: {
               projectId, requirementId, revision: head.revision + 1,
               materialCategory: s.materialCategory, make: s.make, grade: s.grade,
-              normalizedAttributes: s.normalizedAttributes, baseUom: s.baseUom, specFingerprint: s.specFingerprint,
+              normalizedAttributes: s.normalizedAttributes, specFingerprint: s.specFingerprint,
               decisionId: s.decisionId, decisionVersion: s.decisionVersion, optionKey: s.optionKey,
             },
           });

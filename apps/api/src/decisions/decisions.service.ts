@@ -236,6 +236,31 @@ export class DecisionsService {
             throw new ConflictException('This decision has no open change request to resolve — its state is inconsistent; ask the PMC to re-raise or withdraw the change');
           }
         }
+        // The IMMUTABLE approval revision (Phase 3 Task 1 correction round 2, finding 1) —
+        // created in the SAME transaction as the approval it records, with the option pinned
+        // by its real key. Version allocation is monotonic across UNPROVABLE legacy history
+        // too: the floor is both the register head AND the count of recorded approval events
+        // (counted BEFORE this approval's own event lands below), so a legacy approval whose
+        // register row could not be backfilled still reapproves as version 2, never as a
+        // colliding version 1. Identity SERVED to consumers comes solely from these rows —
+        // `decisions.approvedRef` reads the head revision, never event counts or labels.
+        const registerHead = await tx.decisionApprovalRevision.findFirst({
+          where: { decisionId }, orderBy: { version: 'desc' }, select: { version: true },
+        });
+        const priorApprovals = await tx.decisionEvent.count({
+          where: { decisionId, type: { in: ['approved', 'reapproved'] } },
+        });
+        const version = Math.max(registerHead?.version ?? 0, priorApprovals) + 1;
+        await tx.decisionApprovalRevision.create({
+          data: {
+            id: `dar-${decisionId}-v${version}`,
+            projectId, decisionId, version,
+            optionKey: o.optionKey,
+            approvedAt: new Date(),
+            approvedById: actor.actorId,
+            onBehalfOf,
+          },
+        });
         await tx.decisionEvent.create({
           data: {
             decisionId,

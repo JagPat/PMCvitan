@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
+import { DecisionsService } from '../../src/decisions/decisions.service';
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
@@ -20,6 +21,13 @@ import type { CreateRequirementInput } from '../../src/contracts';
  *   approved provenance · database-enforced UPDATE/DELETE refusal · cross-project lineage
  *   refusal · DATE requiredBy round-trip · foreign/inactive responsible refusal · type-neutral
  *   non-material structure · complete event payload · read-policy enforcement.
+ *
+ * ROUND 2 (each RED at `d0897a6`): the IMMUTABLE `DecisionApprovalRevision` register —
+ *   monotonic versions across provable AND unprovable legacy approvals · ambiguous selected
+ *   option refuses (no label fallback, no event-count identity) · forged provenance triples
+ *   unrepresentable (composite register FK) · commit-time material↔spec pairing both ways ·
+ *   single-source UOM (the spec table has no unit column) · both-ordering removal-vs-create
+ *   accountability · database-immutable roots and register rows.
  */
 
 describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', () => {
@@ -32,7 +40,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "CommandExecution", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "ProjectCapability"';
+    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "CommandExecution", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability"';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const client = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'client', projectId }) as AuthUser;
@@ -53,6 +61,8 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
   afterEach(async () => {
     await t.prisma.$executeRawUnsafe(TRUNCATE);
     for (const [model, where] of [
+      ['notification', { projectId: { startsWith: 'it-p3-' } }],
+      ['changeRequest', { decision: { projectId: { startsWith: 'it-p3-' } } }],
       ['decisionEvent', { decision: { projectId: { startsWith: 'it-p3-' } } }],
       ['decisionOption', { decision: { projectId: { startsWith: 'it-p3-' } } }],
       ['decision', { projectId: { startsWith: 'it-p3-' } }],
@@ -81,8 +91,9 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     return id;
   };
 
-  /** An APPROVED decision with real options, a recorded selection and a real approval-event
-   *  history — what `decisions.approvedRef` resolves provenance from. */
+  /** An APPROVED decision with real options, a recorded selection, a real approval-event
+   *  history AND its immutable approval-register head (round 2) — `decisions.approvedRef`
+   *  serves provenance from the register row alone. */
   const makeApprovedDecision = async (projectId: string, id: string, approvals: Array<'approved' | 'reapproved'> = ['approved']): Promise<void> => {
     await t.prisma.decision.create({
       data: {
@@ -93,6 +104,13 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
           { label: 'Option B', optionKey: 'opt-b', material: 'Walnut', delta: 100, swatch: 'sw-b', order: 2 },
         ] },
         events: { create: approvals.map((type) => ({ type, actor: 'member' })) },
+      },
+    });
+    // the register head: version = the recorded approval count, pinning the selected option
+    await t.prisma.decisionApprovalRevision.create({
+      data: {
+        id: `dar-${id}-v${approvals.length}`, projectId, decisionId: id, version: approvals.length,
+        optionKey: 'opt-a', approvedAt: new Date(), approvedById: f.memberUser.id,
       },
     });
   };
@@ -366,5 +384,175 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
     await expect(requirements.list(projectId, client(projectId))).rejects.toMatchObject({ status: 403 });
     await expect(requirements.list(projectId, pmc(projectId))).resolves.toBeTruthy();
+  });
+
+  // ── Round-2 reproduce-first probes (each RED at d0897a6) ──────────────────────────────────
+
+  it('R2-1 MONOTONIC VERSIONS: a legacy approval reapproves as version 2 — with or without a backfilled register row', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const decisions = t.app.get(DecisionsService);
+
+    // (a) a backfilled legacy approval (register v1) reopened for change: the REAL approve
+    // command appends v2 IN THE SAME TRANSACTION, pinning the newly selected option's key
+    // and the approver's identity (on behalf of the client — never disguised)
+    await makeApprovedDecision(projectId, 'IT-P3-LEG1');
+    await t.prisma.decision.update({ where: { id: 'IT-P3-LEG1' }, data: { status: 'change' } });
+    await t.prisma.changeRequest.create({ data: { decisionId: 'IT-P3-LEG1', reason: 'shade', costImpact: 0, timeImpactDays: 0, status: 'open' } });
+    await decisions.approve(projectId, 'IT-P3-LEG1', { optionIndex: 1 }, pmc(projectId));
+    const head1 = await t.prisma.decisionApprovalRevision.findFirstOrThrow({ where: { decisionId: 'IT-P3-LEG1' }, orderBy: { version: 'desc' } });
+    expect(head1.version).toBe(2);
+    expect(head1.optionKey).toBe('opt-b'); // optionIndex 1 → Option B — the option REALLY selected
+    expect(head1.approvedById).toBe(f.memberUser.id);
+    expect(head1.onBehalfOf).toBe('client');
+
+    // (b) an UNPROVABLE legacy history (two recorded approvals, NO register rows — the
+    // migration's ambiguous-skip case): the next approval must version PAST that history,
+    // never collide into a false "version 1"
+    await t.prisma.decision.create({
+      data: {
+        id: 'IT-P3-LEG2', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'change',
+        publishedAt: new Date(), authorId: f.memberUser.id, approvedOption: 'Option A',
+        options: { create: [
+          { label: 'Option A', optionKey: 'opt-a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1 },
+          { label: 'Option B', optionKey: 'opt-b', material: 'Walnut', delta: 100, swatch: 'sw-b', order: 2 },
+        ] },
+        events: { create: [{ type: 'approved', actor: 'm' }, { type: 'reapproved', actor: 'm' }] },
+      },
+    });
+    await t.prisma.changeRequest.create({ data: { decisionId: 'IT-P3-LEG2', reason: 'again', costImpact: 0, timeImpactDays: 0, status: 'open' } });
+    await decisions.approve(projectId, 'IT-P3-LEG2', { optionIndex: 0 }, pmc(projectId));
+    const rows2 = await t.prisma.decisionApprovalRevision.findMany({ where: { decisionId: 'IT-P3-LEG2' } });
+    expect(rows2).toHaveLength(1); // nothing fabricated for the unprovable past
+    expect(rows2[0]!.version).toBe(3); // floor = the two recorded approvals
+  });
+
+  it('R2-2 MISSING/AMBIGUOUS SELECTED OPTION REFUSES: an approved decision with no register row cannot anchor provenance', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const activityId = await freshActivity(projectId);
+    // approved + published, a recorded label matching NO option, NO register row — exactly the
+    // migration's ambiguous-skip state. At d0897a6 the label FALLBACK stored the raw label.
+    await t.prisma.decision.create({
+      data: {
+        id: 'IT-P3-AMB', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'approved',
+        publishedAt: new Date(), authorId: f.memberUser.id, approvedOption: 'A label nobody has',
+        options: { create: [
+          { label: 'Option A', optionKey: 'opt-a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1 },
+        ] },
+      },
+    });
+    const attempt = requirements.create(projectId, { ...CEMENT, activityId, decisionId: 'IT-P3-AMB' }, pmc(projectId));
+    await expect(attempt).rejects.toMatchObject({ status: 400, message: expect.stringContaining('operator repair') });
+  });
+
+  it('R2-3 FORGED PROVENANCE IS UNREPRESENTABLE: the composite register FK refuses a fabricated triple', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const activityId = await freshActivity(projectId);
+    await makeApprovedDecision(projectId, 'IT-P3-REAL'); // register holds ONLY (v1, opt-a)
+
+    await expect(
+      t.prisma.$transaction([
+        t.prisma.activityRequirementRoot.create({ data: { id: 'it-p3-forge', projectId, createdById: f.memberUser.id } }),
+        t.prisma.activityRequirement.create({
+          data: { projectId, requirementId: 'it-p3-forge', revision: 1, activityId, requiredQty: 1, baseUom: 'bag', requiredBy: new Date('2026-08-15'), createdById: f.memberUser.id },
+        }),
+        t.prisma.materialRequirementSpec.create({
+          data: {
+            projectId, requirementId: 'it-p3-forge', revision: 1,
+            materialCategory: 'cement', make: 'x', grade: 'x', normalizedAttributes: '', specFingerprint: 'forged',
+            decisionId: 'IT-P3-REAL', decisionVersion: 999, optionKey: 'DOES-NOT-EXIST',
+          },
+        }),
+      ]),
+    ).rejects.toThrow(/provenance|Foreign key/i);
+  });
+
+  it('R2-4 MATERIAL WITHOUT SPEC REFUSES AT COMMIT', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const activityId = await freshActivity(projectId);
+    await expect(
+      t.prisma.$transaction([
+        t.prisma.activityRequirementRoot.create({ data: { id: 'it-p3-nospec', projectId, createdById: f.memberUser.id } }),
+        t.prisma.activityRequirement.create({
+          data: { projectId, requirementId: 'it-p3-nospec', revision: 1, activityId, requiredQty: 1, baseUom: 'bag', requiredBy: new Date('2026-08-15'), createdById: f.memberUser.id },
+        }),
+      ]),
+    ).rejects.toThrow(/exactly one MaterialRequirementSpec/);
+  });
+
+  it('R2-5 NON-MATERIAL WITH SPEC REFUSES AT COMMIT', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const activityId = await freshActivity(projectId);
+    await expect(
+      t.prisma.$transaction([
+        t.prisma.activityRequirementRoot.create({ data: { id: 'it-p3-labspec', projectId, createdById: f.memberUser.id } }),
+        t.prisma.activityRequirement.create({
+          data: { projectId, requirementId: 'it-p3-labspec', revision: 1, activityId, type: 'labour', requiredQty: 4, baseUom: 'nos', requiredBy: new Date('2026-08-20'), createdById: f.memberUser.id },
+        }),
+        t.prisma.materialRequirementSpec.create({
+          data: { projectId, requirementId: 'it-p3-labspec', revision: 1, materialCategory: 'x', make: 'x', grade: 'x', normalizedAttributes: '', specFingerprint: 'x' },
+        }),
+      ]),
+    ).rejects.toThrow(/no MaterialRequirementSpec/);
+  });
+
+  it('R2-6 SINGLE-SOURCE UOM: the spec table has no unit column to disagree with the revision', async () => {
+    const cols = await t.prisma.$queryRawUnsafe<Array<{ column_name: string }>>(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'MaterialRequirementSpec' AND column_name = 'baseUom'`,
+    );
+    expect(cols).toHaveLength(0); // the duplicated column is GONE — disagreement is unrepresentable
+    await expect(
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "MaterialRequirementSpec" ("id","projectId","requirementId","revision","materialCategory","make","grade","normalizedAttributes","specFingerprint","baseUom") VALUES ('x','p','r',1,'c','m','g','','f','kg')`,
+      ),
+    ).rejects.toThrow(/baseUom/);
+
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const activityId = await freshActivity(projectId);
+    const r = await requirements.create(projectId, { ...CEMENT, activityId }, pmc(projectId));
+    expect(r.spec!.baseUom).toBe(r.baseUom); // the served reference carries the revision's unit
+  });
+
+  it('R2-7/8 BOTH ORDERINGS: removal-before-create refuses; create-before-removal stays historically attributable', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const activityId = await freshActivity(projectId);
+    await t.prisma.membership.create({ data: { projectId, userId: f.strangerUser.id, role: 'engineer', status: 'active' } });
+
+    // create BEFORE removal: the requirement commits against the then-active membership...
+    const r = await requirements.create(projectId, { ...CEMENT, activityId, responsibleId: f.strangerUser.id }, pmc(projectId));
+    expect(r.responsibleId).toBe(f.strangerUser.id);
+    // ...then the member is removed (removals are STATUS FLIPS, exactly what members.service
+    // does) — the requirement stays historically attributable, and the membership row that
+    // carries the attribution cannot be hard-deleted out from under it (composite FK)
+    await t.prisma.membership.update({ where: { projectId_userId: { projectId, userId: f.strangerUser.id } }, data: { status: 'removed' } });
+    const list = await requirements.list(projectId, pmc(projectId));
+    expect(list.requirements.find((x) => x.requirementId === r.requirementId)!.responsibleId).toBe(f.strangerUser.id);
+    await expect(
+      t.prisma.membership.delete({ where: { projectId_userId: { projectId, userId: f.strangerUser.id } } }),
+    ).rejects.toThrow();
+
+    // removal BEFORE create: the readiness-locked in-transaction check refuses the removed member
+    await expect(
+      requirements.create(projectId, { ...CEMENT, activityId, responsibleId: f.strangerUser.id }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('R2-9 IMMUTABLE ROOT AND REGISTER: direct UPDATE and DELETE are DATABASE-rejected', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const activityId = await freshActivity(projectId);
+    const r = await requirements.create(projectId, { ...CEMENT, activityId }, pmc(projectId));
+    await makeApprovedDecision(projectId, 'IT-P3-IMM');
+
+    await expect(t.prisma.activityRequirementRoot.update({ where: { id: r.requirementId }, data: { createdById: f.otherUser.id } })).rejects.toThrow(/append-only/);
+    await expect(t.prisma.activityRequirementRoot.delete({ where: { id: r.requirementId } })).rejects.toThrow(/append-only/);
+    await expect(t.prisma.decisionApprovalRevision.update({ where: { id: 'dar-IT-P3-IMM-v1' }, data: { optionKey: 'opt-b' } })).rejects.toThrow(/append-only/);
+    await expect(t.prisma.decisionApprovalRevision.delete({ where: { id: 'dar-IT-P3-IMM-v1' } })).rejects.toThrow(/append-only/);
   });
 });

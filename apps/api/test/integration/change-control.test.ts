@@ -35,6 +35,9 @@ describe('decision change-control (integration)', () => {
 
   afterAll(async () => {
     const projectId = f.projectA.id;
+    // approvals in this suite wrote immutable register rows (append-only trigger blocks
+    // deleteMany; the spec table FKs the register) — the sanctioned reset is TRUNCATE
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "MaterialRequirementSpec", "DecisionApprovalRevision"');
     await t.prisma.$transaction([
       t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } }),

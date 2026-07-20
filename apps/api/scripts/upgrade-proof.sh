@@ -40,6 +40,10 @@ export PGPASSWORD="${PGPASSWORD:-postgres}"
 DB="${UPGRADE_PROOF_DB:-pmcvitan_upgrade_proof}"
 MIG_DIR="$(cd "$(dirname "$0")/../prisma/migrations" && pwd)"
 PHASE1_FIRST=20260910000000
+# The Phase-3 round-2 provenance migration gets its own stop: a REAL PR-189-era fixture is
+# planted at the pre-round-2 point, the migration is REHEARSED against forged provenance
+# (it must ABORT), the operator repairs, and only then does it apply.
+PHASE3_R2=20261212000000
 
 PSQL_ADMIN="psql -X -q -v ON_ERROR_STOP=1 -d postgres"
 PSQL="psql -X -v ON_ERROR_STOP=1 -d $DB"
@@ -51,12 +55,15 @@ $PSQL_ADMIN -c "CREATE DATABASE $DB;" || exit 1
 # ---- 1. the PRE-Phase-1 ledger ------------------------------------------------
 baseline=0
 phase1_dirs=()
+phase3_r2_dirs=()
 for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   name="$(basename "$d")"
   stamp="${name%%_*}"
   if [ "$stamp" -lt "$PHASE1_FIRST" ] 2>/dev/null || [ "$name" = "0_init" ]; then
     $PSQL -q -f "$d/migration.sql" >/dev/null || { echo "baseline migration failed: $name"; exit 1; }
     baseline=$((baseline + 1))
+  elif [ "$stamp" -ge "$PHASE3_R2" ] 2>/dev/null; then
+    phase3_r2_dirs+=("$d")
   else
     phase1_dirs+=("$d")
   fi
@@ -135,6 +142,94 @@ done
 tail_ok=$($PSQL -tAc "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='GateOverride');")
 [ "$tail_ok" = "t" ] || { echo "FAILED: the Phase 1 ledger did not fully apply (GateOverride missing)"; exit 1; }
 
+# ---- 3b. the PR-189-era fixture at the PRE-round-2 point --------------------------------
+# Real Task-1 rows as PR #189/#190 wrote them: an approved decision with a recorded approval
+# event, a requirement whose spec carries the event-count-derived provenance triple, PLUS a
+# spec whose triple was FORGED (names an approval that never happened). The round-2 migration
+# must backfill the register from the provable history, ABORT on the forged row until an
+# operator explicitly repairs it, and never null anything silently.
+echo ""
+echo "=== planting the PR-189-era fixture (pre-round-2 shapes) ==="
+$PSQL -q <<'SQL' || { echo "PR-189 fixture failed"; exit 1; }
+-- DL-3: approved once, option provable ('Option A' -> key 'a'), approver recorded
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","approvedOption","approvedById","publishedAt","createdAt")
+VALUES ('DL-3','p1','Cement make','Hall','approved','grey','Option A','USER-1',NOW(),'2026-05-01');
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('OPT-31','DL-3','Option A','a','UltraTech OPC 53',0,'grey'),
+       ('OPT-32','DL-3','Option B','b','Ambuja OPC 53',500,'grey');
+INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId","at","payload")
+VALUES ('EV-31','DL-3','approved','Legacy PMC','USER-1','2026-06-01','{"option":"Option A"}');
+
+-- DL-4: approved then reapproved — the CURRENT approval (v2, 'Option B' -> key 'b') is the
+-- provable one; the v1 history is NOT fabricated by the backfill
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","approvedOption","approvedById","publishedAt","createdAt")
+VALUES ('DL-4','p1','Tile grade','Bath','approved','ivory','Option B','USER-1',NOW(),'2026-05-02');
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('OPT-41','DL-4','Option A','a','Vitrified 600',0,'ivory'),
+       ('OPT-42','DL-4','Option B','b','Vitrified 800',900,'ivory');
+INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId","at","payload")
+VALUES ('EV-41','DL-4','approved','Legacy PMC','USER-1','2026-06-02','{"option":"Option A"}'),
+       ('EV-42','DL-4','reapproved','Legacy PMC','USER-1','2026-06-12','{"option":"Option B"}');
+
+-- REQ-1: a PR-189 material requirement whose spec pins DL-3's approval exactly as
+-- approvedRef served it then (version = event count 1, option key 'a')
+INSERT INTO "ActivityRequirementRoot" ("id","projectId","createdById") VALUES ('REQ-1','p1','USER-1');
+INSERT INTO "ActivityRequirement" ("id","projectId","requirementId","revision","activityId","requiredQty","baseUom","requiredBy","createdById")
+VALUES ('AR-1','p1','REQ-1',1,'ACT-1',100,'bag','2026-08-15','USER-1');
+INSERT INTO "MaterialRequirementSpec" ("id","projectId","requirementId","revision","materialCategory","make","grade","normalizedAttributes","baseUom","specFingerprint","decisionId","decisionVersion","optionKey")
+VALUES ('S-1','p1','REQ-1',1,'cement','ultratech','opc 53','grey','bag','fp-legacy-1','DL-3',1,'a');
+
+-- REQ-2: the FORGED row — a provenance triple naming an approval that NEVER happened
+INSERT INTO "ActivityRequirementRoot" ("id","projectId","createdById") VALUES ('REQ-2','p1','USER-1');
+INSERT INTO "ActivityRequirement" ("id","projectId","requirementId","revision","activityId","requiredQty","baseUom","requiredBy","createdById")
+VALUES ('AR-2','p1','REQ-2',1,'ACT-1',50,'bag','2026-09-01','USER-1');
+INSERT INTO "MaterialRequirementSpec" ("id","projectId","requirementId","revision","materialCategory","make","grade","normalizedAttributes","baseUom","specFingerprint","decisionId","decisionVersion","optionKey")
+VALUES ('S-FORGED','p1','REQ-2',1,'cement','forged','opc 43','grey','bag','fp-forged','DL-3',999,'zz');
+SQL
+echo "PR-189 fixture planted (incl. one FORGED provenance triple)"
+
+# ---- 3c. REHEARSAL: the round-2 migration must ABORT on the forged row ------------------
+echo ""
+echo "=== REHEARSAL: applying the round-2 migration over FORGED provenance (must ABORT) ==="
+for d in "${phase3_r2_dirs[@]}"; do
+  name="$(basename "$d")"
+  if psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" > /tmp/upgrade-r2-rehearsal.log 2>&1; then
+    echo "FAILED: $name applied over FORGED provenance instead of aborting"; exit 1
+  fi
+  grep -q "FORGED or UNVERIFIABLE" /tmp/upgrade-r2-rehearsal.log || { echo "FAILED: no forged-provenance diagnostic in the abort output of $name"; cat /tmp/upgrade-r2-rehearsal.log; exit 1; }
+  grep -q "S-FORGED" /tmp/upgrade-r2-rehearsal.log || { echo "FAILED: the abort of $name did not SAMPLE the forged row"; cat /tmp/upgrade-r2-rehearsal.log; exit 1; }
+  echo "rehearsal ok: $name ABORTED and sampled the forged row"
+done
+
+# ---- 3d. EXPLICIT operator repair, then the real round-2 upgrade ------------------------
+# The append-only trigger guards the spec table, so the repair is a deliberate, privileged,
+# in-the-open act: disable the trigger, strip the forged reference to a manual spec
+# (the technical identity is kept — only the false approval claim is removed), re-enable.
+echo ""
+echo "=== operator repair: stripping the FORGED provenance (explicit, trigger disabled/re-enabled) ==="
+$PSQL -q <<'SQL' || { echo "operator repair failed"; exit 1; }
+ALTER TABLE "MaterialRequirementSpec" DISABLE TRIGGER "MaterialRequirementSpec_append_only";
+UPDATE "MaterialRequirementSpec"
+   SET "decisionId" = NULL, "decisionVersion" = NULL, "optionKey" = NULL
+ WHERE "id" = 'S-FORGED';
+ALTER TABLE "MaterialRequirementSpec" ENABLE TRIGGER "MaterialRequirementSpec_append_only";
+SQL
+echo "repaired: S-FORGED is a manual specification again"
+
+for d in "${phase3_r2_dirs[@]}"; do
+  name="$(basename "$d")"
+  echo ""
+  echo "=== applying $name (single transaction) — diagnostics follow ==="
+  if ! psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" 2>&1 \
+      | grep -Ev '^(SET|SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|DO|COMMENT)' ; then
+    true
+  fi
+  applied=$(psql -X -tAc "SELECT 1" -d "$DB")
+  [ "$applied" = "1" ] || { echo "database unreachable after $name"; exit 1; }
+done
+r2_ok=$($PSQL -tAc "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='DecisionApprovalRevision');")
+[ "$r2_ok" = "t" ] || { echo "FAILED: the round-2 migration did not apply after repair (DecisionApprovalRevision missing)"; exit 1; }
+
 # ---- 4. assertions: legacy meaning is preserved -------------------------------
 echo ""
 echo "=== assertions: legacy meaning survived the upgrade ==="
@@ -158,7 +253,7 @@ assert "stale pending request on an approved decision closed as resolved, resolu
   "SELECT status || '|' || COALESCE(resolution,'<null>') FROM \"ChangeRequest\" WHERE id='CR-2';" \
   "resolved|<null>"
 assert "decision statuses untouched (change stays change, approved stays approved)" \
-  "SELECT string_agg(id || '=' || status, ',' ORDER BY id) FROM \"Decision\";" \
+  "SELECT string_agg(id || '=' || status, ',' ORDER BY id) FROM \"Decision\" WHERE id IN ('DL-1','DL-2');" \
   "DL-1=change,DL-2=approved"
 assert "one-open-request invariant is database-enforced (partial unique index)" \
   "SELECT COUNT(*) FROM pg_indexes WHERE indexname='ChangeRequest_one_open_per_decision';" \
@@ -328,6 +423,41 @@ assert "the seal BEFORE INSERT trigger on DomainEvent was installed" \
 assert "the DB is UNSEALED over the legacy fixture (no cutover row until an operator seals)" \
   "SELECT COUNT(*) FROM \"OutboxCutoverState\";" \
   "0"
+
+# Phase 3 Task 1 correction round 2 — the immutable approval register over the PR-189 fixture.
+assert "DL-3's single provable approval backfilled at version 1 with the REAL option key and approver" \
+  "SELECT version || '|' || \"optionKey\" || '|' || \"approvedById\" FROM \"DecisionApprovalRevision\" WHERE \"decisionId\"='DL-3';" \
+  "1|a|USER-1"
+assert "DL-4 backfilled ONLY its current approval (v2, the reapproved option) — v1 history never fabricated" \
+  "SELECT COUNT(*)::text || '|' || MAX(version)::text || '|' || string_agg(\"optionKey\", '') FROM \"DecisionApprovalRevision\" WHERE \"decisionId\"='DL-4';" \
+  "1|2|b"
+assert "DL-2 (approved, NO provable option) was SKIPPED, not fabricated and not nulled — runtime refuses it until operator repair" \
+  "SELECT COUNT(*) FROM \"DecisionApprovalRevision\" WHERE \"decisionId\"='DL-2';" \
+  "0"
+assert "S-1's PR-189 provenance survived VERBATIM (never silently nulled) and now FKs the register" \
+  "SELECT \"decisionId\" || '|' || \"decisionVersion\" || '|' || \"optionKey\" FROM \"MaterialRequirementSpec\" WHERE id='S-1';" \
+  "DL-3|1|a"
+assert "the repaired S-FORGED is a manual spec (all-null provenance) with its technical identity intact" \
+  "SELECT COALESCE(\"decisionId\",'<null>') || '|' || COALESCE(\"decisionVersion\"::text,'<null>') || '|' || COALESCE(\"optionKey\",'<null>') || '|' || \"specFingerprint\" FROM \"MaterialRequirementSpec\" WHERE id='S-FORGED';" \
+  "<null>|<null>|<null>|fp-forged"
+assert "the composite provenance FK onto the register is database-enforced" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname='MaterialRequirementSpec_provenance_fkey' AND contype='f';" \
+  "1"
+assert "the duplicated spec unit column is GONE (single-source UOM on the revision row)" \
+  "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='MaterialRequirementSpec' AND column_name='baseUom';" \
+  "0"
+assert "AR-1 kept its unit, its DATE needed-by and its attributed identities untouched" \
+  "SELECT \"baseUom\" || '|' || \"requiredBy\"::text || '|' || \"createdById\" FROM \"ActivityRequirement\" WHERE id='AR-1';" \
+  "bag|2026-08-15|USER-1"
+assert "the register and the requirement root are database-immutable (append-only triggers installed)" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('DecisionApprovalRevision_append_only','ActivityRequirementRoot_append_only') AND NOT tgisinternal;" \
+  "2"
+assert "the commit-time material/spec pairing constraint triggers are installed on both tables" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('ActivityRequirement_spec_pairing','MaterialRequirementSpec_spec_pairing') AND NOT tgisinternal;" \
+  "2"
+assert "(decisionId, optionKey) is a database-enforced candidate key on DecisionOption" \
+  "SELECT COUNT(*) FROM pg_indexes WHERE indexname='DecisionOption_decisionId_optionKey_key';" \
+  "1"
 
 echo ""
 if [ "$FAIL" = "0" ]; then

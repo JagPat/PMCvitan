@@ -58,6 +58,8 @@ const controllerFiles = ALL_FILES.filter((f) => isSrc(f, '.controller.ts')).sort
 // model whose owner ≠ the writing service's domain is a cross-module edge.
 const MODEL_OWNER: Record<string, string> = {
   decision: 'decisions', decisionOption: 'decisions', decisionEvent: 'decisions', changeRequest: 'decisions',
+  // Task-1 correction round 2 — the immutable approval register, written only by decisions.approve
+  decisionApprovalRevision: 'decisions',
   activity: 'activities', gateOverride: 'activities',
   phase: 'phases',
   inspection: 'inspections', inspectionItem: 'inspections',
