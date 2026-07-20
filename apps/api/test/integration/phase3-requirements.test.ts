@@ -3,6 +3,8 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { DecisionsService } from '../../src/decisions/decisions.service';
+import { MembersService } from '../../src/orgs/members.service';
+import { lockProjectReadiness } from '../../src/common/readiness-lock';
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
@@ -26,8 +28,14 @@ import type { CreateRequirementInput } from '../../src/contracts';
  *   monotonic versions across provable AND unprovable legacy approvals · ambiguous selected
  *   option refuses (no label fallback, no event-count identity) · forged provenance triples
  *   unrepresentable (composite register FK) · commit-time material↔spec pairing both ways ·
- *   single-source UOM (the spec table has no unit column) · both-ordering removal-vs-create
- *   accountability · database-immutable roots and register rows.
+ *   single-source UOM (the spec table has no unit column) · database-immutable roots and
+ *   register rows.
+ *
+ * ROUND 3 (finding 2 of the #191 re-review): the removal-vs-create probes are DETERMINISTIC
+ *   barrier-controlled RACES of the two real commands — the test holds the project readiness
+ *   advisory lock, parks both commands in its wait queue (verified via pg_stat_activity) in
+ *   the chosen order, and releases; PostgreSQL grants in queue order, proving lock
+ *   serialization in BOTH commit orderings.
  */
 
 describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', () => {
@@ -518,29 +526,101 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     expect(r.spec!.baseUom).toBe(r.baseUom); // the served reference carries the revision's unit
   });
 
-  it('R2-7/8 BOTH ORDERINGS: removal-before-create refuses; create-before-removal stays historically attributable', async () => {
+  /**
+   * Round-3 finding 2 — a DETERMINISTIC, barrier-controlled RACE of the two REAL commands.
+   * Both `members.remove` and `requirements.create` take `lockProjectReadiness` as the first
+   * statement of their transactions, so the readiness advisory lock is the serialization
+   * point. The barrier: the test HOLDS that advisory lock in its own transaction, enqueues
+   * the two real commands in the chosen order, and confirms EACH is actually parked in the
+   * advisory-lock wait queue (pg_stat_activity: wait_event 'advisory' on the
+   * pg_advisory_xact_lock statement) before enqueuing the next / releasing. PostgreSQL
+   * grants lock waiters in queue order, so the commit ordering is exactly the enqueue
+   * ordering — deterministically, in both directions.
+   */
+  const readinessWaiters = async (): Promise<number> => {
+    const rows = await t.prisma.$queryRaw<Array<{ c: number }>>`
+      SELECT COUNT(*)::int AS c FROM pg_stat_activity
+      WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'
+        AND query LIKE '%pg_advisory_xact_lock%'`;
+    return rows[0]!.c;
+  };
+  const waitForReadinessWaiters = async (n: number): Promise<void> => {
+    for (let i = 0; i < 400; i++) {
+      if ((await readinessWaiters()) >= n) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`barrier timeout: expected ${n} readiness-lock waiter(s)`);
+  };
+  const holdReadinessLock = (projectId: string) => {
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const held = new Promise<void>((r) => (acquired = r));
+    const done = t.prisma.$transaction(
+      async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        acquired();
+        await gate;
+      },
+      { timeout: 20_000, maxWait: 10_000 },
+    );
+    return { held, release, done };
+  };
+
+  it('R3 RACE A: real member-removal serializes BEFORE requirement-create — the create REFUSES', async () => {
     const projectId = await freshProject();
     await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
     const activityId = await freshActivity(projectId);
     await t.prisma.membership.create({ data: { projectId, userId: f.strangerUser.id, role: 'engineer', status: 'active' } });
+    const members = t.app.get(MembersService);
 
-    // create BEFORE removal: the requirement commits against the then-active membership...
-    const r = await requirements.create(projectId, { ...CEMENT, activityId, responsibleId: f.strangerUser.id }, pmc(projectId));
-    expect(r.responsibleId).toBe(f.strangerUser.id);
-    // ...then the member is removed (removals are STATUS FLIPS, exactly what members.service
-    // does) — the requirement stays historically attributable, and the membership row that
-    // carries the attribution cannot be hard-deleted out from under it (composite FK)
-    await t.prisma.membership.update({ where: { projectId_userId: { projectId, userId: f.strangerUser.id } }, data: { status: 'removed' } });
+    const barrier = holdReadinessLock(projectId);
+    await barrier.held;
+    // enqueue the REAL removal first — confirm it is parked on the advisory lock...
+    const removal = members.remove(projectId, pmc(projectId), f.strangerUser.id);
+    await waitForReadinessWaiters(1);
+    // ...then the REAL create — confirm BOTH are parked, then release: removal commits first
+    const creation = requirements.create(projectId, { ...CEMENT, activityId, responsibleId: f.strangerUser.id }, pmc(projectId));
+    await waitForReadinessWaiters(2);
+    barrier.release();
+    await barrier.done;
+
+    await expect(creation).rejects.toMatchObject({ status: 400 });
+    await removal;
+    // the losing create committed NOTHING
+    expect(await t.prisma.activityRequirement.count({ where: { projectId } })).toBe(0);
+    expect((await t.prisma.membership.findUniqueOrThrow({ where: { projectId_userId: { projectId, userId: f.strangerUser.id } } })).status).toBe('removed');
+  });
+
+  it('R3 RACE B: requirement-create serializes BEFORE member-removal — the requirement stays historically attributable', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const activityId = await freshActivity(projectId);
+    await t.prisma.membership.create({ data: { projectId, userId: f.strangerUser.id, role: 'engineer', status: 'active' } });
+    const members = t.app.get(MembersService);
+
+    const barrier = holdReadinessLock(projectId);
+    await barrier.held;
+    // enqueue the REAL create first, then the REAL removal — the create commits first
+    const creation = requirements.create(projectId, { ...CEMENT, activityId, responsibleId: f.strangerUser.id }, pmc(projectId));
+    await waitForReadinessWaiters(1);
+    const removal = members.remove(projectId, pmc(projectId), f.strangerUser.id);
+    await waitForReadinessWaiters(2);
+    barrier.release();
+    await barrier.done;
+
+    const created = await creation;
+    await removal;
+    expect(created.responsibleId).toBe(f.strangerUser.id);
+    // the membership was removed AFTER the commit (a status flip, exactly what
+    // members.remove does) — the requirement stays historically attributable, and the
+    // membership row carrying the attribution cannot be hard-deleted (composite FK)
+    expect((await t.prisma.membership.findUniqueOrThrow({ where: { projectId_userId: { projectId, userId: f.strangerUser.id } } })).status).toBe('removed');
     const list = await requirements.list(projectId, pmc(projectId));
-    expect(list.requirements.find((x) => x.requirementId === r.requirementId)!.responsibleId).toBe(f.strangerUser.id);
+    expect(list.requirements.find((x) => x.requirementId === created.requirementId)!.responsibleId).toBe(f.strangerUser.id);
     await expect(
       t.prisma.membership.delete({ where: { projectId_userId: { projectId, userId: f.strangerUser.id } } }),
     ).rejects.toThrow();
-
-    // removal BEFORE create: the readiness-locked in-transaction check refuses the removed member
-    await expect(
-      requirements.create(projectId, { ...CEMENT, activityId, responsibleId: f.strangerUser.id }, pmc(projectId)),
-    ).rejects.toMatchObject({ status: 400 });
   });
 
   it('R2-9 IMMUTABLE ROOT AND REGISTER: direct UPDATE and DELETE are DATABASE-rejected', async () => {
