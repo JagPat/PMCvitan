@@ -33,6 +33,10 @@ export const DECISION_QUERIES = [
   'decisions.resolveRef',
   'decisions.countByNodeIds',
   'decisions.countPending',
+  // Phase 3 Task 1 correction — the AUTHORITATIVE approval reference a requirement's material
+  // spec pins: server-resolved approved/reapproved version + the selected option; pending or
+  // reopened decisions refuse (caller-authored provenance is never accepted).
+  'decisions.approvedRef',
 ] as const;
 export type DecisionQuery = (typeof DECISION_QUERIES)[number];
 

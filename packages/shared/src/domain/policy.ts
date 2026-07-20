@@ -28,6 +28,9 @@ export const ROLE_POLICY = {
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // Phase 3 Task 1 — the ActivityRequirement demand contract is authored by the PMC (plan §H matrix)
   'requirement.manage': ['pmc'],
+  // the full requirement register read (§H): pmc + engineer; the client sees only the readiness
+  // summary surfaces (a later-task concern), never the raw register
+  'requirement.read': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

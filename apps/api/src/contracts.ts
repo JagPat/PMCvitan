@@ -648,17 +648,17 @@ const requirementSpecShape = {
   baseUom: z.string().trim().min(1),
   qty: z.string().trim().min(1),
   requiredBy: isoCivilDateSchema,
+  // provenance is SERVER-resolved from the referenced decision's approval record (correction
+  // finding 1): the caller may name a decision, never author its version or option
   decisionId: z.string().trim().min(1).nullish(),
-  decisionVersion: z.number().int().min(1).nullish(),
-  optionKey: z.string().trim().min(1).nullish(),
   responsibleId: z.string().trim().min(1).nullish(),
   criticality: z.enum(['normal', 'critical']).default('normal'),
   tolerance: z.string().trim().min(1).nullish(),
 };
-export const createRequirementSchema = z.object(requirementSpecShape);
+export const createRequirementSchema = z.object(requirementSpecShape).strict();
 export type CreateRequirementInput = z.infer<typeof createRequirementSchema>;
 // a revision restates the full specification (append-only; CAS on the expected revision)
-export const reviseRequirementSchema = z.object({ ...requirementSpecShape, expectedRevision: z.number().int().min(1) });
+export const reviseRequirementSchema = z.object({ ...requirementSpecShape, expectedRevision: z.number().int().min(1) }).strict();
 export type ReviseRequirementInput = z.infer<typeof reviseRequirementSchema>;
-export const cancelRequirementSchema = z.object({ expectedRevision: z.number().int().min(1), reason: z.string().trim().min(1) });
+export const cancelRequirementSchema = z.object({ expectedRevision: z.number().int().min(1), reason: z.string().trim().min(1) }).strict();
 export type CancelRequirementInput = z.infer<typeof cancelRequirementSchema>;
