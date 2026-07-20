@@ -19,9 +19,14 @@ requirement-create races in both orderings). **The Task-1 narrow review returned
 SIGNAL: PHASE 3 TASK 1 IS CLEARED** (lineage `7d3b29d → 27e461a → 4cc759a`; no P0/P1/P2
 findings remain). **Task 2 (procurement: §H vendor tenancy + matrix, §F transitions through
 comparison approval, quote normalization, the §F bound-1 requirement→requisition allocation
-chain under concurrency) is IN IMPLEMENTATION on a held PR** from `main` @ `4cc759a`; the
-next review stop follows Task 3. Three non-blocking guardrails from the GO are recorded in
-§A for Tasks 5–6.** Canonical spec:
+chain under concurrency) is MERGED** (PR #193 @ `main` `697aa18`). **Task 3 (purchase
+orders + delivery commitments: §F PO versioning with PostgreSQL-frozen line snapshots incl.
+UOM conversion + `committedAmountBase`, amendment/cancel/close-short, append-only promise
+history, `po.*`/`delivery.*` events, the §F bound-2 requisition→PO allocation chain under
+concurrency, `approvedOverage` only at issuance/amendment with reason) is DELIVERED on a
+held PR from `main` @ `697aa18` — **REVIEW STOP: Tasks 1–3 are complete; independent review
+of Task 2 + Task 3 is requested before Task 4 (inventory)**. Three non-blocking guardrails
+from the GO are recorded in §A for Tasks 5–6.** Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
 merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:

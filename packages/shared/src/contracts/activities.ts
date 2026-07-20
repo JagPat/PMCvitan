@@ -51,6 +51,7 @@ export const ACTIVITIES_QUERIES = [
   // Phase 3 Task 2 — the same-transaction allocation read: procurement locks a requirement
   // revision FOR UPDATE and reads its required qty/UOM for the §F bound-1 guard.
   'requirements.revisionForAllocation',
+  'requirements.revisionSnapshotForOrder',
 ] as const;
 export type ActivitiesQuery = (typeof ACTIVITIES_QUERIES)[number];
 

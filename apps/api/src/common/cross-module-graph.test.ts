@@ -68,9 +68,11 @@ const MODEL_OWNER: Record<string, string> = {
   // Phase 3 Task 1 — the demand contract is activities-module-owned; its classifier domain is
   // 'requirements' (the requirements.service pillar entry writes ONLY this model)
   activityRequirement: 'requirements', activityRequirementRoot: 'requirements', materialRequirementSpec: 'requirements',
-  // Phase 3 Task 2 — the procurement pillar (§§F/H)
+  // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
   rfq: 'procurement', vendorQuote: 'procurement', vendorQuoteLine: 'procurement', quoteComparison: 'procurement',
+  purchaseOrder: 'procurement', purchaseOrderVersion: 'procurement', purchaseOrderLine: 'procurement',
+  deliveryCommitment: 'procurement', deliveryPromise: 'procurement',
   projectNode: 'nodes',
   media: 'media',
   org: 'orgs', orgMembership: 'orgs', membership: 'orgs', project: 'orgs', projectCompany: 'orgs',
@@ -117,6 +119,9 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // (submit/approve/comparison-approve dispatch their committed events post-commit).
   'procurement/vendors.service.ts': { domain: 'procurement', foreign: {}, dispatch: 0 },
   'procurement/procurement.service.ts': { domain: 'procurement', foreign: {}, dispatch: 3 },
+  // Phase 3 Task 3 — versioned POs + delivery commitments. issue/amend/cancel and the
+  // commit/revise/default delivery commands dispatch their committed events post-commit (6).
+  'procurement/purchase-orders.service.ts': { domain: 'procurement', foreign: {}, dispatch: 6 },
   // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
   'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 3 },
   'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, dispatch: 5 },
@@ -250,6 +255,16 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('rfqs/:rfqId/quotes')",
     "Post('rfqs/:rfqId/comparison')",
     "Post('rfqs/:rfqId/comparison/approve')",
+    // Task 3 — versioned POs + delivery commitments (§F)
+    "Post('pos')",
+    "Post('pos/:poId/issue')",
+    "Post('pos/:poId/amend')",
+    "Post('pos/:poId/cancel')",
+    "Post('pos/:poId/close-short')",
+    "Post('deliveries')",
+    "Post('deliveries/:commitmentId/revise')",
+    "Post('deliveries/:commitmentId/fulfill')",
+    "Post('deliveries/:commitmentId/default')",
   ],
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')"],
 };
@@ -316,9 +331,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('30 external-effect dispatch sites total across the pillar services (unchanged from the pre-PR-C emission count)', () => {
+    it('42 external-effect dispatch sites total across the pillar services (36 + the six Task-3 po/delivery emitters)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(36);
+      expect(total).toBe(42);
     });
   });
 
@@ -329,12 +344,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('67 mutating routes total (the documented command inventory §4)', () => {
+    it('92 mutating routes total (the documented command inventory §4)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(83);
+      expect(total).toBe(92);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(83);
+      expect(live).toBe(92);
     });
   });
 
@@ -348,13 +363,16 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
   describe('read + sender coupling (SnapshotService + ExternalEffectDispatcher injected in every emitter)', () => {
     const emitters = Object.entries(SERVICES).filter(([, s]) => s.dispatch > 0).map(([f]) => f);
-    it('all ten dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning eight also read through SnapshotService', () => {
-      expect(emitters.length).toBe(10);
-      for (const file of emitters) {
-        // Phase 3 — requirements (Task 1) and procurement (Task 2) return MODULE-OWNED dtos
+    it('all eleven dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning eight also read through SnapshotService', () => {
+      expect(emitters.length).toBe(11);
+      const moduleReadServices = [
+        // Phase 3 — requirements (Task 1) and procurement (Tasks 2-3) return MODULE-OWNED dtos
         // (the Task-10 module-read pattern), never the snapshot, so they carry no
         // SnapshotService dependency by design.
-        if (file !== 'activities/requirements.service.ts' && file !== 'procurement/procurement.service.ts') {
+        'activities/requirements.service.ts', 'procurement/procurement.service.ts', 'procurement/purchase-orders.service.ts',
+      ];
+      for (const file of emitters) {
+        if (!moduleReadServices.includes(file)) {
           expect(read(file), `${file} no longer references SnapshotService`).toContain('SnapshotService');
         }
         // PR C: the in-request RealtimeGateway is replaced by the single sender in every emitter.

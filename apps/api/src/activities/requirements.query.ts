@@ -2,18 +2,37 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import type { Prisma } from '@prisma/client';
 
 /**
- * Phase 3 Task 2 — the requirements ALLOCATION read (`requirements.revisionForAllocation`).
+ * Phase 3 Tasks 2–3 — the requirements reads procurement is allowed against requirement
+ * persistence (plan §G edge `procurement → activities`):
  *
- * The one same-transaction query procurement is allowed against requirement persistence
- * (plan §G edge `procurement → activities`): it validates that a pinned
- * `(requirementId, revision)` exists in THIS project, is the requirement's CURRENT head,
- * is an open material revision — and LOCKS the revision row FOR UPDATE so the §F bound-1
- * guard (`Σ requisition-line allocations ≤ required qty`) serializes racing allocators on
- * the row itself. Locking is safe against the append-only trigger (a row lock fires no
- * UPDATE/DELETE trigger). Must be called INSIDE the allocating command's transaction.
+ * `requirements.revisionForAllocation` validates that a pinned `(requirementId, revision)`
+ * exists in THIS project, is the requirement's CURRENT head, is an open revision — and LOCKS
+ * the revision row FOR UPDATE so the §F bound-1 guard (`Σ requisition-line allocations ≤
+ * required qty`) serializes racing allocators on the row itself. Locking is safe against the
+ * append-only trigger (a row lock fires no UPDATE/DELETE trigger). Must be called INSIDE the
+ * allocating command's transaction.
+ *
+ * `requirements.revisionSnapshotForOrder` (Task 3) reads the identity facts a PO line
+ * FREEZES (base UOM + material spec fingerprint) for a PINNED revision — deliberately
+ * WITHOUT the head-currency check: a purchase order executes its requisition line's pinned
+ * revision even after a later revision appended (§F disposition governs re-pointing).
  */
 @Injectable()
 export class RequirementsQueryService {
+  async revisionSnapshotForOrder(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    requirementId: string,
+    revision: number,
+  ): Promise<{ baseUom: string; type: string; specFingerprint: string | null }> {
+    const row = await tx.activityRequirement.findUnique({
+      where: { projectId_requirementId_revision: { projectId, requirementId, revision } },
+      select: { baseUom: true, type: true, materialSpec: { select: { specFingerprint: true } } },
+    });
+    if (!row) throw new NotFoundException('Requirement revision not found in this project');
+    return { baseUom: row.baseUom, type: row.type, specFingerprint: row.materialSpec?.specFingerprint ?? null };
+  }
+
   async revisionForAllocation(
     tx: Prisma.TransactionClient,
     projectId: string,

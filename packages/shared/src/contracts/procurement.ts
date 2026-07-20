@@ -1,11 +1,11 @@
 /**
  * Phase 3 Task 2 — the PROCUREMENT module contract (shared, runtime-importable on both sides).
  *
- * Procurement owns vendors, project-vendor bindings, requisitions, RFQs, vendor quotes and
- * quote comparisons (§G ownership; POs + delivery commitments arrive in Task 3). It is reached
- * ONLY through this contract (commands + queries) and the published `requisition.*` /
- * `comparison.*` events. Every project surface is CAPABILITY-GATED (§D): a non-pilot project
- * gets 404 — the surface does not exist for it.
+ * Procurement owns vendors, project-vendor bindings, requisitions, RFQs, vendor quotes, quote
+ * comparisons, purchase orders and delivery commitments (§G ownership). It is reached ONLY
+ * through this contract (commands + queries) and the published `requisition.*` /
+ * `comparison.*` / `po.*` / `delivery.*` events. Every project surface is CAPABILITY-GATED
+ * (§D): a non-pilot project gets 404 — the surface does not exist for it.
  *
  * TENANCY (§H): `Vendor` is org-scoped — the ONE exception to the every-table-carries-projectId
  * rule, because a vendor is an organization-level party. Project reach is the explicit additive
@@ -15,6 +15,18 @@
  * ALLOCATION (§F bound 1): a requisition line pins `(requirementId, revision)` and allocates
  * base-UOM quantity against that revision's required qty — Σ active line allocations may never
  * exceed it, enforced in-transaction with the revision row locked FOR UPDATE.
+ *
+ * ALLOCATION (§F bound 2, Task 3): a PO line allocates against ONE requisition line —
+ * Σ live PO-line allocations may never exceed that line's qty, enforced in-transaction with
+ * the requisition line locked FOR UPDATE. PO versions in 'amended'/'cancelled' release their
+ * allocation; a 'closed_short' version keeps only its received portion. A line fully
+ * allocated to live POs is marked 'ordered' (and reverts to 'open' when allocation frees).
+ *
+ * PO VERSIONING (§F, Task 3): issuance freezes each line's commercial snapshot (spec ref,
+ * make, UOM conversion, rate, taxes, landed amount, committedAmountBase) at PostgreSQL;
+ * amendment issues a NEW version retaining the prior snapshot verbatim. approvedOverage
+ * (§F bound-3 headroom) is set ONLY at issuance/amendment, with a reason. Delivery
+ * commitments append dated promises — full history, nothing overwritten.
  */
 
 /** The procurement module's state-changing commands (must equal the manifest `commands`). */
@@ -32,6 +44,15 @@ export const PROCUREMENT_COMMANDS = [
   'quotes.record',
   'comparisons.create',
   'comparisons.approve',
+  'pos.create',
+  'pos.issue',
+  'pos.amend',
+  'pos.cancel',
+  'pos.closeShort',
+  'deliveries.commit',
+  'deliveries.revise',
+  'deliveries.fulfill',
+  'deliveries.default',
 ] as const;
 export type ProcurementCommand = (typeof PROCUREMENT_COMMANDS)[number];
 
@@ -41,6 +62,8 @@ export const PROCUREMENT_QUERIES = [
   'vendors.listForProject',
   'requisitions.list',
   'rfqs.get',
+  'pos.list',
+  'pos.get',
 ] as const;
 export type ProcurementQuery = (typeof PROCUREMENT_QUERIES)[number];
 
@@ -71,7 +94,7 @@ export interface RequisitionLineDto {
   readonly requirementId: string;
   readonly revision: number;
   readonly qty: string; // decimal string, numeric(18,6)-exact, in the revision's base UOM
-  readonly status: string; // 'open' | 'cancelled'
+  readonly status: string; // 'open' | 'ordered' | 'cancelled'
 }
 
 export interface RequisitionDto {
@@ -149,4 +172,93 @@ export interface ComparisonEventPayload {
   readonly selectedVendorId: string;
   readonly authority: string; // the approving user's id — real attribution
   readonly reason: string;
+}
+
+/** One dated promise in a delivery commitment's append-only history. */
+export interface DeliveryPromiseDto {
+  readonly seq: number;
+  readonly promisedDate: string; // ISO civil date
+  readonly reason: string | null; // null ONLY on the initial promise
+  readonly recordedAt: string;
+  readonly recordedById: string;
+}
+
+export interface DeliveryCommitmentDto {
+  readonly id: string;
+  readonly poLineId: string;
+  readonly status: string; // 'committed' | 'revised' | 'fulfilled' | 'defaulted'
+  readonly createdAt: string;
+  readonly createdById: string;
+  readonly promises: readonly DeliveryPromiseDto[]; // full history, seq-ordered
+}
+
+/** One PO line's FROZEN commercial snapshot (§F — immutable at PostgreSQL after creation). */
+export interface PurchaseOrderLineDto {
+  readonly id: string;
+  readonly requisitionLineId: string;
+  readonly requirementId: string;
+  readonly revision: number;
+  readonly specFingerprint: string | null;
+  readonly quotedMake: string | null;
+  readonly uom: string; // the revision's base UOM
+  readonly uomConversion: string; // vendor pack unit → base UOM factor, frozen
+  readonly qty: string; // ordered qty in base UOM
+  readonly rate: string;
+  readonly taxAmount: string;
+  readonly freightAmount: string;
+  readonly landedAmount: string;
+  readonly committedAmountBase: string; // rate×qty×uomConversion + tax + freight — the Phase-5 commitment fact
+  readonly approvedOverage: string; // §F bound-3 headroom — set ONLY at issuance/amendment with a reason
+  readonly overageReason: string | null;
+  readonly receivedQty: string; // procurement-owned received-progress fact (Task-4 receipts)
+  readonly commitments: readonly DeliveryCommitmentDto[];
+}
+
+/** One immutable-snapshot PO version (§F machine states live here). */
+export interface PurchaseOrderVersionDto {
+  readonly id: string;
+  readonly version: number;
+  readonly status: string; // 'draft' | 'issued' | 'partially_received' | 'completed' | 'amended' | 'cancelled' | 'closed_short'
+  readonly supersedesVersion: number | null; // reissue = new version referencing the amended one
+  readonly issuedById: string | null;
+  readonly issuedAt: string | null;
+  readonly amendReason: string | null;
+  readonly cancelReason: string | null;
+  readonly closeShortReason: string | null;
+  readonly createdAt: string;
+  readonly createdById: string;
+  readonly lines: readonly PurchaseOrderLineDto[];
+}
+
+export interface PurchaseOrderDto {
+  readonly id: string;
+  readonly vendorId: string;
+  readonly requisitionId: string;
+  readonly comparisonId: string; // provenance: the approved comparison this PO executes
+  readonly createdAt: string;
+  readonly createdById: string;
+  readonly versions: readonly PurchaseOrderVersionDto[]; // version-ordered, full history
+}
+
+/** The `po.issued|amended|cancelled` event payload (§G catalog: poId, version, frozen refs). */
+export interface PoEventPayload {
+  readonly poId: string;
+  readonly version: number;
+  readonly lines: readonly {
+    readonly poLineId: string;
+    readonly requisitionLineId: string;
+    readonly requirementId: string;
+    readonly revision: number;
+    readonly qty: string;
+    readonly committedAmountBase: string;
+    readonly specFingerprint: string | null;
+  }[];
+}
+
+/** The `delivery.committed|revised|defaulted` event payload (promise history tail, §G). */
+export interface DeliveryEventPayload {
+  readonly commitmentId: string;
+  readonly poLineId: string;
+  readonly promisedDate: string; // the LATEST promise (drives §A at-risk)
+  readonly history: readonly { readonly seq: number; readonly promisedDate: string; readonly reason: string | null }[];
 }
