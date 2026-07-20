@@ -1,10 +1,9 @@
 # Phase 3 — Material Readiness Pilot
 
-**Status: PLANNING — corrected per the round-1 architecture review (CONDITIONAL NO-GO, eight
-findings; §§D/H cleared in round 2) and the round-2 mechanical review (BLOCKED NARROWLY, five
-internal inconsistencies, resolved below). Implementation remains BLOCKED until the mechanical
-verification of the five round-2 corrections clears; a clean result immediately grants GO for
-Task 1.** Canonical spec:
+**Status: CLEARED — the final mechanical verification returned GREEN SIGNAL: PHASE 3 PLAN
+CLEARED (all five round-2 corrections pass; lineage `6fa019b → 9a84442 → 88a29fe`, all CI
+green) with explicit GO for Task 1. Task 1 is IN IMPLEMENTATION (held PR; review stop before
+Task 2). Three non-blocking guardrails from the GO are recorded in §A for Tasks 5–6.** Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
 merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:
@@ -153,8 +152,16 @@ An activity with zero material requirements maps to `na`; the legacy mismatch bl
 `fail` row evaluated BEFORE coverage (first-match). Race probes (ALL in Task 6 — after Task 6
 connects canonical coverage to `start()`; live PG, both orderings under concurrency):
 reservation release vs `start`; audited stock adjustment vs `start`; requirement revision vs
-`start`; substitution revocation vs `start`; issue vs reservation release — each proves either
-order serializes under the lock and the losing transaction observes the winner's state.
+`start`; substitution revocation vs `start`; **issue vs `activities.start`** (the Task-1 GO
+corrected this pair — not issue vs reservation-release) — each proves either order serializes
+under the lock and the losing transaction observes the winner's state.
+
+**Guardrails recorded at the Task-1 GO (non-blocking; binding on Tasks 5–6):**
+- Material already ISSUED to an activity (`issuedToActivity`, §C) COUNTS AS COVERAGE for that
+  activity — issuing reserved stock must never make the activity artificially unready.
+- Readiness recomputation reacts to substitution approval AND revocation, and to BOTH mismatch
+  flagging and mismatch resolution.
+- The Task-6 concurrency probe pair is `issue vs activities.start`.
 
 ### §B. Canonical material identity + units (finding 2)
 
