@@ -1,10 +1,15 @@
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma.service';
 import { ProjectionRebuilder } from './rebuilder.service';
+import { DECISIONS_PROJECTION, computeDecisionRows, storedDecisionRows } from '../../decisions/decisions.projection';
 import { DRAWINGS_PROJECTION } from '../../drawings/drawings.projection';
 import { DAILY_LOG_PROJECTION } from '../../daily-log/daily-log.projection';
+import { INSPECTIONS_PROJECTION } from '../../inspections/inspections.projection';
+import { ACTIVITIES_PROJECTION } from '../../activities/activities.projection';
 import { computeDrawingsBase } from '../../drawings/drawings-serialize';
 import { computeDailyLogSlice } from '../../daily-log/daily-log-serialize';
+import { computeInspectionsBase } from '../../inspections/inspections-serialize';
+import { computeActivitiesBase } from '../../activities/activities-serialize';
 
 /**
  * Phase 2 Task 10 finalization — the OPERATOR projection-rebuild operations, extracted from the CLI
@@ -26,6 +31,13 @@ import { computeDailyLogSlice } from '../../daily-log/daily-log-serialize';
  * own outcome row (`projection.rebuild.result`) — success with the resulting generation + state, or
  * the failure message — so an interrupted or partially-failed run leaves a complete, ordered audit
  * trail of exactly which projections were repaired.
+ *
+ * THE DEFAULT RUN COVERS ALL FIVE PRODUCTION PROJECTIONS (final-review P1 correction). A production
+ * upgrade carries legacy generations for EVERY consumer — most dangerously a `decisions.inbox`
+ * generation the pre-#183 per-event consumer left holding a non-empty SUBSET of the canonical
+ * register, which the merged read path serves as authoritative until the next decision event. An
+ * operator rebuild that only knew two consumers would report `ok: true` while leaving that defect
+ * in place, so `run()` with no `--consumer` now rebuilds {@link REBUILDABLE_PROJECTIONS} in full.
  */
 
 /** How a (project, consumer) projection presents to the read path at diagnosis time. */
@@ -33,8 +45,8 @@ export type DiagnosisState =
   | 'none' // no active generation — never initialised; reads serve live
   | 'blocked' // cursor dead-lettered on an earlier position — operator attention; reads serve live
   | 'lagging' // checkpoint behind the committed stream head — ordinary lag; reads serve live
-  | 'current-match' // servable AND the stored base equals the canonical recompute
-  | 'corrupt'; // servable BUT the stored base differs from canonical — the defect class
+  | 'current-match' // servable AND the stored comparable equals the canonical recompute
+  | 'corrupt'; // servable BUT the stored comparable differs from canonical — the defect class
 
 export interface ConsumerDiagnosis {
   state: DiagnosisState;
@@ -71,21 +83,52 @@ export interface RebuildRunReport {
 }
 
 interface Rebuildable {
-  row(tx: Prisma.TransactionClient, generationId: string, projectId: string): Promise<{ dto: Prisma.JsonValue } | null>;
-  compute(tx: Prisma.TransactionClient, projectId: string): Promise<unknown>;
+  /** The generation's STORED comparable — the single composite dto (or null), or the complete
+   *  normalized row set for a per-entity projection. */
+  stored(tx: Prisma.TransactionClient, generationId: string, projectId: string): Promise<unknown>;
+  /** The comparable recomputed from CANONICAL state through the owning module's own serializer. */
+  canonical(tx: Prisma.TransactionClient, projectId: string): Promise<unknown>;
 }
 
-/** The projections this operator command can rebuild, each judged by its module's OWN serializer. */
+/**
+ * The projections this operator command can rebuild — ALL FIVE production projection consumers,
+ * each judged by its module's OWN serializer. The registry is EXPLICIT (no reflection over the
+ * consumer registry): adding a projection consumer without teaching the operator command how to
+ * diagnose it must be a visible, reviewed change here, never a silent default.
+ *
+ * Four modules store a per-PROJECT composite row, so their comparable is the single stored dto vs
+ * the module's `compute*Base`/slice recompute. `decisions.inbox` stores a per-DECISION row set, so
+ * its comparable is the COMPLETE normalized row set (decisionId, status, publishedAt as ISO,
+ * authorId, dto — ordered by decisionId) on both sides — a legacy generation holding a non-empty
+ * SUBSET of the canonical register (the pre-#183 per-event consumer's upgrade residue) therefore
+ * diagnoses as 'corrupt' and is repaired, where an emptiness-only probe would call it healthy.
+ * Both decisions readers live in the decisions module (`decisions.projection.ts`), so every read
+ * of decision persistence stays inside the owning module.
+ */
 export const REBUILDABLE_PROJECTIONS: Record<string, Rebuildable> = {
-  [DRAWINGS_PROJECTION]: {
-    row: (tx, generationId, projectId) =>
-      tx.drawingsProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }),
-    compute: (tx, projectId) => computeDrawingsBase(tx, projectId),
+  [DECISIONS_PROJECTION]: {
+    stored: (tx, generationId) => storedDecisionRows(tx, generationId),
+    canonical: (tx, projectId) => computeDecisionRows(tx, projectId),
   },
   [DAILY_LOG_PROJECTION]: {
-    row: (tx, generationId, projectId) =>
-      tx.dailyLogProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }),
-    compute: (tx, projectId) => computeDailyLogSlice(tx, projectId),
+    stored: async (tx, generationId, projectId) =>
+      (await tx.dailyLogProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
+    canonical: (tx, projectId) => computeDailyLogSlice(tx, projectId),
+  },
+  [DRAWINGS_PROJECTION]: {
+    stored: async (tx, generationId, projectId) =>
+      (await tx.drawingsProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
+    canonical: (tx, projectId) => computeDrawingsBase(tx, projectId),
+  },
+  [INSPECTIONS_PROJECTION]: {
+    stored: async (tx, generationId, projectId) =>
+      (await tx.inspectionsProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
+    canonical: (tx, projectId) => computeInspectionsBase(tx, projectId),
+  },
+  [ACTIVITIES_PROJECTION]: {
+    stored: async (tx, generationId, projectId) =>
+      (await tx.activitiesProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
+    canonical: (tx, projectId) => computeActivitiesBase(tx, projectId),
   },
 };
 
@@ -134,9 +177,9 @@ export class ProjectionRebuildOperations {
       // (head -1) is trivially caught up; a null checkpoint with events pending is lag.
       const applied = gen.appliedPosition ?? -1n;
       if (applied < head) return { state: 'lagging' as const, generation: gen.generation, ...positions };
-      const stored = await spec.row(tx, gen.id, projectId);
-      const expected = await spec.compute(tx, projectId);
-      const match = stableJson(stored?.dto ?? null) === stableJson(expected);
+      const stored = await spec.stored(tx, gen.id, projectId);
+      const expected = await spec.canonical(tx, projectId);
+      const match = stableJson(stored) === stableJson(expected);
       return { state: match ? ('current-match' as const) : ('corrupt' as const), generation: gen.generation, ...positions };
     });
   }

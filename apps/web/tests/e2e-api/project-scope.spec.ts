@@ -72,8 +72,13 @@ test('populated A to empty B is atomic', async ({ page }) => {
     await new Promise((r) => setTimeout(r, 700));
     await route.continue();
   });
-  await page.getByTestId('project-switcher').click();
-  await page.getByRole('button', { name: /Test Empty Site/ }).click();
+  // the same one-unit open-and-pick retry as above (a re-render can close the dropdown between
+  // the two one-shot clicks and swallow the pick)
+  const optionB = page.getByRole('button', { name: /Test Empty Site/ });
+  await expect(async () => {
+    if (!(await optionB.isVisible())) await page.getByTestId('project-switcher').click();
+    await optionB.click({ timeout: 2000 });
+  }).toPass();
 
   // the loading boundary appears immediately; no A decision is visible during the gap
   await expect(page.getByTestId('project-switching')).toBeVisible();
@@ -116,8 +121,11 @@ test('history preserves scope and screen', async ({ page }) => {
   await page.getByRole('button', { name: 'Dashboard' }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${A}/dashboard`));
 
-  await page.getByTestId('project-switcher').click();
-  await page.getByRole('button', { name: /Test Empty Site/ }).click();
+  const optionB2 = page.getByRole('button', { name: /Test Empty Site/ });
+  await expect(async () => {
+    if (!(await optionB2.isVisible())) await page.getByTestId('project-switcher').click();
+    await optionB2.click({ timeout: 2000 });
+  }).toPass();
   await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
   await page.getByRole('button', { name: 'Decision Log' }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${B}/decisions`));

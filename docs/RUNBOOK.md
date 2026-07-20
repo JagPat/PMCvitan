@@ -22,17 +22,23 @@ Deploy with `OUTBOX_SENDER_MODE` unset (legacy default) or `shadow`. In these mo
 in-request dispatcher remains the sole external sender and startup does NOT require a coverage
 seal — the new build serves traffic while the operator steps below run.
 
-## 3. Rebuild the affected projections from canonical
+## 3. Rebuild ALL projections from canonical
 
 ```
 pnpm --filter api projection:rebuild --operator <you@example.com> --reason "<release>: repair pre-correction generations"
 ```
 
-No `--project` flag: every project is rebuilt, for BOTH rebuildable consumers
-(`drawings.inbox`, `daily-log.inbox`). The run audits the invocation BEFORE any work and records a
-per-(project, consumer) outcome row, so an interrupted run is attributable and safely re-runnable
-(idempotent: each run builds a fresh generation from canonical and swaps behind the activation
-barrier — reads keep serving throughout).
+No `--project` and no `--consumer` flag: every project is rebuilt for **ALL FIVE production
+projection consumers** — `decisions.inbox`, `daily-log.inbox`, `drawings.inbox`,
+`inspections.inbox`, `activities.schedule`. This step MUST complete (gated by step 4) **before**
+enabling all module-query reads on the web deployment (`VITE_*_READ=moduleQuery`) and before
+switching to outbox sender mode (step 7): a database upgraded from a pre-#183 build can carry a
+legacy `decisions.inbox` generation that is active and caught-up but holds only a SUBSET of the
+canonical decision register — the read path serves it as authoritative, and only this rebuild (or
+the next decision event on that project) repairs it. The run audits the invocation BEFORE any work
+and records a per-(project, consumer) outcome row, so an interrupted run is attributable and safely
+re-runnable (idempotent: each run builds a fresh generation from canonical and swaps behind the
+activation barrier — reads keep serving throughout).
 
 ## 4. Inspect the diagnostics
 
@@ -78,8 +84,9 @@ unexpected build is deployed — go back to step 2).
 - `pnpm --filter api outbox:status` — `dead: 0`, `blocked: 0`, `oldestPendingSeconds` low/falling
   (the relay is the sole external sender now and must be draining).
 - `pnpm --filter api projection:rebuild --operator <you> --reason "post-cutover readiness check" --project <spot-check id>`
-  on a spot-check project — expect `corruptBefore: 0` and `after.state` of `current-match` (or
-  `lagging` that clears on the next status check). The run is idempotent and non-disruptive.
+  on a spot-check project — covers all five consumers; expect `corruptBefore: 0` and `after.state`
+  of `current-match` (or `lagging` that clears on the next status check). The run is idempotent and
+  non-disruptive.
 
 Done. Any deviation at a gate: stay (or return to) legacy/shadow mode — it is always safe — and
 investigate with the audit trail (`OutboxOperatorAction`, ordered by `at`).

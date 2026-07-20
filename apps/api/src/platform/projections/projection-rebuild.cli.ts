@@ -1,15 +1,25 @@
 import { PrismaService } from '../../prisma.service';
 import { registerConsumer, getConsumer } from '../outbox/registry';
 import { ProjectionRebuilder } from './rebuilder.service';
-import { ProjectionRebuildOperations } from './rebuild-operations';
+import { ProjectionRebuildOperations, REBUILDABLE_PROJECTIONS } from './rebuild-operations';
+import { makeDecisionsProjectionConsumer, DECISIONS_PROJECTION } from '../../decisions/decisions.projection';
 import { makeDrawingsProjectionConsumer, DRAWINGS_PROJECTION } from '../../drawings/drawings.projection';
 import { makeDailyLogProjectionConsumer, DAILY_LOG_PROJECTION } from '../../daily-log/daily-log.projection';
+import { makeInspectionsProjectionConsumer, INSPECTIONS_PROJECTION } from '../../inspections/inspections.projection';
+import { makeActivitiesProjectionConsumer, ACTIVITIES_PROJECTION } from '../../activities/activities.projection';
 
 /**
- * Module-4 correction + Task 10 finalization — the operator projection-rebuild command.
+ * Module-4 correction + Task 10 finalization + final-review P1 correction — the operator
+ * projection-rebuild command.
  *
  *   pnpm --filter api projection:rebuild --operator <identity> --reason <text> \
- *        [--project <id>] [--consumer <drawings.inbox | daily-log.inbox>]
+ *        [--project <id>] [--consumer <name>]
+ *
+ * With no `--consumer`, the run covers ALL FIVE production projection consumers
+ * (decisions.inbox, daily-log.inbox, drawings.inbox, inspections.inbox, activities.schedule) —
+ * the production upgrade path depends on this default: a legacy `decisions.inbox` generation can
+ * hold a non-empty SUBSET of the canonical register while presenting as caught-up, and only a
+ * rebuild (or the next decision event) repairs it.
  *
  * Rebuilds the named projections from CANONICAL state through the standard generation-swap +
  * final-activation-barrier protocol, with CHECKPOINT-AWARE before/after diagnostics per
@@ -40,10 +50,23 @@ async function main(): Promise<void> {
     return;
   }
   const prisma = new PrismaService();
-  if (!getConsumer(DRAWINGS_PROJECTION)) registerConsumer(makeDrawingsProjectionConsumer());
-  if (!getConsumer(DAILY_LOG_PROJECTION)) registerConsumer(makeDailyLogProjectionConsumer());
   const ops = new ProjectionRebuildOperations(prisma, new ProjectionRebuilder(prisma));
   try {
+    // Register every rebuildable projection consumer (this CLI runs standalone, outside the server
+    // boot that normally registers them). The pairing is asserted so the registry and the operator
+    // command can never drift apart silently.
+    const factories: Record<string, () => ReturnType<typeof makeDecisionsProjectionConsumer>> = {
+      [DECISIONS_PROJECTION]: makeDecisionsProjectionConsumer,
+      [DAILY_LOG_PROJECTION]: makeDailyLogProjectionConsumer,
+      [DRAWINGS_PROJECTION]: makeDrawingsProjectionConsumer,
+      [INSPECTIONS_PROJECTION]: makeInspectionsProjectionConsumer,
+      [ACTIVITIES_PROJECTION]: makeActivitiesProjectionConsumer,
+    };
+    for (const name of Object.keys(REBUILDABLE_PROJECTIONS)) {
+      const make = factories[name];
+      if (!make) throw new Error(`no consumer factory wired for rebuildable projection ${name}`);
+      if (!getConsumer(name)) registerConsumer(make());
+    }
     const report = await ops.run({
       operatorIdentity: f.operator,
       reason: f.reason,
