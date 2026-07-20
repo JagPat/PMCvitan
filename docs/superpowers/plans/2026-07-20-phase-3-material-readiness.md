@@ -24,9 +24,19 @@ orders + delivery commitments: §F PO versioning with PostgreSQL-frozen line sna
 UOM conversion + `committedAmountBase`, amendment/cancel/close-short, append-only promise
 history, `po.*`/`delivery.*` events, the §F bound-2 requisition→PO allocation chain under
 concurrency, `approvedOverage` only at issuance/amendment with reason) is DELIVERED on a
-held PR from `main` @ `697aa18` — **REVIEW STOP: Tasks 1–3 are complete; independent review
-of Task 2 + Task 3 is requested before Task 4 (inventory)**. Three non-blocking guardrails
-from the GO are recorded in §A for Tasks 5–6.** Canonical spec:
+held PR from `main` @ `697aa18`, **merged (PR #194 @ `main` `7ca1fc0`)**. The Tasks 2–3
+independent review returned **BLOCKED NARROWLY with seven findings** (P1: off-spec material
+recorded as compliant; P1: dimensionally incorrect purchase-UOM arithmetic; P1: incomplete
+quotes winning as "lowest"; P1: unsealed commercial evidence/PO provenance; P2: concurrent
+double-recorded quotes; P2: multiple live commitments per PO line; P2: UTC quote expiry) —
+**one focused correction PR from `main` @ `7ca1fc0` is DELIVERED on a held PR**: match-only
+selection (+ material-only pipeline), the explicit purchaseUom/purchaseQty/conversionToBase
+triple with derived base qty + prorated partial-order tax/freight, complete-coverage-only
+comparison eligibility, PG-sealed quotes/comparisons + the four-FK provenance chain, one
+recorded quote per (rfq, vendor) + one commitment per PO line, and project-timezone civil
+expiry via the injected clock. **Awaiting the narrow re-review; Task 4 does not start until
+it clears.** Three non-blocking guardrails from the GO are recorded in §A for Tasks 5–6.**
+Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
 merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:

@@ -72,7 +72,8 @@ function serializeLine(l: LineRow): PurchaseOrderLineDto {
   return {
     id: l.id, requisitionLineId: l.requisitionLineId, requirementId: l.requirementId, revision: l.revision,
     specFingerprint: l.specFingerprint, quotedMake: l.quotedMake, uom: l.uom,
-    uomConversion: l.uomConversion.toString(), qty: l.qty.toString(), rate: l.rate.toString(),
+    purchaseUom: l.purchaseUom, purchaseQty: l.purchaseQty.toString(),
+    conversionToBase: l.conversionToBase.toString(), qty: l.qty.toString(), rate: l.rate.toString(),
     taxAmount: l.taxAmount.toString(), freightAmount: l.freightAmount.toString(),
     landedAmount: l.landedAmount.toString(), committedAmountBase: l.committedAmountBase.toString(),
     approvedOverage: l.approvedOverage.toString(), overageReason: l.overageReason,
@@ -206,12 +207,19 @@ export class PurchaseOrdersService {
     for (const input of lines) {
       if (seen.has(input.requisitionLineId)) throw new BadRequestException('Each requisition line may appear at most once per PO version');
       seen.add(input.requisitionLineId);
-      const qtyStr = parseQuantity(input.qty);
-      if (!qtyStr) throw new BadRequestException('line qty must be a positive decimal with at most 6 fractional digits');
-      const qty = new Prisma.Decimal(qtyStr);
-      const conversionStr = input.uomConversion != null ? parseQuantity(input.uomConversion) : '1';
-      if (!conversionStr) throw new BadRequestException('uomConversion must be a positive decimal with at most 6 fractional digits');
-      const uomConversion = new Prisma.Decimal(conversionStr);
+      // F2 correction — the EXPLICIT purchase triple: the caller orders purchaseQty in the
+      // vendor's purchase unit with a purchase→base conversion; the base quantity is DERIVED
+      // and must round-trip numeric(18,6) EXACTLY (the DB CHECK re-derives it).
+      const purchaseQtyStr = parseQuantity(input.purchaseQty);
+      if (!purchaseQtyStr) throw new BadRequestException('purchaseQty must be a positive decimal with at most 6 fractional digits');
+      const purchaseQty = new Prisma.Decimal(purchaseQtyStr);
+      const conversionStr = input.conversionToBase != null ? parseQuantity(input.conversionToBase) : '1';
+      if (!conversionStr) throw new BadRequestException('conversionToBase must be a positive decimal with at most 6 fractional digits');
+      const conversionToBase = new Prisma.Decimal(conversionStr);
+      const qty = purchaseQty.mul(conversionToBase);
+      if (!qty.toDecimalPlaces(6).equals(qty)) {
+        throw new BadRequestException('purchaseQty × conversionToBase must land exactly on 6 decimal places — restate the order in exact base quantities');
+      }
 
       const line = await this.lockLineAndAssertOrderFits(tx, projectId, input.requisitionLineId, qty);
       if (line.requisitionId !== requisitionId) {
@@ -222,16 +230,31 @@ export class PurchaseOrdersService {
         where: { projectId, quoteId: selectedQuoteId, requisitionLineId: line.id },
       });
       if (!quoteLine) throw new BadRequestException('The selected quote does not quote this requisition line — a PO freezes quoted terms only');
+      // F1 defense in depth: approval already refuses non-matching selections; a PO line can
+      // still never label offered material with the demanded fingerprint.
+      if (!quoteLine.matchesSpecification) {
+        throw new BadRequestException('The quoted material does NOT match the approved specification — it cannot be ordered without an approved substitution');
+      }
       const snapshot = await this.requirementsQuery.revisionSnapshotForOrder(tx, projectId, line.requirementId, line.revision);
-      const committedAmountBase = quoteLine.baseRate.mul(qty).mul(uomConversion)
-        .add(quoteLine.taxAmount).add(quoteLine.freightAmount).toDecimalPlaces(2);
+      if (snapshot.type !== 'material' || !snapshot.specFingerprint) {
+        throw new BadRequestException('Only MATERIAL requirements with a specification identity flow through purchase orders');
+      }
+      // F2 — dimensionally exact commitment: rate is the quote's per-BASE-unit rate, so
+      // rate × purchaseQty × conversionToBase = rate × baseQty; a PARTIAL order carries its
+      // base-quantity share of the quote line's tax/freight amounts (2 dp, documented).
+      const shareFactor = qty.div(line.qty);
+      const taxAmount = quoteLine.taxAmount.mul(shareFactor).toDecimalPlaces(2);
+      const freightAmount = quoteLine.freightAmount.mul(shareFactor).toDecimalPlaces(2);
+      const committedAmountBase = quoteLine.baseRate.mul(purchaseQty).mul(conversionToBase)
+        .add(taxAmount).add(freightAmount).toDecimalPlaces(2);
       await tx.purchaseOrderLine.create({
         data: {
           projectId, poVersionId, requisitionLineId: line.id,
           requirementId: line.requirementId, revision: line.revision,
           specFingerprint: snapshot.specFingerprint, quotedMake: quoteLine.quotedMake,
-          uom: snapshot.baseUom, uomConversion, qty,
-          rate: quoteLine.baseRate, taxAmount: quoteLine.taxAmount, freightAmount: quoteLine.freightAmount,
+          uom: snapshot.baseUom, purchaseUom: input.purchaseUom ?? snapshot.baseUom,
+          purchaseQty, conversionToBase, qty,
+          rate: quoteLine.baseRate, taxAmount, freightAmount,
           landedAmount: quoteLine.landedCost, committedAmountBase,
         },
       });
@@ -436,6 +459,12 @@ export class PurchaseOrdersService {
         if (!line) throw new NotFoundException('Purchase order line not found in this project');
         if (line.poVersion.status !== 'issued' && line.poVersion.status !== 'partially_received') {
           throw new ConflictException('A delivery is committed against a line of an ISSUED purchase order version');
+        }
+        // F6 correction: EXACTLY ONE commitment per PO line — its promise history carries
+        // every revision. The unique index (projectId, poLineId) is the database backstop.
+        const existing = await tx.deliveryCommitment.findFirst({ where: { projectId, poLineId: line.id }, select: { id: true } });
+        if (existing) {
+          throw new ConflictException('This PO line already has its delivery commitment — REVISE it instead of committing a second one');
         }
         const commitment = await tx.deliveryCommitment.create({
           data: { projectId, poLineId: line.id, createdById: actor.actorId },

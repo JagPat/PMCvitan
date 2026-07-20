@@ -146,7 +146,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
       data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
     });
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
-    await expect(pos.create(id, { comparisonId: 'c', lines: [{ requisitionLineId: 'l', qty: '1' }] }, pmc(id))).rejects.toMatchObject({ status: 404 });
+    await expect(pos.create(id, { comparisonId: 'c', lines: [{ requisitionLineId: 'l', purchaseQty: '1' }] }, pmc(id))).rejects.toMatchObject({ status: 404 });
     await expect(pos.listPos(id, pmc(id))).rejects.toMatchObject({ status: 404 });
     await expect(pos.commitDelivery(id, { poLineId: 'x', promisedDate: '2026-09-01' }, pmc(id))).rejects.toMatchObject({ status: 404 });
   });
@@ -154,7 +154,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
   it('FROZEN SNAPSHOT: the PO line copies the SELECTED quote + revision identity and computes committedAmountBase once', async () => {
     const projectId = await freshProject();
     const chain = await approvedChain(projectId, { lineQty: '60' });
-    const draft = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '60' }] }, pmc(projectId));
+    const draft = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '60' }] }, pmc(projectId));
     expect(draft.vendorId).toBe(chain.vendorId);
     expect(draft.requisitionId).toBe(chain.requisition.id);
     expect(draft.versions).toHaveLength(1);
@@ -164,7 +164,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     // the commercial snapshot came from the quote line — never the caller
     expect(line).toMatchObject({
       requisitionLineId: chain.lineId, requirementId: chain.req.requirementId, revision: chain.req.revision,
-      quotedMake: 'UltraTech OPC', uom: 'bag', uomConversion: '1',
+      quotedMake: 'UltraTech OPC', uom: 'bag', purchaseUom: 'bag', purchaseQty: '60', conversionToBase: '1',
       rate: '100', taxAmount: '50', freightAmount: '25', landedAmount: '999.99',
       approvedOverage: '0', overageReason: null, receivedQty: '0',
     });
@@ -173,7 +173,8 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
       where: { projectId, requirementId: chain.req.requirementId, revision: chain.req.revision },
     });
     expect(line.specFingerprint).toBe(spec.specFingerprint);
-    // committedAmountBase = rate × qty × conversion + tax + freight = 100×60×1 + 50 + 25
+    // committedAmountBase = rate × purchaseQty × conversionToBase + prorated tax/freight
+    // = 100×60×1 + 50 + 25 (a FULL order of the 60-qty line carries the whole amounts)
     expect(line.committedAmountBase).toBe('6075');
 
     // issuance: draft → issued with attribution + the po.issued event; a second issue 409s
@@ -185,7 +186,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
   it('DB FREEZE: commercial columns, versions, the root and promises are PostgreSQL-immutable', async () => {
     const projectId = await freshProject();
     const chain = await approvedChain(projectId);
-    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '10' }] }, pmc(projectId));
+    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '10' }] }, pmc(projectId));
     await pos.issue(projectId, po.id, {}, pmc(projectId));
     const lineRow = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { projectId } });
     // any commercial change is rejected by the frozen-snapshot trigger…
@@ -215,19 +216,19 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
   it('AMENDMENT: the prior frozen snapshot is retained VERBATIM; the reissue references it and re-validates §F bound 2', async () => {
     const projectId = await freshProject();
     const chain = await approvedChain(projectId); // requisition line qty 100
-    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '60' }] }, pmc(projectId));
+    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '60' }] }, pmc(projectId));
     await pos.issue(projectId, po.id, {}, pmc(projectId));
     const before = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { projectId } });
 
     // a SECOND PO takes 40 of the same line — the ceiling is now fully allocated
-    const po2 = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '40' }] }, pmc(projectId));
+    const po2 = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '40' }] }, pmc(projectId));
     void po2;
     // amending the first PO to 80 would need 80+40=120 > 100 — §F bound 2 refuses IN the amend
     await expect(
-      pos.amend(projectId, po.id, { reason: 'quantity correction', lines: [{ requisitionLineId: chain.lineId, qty: '80' }] }, pmc(projectId)),
+      pos.amend(projectId, po.id, { reason: 'quantity correction', lines: [{ requisitionLineId: chain.lineId, purchaseQty: '80' }] }, pmc(projectId)),
     ).rejects.toMatchObject({ status: 409 });
     // amend to 55 fits (55+40 ≤ 100): prior version → 'amended', new version ISSUED referencing it
-    const amended = await pos.amend(projectId, po.id, { reason: 'short supply', lines: [{ requisitionLineId: chain.lineId, qty: '55' }] }, pmc(projectId));
+    const amended = await pos.amend(projectId, po.id, { reason: 'short supply', lines: [{ requisitionLineId: chain.lineId, purchaseQty: '55' }] }, pmc(projectId));
     expect(amended.versions).toHaveLength(2);
     expect(amended.versions[0]).toMatchObject({ version: 1, status: 'amended', amendReason: 'short supply' });
     expect(amended.versions[1]).toMatchObject({ version: 2, status: 'issued', supersedesVersion: 1 });
@@ -236,7 +237,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     const after = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { id: before.id } });
     expect(JSON.stringify(after)).toBe(JSON.stringify(before));
     // only ISSUED versions amend — the amended v1 cannot amend again (the current version is v2)
-    const again = await pos.amend(projectId, po.id, { reason: 'again', lines: [{ requisitionLineId: chain.lineId, qty: '50' }] }, pmc(projectId));
+    const again = await pos.amend(projectId, po.id, { reason: 'again', lines: [{ requisitionLineId: chain.lineId, purchaseQty: '50' }] }, pmc(projectId));
     expect(again.versions).toHaveLength(3); // v2 (issued) amended into v3 — the machine walks the CURRENT version
   });
 
@@ -244,10 +245,10 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     const projectId = await freshProject();
     // requirement 100; requisition line 100 (fully allocated under bound 1)
     const chain = await approvedChain(projectId);
-    const a = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '60' }] }, pmc(projectId));
-    await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '40' }] }, pmc(projectId));
+    const a = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '60' }] }, pmc(projectId));
+    await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '40' }] }, pmc(projectId));
     await expect(
-      pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '1' }] }, pmc(projectId)),
+      pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '1' }] }, pmc(projectId)),
     ).rejects.toMatchObject({ status: 409 });
     // fully covered → the requisition line flipped to 'ordered'
     const ordered = await t.prisma.requisitionLine.findFirstOrThrow({ where: { projectId, id: chain.lineId } });
@@ -264,14 +265,14 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     await pos.cancel(projectId, a.id, { reason: 'not needed' }, pmc(projectId));
     const reopened = await t.prisma.requisitionLine.findFirstOrThrow({ where: { projectId, id: chain.lineId } });
     expect(reopened.status).toBe('open');
-    const c = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '50' }] }, pmc(projectId));
+    const c = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '50' }] }, pmc(projectId));
     void c;
     await expect(
-      pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '11' }] }, pmc(projectId)),
+      pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '11' }] }, pmc(projectId)),
     ).rejects.toMatchObject({ status: 409 });
     // refill exactly (50 + 40 + 10 = 100) — the line flips back to 'ordered' and the
     // approved requisition, with NO open line left, CAN close (§F: all ordered or cancelled)
-    await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '10' }] }, pmc(projectId));
+    await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '10' }] }, pmc(projectId));
     expect((await t.prisma.requisitionLine.findFirstOrThrow({ where: { projectId, id: chain.lineId } })).status).toBe('ordered');
     const closed = await procurement.close(projectId, chain.requisition.id, pmc(projectId));
     expect(closed.status).toBe('closed');
@@ -308,9 +309,9 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
       { timeout: 20_000, maxWait: 10_000 },
     );
     await held;
-    const raceA = pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '60' }] }, pmc(projectId));
+    const raceA = pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '60' }] }, pmc(projectId));
     await waitForReadinessWaiters(1);
-    const raceB = pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '60' }] }, pmc(projectId));
+    const raceB = pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '60' }] }, pmc(projectId));
     await waitForReadinessWaiters(2);
     release();
     await holder;
@@ -326,7 +327,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
   it('approvedOverage: recorded ONLY at issuance/amendment, with a reason', async () => {
     const projectId = await freshProject();
     const chain = await approvedChain(projectId);
-    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '50' }] }, pmc(projectId));
+    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '50' }] }, pmc(projectId));
     // creation NEVER carries overage (no schema field); issuance records it with its reason
     const issued = await pos.issue(projectId, po.id, {
       overages: [{ requisitionLineId: chain.lineId, approvedOverage: '2.5', reason: 'vendor supplies 50kg bags — rounding headroom' }],
@@ -334,7 +335,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     expect(issued.versions[0]!.lines[0]).toMatchObject({ approvedOverage: '2.5', overageReason: 'vendor supplies 50kg bags — rounding headroom' });
     // an overage naming a line the version does not order refuses
     const other = await approvedChain(projectId);
-    const po2 = await pos.create(projectId, { comparisonId: other.comparisonId, lines: [{ requisitionLineId: other.lineId, qty: '10' }] }, pmc(projectId));
+    const po2 = await pos.create(projectId, { comparisonId: other.comparisonId, lines: [{ requisitionLineId: other.lineId, purchaseQty: '10' }] }, pmc(projectId));
     await expect(
       pos.issue(projectId, po2.id, { overages: [{ requisitionLineId: chain.lineId, approvedOverage: '1', reason: 'wrong line' }] }, pmc(projectId)),
     ).rejects.toMatchObject({ status: 400 });
@@ -343,7 +344,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     await expect(pos.issue(projectId, po.id, { overages: [{ requisitionLineId: chain.lineId, approvedOverage: '9', reason: 'late' }] }, pmc(projectId))).rejects.toMatchObject({ status: 409 });
     const amended = await pos.amend(projectId, po.id, {
       reason: 'renegotiated pack size',
-      lines: [{ requisitionLineId: chain.lineId, qty: '50' }],
+      lines: [{ requisitionLineId: chain.lineId, purchaseQty: '50' }],
       overages: [{ requisitionLineId: chain.lineId, approvedOverage: '5', reason: 'pack-size overage re-approved' }],
     }, pmc(projectId));
     expect(amended.versions[1]!.lines[0]).toMatchObject({ approvedOverage: '5', overageReason: 'pack-size overage re-approved' });
@@ -352,7 +353,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
   it('CANCEL vs CLOSE-SHORT: receipts force close-short; close-short releases the un-received remainder', async () => {
     const projectId = await freshProject();
     const chain = await approvedChain(projectId);
-    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '60' }] }, pmc(projectId));
+    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '60' }] }, pmc(projectId));
     await pos.issue(projectId, po.id, {}, pmc(projectId));
     // simulate the Task-4 received-progress fact (the ONE mutable line column)
     const lineRow = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { projectId } });
@@ -362,16 +363,16 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     const closed = await pos.closeShort(projectId, po.id, { reason: 'vendor cannot deliver the balance' }, pmc(projectId));
     expect(closed.versions[0]).toMatchObject({ status: 'closed_short', closeShortReason: 'vendor cannot deliver the balance' });
     // closed_short keeps ONLY its received 5 — 95 of the 100-qty line is free again
-    await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '95' }] }, pmc(projectId));
+    await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '95' }] }, pmc(projectId));
     await expect(
-      pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '1' }] }, pmc(projectId)),
+      pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '1' }] }, pmc(projectId)),
     ).rejects.toMatchObject({ status: 409 });
   });
 
   it('PROMISES: every revision APPENDS a dated promise; the §G delivery events carry the history tail', async () => {
     const projectId = await freshProject();
     const chain = await approvedChain(projectId);
-    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '20' }] }, pmc(projectId));
+    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '20' }] }, pmc(projectId));
     // deliveries commit only against an ISSUED version's line
     const draftLine = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { projectId } });
     await expect(pos.commitDelivery(projectId, { poLineId: draftLine.id, promisedDate: '2026-09-01' }, pmc(projectId))).rejects.toMatchObject({ status: 409 });
@@ -392,8 +393,14 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     const defaulted = await pos.defaultDelivery(projectId, commitment.id, pmc(projectId));
     expect(defaulted.status).toBe('defaulted');
     await expect(pos.reviseDelivery(projectId, commitment.id, { promisedDate: '2026-10-01', reason: 'too late' }, pmc(projectId))).rejects.toMatchObject({ status: 409 });
-    // a second commitment fulfills (audit-only terminal)
-    const c2 = await pos.commitDelivery(projectId, { poLineId: draftLine.id, promisedDate: '2026-09-20' }, pmc(projectId));
+    // F6 correction: a SECOND commitment on the same line refuses — one commitment per PO
+    // line; a fulfilment probe runs on a fresh PO's line instead
+    await expect(pos.commitDelivery(projectId, { poLineId: draftLine.id, promisedDate: '2026-09-20' }, pmc(projectId))).rejects.toMatchObject({ status: 409 });
+    const chain2 = await approvedChain(projectId);
+    const po2 = await pos.create(projectId, { comparisonId: chain2.comparisonId, lines: [{ requisitionLineId: chain2.lineId, purchaseQty: '5' }] }, pmc(projectId));
+    await pos.issue(projectId, po2.id, {}, pmc(projectId));
+    const line2 = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { projectId, requisitionLineId: chain2.lineId } });
+    const c2 = await pos.commitDelivery(projectId, { poLineId: line2.id, promisedDate: '2026-09-20' }, pmc(projectId));
     const fulfilled = await pos.fulfillDelivery(projectId, c2.id, pmc(projectId));
     expect(fulfilled.status).toBe('fulfilled');
 
@@ -413,13 +420,13 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     const projectId = await freshProject();
     const chain = await approvedChain(projectId);
     // a never-issued draft cancels with NO event (§G announces only what the world saw)
-    const draft = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '10' }] }, pmc(projectId));
+    const draft = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '10' }] }, pmc(projectId));
     await pos.cancel(projectId, draft.id, { reason: 'never issued' }, pmc(projectId));
     expect(await t.prisma.domainEvent.count({ where: { projectId, eventType: 'po.cancelled' } })).toBe(0);
 
-    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '30' }] }, pmc(projectId));
+    const po = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '30' }] }, pmc(projectId));
     await pos.issue(projectId, po.id, {}, pmc(projectId));
-    await pos.amend(projectId, po.id, { reason: 'rate hold expired', lines: [{ requisitionLineId: chain.lineId, qty: '25' }] }, pmc(projectId));
+    await pos.amend(projectId, po.id, { reason: 'rate hold expired', lines: [{ requisitionLineId: chain.lineId, purchaseQty: '25' }] }, pmc(projectId));
     await pos.cancel(projectId, po.id, { reason: 'project descoped' }, pmc(projectId));
 
     const evs = await t.prisma.domainEvent.findMany({
@@ -430,9 +437,10 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     const issuedPayload = evs[0]!.payload as { poId: string; version: number; lines: Array<Record<string, unknown>> };
     expect(issuedPayload.poId).toBe(po.id);
     expect(issuedPayload.version).toBe(1);
+    // 30 of the 100-qty line: committed = 100×30 + tax 50×0.3 + freight 25×0.3 = 3022.5
     expect(issuedPayload.lines[0]).toMatchObject({
       requisitionLineId: chain.lineId, requirementId: chain.req.requirementId, revision: chain.req.revision,
-      qty: '30', committedAmountBase: '3075',
+      qty: '30', committedAmountBase: '3022.5',
     });
     const amendedPayload = evs[1]!.payload as { version: number; lines: Array<Record<string, unknown>> };
     expect(amendedPayload.version).toBe(2);
@@ -449,8 +457,8 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     const projectId = await freshProject();
     const chain = await approvedChain(projectId);
     const key = `it-p3q-key-${Date.now() % 1e6}`;
-    const first = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '10' }] }, pmc(projectId), key);
-    const replay = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, qty: '10' }] }, pmc(projectId), key);
+    const first = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '10' }] }, pmc(projectId), key);
+    const replay = await pos.create(projectId, { comparisonId: chain.comparisonId, lines: [{ requisitionLineId: chain.lineId, purchaseQty: '10' }] }, pmc(projectId), key);
     expect(replay.id).toBe(first.id);
     expect(await t.prisma.purchaseOrder.count({ where: { projectId } })).toBe(1);
     const issueKey = `${key}-issue`;
@@ -465,7 +473,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     const chain2 = await approvedChain(p2);
     // a PO in p1 cannot execute p2's comparison, nor commit deliveries on p2's lines
     await expect(
-      pos.create(p1, { comparisonId: chain2.comparisonId, lines: [{ requisitionLineId: chain2.lineId, qty: '1' }] }, pmc(p1)),
+      pos.create(p1, { comparisonId: chain2.comparisonId, lines: [{ requisitionLineId: chain2.lineId, purchaseQty: '1' }] }, pmc(p1)),
     ).rejects.toMatchObject({ status: 400 });
     const foreignLine = await t.prisma.purchaseOrderLine.findFirst({ where: { projectId: p2 } });
     void foreignLine; // (no PO exists yet in p2 — the delivery probe uses a bogus id)
@@ -476,7 +484,7 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     const refused = await request(t.app.getHttpServer())
       .post(`/projects/${p1}/pos`)
       .set('Authorization', `Bearer ${engToken}`)
-      .send({ comparisonId: 'c', lines: [{ requisitionLineId: 'l', qty: '1' }] });
+      .send({ comparisonId: 'c', lines: [{ requisitionLineId: 'l', purchaseQty: '1' }] });
     expect(refused.status).toBe(403);
     const reads = await request(t.app.getHttpServer())
       .get(`/projects/${p1}/pos`)

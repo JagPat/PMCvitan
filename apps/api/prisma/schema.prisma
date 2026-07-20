@@ -1082,6 +1082,8 @@ model RequisitionLine {
   poLines    PurchaseOrderLine[]
 
   @@unique([projectId, id])
+  // F4 correction: the FK target sealing a PO line's frozen requirement pin to ITS line's real pin
+  @@unique([projectId, id, requirementId, revision])
   @@index([projectId, requirementId, revision])
 }
 
@@ -1101,6 +1103,8 @@ model Rfq {
   comparison QuoteComparison?
 
   @@unique([projectId, id])
+  // F4 correction: the FK target letting the comparison seal its requisition provenance
+  @@unique([projectId, id, requisitionId])
 }
 
 // §F — one vendor's quote on an RFQ, reached THROUGH the ProjectVendor binding (§H).
@@ -1126,6 +1130,12 @@ model VendorQuote {
   comparisonsSelected QuoteComparison[]
 
   @@unique([projectId, id])
+  // F4 correction: the FK target proving a comparison's selection is a quote of the SAME
+  // rfq AND that the recorded selectedVendorId is truly that quote's vendor. Rows are
+  // lifecycle-only at PostgreSQL (status may transition; everything else is frozen), and
+  // at most ONE 'recorded' quote per (projectId, rfqId, vendorId) — a partial unique index
+  // (SQL migration; not expressible in Prisma).
+  @@unique([projectId, rfqId, vendorId, id])
   @@index([projectId, rfqId, vendorId])
 }
 
@@ -1153,12 +1163,20 @@ model VendorQuoteLine {
 }
 
 // §F — the recorded comparison decision: draft → approved, carrying REAL authority + reason;
-// a non-lowest landed-total selection additionally demands an explicit justification.
+// a non-lowest landed-total selection additionally demands an explicit justification. Only
+// COMPLETE quotes (covering every open requisition line) are eligible; an offered material
+// that does not match the approved specification cannot be selected (F1/F3 corrections —
+// substitutions and partial awards are unsupported until their tasks land). Approval is
+// SEALED at PostgreSQL: identity is frozen, only the approval columns may be written, and
+// an approved row can never change again.
 model QuoteComparison {
   id               String       @id @default(cuid())
   projectId        String
   rfq              Rfq          @relation(fields: [projectId, rfqId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   rfqId            String
+  // F4 correction: the RFQ's requisition, denormalized + FK-sealed (projectId, rfqId,
+  // requisitionId) -> Rfq so a purchase order can seal its full provenance chain.
+  requisitionId    String
   status           String       @default("draft") // draft|approved
   selectedQuote    VendorQuote? @relation(fields: [projectId, selectedQuoteId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   selectedQuoteId  String?
@@ -1173,6 +1191,8 @@ model QuoteComparison {
 
   @@unique([projectId, rfqId]) // one comparison per RFQ
   @@unique([projectId, id])
+  // F4 correction: the FK target sealing a PO's vendor + requisition to the APPROVED selection
+  @@unique([projectId, id, selectedVendorId, requisitionId])
 }
 
 // §F Task 3 — the PO ROOT: immutable identity (vendor through the §H binding + source
@@ -1228,13 +1248,19 @@ model PurchaseOrderVersion {
 }
 
 // §F — a PO line's FROZEN commercial snapshot, copied from the comparison-approved quote
-// line at creation: specification ref, make, UOM conversion, rate, taxes, landed amount.
-// committedAmountBase = rate × qty × uomConversion + taxAmount + freightAmount, computed
-// once and frozen — the Phase-5 commitment fact. A DB trigger rejects any UPDATE except
-// receivedQty (the procurement-owned received-progress fact Task-4 receipts append through
-// the participant) and the issuance-time approvedOverage(+reason); rows are never deleted.
-// approvedOverage is the ONLY §F bound-3 headroom: set by pmc at issuance/amendment with a
-// reason, never afterwards.
+// line at creation. F2 correction — the purchase-UOM triple is EXPLICIT and dimensionally
+// sound: the caller orders `purchaseQty` in `purchaseUom`; `conversionToBase` converts one
+// purchase unit to base units; `qty` is the DERIVED base quantity = purchaseQty ×
+// conversionToBase (DB CHECK), and every §F allocation bound uses it. `rate` is the quote's
+// per-BASE-unit rate, so committedAmountBase = rate × purchaseQty × conversionToBase +
+// taxAmount + freightAmount ( = rate × qty + tax + freight) is exact. For a PARTIAL order,
+// taxAmount/freightAmount carry the ordered share of the quote line's amounts, prorated by
+// base quantity and rounded to 2 dp (documented Stage-1 treatment). A DB trigger rejects
+// any UPDATE except receivedQty (the procurement-owned received-progress fact Task-4
+// receipts append through the participant) and the issuance-time approvedOverage(+reason);
+// rows are never deleted. approvedOverage is the ONLY §F bound-3 headroom: set by pmc at
+// issuance/amendment with a reason, never afterwards. The (requisitionLineId,
+// requirementId, revision) pin is FK-sealed to the requisition line's own pin (F4).
 model PurchaseOrderLine {
   id                  String               @id @default(cuid())
   projectId           String
@@ -1242,13 +1268,15 @@ model PurchaseOrderLine {
   poVersionId         String
   requisitionLine     RequisitionLine      @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   requisitionLineId   String
-  requirementId       String // frozen requirement pin (copied from the requisition line)
+  requirementId       String // frozen requirement pin (FK-sealed to the requisition line's pin)
   revision            Int
-  specFingerprint     String? // the revision's material spec identity at freeze time
+  specFingerprint     String // the DEMANDED material identity — always present (material-only pipeline; selection is match-only)
   quotedMake          String?
   uom                 String // the revision's base UOM (single source)
-  uomConversion       Decimal              @default(1) @db.Decimal(18, 6) // vendor pack unit → base UOM factor, frozen at creation
-  qty                 Decimal              @db.Decimal(18, 6) // ordered qty in base UOM
+  purchaseUom         String // the vendor's pack/purchase unit label (defaults to the base UOM)
+  purchaseQty         Decimal              @db.Decimal(18, 6) // ordered quantity in purchase units (caller-authored)
+  conversionToBase    Decimal              @default(1) @db.Decimal(18, 6) // one purchase unit in base units, frozen at creation
+  qty                 Decimal              @db.Decimal(18, 6) // DERIVED base quantity = purchaseQty × conversionToBase (DB CHECK)
   rate                Decimal              @db.Decimal(18, 2)
   taxAmount           Decimal              @db.Decimal(18, 2)
   freightAmount       Decimal              @db.Decimal(18, 2)
