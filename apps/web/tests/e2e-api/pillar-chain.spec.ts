@@ -411,8 +411,12 @@ test('OFFLINE EVIDENCE: a captured photo survives a reload and replays exactly o
   await page.reload();
   await signIn(page, ENG);
   await expect(page.getByTestId('project-switcher')).toBeVisible();
-  await page.getByTestId('project-switcher').click();
-  await page.getByRole('button', { name: new RegExp(CHAIN_NAME) }).first().click();
+  // one-unit open-and-pick retry (a re-render can close the dropdown and swallow the pick)
+  const chainOption = page.getByRole('button', { name: new RegExp(CHAIN_NAME) }).first();
+  await expect(async () => {
+    if (!(await chainOption.isVisible())) await page.getByTestId('project-switcher').click();
+    await chainOption.click({ timeout: 2000 });
+  }).toPass();
 
   // back online → the replay uploads EXACTLY once (project-scoped clientKey dedupe).
   // Boot resets online=true without flushing — cycle the switch to trigger the flush.

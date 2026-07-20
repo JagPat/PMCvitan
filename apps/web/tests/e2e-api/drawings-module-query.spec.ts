@@ -93,9 +93,13 @@ test.describe('drawings module-owned read (moduleQuery)', () => {
     await page.goto('/');
     await signIn(page, 'test-pmc@vitan.in'); // home = B
     await expect(page.getByTestId('project-switcher')).toContainText('Test Empty Site');
-    // switch to Project A (where the register lives)
-    await page.getByTestId('project-switcher').click();
-    await page.getByRole('button', { name: /Residence at Ambli/ }).click();
+    // switch to Project A (where the register lives) — one-unit open-and-pick retry (a re-render
+    // can close the dropdown between the two one-shot clicks and swallow the pick)
+    const optionA = page.getByRole('button', { name: /Residence at Ambli/ });
+    await expect(async () => {
+      if (!(await optionA.isVisible())) await page.getByTestId('project-switcher').click();
+      await optionA.click({ timeout: 2000 });
+    }).toPass();
     await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
 
     await page.getByRole('button', { name: 'Drawings' }).click();

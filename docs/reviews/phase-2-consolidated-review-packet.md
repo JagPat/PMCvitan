@@ -266,5 +266,9 @@ PostgreSQL 16):
   run). The existing rebuild-operations suite's audit pin was widened from two consumers to five.
 
 **Gates for this correction:** recorded in the PR (pnpm check; the complete live-PG integration
-suite; `scripts/upgrade-proof.sh`; `test:e2e:api:allmodules` and `test:e2e:api:allmodules:outbox`;
-the focused probe red @ `c94aee3` / green @ head).
+suite — 44 files / 371 tests; `scripts/upgrade-proof.sh` PASSED; `test:e2e:api:allmodules` and
+`test:e2e:api:allmodules:outbox` 27/27 each; the focused probe red @ `c94aee3` / green @ head).
+One legacy-mode `allmodules` run flaked on `project-scope.spec.ts`'s SECOND project switch — the
+§8-recorded switcher-dropdown race family, at a one-shot open-and-pick the #183 hardening had not
+covered. The four remaining one-shot switcher picks in the e2e specs now use the same cleared
+one-unit `toPass()` retry (test-only; no product change).
