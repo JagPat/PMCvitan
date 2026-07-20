@@ -6,6 +6,7 @@ import {
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -111,6 +112,9 @@ export class RequirementsService {
     private readonly prisma: PrismaService,
     private readonly capabilities: CapabilitiesService,
     private readonly decisionsQuery: DecisionsQueryService,
+    // Phase 3 Task 2 — the §F disposition guard: cancel refuses while open requisition lines
+    // reference this requirement (the procurement-owned participant runs inside our tx)
+    private readonly procurementParticipant: ProcurementParticipant,
     // the single external-effect sender (PR C Task 2) — snapshot invalidations ride it post-commit
     private readonly dispatcher: ExternalEffectDispatcher,
   ) {}
@@ -272,6 +276,9 @@ export class RequirementsService {
         const head = await this.lockRootHead(tx, projectId, requirementId);
         if (head.revision !== input.expectedRevision) throw new ConflictException(`Requirement is at revision ${head.revision}, not ${input.expectedRevision}`);
         if (head.status === 'cancelled') throw new BadRequestException('Requirement is already cancelled');
+        // §F disposition (Task 2): open downstream requisition lines block the cancel — the
+        // readiness lock we hold serializes this check against concurrent line creation
+        await this.procurementParticipant.assertRequirementDisposable(tx, projectId, requirementId);
         // a cancel APPENDS a revision copying the head's neutral columns + material spec verbatim
         const created = await tx.activityRequirement.create({
           data: {

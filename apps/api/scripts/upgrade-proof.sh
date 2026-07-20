@@ -274,6 +274,17 @@ after_count=$($PSQL -tAc 'SELECT COUNT(*) FROM "DecisionApprovalRevision";')
 [ "$before_count" = "$after_count" ] || { echo "FAILED: the history migration is not idempotent ($before_count -> $after_count rows)"; exit 1; }
 echo "history migration idempotency: $before_count rows before and after the re-run"
 
+# ---- 3f. the remaining ledger to HEAD ----------------------------------------------------
+# Migrations stamped after the round-2 stop (Task 2 procurement onward) also land in
+# phase3_r2_dirs; the explicit round-2/3 stops above covered exactly two of them. Apply every
+# remaining one in ledger order so the proof upgrades the legacy database all the way to HEAD.
+for d in "${phase3_r2_dirs[@]}"; do
+  case "$(basename "$d")" in
+    "$(basename "$R2_PROVENANCE")"|"$(basename "$R3_HISTORY")") continue ;;
+  esac
+  apply_one "$d"
+done
+
 # ---- 4. assertions: legacy meaning is preserved -------------------------------
 echo ""
 echo "=== assertions: legacy meaning survived the upgrade ==="
@@ -510,6 +521,26 @@ assert "the commit-time material/spec pairing constraint triggers are installed 
   "2"
 assert "(decisionId, optionKey) is a database-enforced candidate key on DecisionOption" \
   "SELECT COUNT(*) FROM pg_indexes WHERE indexname='DecisionOption_decisionId_optionKey_key';" \
+  "1"
+
+# Phase 3 Task 2 — procurement is a purely additive, row-free capability over the legacy DB.
+assert "the eight procurement tables exist" \
+  "SELECT ((to_regclass('\"Vendor\"') IS NOT NULL) AND (to_regclass('\"ProjectVendor\"') IS NOT NULL) AND (to_regclass('\"Requisition\"') IS NOT NULL) AND (to_regclass('\"RequisitionLine\"') IS NOT NULL) AND (to_regclass('\"Rfq\"') IS NOT NULL) AND (to_regclass('\"VendorQuote\"') IS NOT NULL) AND (to_regclass('\"VendorQuoteLine\"') IS NOT NULL) AND (to_regclass('\"QuoteComparison\"') IS NOT NULL))::text;" \
+  "true"
+assert "the procurement migration wrote NO rows over the legacy DB (pure capability add)" \
+  "SELECT (SELECT COUNT(*) FROM \"Vendor\") + (SELECT COUNT(*) FROM \"ProjectVendor\") + (SELECT COUNT(*) FROM \"Requisition\");" \
+  "0"
+assert "requisition lines FK the ActivityRequirement revision row (the §F bound-1 anchor)" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname='RequisitionLine_projectId_requirementId_revision_fkey' AND contype='f';" \
+  "1"
+assert "the §H dual composite FKs make a cross-org vendor binding unrepresentable" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('ProjectVendor_orgId_projectId_fkey','ProjectVendor_orgId_vendorId_fkey') AND contype='f';" \
+  "2"
+assert "quotes reach the vendor ONLY through the project binding (composite §H FK)" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname='VendorQuote_projectId_vendorId_fkey' AND contype='f';" \
+  "1"
+assert "the comparison approval completeness CHECK is database-enforced" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname='QuoteComparison_approval_check';" \
   "1"
 
 echo ""

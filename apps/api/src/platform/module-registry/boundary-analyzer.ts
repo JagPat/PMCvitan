@@ -112,6 +112,8 @@ export const DEFAULT_DIR_TO_MODULE: Readonly<Record<string, string>> = {
   nodes: 'nodes',
   media: 'media',
   orgs: 'orgs',
+  // Phase 3 Task 2 — the procurement pillar (vendors + requisitions/RFQs/quotes/comparisons)
+  procurement: 'procurement',
   auth: 'auth',
   platform: 'platform',
   push: 'platform',

@@ -14,7 +14,7 @@ describe('Phase 2 Task 7 — module registry', () => {
 
   it('enablement is every compiled module — the single source of truth (finding 7)', () => {
     expect(enabledModuleIds()).toEqual(
-      ['activities', 'auth', 'daily-log', 'decisions', 'drawings', 'inspections', 'media', 'nodes', 'orgs', 'platform'],
+      ['activities', 'auth', 'daily-log', 'decisions', 'drawings', 'inspections', 'media', 'nodes', 'orgs', 'platform', 'procurement'],
     );
   });
 
@@ -58,6 +58,11 @@ describe('Phase 2 Task 7 — module registry', () => {
       activities: ['decisions', 'drawings', 'inspections'], 'daily-log': ['decisions'], nodes: ['decisions'],
       orgs: ['decisions', 'inspections'], drawings: ['decisions'],
       media: ['decisions', 'daily-log', 'inspections'],
+      // Phase 3 Task 2 — procurement reads requirement revisions through the activities query
+      // (the §F bound-1 allocation lock) and approved specifications through decisions; neither
+      // target depends back on procurement (the requirements-cancel disposition guard is a
+      // WORKFLOW PARTICIPATION, cycle-exempt), so the graph stays acyclic.
+      procurement: ['activities', 'decisions'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.dependsOn, `${m.id} dependsOn`).toEqual(expectedDependsOn[m.id] ?? []);
@@ -67,7 +72,9 @@ describe('Phase 2 Task 7 — module registry', () => {
     const expectedParticipants: Record<string, string[]> = {
       // completion creates the closing inspection (edge 1) + relabel; the Module-4 correction adds
       // the drawings participant: activity deletion unlinks governed drawings (drawing.activity_unlinked)
-      activities: ['inspections', 'drawings'],
+      // Phase 3 Task 2 adds the procurement participant: requirements.cancel refuses while open
+      // requisition lines reference the requirement (the §F explicit-disposition guard)
+      activities: ['inspections', 'drawings', 'procurement'],
       'daily-log': ['activities'], // material-mismatch blocks the activity's readiness (edge 4)
       media: ['inspections'], // evidence add/remove (edges via the media create/remove tx)
       // Task 10 Module 4 (+ correction): node deletion unfiles placed inspections, filed activities,

@@ -48,6 +48,9 @@ export const ACTIVITIES_QUERIES = [
   'activities.resolveRef',
   // Phase 3 Task 1 — the module-owned requirements read (capability-gated; 404 on non-pilot projects).
   'requirements.list',
+  // Phase 3 Task 2 — the same-transaction allocation read: procurement locks a requirement
+  // revision FOR UPDATE and reads its required qty/UOM for the §F bound-1 guard.
+  'requirements.revisionForAllocation',
 ] as const;
 export type ActivitiesQuery = (typeof ACTIVITIES_QUERIES)[number];
 

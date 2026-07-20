@@ -8,22 +8,20 @@ independent review returned BLOCKED NARROWLY (four findings), corrected in PR #1
 `decisions.approvedRef`; type-neutral revisions + revision-owned MaterialRequirementSpec;
 DATE `requiredBy` + membership/identity FKs; shared contracts; explicit `requirement.read`
 policy). The narrow re-review of #190 returned SIX further findings, resolved by the round-2
-correction (PR #191, merged @ `main` `7d3b29d`: the decisions-owned IMMUTABLE
-DecisionApprovalRevision register; register-FK'd spec provenance with label fallback and
-event-count identity removed; the diagnostic-first migration; commit-time material↔spec
-pairing + single-source UOM; readiness-locked responsible validation; an immutable
-ActivityRequirementRoot). The #191 narrow re-review returned BLOCKED NARROWLY: one P1 — the
-migration's current-only backfill falsely rejected a VALID earlier-version provenance
-reference (a requirement pinned while v1 governed, before a reapproval) as forged, blocking
-a legitimate `d0897a6` upgrade — plus a P2 (sequential membership probe, not a race) and a
-P3 (stale docs). The round-3 correction (the backfill amended in place, documented, to
-register EVERY uniquely provable approval/reapproval event; the idempotent
-`20261216000000_phase3_approval_history` migration completing already-applied databases,
-both-states strategy in `docs/RUNBOOK.md` §0; the upgrade-proof extended with the reviewer's
-exact reproduction and an applied-defective simulation; deterministic barrier-controlled
-races of the real member-removal vs requirement-create commands in both orderings) is on a
-held PR awaiting a narrow re-review. Task 2 begins ONLY after it clears. Three non-blocking
-guardrails from the GO are recorded in §A for Tasks 5–6.** Canonical spec:
+correction (PR #191, merged @ `main` `7d3b29d`). The #191 narrow re-review returned BLOCKED
+NARROWLY (one P1: the current-only backfill falsely rejected a valid earlier-version
+provenance reference; a P2 sequential membership probe; a P3 docs staleness), resolved by
+the round-3 correction (PR #192, merged @ `main` `4cc759a`: full provable-history backfill
+amended in place, the idempotent `20261216000000_phase3_approval_history` migration with the
+three-state operator strategy in `docs/RUNBOOK.md` §0, the reviewer's exact upgrade
+reproduction in the upgrade-proof, and deterministic barrier-controlled member-removal vs
+requirement-create races in both orderings). **The Task-1 narrow review returned GREEN
+SIGNAL: PHASE 3 TASK 1 IS CLEARED** (lineage `7d3b29d → 27e461a → 4cc759a`; no P0/P1/P2
+findings remain). **Task 2 (procurement: §H vendor tenancy + matrix, §F transitions through
+comparison approval, quote normalization, the §F bound-1 requirement→requisition allocation
+chain under concurrency) is IN IMPLEMENTATION on a held PR** from `main` @ `4cc759a`; the
+next review stop follows Task 3. Three non-blocking guardrails from the GO are recorded in
+§A for Tasks 5–6.** Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
 merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:

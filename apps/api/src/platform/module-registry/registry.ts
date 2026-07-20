@@ -9,6 +9,7 @@ import { mediaManifest } from '../../media/media.manifest';
 import { orgsManifest } from '../../orgs/orgs.manifest';
 import { authManifest } from '../../auth/auth.manifest';
 import { platformManifest } from '../platform.manifest';
+import { procurementManifest } from '../../procurement/procurement.manifest';
 
 /**
  * Phase 2 Task 7 — the compiled module registry.
@@ -22,6 +23,7 @@ import { platformManifest } from '../platform.manifest';
 export const MODULE_MANIFESTS: readonly ModuleManifest[] = [
   decisionsManifest,
   activitiesManifest,
+  procurementManifest,
   inspectionsManifest,
   drawingsManifest,
   dailyLogManifest,

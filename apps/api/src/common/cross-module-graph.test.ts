@@ -68,6 +68,9 @@ const MODEL_OWNER: Record<string, string> = {
   // Phase 3 Task 1 — the demand contract is activities-module-owned; its classifier domain is
   // 'requirements' (the requirements.service pillar entry writes ONLY this model)
   activityRequirement: 'requirements', activityRequirementRoot: 'requirements', materialRequirementSpec: 'requirements',
+  // Phase 3 Task 2 — the procurement pillar (§§F/H)
+  vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
+  rfq: 'procurement', vendorQuote: 'procurement', vendorQuoteLine: 'procurement', quoteComparison: 'procurement',
   projectNode: 'nodes',
   media: 'media',
   org: 'orgs', orgMembership: 'orgs', membership: 'orgs', project: 'orgs', projectCompany: 'orgs',
@@ -109,6 +112,11 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   'activities/phases.service.ts': { domain: 'phases', foreign: {}, dispatch: 2 },
   // Phase 3 Task 1 — requirement create/revise/cancel (capability-gated; append-only revisions)
   'activities/requirements.service.ts': { domain: 'requirements', foreign: {}, dispatch: 3 },
+  // Phase 3 Task 2 — the procurement pillar. vendors.service writes the org party + binding
+  // (no domain events); procurement.service runs the §F pipeline through comparison approval
+  // (submit/approve/comparison-approve dispatch their committed events post-commit).
+  'procurement/vendors.service.ts': { domain: 'procurement', foreign: {}, dispatch: 0 },
+  'procurement/procurement.service.ts': { domain: 'procurement', foreign: {}, dispatch: 3 },
   // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
   'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 3 },
   'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, dispatch: 5 },
@@ -227,6 +235,22 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'inspections/inspections.controller.ts': ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')"],
   'activities/phases.controller.ts': ['Post()', "Delete(':phaseId')"],
   'activities/requirements.controller.ts': ['Post()', "Post(':requirementId/revise')", "Post(':requirementId/cancel')"],
+  // Phase 3 Task 2 — the procurement pipeline (§F through comparison approval) + the §H
+  // vendor registry (org-admin CRUD) and project binding
+  'procurement/vendors.controller.ts': ["Post('orgs/:orgId/vendors')", "Post('projects/:projectId/vendors')"],
+  'procurement/procurement.controller.ts': [
+    "Post('requisitions')",
+    "Post('requisitions/:requisitionId/submit')",
+    "Post('requisitions/:requisitionId/approve')",
+    "Post('requisitions/:requisitionId/reject')",
+    "Post('requisitions/:requisitionId/close')",
+    "Post('requisitions/:requisitionId/lines/:lineId/cancel')",
+    "Post('rfqs')",
+    "Post('rfqs/:rfqId/close')",
+    "Post('rfqs/:rfqId/quotes')",
+    "Post('rfqs/:rfqId/comparison')",
+    "Post('rfqs/:rfqId/comparison/approve')",
+  ],
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')"],
 };
 
@@ -294,7 +318,7 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
     it('30 external-effect dispatch sites total across the pillar services (unchanged from the pre-PR-C emission count)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(33);
+      expect(total).toBe(36);
     });
   });
 
@@ -307,10 +331,10 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
     }
     it('67 mutating routes total (the documented command inventory §4)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(70);
+      expect(total).toBe(83);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(70);
+      expect(live).toBe(83);
     });
   });
 
@@ -324,12 +348,13 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
   describe('read + sender coupling (SnapshotService + ExternalEffectDispatcher injected in every emitter)', () => {
     const emitters = Object.entries(SERVICES).filter(([, s]) => s.dispatch > 0).map(([f]) => f);
-    it('all nine dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning eight also read through SnapshotService', () => {
-      expect(emitters.length).toBe(9);
+    it('all ten dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning eight also read through SnapshotService', () => {
+      expect(emitters.length).toBe(10);
       for (const file of emitters) {
-        // Phase 3 Task 1 — requirements returns the MODULE-OWNED dto (the Task-10 module-read
-        // pattern), never the snapshot, so it carries no SnapshotService dependency by design.
-        if (file !== 'activities/requirements.service.ts') {
+        // Phase 3 — requirements (Task 1) and procurement (Task 2) return MODULE-OWNED dtos
+        // (the Task-10 module-read pattern), never the snapshot, so they carry no
+        // SnapshotService dependency by design.
+        if (file !== 'activities/requirements.service.ts' && file !== 'procurement/procurement.service.ts') {
           expect(read(file), `${file} no longer references SnapshotService`).toContain('SnapshotService');
         }
         // PR C: the in-request RealtimeGateway is replaced by the single sender in every emitter.

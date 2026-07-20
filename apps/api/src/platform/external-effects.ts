@@ -67,6 +67,12 @@ export const EXTERNAL_EFFECTS = {
   'requirement.created': { eventType: 'requirement.created', invalidate: true, push: null },
   'requirement.revised': { eventType: 'requirement.revised', invalidate: true, push: null },
   'requirement.cancelled': { eventType: 'requirement.cancelled', invalidate: true, push: null },
+  // ── procurement (Phase 3 Task 2) ───────────────────────────────────────────────────────────
+  // The §G pipeline events (submitted/approved + the comparison approval ONLY). Snapshot-
+  // invalidate only; Inbox/notification semantics arrive with the readiness surfaces later.
+  'requisition.submitted': { eventType: 'requisition.submitted', invalidate: true, push: null },
+  'requisition.approved': { eventType: 'requisition.approved', invalidate: true, push: null },
+  'comparison.approved': { eventType: 'comparison.approved', invalidate: true, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────
