@@ -171,9 +171,11 @@ interface CrRow {
 
 function makeLifecycle(status: string) {
   const row: LifecycleRow = { id: 'DL-1', projectId: 'proj-1', title: 'Kitchen counter top', status };
-  const options = [{ label: 'Option A', material: 'Granite', delta: 0, swatch: 'sw1', order: 0 }];
+  const options = [{ label: 'Option A', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', order: 0 }];
   const changeRequests: CrRow[] = [];
   const events: Array<{ type: string; actor: string; actorId?: string; actorName?: string; actorRole?: string; payload?: Record<string, unknown> }> = [];
+  // the IMMUTABLE approval register (round 2) — approve() appends one row per approval
+  const revisions: Array<{ id: string; decisionId: string; version: number; optionKey: string; approvedById?: string | null; onBehalfOf?: string | null }> = [];
   const audits: Array<{ actor: string; actorId?: string; actorRole?: string; action: string }> = [];
   const notices: string[] = [];
   const prisma = {
@@ -205,7 +207,14 @@ function makeLifecycle(status: string) {
         return { count: hit.length };
       }),
     },
-    decisionEvent: { create: vi.fn((args: { data: (typeof events)[number] }) => { events.push(args.data); return Promise.resolve(args.data); }) },
+    decisionEvent: {
+      create: vi.fn((args: { data: (typeof events)[number] }) => { events.push(args.data); return Promise.resolve(args.data); }),
+      count: vi.fn(async ({ where }: { where: { type: { in: string[] } } }) => events.filter((e) => where.type.in.includes(e.type)).length),
+    },
+    decisionApprovalRevision: {
+      findFirst: vi.fn(async () => (revisions.length ? revisions[revisions.length - 1] : null)),
+      create: vi.fn((args: { data: (typeof revisions)[number] }) => { revisions.push(args.data); return Promise.resolve(args.data); }),
+    },
     notification: { create: vi.fn((args: { data: { text: string } }) => { notices.push(args.data.text); return Promise.resolve(args.data); }) },
     auditLog: { create: vi.fn((args: { data: (typeof audits)[number] }) => { audits.push(args.data); return Promise.resolve(args.data); }) },
     // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its three steps

@@ -3,14 +3,22 @@
 **Status: CLEARED — the final mechanical verification returned GREEN SIGNAL: PHASE 3 PLAN
 CLEARED (all five round-2 corrections pass; lineage `6fa019b → 9a84442 → 88a29fe`, all CI
 green) with explicit GO for Task 1. Task 1 is MERGED (PR #189 @ `main` `24ee03f`); its
-independent review returned BLOCKED NARROWLY (four findings: caller-authored decision
-provenance; append-only not DB-enforced; material-only non-type-neutral model; incomplete
-shared contracts/read policy) — the focused correction (ActivityRequirementRoot lineage +
-append-only triggers; server-authoritative `decisions.approvedRef`; type-neutral revisions +
-revision-owned MaterialRequirementSpec; DATE `requiredBy` + membership/identity FKs; shared
-DTO/event contract; explicit `requirement.read` policy) is on a held PR awaiting its narrow
-mechanical re-review. Task 2 begins ONLY after it clears. Three non-blocking guardrails from
-the GO are recorded in §A for Tasks 5–6.** Canonical spec:
+independent review returned BLOCKED NARROWLY (four findings), corrected in PR #190 (merged @
+`main` `d0897a6`: ActivityRequirementRoot lineage + append-only triggers; server-resolved
+`decisions.approvedRef`; type-neutral revisions + revision-owned MaterialRequirementSpec;
+DATE `requiredBy` + membership/identity FKs; shared contracts; explicit `requirement.read`
+policy). The narrow re-review of #190 returned SIX further findings; the round-2 correction
+(the decisions-owned IMMUTABLE DecisionApprovalRevision register written in the same
+transaction as approve/reapprove with monotonic versions across provable and unprovable
+legacy approvals; spec provenance FK-bound onto the register with label fallback and
+event-count identity removed; a diagnostic-first forward migration that ABORTS on forged or
+unverifiable provenance with sampled rows, skips ambiguous legacy approvals loudly for
+explicit operator repair and nulls nothing silently; commit-time material↔spec pairing via
+deferred constraint triggers + single-source UOM with the spec's duplicated baseUom column
+removed; responsible-membership validation inside the readiness-locked command transaction
+with both-ordering probes; an immutable ActivityRequirementRoot) is on a held PR awaiting a
+narrow re-review limited to those findings. Task 2 begins ONLY after it clears. Three
+non-blocking guardrails from the GO are recorded in §A for Tasks 5–6.** Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
 merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:

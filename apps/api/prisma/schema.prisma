@@ -773,8 +773,9 @@ model User {
   passwordChallenges PasswordCredentialChallenge[]
   securityEvents     SecurityAuditEvent[]          @relation("SecurityEventTarget")
   securityActorEvents SecurityAuditEvent[]         @relation("SecurityEventActor")
-  requirementRootsCreated ActivityRequirementRoot[] @relation("requirementRootsCreated")
-  requirementsCreated     ActivityRequirement[]     @relation("requirementsCreated")
+  requirementRootsCreated ActivityRequirementRoot[]  @relation("requirementRootsCreated")
+  requirementsCreated     ActivityRequirement[]      @relation("requirementsCreated")
+  approvalsRecorded       DecisionApprovalRevision[] @relation("approvalRevisionsApproved")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -957,18 +958,22 @@ model MaterialRequirementSpec {
   requirementId String
   revision      Int
 
+  // The unit of measure lives ONCE, on the revision row (round-2 finding 4): the fingerprint
+  // still hashes it as part of the §B identity, but there is no duplicated column to disagree.
   materialCategory     String
   make                 String
   grade                String
   normalizedAttributes String
-  baseUom              String // mirrors the revision's unit (part of the fingerprinted identity)
   specFingerprint      String
 
-  // AUTHORITATIVE decision provenance — all null (manual spec) or all server-resolved (CHECK)
-  decision        Decision? @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  decisionId      String?
-  decisionVersion Int?
-  optionKey       String?
+  // AUTHORITATIVE decision provenance — all null (manual spec) or all server-resolved (CHECK).
+  // Round-2 finding 2: the triple FKs onto the IMMUTABLE DecisionApprovalRevision register, so
+  // a spec can only reference an approval that really happened, for a real selected option.
+  decision         Decision?                 @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId       String?
+  approvalRevision DecisionApprovalRevision? @relation(fields: [projectId, decisionId, decisionVersion, optionKey], references: [projectId, decisionId, version, optionKey], onDelete: NoAction, onUpdate: NoAction)
+  decisionVersion  Int?
+  optionKey        String?
 
   @@unique([projectId, requirementId, revision])
   @@index([projectId, specFingerprint])
@@ -1002,9 +1007,10 @@ model Decision {
   publishedAt    DateTime?
   authorId       String?
 
-  options        DecisionOption[]
-  events         DecisionEvent[]
-  materialSpecs  MaterialRequirementSpec[]
+  options           DecisionOption[]
+  events            DecisionEvent[]
+  approvalRevisions DecisionApprovalRevision[]
+  materialSpecs     MaterialRequirementSpec[]
   changeRequests ChangeRequest[]
   activities     Activity[]
   materials      SiteMaterial[]
@@ -1031,6 +1037,42 @@ model DecisionOption {
   photoUrl    String? // uploaded sample photo (media url); swatch is the fallback
   recommended Boolean  @default(false)
   order       Int      @default(0)
+
+  approvalRevisions DecisionApprovalRevision[]
+
+  // the approval register (and requirement provenance behind it) pins an option by
+  // (decisionId, optionKey) — the pair is a database-enforced candidate key
+  @@unique([decisionId, optionKey])
+}
+
+// The IMMUTABLE approval register of a decision (Phase 3 Task 1 correction round 2, finding 1).
+// One row PER approval/reapproval, created in the SAME transaction as the approve command.
+// Rows are database-immutable (BEFORE UPDATE OR DELETE trigger); `version` is monotonic per
+// decision INCLUDING unprovable legacy history — the service allocates
+// max(head revision, recorded approval events) + 1, so a legacy approval's first reapproval is
+// version 2, never a colliding version 1. Requirement provenance (MaterialRequirementSpec) FKs
+// onto (projectId, decisionId, version, optionKey): a spec can only ever reference an approval
+// that REALLY happened, for an option the decision REALLY has. `decisions.approvedRef` serves
+// provenance from the head row alone — never from event counts or label matching.
+model DecisionApprovalRevision {
+  id           String         @id
+  projectId    String
+  decision     Decision       @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId   String
+  version      Int
+  option       DecisionOption @relation(fields: [decisionId, optionKey], references: [decisionId, optionKey], onDelete: NoAction, onUpdate: NoAction)
+  optionKey    String
+  approvedAt   DateTime
+  approvedBy   User?          @relation("approvalRevisionsApproved", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approvedById String? // null only on backfilled legacy rows whose approver was never recorded
+  onBehalfOf   String? // 'client' when a PMC recorded the client's consent — never disguised
+
+  materialSpecs MaterialRequirementSpec[]
+
+  @@unique([decisionId, version])
+  // the provenance FK target: version AND option bind together to one immutable approval fact
+  // (explicit name — the generated one exceeds PostgreSQL's 63-char identifier limit)
+  @@unique([projectId, decisionId, version, optionKey], map: "DecisionApprovalRevision_provenance_target_key")
 }
 
 // Append-only lifecycle + audit log for a decision.

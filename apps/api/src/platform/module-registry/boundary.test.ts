@@ -172,8 +172,9 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
 
   it('the decisions module is read-encapsulated (Task 8 — first fully-extracted backend module)', () => {
     const decisions = MODULE_MANIFESTS.find((m) => m.id === 'decisions');
-    // Task 9 adds `decisionProjection` — the module's own rebuildable read-model table, also read-encapsulated
-    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionEvent', 'changeRequest', 'decisionProjection']);
+    // Task 9 adds `decisionProjection` — the module's own rebuildable read-model table, also read-encapsulated.
+    // The Phase-3 Task-1 round-2 correction adds `decisionApprovalRevision` — the immutable approval register.
+    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection']);
     // it declares the queries other modules reach it through, and depends on nothing
     expect(decisions?.queries.length).toBeGreaterThan(0);
     // and every module that reads decisions now declares the dependency

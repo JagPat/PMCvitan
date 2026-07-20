@@ -29,6 +29,7 @@ describe('phase 1 baseline characterization (integration)', () => {
 
   afterAll(async () => {
     const projectId = f.projectA.id;
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "MaterialRequirementSpec", "DecisionApprovalRevision"');
     await t.prisma.$transaction([
       t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } }),

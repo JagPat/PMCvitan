@@ -47,6 +47,7 @@ describe('start vs readiness concurrency (integration)', () => {
     await t.prisma.siteMaterial.deleteMany({ where: { projectId } });
     await t.prisma.crewRow.deleteMany({ where: { dailyLog: { projectId } } });
     await t.prisma.dailyLog.deleteMany({ where: { projectId } });
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "MaterialRequirementSpec", "DecisionApprovalRevision"');
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } });
     await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } });
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } });

@@ -45,6 +45,14 @@ async function main(): Promise<void> {
   await prisma.$executeRawUnsafe(
     'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection"',
   );
+  // Phase 3 append-only tables (BEFORE UPDATE/DELETE triggers block deleteMany): the requirement
+  // spec/revision/root chain and the immutable decision approval register — TRUNCATEd together
+  // because the spec FKs onto the register. Approvals recorded through the API in a prior run
+  // would otherwise block the DecisionOption/Decision wipes below.
+  await prisma.$executeRawUnsafe(
+    'TRUNCATE TABLE "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
+  );
+  await prisma.projectCapability.deleteMany();
   await prisma.gateOverride.deleteMany();
   await prisma.drawingRecipient.deleteMany();
   await prisma.passwordCredentialChallenge.deleteMany();

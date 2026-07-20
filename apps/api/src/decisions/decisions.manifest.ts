@@ -7,11 +7,11 @@ export const decisionsManifest: ModuleManifest = {
   kind: 'domain',
   // Task 9 — `decisionProjection` is the module's own rebuildable read-model table, written only by
   // its `decisions.inbox` projection consumer and read only by its projection query.
-  ownsModels: ['decision', 'decisionOption', 'decisionEvent', 'changeRequest', 'decisionProjection'],
+  ownsModels: ['decision', 'decisionOption', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection'],
   // Task 8 — the FIRST fully-extracted backend module: its models are read-encapsulated, so no
   // other module reads decision persistence directly (the boundary check enforces it); every
   // cross-module read goes through the queries below (DecisionsQueryService).
-  readEncapsulated: ['decision', 'decisionOption', 'decisionEvent', 'changeRequest', 'decisionProjection'],
+  readEncapsulated: ['decision', 'decisionOption', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection'],
   dependsOn: [],
   workflowParticipants: [],
   producesEvents: [
