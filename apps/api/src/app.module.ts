@@ -30,6 +30,7 @@ import { VendorsController } from './procurement/vendors.controller';
 import { ProcurementController } from './procurement/procurement.controller';
 import { VendorsService } from './procurement/vendors.service';
 import { ProcurementService } from './procurement/procurement.service';
+import { PurchaseOrdersService } from './procurement/purchase-orders.service';
 import { ProcurementParticipant } from './procurement/procurement.participant';
 import { RequirementsService } from './activities/requirements.service';
 import { CapabilitiesService } from './platform/capabilities.service';
@@ -105,6 +106,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     RequirementsQueryService,
     VendorsService,
     ProcurementService,
+    PurchaseOrdersService,
     ProcurementParticipant,
     CapabilitiesService,
     JwtGuard,

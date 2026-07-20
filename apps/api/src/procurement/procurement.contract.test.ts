@@ -15,13 +15,21 @@ describe('Task 2 — the procurement module implements its shared command/query 
   it('the module read-encapsulates every model it owns (fully extracted from day one)', () => {
     expect(procurementManifest.readEncapsulated).toEqual(procurementManifest.ownsModels);
     expect([...(procurementManifest.ownsModels ?? [])].sort()).toEqual([
-      'projectVendor', 'quoteComparison', 'requisition', 'requisitionLine', 'rfq', 'vendor', 'vendorQuote', 'vendorQuoteLine',
+      'deliveryCommitment', 'deliveryPromise',
+      'projectVendor', 'purchaseOrder', 'purchaseOrderLine', 'purchaseOrderVersion',
+      'quoteComparison', 'requisition', 'requisitionLine', 'rfq', 'vendor', 'vendorQuote', 'vendorQuoteLine',
     ]);
   });
 
-  it('the manifest publishes exactly the §G pipeline events (submitted/approved + comparison approval)', () => {
+  it('the manifest publishes exactly the §G pipeline events (requisition/comparison + Task-3 po/delivery)', () => {
     expect([...procurementManifest.producesEvents].sort()).toEqual([
       'comparison.approved',
+      'delivery.committed',
+      'delivery.defaulted',
+      'delivery.revised',
+      'po.amended',
+      'po.cancelled',
+      'po.issued',
       'requisition.approved',
       'requisition.submitted',
     ]);

@@ -543,6 +543,23 @@ assert "the comparison approval completeness CHECK is database-enforced" \
   "SELECT COUNT(*) FROM pg_constraint WHERE conname='QuoteComparison_approval_check';" \
   "1"
 
+# Phase 3 Task 3 — versioned POs + delivery commitments: purely additive, row-free.
+assert "the five purchase-order/delivery tables exist" \
+  "SELECT ((to_regclass('\"PurchaseOrder\"') IS NOT NULL) AND (to_regclass('\"PurchaseOrderVersion\"') IS NOT NULL) AND (to_regclass('\"PurchaseOrderLine\"') IS NOT NULL) AND (to_regclass('\"DeliveryCommitment\"') IS NOT NULL) AND (to_regclass('\"DeliveryPromise\"') IS NOT NULL))::text;" \
+  "true"
+assert "the purchase-order migration wrote NO rows over the legacy DB (pure capability add)" \
+  "SELECT (SELECT COUNT(*) FROM \"PurchaseOrder\") + (SELECT COUNT(*) FROM \"PurchaseOrderVersion\") + (SELECT COUNT(*) FROM \"DeliveryCommitment\");" \
+  "0"
+assert "'ordered' joined the requisition-line status vocabulary (widened CHECK)" \
+  "SELECT pg_get_constraintdef(oid) LIKE '%ordered%' FROM pg_constraint WHERE conname='RequisitionLine_status_check';" \
+  "t"
+assert "the frozen-snapshot, lifecycle-only and append-only PO/delivery triggers are installed" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('PurchaseOrder_append_only','PurchaseOrderVersion_lifecycle_only','PurchaseOrderLine_frozen','DeliveryCommitment_lifecycle_only','DeliveryPromise_append_only') AND NOT tgisinternal;" \
+  "5"
+assert "the §F overage-reason and cancel/close-short reason CHECKs are database-enforced" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('PurchaseOrderLine_overage_reason_check','PurchaseOrderVersion_cancel_reason_check','PurchaseOrderVersion_close_short_reason_check','DeliveryPromise_revision_reason_check');" \
+  "4"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

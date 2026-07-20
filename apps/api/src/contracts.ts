@@ -716,3 +716,47 @@ export const approveComparisonSchema = z.object({
   justification: z.string().trim().min(1).max(2000).optional(),
 }).strict();
 export type ApproveComparisonInput = z.infer<typeof approveComparisonSchema>;
+
+// ── Phase 3 Task 3 — purchase orders + delivery commitments (plan §F). The commercial
+// snapshot is SERVER-frozen from the comparison-approved quote — the caller picks lines and
+// quantities, never authors rates or landed amounts. approvedOverage is accepted ONLY by the
+// issue/amend commands (with a reason), matching "set only by pmc at issuance/amendment".
+const poLineShape = z.object({
+  requisitionLineId: z.string().min(1),
+  qty: z.string().trim().min(1), // base-UOM decimal string (parseQuantity-canonicalized)
+  uomConversion: z.string().trim().min(1).optional(), // vendor pack unit → base UOM (default 1)
+}).strict();
+const poOverageShape = z.object({
+  requisitionLineId: z.string().min(1), // names the line the headroom applies to
+  approvedOverage: z.string().trim().min(1),
+  reason: z.string().trim().min(1).max(1000),
+}).strict();
+export const createPoSchema = z.object({
+  comparisonId: z.string().min(1),
+  lines: z.array(poLineShape).min(1).max(50),
+}).strict();
+export type CreatePoInput = z.infer<typeof createPoSchema>;
+export const issuePoSchema = z.object({
+  overages: z.array(poOverageShape).max(50).optional(),
+}).strict();
+export type IssuePoInput = z.infer<typeof issuePoSchema>;
+export const amendPoSchema = z.object({
+  reason: z.string().trim().min(1).max(1000),
+  lines: z.array(poLineShape).min(1).max(50),
+  overages: z.array(poOverageShape).max(50).optional(),
+}).strict();
+export type AmendPoInput = z.infer<typeof amendPoSchema>;
+export const cancelPoSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+export type CancelPoInput = z.infer<typeof cancelPoSchema>;
+export const closeShortPoSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+export type CloseShortPoInput = z.infer<typeof closeShortPoSchema>;
+export const commitDeliverySchema = z.object({
+  poLineId: z.string().min(1),
+  promisedDate: z.string().trim().min(1), // ISO civil date (validated by the civil-date helper)
+}).strict();
+export type CommitDeliveryInput = z.infer<typeof commitDeliverySchema>;
+export const reviseDeliverySchema = z.object({
+  promisedDate: z.string().trim().min(1),
+  reason: z.string().trim().min(1).max(1000), // every revision explains itself (§F)
+}).strict();
+export type ReviseDeliveryInput = z.infer<typeof reviseDeliverySchema>;

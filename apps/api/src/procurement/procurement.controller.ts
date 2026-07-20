@@ -1,23 +1,31 @@
 import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
 import { ProcurementService } from './procurement.service';
+import { PurchaseOrdersService } from './purchase-orders.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
 import {
   createRequisitionSchema, rejectRequisitionSchema, createRfqSchema, recordQuoteSchema, approveComparisonSchema,
+  createPoSchema, issuePoSchema, amendPoSchema, cancelPoSchema, closeShortPoSchema, commitDeliverySchema, reviseDeliverySchema,
   type CreateRequisitionInput, type RejectRequisitionInput, type CreateRfqInput, type RecordQuoteInput, type ApproveComparisonInput,
+  type CreatePoInput, type IssuePoInput, type AmendPoInput, type CancelPoInput, type CloseShortPoInput,
+  type CommitDeliveryInput, type ReviseDeliveryInput,
 } from '../contracts';
 
 /**
- * Phase 3 Task 2 — the §F procurement pipeline through comparison approval. Every handler is
- * CAPABILITY-GATED in the service (§D — 404 off-pilot). Authority per the §H matrix:
- * drafting/submitting a requisition is pmc/engineer; approval, rejection, line disposition
- * and everything from RFQs to the comparison is pmc. Reads are pmc/engineer.
+ * Phase 3 Tasks 2–3 — the §F procurement pipeline through PO issuance + delivery
+ * commitments. Every handler is CAPABILITY-GATED in the service (§D — 404 off-pilot).
+ * Authority per the §H matrix: drafting/submitting a requisition is pmc/engineer; approval,
+ * rejection, line disposition and everything from RFQs through POs and deliveries is pmc.
+ * Reads are pmc/engineer.
  */
 @Controller('projects/:projectId')
 @UseGuards(JwtGuard, RolesGuard)
 export class ProcurementController {
-  constructor(private readonly procurement: ProcurementService) {}
+  constructor(
+    private readonly procurement: ProcurementService,
+    private readonly purchaseOrders: PurchaseOrdersService,
+  ) {}
 
   @Post('requisitions')
   @RolesFor('requisition.submit')
@@ -154,5 +162,125 @@ export class ProcurementController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.procurement.approveComparison(projectId, rfqId, body, user, idempotencyKey);
+  }
+
+  // ── Task 3 — purchase orders (§F versioned machine; pmc authority per §H) ────────────────
+
+  @Post('pos')
+  @RolesFor('procurement.manage')
+  createPo(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(createPoSchema)) body: CreatePoInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.purchaseOrders.create(projectId, body, user, idempotencyKey);
+  }
+
+  @Get('pos')
+  @RolesFor('procurement.read')
+  listPos(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.purchaseOrders.listPos(projectId, user);
+  }
+
+  @Get('pos/:poId')
+  @RolesFor('procurement.read')
+  readPo(@Param('projectId') projectId: string, @Param('poId') poId: string, @CurrentUser() user: AuthUser) {
+    return this.purchaseOrders.readPo(projectId, poId, user);
+  }
+
+  @Post('pos/:poId/issue')
+  @RolesFor('procurement.manage')
+  issuePo(
+    @Param('projectId') projectId: string,
+    @Param('poId') poId: string,
+    @Body(new ZodPipe(issuePoSchema)) body: IssuePoInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.purchaseOrders.issue(projectId, poId, body, user, idempotencyKey);
+  }
+
+  @Post('pos/:poId/amend')
+  @RolesFor('procurement.manage')
+  amendPo(
+    @Param('projectId') projectId: string,
+    @Param('poId') poId: string,
+    @Body(new ZodPipe(amendPoSchema)) body: AmendPoInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.purchaseOrders.amend(projectId, poId, body, user, idempotencyKey);
+  }
+
+  @Post('pos/:poId/cancel')
+  @RolesFor('procurement.manage')
+  cancelPo(
+    @Param('projectId') projectId: string,
+    @Param('poId') poId: string,
+    @Body(new ZodPipe(cancelPoSchema)) body: CancelPoInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.purchaseOrders.cancel(projectId, poId, body, user, idempotencyKey);
+  }
+
+  @Post('pos/:poId/close-short')
+  @RolesFor('procurement.manage')
+  closeShortPo(
+    @Param('projectId') projectId: string,
+    @Param('poId') poId: string,
+    @Body(new ZodPipe(closeShortPoSchema)) body: CloseShortPoInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.purchaseOrders.closeShort(projectId, poId, body, user, idempotencyKey);
+  }
+
+  // ── Task 3 — delivery commitments (append-only promise history) ──────────────────────────
+
+  @Post('deliveries')
+  @RolesFor('procurement.manage')
+  commitDelivery(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(commitDeliverySchema)) body: CommitDeliveryInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.purchaseOrders.commitDelivery(projectId, body, user, idempotencyKey);
+  }
+
+  @Post('deliveries/:commitmentId/revise')
+  @RolesFor('procurement.manage')
+  reviseDelivery(
+    @Param('projectId') projectId: string,
+    @Param('commitmentId') commitmentId: string,
+    @Body(new ZodPipe(reviseDeliverySchema)) body: ReviseDeliveryInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.purchaseOrders.reviseDelivery(projectId, commitmentId, body, user, idempotencyKey);
+  }
+
+  @Post('deliveries/:commitmentId/fulfill')
+  @RolesFor('procurement.manage')
+  fulfillDelivery(
+    @Param('projectId') projectId: string,
+    @Param('commitmentId') commitmentId: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.purchaseOrders.fulfillDelivery(projectId, commitmentId, user, idempotencyKey);
+  }
+
+  @Post('deliveries/:commitmentId/default')
+  @RolesFor('procurement.manage')
+  defaultDelivery(
+    @Param('projectId') projectId: string,
+    @Param('commitmentId') commitmentId: string,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.purchaseOrders.defaultDelivery(projectId, commitmentId, user, idempotencyKey);
   }
 }

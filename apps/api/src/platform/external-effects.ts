@@ -73,6 +73,14 @@ export const EXTERNAL_EFFECTS = {
   'requisition.submitted': { eventType: 'requisition.submitted', invalidate: true, push: null },
   'requisition.approved': { eventType: 'requisition.approved', invalidate: true, push: null },
   'comparison.approved': { eventType: 'comparison.approved', invalidate: true, push: null },
+  // Task 3 — §G PO/delivery events (issued/amended/cancelled + committed/revised/defaulted
+  // ONLY). Snapshot-invalidate only; the §A at-risk consumption arrives with Task 6.
+  'po.issued': { eventType: 'po.issued', invalidate: true, push: null },
+  'po.amended': { eventType: 'po.amended', invalidate: true, push: null },
+  'po.cancelled': { eventType: 'po.cancelled', invalidate: true, push: null },
+  'delivery.committed': { eventType: 'delivery.committed', invalidate: true, push: null },
+  'delivery.revised': { eventType: 'delivery.revised', invalidate: true, push: null },
+  'delivery.defaulted': { eventType: 'delivery.defaulted', invalidate: true, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────

@@ -99,6 +99,7 @@ model Project {
   materialSpecs    MaterialRequirementSpec[]
   vendorBindings   ProjectVendor[]           @relation("projectVendorProject")
   requisitions     Requisition[]
+  purchaseOrders   PurchaseOrder[]           @relation("purchaseOrderProject")
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -785,6 +786,10 @@ model User {
   rfqsIssued              Rfq[]                      @relation("rfqsIssued")
   quotesRecorded          VendorQuote[]              @relation("quotesRecorded")
   comparisonsCreated      QuoteComparison[]          @relation("comparisonsCreated")
+  purchaseOrdersCreated   PurchaseOrder[]            @relation("purchaseOrdersCreated")
+  poVersionsCreated       PurchaseOrderVersion[]     @relation("poVersionsCreated")
+  commitmentsCreated      DeliveryCommitment[]       @relation("commitmentsCreated")
+  promisesRecorded        DeliveryPromise[]          @relation("promisesRecorded")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -1024,7 +1029,8 @@ model ProjectVendor {
   boundBy   User     @relation("vendorsBound", fields: [boundById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   boundById String
 
-  quotes VendorQuote[]
+  quotes         VendorQuote[]
+  purchaseOrders PurchaseOrder[]
 
   @@unique([projectId, vendorId])
   @@unique([projectId, id])
@@ -1049,8 +1055,9 @@ model Requisition {
   rejectedReason String?
   closedAt       DateTime?
 
-  lines RequisitionLine[]
-  rfqs  Rfq[]
+  lines          RequisitionLine[]
+  rfqs           Rfq[]
+  purchaseOrders PurchaseOrder[]
 
   @@unique([projectId, id])
 }
@@ -1067,11 +1074,12 @@ model RequisitionLine {
   requirementId String
   revision      Int
   qty           Decimal             @db.Decimal(18, 6) // in the revision's base UOM (single source)
-  status        String              @default("open") // open|cancelled ('ordered' arrives with Task-3 POs)
+  status        String              @default("open") // open|ordered|cancelled — 'ordered' = fully allocated to live POs (Task 3); open+ordered BOTH count toward §F bound 1
   cancelledAt   DateTime?
   cancelledById String?
 
   quoteLines VendorQuoteLine[]
+  poLines    PurchaseOrderLine[]
 
   @@unique([projectId, id])
   @@index([projectId, requirementId, revision])
@@ -1164,6 +1172,133 @@ model QuoteComparison {
   approvedAt       DateTime?
 
   @@unique([projectId, rfqId]) // one comparison per RFQ
+  @@unique([projectId, id])
+}
+
+// §F Task 3 — the PO ROOT: immutable identity (vendor through the §H binding + source
+// requisition + comparison provenance). Lifecycle lives on VERSION rows; the root never
+// changes (DB append-only trigger, the ActivityRequirementRoot pattern).
+model PurchaseOrder {
+  id            String        @id @default(cuid())
+  projectId     String
+  project       Project       @relation("purchaseOrderProject", fields: [projectId], references: [id])
+  binding       ProjectVendor @relation(fields: [projectId, vendorId], references: [projectId, vendorId], onDelete: NoAction, onUpdate: NoAction)
+  vendorId      String
+  requisition   Requisition   @relation(fields: [projectId, requisitionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionId String
+  comparisonId  String // provenance: the APPROVED comparison this PO executes
+  createdAt     DateTime      @default(now())
+  createdBy     User          @relation("purchaseOrdersCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById   String
+
+  versions PurchaseOrderVersion[]
+
+  @@unique([projectId, id])
+}
+
+// §F — ONE version of a PO. draft → issued → partially_received → completed;
+// issued → amended (a NEW version row is issued; THIS row's frozen snapshot is retained
+// verbatim) | cancelled (only with zero accepted receipts — otherwise close-short with
+// reason). Reissue = the new version referencing the amended one via supersedesVersion.
+// DB triggers freeze everything except the lifecycle columns; rows are never deleted.
+model PurchaseOrderVersion {
+  id                String        @id @default(cuid())
+  projectId         String
+  po                PurchaseOrder @relation(fields: [projectId, poId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  poId              String
+  version           Int
+  status            String        @default("draft") // draft|issued|partially_received|completed|amended|cancelled|closed_short
+  supersedesVersion Int? // the amended prior version this reissue replaces
+  issuedById        String? // transition attribution (Decision.approvedById precedent)
+  issuedAt          DateTime?
+  amendedAt         DateTime?
+  amendReason       String?
+  cancelledAt       DateTime?
+  cancelReason      String?
+  closedShortAt     DateTime?
+  closeShortReason  String?
+  createdAt         DateTime      @default(now())
+  createdBy         User          @relation("poVersionsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById       String
+
+  lines PurchaseOrderLine[]
+
+  @@unique([poId, version])
+  @@unique([projectId, id])
+}
+
+// §F — a PO line's FROZEN commercial snapshot, copied from the comparison-approved quote
+// line at creation: specification ref, make, UOM conversion, rate, taxes, landed amount.
+// committedAmountBase = rate × qty × uomConversion + taxAmount + freightAmount, computed
+// once and frozen — the Phase-5 commitment fact. A DB trigger rejects any UPDATE except
+// receivedQty (the procurement-owned received-progress fact Task-4 receipts append through
+// the participant) and the issuance-time approvedOverage(+reason); rows are never deleted.
+// approvedOverage is the ONLY §F bound-3 headroom: set by pmc at issuance/amendment with a
+// reason, never afterwards.
+model PurchaseOrderLine {
+  id                  String               @id @default(cuid())
+  projectId           String
+  poVersion           PurchaseOrderVersion @relation(fields: [projectId, poVersionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  poVersionId         String
+  requisitionLine     RequisitionLine      @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionLineId   String
+  requirementId       String // frozen requirement pin (copied from the requisition line)
+  revision            Int
+  specFingerprint     String? // the revision's material spec identity at freeze time
+  quotedMake          String?
+  uom                 String // the revision's base UOM (single source)
+  uomConversion       Decimal              @default(1) @db.Decimal(18, 6) // vendor pack unit → base UOM factor, frozen at creation
+  qty                 Decimal              @db.Decimal(18, 6) // ordered qty in base UOM
+  rate                Decimal              @db.Decimal(18, 2)
+  taxAmount           Decimal              @db.Decimal(18, 2)
+  freightAmount       Decimal              @db.Decimal(18, 2)
+  landedAmount        Decimal              @db.Decimal(18, 2) // the quote line's landed metric, copied verbatim
+  committedAmountBase Decimal              @db.Decimal(18, 2)
+  approvedOverage     Decimal              @default(0) @db.Decimal(18, 6)
+  overageReason       String?
+  receivedQty         Decimal              @default(0) @db.Decimal(18, 6)
+
+  commitments DeliveryCommitment[]
+
+  @@unique([projectId, id])
+  @@index([projectId, requisitionLineId])
+}
+
+// §F — a vendor's delivery commitment on a PO line: committed → revised* → fulfilled |
+// defaulted. Every revision APPENDS a dated promise row — full history, nothing
+// overwritten; the LATEST promise drives §A at-risk (Task 6).
+model DeliveryCommitment {
+  id          String            @id @default(cuid())
+  projectId   String
+  poLine      PurchaseOrderLine @relation(fields: [projectId, poLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  poLineId    String
+  status      String            @default("committed") // committed|revised|fulfilled|defaulted
+  createdAt   DateTime          @default(now())
+  createdBy   User              @relation("commitmentsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+  fulfilledAt DateTime?
+  defaultedAt DateTime?
+
+  promises DeliveryPromise[]
+
+  @@unique([projectId, id])
+}
+
+// §F — ONE dated promise in a commitment's append-only history (PG BEFORE UPDATE/DELETE
+// trigger). seq is monotone per commitment; the initial promise carries no reason.
+model DeliveryPromise {
+  id           String             @id @default(cuid())
+  projectId    String
+  commitment   DeliveryCommitment @relation(fields: [projectId, commitmentId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  commitmentId String
+  seq          Int
+  promisedDate DateTime           @db.Date
+  reason       String? // why the promise moved (required for every revision; null on the initial promise)
+  recordedAt   DateTime           @default(now())
+  recordedBy   User               @relation("promisesRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById String
+
+  @@unique([commitmentId, seq])
   @@unique([projectId, id])
 }
 

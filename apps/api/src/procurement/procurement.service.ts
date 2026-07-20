@@ -106,9 +106,11 @@ export class ProcurementService {
     tx: Prisma.TransactionClient, projectId: string, requirementId: string, revision: number, addQty: Prisma.Decimal,
   ): Promise<void> {
     const rev = await this.requirementsQuery.revisionForAllocation(tx, projectId, requirementId, revision);
+    // Task 3: a line fully ordered to POs is marked 'ordered' — it STILL holds its
+    // requirement allocation (only 'cancelled' releases it).
     const allocated = await tx.requisitionLine.aggregate({
       where: {
-        projectId, requirementId, revision, status: 'open',
+        projectId, requirementId, revision, status: { in: ['open', 'ordered'] },
         requisition: { status: { notIn: ['rejected', 'closed'] } },
       },
       _sum: { qty: true },

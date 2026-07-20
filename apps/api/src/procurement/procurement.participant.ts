@@ -14,11 +14,13 @@ import type { Prisma } from '@prisma/client';
 @Injectable()
 export class ProcurementParticipant {
   async assertRequirementDisposable(tx: Prisma.TransactionClient, projectId: string, requirementId: string): Promise<void> {
+    // Task 3: an 'ordered' line is bound even harder downstream (live PO lines) — it
+    // demands disposition exactly like an open one; only 'cancelled' lines are settled.
     const open = await tx.requisitionLine.count({
       where: {
         projectId,
         requirementId,
-        status: 'open',
+        status: { in: ['open', 'ordered'] },
         requisition: { status: { notIn: ['rejected', 'closed'] } },
       },
     });

@@ -65,6 +65,14 @@ export const DOMAIN_EVENT_TYPES = [
   'requisition.submitted',
   'requisition.approved',
   'comparison.approved',
+  // Phase 3 Task 3 — POs + delivery commitments (plan §G catalog: issued/amended/cancelled
+  // and committed/revised/defaulted ONLY; drafts, close-short and fulfilment are audit facts)
+  'po.issued',
+  'po.amended',
+  'po.cancelled',
+  'delivery.committed',
+  'delivery.revised',
+  'delivery.defaulted',
   'phase.created',
   'phase.removed',
   // inspections
