@@ -10,6 +10,27 @@ order; every step names the command and the check that gates the next step.
 Two operator identities appear below: pass YOUR identity (email) to `--operator` and a short
 auditable reason to `--reason` — both are recorded durably (`OutboxOperatorAction`).
 
+## 0. Phase-3 approval-register migration note (one-time, releases ≥ the round-3 correction)
+
+`20261212000000_phase3_approval_provenance` was amended IN PLACE by the Task-1 round-3
+correction: its round-2 form backfilled only each decision's LATEST approval and could
+falsely abort a legitimate upgrade (a requirement pinning an earlier approved version). The
+strategy for both database states — check first with
+`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name LIKE '20261212%';`:
+
+- **Not yet applied** (upgrading straight from a pre-Phase-3-correction release): the amended
+  migration backfills EVERY uniquely provable approval; `20261216000000_phase3_approval_history`
+  then inserts nothing. No action needed.
+- **Already applied** (the defective round-2 form ran — it can only have completed on a
+  database with no earlier-version spec references): `prisma migrate deploy` skips it by name
+  (applied-migration checksums are not re-verified — the amendment is inert there, and this
+  note is the explicit record of it) and `20261216000000_phase3_approval_history` idempotently
+  completes the register with the missing earlier provable approvals. No action needed.
+
+In BOTH states the deploy aborts loudly (sampled rows, named repair) on forged/unverifiable
+spec provenance or approver identities naming no user — repair the data explicitly and re-run
+`prisma migrate deploy`; never null provenance to force it through.
+
 ## 1. Drain all OLD application instances
 
 Stop routing to and shut down every instance running the PREVIOUS build. The single-sender

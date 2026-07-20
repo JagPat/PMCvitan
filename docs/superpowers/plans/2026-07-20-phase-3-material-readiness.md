@@ -7,18 +7,23 @@ independent review returned BLOCKED NARROWLY (four findings), corrected in PR #1
 `main` `d0897a6`: ActivityRequirementRoot lineage + append-only triggers; server-resolved
 `decisions.approvedRef`; type-neutral revisions + revision-owned MaterialRequirementSpec;
 DATE `requiredBy` + membership/identity FKs; shared contracts; explicit `requirement.read`
-policy). The narrow re-review of #190 returned SIX further findings; the round-2 correction
-(the decisions-owned IMMUTABLE DecisionApprovalRevision register written in the same
-transaction as approve/reapprove with monotonic versions across provable and unprovable
-legacy approvals; spec provenance FK-bound onto the register with label fallback and
-event-count identity removed; a diagnostic-first forward migration that ABORTS on forged or
-unverifiable provenance with sampled rows, skips ambiguous legacy approvals loudly for
-explicit operator repair and nulls nothing silently; commit-time material↔spec pairing via
-deferred constraint triggers + single-source UOM with the spec's duplicated baseUom column
-removed; responsible-membership validation inside the readiness-locked command transaction
-with both-ordering probes; an immutable ActivityRequirementRoot) is on a held PR awaiting a
-narrow re-review limited to those findings. Task 2 begins ONLY after it clears. Three
-non-blocking guardrails from the GO are recorded in §A for Tasks 5–6.** Canonical spec:
+policy). The narrow re-review of #190 returned SIX further findings, resolved by the round-2
+correction (PR #191, merged @ `main` `7d3b29d`: the decisions-owned IMMUTABLE
+DecisionApprovalRevision register; register-FK'd spec provenance with label fallback and
+event-count identity removed; the diagnostic-first migration; commit-time material↔spec
+pairing + single-source UOM; readiness-locked responsible validation; an immutable
+ActivityRequirementRoot). The #191 narrow re-review returned BLOCKED NARROWLY: one P1 — the
+migration's current-only backfill falsely rejected a VALID earlier-version provenance
+reference (a requirement pinned while v1 governed, before a reapproval) as forged, blocking
+a legitimate `d0897a6` upgrade — plus a P2 (sequential membership probe, not a race) and a
+P3 (stale docs). The round-3 correction (the backfill amended in place, documented, to
+register EVERY uniquely provable approval/reapproval event; the idempotent
+`20261216000000_phase3_approval_history` migration completing already-applied databases,
+both-states strategy in `docs/RUNBOOK.md` §0; the upgrade-proof extended with the reviewer's
+exact reproduction and an applied-defective simulation; deterministic barrier-controlled
+races of the real member-removal vs requirement-create commands in both orderings) is on a
+held PR awaiting a narrow re-review. Task 2 begins ONLY after it clears. Three non-blocking
+guardrails from the GO are recorded in §A for Tasks 5–6.** Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
 merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:

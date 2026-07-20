@@ -51,20 +51,27 @@ END $$;
 CREATE UNIQUE INDEX "DecisionOption_decisionId_optionKey_key" ON "DecisionOption"("decisionId", "optionKey");
 
 -- ============================================================================
--- 2. BACKFILL (finding 3): one register row per decision with a recorded approval — its
---    CURRENT approval, at version = the recorded approval-event count (floor 1) — created
---    ONLY when the selected option is UNIQUELY PROVABLE: the latest approval event's payload
---    option label (else Decision.approvedOption) matches EXACTLY ONE of the decision's
---    options. Ambiguous decisions are SKIPPED with a loud sampled WARNING — they are refused
---    at runtime (`decisions.approvedRef` finds no register row → operator repair) and their
---    NEXT real approval versions PAST the unprovable history (the service allocates
---    max(head, recorded approval events) + 1). Earlier approvals (versions 1..N-1 of a
---    reapproved decision) are NOT fabricated: no pre-round-2 requirement ever referenced
---    them (`approvedRef` always served the current count), and inventing rows for approvals
---    whose option is unknowable would be fabrication, not backfill.
---    approvedAt/approvedById come from the latest approval event; an event-less approved
---    decision (pre-event-envelope legacy) falls back to Decision.createdAt /
---    Decision.approvedById — the best recorded truth, noted here, never invented beyond it.
+-- 2. BACKFILL (finding 3; AMENDED in the round-3 correction): one register row for EVERY
+--    uniquely provable approval/reapproval — NOT only the latest. The round-2 current-only
+--    assumption was WRONG: under the round-1 schema a requirement could legitimately pin an
+--    approval, after which the decision was reopened and reapproved — its spec then
+--    references an EARLIER version, and a current-only register falsely rejected that valid
+--    provenance as forged (found + reproduced by the #191 narrow re-review).
+--    Provability is PER EVENT: the event's own recorded payload option label (the LATEST
+--    event may additionally fall back to the decision's recorded `approvedOption`) matching
+--    EXACTLY ONE of the decision's options. An approved decision with NO recorded approval
+--    events (pre-event-envelope legacy) yields a single version-1 row from the decision's
+--    own recorded selection, at the best recorded timestamp (createdAt) — never invented
+--    beyond that. Ambiguous events are SKIPPED with a loud sampled WARNING; a spec that
+--    references a skipped version aborts below for explicit operator repair. Nothing is
+--    nulled or rewritten.
+--    AMENDMENT DISCIPLINE: this file was corrected IN PLACE after merge — documented, never
+--    silent. The defective version could only COMPLETE on a database with no earlier-version
+--    spec references (it ABORTED otherwise), and `prisma migrate deploy` applies by name
+--    without re-verifying applied checksums, so this amendment is inert on such databases;
+--    they are completed by `20261216000000_phase3_approval_history`, which idempotently
+--    inserts the missing provable history. Still-pending databases (upgrading straight from
+--    `d0897a6`) run THIS corrected version and need no repair.
 -- ============================================================================
 DO $$
 DECLARE
@@ -74,33 +81,37 @@ DECLARE
   s_orphan_actor TEXT;
 BEGIN
   CREATE TEMP TABLE _p3_backfill ON COMMIT DROP AS
-  SELECT
-    d."id"                                   AS decision_id,
-    d."projectId"                            AS project_id,
-    GREATEST(1, (SELECT COUNT(*) FROM "DecisionEvent" e
-                 WHERE e."decisionId" = d."id" AND e."type" IN ('approved','reapproved')))::int AS version,
-    COALESCE(le."payload"->>'option', d."approvedOption") AS selected_label,
-    (SELECT COUNT(*) FROM "DecisionOption" o
-     WHERE o."decisionId" = d."id"
-       AND o."label" = COALESCE(le."payload"->>'option', d."approvedOption"))::int AS label_matches,
-    (SELECT o."optionKey" FROM "DecisionOption" o
-     WHERE o."decisionId" = d."id"
-       AND o."label" = COALESCE(le."payload"->>'option', d."approvedOption")
-     LIMIT 1)                                AS option_key,
-    COALESCE(le."at", d."createdAt")         AS approved_at,
-    COALESCE(le."actorId", d."approvedById") AS approved_by,
-    COALESCE(le."payload"->>'onBehalfOf', d."onBehalfOf") AS on_behalf
-  FROM "Decision" d
-  LEFT JOIN LATERAL (
-    SELECT e."at", e."actorId", e."payload"
+  WITH approval_events AS (
+    SELECT e."decisionId" AS decision_id, e."at", e."id" AS event_id, e."actorId" AS actor_id, e."payload",
+           (ROW_NUMBER() OVER (PARTITION BY e."decisionId" ORDER BY e."at" ASC, e."id" ASC))::int AS version,
+           (COUNT(*) OVER (PARTITION BY e."decisionId"))::int AS total
     FROM "DecisionEvent" e
-    WHERE e."decisionId" = d."id" AND e."type" IN ('approved','reapproved')
-    ORDER BY e."at" DESC, e."id" DESC
-    LIMIT 1
-  ) le ON TRUE
-  WHERE d."status" = 'approved'
-     OR EXISTS (SELECT 1 FROM "DecisionEvent" e
-                WHERE e."decisionId" = d."id" AND e."type" IN ('approved','reapproved'));
+    WHERE e."type" IN ('approved','reapproved')
+  ),
+  candidates AS (
+    -- every recorded approval, versioned 1..N in event order
+    SELECT d."id" AS decision_id, d."projectId" AS project_id, ae.version,
+           COALESCE(ae."payload"->>'option', CASE WHEN ae.version = ae.total THEN d."approvedOption" END) AS selected_label,
+           ae."at" AS approved_at,
+           COALESCE(ae.actor_id, CASE WHEN ae.version = ae.total THEN d."approvedById" END) AS approved_by,
+           COALESCE(ae."payload"->>'onBehalfOf', CASE WHEN ae.version = ae.total THEN d."onBehalfOf" END) AS on_behalf
+    FROM "Decision" d
+    JOIN approval_events ae ON ae.decision_id = d."id"
+    UNION ALL
+    -- approved decisions with NO recorded approval events (pre-event-envelope legacy)
+    SELECT d."id", d."projectId", 1, d."approvedOption", d."createdAt", d."approvedById", d."onBehalfOf"
+    FROM "Decision" d
+    WHERE d."status" = 'approved'
+      AND NOT EXISTS (SELECT 1 FROM "DecisionEvent" e
+                      WHERE e."decisionId" = d."id" AND e."type" IN ('approved','reapproved'))
+  )
+  SELECT c.decision_id, c.project_id, c.version, c.selected_label, c.approved_at, c.approved_by, c.on_behalf,
+         (SELECT COUNT(*) FROM "DecisionOption" o
+          WHERE o."decisionId" = c.decision_id AND o."label" = c.selected_label)::int AS label_matches,
+         (SELECT o."optionKey" FROM "DecisionOption" o
+          WHERE o."decisionId" = c.decision_id AND o."label" = c.selected_label
+          LIMIT 1) AS option_key
+  FROM candidates c;
 
   -- a recorded approver that names NO existing user is unverifiable attribution — never
   -- silently nulled, never invented: ABORT with samples for explicit operator repair
@@ -114,14 +125,15 @@ BEGIN
     RAISE EXCEPTION 'phase3_approval_provenance ABORT: % approvals name a nonexistent approver — operator repair required (restore or correct the user identity), sampled: %', n_orphan_actor, s_orphan_actor;
   END IF;
 
-  -- ambiguous selected option → SKIP the backfill, WARN with samples, refuse at runtime
-  SELECT COUNT(*), string_agg(decision_id || ' (label=' || COALESCE(selected_label, '<null>') || ', matches=' || label_matches || ')', ' | ')
+  -- ambiguous selected option → SKIP that event's backfill, WARN with samples; a spec
+  -- referencing a skipped version aborts in step 3 for explicit operator repair
+  SELECT COUNT(*), string_agg(decision_id || ' v' || version || ' (label=' || COALESCE(selected_label, '<null>') || ', matches=' || label_matches || ')', ' | ')
     INTO n_ambiguous, s_ambiguous
-  FROM (SELECT decision_id, selected_label, label_matches FROM _p3_backfill
+  FROM (SELECT decision_id, version, selected_label, label_matches FROM _p3_backfill
         WHERE selected_label IS NULL OR label_matches <> 1
         LIMIT 10) s;
   IF n_ambiguous > 0 THEN
-    RAISE WARNING 'phase3_approval_provenance: % legacy approvals have NO uniquely provable selected option — NOT backfilled; these decisions cannot anchor requirement provenance until an operator repairs them, sampled: %', n_ambiguous, s_ambiguous;
+    RAISE WARNING 'phase3_approval_provenance: % legacy approvals have NO uniquely provable selected option — NOT backfilled; these approvals cannot anchor requirement provenance until an operator repairs them, sampled: %', n_ambiguous, s_ambiguous;
   END IF;
 
   INSERT INTO "DecisionApprovalRevision"
