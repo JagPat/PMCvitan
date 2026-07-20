@@ -19,7 +19,8 @@
     "outbox:status": "tsx src/platform/outbox/outbox.cli.ts status",
     "outbox:retry": "tsx src/platform/outbox/outbox.cli.ts retry",
     "outbox:seal-external": "tsx src/platform/outbox/outbox.cli.ts seal-external",
-    "projection:rebuild": "tsx src/platform/projections/projection-rebuild.cli.ts"
+    "projection:rebuild": "tsx src/platform/projections/projection-rebuild.cli.ts",
+    "capability:enable": "tsx src/platform/capability.cli.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -63,6 +63,9 @@ const MODEL_OWNER: Record<string, string> = {
   inspection: 'inspections', inspectionItem: 'inspections',
   drawing: 'drawings', drawingRevision: 'drawings', drawingRecipient: 'drawings', drawingAck: 'drawings',
   dailyLog: 'daily-log', crewRow: 'daily-log', siteMaterial: 'daily-log',
+  // Phase 3 Task 1 — the demand contract is activities-module-owned; its classifier domain is
+  // 'requirements' (the requirements.service pillar entry writes ONLY this model)
+  activityRequirement: 'requirements',
   projectNode: 'nodes',
   media: 'media',
   org: 'orgs', orgMembership: 'orgs', membership: 'orgs', project: 'orgs', projectCompany: 'orgs',
@@ -72,6 +75,8 @@ const MODEL_OWNER: Record<string, string> = {
   // identity-security infrastructure is shared by auth self-service and the
   // org-admin invitation correction workflow.
   passwordCredentialChallenge: 'SHARED', securityAuditEvent: 'SHARED',
+  // Phase 3 Task 1 — platform-owned pilot activation (§D); written only by the capabilities service/CLI
+  projectCapability: 'SHARED',
 };
 
 // The PILLAR mutating services: each owns a domain, writes an EXACT multiset of
@@ -100,6 +105,8 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   'activities/activities.service.ts': { domain: 'activities', foreign: {}, dispatch: 7 },
   // edge 6 (phase→activity detach) → FK SET NULL (phaseId)
   'activities/phases.service.ts': { domain: 'phases', foreign: {}, dispatch: 2 },
+  // Phase 3 Task 1 — requirement create/revise/cancel (capability-gated; append-only revisions)
+  'activities/requirements.service.ts': { domain: 'requirements', foreign: {}, dispatch: 3 },
   // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
   'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 3 },
   'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, dispatch: 5 },
@@ -122,6 +129,7 @@ const NON_PILLAR_WRITERS: Record<string, string> = {
   'orgs/members.service.ts': 'project roster — writes orgs-owned User/Membership; no cross-domain write, no signal',
   'orgs/companies.service.ts': 'project roster — writes orgs-owned ProjectCompany; no cross-domain write, no signal',
   'push/push.service.ts': 'infra — writes the SHARED PushSubscription; no domain table, no signal',
+  'platform/capabilities.service.ts': 'platform infra (Phase 3 Task 1) — pilot capability activation writes the SHARED ProjectCapability record; no module domain table, no signal',
   'platform/outbox/relay.service.ts': 'platform infra (Task 6) — the outbox relay writes the SHARED OutboxDelivery/ProcessedEvent/ProjectionCursor delivery-state tables and dispatches to consumers; no module domain table',
   'platform/outbox/outbox-operations.service.ts': 'platform infra (PR B Task 4) — operator dead-letter status/retry writes the SHARED OutboxDelivery/ProjectionCursor delivery-state + the OutboxOperatorAction audit; no module domain table',
   'platform/projections/rebuilder.service.ts': 'platform infra (Task 9) — the projection rebuilder writes the SHARED ProjectionGeneration lifecycle table and replays events into a building generation via each consumer\'s own handler; no module domain table',
@@ -216,6 +224,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Delete('media/:id')"],
   'inspections/inspections.controller.ts': ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')"],
   'activities/phases.controller.ts': ['Post()', "Delete(':phaseId')"],
+  'activities/requirements.controller.ts': ['Post()', "Post(':requirementId/revise')", "Post(':requirementId/cancel')"],
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')"],
 };
 
@@ -283,7 +292,7 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
     it('30 external-effect dispatch sites total across the pillar services (unchanged from the pre-PR-C emission count)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(30);
+      expect(total).toBe(33);
     });
   });
 
@@ -296,10 +305,10 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
     }
     it('67 mutating routes total (the documented command inventory §4)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(67);
+      expect(total).toBe(70);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(67);
+      expect(live).toBe(70);
     });
   });
 
@@ -313,10 +322,14 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
   describe('read + sender coupling (SnapshotService + ExternalEffectDispatcher injected in every emitter)', () => {
     const emitters = Object.entries(SERVICES).filter(([, s]) => s.dispatch > 0).map(([f]) => f);
-    it('all eight dispatching services depend on SnapshotService and the single ExternalEffectDispatcher', () => {
-      expect(emitters.length).toBe(8);
+    it('all nine dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning eight also read through SnapshotService', () => {
+      expect(emitters.length).toBe(9);
       for (const file of emitters) {
-        expect(read(file), `${file} no longer references SnapshotService`).toContain('SnapshotService');
+        // Phase 3 Task 1 — requirements returns the MODULE-OWNED dto (the Task-10 module-read
+        // pattern), never the snapshot, so it carries no SnapshotService dependency by design.
+        if (file !== 'activities/requirements.service.ts') {
+          expect(read(file), `${file} no longer references SnapshotService`).toContain('SnapshotService');
+        }
         // PR C: the in-request RealtimeGateway is replaced by the single sender in every emitter.
         expect(read(file), `${file} no longer injects ExternalEffectDispatcher`).toContain('ExternalEffectDispatcher');
       }

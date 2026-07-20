@@ -61,6 +61,12 @@ export const EXTERNAL_EFFECTS = {
   'activity.material_blocked': { eventType: 'activity.material_blocked', invalidate: true, push: null },
   'activity.unfiled': { eventType: 'activity.unfiled', invalidate: true, push: null },
   // ── phases ─────────────────────────────────────────────────────────────────────────────────
+  // Phase 3 Task 1 — requirement demand-contract events (pilot projects only; §D gate).
+  // Snapshot-invalidate only; no push notification (Inbox/notification semantics arrive with
+  // the readiness surfaces in later tasks).
+  'requirement.created': { eventType: 'requirement.created', invalidate: true, push: null },
+  'requirement.revised': { eventType: 'requirement.revised', invalidate: true, push: null },
+  'requirement.cancelled': { eventType: 'requirement.cancelled', invalidate: true, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────

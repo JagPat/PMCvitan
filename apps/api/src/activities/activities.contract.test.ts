@@ -28,7 +28,7 @@ describe('Task 10 — the activities module implements its shared command/query 
     expect(activitiesManifest.readEncapsulated).toEqual(activitiesManifest.ownsModels);
     // the activity spine owns EXACTLY its canonical models + the rebuildable projection table — no other
     // module reads any of them directly (the boundary check enforces it).
-    expect(activitiesManifest.ownsModels).toEqual(['activity', 'gateOverride', 'phase', 'activitiesProjection']);
+    expect(activitiesManifest.ownsModels).toEqual(['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement']);
   });
 
   it('the manifest publishes the activity/phase lifecycle + the participant signal events', () => {
@@ -50,6 +50,9 @@ describe('Task 10 — the activities module implements its shared command/query 
         'activity.unfiled',
         'phase.created',
         'phase.removed',
+        'requirement.cancelled',
+        'requirement.created',
+        'requirement.revised',
       ].sort(),
     );
     // the atomic activity↔inspection edges stay WORKFLOW contracts (participant), not cross-module

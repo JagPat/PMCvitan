@@ -55,6 +55,11 @@ export const DOMAIN_EVENT_TYPES = [
   'activity.material_blocked',
   'activity.unfiled',
   // phases
+  // Phase 3 Task 1 — the ActivityRequirement demand contract (activities-owned; plan §G:
+  // created/revised/cancelled ONLY — derived satisfaction produces no domain event)
+  'requirement.created',
+  'requirement.revised',
+  'requirement.cancelled',
   'phase.created',
   'phase.removed',
   // inspections
