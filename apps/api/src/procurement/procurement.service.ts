@@ -329,7 +329,7 @@ export class ProcurementService {
         });
         const created = await tx.vendorQuote.create({
           data: {
-            projectId, rfqId, vendorId: input.vendorId, validUntil,
+            projectId, rfqId, requisitionId: rfq.requisitionId, vendorId: input.vendorId, validUntil,
             leadTimeDays: input.leadTimeDays ?? null, paymentTerms: input.paymentTerms ?? null,
             warrantyTerms: input.warrantyTerms ?? null,
             historicalScore: input.historicalScore != null ? new Prisma.Decimal(input.historicalScore) : null,
@@ -347,6 +347,7 @@ export class ProcurementService {
           await tx.vendorQuoteLine.create({
             data: {
               projectId, quoteId: created.id, requisitionLineId: line.requisitionLineId,
+              requisitionId: rfq.requisitionId,
               baseRate: new Prisma.Decimal(line.baseRate), taxAmount: new Prisma.Decimal(line.taxAmount),
               freightAmount: new Prisma.Decimal(line.freightAmount), landedCost: new Prisma.Decimal(line.landedCost),
               quotedMake: line.quotedMake, matchesSpecification: line.matchesSpecification,

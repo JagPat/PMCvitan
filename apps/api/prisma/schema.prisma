@@ -1084,6 +1084,8 @@ model RequisitionLine {
   @@unique([projectId, id])
   // F4 correction: the FK target sealing a PO line's frozen requirement pin to ITS line's real pin
   @@unique([projectId, id, requirementId, revision])
+  // F4-r2: the FK target sealing quote/PO line CONTAINMENT to their parent requisition
+  @@unique([projectId, requisitionId, id])
   @@index([projectId, requirementId, revision])
 }
 
@@ -1114,6 +1116,10 @@ model VendorQuote {
   projectId       String
   rfq             Rfq           @relation(fields: [projectId, rfqId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   rfqId           String
+  // F4-r2: the RFQ's requisition, denormalized (immutable — the lifecycle trigger freezes it)
+  // and FK-sealed (projectId, rfqId, requisitionId) -> Rfq, so every quote LINE can be
+  // containment-sealed to this same requisition.
+  requisitionId   String
   binding         ProjectVendor @relation(fields: [projectId, vendorId], references: [projectId, vendorId], onDelete: NoAction, onUpdate: NoAction)
   vendorId        String
   status          String        @default("recorded") // recorded|superseded|expired
@@ -1136,6 +1142,8 @@ model VendorQuote {
   // at most ONE 'recorded' quote per (projectId, rfqId, vendorId) — a partial unique index
   // (SQL migration; not expressible in Prisma).
   @@unique([projectId, rfqId, vendorId, id])
+  // F4-r2: the FK target sealing each quote line's containment to THIS quote's requisition
+  @@unique([projectId, id, requisitionId])
   @@index([projectId, rfqId, vendorId])
 }
 
@@ -1148,6 +1156,10 @@ model VendorQuoteLine {
   quoteId              String
   requisitionLine      RequisitionLine @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   requisitionLineId    String
+  // F4-r2: containment — this line's requisition, FK-sealed BOTH to the parent quote's
+  // requisition and to the requisition line's own requisition (a foreign line is
+  // unrepresentable; rows are fully append-only).
+  requisitionId        String
   baseRate             Decimal         @db.Decimal(18, 2)
   taxAmount            Decimal         @db.Decimal(18, 2)
   freightAmount        Decimal         @db.Decimal(18, 2)
@@ -1191,8 +1203,9 @@ model QuoteComparison {
 
   @@unique([projectId, rfqId]) // one comparison per RFQ
   @@unique([projectId, id])
-  // F4 correction: the FK target sealing a PO's vendor + requisition to the APPROVED selection
-  @@unique([projectId, id, selectedVendorId, requisitionId])
+  // F4-r2: STATUS joins the provenance key, so a purchase order can only ever reference an
+  // APPROVED selection (its comparisonStatus column is CHECK-pinned to 'approved').
+  @@unique([projectId, id, selectedVendorId, requisitionId, status], map: "QuoteComparison_provenance_status_key")
 }
 
 // §F Task 3 — the PO ROOT: immutable identity (vendor through the §H binding + source
@@ -1207,6 +1220,9 @@ model PurchaseOrder {
   requisition   Requisition   @relation(fields: [projectId, requisitionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   requisitionId String
   comparisonId  String // provenance: the APPROVED comparison this PO executes
+  // F4-r2: CHECK-pinned to 'approved' and part of the provenance FK — a PO referencing a
+  // draft comparison is unrepresentable at PostgreSQL, not merely refused by the service.
+  comparisonStatus String     @default("approved")
   createdAt     DateTime      @default(now())
   createdBy     User          @relation("purchaseOrdersCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById   String
@@ -1214,6 +1230,8 @@ model PurchaseOrder {
   versions PurchaseOrderVersion[]
 
   @@unique([projectId, id])
+  // F4-r2: the FK target sealing every VERSION's containment to this PO's requisition
+  @@unique([projectId, id, requisitionId])
 }
 
 // §F — ONE version of a PO. draft → issued → partially_received → completed;
@@ -1227,6 +1245,9 @@ model PurchaseOrderVersion {
   po                PurchaseOrder @relation(fields: [projectId, poId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   poId              String
   version           Int
+  // F4-r2: the PO root's requisition, denormalized (frozen by the lifecycle trigger) and
+  // FK-sealed to the root, so every LINE can be containment-sealed in turn.
+  requisitionId     String
   status            String        @default("draft") // draft|issued|partially_received|completed|amended|cancelled|closed_short
   supersedesVersion Int? // the amended prior version this reissue replaces
   issuedById        String? // transition attribution (Decision.approvedById precedent)
@@ -1245,6 +1266,8 @@ model PurchaseOrderVersion {
 
   @@unique([poId, version])
   @@unique([projectId, id])
+  // F4-r2: the FK target sealing every LINE's containment to this version's requisition
+  @@unique([projectId, id, requisitionId])
 }
 
 // §F — a PO line's FROZEN commercial snapshot, copied from the comparison-approved quote
@@ -1268,6 +1291,10 @@ model PurchaseOrderLine {
   poVersionId         String
   requisitionLine     RequisitionLine      @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   requisitionLineId   String
+  // F4-r2: containment — this line's requisition, FK-sealed BOTH to the parent version's
+  // requisition and to the requisition line's own requisition (a foreign line is
+  // unrepresentable; the frozen trigger covers it).
+  requisitionId       String
   requirementId       String // frozen requirement pin (FK-sealed to the requisition line's pin)
   revision            Int
   specFingerprint     String // the DEMANDED material identity — always present (material-only pipeline; selection is match-only)

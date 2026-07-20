@@ -34,9 +34,17 @@ selection (+ material-only pipeline), the explicit purchaseUom/purchaseQty/conve
 triple with derived base qty + prorated partial-order tax/freight, complete-coverage-only
 comparison eligibility, PG-sealed quotes/comparisons + the four-FK provenance chain, one
 recorded quote per (rfq, vendor) + one commitment per PO line, and project-timezone civil
-expiry via the injected clock. **Awaiting the narrow re-review; Task 4 does not start until
-it clears.** Three non-blocking guardrails from the GO are recorded in §A for Tasks 5–6.**
-Canonical spec:
+expiry via the injected clock — merged (PR #195 @ `main` `bffd7c9`). **The narrow re-review
+CLEARED six of the seven findings; only F4 database provenance remained incomplete** (two
+P1s: a PO could reference a DRAFT comparison at PostgreSQL — the provenance FK omitted
+status; requisition containment was not enforced through quote/PO lines). **The F4-completion
+correction from `main` @ `bffd7c9` is DELIVERED on a held PR**: `comparisonStatus`
+CHECK-pinned to 'approved' joins the five-column PO provenance FK (draft references
+unrepresentable), and immutable denormalized `requisitionId` columns + composite FKs seal
+every quote line AND PO line to their parent RFQ/PO requisition — the reviewer's three
+probes RED at `bffd7c9`, GREEN at the correction head. **Awaiting the mechanical re-review;
+Task 4 does not start until it clears.** Three non-blocking guardrails from the GO are
+recorded in §A for Tasks 5–6.** Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
 merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:
