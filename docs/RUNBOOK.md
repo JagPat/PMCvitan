@@ -14,20 +14,42 @@ auditable reason to `--reason` — both are recorded durably (`OutboxOperatorAct
 
 `20261212000000_phase3_approval_provenance` was amended IN PLACE by the Task-1 round-3
 correction: its round-2 form backfilled only each decision's LATEST approval and could
-falsely abort a legitimate upgrade (a requirement pinning an earlier approved version). The
-strategy for both database states — check first with
-`SELECT migration_name FROM "_prisma_migrations" WHERE migration_name LIKE '20261212%';`:
+falsely abort a legitimate upgrade (a requirement pinning an earlier approved version). There
+are THREE possible database states — classify FIRST with the full record, not the name alone
+(a failed attempt also leaves a `_prisma_migrations` row):
 
-- **Not yet applied** (upgrading straight from a pre-Phase-3-correction release): the amended
-  migration backfills EVERY uniquely provable approval; `20261216000000_phase3_approval_history`
-  then inserts nothing. No action needed.
-- **Already applied** (the defective round-2 form ran — it can only have completed on a
-  database with no earlier-version spec references): `prisma migrate deploy` skips it by name
-  (applied-migration checksums are not re-verified — the amendment is inert there, and this
-  note is the explicit record of it) and `20261216000000_phase3_approval_history` idempotently
-  completes the register with the missing earlier provable approvals. No action needed.
+```sql
+SELECT migration_name, finished_at, rolled_back_at, logs
+FROM "_prisma_migrations" WHERE migration_name LIKE '20261212%';
+```
 
-In BOTH states the deploy aborts loudly (sampled rows, named repair) on forged/unverifiable
+- **No row — not yet applied** (upgrading straight from a pre-Phase-3-correction release):
+  the amended migration backfills EVERY uniquely provable approval;
+  `20261216000000_phase3_approval_history` then inserts nothing. No action needed.
+- **`finished_at` set — successfully applied** (the defective round-2 form ran — it can only
+  have completed on a database with no earlier-version spec references): `prisma migrate
+  deploy` skips it by name (applied-migration checksums are not re-verified — the amendment
+  is inert there, and this note is the explicit record of it) and
+  `20261216000000_phase3_approval_history` idempotently completes the register with the
+  missing earlier provable approvals. No action needed.
+- **`finished_at IS NULL AND rolled_back_at IS NULL` — a FAILED attempt** (e.g. the defective
+  form aborted on a valid earlier-version reference, or either form aborted on genuinely
+  forged/unverifiable data). Prisma refuses ALL later migrations until the failed record is
+  resolved. Recovery (Prisma's documented failed-migration workflow,
+  https://www.prisma.io/docs/orm/prisma-migrate/workflows/patching-and-hotfixing):
+  1. Read `logs` for the diagnostic; the migration runs in a single transaction, so verify
+     the PostgreSQL transaction rolled back (its objects — e.g. `DecisionApprovalRevision` —
+     are absent) and repair the DIAGNOSED data (genuinely forged provenance, orphan approver
+     identities); a valid earlier-version reference needs NO data repair — the amended file
+     itself is the fix.
+  2. Mark the failed record rolled back, then redeploy:
+     ```
+     pnpm --filter api exec prisma migrate resolve \
+       --rolled-back 20261212000000_phase3_approval_provenance
+     pnpm --filter api prisma:migrate
+     ```
+
+In ALL states the deploy aborts loudly (sampled rows, named repair) on forged/unverifiable
 spec provenance or approver identities naming no user — repair the data explicitly and re-run
 `prisma migrate deploy`; never null provenance to force it through.
 
