@@ -250,6 +250,7 @@ export class PurchaseOrdersService {
       await tx.purchaseOrderLine.create({
         data: {
           projectId, poVersionId, requisitionLineId: line.id,
+          requisitionId: line.requisitionId,
           requirementId: line.requirementId, revision: line.revision,
           specFingerprint: snapshot.specFingerprint, quotedMake: quoteLine.quotedMake,
           uom: snapshot.baseUom, purchaseUom: input.purchaseUom ?? snapshot.baseUom,
@@ -301,7 +302,7 @@ export class PurchaseOrdersService {
           },
         });
         const version = await tx.purchaseOrderVersion.create({
-          data: { projectId, poId: po.id, version: 1, createdById: actor.actorId },
+          data: { projectId, poId: po.id, requisitionId: po.requisitionId, version: 1, createdById: actor.actorId },
         });
         await this.freezeLines(tx, projectId, version.id, comparison.rfq.requisitionId, comparison.selectedQuoteId, input.lines);
         await recordAudit(tx, { projectId, actor, action: 'po.create', entity: 'PurchaseOrder', entityId: po.id });
@@ -364,7 +365,7 @@ export class PurchaseOrdersService {
         const comparison = await tx.quoteComparison.findFirstOrThrow({ where: { projectId, id: po.comparisonId }, select: { selectedQuoteId: true } });
         const next = await tx.purchaseOrderVersion.create({
           data: {
-            projectId, poId, version: current.version + 1, status: 'issued',
+            projectId, poId, requisitionId: po.requisitionId, version: current.version + 1, status: 'issued',
             supersedesVersion: current.version,
             issuedById: actor.actorId, issuedAt: new Date(), createdById: actor.actorId,
           },

@@ -14,11 +14,17 @@ import type { CreateRequirementInput } from '../../src/contracts';
 /**
  * Phase 3 Tasks 2-3 CORRECTION — the seven review findings, reproduce-first (live PG).
  *
- * Every probe here asserts the CORRECTED behavior and was RED at base `7ca1fc0`
+ * Round 1: every probe asserts the CORRECTED behavior and was RED at base `7ca1fc0`
  * (except where noted): F1/F1c/F3/F4a/F4b/F6 failed verbatim; F5's schema gap is
  * reproduced by the direct-insert probe (the service-path race passed at base only
  * because unserialized recordings completed sequentially); F7's defect was the
  * `new Date().toISOString()` call, replaced by the injected project-timezone clock.
+ *
+ * Round 2 (F4 completion — the narrow re-review's two P1 gaps): the three F4-r2 probes
+ * below were RED at `bffd7c9` — a PO referencing a DRAFT comparison inserted; a quote for
+ * requisition A accepted a line of requisition B; a PO for requisition A accepted a line
+ * of requisition B. They are sealed by the status-bearing provenance FK and the immutable
+ * denormalized requisitionId containment chain.
  */
 
 describe('Phase 3 T2-3 correction — the seven findings (live PG)', () => {
@@ -305,9 +311,9 @@ describe('Phase 3 T2-3 correction — the seven findings (live PG)', () => {
     const requisition = await procurement.approve(projectId, created.id, pmc(projectId));
     const rfq = await procurement.createRfq(projectId, { requisitionId: requisition.id }, pmc(projectId));
     const vendorId = await boundVendor(projectId);
-    await t.prisma.vendorQuote.create({ data: { projectId, rfqId: rfq.id, vendorId, validUntil: new Date('2027-01-01'), recordedById: f.memberUser.id } });
+    await t.prisma.vendorQuote.create({ data: { projectId, rfqId: rfq.id, requisitionId: requisition.id, vendorId, validUntil: new Date('2027-01-01'), recordedById: f.memberUser.id } });
     await expect(
-      t.prisma.vendorQuote.create({ data: { projectId, rfqId: rfq.id, vendorId, validUntil: new Date('2027-01-01'), recordedById: f.memberUser.id } }),
+      t.prisma.vendorQuote.create({ data: { projectId, rfqId: rfq.id, requisitionId: requisition.id, vendorId, validUntil: new Date('2027-01-01'), recordedById: f.memberUser.id } }),
     ).rejects.toThrow(/one_recorded_per_rfq_vendor|Unique constraint/);
   });
 
@@ -362,5 +368,87 @@ describe('Phase 3 T2-3 correction — the seven findings (live PG)', () => {
     await expect(
       pos.commitDelivery(projectId, { poLineId: lineRow.id, promisedDate: '2026-09-05' }, pmc(projectId)),
     ).rejects.toMatchObject({ status: 409 });
+  });
+
+  // ── round 2 — F4 completion (RED at bffd7c9) ────────────────────────────────────────────
+
+  const approvedRequisition = async (projectId: string, qty = '50') => {
+    const req = await freshRequirement(projectId);
+    const created = await procurement.createRequisition(projectId, { title: `R${seq++}`, lines: [{ requirementId: req.requirementId, revision: req.revision, qty }] }, pmc(projectId));
+    await procurement.submit(projectId, created.id, pmc(projectId));
+    return procurement.approve(projectId, created.id, pmc(projectId));
+  };
+
+  it('F4-r2 P1a: a PO referencing a DRAFT comparison is unrepresentable (status joins the provenance FK)', async () => {
+    const projectId = await freshProject();
+    const requisition = await approvedRequisition(projectId);
+    const rfq = await procurement.createRfq(projectId, { requisitionId: requisition.id }, pmc(projectId));
+    const vendorId = await boundVendor(projectId);
+    // the reviewer's exact shape: a DRAFT comparison with selectedVendorId set but NO
+    // selected quote (the MATCH SIMPLE gap) — a PO referencing it must be FK-rejected
+    const draft = await t.prisma.quoteComparison.create({
+      data: { projectId, rfqId: rfq.id, requisitionId: requisition.id, createdById: f.memberUser.id, selectedVendorId: vendorId },
+    });
+    await expect(
+      t.prisma.purchaseOrder.create({
+        data: { projectId, vendorId, requisitionId: requisition.id, comparisonId: draft.id, createdById: f.memberUser.id },
+      }),
+    ).rejects.toThrow();
+    // and the escape hatch is CHECK-pinned: a PO cannot simply declare comparisonStatus 'draft'
+    await expect(
+      t.prisma.purchaseOrder.create({
+        data: { projectId, vendorId, requisitionId: requisition.id, comparisonId: draft.id, comparisonStatus: 'draft', createdById: f.memberUser.id },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('F4-r2 P1b: a quote line from ANOTHER requisition is unrepresentable (containment chain)', async () => {
+    const projectId = await freshProject();
+    const reqA = await approvedRequisition(projectId);
+    const reqB = await approvedRequisition(projectId);
+    const rfqA = await procurement.createRfq(projectId, { requisitionId: reqA.id }, pmc(projectId));
+    const vendorId = await boundVendor(projectId);
+    const withQuote = await procurement.recordQuote(projectId, rfqA.id, {
+      vendorId, validUntil: '2027-01-01',
+      lines: [{ requisitionLineId: reqA.lines[0]!.id, baseRate: '10', taxAmount: '0', freightAmount: '0', landedCost: '10', quotedMake: 'UltraTech', matchesSpecification: true }],
+    }, pmc(projectId));
+    const quoteId = withQuote.quotes[0]!.id;
+    const insertForged = (requisitionId: string) =>
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "VendorQuoteLine" ("id","projectId","quoteId","requisitionLineId","requisitionId","baseRate","taxAmount","freightAmount","landedCost","quotedMake","matchesSpecification")
+         VALUES ('f4r2-forged-' || gen_random_uuid(), $1, $2, $3, $4, 10, 0, 0, 10, 'UltraTech', true)`,
+        projectId, quoteId, reqB.lines[0]!.id, requisitionId,
+      );
+    // claiming the quote's requisition A with B's line → the line-containment FK refuses
+    await expect(insertForged(reqA.id)).rejects.toThrow();
+    // claiming B honestly → the quote-containment FK refuses (the quote belongs to A)
+    await expect(insertForged(reqB.id)).rejects.toThrow();
+  });
+
+  it('F4-r2 P1b: a PO line from ANOTHER requisition is unrepresentable (containment chain)', async () => {
+    const projectId = await freshProject();
+    const reqA = await approvedRequisition(projectId);
+    const reqB = await approvedRequisition(projectId);
+    const rfqA = await procurement.createRfq(projectId, { requisitionId: reqA.id }, pmc(projectId));
+    const vendorId = await boundVendor(projectId);
+    const withQuote = await procurement.recordQuote(projectId, rfqA.id, {
+      vendorId, validUntil: '2027-01-01',
+      lines: [{ requisitionLineId: reqA.lines[0]!.id, baseRate: '10', taxAmount: '0', freightAmount: '0', landedCost: '10', quotedMake: 'UltraTech', matchesSpecification: true }],
+    }, pmc(projectId));
+    await procurement.createComparison(projectId, rfqA.id, pmc(projectId));
+    const approved = await procurement.approveComparison(projectId, rfqA.id, { selectedQuoteId: withQuote.quotes[0]!.id, reason: 'only' }, pmc(projectId));
+    const po = await pos.create(projectId, { comparisonId: approved.comparison!.id, lines: [{ requisitionLineId: reqA.lines[0]!.id, purchaseQty: '10' }] }, pmc(projectId));
+    const version = await t.prisma.purchaseOrderVersion.findFirstOrThrow({ where: { projectId, poId: po.id } });
+    const bLine = await t.prisma.requisitionLine.findFirstOrThrow({ where: { projectId, requisitionId: reqB.id } });
+    const insertForged = (requisitionId: string) =>
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "PurchaseOrderLine" ("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","specFingerprint","uom","purchaseUom","purchaseQty","conversionToBase","qty","rate","taxAmount","freightAmount","landedAmount","committedAmountBase")
+         VALUES ('f4r2-poline-' || gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'fp', 'bag', 'bag', 10, 1, 10, 10, 0, 0, 10, 100)`,
+        projectId, version.id, bLine.id, requisitionId, bLine.requirementId, bLine.revision,
+      );
+    // claiming the PO's requisition A with B's line → the line-containment FK refuses
+    await expect(insertForged(reqA.id)).rejects.toThrow();
+    // claiming B honestly → the version-containment FK refuses (the PO belongs to A)
+    await expect(insertForged(reqB.id)).rejects.toThrow();
   });
 });

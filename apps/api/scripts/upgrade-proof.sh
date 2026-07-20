@@ -580,6 +580,17 @@ assert "the F1 match-only identity: PO-line specFingerprint is NOT NULL" \
   "SELECT is_nullable FROM information_schema.columns WHERE table_name='PurchaseOrderLine' AND column_name='specFingerprint';" \
   "NO"
 
+# F4 round 2 — status-bearing PO provenance + requisition containment, row-free.
+assert "the PO provenance FK carries the comparison STATUS (draft references unrepresentable)" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname='PurchaseOrder_comparison_status_check')::text || '|' || (SELECT pg_get_constraintdef(oid) LIKE '%comparisonStatus%' FROM pg_constraint WHERE conname='PurchaseOrder_comparison_provenance_fkey')::text;" \
+  "1|true"
+assert "the four containment FKs seal quote lines AND PO lines to their parent requisition" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('VendorQuoteLine_quote_containment_fkey','VendorQuoteLine_line_containment_fkey','PurchaseOrderLine_version_containment_fkey','PurchaseOrderLine_line_containment_fkey') AND contype='f';" \
+  "4"
+assert "the denormalized requisitionId columns are NOT NULL on all four evidence tables" \
+  "SELECT COUNT(*) FROM information_schema.columns WHERE column_name='requisitionId' AND is_nullable='NO' AND table_name IN ('VendorQuote','VendorQuoteLine','PurchaseOrderVersion','PurchaseOrderLine');" \
+  "4"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."
