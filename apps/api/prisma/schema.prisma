@@ -93,8 +93,10 @@ model Project {
   // Composite identity the DomainEvent tenant FK references (Phase 2 Task 4) — proves an
   // event's (organizationId, projectId) is the project's REAL org, so org cannot be forged.
   @@unique([orgId, id])
-  capabilities ProjectCapability[]
-  requirements ActivityRequirement[]
+  capabilities     ProjectCapability[]
+  requirements     ActivityRequirement[]
+  requirementRoots ActivityRequirementRoot[]
+  materialSpecs    MaterialRequirementSpec[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -560,6 +562,7 @@ model Membership {
 
   @@unique([projectId, userId])
   @@index([userId])
+  responsibleFor ActivityRequirement[]
 }
 
 // A browser Web Push subscription (Phase 8). Endpoint is unique per device;
@@ -770,6 +773,8 @@ model User {
   passwordChallenges PasswordCredentialChallenge[]
   securityEvents     SecurityAuditEvent[]          @relation("SecurityEventTarget")
   securityActorEvents SecurityAuditEvent[]         @relation("SecurityEventActor")
+  requirementRootsCreated ActivityRequirementRoot[] @relation("requirementRootsCreated")
+  requirementsCreated     ActivityRequirement[]     @relation("requirementsCreated")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -885,50 +890,90 @@ enum RequirementType {
   inspection
 }
 
-// The §11 demand contract (plan §§B/F). APPEND-ONLY: a change writes a NEW row with the same
-// requirementId and revision+1 — no row is ever updated; the current state of a requirement is
-// its highest revision. The MaterialSpecificationRef is flattened onto the row: TECHNICAL
-// identity (category/make/grade/attributes/baseUom + specFingerprint, hashed WITHOUT
-// provenance) and PROVENANCE (decisionId/decisionVersion/optionKey, never hashed). Owned by
-// the activities module; only type 'material' is produced in Phase 3 Task 1.
-model ActivityRequirement {
-  id            String          @id @default(cuid()) // row id (one per revision)
-  project       Project         @relation(fields: [projectId], references: [id])
-  projectId     String
-  requirementId String // stable identity across revisions
-  revision      Int // 1-based, monotone per requirementId
-  activity      Activity        @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  activityId    String
-  type          RequirementType @default(material)
+// Phase 3 Task 1 correction — the requirement ROOT: the stable, project-contained identity a
+// revision belongs to. Every revision row carries a composite FK to (projectId, rootId), so a
+// revision lineage CROSSING projects is unrepresentable in PostgreSQL (review finding 2).
+model ActivityRequirementRoot {
+  id          String                @id // the stable requirementId
+  project     Project               @relation(fields: [projectId], references: [id])
+  projectId   String
+  createdAt   DateTime              @default(now())
+  createdBy   User                  @relation("requirementRootsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+  revisions   ActivityRequirement[]
 
-  // MaterialSpecificationRef — technical identity (fingerprinted)
+  @@unique([projectId, id])
+}
+
+// The §11 demand contract (plan §§B/F) — TYPE-NEUTRAL revision rows (correction finding 3).
+// APPEND-ONLY: a BEFORE UPDATE OR DELETE trigger (this correction's migration) makes every
+// revision row database-immutable; revise/cancel INSERT revision+1 against the same root. The
+// common contract keeps only type-neutral fields (§11: quantity + unit + dates + parties);
+// material-only specification detail lives in the revision-owned MaterialRequirementSpec.
+// Downstream phases FK onto (projectId, requirementId, revision).
+model ActivityRequirement {
+  id            String                  @id @default(cuid()) // row id (one per revision)
+  project       Project                 @relation(fields: [projectId], references: [id])
+  projectId     String
+  root          ActivityRequirementRoot @relation(fields: [projectId, requirementId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requirementId String
+  revision      Int // 1-based, monotone per requirementId
+  activity      Activity                @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId    String
+  type          RequirementType         @default(material)
+
+  requiredQty Decimal  @db.Decimal(18, 6)
+  baseUom     String
+  requiredBy  DateTime @db.Date // civil DATE (correction finding 3)
+  // the accountable party: an ACTIVE same-project membership (service-validated; FK backstop)
+  responsible   Membership? @relation(fields: [projectId, responsibleId], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
+  responsibleId String?
+  criticality   String      @default("normal") // 'normal' | 'critical'
+  tolerance     Decimal?    @db.Decimal(18, 6)
+  status        String      @default("open") // 'open' | 'cancelled' (a cancel APPENDS a revision)
+  createdAt     DateTime    @default(now())
+  createdBy     User        @relation("requirementsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById   String
+
+  materialSpec MaterialRequirementSpec?
+
+  @@unique([requirementId, revision])
+  // the downstream-FK identity (correction finding 2): later phases pin exactly this triple
+  @@unique([projectId, requirementId, revision])
+  // composite identity so referencing rows can carry (projectId, rowId) FKs (Phase 0 Task 5 pattern)
+  @@unique([projectId, id])
+  @@index([projectId, activityId])
+}
+
+// The MATERIAL-ONLY specification detail of one requirement revision (correction finding 3):
+// technical identity (fingerprinted, §B) + AUTHORITATIVE decision provenance (finding 1 —
+// SERVER-derived from a real approved/reapproved decision + its selected option; the all-or-none
+// rule is a database CHECK). Append-only via the same BEFORE UPDATE OR DELETE trigger.
+model MaterialRequirementSpec {
+  id            String              @id @default(cuid())
+  project       Project             @relation(fields: [projectId], references: [id])
+  projectId     String
+  requirement   ActivityRequirement @relation(fields: [projectId, requirementId, revision], references: [projectId, requirementId, revision], onDelete: NoAction, onUpdate: NoAction)
+  requirementId String
+  revision      Int
+
   materialCategory     String
   make                 String
   grade                String
   normalizedAttributes String
-  baseUom              String
+  baseUom              String // mirrors the revision's unit (part of the fingerprinted identity)
   specFingerprint      String
-  // MaterialSpecificationRef — decision provenance (NOT fingerprinted)
+
+  // AUTHORITATIVE decision provenance — all null (manual spec) or all server-resolved (CHECK)
   decision        Decision? @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   decisionId      String?
   decisionVersion Int?
   optionKey       String?
 
-  requiredQty   Decimal   @db.Decimal(18, 6)
-  requiredBy    DateTime
-  responsibleId String?
-  criticality   String    @default("normal") // 'normal' | 'critical'
-  tolerance     Decimal?  @db.Decimal(18, 6)
-  status        String    @default("open") // 'open' | 'cancelled' (a cancel APPENDS a revision)
-  createdAt     DateTime  @default(now())
-  createdById   String
-
-  @@unique([requirementId, revision])
-  // composite identity so later phases can carry (projectId, rowId) FKs (Phase 0 Task 5 pattern)
-  @@unique([projectId, id])
-  @@index([projectId, activityId])
+  @@unique([projectId, requirementId, revision])
   @@index([projectId, specFingerprint])
 }
+
 
 model Decision {
   id             String           @id // e.g. "DL-014"
@@ -959,7 +1004,7 @@ model Decision {
 
   options        DecisionOption[]
   events         DecisionEvent[]
-  requirements   ActivityRequirement[]
+  materialSpecs  MaterialRequirementSpec[]
   changeRequests ChangeRequest[]
   activities     Activity[]
   materials      SiteMaterial[]

@@ -1,11 +1,15 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { computeSpecFingerprint, isBaseUom, normalizeSpecText, parseQuantity } from '@vitan/shared';
+import {
+  computeSpecFingerprint, isBaseUom, normalizeSpecText, parseQuantity,
+  type RequirementDto, type RequirementEventPayload, type RequirementListItem, type RequirementSpecRef, ROLE_POLICY,
+} from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
@@ -15,54 +19,50 @@ import type { CreateRequirementInput, ReviseRequirementInput, CancelRequirementI
 import { randomUUID } from 'node:crypto';
 
 /**
- * Phase 3 Task 1 — the ActivityRequirement demand contract (plan §§B/D/F/G).
+ * Phase 3 Task 1 (correction) — the ActivityRequirement demand contract (plan §§B/D/F/G;
+ * review findings 1–4).
  *
- * APPEND-ONLY REVISIONS: a requirement is never updated — `revise`/`cancel` INSERT a new row
- * with the same `requirementId` and `revision + 1` under a CAS on the caller's
- * `expectedRevision`, with the current head row locked FOR UPDATE so two concurrent revisions
- * serialize and the loser conflicts. The current state of a requirement is its highest
- * revision; every prior revision is retained byte-identical (Task-1 immutability probes).
+ * ROOT + IMMUTABLE REVISIONS (finding 2): a requirement is a project-contained
+ * `ActivityRequirementRoot`; every revision row carries a composite FK to
+ * `(projectId, rootId)`, so lineage crossing projects is unrepresentable, and a database
+ * BEFORE UPDATE OR DELETE trigger makes revision rows (and their material specs) append-only —
+ * `revise`/`cancel` INSERT `revision + 1` under a CAS on the caller's `expectedRevision`, with
+ * the ROOT row locked FOR UPDATE so two concurrent revisions serialize and the loser conflicts.
+ * Downstream phases FK onto the unique `(projectId, requirementId, revision)` triple.
  *
- * IDENTITY vs PROVENANCE (§B): the stored `specFingerprint` hashes ONLY the normalized
- * technical identity through the ONE shared `computeSpecFingerprint`; the decision reference
- * (validated through the decisions module's query contract — never a direct foreign read) is
- * carried as un-hashed provenance.
+ * TYPE-NEUTRAL CONTRACT (finding 3): the revision row carries only the §11 common fields
+ * (quantity + unit + civil-DATE needed-by + parties + criticality/tolerance/status); the
+ * material-only specification lives in the revision-owned `MaterialRequirementSpec`. A future
+ * labour/equipment type is a revision row with no material spec — no fake material values.
  *
- * CAPABILITY GATE (§D): every entry point asserts the project's `materials` capability FIRST
- * and refuses with 404 — to a non-pilot project this module surface does not exist, no event
- * is emitted, and behavior is byte-identical to a pre-Phase-3 deployment.
+ * AUTHORITATIVE PROVENANCE (finding 1): a material spec referencing a decision pins the
+ * SERVER-resolved `decisions.approvedRef` — a real approved/reapproved version counter and the
+ * decision's own selected option, resolved inside the command transaction through the decisions
+ * query contract. Pending/draft/reopened decisions refuse; caller-authored version/option
+ * inputs do not exist (the request schema is strict). Provenance is all-or-none (database CHECK).
  *
- * LOCK PROTOCOL (§A): requirement create/revise/cancel are coverage-affecting writes, so each
- * takes `lockProjectReadiness` inside its command transaction — the same per-project advisory
- * lock every readiness-affecting write has taken since Phase 1.
+ * CAPABILITY GATE (§D) and LOCK PROTOCOL (§A) as shipped in Task 1: every entry point asserts
+ * the `materials` capability first (404 on non-pilot projects) and every command takes
+ * `lockProjectReadiness` inside its transaction.
  */
 
-export interface RequirementDto {
-  id: string;
-  requirementId: string;
-  revision: number;
-  activityId: string;
-  type: string;
-  materialCategory: string;
-  make: string;
-  grade: string;
-  normalizedAttributes: string;
-  baseUom: string;
-  specFingerprint: string;
-  decisionId: string | null;
-  decisionVersion: number | null;
-  optionKey: string | null;
-  qty: string;
-  requiredBy: string;
-  responsibleId: string | null;
-  criticality: string;
-  tolerance: string | null;
-  status: string;
-  createdAt: string;
-  createdById: string;
-}
+type SpecRow = Prisma.MaterialRequirementSpecGetPayload<Record<string, never>>;
+type Row = Prisma.ActivityRequirementGetPayload<{ include: { materialSpec: true } }>;
 
-type Row = Prisma.ActivityRequirementGetPayload<Record<string, never>>;
+function serializeSpec(s: SpecRow | null): RequirementSpecRef | null {
+  if (!s) return null;
+  return {
+    materialCategory: s.materialCategory,
+    make: s.make,
+    grade: s.grade,
+    normalizedAttributes: s.normalizedAttributes,
+    baseUom: s.baseUom,
+    specFingerprint: s.specFingerprint,
+    decisionId: s.decisionId,
+    decisionVersion: s.decisionVersion,
+    optionKey: s.optionKey,
+  };
+}
 
 function serializeRequirement(r: Row): RequirementDto {
   return {
@@ -71,23 +71,32 @@ function serializeRequirement(r: Row): RequirementDto {
     revision: r.revision,
     activityId: r.activityId,
     type: r.type,
-    materialCategory: r.materialCategory,
-    make: r.make,
-    grade: r.grade,
-    normalizedAttributes: r.normalizedAttributes,
-    baseUom: r.baseUom,
-    specFingerprint: r.specFingerprint,
-    decisionId: r.decisionId,
-    decisionVersion: r.decisionVersion,
-    optionKey: r.optionKey,
+    spec: serializeSpec(r.materialSpec),
     qty: r.requiredQty.toString(),
-    requiredBy: r.requiredBy.toISOString().slice(0, 10),
+    baseUom: r.baseUom,
+    requiredBy: toIsoCivilDate(r.requiredBy) ?? '',
     responsibleId: r.responsibleId,
     criticality: r.criticality,
     tolerance: r.tolerance ? r.tolerance.toString() : null,
     status: r.status,
     createdAt: r.createdAt.toISOString(),
     createdById: r.createdById,
+  };
+}
+
+/** The complete documented event payload (review finding 4): identity, revision, activity,
+ *  the FULL spec reference, quantity, unit and the civil needed-by date. */
+function eventPayload(r: Row, reason?: string): RequirementEventPayload {
+  return {
+    requirementId: r.requirementId,
+    revision: r.revision,
+    activityId: r.activityId,
+    specRef: serializeSpec(r.materialSpec),
+    qty: r.requiredQty.toString(),
+    baseUom: r.baseUom,
+    requiredBy: toIsoCivilDate(r.requiredBy) ?? '',
+    status: r.status,
+    ...(reason ? { reason } : {}),
   };
 }
 
@@ -101,15 +110,39 @@ export class RequirementsService {
     private readonly dispatcher: ExternalEffectDispatcher,
   ) {}
 
-  /** Validate + normalize the spec/quantity inputs into the columns a revision row stores. */
-  private async specColumns(projectId: string, input: CreateRequirementInput) {
-    if (!isBaseUom(input.baseUom)) throw new BadRequestException(`baseUom must be one of the supported base units`);
+  /** Validate + normalize the TYPE-NEUTRAL revision columns (§11 common contract). */
+  private async neutralColumns(projectId: string, input: CreateRequirementInput) {
+    if (!isBaseUom(input.baseUom)) throw new BadRequestException('baseUom must be one of the supported base units');
     const qty = parseQuantity(input.qty);
     if (!qty) throw new BadRequestException('qty must be a positive decimal with at most 6 fractional digits');
     const tolerance = input.tolerance == null ? null : parseQuantity(input.tolerance);
     if (input.tolerance != null && !tolerance) throw new BadRequestException('tolerance must be a positive decimal with at most 6 fractional digits');
-    // decision PROVENANCE is validated through the decisions module's query contract (§G edge)
-    const decisionId = await this.decisionsQuery.resolveRefInProject(projectId, input.decisionId ?? null);
+    const requiredBy = fromIsoCivilDate(input.requiredBy);
+    if (!requiredBy) throw new BadRequestException('requiredBy must be an ISO civil date');
+    // the accountable party must be an ACTIVE same-project membership in an eligible role
+    // (§H matrix: the material execution roles) — the composite FK is the database backstop
+    if (input.responsibleId) {
+      const m = await this.prisma.membership.findUnique({
+        where: { projectId_userId: { projectId, userId: input.responsibleId } },
+        select: { status: true, role: true },
+      });
+      if (!m || m.status !== 'active' || !(ROLE_POLICY['requirement.read'] as readonly string[]).includes(m.role)) {
+        throw new BadRequestException('responsibleId must be an active pmc/engineer member of this project');
+      }
+    }
+    return {
+      requiredQty: new Prisma.Decimal(qty),
+      baseUom: input.baseUom,
+      requiredBy,
+      responsibleId: input.responsibleId ?? null,
+      criticality: input.criticality,
+      tolerance: tolerance ? new Prisma.Decimal(tolerance) : null,
+    };
+  }
+
+  /** Build the material spec columns: fingerprinted technical identity + AUTHORITATIVE
+   *  server-resolved decision provenance (never caller-authored — finding 1). */
+  private async specColumns(projectId: string, input: CreateRequirementInput, tx: Prisma.TransactionClient) {
     const identity = {
       materialCategory: normalizeSpecText(input.materialCategory),
       make: normalizeSpecText(input.make),
@@ -118,28 +151,23 @@ export class RequirementsService {
       baseUom: input.baseUom,
     };
     const specFingerprint = await computeSpecFingerprint(identity);
-    return {
-      ...identity,
-      specFingerprint,
-      decisionId,
-      decisionVersion: decisionId ? (input.decisionVersion ?? null) : null,
-      optionKey: decisionId ? (input.optionKey ?? null) : null,
-      requiredQty: new Prisma.Decimal(qty),
-      requiredBy: new Date(`${input.requiredBy}T00:00:00.000Z`),
-      responsibleId: input.responsibleId ?? null,
-      criticality: input.criticality,
-      tolerance: tolerance ? new Prisma.Decimal(tolerance) : null,
-    };
+    const provenance = input.decisionId
+      ? await this.decisionsQuery.approvedRef(projectId, input.decisionId, tx)
+      : { decisionId: null, decisionVersion: null, optionKey: null };
+    return { ...identity, specFingerprint, ...provenance };
   }
 
-  /** Lock + read the CURRENT head revision of a requirement inside the command transaction. */
-  private async lockHead(tx: Prisma.TransactionClient, projectId: string, requirementId: string): Promise<Row> {
-    const rows = await tx.$queryRaw<Array<{ id: string }>>`
-      SELECT "id" FROM "ActivityRequirement"
-      WHERE "projectId" = ${projectId} AND "requirementId" = ${requirementId}
-      ORDER BY "revision" DESC LIMIT 1 FOR UPDATE`;
-    if (!rows[0]) throw new NotFoundException('Requirement not found');
-    return tx.activityRequirement.findUniqueOrThrow({ where: { id: rows[0].id } });
+  /** Lock the requirement ROOT (the revision-lineage serialization point) and return the head. */
+  private async lockRootHead(tx: Prisma.TransactionClient, projectId: string, requirementId: string): Promise<Row> {
+    const roots = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "ActivityRequirementRoot"
+      WHERE "projectId" = ${projectId} AND "id" = ${requirementId} FOR UPDATE`;
+    if (!roots[0]) throw new NotFoundException('Requirement not found');
+    return tx.activityRequirement.findFirstOrThrow({
+      where: { projectId, requirementId },
+      orderBy: { revision: 'desc' },
+      include: { materialSpec: true },
+    });
   }
 
   async create(projectId: string, input: CreateRequirementInput, user: AuthUser, idempotencyKey?: string): Promise<RequirementDto> {
@@ -149,26 +177,31 @@ export class RequirementsService {
     const requestHash = hashRequest(input);
     const activity = await this.prisma.activity.findFirst({ where: { id: input.activityId, projectId }, select: { id: true } });
     if (!activity) throw new BadRequestException('activityId does not belong to this project');
-    const cols = await this.specColumns(projectId, input);
+    const neutral = await this.neutralColumns(projectId, input);
     const requirementId = randomUUID();
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'requirements.create', idempotencyKey, requestHash,
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
+        // provenance resolves INSIDE the transaction — the approval it pins is transactionally real
+        const spec = await this.specColumns(projectId, input, tx);
+        await tx.activityRequirementRoot.create({ data: { id: requirementId, projectId, createdById: actor.actorId } });
         const created = await tx.activityRequirement.create({
-          data: { projectId, requirementId, revision: 1, activityId: input.activityId, type: 'material', createdById: actor.actorId, ...cols },
+          data: { projectId, requirementId, revision: 1, activityId: input.activityId, type: 'material', createdById: actor.actorId, ...neutral },
         });
+        await tx.materialRequirementSpec.create({ data: { projectId, requirementId, revision: 1, ...spec } });
         await recordAudit(tx, { projectId, actor, action: 'requirement.create', entity: 'ActivityRequirement', entityId: requirementId });
+        const full = await tx.activityRequirement.findUniqueOrThrow({ where: { id: created.id }, include: { materialSpec: true } });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'requirement.created', entityType: 'ActivityRequirement', entityId: requirementId,
-          payload: { requirementId, revision: 1, activityId: input.activityId, specFingerprint: cols.specFingerprint, baseUom: cols.baseUom, qty: cols.requiredQty.toString() },
+          payload: eventPayload(full) as unknown as Prisma.InputJsonValue,
           effectKey: 'requirement.created', dispatch: {},
         });
         return { resultRef: created.id, events: [ev] };
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
-    const row = await this.prisma.activityRequirement.findFirstOrThrow({ where: { projectId, id: outcome.resultRef } });
+    const row = await this.prisma.activityRequirement.findFirstOrThrow({ where: { projectId, id: outcome.resultRef }, include: { materialSpec: true } });
     return serializeRequirement(row);
   }
 
@@ -179,29 +212,32 @@ export class RequirementsService {
     const requestHash = hashRequest({ requirementId, ...input });
     const activity = await this.prisma.activity.findFirst({ where: { id: input.activityId, projectId }, select: { id: true } });
     if (!activity) throw new BadRequestException('activityId does not belong to this project');
-    const cols = await this.specColumns(projectId, input);
+    const neutral = await this.neutralColumns(projectId, input);
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'requirements.revise', idempotencyKey, requestHash,
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
-        const head = await this.lockHead(tx, projectId, requirementId);
-        // CAS — two concurrent revisions serialize on the head lock; the loser conflicts
+        const head = await this.lockRootHead(tx, projectId, requirementId);
+        // CAS — two concurrent revisions serialize on the root lock; the loser conflicts
         if (head.revision !== input.expectedRevision) throw new ConflictException(`Requirement is at revision ${head.revision}, not ${input.expectedRevision}`);
         if (head.status === 'cancelled') throw new BadRequestException('A cancelled requirement cannot be revised');
+        const spec = await this.specColumns(projectId, input, tx);
         const created = await tx.activityRequirement.create({
-          data: { projectId, requirementId, revision: head.revision + 1, activityId: input.activityId, type: 'material', createdById: actor.actorId, ...cols },
+          data: { projectId, requirementId, revision: head.revision + 1, activityId: input.activityId, type: 'material', createdById: actor.actorId, ...neutral },
         });
+        await tx.materialRequirementSpec.create({ data: { projectId, requirementId, revision: head.revision + 1, ...spec } });
         await recordAudit(tx, { projectId, actor, action: 'requirement.revise', entity: 'ActivityRequirement', entityId: requirementId });
+        const full = await tx.activityRequirement.findUniqueOrThrow({ where: { id: created.id }, include: { materialSpec: true } });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'requirement.revised', entityType: 'ActivityRequirement', entityId: requirementId,
-          payload: { requirementId, revision: head.revision + 1, activityId: input.activityId, specFingerprint: cols.specFingerprint, baseUom: cols.baseUom, qty: cols.requiredQty.toString() },
+          payload: eventPayload(full) as unknown as Prisma.InputJsonValue,
           effectKey: 'requirement.revised', dispatch: {},
         });
         return { resultRef: created.id, events: [ev] };
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
-    const row = await this.prisma.activityRequirement.findFirstOrThrow({ where: { projectId, id: outcome.resultRef } });
+    const row = await this.prisma.activityRequirement.findFirstOrThrow({ where: { projectId, id: outcome.resultRef }, include: { materialSpec: true } });
     return serializeRequirement(row);
   }
 
@@ -214,38 +250,60 @@ export class RequirementsService {
       scope, actor, commandType: 'requirements.cancel', idempotencyKey, requestHash,
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
-        const head = await this.lockHead(tx, projectId, requirementId);
+        const head = await this.lockRootHead(tx, projectId, requirementId);
         if (head.revision !== input.expectedRevision) throw new ConflictException(`Requirement is at revision ${head.revision}, not ${input.expectedRevision}`);
         if (head.status === 'cancelled') throw new BadRequestException('Requirement is already cancelled');
-        // a cancel APPENDS a revision copying the head's specification — nothing is edited
+        // a cancel APPENDS a revision copying the head's neutral columns + material spec verbatim
         const created = await tx.activityRequirement.create({
           data: {
             projectId, requirementId, revision: head.revision + 1, activityId: head.activityId, type: head.type,
-            materialCategory: head.materialCategory, make: head.make, grade: head.grade,
-            normalizedAttributes: head.normalizedAttributes, baseUom: head.baseUom, specFingerprint: head.specFingerprint,
-            decisionId: head.decisionId, decisionVersion: head.decisionVersion, optionKey: head.optionKey,
-            requiredQty: head.requiredQty, requiredBy: head.requiredBy, responsibleId: head.responsibleId,
-            criticality: head.criticality, tolerance: head.tolerance, status: 'cancelled', createdById: actor.actorId,
+            requiredQty: head.requiredQty, baseUom: head.baseUom, requiredBy: head.requiredBy,
+            responsibleId: head.responsibleId, criticality: head.criticality, tolerance: head.tolerance,
+            status: 'cancelled', createdById: actor.actorId,
           },
         });
+        if (head.materialSpec) {
+          const s = head.materialSpec;
+          await tx.materialRequirementSpec.create({
+            data: {
+              projectId, requirementId, revision: head.revision + 1,
+              materialCategory: s.materialCategory, make: s.make, grade: s.grade,
+              normalizedAttributes: s.normalizedAttributes, baseUom: s.baseUom, specFingerprint: s.specFingerprint,
+              decisionId: s.decisionId, decisionVersion: s.decisionVersion, optionKey: s.optionKey,
+            },
+          });
+        }
         await recordAudit(tx, { projectId, actor, action: 'requirement.cancel', entity: 'ActivityRequirement', entityId: requirementId });
+        const full = await tx.activityRequirement.findUniqueOrThrow({ where: { id: created.id }, include: { materialSpec: true } });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'requirement.cancelled', entityType: 'ActivityRequirement', entityId: requirementId,
-          payload: { requirementId, revision: head.revision + 1, activityId: head.activityId, reason: input.reason },
+          payload: eventPayload(full, input.reason) as unknown as Prisma.InputJsonValue,
           effectKey: 'requirement.cancelled', dispatch: {},
         });
         return { resultRef: created.id, events: [ev] };
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
-    const row = await this.prisma.activityRequirement.findFirstOrThrow({ where: { projectId, id: outcome.resultRef } });
+    const row = await this.prisma.activityRequirement.findFirstOrThrow({ where: { projectId, id: outcome.resultRef }, include: { materialSpec: true } });
     return serializeRequirement(row);
   }
 
-  /** The module-owned read: every requirement's CURRENT head revision (+ how many revisions exist). */
-  async list(projectId: string, _user: AuthUser): Promise<{ requirements: Array<RequirementDto & { revisions: number }> }> {
+  /**
+   * The module-owned read: every requirement's CURRENT head revision (+ revision count).
+   * EXPLICIT READ POLICY (review finding 4, §H): the full register is a pmc/engineer surface —
+   * enforced at the route (`@RolesFor('requirement.read')`) AND here, so a service-level caller
+   * cannot bypass it. Client-facing readiness summaries are a separate later-task surface.
+   */
+  async list(projectId: string, user: AuthUser): Promise<{ requirements: RequirementListItem[] }> {
     await this.capabilities.assertEnabled(projectId, MATERIALS_CAPABILITY);
-    const rows = await this.prisma.activityRequirement.findMany({ where: { projectId }, orderBy: [{ requirementId: 'asc' }, { revision: 'asc' }] });
+    if (!(ROLE_POLICY['requirement.read'] as readonly string[]).includes(user.role)) {
+      throw new ForbiddenException('The requirement register is a pmc/engineer surface');
+    }
+    const rows = await this.prisma.activityRequirement.findMany({
+      where: { projectId },
+      orderBy: [{ requirementId: 'asc' }, { revision: 'asc' }],
+      include: { materialSpec: true },
+    });
     const byId = new Map<string, { head: Row; revisions: number }>();
     for (const r of rows) {
       const cur = byId.get(r.requirementId);

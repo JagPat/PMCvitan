@@ -19,6 +19,7 @@ export class RequirementsController {
   constructor(private readonly requirements: RequirementsService) {}
 
   @Get()
+  @RolesFor('requirement.read')
   list(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
     return this.requirements.list(projectId, user);
   }

@@ -65,7 +65,7 @@ const MODEL_OWNER: Record<string, string> = {
   dailyLog: 'daily-log', crewRow: 'daily-log', siteMaterial: 'daily-log',
   // Phase 3 Task 1 — the demand contract is activities-module-owned; its classifier domain is
   // 'requirements' (the requirements.service pillar entry writes ONLY this model)
-  activityRequirement: 'requirements',
+  activityRequirement: 'requirements', activityRequirementRoot: 'requirements', materialRequirementSpec: 'requirements',
   projectNode: 'nodes',
   media: 'media',
   org: 'orgs', orgMembership: 'orgs', membership: 'orgs', project: 'orgs', projectCompany: 'orgs',

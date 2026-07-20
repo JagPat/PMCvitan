@@ -24,7 +24,7 @@ export const decisionsManifest: ModuleManifest = {
   ],
   consumesEvents: [],
   commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange'],
-  queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending'],
+  queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef'],
   routes: [
     'POST /projects/:projectId/decisions',
     'POST /projects/:projectId/decisions/:decisionId/publish',

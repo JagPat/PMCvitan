@@ -21,6 +21,7 @@ export * from './contracts/decisions';
 export * from './contracts/daily-log';
 // Module contracts: the drawings command/query contract (Phase 2 Task 10 — controlled-drawing module)
 export * from './contracts/activities';
+export * from './contracts/requirements';
 export * from './contracts/drawings';
 export * from './contracts/inspections';
 // i18n dictionaries

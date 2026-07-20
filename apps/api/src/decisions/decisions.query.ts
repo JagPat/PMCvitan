@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import type { DecisionStatus } from '../domain/transitions';
 import type { Role } from '../common/auth';
@@ -161,4 +162,43 @@ export class DecisionsQueryService {
   countPending(projectId: string): Promise<number> {
     return this.prisma.decision.count({ where: { projectId, status: 'pending', publishedAt: { not: null } } });
   }
+  /**
+   * Phase 3 Task 1 correction (review finding 1) — the AUTHORITATIVE, immutable decision
+   * approval reference a material requirement pins as provenance. SERVER-resolved, never
+   * caller-authored:
+   *   • the decision must be PUBLISHED and status `approved` (a pending, draft or reopened
+   *     `change` decision cannot anchor procurement provenance — refused with a readable 400);
+   *   • `decisionVersion` is the count of `approved`/`reapproved` events in the decision's
+   *     append-only event log (min 1 for a legacy approved row imported without events) — the
+   *     real re-approval counter, not a caller claim;
+   *   • `optionKey` is the SELECTED option's key, resolved from the decision's own options via
+   *     the recorded `approvedOption` label (falling back to the recorded label itself for
+   *     legacy rows whose option list no longer carries it). An approved decision with NO
+   *     recorded selection cannot anchor provenance and refuses.
+   * Runs on the caller's transaction client when provided (same-tx validation, spec §6).
+   */
+  async approvedRef(
+    projectId: string,
+    decisionId: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<{ decisionId: string; decisionVersion: number; optionKey: string }> {
+    const client = tx ?? this.prisma;
+    const d = await client.decision.findFirst({
+      where: { id: decisionId, projectId },
+      include: { options: { orderBy: { order: 'asc' } }, events: { where: { type: { in: ['approved', 'reapproved'] } }, select: { id: true } } },
+    });
+    if (!d) throw new BadRequestException('decisionId does not belong to this project');
+    if (d.publishedAt === null) throw new BadRequestException('A draft decision cannot anchor requirement provenance');
+    if (d.status !== 'approved') {
+      throw new BadRequestException(`Only an approved decision can anchor requirement provenance (status is '${d.status}')`);
+    }
+    if (!d.approvedOption) throw new BadRequestException('The approved decision records no selected option');
+    const selected = d.options.find((o) => o.label === d.approvedOption);
+    return {
+      decisionId: d.id,
+      decisionVersion: Math.max(1, d.events.length),
+      optionKey: selected ? selected.optionKey : d.approvedOption,
+    };
+  }
+
 }

@@ -15,6 +15,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'requirement.manage': ['pmc'],
+  'requirement.read': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],

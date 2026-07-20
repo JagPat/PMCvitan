@@ -2,8 +2,15 @@
 
 **Status: CLEARED — the final mechanical verification returned GREEN SIGNAL: PHASE 3 PLAN
 CLEARED (all five round-2 corrections pass; lineage `6fa019b → 9a84442 → 88a29fe`, all CI
-green) with explicit GO for Task 1. Task 1 is IN IMPLEMENTATION (held PR; review stop before
-Task 2). Three non-blocking guardrails from the GO are recorded in §A for Tasks 5–6.** Canonical spec:
+green) with explicit GO for Task 1. Task 1 is MERGED (PR #189 @ `main` `24ee03f`); its
+independent review returned BLOCKED NARROWLY (four findings: caller-authored decision
+provenance; append-only not DB-enforced; material-only non-type-neutral model; incomplete
+shared contracts/read policy) — the focused correction (ActivityRequirementRoot lineage +
+append-only triggers; server-authoritative `decisions.approvedRef`; type-neutral revisions +
+revision-owned MaterialRequirementSpec; DATE `requiredBy` + membership/identity FKs; shared
+DTO/event contract; explicit `requirement.read` policy) is on a held PR awaiting its narrow
+mechanical re-review. Task 2 begins ONLY after it clears. Three non-blocking guardrails from
+the GO are recorded in §A for Tasks 5–6.** Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
 merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:
