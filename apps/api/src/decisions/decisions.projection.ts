@@ -46,6 +46,63 @@ async function upsertRow(tx: Prisma.TransactionClient, generationId: string, d: 
   });
 }
 
+/**
+ * Phase 2 final-review P1 correction — the decisions half of the OPERATOR DIAGNOSTIC.
+ *
+ * `decisions.inbox` is a per-DECISION row set, not the composite single-row shape the four later
+ * module projections use — so its corruption check must compare the COMPLETE normalized row set. A
+ * legacy generation materialized by the pre-#183 per-event consumer can hold a NON-EMPTY SUBSET of
+ * the canonical register while presenting as caught-up and servable (the read-side hollow guard
+ * catches only a fully EMPTY generation), and a single-row or emptiness-only probe would call it
+ * healthy. Both sides of the comparison normalize through {@link toDecisionComparable}: rows are
+ * ordered by `decisionId`, `publishedAt` becomes an explicit ISO string (a `Date` object would
+ * stringify as `{}` under key-order-independent JSON), and the dto is this module's ONE canonical
+ * serializer output — so the comparison covers every key column AND the served payload.
+ */
+export interface DecisionComparableRow {
+  decisionId: string;
+  status: string;
+  /** ISO-8601 or null — never a `Date` (normalized identically on the stored and canonical sides). */
+  publishedAt: string | null;
+  authorId: string | null;
+  dto: unknown;
+}
+
+/** Normalize one row (stored or canonical) into the diagnostic's comparable shape. */
+function toDecisionComparable(r: {
+  decisionId: string;
+  status: string;
+  publishedAt: Date | null;
+  authorId: string | null;
+  dto: unknown;
+}): DecisionComparableRow {
+  return {
+    decisionId: r.decisionId,
+    status: r.status,
+    publishedAt: r.publishedAt ? r.publishedAt.toISOString() : null,
+    authorId: r.authorId,
+    dto: r.dto,
+  };
+}
+
+/** The CANONICAL comparable row set: every decision of the project through `serializeDecision`,
+ *  ordered by `decisionId` — what a correct, caught-up generation must store, in full. */
+export async function computeDecisionRows(tx: Prisma.TransactionClient, projectId: string): Promise<DecisionComparableRow[]> {
+  const rows = await tx.decision.findMany({ where: { projectId }, include: DECISION_INCLUDE, orderBy: { id: 'asc' } });
+  return rows.map((d) =>
+    toDecisionComparable({ decisionId: d.id, status: d.status, publishedAt: d.publishedAt, authorId: d.authorId, dto: serializeDecision(d) }),
+  );
+}
+
+/** The STORED comparable row set: the generation's `DecisionProjection` rows, normalized and ordered
+ *  identically to {@link computeDecisionRows} so the two sides compare field-for-field. */
+export async function storedDecisionRows(tx: Prisma.TransactionClient, generationId: string): Promise<DecisionComparableRow[]> {
+  const rows = await tx.decisionProjection.findMany({ where: { generationId }, orderBy: { decisionId: 'asc' } });
+  return rows.map((r) =>
+    toDecisionComparable({ decisionId: r.decisionId, status: r.status, publishedAt: r.publishedAt, authorId: r.authorId, dto: r.dto }),
+  );
+}
+
 /** Build the `decisions.inbox` projection consumer (reads canonical decisions to refresh its rows). */
 export function makeDecisionsProjectionConsumer(): OutboxConsumer {
   return {
