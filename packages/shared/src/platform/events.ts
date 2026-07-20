@@ -60,6 +60,11 @@ export const DOMAIN_EVENT_TYPES = [
   'requirement.created',
   'requirement.revised',
   'requirement.cancelled',
+  // Phase 3 Task 2 — the procurement pipeline (plan §G catalog: submitted/approved and the
+  // comparison approval ONLY; drafts, rejections and RFQ/quote bookkeeping are audit facts)
+  'requisition.submitted',
+  'requisition.approved',
+  'comparison.approved',
   'phase.created',
   'phase.removed',
   // inspections

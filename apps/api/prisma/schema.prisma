@@ -97,6 +97,8 @@ model Project {
   requirements     ActivityRequirement[]
   requirementRoots ActivityRequirementRoot[]
   materialSpecs    MaterialRequirementSpec[]
+  vendorBindings   ProjectVendor[]           @relation("projectVendorProject")
+  requisitions     Requisition[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -478,6 +480,7 @@ model Org {
   modules   TemplateModule[]
   templates ProjectTemplate[]
   commandExecutions CommandExecution[]
+  vendors           Vendor[]
 }
 
 // Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
@@ -776,6 +779,12 @@ model User {
   requirementRootsCreated ActivityRequirementRoot[]  @relation("requirementRootsCreated")
   requirementsCreated     ActivityRequirement[]      @relation("requirementsCreated")
   approvalsRecorded       DecisionApprovalRevision[] @relation("approvalRevisionsApproved")
+  vendorsCreated          Vendor[]                   @relation("vendorsCreated")
+  vendorsBound            ProjectVendor[]            @relation("vendorsBound")
+  requisitionsCreated     Requisition[]              @relation("requisitionsCreated")
+  rfqsIssued              Rfq[]                      @relation("rfqsIssued")
+  quotesRecorded          VendorQuote[]              @relation("quotesRecorded")
+  comparisonsCreated      QuoteComparison[]          @relation("comparisonsCreated")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -936,7 +945,8 @@ model ActivityRequirement {
   createdBy     User        @relation("requirementsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById   String
 
-  materialSpec MaterialRequirementSpec?
+  materialSpec     MaterialRequirementSpec?
+  requisitionLines RequisitionLine[]
 
   @@unique([requirementId, revision])
   // the downstream-FK identity (correction finding 2): later phases pin exactly this triple
@@ -979,6 +989,183 @@ model MaterialRequirementSpec {
   @@index([projectId, specFingerprint])
 }
 
+
+// ─── Phase 3 Task 2 — the procurement module (plan §§F/G/H) ────────────────────────────────
+// Vendor is ORG-scoped — the ONE exception to the every-table-carries-projectId rule, because
+// a vendor is an organization-level party (§H). Project reach is ONLY the additive
+// ProjectVendor binding below, whose org provably matches both sides.
+model Vendor {
+  id          String   @id @default(cuid())
+  org         Org      @relation(fields: [orgId], references: [id])
+  orgId       String
+  name        String
+  contact     String?
+  gstin       String?
+  createdAt   DateTime @default(now())
+  createdBy   User     @relation("vendorsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+
+  bindings ProjectVendor[]
+
+  @@unique([orgId, id])
+}
+
+// §H — a vendor's explicit reach into ONE project. The composite FKs bind the SAME orgId to
+// the vendor AND the project, so a cross-org binding is unrepresentable in PostgreSQL; every
+// procurement row references (projectId, vendorId) THROUGH this binding.
+model ProjectVendor {
+  id        String   @id @default(cuid())
+  projectId String
+  orgId     String
+  project   Project  @relation("projectVendorProject", fields: [orgId, projectId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
+  vendor    Vendor   @relation(fields: [orgId, vendorId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
+  vendorId  String
+  boundAt   DateTime @default(now())
+  boundBy   User     @relation("vendorsBound", fields: [boundById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  boundById String
+
+  quotes VendorQuote[]
+
+  @@unique([projectId, vendorId])
+  @@unique([projectId, id])
+}
+
+// §F — a demand batch against pinned requirement revisions. CAS state machine:
+// draft → submitted → approved | rejected; approved → closed (all lines ordered or cancelled).
+model Requisition {
+  id             String    @id @default(cuid())
+  project        Project   @relation(fields: [projectId], references: [id])
+  projectId      String
+  title          String
+  notes          String?
+  status         String    @default("draft") // draft|submitted|approved|rejected|closed
+  createdAt      DateTime  @default(now())
+  createdBy      User      @relation("requisitionsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById    String
+  submittedById  String? // transition attribution (audited + event-attributed, like Decision.approvedById)
+  submittedAt    DateTime?
+  approvedById   String?
+  approvedAt     DateTime?
+  rejectedReason String?
+  closedAt       DateTime?
+
+  lines RequisitionLine[]
+  rfqs  Rfq[]
+
+  @@unique([projectId, id])
+}
+
+// §F bound 1 — ONE allocation of base-UOM quantity against a pinned requirement revision
+// (the Task-1 composite triple FK is the downstream target). Σ active allocations per
+// revision ≤ its required qty — enforced in-transaction with the revision locked FOR UPDATE.
+model RequisitionLine {
+  id            String              @id @default(cuid())
+  projectId     String
+  requisition   Requisition         @relation(fields: [projectId, requisitionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionId String
+  requirement   ActivityRequirement @relation(fields: [projectId, requirementId, revision], references: [projectId, requirementId, revision], onDelete: NoAction, onUpdate: NoAction)
+  requirementId String
+  revision      Int
+  qty           Decimal             @db.Decimal(18, 6) // in the revision's base UOM (single source)
+  status        String              @default("open") // open|cancelled ('ordered' arrives with Task-3 POs)
+  cancelledAt   DateTime?
+  cancelledById String?
+
+  quoteLines VendorQuoteLine[]
+
+  @@unique([projectId, id])
+  @@index([projectId, requirementId, revision])
+}
+
+// §F — an RFQ issued from an approved requisition: issued → closed (quotes in or expired).
+model Rfq {
+  id            String      @id @default(cuid())
+  projectId     String
+  requisition   Requisition @relation(fields: [projectId, requisitionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionId String
+  status        String      @default("issued") // issued|closed
+  issuedAt      DateTime    @default(now())
+  issuedBy      User        @relation("rfqsIssued", fields: [issuedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  issuedById    String
+  closedAt      DateTime?
+
+  quotes     VendorQuote[]
+  comparison QuoteComparison?
+
+  @@unique([projectId, id])
+}
+
+// §F — one vendor's quote on an RFQ, reached THROUGH the ProjectVendor binding (§H).
+// recorded → superseded (a newer quote from the same vendor) | expired (validity passed).
+model VendorQuote {
+  id              String        @id @default(cuid())
+  projectId       String
+  rfq             Rfq           @relation(fields: [projectId, rfqId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  rfqId           String
+  binding         ProjectVendor @relation(fields: [projectId, vendorId], references: [projectId, vendorId], onDelete: NoAction, onUpdate: NoAction)
+  vendorId        String
+  status          String        @default("recorded") // recorded|superseded|expired
+  validUntil      DateTime      @db.Date
+  leadTimeDays    Int?
+  paymentTerms    String?
+  warrantyTerms   String?
+  historicalScore Decimal?      @db.Decimal(5, 2)
+  recordedAt      DateTime      @default(now())
+  recordedBy      User          @relation("quotesRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById    String
+
+  lines               VendorQuoteLine[]
+  comparisonsSelected QuoteComparison[]
+
+  @@unique([projectId, id])
+  @@index([projectId, rfqId, vendorId])
+}
+
+// §F quote normalization — the comparison inputs, per quoted requisition line. Money is
+// Decimal in the project base currency (INR, Stage 1); landedCost is the comparison metric.
+model VendorQuoteLine {
+  id                   String          @id @default(cuid())
+  projectId            String
+  quote                VendorQuote     @relation(fields: [projectId, quoteId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  quoteId              String
+  requisitionLine      RequisitionLine @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionLineId    String
+  baseRate             Decimal         @db.Decimal(18, 2)
+  taxAmount            Decimal         @db.Decimal(18, 2)
+  freightAmount        Decimal         @db.Decimal(18, 2)
+  landedCost           Decimal         @db.Decimal(18, 2)
+  quotedMake           String
+  matchesSpecification Boolean
+  sampleCompliant      Boolean?
+  vendorStockQty       Decimal?        @db.Decimal(18, 6)
+  deliveryPromise      DateTime?       @db.Date
+
+  @@unique([quoteId, requisitionLineId])
+  @@unique([projectId, id])
+}
+
+// §F — the recorded comparison decision: draft → approved, carrying REAL authority + reason;
+// a non-lowest landed-total selection additionally demands an explicit justification.
+model QuoteComparison {
+  id               String       @id @default(cuid())
+  projectId        String
+  rfq              Rfq          @relation(fields: [projectId, rfqId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  rfqId            String
+  status           String       @default("draft") // draft|approved
+  selectedQuote    VendorQuote? @relation(fields: [projectId, selectedQuoteId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  selectedQuoteId  String?
+  selectedVendorId String?
+  reason           String?
+  justification    String? // required when the selection is not the lowest landed total
+  createdAt        DateTime     @default(now())
+  createdBy        User         @relation("comparisonsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById      String
+  approvedById     String?
+  approvedAt       DateTime?
+
+  @@unique([projectId, rfqId]) // one comparison per RFQ
+  @@unique([projectId, id])
+}
 
 model Decision {
   id             String           @id // e.g. "DL-014"

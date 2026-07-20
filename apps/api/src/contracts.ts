@@ -662,3 +662,57 @@ export const reviseRequirementSchema = z.object({ ...requirementSpecShape, expec
 export type ReviseRequirementInput = z.infer<typeof reviseRequirementSchema>;
 export const cancelRequirementSchema = z.object({ expectedRevision: z.number().int().min(1), reason: z.string().trim().min(1) }).strict();
 export type CancelRequirementInput = z.infer<typeof cancelRequirementSchema>;
+
+// ── Phase 3 Task 2 — procurement (plan §§F/H). Strict schemas: no caller-authored server
+// facts; quantities are positive decimal STRINGS (≤6 dp, parseQuantity-canonicalized in the
+// service); money is a positive decimal STRING with at most 2 fractional digits (INR).
+const money = z.string().trim().regex(/^\d{1,16}(\.\d{1,2})?$/, 'money must be a decimal amount with at most 2 fractional digits');
+export const createVendorSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  contact: z.string().trim().min(1).max(500).optional(),
+  gstin: z.string().trim().min(1).max(30).optional(),
+}).strict();
+export type CreateVendorInput = z.infer<typeof createVendorSchema>;
+export const bindVendorSchema = z.object({ vendorId: z.string().min(1) }).strict();
+export type BindVendorInput = z.infer<typeof bindVendorSchema>;
+export const createRequisitionSchema = z.object({
+  title: z.string().trim().min(1).max(300),
+  notes: z.string().trim().max(2000).optional(),
+  lines: z.array(z.object({
+    requirementId: z.string().min(1),
+    revision: z.number().int().min(1),
+    qty: z.string().trim().min(1),
+  }).strict()).min(1).max(50),
+}).strict();
+export type CreateRequisitionInput = z.infer<typeof createRequisitionSchema>;
+export const rejectRequisitionSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+export type RejectRequisitionInput = z.infer<typeof rejectRequisitionSchema>;
+export const createRfqSchema = z.object({ requisitionId: z.string().min(1) }).strict();
+export type CreateRfqInput = z.infer<typeof createRfqSchema>;
+export const recordQuoteSchema = z.object({
+  vendorId: z.string().min(1),
+  validUntil: z.string().trim().min(1), // ISO civil date (validated by the civil-date helper)
+  leadTimeDays: z.number().int().min(0).max(3650).optional(),
+  paymentTerms: z.string().trim().max(1000).optional(),
+  warrantyTerms: z.string().trim().max(1000).optional(),
+  historicalScore: z.string().trim().regex(/^\d{1,3}(\.\d{1,2})?$/).optional(),
+  lines: z.array(z.object({
+    requisitionLineId: z.string().min(1),
+    baseRate: money,
+    taxAmount: money,
+    freightAmount: money,
+    landedCost: money,
+    quotedMake: z.string().trim().min(1).max(300),
+    matchesSpecification: z.boolean(),
+    sampleCompliant: z.boolean().optional(),
+    vendorStockQty: z.string().trim().min(1).optional(),
+    deliveryPromise: z.string().trim().min(1).optional(), // ISO civil date
+  }).strict()).min(1).max(50),
+}).strict();
+export type RecordQuoteInput = z.infer<typeof recordQuoteSchema>;
+export const approveComparisonSchema = z.object({
+  selectedQuoteId: z.string().min(1),
+  reason: z.string().trim().min(1).max(1000),
+  justification: z.string().trim().min(1).max(2000).optional(),
+}).strict();
+export type ApproveComparisonInput = z.infer<typeof approveComparisonSchema>;

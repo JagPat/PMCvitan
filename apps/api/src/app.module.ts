@@ -25,6 +25,12 @@ import { ActivitiesController } from './activities/activities.controller';
 import { PhasesService } from './activities/phases.service';
 import { PhasesController } from './activities/phases.controller';
 import { RequirementsController } from './activities/requirements.controller';
+import { RequirementsQueryService } from './activities/requirements.query';
+import { VendorsController } from './procurement/vendors.controller';
+import { ProcurementController } from './procurement/procurement.controller';
+import { VendorsService } from './procurement/vendors.service';
+import { ProcurementService } from './procurement/procurement.service';
+import { ProcurementParticipant } from './procurement/procurement.participant';
 import { RequirementsService } from './activities/requirements.service';
 import { CapabilitiesService } from './platform/capabilities.service';
 import { InspectionsService } from './inspections/inspections.service';
@@ -82,6 +88,8 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     ActivitiesController,
     PhasesController,
     RequirementsController,
+    VendorsController,
+    ProcurementController,
     InspectionsController,
     DailyLogController,
     MediaController,
@@ -94,6 +102,10 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
   ],
   providers: [
     RequirementsService,
+    RequirementsQueryService,
+    VendorsService,
+    ProcurementService,
+    ProcurementParticipant,
     CapabilitiesService,
     JwtGuard,
     ProjectAccessService,

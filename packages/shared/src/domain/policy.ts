@@ -31,6 +31,14 @@ export const ROLE_POLICY = {
   // the full requirement register read (§H): pmc + engineer; the client sees only the readiness
   // summary surfaces (a later-task concern), never the raw register
   'requirement.read': ['pmc', 'engineer'],
+  // Phase 3 Task 2 — the procurement pilot surface (plan §H matrix). Requisition drafting +
+  // submission is a pmc/engineer action; approval and everything from RFQs through comparison
+  // is pmc authority. Vendor CRUD is an ORG-ADMIN surface (org membership, not a project role)
+  // and therefore is not represented here. The pipeline read mirrors requirement.read.
+  'requisition.submit': ['pmc', 'engineer'],
+  'requisition.approve': ['pmc'],
+  'procurement.manage': ['pmc'],
+  'procurement.read': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

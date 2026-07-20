@@ -32,7 +32,9 @@ export const activitiesManifest: ModuleManifest = {
   dependsOn: ['decisions', 'drawings', 'inspections'],
   // Module 4 correction — `remove` also routes the drawing unlink (Drawing.activityId, previously
   // ON DELETE SET NULL only) through the drawings participant on the same transaction.
-  workflowParticipants: ['inspections', 'drawings'],
+  // Phase 3 Task 2 — `requirements.cancel` invokes the procurement participant (the §F
+  // explicit-disposition guard: open requisition lines block the cancel) on the same transaction.
+  workflowParticipants: ['inspections', 'drawings', 'procurement'],
   producesEvents: [
     'activity.created',
     'activity.updated',

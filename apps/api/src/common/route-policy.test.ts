@@ -9,6 +9,8 @@ import { ROLE_POLICY, type PolicyAction } from '@vitan/shared';
 import { ActivitiesController } from '../activities/activities.controller';
 import { PhasesController } from '../activities/phases.controller';
 import { RequirementsController } from '../activities/requirements.controller';
+import { VendorsController } from '../procurement/vendors.controller';
+import { ProcurementController } from '../procurement/procurement.controller';
 import { AuthController } from '../auth/auth.controller';
 import { DailyLogController } from '../daily-log/daily-log.controller';
 import { DecisionsController } from '../decisions/decisions.controller';
@@ -39,6 +41,8 @@ const CONTROLLERS = [
   ActivitiesController,
   PhasesController,
   RequirementsController,
+  VendorsController,
+  ProcurementController,
   AuthController,
   DailyLogController,
   DecisionsController,
