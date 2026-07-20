@@ -9,6 +9,7 @@ import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import { InspectionParticipant } from '../inspections/inspection.participant';
+import { InventoryParticipant } from '../inventory/inventory.participant';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
@@ -45,6 +46,8 @@ export class MediaService {
     // Task 10 (Module 3) correction — item evidence is linked through the inspections participant (in-tx),
     // which appends the inspection-owned evidence event so the projection observes the change.
     private readonly inspectionParticipant: InspectionParticipant,
+    // Phase 3 Task 4 — a delete is refused while the photo is immutable stock-ledger evidence.
+    private readonly inventoryParticipant: InventoryParticipant,
   ) {}
 
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
@@ -183,6 +186,10 @@ export class MediaService {
     if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
     const actor = await resolveActor(this.prisma, user);
     const events = await this.prisma.$transaction(async (tx) => {
+      // Phase 3 Task 4 — the §C stock ledger is immutable, so a photo cited as stock quality
+      // evidence can never be unlinked: the inventory participant REFUSES the delete (409)
+      // before anything is touched (the ledger's composite FK is the database backstop).
+      await this.inventoryParticipant.assertMediaDisposable(tx, projectId, id);
       // Task 10 (Module 3) correction — unlink any inspection-owned evidence FIRST (participant appends
       // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
       // observes the removal. `null` when this media was not item-level evidence.

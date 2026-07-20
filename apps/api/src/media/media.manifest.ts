@@ -12,7 +12,9 @@ export const mediaManifest: ModuleManifest = {
   // Task 10 (Module 3) correction — item evidence is linked/unlinked through the inspections participant
   // (addEvidence/removeEvidence) in the media-create/remove transaction, so the inspection-owned
   // InspectionEvidence write + its signal event commit atomically with the media write.
-  workflowParticipants: ['inspections'],
+  // Phase 3 Task 4 — the delete transaction also invokes the inventory participant
+  // (assertMediaDisposable): photos cited by the immutable §C stock ledger are not deletable.
+  workflowParticipants: ['inspections', 'inventory'],
   producesEvents: ['media.uploaded', 'media.refiled', 'media.removed'],
   consumesEvents: [],
   commands: ['media.create', 'media.setNode', 'media.remove'],

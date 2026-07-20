@@ -11,6 +11,7 @@ import { PhasesController } from '../activities/phases.controller';
 import { RequirementsController } from '../activities/requirements.controller';
 import { VendorsController } from '../procurement/vendors.controller';
 import { ProcurementController } from '../procurement/procurement.controller';
+import { InventoryController } from '../inventory/inventory.controller';
 import { AuthController } from '../auth/auth.controller';
 import { DailyLogController } from '../daily-log/daily-log.controller';
 import { DecisionsController } from '../decisions/decisions.controller';
@@ -43,6 +44,7 @@ const CONTROLLERS = [
   RequirementsController,
   VendorsController,
   ProcurementController,
+  InventoryController,
   AuthController,
   DailyLogController,
   DecisionsController,

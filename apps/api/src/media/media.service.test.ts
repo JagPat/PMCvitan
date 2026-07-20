@@ -5,6 +5,7 @@ import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import type { InspectionsQueryService } from '../inspections/inspections.query';
 import type { InspectionParticipant } from '../inspections/inspection.participant';
+import type { InventoryParticipant } from '../inventory/inventory.participant';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './storage.service';
 import type { SignedUrlService } from './signed-url.service';
@@ -69,6 +70,8 @@ function make(
     addEvidence: vi.fn(async () => ({ eventId: 'ev-add' })),
     removeEvidence: vi.fn(async () => null),
   } as unknown as InspectionParticipant;
+  // Phase 3 Task 4 — no media under test is stock-ledger evidence, so the guard passes.
+  const inventoryParticipant = { assertMediaDisposable: vi.fn(async () => {}) } as unknown as InventoryParticipant;
   const svc = new MediaService(
     prisma as unknown as PrismaService,
     storage as unknown as StorageService,
@@ -80,6 +83,7 @@ function make(
     new DailyLogQueryService(prisma as unknown as PrismaService),
     inspections,
     inspectionParticipant,
+    inventoryParticipant,
   );
   return { svc, prisma, storage, signed, dispatcher, snapshot, created };
 }

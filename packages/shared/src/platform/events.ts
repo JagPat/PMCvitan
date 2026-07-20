@@ -73,6 +73,10 @@ export const DOMAIN_EVENT_TYPES = [
   'delivery.committed',
   'delivery.revised',
   'delivery.defaulted',
+  // Phase 3 Task 4 — the inventory stock ledger (plan §G catalog: ONE event per appended §C
+  // ledger row — receipts, acceptance, rejection, vendor-return, adjustment, reversal; buckets
+  // are derived, so there is no bucket-changed event)
+  'stock.transacted',
   'phase.created',
   'phase.removed',
   // inspections

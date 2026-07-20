@@ -14,7 +14,7 @@ describe('Phase 2 Task 7 — module registry', () => {
 
   it('enablement is every compiled module — the single source of truth (finding 7)', () => {
     expect(enabledModuleIds()).toEqual(
-      ['activities', 'auth', 'daily-log', 'decisions', 'drawings', 'inspections', 'media', 'nodes', 'orgs', 'platform', 'procurement'],
+      ['activities', 'auth', 'daily-log', 'decisions', 'drawings', 'inspections', 'inventory', 'media', 'nodes', 'orgs', 'platform', 'procurement'],
     );
   });
 
@@ -76,7 +76,13 @@ describe('Phase 2 Task 7 — module registry', () => {
       // requisition lines reference the requirement (the §F explicit-disposition guard)
       activities: ['inspections', 'drawings', 'procurement'],
       'daily-log': ['activities'], // material-mismatch blocks the activity's readiness (edge 4)
-      media: ['inspections'], // evidence add/remove (edges via the media create/remove tx)
+      // Phase 3 Task 4 adds the inventory participant to media: the delete tx refuses while the
+      // photo is immutable stock-ledger quality evidence (assertMediaDisposable)
+      media: ['inspections', 'inventory'], // evidence add/remove (edges via the media create/remove tx)
+      // Phase 3 Task 4 — the §G inventory→procurement edge: the receipt tx invokes the
+      // procurement-owned PO-line lock + received-progress fact (§F bound 3); procurement does
+      // not depend back on inventory, so the graph stays acyclic
+      inventory: ['procurement'],
       // Task 10 Module 4 (+ correction): node deletion unfiles placed inspections, filed activities,
       // filed drawings AND staged site materials — each through its owning module's participant,
       // appending inspection.unfiled / activity.unfiled / drawing.unfiled / material.unfiled

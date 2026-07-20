@@ -81,6 +81,9 @@ export const EXTERNAL_EFFECTS = {
   'delivery.committed': { eventType: 'delivery.committed', invalidate: true, push: null },
   'delivery.revised': { eventType: 'delivery.revised', invalidate: true, push: null },
   'delivery.defaulted': { eventType: 'delivery.defaulted', invalidate: true, push: null },
+  // Task 4 — the §G inventory ledger event (ONE per appended §C stock transaction).
+  // Snapshot-invalidate only; the readiness/store projections consume it in Tasks 5–6.
+  'stock.transacted': { eventType: 'stock.transacted', invalidate: true, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────

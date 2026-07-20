@@ -114,6 +114,8 @@ export const DEFAULT_DIR_TO_MODULE: Readonly<Record<string, string>> = {
   orgs: 'orgs',
   // Phase 3 Task 2 — the procurement pillar (vendors + requisitions/RFQs/quotes/comparisons)
   procurement: 'procurement',
+  // Phase 3 Task 4 — the inventory pillar (stock lots + the append-only §C ledger)
+  inventory: 'inventory',
   auth: 'auth',
   platform: 'platform',
   push: 'platform',

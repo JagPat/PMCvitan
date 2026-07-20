@@ -764,3 +764,55 @@ export const reviseDeliverySchema = z.object({
   reason: z.string().trim().min(1).max(1000), // every revision explains itself (§F)
 }).strict();
 export type ReviseDeliveryInput = z.infer<typeof reviseDeliverySchema>;
+
+// ── Phase 3 Task 4 — the inventory store (plan §C). Quantities are decimal strings
+// (parseQuantity-canonicalized by the service). A receipt is entered in the PO line's
+// PURCHASE units — the service derives the base quantity via the frozen conversion; every
+// other movement is entered in base units against a lot + store location. The service (and
+// the database CHECKs behind it) require quality evidence on accept/reject and a reason on
+// adjust/reverse.
+const qtyString = z.string().trim().min(1);
+export const recordReceiptSchema = z.object({
+  poLineId: z.string().min(1),
+  commitmentId: z.string().min(1),
+  purchaseQty: qtyString, // in the PO line's purchase UOM
+  storeLocation: z.string().trim().min(1).max(120).optional(), // default 'main'
+  note: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+export type RecordReceiptInput = z.infer<typeof recordReceiptSchema>;
+const stockQualitySchema = z.object({
+  lotId: z.string().min(1),
+  storeLocation: z.string().trim().min(1).max(120).optional(),
+  qty: qtyString, // base UOM
+  evidenceMediaId: z.string().min(1), // quality evidence photo — required (§C)
+  note: z.string().trim().min(1).max(1000).optional(),
+});
+export const acceptStockSchema = stockQualitySchema.extend({
+  qualityResult: z.string().trim().min(1).max(300), // e.g. 'passed', 'passed-with-remarks'
+}).strict();
+export type AcceptStockInput = z.infer<typeof acceptStockSchema>;
+export const rejectStockSchema = stockQualitySchema.extend({
+  reason: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+export type RejectStockInput = z.infer<typeof rejectStockSchema>;
+export const vendorReturnSchema = z.object({
+  lotId: z.string().min(1),
+  storeLocation: z.string().trim().min(1).max(120).optional(),
+  qty: qtyString,
+  note: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+export type VendorReturnInput = z.infer<typeof vendorReturnSchema>;
+export const adjustStockSchema = z.object({
+  lotId: z.string().min(1),
+  storeLocation: z.string().trim().min(1).max(120).optional(),
+  qty: qtyString,
+  fromBucket: z.enum(['quarantine', 'acceptedOnHand', 'rejected']).optional(), // omit = write-on
+  toBucket: z.enum(['quarantine', 'acceptedOnHand', 'rejected']).optional(), // omit = write-off
+  reason: z.string().trim().min(1).max(1000), // audited, reasoned (§C)
+}).strict();
+export type AdjustStockInput = z.infer<typeof adjustStockSchema>;
+export const reverseStockSchema = z.object({
+  txId: z.string().min(1), // the ledger row to reverse, in full
+  reason: z.string().trim().min(1).max(1000),
+}).strict();
+export type ReverseStockInput = z.infer<typeof reverseStockSchema>;

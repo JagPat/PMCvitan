@@ -100,6 +100,8 @@ model Project {
   vendorBindings   ProjectVendor[]           @relation("projectVendorProject")
   requisitions     Requisition[]
   purchaseOrders   PurchaseOrder[]           @relation("purchaseOrderProject")
+  stockLots         StockLot[]
+  stockTransactions StockTransaction[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -447,6 +449,9 @@ model CommandExecution {
 
   org Org @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
+  // Phase 3 Task 4 — stock ledger rows recording this execution as their source action (§C)
+  stockTransactions StockTransaction[]
+
   @@index([organizationId])
   @@index([projectId])
 }
@@ -631,6 +636,9 @@ model Media {
   createdAt  DateTime @default(now())
   // overrides citing this photo as supporting evidence (Phase 1 Task 6)
   gateOverrides GateOverride[]
+  // stock quality decisions citing this photo (Phase 3 Task 4) — the ledger is immutable, so
+  // media backing a stock transaction is not deletable (InventoryParticipant refuses)
+  stockEvidence StockTransaction[]
 
   @@unique([projectId, id]) // referenced identity (Task 6 override evidence)
   @@unique([projectId, clientKey])
@@ -790,6 +798,8 @@ model User {
   poVersionsCreated       PurchaseOrderVersion[]     @relation("poVersionsCreated")
   commitmentsCreated      DeliveryCommitment[]       @relation("commitmentsCreated")
   promisesRecorded        DeliveryPromise[]          @relation("promisesRecorded")
+  stockLotsReceived         StockLot[]         @relation("stockLotsReceived")
+  stockTransactionsRecorded StockTransaction[] @relation("stockTransactionsRecorded")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -952,6 +962,7 @@ model ActivityRequirement {
 
   materialSpec     MaterialRequirementSpec?
   requisitionLines RequisitionLine[]
+  stockLots        StockLot[]
 
   @@unique([requirementId, revision])
   // the downstream-FK identity (correction finding 2): later phases pin exactly this triple
@@ -1314,6 +1325,9 @@ model PurchaseOrderLine {
   receivedQty         Decimal              @default(0) @db.Decimal(18, 6)
 
   commitments DeliveryCommitment[]
+  // Phase 3 Task 4 — received batches + receipt ledger rows against this line
+  stockLots         StockLot[]
+  stockTransactions StockTransaction[]
 
   @@unique([projectId, id])
   @@index([projectId, requisitionLineId])
@@ -1335,6 +1349,9 @@ model DeliveryCommitment {
   defaultedAt DateTime?
 
   promises DeliveryPromise[]
+  // Phase 3 Task 4 — received batches + receipt ledger rows fulfilling this commitment
+  stockLots         StockLot[]
+  stockTransactions StockTransaction[]
 
   @@unique([projectId, id])
 }
@@ -1355,6 +1372,100 @@ model DeliveryPromise {
 
   @@unique([commitmentId, seq])
   @@unique([projectId, id])
+}
+
+// ─── Phase 3 Task 4 — the inventory module (plan §C) ───────────────────────────────────────
+// A StockLot is ONE immutable received batch (a BEFORE UPDATE OR DELETE trigger blocks every
+// change). It carries the full §B MaterialSpecificationRef — technical identity + decision
+// provenance — FROZEN at receipt from the pinned requirement revision the received PO line
+// executes (selection is match-only, so compliant receipts carry the demanded identity), plus
+// provenance FKs to the PO line and the delivery commitment the receipt fulfilled. The lot has
+// NO quantity and NO location column: physical truth lives ONLY in the append-only ledger
+// below, keyed (projectId, storeLocation, stockLotId).
+model StockLot {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id])
+  projectId String
+
+  poLine       PurchaseOrderLine  @relation(fields: [projectId, poLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  poLineId     String
+  commitment   DeliveryCommitment @relation(fields: [projectId, commitmentId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  commitmentId String
+
+  // the PO line's frozen requirement pin, FK-sealed so the §B ref below provably belongs to it
+  requirement   ActivityRequirement @relation(fields: [projectId, requirementId, revision], references: [projectId, requirementId, revision], onDelete: NoAction, onUpdate: NoAction)
+  requirementId String
+  revision      Int
+
+  // §B MaterialSpecificationRef — technical identity, verbatim from the revision's spec
+  materialCategory     String
+  make                 String
+  grade                String
+  normalizedAttributes String
+  baseUom              String
+  specFingerprint      String
+  // §B provenance (all null = manual spec) — copied from the revision's spec at receipt
+  decisionId      String?
+  decisionVersion Int?
+  optionKey       String?
+
+  receivedAt   DateTime @default(now())
+  receivedBy   User     @relation("stockLotsReceived", fields: [receivedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  receivedById String
+
+  transactions StockTransaction[]
+
+  @@unique([projectId, id])
+  @@index([projectId, specFingerprint])
+  @@index([projectId, poLineId])
+}
+
+// The §C append-only stock ledger — the ONLY place a quantity moves; NO current-quantity
+// column exists anywhere. Every row moves `qty` (base UOM, > 0) from `fromBucket` to
+// `toBucket` (null = outside the store), so buckets derive by ONE generic fold per stock key.
+// Database CHECKs pin the per-type movement (a receipt row that fills anything but quarantine
+// is unrepresentable); a BEFORE UPDATE OR DELETE trigger makes rows immutable; a reversal
+// trigger proves each reversal row is the exact inverse of the row it references (§C rule
+// iii). `sourceCommandId` records the CommandExecution ledger row that appended the row (§C
+// rule ii — a replayed command re-runs nothing, so it appends nothing).
+model StockTransaction {
+  id            String   @id @default(cuid())
+  project       Project  @relation(fields: [projectId], references: [id])
+  projectId     String
+  lot           StockLot @relation(fields: [projectId, lotId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  lotId         String
+  storeLocation String
+  type          String // receipt|acceptance|rejection|vendor_return|adjustment|reversal (Task-4 vocabulary; CHECK)
+  qty           Decimal  @db.Decimal(18, 6)
+  fromBucket    String? // quarantine|acceptedOnHand|rejected (CHECK); null = from outside the store
+  toBucket      String? // same domain; null = leaves the store
+
+  // receipt provenance (CHECK: exactly the receipt rows carry both)
+  poLine       PurchaseOrderLine?  @relation(fields: [projectId, poLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  poLineId     String?
+  commitment   DeliveryCommitment? @relation(fields: [projectId, commitmentId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  commitmentId String?
+
+  // reversal linkage (CHECK: exactly the reversal rows carry it; partial unique — once each)
+  reversedTx   StockTransaction?  @relation("stockReversal", fields: [projectId, reversedTxId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  reversedTxId String?
+  reversedBy   StockTransaction[] @relation("stockReversal")
+
+  // quality decision facts (CHECK: acceptance carries result + evidence; rejection evidence)
+  qualityResult   String?
+  evidenceMedia   Media?  @relation(fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  evidenceMediaId String?
+  reason          String? // required on adjustment + reversal (CHECK)
+
+  sourceCommand   CommandExecution? @relation(fields: [sourceCommandId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  sourceCommandId String?
+  recordedAt      DateTime          @default(now())
+  recordedBy      User              @relation("stockTransactionsRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById    String
+
+  @@unique([projectId, id])
+  @@index([projectId, lotId, storeLocation])
+  @@index([projectId, poLineId])
 }
 
 model Decision {

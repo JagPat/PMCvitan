@@ -48,9 +48,21 @@ at `9520cd4`** (all 51 migrations apply; the three provenance probes pass; corre
 14/14; Task 2–3 suites 24/24; upgrade proof PASSED; no remaining P0/P1/P2 findings — the
 Tasks 2–3 review cycle is CLOSED; F1–F7 are not reopened absent a direct Task-4 regression).
 **Task 4 (inventory: receipts + acceptance, `StockLot`, the immutable §C ledger, §F bound-3
-receipt enforcement, the `ProcurementParticipant` PO-line lock) is IN PROGRESS on a held PR
-from `main` @ `9520cd4`; the next review stop follows Task 5.** Three non-blocking guardrails
-from the GO are recorded in §A for Tasks 5–6.** Canonical spec:
+receipt enforcement, the `ProcurementParticipant` PO-line lock) is DELIVERED on a held PR
+from `main` @ `9520cd4`: the inventory module owns `StockLot` (each batch freezing the
+pinned revision's full §B `MaterialSpecificationRef`) + the append-only `StockTransaction`
+ledger — buckets derive by ONE generic fold per stock key, no current-quantity column exists
+anywhere, and PostgreSQL CHECKs pin every §C movement equation while the append-only +
+reversal-inverse triggers seal rule iii; every command re-derives buckets under the lot
+`FOR UPDATE` and refuses any negative bucket; receipts run in purchase units through the
+PO's frozen conversion with §F bound 3 (`Σ accepted+quarantined ≤ ordered +
+approvedOverage`; rejection frees headroom) enforced through the transaction-bound
+`ProcurementParticipant` PO-line lock that also appends the procurement-owned
+received-progress fact; every ledger row records its source `CommandExecution` id (§C rule
+ii — keyed replays append nothing); `stock.transacted` events per row; both-orders
+acceptance-vs-adjustment and both bound-3 race shapes proven under the deterministic
+barrier. The next review stop follows Task 5.** Three non-blocking guardrails
+from the GO are recorded in §A for Tasks 5–6. Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
 merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:
