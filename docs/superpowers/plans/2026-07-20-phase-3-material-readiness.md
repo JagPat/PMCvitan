@@ -42,9 +42,15 @@ correction from `main` @ `bffd7c9` is DELIVERED on a held PR**: `comparisonStatu
 CHECK-pinned to 'approved' joins the five-column PO provenance FK (draft references
 unrepresentable), and immutable denormalized `requisitionId` columns + composite FKs seal
 every quote line AND PO line to their parent RFQ/PO requisition — the reviewer's three
-probes RED at `bffd7c9`, GREEN at the correction head. **Awaiting the mechanical re-review;
-Task 4 does not start until it clears.** Three non-blocking guardrails from the GO are
-recorded in §A for Tasks 5–6.** Canonical spec:
+probes RED at `bffd7c9`, GREEN at the correction head — merged (PR #196 @ `main`
+`9520cd4`). **The mechanical re-review returned GREEN SIGNAL: PHASE 3 TASKS 2–3 ARE CLEARED
+at `9520cd4`** (all 51 migrations apply; the three provenance probes pass; correction suite
+14/14; Task 2–3 suites 24/24; upgrade proof PASSED; no remaining P0/P1/P2 findings — the
+Tasks 2–3 review cycle is CLOSED; F1–F7 are not reopened absent a direct Task-4 regression).
+**Task 4 (inventory: receipts + acceptance, `StockLot`, the immutable §C ledger, §F bound-3
+receipt enforcement, the `ProcurementParticipant` PO-line lock) is IN PROGRESS on a held PR
+from `main` @ `9520cd4`; the next review stop follows Task 5.** Three non-blocking guardrails
+from the GO are recorded in §A for Tasks 5–6.** Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction
 merged @ `9a84442` (lineage `6fa019b → 9e33227 → 9a84442`); round-2 correction baseline:
