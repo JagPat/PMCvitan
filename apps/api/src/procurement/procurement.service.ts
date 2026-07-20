@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   parseQuantity, ROLE_POLICY,
@@ -10,6 +10,7 @@ import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilit
 import { RequirementsQueryService } from '../activities/requirements.query';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { CLOCK, type Clock } from '../common/clock';
 import { fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -93,6 +94,7 @@ export class ProcurementService {
     private readonly capabilities: CapabilitiesService,
     private readonly requirementsQuery: RequirementsQueryService,
     private readonly dispatcher: ExternalEffectDispatcher,
+    @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
   private async begin(projectId: string, user: AuthUser): Promise<{ actor: Actor; scope: CommandScope }> {
@@ -106,6 +108,11 @@ export class ProcurementService {
     tx: Prisma.TransactionClient, projectId: string, requirementId: string, revision: number, addQty: Prisma.Decimal,
   ): Promise<void> {
     const rev = await this.requirementsQuery.revisionForAllocation(tx, projectId, requirementId, revision);
+    // F1 correction: this is the MATERIAL procurement pipeline — labour/equipment demand
+    // never becomes a requisition line here.
+    if (rev.type !== 'material') {
+      throw new BadRequestException(`Only MATERIAL requirements flow through procurement — this requirement is '${rev.type}'`);
+    }
     // Task 3: a line fully ordered to POs is marked 'ordered' — it STILL holds its
     // requirement allocation (only 'cancelled' releases it).
     const allocated = await tx.requisitionLine.aggregate({
@@ -304,6 +311,11 @@ export class ProcurementService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'quotes.record', idempotencyKey, requestHash: hashRequest({ rfqId, ...input }),
       run: async (tx) => {
+        // F5 correction: quote recording joins the readiness-lock protocol, so two
+        // recordings of the same (rfq, vendor) SERIALIZE — the second supersedes the
+        // first instead of leaving two 'recorded' rows. The partial unique index
+        // (VendorQuote_one_recorded_per_rfq_vendor) is the database backstop.
+        await lockProjectReadiness(tx, projectId);
         const rfq = await tx.rfq.findFirst({ where: { id: rfqId, projectId }, select: { status: true, requisitionId: true } });
         if (!rfq) throw new BadRequestException('rfqId does not belong to this project');
         if (rfq.status !== 'issued') throw new ConflictException('Quotes are recorded against an ISSUED RFQ');
@@ -357,11 +369,13 @@ export class ProcurementService {
     await executeCommand(this.prisma, {
       scope, actor, commandType: 'comparisons.create', idempotencyKey, requestHash: hashRequest({ rfqId }),
       run: async (tx) => {
-        const rfq = await tx.rfq.findFirst({ where: { id: rfqId, projectId }, select: { id: true } });
+        const rfq = await tx.rfq.findFirst({ where: { id: rfqId, projectId }, select: { id: true, requisitionId: true } });
         if (!rfq) throw new BadRequestException('rfqId does not belong to this project');
         const existing = await tx.quoteComparison.findUnique({ where: { projectId_rfqId: { projectId, rfqId } } });
         if (existing) throw new ConflictException('A comparison already exists for this RFQ');
-        const created = await tx.quoteComparison.create({ data: { projectId, rfqId, createdById: actor.actorId } });
+        const created = await tx.quoteComparison.create({
+          data: { projectId, rfqId, requisitionId: rfq.requisitionId, createdById: actor.actorId },
+        });
         await recordAudit(tx, { projectId, actor, action: 'comparison.create', entity: 'QuoteComparison', entityId: created.id });
         return { resultRef: created.id, events: [] };
       },
@@ -378,18 +392,36 @@ export class ProcurementService {
         const comparison = await tx.quoteComparison.findUnique({ where: { projectId_rfqId: { projectId, rfqId } } });
         if (!comparison) throw new NotFoundException('No comparison exists for this RFQ');
         if (comparison.status !== 'draft') throw new ConflictException('The comparison is already approved');
-        // validity is settled INSIDE the approving transaction: recorded quotes past their
-        // validity date are CAS'd to EXPIRED here and can win nothing (§F transition)
-        const today = new Date(new Date().toISOString().slice(0, 10));
+        // F7 correction: validity is settled INSIDE the approving transaction against the
+        // PROJECT's civil today (the injected clock + Project.timeZone — never server UTC).
+        const project = await tx.project.findFirstOrThrow({ where: { id: projectId }, select: { timeZone: true } });
+        const today = new Date(this.clock.today(project.timeZone));
         await tx.vendorQuote.updateMany({
           where: { projectId, rfqId, status: 'recorded', validUntil: { lt: today } },
           data: { status: 'expired' },
         });
         const live = await tx.vendorQuote.findMany({ where: { projectId, rfqId, status: 'recorded' }, include: { lines: true } });
         if (live.length === 0) throw new ConflictException('No live (recorded, unexpired) quotes to compare');
-        const selected = live.find((q) => q.id === input.selectedQuoteId);
-        if (!selected) throw new BadRequestException('selectedQuoteId must name a LIVE quote of this RFQ (recorded and unexpired)');
-        const totals = new Map(live.map((q) => [q.id, q.lines.reduce((s, l) => s.add(l.landedCost), new Prisma.Decimal(0))]));
+        // F3 correction: only COMPLETE quotes — covering EVERY open line of the requisition —
+        // are eligible; partial awards are unsupported, so an incomplete quote can neither
+        // win nor set the "lowest total" bar.
+        const openLines = await tx.requisitionLine.findMany({
+          where: { projectId, requisitionId: comparison.requisitionId, status: 'open' },
+          select: { id: true },
+        });
+        const eligible = live.filter((q) => openLines.every((l) => q.lines.some((ql) => ql.requisitionLineId === l.id)));
+        if (eligible.length === 0) throw new ConflictException('No COMPLETE live quote covers every open requisition line — partial awards are unsupported');
+        const selected = eligible.find((q) => q.id === input.selectedQuoteId);
+        if (!selected) {
+          throw new BadRequestException('selectedQuoteId must name a LIVE, COMPLETE quote of this RFQ (recorded, unexpired, covering every open line)');
+        }
+        // F1 correction: an offered material that does not match the approved specification
+        // cannot be selected — substitution approval is a later task; until it lands,
+        // non-matching selection is refused outright.
+        if (selected.lines.some((l) => !l.matchesSpecification)) {
+          throw new BadRequestException('The selected quote offers material that does NOT match the approved specification — an approved substitution is required (unsupported until the substitution task)');
+        }
+        const totals = new Map(eligible.map((q) => [q.id, q.lines.reduce((s, l) => s.add(l.landedCost), new Prisma.Decimal(0))]));
         const lowest = [...totals.values()].reduce((a, b) => (b.lessThan(a) ? b : a));
         const selectedTotal = totals.get(selected.id)!;
         if (selectedTotal.greaterThan(lowest) && !input.justification) {

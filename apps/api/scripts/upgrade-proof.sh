@@ -560,6 +560,26 @@ assert "the §F overage-reason and cancel/close-short reason CHECKs are database
   "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('PurchaseOrderLine_overage_reason_check','PurchaseOrderVersion_cancel_reason_check','PurchaseOrderVersion_close_short_reason_check','DeliveryPromise_revision_reason_check');" \
   "4"
 
+# Phase 3 Tasks 2-3 CORRECTION — the review findings' database invariants land row-free.
+assert "at most ONE recorded quote per (project, rfq, vendor) — the F5 partial unique exists" \
+  "SELECT COUNT(*) FROM pg_indexes WHERE indexname='VendorQuote_one_recorded_per_rfq_vendor';" \
+  "1"
+assert "exactly ONE delivery commitment per PO line — the F6 unique exists" \
+  "SELECT COUNT(*) FROM pg_indexes WHERE indexname='DeliveryCommitment_projectId_poLineId_key';" \
+  "1"
+assert "quotes/quote-lines/comparisons are sealed — the F4 evidence triggers are installed" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('VendorQuote_lifecycle_only','VendorQuoteLine_append_only','QuoteComparison_lifecycle_only') AND NOT tgisinternal;" \
+  "3"
+assert "the F4 provenance chain FKs exist (rfq-sealed selection, comparison->rfq requisition, PO->comparison, PO-line pin)" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('QuoteComparison_selection_fkey','QuoteComparison_projectId_rfqId_requisitionId_fkey','PurchaseOrder_comparison_provenance_fkey','PurchaseOrderLine_requirement_pin_fkey') AND contype='f';" \
+  "4"
+assert "the F2 purchase triple is present with the base-quantity derivation CHECK" \
+  "SELECT ((SELECT COUNT(*) FROM information_schema.columns WHERE table_name='PurchaseOrderLine' AND column_name IN ('purchaseUom','purchaseQty','conversionToBase'))::text || '|' || (SELECT COUNT(*) FROM pg_constraint WHERE conname='PurchaseOrderLine_base_qty_derivation_check')::text);" \
+  "3|1"
+assert "the F1 match-only identity: PO-line specFingerprint is NOT NULL" \
+  "SELECT is_nullable FROM information_schema.columns WHERE table_name='PurchaseOrderLine' AND column_name='specFingerprint';" \
+  "NO"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

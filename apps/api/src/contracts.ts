@@ -721,10 +721,14 @@ export type ApproveComparisonInput = z.infer<typeof approveComparisonSchema>;
 // snapshot is SERVER-frozen from the comparison-approved quote — the caller picks lines and
 // quantities, never authors rates or landed amounts. approvedOverage is accepted ONLY by the
 // issue/amend commands (with a reason), matching "set only by pmc at issuance/amendment".
+// T2-3 correction F2 — the EXPLICIT purchase triple: the caller orders purchaseQty in the
+// vendor's purchase unit; conversionToBase converts one purchase unit to base units; the
+// base quantity is DERIVED by the service (and re-derived by a DB CHECK), never authored.
 const poLineShape = z.object({
   requisitionLineId: z.string().min(1),
-  qty: z.string().trim().min(1), // base-UOM decimal string (parseQuantity-canonicalized)
-  uomConversion: z.string().trim().min(1).optional(), // vendor pack unit → base UOM (default 1)
+  purchaseQty: z.string().trim().min(1), // decimal string (parseQuantity-canonicalized)
+  conversionToBase: z.string().trim().min(1).optional(), // one purchase unit in base units (default 1)
+  purchaseUom: z.string().trim().min(1).max(50).optional(), // pack unit label (default: the base UOM)
 }).strict();
 const poOverageShape = z.object({
   requisitionLineId: z.string().min(1), // names the line the headroom applies to

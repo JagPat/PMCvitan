@@ -192,22 +192,30 @@ export interface DeliveryCommitmentDto {
   readonly promises: readonly DeliveryPromiseDto[]; // full history, seq-ordered
 }
 
-/** One PO line's FROZEN commercial snapshot (§F — immutable at PostgreSQL after creation). */
+/**
+ * One PO line's FROZEN commercial snapshot (§F — immutable at PostgreSQL after creation).
+ * The purchase triple is EXPLICIT (T2-3 correction F2): the caller orders `purchaseQty` in
+ * `purchaseUom`; `conversionToBase` converts one purchase unit to base units; `qty` is the
+ * DERIVED base quantity used by every allocation bound. `rate` is the quote's per-BASE-unit
+ * rate; a PARTIAL order carries its base-quantity share of the quote line's tax/freight.
+ */
 export interface PurchaseOrderLineDto {
   readonly id: string;
   readonly requisitionLineId: string;
   readonly requirementId: string;
   readonly revision: number;
-  readonly specFingerprint: string | null;
+  readonly specFingerprint: string; // the DEMANDED material identity — match-only (no substitutions yet)
   readonly quotedMake: string | null;
   readonly uom: string; // the revision's base UOM
-  readonly uomConversion: string; // vendor pack unit → base UOM factor, frozen
-  readonly qty: string; // ordered qty in base UOM
-  readonly rate: string;
-  readonly taxAmount: string;
-  readonly freightAmount: string;
+  readonly purchaseUom: string; // the vendor's pack/purchase unit label
+  readonly purchaseQty: string; // ordered quantity in purchase units (caller-authored)
+  readonly conversionToBase: string; // one purchase unit in base units, frozen
+  readonly qty: string; // DERIVED base quantity = purchaseQty × conversionToBase
+  readonly rate: string; // per-BASE-unit rate from the selected quote
+  readonly taxAmount: string; // the ordered share of the quote line's tax (prorated, 2 dp)
+  readonly freightAmount: string; // the ordered share of the quote line's freight (prorated, 2 dp)
   readonly landedAmount: string;
-  readonly committedAmountBase: string; // rate×qty×uomConversion + tax + freight — the Phase-5 commitment fact
+  readonly committedAmountBase: string; // rate × purchaseQty × conversionToBase + tax + freight — the Phase-5 commitment fact
   readonly approvedOverage: string; // §F bound-3 headroom — set ONLY at issuance/amendment with a reason
   readonly overageReason: string | null;
   readonly receivedQty: string; // procurement-owned received-progress fact (Task-4 receipts)
