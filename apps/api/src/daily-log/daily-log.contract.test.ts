@@ -4,6 +4,7 @@ import {
   DAILY_LOG_QUERIES,
   type AddMaterialInput as SharedAddMaterialInput,
   type FlagMismatchInput as SharedFlagMismatchInput,
+  type ResolveMismatchInput as SharedResolveMismatchInput,
   type SubmitDailyLogInput as SharedSubmitDailyLogInput,
   type DailyLogCoreView,
   type DailyLogSnapshotResult,
@@ -12,7 +13,7 @@ import {
 import { dailyLogManifest } from './daily-log.manifest';
 import { DailyLogQueryService, type DailyLogCore } from './daily-log.query';
 import { DailyLogService } from './daily-log.service';
-import type { AddMaterialInput, FlagMismatchInput, SubmitDailyLogInput } from '../contracts';
+import type { AddMaterialInput, FlagMismatchInput, ResolveMismatchInput, SubmitDailyLogInput } from '../contracts';
 
 /**
  * Phase 2 Task 10 — the daily-log module is reachable ONLY through its shared contract (commands +
@@ -39,7 +40,8 @@ describe('Task 10 — the daily-log module implements its shared command/query c
     expect([...dailyLogManifest.producesEvents].sort()).toEqual(
       // `material.unfiled` — Module 4 correction, the owner-aligned SET NULL signal appended by
       // DailyLogParticipant on the foreign nodes.remove transaction.
-      ['dailylog.started', 'dailylog.submitted', 'material.added', 'material.mismatch_flagged', 'material.unfiled'].sort(),
+      // `mismatch.resolved` — Phase 3 Task 5 (§E), one mismatch observation closed.
+      ['dailylog.started', 'dailylog.submitted', 'material.added', 'material.mismatch_flagged', 'material.unfiled', 'mismatch.resolved'].sort(),
     );
     // the module reads decisions through the decisions query contract; the material-mismatch flag is a
     // WORKFLOW participation with activities (edge 4), NOT a persistence dependency.
@@ -58,8 +60,9 @@ describe('Task 10 — the daily-log module implements its shared command/query c
     const _start: Parameters<DailyLogService['start']>[2] = 'k' as string | undefined;
     const _add: Parameters<DailyLogService['addMaterial']>[3] = 'k' as string | undefined;
     const _flag: Parameters<DailyLogService['flagMismatch']>[3] = 'k' as string | undefined;
+    const _resolve: Parameters<DailyLogService['resolveMismatch']>[3] = 'k' as string | undefined;
     const _submit: Parameters<DailyLogService['submit']>[3] = 'k' as string | undefined;
-    void [_start, _add, _flag, _submit];
+    void [_start, _add, _flag, _resolve, _submit];
     expect(true).toBe(true);
   });
 
@@ -68,6 +71,8 @@ describe('Task 10 — the daily-log module implements its shared command/query c
     // the API's validated request bodies are valid shared command inputs
     const _add: SharedAddMaterialInput = {} as AddMaterialInput;
     const _flag: SharedFlagMismatchInput = {} as FlagMismatchInput;
+    const _resolve: SharedResolveMismatchInput = {} as ResolveMismatchInput;
+    void _resolve;
     const _submit: SharedSubmitDailyLogInput = {} as SubmitDailyLogInput;
     // the query results (the photo-less daily-log core + the snapshot slice) are the shared views
     const _core: DailyLogCoreView = {} as DailyLogCore;

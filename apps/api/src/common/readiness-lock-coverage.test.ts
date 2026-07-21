@@ -53,7 +53,7 @@ const COVERAGE: Record<string, 'locked' | string> = {
   // they write a readiness input on the CALLER'S transaction, and every readiness-
   // affecting caller takes lockProjectReadiness before invoking them.
   'activities/activity.participant.ts':
-    'exempt: writes gateMaterial/status on the CALLER\'s transaction — the readiness-affecting callers (inspections.decide sign-off/revert, daily-log.flagMismatch block) hold lockProjectReadiness first',
+    'exempt: writes gateMaterial/status on the CALLER\'s transaction — the readiness-affecting callers (inspections.decide sign-off/revert, daily-log.flagMismatch block, daily-log.resolveMismatch unblock) hold lockProjectReadiness first',
   'inspections/inspection.participant.ts':
     'exempt: createClosingInspection runs in activities.complete\'s transaction (unlocked, exactly as that closing-inspection create always was — the file-level tolerance below); createForInit runs during project creation (see the orgs exemption)',
   // Module 4 correction — the SET NULL owner-signal participant.

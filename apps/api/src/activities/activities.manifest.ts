@@ -47,6 +47,9 @@ export const activitiesManifest: ModuleManifest = {
     // module's participant) so the ordered activities.schedule projection refreshes when a foreign
     // mutation touches an activity-owned serialized fact. Signal-only (no push).
     'activity.material_blocked',
+    // Phase 3 Task 5 (§E) — the inverse signal, appended by the daily-log resolve-mismatch
+    // command through ActivityParticipant.clearMaterialMismatchBlock (same owner-aligned rule).
+    'activity.material_unblocked',
     'activity.unfiled',
     'phase.created',
     'phase.removed',

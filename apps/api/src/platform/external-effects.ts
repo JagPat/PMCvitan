@@ -59,6 +59,9 @@ export const EXTERNAL_EFFECTS = {
   // participant (daily-log material-mismatch block; node-deletion unfiling). Signal-only: they refresh the
   // activities projection and dedupe with the foreign command's own socket invalidation; no push.
   'activity.material_blocked': { eventType: 'activity.material_blocked', invalidate: true, push: null },
+  // Phase 3 Task 5 (§E) — the INVERSE signal: the daily-log mismatch-resolution command cleared the
+  // block through the activities participant (gate falls back to 'wait'; never a push).
+  'activity.material_unblocked': { eventType: 'activity.material_unblocked', invalidate: true, push: null },
   'activity.unfiled': { eventType: 'activity.unfiled', invalidate: true, push: null },
   // ── phases ─────────────────────────────────────────────────────────────────────────────────
   // Phase 3 Task 1 — requirement demand-contract events (pilot projects only; §D gate).
@@ -84,6 +87,8 @@ export const EXTERNAL_EFFECTS = {
   // Task 4 — the §G inventory ledger event (ONE per appended §C stock transaction).
   // Snapshot-invalidate only; the readiness/store projections consume it in Tasks 5–6.
   'stock.transacted': { eventType: 'stock.transacted', invalidate: true, push: null },
+  // Task 5 — the §G issue event (§E: the canonical record of what LEFT the store). Signal-only.
+  'issue.recorded': { eventType: 'issue.recorded', invalidate: true, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────
@@ -127,6 +132,8 @@ export const EXTERNAL_EFFECTS = {
   'material.mismatch_flagged': { eventType: 'material.mismatch_flagged', invalidate: true, push: ['pmc', 'contractor'] },
   // Task 10 (Module 4) correction — the daily-log-owned SET-NULL signal (invalidate only, never push)
   'material.unfiled': { eventType: 'material.unfiled', invalidate: true, push: null },
+  // Phase 3 Task 5 (§E) — one mismatch observation closed with an explicit resolution. Signal-only.
+  'mismatch.resolved': { eventType: 'mismatch.resolved', invalidate: true, push: null },
   // ── nodes (location spine) — signal only, never a push ───────────────────────────────────────
   'node.created': { eventType: 'node.created', invalidate: true, push: null },
   'node.published': { eventType: 'node.published', invalidate: true, push: null },

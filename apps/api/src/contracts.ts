@@ -127,6 +127,14 @@ export type SubmitDailyLogInput = z.infer<typeof submitDailyLogSchema>;
 
 export const flagMismatchSchema = z.object({ decisionId: z.string().min(1) });
 export type FlagMismatchInput = z.infer<typeof flagMismatchSchema>;
+// Phase 3 Task 5 (§E) — close ONE mismatch observation with an explicit disposition + reason
+// (the observation row is never edited; one resolution per observation).
+export const resolveMismatchSchema = z.object({
+  siteMaterialId: z.string().min(1),
+  resolution: z.string().trim().min(1).max(300), // e.g. 'returned-and-replaced', 'accepted-by-client'
+  reason: z.string().trim().min(1).max(1000),
+}).strict();
+export type ResolveMismatchInput = z.infer<typeof resolveMismatchSchema>;
 
 // ── Phase 7c-media ─────────────────────────────────────────────────────────
 // A site photo upload. `data` is base64 (no data: URL prefix).
@@ -816,3 +824,57 @@ export const reverseStockSchema = z.object({
   reason: z.string().trim().min(1).max(1000),
 }).strict();
 export type ReverseStockInput = z.infer<typeof reverseStockSchema>;
+
+// ── Phase 3 Task 5 — store-to-site flows (plan §§C/E). Reservation/issue name an ACTIVITY;
+// consumption/site-return/wastage name the ISSUE they are recorded against (§E — lot,
+// location and activity derive from it); a transfer names the destination store location.
+export const reserveStockSchema = z.object({
+  lotId: z.string().min(1),
+  storeLocation: z.string().trim().min(1).max(120).optional(), // default 'main'
+  activityId: z.string().min(1),
+  qty: qtyString, // base UOM
+}).strict();
+export type ReserveStockInput = z.infer<typeof reserveStockSchema>;
+export const releaseReservationSchema = z.object({
+  lotId: z.string().min(1),
+  storeLocation: z.string().trim().min(1).max(120).optional(),
+  activityId: z.string().min(1),
+  qty: qtyString,
+  note: z.string().trim().min(1).max(1000).optional(), // cancel / revise / no-longer-needed
+}).strict();
+export type ReleaseReservationInput = z.infer<typeof releaseReservationSchema>;
+export const issueStockSchema = z.object({
+  lotId: z.string().min(1),
+  storeLocation: z.string().trim().min(1).max(120).optional(),
+  activityId: z.string().min(1), // §C — an issue must reference activity + location
+  qty: qtyString,
+  note: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+export type IssueStockInput = z.infer<typeof issueStockSchema>;
+export const consumeStockSchema = z.object({
+  issueId: z.string().min(1), // §E — recorded AGAINST the referenced issue
+  qty: qtyString,
+  note: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+export type ConsumeStockInput = z.infer<typeof consumeStockSchema>;
+export const siteReturnSchema = z.object({
+  issueId: z.string().min(1),
+  qty: qtyString,
+  note: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+export type SiteReturnInput = z.infer<typeof siteReturnSchema>;
+export const wastageSchema = z.object({
+  issueId: z.string().min(1),
+  qty: qtyString,
+  reason: z.string().trim().min(1).max(1000), // §C — wastage always explains itself
+  evidenceMediaId: z.string().min(1), // §C — photographic evidence, thereafter delete-sealed
+}).strict();
+export type WastageInput = z.infer<typeof wastageSchema>;
+export const transferStockSchema = z.object({
+  lotId: z.string().min(1),
+  storeLocation: z.string().trim().min(1).max(120).optional(), // SOURCE, default 'main'
+  toStoreLocation: z.string().trim().min(1).max(120), // destination — must differ
+  qty: qtyString,
+  note: z.string().trim().min(1).max(1000).optional(),
+}).strict();
+export type TransferStockInput = z.infer<typeof transferStockSchema>;

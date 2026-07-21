@@ -37,6 +37,8 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'dailyLog.start': ['engineer', 'pmc'],
   'dailyLog.addMaterial': ['engineer', 'pmc'],
   'dailyLog.flagMismatch': ['engineer', 'pmc'],
+  // Phase 3 Task 5 (§E) — closing a mismatch is the PMC's attributable authority decision.
+  'dailyLog.resolveMismatch': ['pmc'],
   'dailyLog.submit': ['engineer', 'pmc'],
   'media.upload': ['pmc', 'engineer'],
   'media.delete': ['pmc', 'engineer'],

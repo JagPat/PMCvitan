@@ -114,6 +114,54 @@ export class ActivityParticipant {
   }
 
   /**
+   * Phase 3 Task 5 — the target an inventory reservation/issue names (§C: an issue "must
+   * reference activity + location"). Lives HERE so inventory never reads `prisma.activity`
+   * itself: §G's dependency edges run `activities → inventory` (`coverageFor`, Task 6), so
+   * an inventory → activities READ edge would close a cycle — the workflow participant is
+   * the cycle-exempt channel, exactly like the sign-off target above.
+   */
+  async materialTarget(
+    db: Prisma.TransactionClient,
+    params: { projectId: string; activityId: string },
+  ): Promise<{ id: string; name: string } | null> {
+    const { projectId, activityId } = params;
+    return db.activity.findFirst({ where: { id: activityId, projectId }, select: { id: true, name: true } });
+  }
+
+  /**
+   * Phase 3 Task 5 (§E) — the INVERSE of {@link blockForMaterialMismatch}: called by the
+   * daily-log mismatch-resolution command (same locked transaction) ONLY after it proved no
+   * unresolved mismatch observation remains for the decision. Every activity this decision
+   * blocked is released: the stored material gate falls back to `wait` (the material state
+   * needs re-verification — clearing a dispute never fabricates readiness), and the status
+   * derives honestly from the recorded work state (`in_progress` if the activity had
+   * started, else `not_started`; `done` rows were never blocked). Appends ONE
+   * `activity.material_unblocked` signal when any activity changed, mirroring the block's
+   * owner-aligned event so the activities projection observes the release.
+   */
+  async clearMaterialMismatchBlock(
+    tx: Prisma.TransactionClient,
+    params: { projectId: string; decisionId: string; actor: Actor },
+  ): Promise<EmittedEventMeta | null> {
+    const { projectId, decisionId, actor } = params;
+    const blocked = await tx.activity.findMany({
+      where: { projectId, decisionId, gateMaterial: 'fail', status: 'blocked' },
+    });
+    for (const a of blocked) {
+      await tx.activity.update({
+        where: { id: a.id },
+        data: {
+          gateMaterial: 'wait' as GateState,
+          status: a.actualStart != null || a.actualStartDate != null ? 'in_progress' : 'not_started',
+          block: null,
+        },
+      });
+    }
+    if (blocked.length === 0) return null;
+    return emitEvent(tx, { projectId, actor, eventType: 'activity.material_unblocked', entityType: 'Activity', entityId: blocked[0].id, payload: { decisionId, unblocked: blocked.length }, effectKey: 'activity.material_unblocked', dispatch: {} });
+  }
+
+  /**
    * Clear the location of every activity filed on a node being deleted (unfile) and append
    * `activity.unfiled` when any row changed — invoked on the node-remove transaction BEFORE the node
    * is deleted, so the projection observes the location change instead of relying on the FK's silent

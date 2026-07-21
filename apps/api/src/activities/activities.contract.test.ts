@@ -47,6 +47,9 @@ describe('Task 10 — the activities module implements its shared command/query 
         // sign-off events (`activity.signed_off`/`signoff_rejected`) are produced by INSPECTIONS (the
         // cause is the inspection decision) — they live in ITS manifest, not here.
         'activity.material_blocked',
+        // Phase 3 Task 5 (§E) — the inverse block signal, appended by the daily-log
+        // resolve-mismatch command through the activities participant.
+        'activity.material_unblocked',
         'activity.unfiled',
         'phase.created',
         'phase.removed',

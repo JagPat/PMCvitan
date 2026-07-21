@@ -21,8 +21,18 @@
  * line's PURCHASE units and converted to base via the PO's FROZEN `conversionToBase`;
  * `Σ (accepted + quarantined) per PO line ≤ ordered + approvedOverage` always.
  *
- * Task 4 carries receipts/acceptance/rejection/vendor-return/adjustment/reversal ONLY.
- * Reservations, transfers, issues, consumption, site-returns and wastage are Task 5.
+ * TASK 5 — the store-to-site §C flows. A `reservation` claims part of `acceptedOnHand`
+ * for a NAMED activity (guard: `freeAvailable ≥ qty`); an `issue` is the ONLY transaction
+ * that takes on-hand stock out of the store for work — it creates the §E-canonical
+ * `MaterialIssue` record (what LEFT THE STORE), consumes the activity's reserved portion
+ * first (an explicit `reservation_release` row appends in the same command), and is
+ * guarded by `qty ≤ freeAvailable + reservedForThisActivity`. `consumption`, `site_return`
+ * and `wastage` are recorded AGAINST the referenced `MaterialIssue` (§E) and move ONLY
+ * `issuedToActivity` — consumption NEVER touches a store bucket (the double-count guard).
+ * A `transfer` moves acceptedOnHand between store locations of the SAME project
+ * (guard: `freeAvailable ≥ qty` at the source — reservations do not travel). The Daily Log
+ * screen reads issued material through THIS module's `stock.issues` query — nothing is
+ * ever copied into the daily-log's `SiteMaterial` observations (§E).
  */
 
 /** The inventory module's state-changing commands (must equal the manifest `commands`). */
@@ -33,14 +43,21 @@ export const INVENTORY_COMMANDS = [
   'receipts.vendorReturn',
   'stock.adjust',
   'stock.reverse',
+  'stock.reserve',
+  'stock.release',
+  'stock.issue',
+  'stock.consume',
+  'stock.siteReturn',
+  'stock.wastage',
+  'stock.transfer',
 ] as const;
 export type InventoryCommand = (typeof INVENTORY_COMMANDS)[number];
 
 /** The inventory module's read queries (must equal the manifest `queries`). */
-export const INVENTORY_QUERIES = ['stock.store'] as const;
+export const INVENTORY_QUERIES = ['stock.store', 'stock.issues'] as const;
 export type InventoryQuery = (typeof INVENTORY_QUERIES)[number];
 
-/** The §C ledger's transaction vocabulary shipped in Task 4 (Task 5 extends it). */
+/** The §C ledger's transaction vocabulary (Tasks 4 + 5). */
 export const STOCK_TRANSACTION_TYPES = [
   'receipt',
   'acceptance',
@@ -48,11 +65,18 @@ export const STOCK_TRANSACTION_TYPES = [
   'vendor_return',
   'adjustment',
   'reversal',
+  'reservation',
+  'reservation_release',
+  'issue',
+  'consumption',
+  'site_return',
+  'wastage',
+  'transfer',
 ] as const;
 export type StockTransactionType = (typeof STOCK_TRANSACTION_TYPES)[number];
 
-/** The §C buckets a Task-4 ledger row may move quantity between. */
-export const STOCK_BUCKETS = ['quarantine', 'acceptedOnHand', 'rejected'] as const;
+/** The §C buckets a ledger row may move quantity between (Tasks 4 + 5). */
+export const STOCK_BUCKETS = ['quarantine', 'acceptedOnHand', 'rejected', 'reserved', 'issuedToActivity'] as const;
 export type StockBucket = (typeof STOCK_BUCKETS)[number];
 
 /** One stock key's derived §C buckets — NEVER stored, always folded from the ledger. */
@@ -60,10 +84,10 @@ export interface StockBucketsDto {
   readonly storeLocation: string;
   readonly quarantine: string; // Decimal strings, numeric(18,6)-exact, base UOM
   readonly acceptedOnHand: string;
-  readonly reserved: string; // 0 until Task 5
+  readonly reserved: string;
   readonly freeAvailable: string; // derived: acceptedOnHand − reserved
   readonly rejected: string;
-  readonly issuedToActivity: string; // 0 until Task 5
+  readonly issuedToActivity: string;
 }
 
 /** One append-only §C ledger row. */
@@ -77,9 +101,12 @@ export interface StockTransactionDto {
   readonly toBucket: string | null;
   readonly poLineId: string | null; // receipt rows only
   readonly commitmentId: string | null; // receipt rows only
+  readonly activityId: string | null; // reservation/release/issue/consumption/site-return/wastage rows
+  readonly issueId: string | null; // the §E MaterialIssue: the issue row itself + custody movements against it
+  readonly toStoreLocation: string | null; // transfer rows only — the destination stock key
   readonly reversedTxId: string | null; // reversal rows only — the row this one reverses
   readonly qualityResult: string | null; // acceptance rows
-  readonly evidenceMediaId: string | null; // acceptance/rejection rows
+  readonly evidenceMediaId: string | null; // acceptance/rejection/wastage rows
   readonly reason: string | null;
   readonly sourceCommandId: string | null; // the CommandExecution ledger row (§C rule ii)
   readonly recordedAt: string;
@@ -115,6 +142,43 @@ export interface StockLotDto {
 /** The `stock.store` query result — the project store view. */
 export interface StockStoreDto {
   readonly lots: readonly StockLotDto[];
+}
+
+/**
+ * The §E-canonical record of material that LEFT THE STORE for an activity. Immutable —
+ * corrections reverse the underlying ledger rows (§C rule iii); the issue record itself is
+ * never edited or deleted, so a daily-log reference to it can never be orphaned. The custody
+ * breakdown is DERIVED per issue from the ledger (`issuedToActivity` fold filtered by issue).
+ */
+export interface MaterialIssueDto {
+  readonly id: string;
+  readonly lotId: string;
+  readonly storeLocation: string;
+  readonly activityId: string;
+  readonly qty: string; // base UOM
+  readonly issuedAt: string;
+  readonly issuedById: string;
+  // the lot's §B identity, joined for display (never copied into daily-log rows — §E)
+  readonly materialCategory: string;
+  readonly make: string;
+  readonly baseUom: string;
+  readonly specFingerprint: string;
+  // derived custody: qty − consumed − returned − wasted (± reversals), never below 0
+  readonly remainingCustody: string;
+}
+
+/** The `stock.issues` query result — the §E Daily-Log read of issued material. */
+export interface StockIssuesDto {
+  readonly issues: readonly MaterialIssueDto[];
+}
+
+/** The `issue.recorded` event payload (§G catalog: issueId, activityId, locationId, qty).
+ *  `locationId` carries the §C stock key's store location. */
+export interface IssueRecordedPayload {
+  readonly issueId: string;
+  readonly activityId: string;
+  readonly locationId: string;
+  readonly qty: string;
 }
 
 /** The `stock.transacted` event payload (§G catalog: txId, type, stockKey, qty, sourceCommandId). */
