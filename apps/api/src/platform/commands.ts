@@ -32,6 +32,16 @@ import type { EmittedEventMeta } from './outbox/registry';
 /** The transaction handle a command's `run` writes through — a `$transaction` callback client. */
 export type CommandTx = Prisma.TransactionClient;
 
+/** Phase 3 Task 4 — execution context handed to `run` alongside the transaction. `commandId`
+ *  is the `CommandExecution` ledger row this execution reserved, so a mutation can record its
+ *  source action on rows it appends (the §C stock-ledger provenance rule). It is `null` ONLY
+ *  on the legacy unkeyed path, which reserves no ledger row (additive rollout — a missing key
+ *  is refused once `commandKeyEnforced()` flips on). Existing `run` callbacks that declare
+ *  only `(tx)` are unaffected. */
+export interface CommandRunContext {
+  commandId: string | null;
+}
+
 /** The project- or org-scoped subject the receipt keys on. For a project command the tenant
  *  `organizationId` is DERIVED server-side from the project, so it can never be forged. */
 export type CommandScope =
@@ -60,7 +70,7 @@ export interface ExecuteInput<T> {
   /** Canonical hash of the EXACT request DTO fields — the same-key/different-payload → 409 key. */
   requestHash: string;
   /** The canonical mutation, run INSIDE the reserve/receipt transaction. Returns the resultRef. */
-  run: (tx: CommandTx) => Promise<CommandResult<T>>;
+  run: (tx: CommandTx, ctx: CommandRunContext) => Promise<CommandResult<T>>;
 }
 
 export interface ExecuteOutcome<T> {
@@ -148,7 +158,7 @@ export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInp
     if (commandKeyEnforced()) {
       throw new BadRequestException('This action requires an Idempotency-Key — please update the app to continue.');
     }
-    const r = await prisma.$transaction((tx) => input.run(tx));
+    const r = await prisma.$transaction((tx) => input.run(tx, { commandId: null }));
     return { replayed: false, resultRef: r.resultRef, value: r.value, events: r.events ?? [] };
   }
 
@@ -176,7 +186,7 @@ export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInp
         },
         select: { id: true },
       });
-      const result = await input.run(tx);
+      const result = await input.run(tx, { commandId: reservation.id });
       await tx.commandExecution.update({
         where: { id: reservation.id },
         data: { status: 'succeeded', resultRef: result.resultRef, completedAt: new Date() },

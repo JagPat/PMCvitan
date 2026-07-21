@@ -73,6 +73,8 @@ const MODEL_OWNER: Record<string, string> = {
   rfq: 'procurement', vendorQuote: 'procurement', vendorQuoteLine: 'procurement', quoteComparison: 'procurement',
   purchaseOrder: 'procurement', purchaseOrderVersion: 'procurement', purchaseOrderLine: 'procurement',
   deliveryCommitment: 'procurement', deliveryPromise: 'procurement',
+  // Phase 3 Task 4 — the inventory pillar (§C physical truth: lots + the append-only ledger)
+  stockLot: 'inventory', stockTransaction: 'inventory',
   projectNode: 'nodes',
   media: 'media',
   org: 'orgs', orgMembership: 'orgs', membership: 'orgs', project: 'orgs', projectCompany: 'orgs',
@@ -122,6 +124,12 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // Phase 3 Task 3 — versioned POs + delivery commitments. issue/amend/cancel and the
   // commit/revise/default delivery commands dispatch their committed events post-commit (6).
   'procurement/purchase-orders.service.ts': { domain: 'procurement', foreign: {}, dispatch: 6 },
+  // Phase 3 Task 4 — the inventory pillar: receipt/accept/reject/vendor-return/adjust/reverse
+  // each append ONE §C ledger row and dispatch its committed stock.transacted event (6). The
+  // §G inventory→procurement receipt edge routes through the procurement PARTICIPANT (the
+  // PO-line lock + received-progress fact live in procurement-owned code), so this service
+  // writes ONLY its own domain.
+  'inventory/inventory.service.ts': { domain: 'inventory', foreign: {}, dispatch: 6 },
   // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
   'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 3 },
   'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, dispatch: 5 },
@@ -266,6 +274,15 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('deliveries/:commitmentId/fulfill')",
     "Post('deliveries/:commitmentId/default')",
   ],
+  // Phase 3 Task 4 — the inventory store surface (§C ledger commands)
+  'inventory/inventory.controller.ts': [
+    "Post('stock/receipts')",
+    "Post('stock/accept')",
+    "Post('stock/reject')",
+    "Post('stock/vendor-return')",
+    "Post('stock/adjust')",
+    "Post('stock/reverse')",
+  ],
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')"],
 };
 
@@ -331,9 +348,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('42 external-effect dispatch sites total across the pillar services (36 + the six Task-3 po/delivery emitters)', () => {
+    it('48 external-effect dispatch sites total across the pillar services (42 + the six Task-4 stock emitters)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(42);
+      expect(total).toBe(48);
     });
   });
 
@@ -344,12 +361,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('92 mutating routes total (the documented command inventory §4)', () => {
+    it('98 mutating routes total (the documented command inventory §4)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(92);
+      expect(total).toBe(98);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(92);
+      expect(live).toBe(98);
     });
   });
 
@@ -363,13 +380,14 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
   describe('read + sender coupling (SnapshotService + ExternalEffectDispatcher injected in every emitter)', () => {
     const emitters = Object.entries(SERVICES).filter(([, s]) => s.dispatch > 0).map(([f]) => f);
-    it('all eleven dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning eight also read through SnapshotService', () => {
-      expect(emitters.length).toBe(11);
+    it('all twelve dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning eight also read through SnapshotService', () => {
+      expect(emitters.length).toBe(12);
       const moduleReadServices = [
-        // Phase 3 — requirements (Task 1) and procurement (Tasks 2-3) return MODULE-OWNED dtos
-        // (the Task-10 module-read pattern), never the snapshot, so they carry no
-        // SnapshotService dependency by design.
+        // Phase 3 — requirements (Task 1), procurement (Tasks 2-3) and inventory (Task 4)
+        // return MODULE-OWNED dtos (the Task-10 module-read pattern), never the snapshot, so
+        // they carry no SnapshotService dependency by design.
         'activities/requirements.service.ts', 'procurement/procurement.service.ts', 'procurement/purchase-orders.service.ts',
+        'inventory/inventory.service.ts',
       ];
       for (const file of emitters) {
         if (!moduleReadServices.includes(file)) {

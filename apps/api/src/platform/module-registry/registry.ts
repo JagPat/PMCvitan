@@ -10,6 +10,7 @@ import { orgsManifest } from '../../orgs/orgs.manifest';
 import { authManifest } from '../../auth/auth.manifest';
 import { platformManifest } from '../platform.manifest';
 import { procurementManifest } from '../../procurement/procurement.manifest';
+import { inventoryManifest } from '../../inventory/inventory.manifest';
 
 /**
  * Phase 2 Task 7 — the compiled module registry.
@@ -24,6 +25,7 @@ export const MODULE_MANIFESTS: readonly ModuleManifest[] = [
   decisionsManifest,
   activitiesManifest,
   procurementManifest,
+  inventoryManifest,
   inspectionsManifest,
   drawingsManifest,
   dailyLogManifest,

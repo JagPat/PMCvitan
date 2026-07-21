@@ -591,6 +591,26 @@ assert "the denormalized requisitionId columns are NOT NULL on all four evidence
   "SELECT COUNT(*) FROM information_schema.columns WHERE column_name='requisitionId' AND is_nullable='NO' AND table_name IN ('VendorQuote','VendorQuoteLine','PurchaseOrderVersion','PurchaseOrderLine');" \
   "4"
 
+# Phase 3 Task 4 — the inventory tables land row-free with their §C seals installed.
+assert "the two inventory tables exist and the migration wrote NO rows over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('StockLot','StockTransaction'))::text || '|' || (SELECT COUNT(*) FROM \"StockLot\")::text || '|' || (SELECT COUNT(*) FROM \"StockTransaction\")::text;" \
+  "2|0|0"
+assert "both inventory tables are append-only and the reversal-inverse trigger is installed (§C rule iii)" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('StockLot_append_only','StockTransaction_append_only','StockTransaction_reversal_inverse') AND NOT tgisinternal;" \
+  "3"
+assert "the §C conservation CHECKs pin qty > 0, the type vocabulary, the bucket domain and the per-type movement shape" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockTransaction_qty_positive_check','StockTransaction_type_check','StockTransaction_bucket_domain_check','StockTransaction_type_shape_check');" \
+  "4"
+assert "the ledger's provenance FKs seal receipt (PO line + commitment), evidence media, the reversal chain and the source command" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockTransaction_projectId_poLineId_fkey','StockTransaction_projectId_commitmentId_fkey','StockTransaction_projectId_evidenceMediaId_fkey','StockTransaction_projectId_reversedTxId_fkey','StockTransaction_sourceCommandId_fkey') AND contype='f';" \
+  "5"
+assert "each ledger row is reversible AT MOST once (the partial unique exists)" \
+  "SELECT COUNT(*) FROM pg_indexes WHERE indexname='StockTransaction_reversedTx_once_key';" \
+  "1"
+assert "the lot's §B ref is FK-sealed to its pinned requirement revision and its PO-line/commitment provenance" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockLot_projectId_requirementId_revision_fkey','StockLot_projectId_poLineId_fkey','StockLot_projectId_commitmentId_fkey') AND contype='f';" \
+  "3"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

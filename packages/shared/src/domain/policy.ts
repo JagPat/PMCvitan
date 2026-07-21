@@ -39,6 +39,13 @@ export const ROLE_POLICY = {
   'requisition.approve': ['pmc'],
   'procurement.manage': ['pmc'],
   'procurement.read': ['pmc', 'engineer'],
+  // Phase 3 Task 4 — the inventory store surface (plan §H matrix). Receipt recording and the
+  // quality decisions (accept/reject) plus the vendor-return that closes a rejection are
+  // pmc/engineer store work; the free-form adjustment and the reversal correction are pmc
+  // authority; the store read mirrors procurement.read.
+  'stock.record': ['pmc', 'engineer'],
+  'stock.adjust': ['pmc'],
+  'stock.read': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

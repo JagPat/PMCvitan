@@ -23,6 +23,7 @@ export * from './contracts/daily-log';
 export * from './contracts/activities';
 export * from './contracts/requirements';
 export * from './contracts/procurement';
+export * from './contracts/inventory';
 export * from './contracts/drawings';
 export * from './contracts/inspections';
 // i18n dictionaries
