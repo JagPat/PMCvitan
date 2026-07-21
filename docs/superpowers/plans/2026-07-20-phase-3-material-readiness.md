@@ -48,8 +48,8 @@ at `9520cd4`** (all 51 migrations apply; the three provenance probes pass; corre
 14/14; Task 2–3 suites 24/24; upgrade proof PASSED; no remaining P0/P1/P2 findings — the
 Tasks 2–3 review cycle is CLOSED; F1–F7 are not reopened absent a direct Task-4 regression).
 **Task 4 (inventory: receipts + acceptance, `StockLot`, the immutable §C ledger, §F bound-3
-receipt enforcement, the `ProcurementParticipant` PO-line lock) is DELIVERED on a held PR
-from `main` @ `9520cd4`: the inventory module owns `StockLot` (each batch freezing the
+receipt enforcement, the `ProcurementParticipant` PO-line lock) is MERGED (PR #197 @ `main`
+`160702e`) from `main` @ `9520cd4`: the inventory module owns `StockLot` (each batch freezing the
 pinned revision's full §B `MaterialSpecificationRef`) + the append-only `StockTransaction`
 ledger — buckets derive by ONE generic fold per stock key, no current-quantity column exists
 anywhere, and PostgreSQL CHECKs pin every §C movement equation while the append-only +
@@ -61,7 +61,31 @@ approvedOverage`; rejection frees headroom) enforced through the transaction-bou
 received-progress fact; every ledger row records its source `CommandExecution` id (§C rule
 ii — keyed replays append nothing); `stock.transacted` events per row; both-orders
 acceptance-vs-adjustment and both bound-3 race shapes proven under the deterministic
-barrier. The next review stop follows Task 5.** Three non-blocking guardrails
+barrier.** **Task 5 (reservations, issues, consumption/site-returns/wastage, transfers,
+the §E Daily-Log read + `MismatchResolution`) is DELIVERED on a held PR from `main` @
+`160702e`**: seven new movements through the SAME generic fold — reservation/release for a
+NAMED activity (the §C `freeAvailable ≥ qty` guard IS the fold refusal; releases are guarded
+by the activity's scoped fold), `issue` creating the §E-canonical `MaterialIssue` while
+consuming the activity's reserved portion FIRST via an explicit same-command
+`reservation_release` row (`qty ≤ freeAvailable + reservedForThisActivity` holds exactly),
+consumption/site-return/wastage recorded AGAINST the referenced issue moving
+`issuedToActivity` ONLY (the CHECK arms cannot name a store bucket — the double-count guard
+is structural; wastage demands reason + delete-sealed evidence, pmc), and `transfer`
+spanning two store keys in ONE row (reservations do NOT travel); the v2 reversal trigger
+copies the activity/issue scope verbatim and swaps a transfer's locations; `stock.reverse`
+re-checks the scoped truths; reserve/issue validate their activity through
+`ActivityParticipant.materialTarget` (the cycle-exempt second participant edge); the §E read
+is inventory's `stock.issues` (nothing copied into daily-log rows; the non-pilot response
+shape is byte-identical); `daily-log.resolveMismatch` (pilot-gated, pmc) closes exactly ONE
+observation via the append-only UNIQUE-per-observation `MismatchResolution` register — the
+observation is never edited — and clears the block through
+`ActivityParticipant.clearMaterialMismatchBlock` ONLY when no unresolved mismatch remains
+(gate falls back to `wait`, status derives from recorded work state, ONE
+`activity.material_unblocked` signal); events `issue.recorded`/`mismatch.resolved`/
+`activity.material_unblocked`; keyed replays append nothing; the two-issues-one-pool race
+admits exactly one under the deterministic barrier; 12/12 focused live-PG tests. **The
+review stop is NOW: Tasks 4+5 are reviewed together (the user's explicit instruction —
+matching the plan's prescribed stop after Task 5).** Three non-blocking guardrails
 from the GO are recorded in §A for Tasks 5–6. Canonical spec:
 `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
 (§10–§13, §17, §24 Phase 3, §25). Planning baseline: `main` @ `13fcf3a`; round-1 correction

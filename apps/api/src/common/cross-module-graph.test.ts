@@ -65,6 +65,9 @@ const MODEL_OWNER: Record<string, string> = {
   inspection: 'inspections', inspectionItem: 'inspections',
   drawing: 'drawings', drawingRevision: 'drawings', drawingRecipient: 'drawings', drawingAck: 'drawings',
   dailyLog: 'daily-log', crewRow: 'daily-log', siteMaterial: 'daily-log',
+  // Phase 3 Task 5 (§E) — the append-only mismatch resolution register, written only by
+  // daily-log.resolveMismatch (one per observation; the observation row is never edited)
+  mismatchResolution: 'daily-log',
   // Phase 3 Task 1 — the demand contract is activities-module-owned; its classifier domain is
   // 'requirements' (the requirements.service pillar entry writes ONLY this model)
   activityRequirement: 'requirements', activityRequirementRoot: 'requirements', materialRequirementSpec: 'requirements',
@@ -73,8 +76,9 @@ const MODEL_OWNER: Record<string, string> = {
   rfq: 'procurement', vendorQuote: 'procurement', vendorQuoteLine: 'procurement', quoteComparison: 'procurement',
   purchaseOrder: 'procurement', purchaseOrderVersion: 'procurement', purchaseOrderLine: 'procurement',
   deliveryCommitment: 'procurement', deliveryPromise: 'procurement',
-  // Phase 3 Task 4 — the inventory pillar (§C physical truth: lots + the append-only ledger)
-  stockLot: 'inventory', stockTransaction: 'inventory',
+  // Phase 3 Task 4 — the inventory pillar (§C physical truth: lots + the append-only ledger);
+  // Task 5 adds the §E-canonical MaterialIssue (what LEFT the store, for which activity)
+  stockLot: 'inventory', stockTransaction: 'inventory', materialIssue: 'inventory',
   projectNode: 'nodes',
   media: 'media',
   org: 'orgs', orgMembership: 'orgs', membership: 'orgs', project: 'orgs', projectCompany: 'orgs',
@@ -125,16 +129,19 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // commit/revise/default delivery commands dispatch their committed events post-commit (6).
   'procurement/purchase-orders.service.ts': { domain: 'procurement', foreign: {}, dispatch: 6 },
   // Phase 3 Task 4 — the inventory pillar: receipt/accept/reject/vendor-return/adjust/reverse
-  // each append ONE §C ledger row and dispatch its committed stock.transacted event (6). The
+  // each append ONE §C ledger row and dispatch its committed stock.transacted event. The
   // §G inventory→procurement receipt edge routes through the procurement PARTICIPANT (the
   // PO-line lock + received-progress fact live in procurement-owned code), so this service
-  // writes ONLY its own domain.
-  'inventory/inventory.service.ts': { domain: 'inventory', foreign: {}, dispatch: 6 },
+  // writes ONLY its own domain. Task 5 adds reserve/release/issue/consume/site-return/
+  // wastage/transfer (the activity target routes through the activities PARTICIPANT — the
+  // cycle-exempt channel), each dispatching once post-commit (13 total).
+  'inventory/inventory.service.ts': { domain: 'inventory', foreign: {}, dispatch: 13 },
   // edges 2/3 (sign-off done/revert) → activity.participant.applySignOff/revertSignOff
   'inspections/inspections.service.ts': { domain: 'inspections', foreign: {}, dispatch: 3 },
   'drawings/drawings.service.ts': { domain: 'drawings', foreign: {}, dispatch: 5 },
-  // edge 4 (material mismatch block) → activity.participant.blockForMaterialMismatch
-  'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, dispatch: 4 },
+  // edge 4 (material mismatch block) → activity.participant.blockForMaterialMismatch;
+  // Phase 3 Task 5 adds resolveMismatch (the inverse edge → clearMaterialMismatchBlock)
+  'daily-log/daily-log.service.ts': { domain: 'daily-log', foreign: {}, dispatch: 5 },
   // edge 7 (node unfiling across five domains) → FK SET NULL (nodeId); decisions stay a guarded NO ACTION
   'nodes/nodes.service.ts': { domain: 'nodes', foreign: {}, dispatch: 1 },
   'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 3 },
@@ -241,7 +248,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   ],
   'nodes/nodes.controller.ts': ['Post()', "Patch(':nodeId')", "Post(':nodeId/move')", "Post(':nodeId/publish')", "Delete(':nodeId')"],
   'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/change/withdraw')"],
-  'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('submit')"],
+  'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('resolve-mismatch')", "Post('submit')"],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
   'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Delete('media/:id')"],
@@ -274,7 +281,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('deliveries/:commitmentId/fulfill')",
     "Post('deliveries/:commitmentId/default')",
   ],
-  // Phase 3 Task 4 — the inventory store surface (§C ledger commands)
+  // Phase 3 Task 4 — the inventory store surface (§C ledger commands); Task 5 adds the
+  // store-to-site flows (reserve/release/issue/consume/site-return/wastage/transfer)
   'inventory/inventory.controller.ts': [
     "Post('stock/receipts')",
     "Post('stock/accept')",
@@ -282,6 +290,13 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('stock/vendor-return')",
     "Post('stock/adjust')",
     "Post('stock/reverse')",
+    "Post('stock/reserve')",
+    "Post('stock/release')",
+    "Post('stock/issue')",
+    "Post('stock/consume')",
+    "Post('stock/site-return')",
+    "Post('stock/wastage')",
+    "Post('stock/transfer')",
   ],
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')"],
 };
@@ -348,9 +363,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('48 external-effect dispatch sites total across the pillar services (42 + the six Task-4 stock emitters)', () => {
+    it('56 external-effect dispatch sites total across the pillar services (48 + the seven Task-5 stock-flow emitters + resolveMismatch)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(48);
+      expect(total).toBe(56);
     });
   });
 
@@ -361,12 +376,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('98 mutating routes total (the documented command inventory §4)', () => {
+    it('106 mutating routes total (the documented command inventory §4)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(98);
+      expect(total).toBe(106);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(98);
+      expect(live).toBe(106);
     });
   });
 

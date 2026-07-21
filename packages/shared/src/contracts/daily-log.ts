@@ -14,6 +14,10 @@ export const DAILY_LOG_COMMANDS = [
   'daily-log.start',
   'daily-log.addMaterial',
   'daily-log.flagMismatch',
+  // Phase 3 Task 5 (§E) — close ONE mismatch observation with an explicit, audited resolution
+  // (pilot-gated; the observation row is never edited; the activity's block clears only when
+  // no unresolved mismatch remains)
+  'daily-log.resolveMismatch',
   'daily-log.submit',
 ] as const;
 export type DailyLogCommand = (typeof DAILY_LOG_COMMANDS)[number];
@@ -51,6 +55,23 @@ export interface AddMaterialInput {
  *  the linked activity in one atomic workflow with the activities module). */
 export interface FlagMismatchInput {
   readonly decisionId: string;
+}
+
+/** `daily-log.resolveMismatch` (Phase 3 Task 5, §E) — close ONE `matched: false` observation with an
+ *  explicit disposition + reason. The observation row is NEVER edited; `siteMaterialId` is UNIQUE on
+ *  the resolution table, so a second resolution of the same observation is refused. */
+export interface ResolveMismatchInput {
+  readonly siteMaterialId: string;
+  /** the disposition, e.g. 'returned-and-replaced', 'accepted-by-client' — short, free-form. */
+  readonly resolution: string;
+  readonly reason: string;
+}
+
+/** The `mismatch.resolved` event payload (§G catalog: siteMaterialId, resolution, authority). */
+export interface MismatchResolvedPayload {
+  readonly siteMaterialId: string;
+  readonly resolution: string;
+  readonly authority: string; // the resolving user's id — real attribution
 }
 
 /** `daily-log.submit` — submit the day's log with attendance, progress and the crew roster. */

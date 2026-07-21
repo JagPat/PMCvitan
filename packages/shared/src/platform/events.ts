@@ -53,6 +53,10 @@ export const DOMAIN_EVENT_TYPES = [
   // an activity-owned serialized field (the Module-3 owner-aligned pattern): the daily-log material
   // mismatch failing the stored material gate + blocking, and a node deletion unfiling placed activities.
   'activity.material_blocked',
+  // Phase 3 Task 5 — the inverse owner-aligned signal: a mismatch RESOLUTION clears the
+  // material block (only when no unresolved mismatch remains), appended by the activities
+  // participant in the daily-log resolve transaction so the projection observes the change.
+  'activity.material_unblocked',
   'activity.unfiled',
   // phases
   // Phase 3 Task 1 — the ActivityRequirement demand contract (activities-owned; plan §G:
@@ -77,6 +81,12 @@ export const DOMAIN_EVENT_TYPES = [
   // ledger row — receipts, acceptance, rejection, vendor-return, adjustment, reversal; buckets
   // are derived, so there is no bucket-changed event)
   'stock.transacted',
+  // Phase 3 Task 5 — the §E canonical issue record (what LEFT THE STORE for an activity):
+  // one event per MaterialIssue, alongside the ledger row's stock.transacted
+  'issue.recorded',
+  // Phase 3 Task 5 — §E: an explicit, audited resolution closing ONE mismatch observation
+  // (the observation row itself is never edited)
+  'mismatch.resolved',
   'phase.created',
   'phase.removed',
   // inspections

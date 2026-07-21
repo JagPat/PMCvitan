@@ -100,8 +100,10 @@ model Project {
   vendorBindings   ProjectVendor[]           @relation("projectVendorProject")
   requisitions     Requisition[]
   purchaseOrders   PurchaseOrder[]           @relation("purchaseOrderProject")
-  stockLots         StockLot[]
-  stockTransactions StockTransaction[]
+  stockLots           StockLot[]
+  stockTransactions   StockTransaction[]
+  materialIssues      MaterialIssue[]
+  mismatchResolutions MismatchResolution[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -800,6 +802,8 @@ model User {
   promisesRecorded        DeliveryPromise[]          @relation("promisesRecorded")
   stockLotsReceived         StockLot[]         @relation("stockLotsReceived")
   stockTransactionsRecorded StockTransaction[] @relation("stockTransactionsRecorded")
+  materialIssuesIssued      MaterialIssue[]      @relation("materialIssuesIssued")
+  mismatchesResolved        MismatchResolution[] @relation("mismatchesResolved")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -1414,6 +1418,7 @@ model StockLot {
   receivedById String
 
   transactions StockTransaction[]
+  issues       MaterialIssue[]
 
   @@unique([projectId, id])
   @@index([projectId, specFingerprint])
@@ -1446,6 +1451,18 @@ model StockTransaction {
   commitment   DeliveryCommitment? @relation(fields: [projectId, commitmentId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   commitmentId String?
 
+  // Task 5 — activity linkage (CHECK: exactly the reservation/release/issue/consumption/
+  // site-return/wastage rows carry it; reversals copy their target's, trigger-verified)
+  activity   Activity? @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId String?
+  // Task 5 — the §E MaterialIssue this row belongs to: the issue row itself plus every
+  // custody movement (consumption/site-return/wastage) recorded AGAINST it
+  issue   MaterialIssue? @relation(fields: [projectId, issueId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  issueId String?
+  // Task 5 — a transfer's DESTINATION stock key (CHECK: exactly the transfer rows carry it);
+  // the row's own storeLocation is the source, so ONE row moves acceptedOnHand between keys
+  toStoreLocation String?
+
   // reversal linkage (CHECK: exactly the reversal rows carry it; partial unique — once each)
   reversedTx   StockTransaction?  @relation("stockReversal", fields: [projectId, reversedTxId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   reversedTxId String?
@@ -1466,6 +1483,36 @@ model StockTransaction {
   @@unique([projectId, id])
   @@index([projectId, lotId, storeLocation])
   @@index([projectId, poLineId])
+  @@index([projectId, activityId])
+  @@index([projectId, issueId])
+}
+
+// Task 5 — the §E-CANONICAL record of material that LEFT THE STORE for an activity ("an
+// issue is not a delivery"). Immutable (BEFORE UPDATE OR DELETE trigger): corrections
+// reverse the underlying ledger rows (§C rule iii), never edit or delete this record, so a
+// daily-log reference to an issue id can never be orphaned. The Daily Log screen reads
+// these through inventory's `stock.issues` query — nothing is copied into SiteMaterial.
+model MaterialIssue {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id])
+  projectId String
+
+  lot           StockLot @relation(fields: [projectId, lotId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  lotId         String
+  storeLocation String // the §C stock key the material left
+  activity      Activity @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId    String
+  qty           Decimal  @db.Decimal(18, 6) // base UOM
+
+  issuedAt   DateTime @default(now())
+  issuedBy   User     @relation("materialIssuesIssued", fields: [issuedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  issuedById String
+
+  transactions StockTransaction[]
+
+  @@unique([projectId, id])
+  @@index([projectId, activityId])
+  @@index([projectId, lotId])
 }
 
 model Decision {
@@ -1643,6 +1690,9 @@ model Activity {
   nodeId         String?
   order          Int            @default(0)
   drawings       Drawing[]
+  // Phase 3 Task 5 — stock movements scoped to this activity + the §E issue records
+  stockTransactions StockTransaction[]
+  materialIssues    MaterialIssue[]
   // inspections whose requirement edge names this activity (Phase 1 Task 4)
   inspections    Inspection[]
   // manual readiness exceptions — attributable, evidenced, EXPIRING (Phase 1 Task 6)
@@ -1825,8 +1875,37 @@ model SiteMaterial {
   nodeId     String?
   order      Int       @default(0)
 
+  // Phase 3 Task 5 (§E) — the explicit resolution closing this observation (at most one)
+  resolution MismatchResolution?
+
+  // referenced identity for the resolution's composite (projectId, siteMaterialId) FK (Task 5)
+  @@unique([projectId, id])
   @@index([nodeId])
   @@index([projectId])
+}
+
+// Phase 3 Task 5 (§E) — an explicit, audited resolution closing EXACTLY ONE `matched: false`
+// observation. The observation row is NEVER edited (it stays `matched: false` as history);
+// `siteMaterialId` is UNIQUE here, so a second resolution of the same observation is
+// unrepresentable. Immutable (BEFORE UPDATE OR DELETE trigger). The activity's mismatch
+// block clears ONLY when no unresolved mismatch observation remains for its decision.
+model MismatchResolution {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id])
+  projectId String
+
+  siteMaterial   SiteMaterial @relation(fields: [projectId, siteMaterialId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  siteMaterialId String
+
+  resolution String // the disposition, e.g. 'returned-and-replaced'
+  reason     String // why this disposition closes the dispute
+
+  resolvedAt   DateTime @default(now())
+  resolvedBy   User     @relation("mismatchesResolved", fields: [resolvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  resolvedById String
+
+  @@unique([projectId, siteMaterialId])
+  @@unique([projectId, id])
 }
 
 model Notification {

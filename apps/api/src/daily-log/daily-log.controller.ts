@@ -4,7 +4,10 @@ import { DailyLogQueryService } from './daily-log.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
-import { addMaterialSchema, flagMismatchSchema, submitDailyLogSchema, type AddMaterialInput, type FlagMismatchInput, type SubmitDailyLogInput } from '../contracts';
+import {
+  addMaterialSchema, flagMismatchSchema, resolveMismatchSchema, submitDailyLogSchema,
+  type AddMaterialInput, type FlagMismatchInput, type ResolveMismatchInput, type SubmitDailyLogInput,
+} from '../contracts';
 
 @Controller('projects/:projectId/daily-log')
 @UseGuards(JwtGuard, RolesGuard)
@@ -60,6 +63,20 @@ export class DailyLogController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.dailyLog.flagMismatch(projectId, body, user, idempotencyKey);
+  }
+
+  /** Phase 3 Task 5 (§E) — close ONE mismatch observation with an explicit disposition + reason; the
+   *  activity block clears only when no unresolved mismatch remains. Pilot-gated in the service (§D);
+   *  pmc-only. Keyed for replay-safety. */
+  @Post('resolve-mismatch')
+  @RolesFor('dailyLog.resolveMismatch')
+  resolveMismatch(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(resolveMismatchSchema)) body: ResolveMismatchInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.dailyLog.resolveMismatch(projectId, body, user, idempotencyKey);
   }
 
   /** Submit the daily site log (attendance, crew, materials, photos) — the site engineer (or PMC). A

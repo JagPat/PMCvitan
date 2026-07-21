@@ -58,6 +58,9 @@ export const ROLE_POLICY = {
   'dailyLog.start': ['engineer', 'pmc'],
   'dailyLog.addMaterial': ['engineer', 'pmc'],
   'dailyLog.flagMismatch': ['engineer', 'pmc'],
+  // Phase 3 Task 5 (§E) — closing a mismatch observation is the PMC's attributable quality
+  // decision (the flag is engineer site work; the resolution disposes of the dispute)
+  'dailyLog.resolveMismatch': ['pmc'],
   'dailyLog.submit': ['engineer', 'pmc'],
   'media.upload': ['pmc', 'engineer'],
   'media.delete': ['pmc', 'engineer'],

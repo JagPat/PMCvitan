@@ -9,7 +9,9 @@ import { ddMmmYyyy } from '../domain/dates';
 import { CLOCK, type Clock } from '../common/clock';
 import { fromIsoCivilDate } from '../common/civil-date';
 import type { AuthUser } from '../common/auth';
-import type { AddMaterialInput, FlagMismatchInput, SubmitDailyLogInput } from '../contracts';
+import type { MismatchResolvedPayload } from '@vitan/shared';
+import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
+import type { AddMaterialInput, FlagMismatchInput, ResolveMismatchInput, SubmitDailyLogInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -31,6 +33,9 @@ export class DailyLogService {
     // the linked activities THROUGH it (edge 4), so the Activity write stays in the
     // activities module while this flag orchestrates it under the readiness lock.
     private readonly activities: ActivityParticipant,
+    // Phase 3 Task 5 — the mismatch-RESOLUTION surface is pilot-gated (§D — 404 off-pilot);
+    // the pre-existing flag flow stays exactly as it was on non-pilot projects.
+    private readonly capabilities: CapabilitiesService,
   ) {}
 
   /** Flag a material as not matching its locked decision → block the linked activity.
@@ -74,6 +79,60 @@ export class DailyLogService {
       },
     });
     // material mismatch blocks work — alert PMC (resolves it) and contractor (supplied it)
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /**
+   * Phase 3 Task 5 (§E) — close ONE `matched: false` observation with an explicit, audited
+   * disposition. The observation row is NEVER edited (`matched` stays false — the history
+   * says what was observed); the resolution is a separate append-only record, UNIQUE per
+   * observation. The activity block clears ONLY when no unresolved mismatch remains for the
+   * decision — through the activities participant, under the same readiness lock, with the
+   * material gate falling back to `wait` (clearing a dispute never fabricates readiness).
+   * Pilot-gated (§D — 404 off-pilot); pmc authority (route policy `dailyLog.resolveMismatch`).
+   */
+  async resolveMismatch(projectId: string, input: ResolveMismatchInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    await this.capabilities.assertEnabled(projectId, MATERIALS_CAPABILITY);
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const requestHash = hashRequest(input);
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'daily-log.resolveMismatch', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'daily-log.resolveMismatch', idempotencyKey, requestHash,
+      run: async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        const mat = await tx.siteMaterial.findFirst({ where: { projectId, id: input.siteMaterialId }, include: { resolution: true } });
+        if (!mat) throw new NotFoundException('Site material not found in this project');
+        if (mat.matched) throw new BadRequestException('This observation is not a mismatch — nothing to resolve');
+        if (mat.resolution) throw new ConflictException('This observation is already resolved (§E — one resolution per observation)');
+        const resolution = await tx.mismatchResolution.create({
+          data: { projectId, siteMaterialId: mat.id, resolution: input.resolution, reason: input.reason, resolvedById: actor.actorId },
+        });
+        await recordAudit(tx, { projectId, actor, action: 'material.mismatch_resolved', entity: 'MismatchResolution', entityId: resolution.id });
+        await tx.notification.create({ data: { projectId, text: `Mismatch resolved: ${mat.name} — ${input.resolution}`, color: '#3F7A54', time: 'just now' } });
+        const events = [await emitEvent(tx, {
+          projectId, actor, eventType: 'mismatch.resolved', entityType: 'SiteMaterial', entityId: mat.id,
+          payload: { siteMaterialId: mat.id, resolution: input.resolution, authority: actor.actorId } satisfies MismatchResolvedPayload,
+          effectKey: 'mismatch.resolved', dispatch: {},
+        })];
+        // §E: the block clears ONLY when NO unresolved mismatch observation remains for the
+        // decision — another still-open observation keeps every linked activity blocked.
+        if (mat.decisionId) {
+          const remaining = await tx.siteMaterial.count({
+            where: { projectId, decisionId: mat.decisionId, matched: false, id: { not: mat.id }, resolution: { is: null } },
+          });
+          if (remaining === 0) {
+            const unblocked = await this.activities.clearMaterialMismatchBlock(tx, { projectId, decisionId: mat.decisionId, actor });
+            if (unblocked) events.push(unblocked);
+          }
+        }
+        return { resultRef: resolution.id, events };
+      },
+    });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.snapshot.build(projectId, user.role, user.sub);
   }

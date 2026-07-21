@@ -611,6 +611,32 @@ assert "the lot's §B ref is FK-sealed to its pinned requirement revision and it
   "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockLot_projectId_requirementId_revision_fkey','StockLot_projectId_poLineId_fkey','StockLot_projectId_commitmentId_fkey') AND contype='f';" \
   "3"
 
+# Phase 3 Task 5 — the store-to-site tables land row-free with their §§C/E seals installed.
+assert "the two Task-5 tables exist and the migration wrote NO rows over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('MaterialIssue','MismatchResolution'))::text || '|' || (SELECT COUNT(*) FROM \"MaterialIssue\")::text || '|' || (SELECT COUNT(*) FROM \"MismatchResolution\")::text;" \
+  "2|0|0"
+assert "the ledger gained the three Task-5 columns (activityId, issueId, toStoreLocation), all nullable — additive over legacy rows" \
+  "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='StockTransaction' AND column_name IN ('activityId','issueId','toStoreLocation') AND is_nullable='YES';" \
+  "3"
+assert "the widened type CHECK admits the seven Task-5 movements" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname='StockTransaction_type_check' AND pg_get_constraintdef(oid) LIKE '%issue%' AND pg_get_constraintdef(oid) LIKE '%transfer%' AND pg_get_constraintdef(oid) LIKE '%wastage%';" \
+  "1"
+assert "the bucket domain CHECK admits the two Task-5 buckets (reserved, issuedToActivity)" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname='StockTransaction_bucket_domain_check' AND pg_get_constraintdef(oid) LIKE '%reserved%' AND pg_get_constraintdef(oid) LIKE '%issuedToActivity%';" \
+  "1"
+assert "both §E records are append-only (MaterialIssue + MismatchResolution triggers installed)" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('MaterialIssue_append_only','MismatchResolution_append_only') AND NOT tgisinternal;" \
+  "2"
+assert "the v2 reversal-inverse function verifies the transfer location swap and the copied activity/issue scope" \
+  "SELECT COUNT(*) FROM pg_proc WHERE proname='phase3_stock_reversal_inverse' AND prosrc LIKE '%toStoreLocation%' AND prosrc LIKE '%activityId%' AND prosrc LIKE '%issueId%';" \
+  "1"
+assert "one resolution per observation (the SiteMaterial unique target + the resolution's unique both exist)" \
+  "SELECT COUNT(*) FROM pg_indexes WHERE indexname IN ('SiteMaterial_projectId_id_key','MismatchResolution_projectId_siteMaterialId_key');" \
+  "2"
+assert "the Task-5 provenance FKs seal the issue chain (ledger→activity, ledger→issue, issue→lot/activity, resolution→observation)" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockTransaction_projectId_activityId_fkey','StockTransaction_projectId_issueId_fkey','MaterialIssue_projectId_lotId_fkey','MaterialIssue_projectId_activityId_fkey','MismatchResolution_projectId_siteMaterialId_fkey') AND contype='f';" \
+  "5"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

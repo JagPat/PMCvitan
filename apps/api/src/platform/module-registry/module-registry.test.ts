@@ -81,8 +81,10 @@ describe('Phase 2 Task 7 — module registry', () => {
       media: ['inspections', 'inventory'], // evidence add/remove (edges via the media create/remove tx)
       // Phase 3 Task 4 — the §G inventory→procurement edge: the receipt tx invokes the
       // procurement-owned PO-line lock + received-progress fact (§F bound 3); procurement does
-      // not depend back on inventory, so the graph stays acyclic
-      inventory: ['procurement'],
+      // not depend back on inventory, so the graph stays acyclic. Task 5 adds the activities
+      // participant: reserve/issue validate their named activity through materialTarget (the
+      // cycle-exempt channel — §G's READ edge runs activities → inventory in Task 6)
+      inventory: ['procurement', 'activities'],
       // Task 10 Module 4 (+ correction): node deletion unfiles placed inspections, filed activities,
       // filed drawings AND staged site materials — each through its owning module's participant,
       // appending inspection.unfiled / activity.unfiled / drawing.unfiled / material.unfiled

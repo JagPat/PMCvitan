@@ -2,11 +2,13 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { Prisma } from '@prisma/client';
 import {
   parseQuantity,
-  type StockBucketsDto, type StockLotDto, type StockStoreDto, type StockTransactedPayload, type StockTransactionDto,
+  type IssueRecordedPayload, type MaterialIssueDto, type StockBucketsDto, type StockIssuesDto,
+  type StockLotDto, type StockStoreDto, type StockTransactedPayload, type StockTransactionDto,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
 import { ProcurementParticipant } from '../procurement/procurement.participant';
+import { ActivityParticipant } from '../activities/activity.participant';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { recordAudit } from '../platform/audit';
@@ -16,7 +18,9 @@ import { resolveActor, type Actor } from '../common/actor';
 import type { AuthUser } from '../common/auth';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import type {
-  AcceptStockInput, AdjustStockInput, RecordReceiptInput, RejectStockInput, ReverseStockInput, VendorReturnInput,
+  AcceptStockInput, AdjustStockInput, ConsumeStockInput, IssueStockInput, RecordReceiptInput, RejectStockInput,
+  ReleaseReservationInput, ReserveStockInput, ReverseStockInput, SiteReturnInput, TransferStockInput,
+  VendorReturnInput, WastageInput,
 } from '../contracts';
 
 /**
@@ -47,29 +51,58 @@ import type {
  * while appending the procurement-owned received-progress fact — one lock, one bound, one
  * transaction. A rejection frees that headroom (the vendor replaces rejected material); a
  * reversal restores whichever side it undoes, re-checking the bound when it re-adds.
+ *
+ * TASK 5 — store-to-site flows, all through the SAME generic fold:
+ *   • `reservation`/`reservation_release` claim/release part of acceptedOnHand for a NAMED
+ *     activity ((outside) ↔ `reserved`); the freeAvailable ≥ 0 refusal IS the §C
+ *     `freeAvailable ≥ qty` reservation guard.
+ *   • `issue` (acceptedOnHand → issuedToActivity) creates the §E-canonical `MaterialIssue`
+ *     and CONSUMES the activity's reserved portion first by appending an explicit
+ *     `reservation_release` row in the same command — so the §C guard
+ *     `qty ≤ freeAvailable + reservedForThisActivity` falls out of the fold refusal.
+ *   • `consumption`/`site_return`/`wastage` are recorded AGAINST a MaterialIssue and move
+ *     ONLY `issuedToActivity` (the CHECK arms cannot name a store bucket — the §C
+ *     double-count guard is structural). Per-issue custody derives by the SAME fold
+ *     restricted to the issue's rows; per-activity reservation by the fold restricted to
+ *     the activity's rows.
+ *   • `transfer` moves acceptedOnHand between two store locations in ONE row (the row's
+ *     `storeLocation` is the source, `toStoreLocation` the destination); the source-key
+ *     freeAvailable ≥ 0 refusal enforces "reservations do not travel".
  */
 
 const DEFAULT_LOCATION = 'main';
 
-type Bucket = 'quarantine' | 'acceptedOnHand' | 'rejected';
+type Bucket = 'quarantine' | 'acceptedOnHand' | 'rejected' | 'reserved' | 'issuedToActivity';
+const BUCKETS = ['quarantine', 'acceptedOnHand', 'rejected', 'reserved', 'issuedToActivity'] as const;
 
-interface Buckets {
-  quarantine: Prisma.Decimal;
-  acceptedOnHand: Prisma.Decimal;
-  rejected: Prisma.Decimal;
-}
+type Buckets = Record<Bucket, Prisma.Decimal>;
 
 type TxRow = Prisma.StockTransactionGetPayload<Record<string, never>>;
 type LotRow = Prisma.StockLotGetPayload<{ include: { transactions: true } }>;
 
 const ZERO = new Prisma.Decimal(0);
 
-/** The §C generic fold: every row moves qty from `fromBucket` to `toBucket` (null = outside). */
-function foldBuckets(rows: ReadonlyArray<Pick<TxRow, 'qty' | 'fromBucket' | 'toBucket'>>): Buckets {
-  const b: Buckets = { quarantine: ZERO, acceptedOnHand: ZERO, rejected: ZERO };
+type Movement = Pick<TxRow, 'qty' | 'fromBucket' | 'toBucket'> & {
+  storeLocation: string;
+  toStoreLocation: string | null;
+};
+
+/** A movement carrying its per-activity/per-issue scope (every persisted TxRow satisfies this). */
+type ScopedMovement = Movement & { activityId: string | null; issueId: string | null };
+
+/**
+ * The §C generic fold AT one stock key: every row moves qty from `fromBucket` to `toBucket`
+ * (null = outside the store). A row carrying `toStoreLocation` (a transfer, or a transfer
+ * reversal) spans TWO keys: its `fromBucket` side applies at `storeLocation` and its
+ * `toBucket` side at `toStoreLocation` — everything else applies both sides at its own key.
+ */
+function foldBuckets(rows: readonly Movement[], storeLocation: string): Buckets {
+  const b = Object.fromEntries(BUCKETS.map((k) => [k, ZERO])) as Buckets;
   for (const row of rows) {
-    if (row.fromBucket) b[row.fromBucket as Bucket] = b[row.fromBucket as Bucket].sub(row.qty);
-    if (row.toBucket) b[row.toBucket as Bucket] = b[row.toBucket as Bucket].add(row.qty);
+    const fromApplies = row.storeLocation === storeLocation;
+    const toApplies = row.toStoreLocation ? row.toStoreLocation === storeLocation : fromApplies;
+    if (row.fromBucket && fromApplies) b[row.fromBucket as Bucket] = b[row.fromBucket as Bucket].sub(row.qty);
+    if (row.toBucket && toApplies) b[row.toBucket as Bucket] = b[row.toBucket as Bucket].add(row.qty);
   }
   return b;
 }
@@ -78,7 +111,9 @@ function serializeTx(t: TxRow): StockTransactionDto {
   return {
     id: t.id, lotId: t.lotId, storeLocation: t.storeLocation, type: t.type,
     qty: t.qty.toString(), fromBucket: t.fromBucket, toBucket: t.toBucket,
-    poLineId: t.poLineId, commitmentId: t.commitmentId, reversedTxId: t.reversedTxId,
+    poLineId: t.poLineId, commitmentId: t.commitmentId,
+    activityId: t.activityId, issueId: t.issueId, toStoreLocation: t.toStoreLocation,
+    reversedTxId: t.reversedTxId,
     qualityResult: t.qualityResult, evidenceMediaId: t.evidenceMediaId, reason: t.reason,
     sourceCommandId: t.sourceCommandId,
     recordedAt: t.recordedAt.toISOString(), recordedById: t.recordedById,
@@ -94,17 +129,17 @@ function ledgerOrder(a: TxRow, b: TxRow): number {
 
 function serializeLot(lot: LotRow): StockLotDto {
   const ordered = [...lot.transactions].sort(ledgerOrder);
-  const locations = [...new Set(ordered.map((t) => t.storeLocation))].sort();
+  const locations = [...new Set(ordered.flatMap((t) => (t.toStoreLocation ? [t.storeLocation, t.toStoreLocation] : [t.storeLocation])))].sort();
   const perLocation: StockBucketsDto[] = locations.map((loc) => {
-    const b = foldBuckets(ordered.filter((t) => t.storeLocation === loc));
+    const b = foldBuckets(ordered, loc);
     return {
       storeLocation: loc,
       quarantine: b.quarantine.toString(),
       acceptedOnHand: b.acceptedOnHand.toString(),
-      reserved: '0', // Task 5
-      freeAvailable: b.acceptedOnHand.toString(), // acceptedOnHand − reserved(=0)
+      reserved: b.reserved.toString(),
+      freeAvailable: b.acceptedOnHand.sub(b.reserved).toString(),
       rejected: b.rejected.toString(),
-      issuedToActivity: '0', // Task 5
+      issuedToActivity: b.issuedToActivity.toString(),
     };
   });
   return {
@@ -120,12 +155,41 @@ function serializeLot(lot: LotRow): StockLotDto {
   };
 }
 
+type IssueRow = Prisma.MaterialIssueGetPayload<{
+  include: {
+    lot: { select: { materialCategory: true; make: true; baseUom: true; specFingerprint: true } };
+    transactions: true;
+  };
+}>;
+
+const ISSUE_INCLUDE = {
+  lot: { select: { materialCategory: true, make: true, baseUom: true, specFingerprint: true } },
+  transactions: true,
+} as const;
+
+/** The §E-canonical issue record + its DERIVED remaining custody (the fold restricted to the
+ *  issue's own ledger rows — `issue` minus consumption/site-return/wastage, ± reversals). */
+function serializeIssue(issue: IssueRow): MaterialIssueDto {
+  const custody = foldBuckets(issue.transactions, issue.storeLocation).issuedToActivity;
+  return {
+    id: issue.id, lotId: issue.lotId, storeLocation: issue.storeLocation, activityId: issue.activityId,
+    qty: issue.qty.toString(), issuedAt: issue.issuedAt.toISOString(), issuedById: issue.issuedById,
+    materialCategory: issue.lot.materialCategory, make: issue.lot.make,
+    baseUom: issue.lot.baseUom, specFingerprint: issue.lot.specFingerprint,
+    remainingCustody: custody.toString(),
+  };
+}
+
 @Injectable()
 export class InventoryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly capabilities: CapabilitiesService,
     private readonly procurementParticipant: ProcurementParticipant,
+    // Task 5 — reservations and issues NAME an activity (§C); the target is validated
+    // through the activities participant (the cycle-exempt channel — §G's dependency edge
+    // runs activities → inventory in Task 6, so inventory may not READ activities).
+    private readonly activityParticipant: ActivityParticipant,
     private readonly dispatcher: ExternalEffectDispatcher,
   ) {}
 
@@ -155,30 +219,50 @@ export class InventoryService {
     return lot;
   }
 
+  /** Every ledger row of one lot (all locations — a transfer row spans two keys). */
+  private async lotRows(tx: CommandTx, projectId: string, lotId: string): Promise<TxRow[]> {
+    return tx.stockTransaction.findMany({ where: { projectId, lotId } });
+  }
+
   /**
-   * §C rule i — re-derive the key's buckets from the ledger (under the lot lock), apply the
-   * candidate movement, and REFUSE if any bucket would go negative. Returns nothing — the
-   * caller appends the row only after this passes.
+   * §C rule i — re-derive the affected keys' buckets from the ledger (under the lot lock),
+   * apply the candidate movement, and REFUSE if ANY bucket — including the derived
+   * `freeAvailable = acceptedOnHand − reserved` — would go negative at ANY touched key.
+   * A transfer candidate touches two keys; both are re-derived.
    */
-  private async assertMovementLegal(
-    tx: CommandTx, projectId: string, lotId: string, storeLocation: string,
-    movement: { fromBucket: Bucket | null; toBucket: Bucket | null; qty: Prisma.Decimal },
-  ): Promise<void> {
-    const rows = await tx.stockTransaction.findMany({
-      where: { projectId, lotId, storeLocation },
-      select: { qty: true, fromBucket: true, toBucket: true },
-    });
-    const buckets = foldBuckets([...rows, movement]);
-    for (const bucket of ['quarantine', 'acceptedOnHand', 'rejected'] as const) {
-      if (buckets[bucket].lessThan(0)) {
+  private assertMovementLegal(rows: readonly Movement[], candidate: Movement): void {
+    const touched = candidate.toStoreLocation
+      ? [candidate.storeLocation, candidate.toStoreLocation]
+      : [candidate.storeLocation];
+    for (const loc of touched) {
+      const buckets = foldBuckets([...rows, candidate], loc);
+      for (const bucket of BUCKETS) {
+        if (buckets[bucket].lessThan(0)) {
+          throw new ConflictException(
+            `Refused: ${bucket} at '${loc}' would go to ${buckets[bucket].toString()} (§C — no bucket may go negative)`,
+          );
+        }
+      }
+      const freeAvailable = buckets.acceptedOnHand.sub(buckets.reserved);
+      if (freeAvailable.lessThan(0)) {
         throw new ConflictException(
-          `Refused: ${bucket} at '${storeLocation}' would go to ${buckets[bucket].toString()} (§C — no bucket may go negative)`,
+          `Refused: freeAvailable at '${loc}' would go to ${freeAvailable.toString()} (§C — acceptedOnHand − reserved may never go negative)`,
         );
       }
     }
-    // freeAvailable = acceptedOnHand − reserved; reserved is 0 until Task 5, so the
-    // acceptedOnHand check above already covers it — recorded here so the derived-bucket
-    // refusal stays explicit when reservations land.
+  }
+
+  /** The activity's reserved portion at one stock key (the fold restricted to its rows). */
+  private reservedForActivity(rows: readonly ScopedMovement[], storeLocation: string, activityId: string): Prisma.Decimal {
+    const scoped = rows.filter((r) => r.activityId === activityId);
+    return foldBuckets(scoped, storeLocation).reserved;
+  }
+
+  /** The issue's remaining custody (the fold restricted to its rows — §E: consumption,
+   *  site-return and wastage are recorded AGAINST the referenced MaterialIssue). */
+  private issueCustody(rows: readonly ScopedMovement[], storeLocation: string, issueId: string): Prisma.Decimal {
+    const scoped = rows.filter((r) => r.issueId === issueId);
+    return foldBuckets(scoped, storeLocation).issuedToActivity;
   }
 
   /** Append ONE §C ledger row + its audit + `stock.transacted` event (§C rule ii provenance). */
@@ -188,6 +272,7 @@ export class InventoryService {
       lotId: string; storeLocation: string; type: string; qty: Prisma.Decimal;
       fromBucket: Bucket | null; toBucket: Bucket | null;
       poLineId?: string; commitmentId?: string; reversedTxId?: string;
+      activityId?: string | null; issueId?: string | null; toStoreLocation?: string | null;
       qualityResult?: string; evidenceMediaId?: string; reason?: string;
     },
     auditAction: string,
@@ -198,6 +283,8 @@ export class InventoryService {
         qty: data.qty, fromBucket: data.fromBucket, toBucket: data.toBucket,
         poLineId: data.poLineId ?? null, commitmentId: data.commitmentId ?? null,
         reversedTxId: data.reversedTxId ?? null,
+        activityId: data.activityId ?? null, issueId: data.issueId ?? null,
+        toStoreLocation: data.toStoreLocation ?? null,
         qualityResult: data.qualityResult ?? null, evidenceMediaId: data.evidenceMediaId ?? null,
         reason: data.reason ?? null,
         sourceCommandId: ctx.commandId, recordedById: actor.actorId,
@@ -287,7 +374,7 @@ export class InventoryService {
         await lockProjectReadiness(tx, projectId);
         const lot = await this.lockLot(tx, projectId, input.lotId);
         await this.assertEvidenceMedia(tx, projectId, input.evidenceMediaId);
-        await this.assertMovementLegal(tx, projectId, lot.id, storeLocation, { fromBucket: 'quarantine', toBucket: 'acceptedOnHand', qty });
+        this.assertMovementLegal(await this.lotRows(tx, projectId, lot.id), { qty, fromBucket: 'quarantine', toBucket: 'acceptedOnHand', storeLocation, toStoreLocation: null });
         const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
           lotId: lot.id, storeLocation, type: 'acceptance', qty,
           fromBucket: 'quarantine', toBucket: 'acceptedOnHand',
@@ -314,7 +401,7 @@ export class InventoryService {
         await lockProjectReadiness(tx, projectId);
         const lot = await this.lockLot(tx, projectId, input.lotId);
         await this.assertEvidenceMedia(tx, projectId, input.evidenceMediaId);
-        await this.assertMovementLegal(tx, projectId, lot.id, storeLocation, { fromBucket: 'quarantine', toBucket: 'rejected', qty });
+        this.assertMovementLegal(await this.lotRows(tx, projectId, lot.id), { qty, fromBucket: 'quarantine', toBucket: 'rejected', storeLocation, toStoreLocation: null });
         await this.procurementParticipant.applyReceiptProgress(tx, projectId, lot.poLineId, qty.negated());
         const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
           lotId: lot.id, storeLocation, type: 'rejection', qty,
@@ -338,7 +425,7 @@ export class InventoryService {
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const lot = await this.lockLot(tx, projectId, input.lotId);
-        await this.assertMovementLegal(tx, projectId, lot.id, storeLocation, { fromBucket: 'rejected', toBucket: null, qty });
+        this.assertMovementLegal(await this.lotRows(tx, projectId, lot.id), { qty, fromBucket: 'rejected', toBucket: null, storeLocation, toStoreLocation: null });
         const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
           lotId: lot.id, storeLocation, type: 'vendor_return', qty,
           fromBucket: 'rejected', toBucket: null, reason: input.note,
@@ -369,7 +456,7 @@ export class InventoryService {
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const lot = await this.lockLot(tx, projectId, input.lotId);
-        await this.assertMovementLegal(tx, projectId, lot.id, storeLocation, { fromBucket, toBucket, qty });
+        this.assertMovementLegal(await this.lotRows(tx, projectId, lot.id), { qty, fromBucket, toBucket, storeLocation, toStoreLocation: null });
         const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
           lotId: lot.id, storeLocation, type: 'adjustment', qty,
           fromBucket, toBucket, reason: input.reason,
@@ -402,17 +489,50 @@ export class InventoryService {
         const lot = await this.lockLot(tx, projectId, target.lotId);
         const prior = await tx.stockTransaction.findFirst({ where: { projectId, reversedTxId: target.id }, select: { id: true } });
         if (prior) throw new ConflictException('This transaction is already reversed');
-        const fromBucket = (target.toBucket ?? null) as Bucket | null;
-        const toBucket = (target.fromBucket ?? null) as Bucket | null;
-        await this.assertMovementLegal(tx, projectId, lot.id, target.storeLocation, { fromBucket, toBucket, qty: target.qty });
+        // The exact inverse (DB-trigger-verified): a transfer reverses by SWAPPING the two
+        // locations with the buckets unchanged (the fold then moves the quantity back);
+        // everything else swaps the buckets in place. The activity/issue scope is copied
+        // VERBATIM — the correction stays attributable to the same reservation/custody.
+        const inverse: ScopedMovement = target.toStoreLocation
+          ? {
+              qty: target.qty, fromBucket: target.fromBucket, toBucket: target.toBucket,
+              storeLocation: target.toStoreLocation, toStoreLocation: target.storeLocation,
+              activityId: target.activityId, issueId: target.issueId,
+            }
+          : {
+              qty: target.qty, fromBucket: target.toBucket, toBucket: target.fromBucket,
+              storeLocation: target.storeLocation, toStoreLocation: null,
+              activityId: target.activityId, issueId: target.issueId,
+            };
+        const rows = await this.lotRows(tx, projectId, lot.id);
+        this.assertMovementLegal(rows, inverse);
+        // Scoped §C re-checks — the store-wide fold cannot see PER-ACTIVITY/PER-ISSUE truth:
+        // un-reserving what the activity no longer holds (its reservation was consumed), or
+        // pulling back custody the issue already consumed/returned, must refuse even when
+        // every store-wide bucket stays non-negative.
+        const withInverse: ScopedMovement[] = [...rows, inverse];
+        if (target.activityId) {
+          const reserved = this.reservedForActivity(withInverse, target.storeLocation, target.activityId);
+          if (reserved.lessThan(0)) {
+            throw new ConflictException(`Refused: the activity's reserved portion at '${target.storeLocation}' would go to ${reserved.toString()} (§C — the reservation was already consumed)`);
+          }
+        }
+        if (target.issueId) {
+          const custody = this.issueCustody(withInverse, target.storeLocation, target.issueId);
+          if (custody.lessThan(0)) {
+            throw new ConflictException(`Refused: the issue's remaining custody would go to ${custody.toString()} (§C — already consumed, returned or wasted)`);
+          }
+        }
         if (target.type === 'receipt') {
           await this.procurementParticipant.applyReceiptProgress(tx, projectId, lot.poLineId, target.qty.negated());
         } else if (target.type === 'rejection') {
           await this.procurementParticipant.applyReceiptProgress(tx, projectId, lot.poLineId, target.qty);
         }
         const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
-          lotId: lot.id, storeLocation: target.storeLocation, type: 'reversal', qty: target.qty,
-          fromBucket, toBucket, reversedTxId: target.id, reason: input.reason,
+          lotId: lot.id, storeLocation: inverse.storeLocation, type: 'reversal', qty: target.qty,
+          fromBucket: inverse.fromBucket as Bucket | null, toBucket: inverse.toBucket as Bucket | null,
+          reversedTxId: target.id, reason: input.reason,
+          activityId: target.activityId, issueId: target.issueId, toStoreLocation: inverse.toStoreLocation,
         }, 'stock.reverse');
         return { resultRef: row.id, events: [event] };
       },
@@ -420,6 +540,277 @@ export class InventoryService {
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     const target = await this.prisma.stockTransaction.findFirstOrThrow({ where: { projectId, id: input.txId }, select: { lotId: true } });
     return this.readLot(projectId, target.lotId);
+  }
+
+  /**
+   * `stock.reserve` — §C: claim part of a store key's FREE pool for a NAMED activity
+   * ((outside) → `reserved`). The §C guard `freeAvailable ≥ qty` IS the fold refusal: the
+   * candidate row drives `freeAvailable = acceptedOnHand − reserved` negative exactly when
+   * the free pool is short. The activity target is validated through the activities
+   * participant (the cycle-exempt channel — inventory may not READ activities).
+   */
+  async reserve(projectId: string, input: ReserveStockInput, user: AuthUser, idempotencyKey?: string): Promise<StockLotDto> {
+    const { actor, scope } = await this.begin(projectId, user);
+    const qty = this.parseQty(input.qty, 'qty');
+    const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'stock.reserve', idempotencyKey, requestHash: hashRequest(input),
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        const activity = await this.activityParticipant.materialTarget(tx, { projectId, activityId: input.activityId });
+        if (!activity) throw new NotFoundException('Activity not found in this project');
+        const lot = await this.lockLot(tx, projectId, input.lotId);
+        this.assertMovementLegal(await this.lotRows(tx, projectId, lot.id), { qty, fromBucket: null, toBucket: 'reserved', storeLocation, toStoreLocation: null });
+        const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
+          lotId: lot.id, storeLocation, type: 'reservation', qty,
+          fromBucket: null, toBucket: 'reserved', activityId: activity.id,
+        }, 'stock.reserve');
+        return { resultRef: row.id, events: [event] };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.readLot(projectId, input.lotId);
+  }
+
+  /**
+   * `stock.release` — §C: return part of an activity's reserved portion to the free pool
+   * (`reserved` → (outside); cancel / revise / no-longer-needed). Guarded by the ACTIVITY's
+   * scoped fold — one activity can never release another activity's reservation.
+   */
+  async release(projectId: string, input: ReleaseReservationInput, user: AuthUser, idempotencyKey?: string): Promise<StockLotDto> {
+    const { actor, scope } = await this.begin(projectId, user);
+    const qty = this.parseQty(input.qty, 'qty');
+    const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'stock.release', idempotencyKey, requestHash: hashRequest(input),
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        const lot = await this.lockLot(tx, projectId, input.lotId);
+        const rows = await this.lotRows(tx, projectId, lot.id);
+        const reserved = this.reservedForActivity(rows, storeLocation, input.activityId);
+        if (reserved.lessThan(qty)) {
+          throw new ConflictException(`Refused: the activity holds ${reserved.toString()} reserved at '${storeLocation}' — cannot release ${qty.toString()}`);
+        }
+        this.assertMovementLegal(rows, { qty, fromBucket: 'reserved', toBucket: null, storeLocation, toStoreLocation: null });
+        const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
+          lotId: lot.id, storeLocation, type: 'reservation_release', qty,
+          fromBucket: 'reserved', toBucket: null, activityId: input.activityId, reason: input.note,
+        }, 'stock.release');
+        return { resultRef: row.id, events: [event] };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.readLot(projectId, input.lotId);
+  }
+
+  /**
+   * `stock.issue` — §C/§E: material physically LEAVES the store for a named activity. ONE
+   * command, three facts on one transaction:
+   *   1. the §E-canonical `MaterialIssue` record (what left, for whom, from where, by whom);
+   *   2. the activity's reserved portion is consumed FIRST — an explicit, attributable
+   *      `reservation_release` ledger row for min(reservedForThisActivity, qty);
+   *   3. the `issue` ledger row (acceptedOnHand → issuedToActivity).
+   * The §C guard `qty ≤ freeAvailable + reservedForThisActivity` IS the fold refusal after
+   * the release row: what the release freed plus the free pool must cover the issue.
+   * An issue is NOT a delivery (§E) — nothing is copied into daily-log rows; the Daily-Log
+   * screen reads issued material through `stock.issues`.
+   */
+  async issue(projectId: string, input: IssueStockInput, user: AuthUser, idempotencyKey?: string): Promise<MaterialIssueDto> {
+    const { actor, scope } = await this.begin(projectId, user);
+    const qty = this.parseQty(input.qty, 'qty');
+    const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'stock.issue', idempotencyKey, requestHash: hashRequest(input),
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        const activity = await this.activityParticipant.materialTarget(tx, { projectId, activityId: input.activityId });
+        if (!activity) throw new NotFoundException('Activity not found in this project');
+        const lot = await this.lockLot(tx, projectId, input.lotId);
+        const rows = await this.lotRows(tx, projectId, lot.id);
+        const events: EmittedEventMeta[] = [];
+        const issue = await tx.materialIssue.create({
+          data: { projectId, lotId: lot.id, storeLocation, activityId: activity.id, qty, issuedById: actor.actorId },
+        });
+        await recordAudit(tx, { projectId, actor, action: 'stock.issue', entity: 'MaterialIssue', entityId: issue.id });
+        const reserved = this.reservedForActivity(rows, storeLocation, activity.id);
+        const releaseQty = Prisma.Decimal.min(reserved, qty);
+        const withRelease: ScopedMovement[] = [...rows];
+        if (releaseQty.greaterThan(0)) {
+          const { row: releaseRow, event: releaseEvent } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
+            lotId: lot.id, storeLocation, type: 'reservation_release', qty: releaseQty,
+            fromBucket: 'reserved', toBucket: null, activityId: activity.id, reason: 'consumed by issue',
+          }, 'stock.issue');
+          withRelease.push(releaseRow);
+          events.push(releaseEvent);
+        }
+        this.assertMovementLegal(withRelease, { qty, fromBucket: 'acceptedOnHand', toBucket: 'issuedToActivity', storeLocation, toStoreLocation: null });
+        const { event: issueEvent } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
+          lotId: lot.id, storeLocation, type: 'issue', qty,
+          fromBucket: 'acceptedOnHand', toBucket: 'issuedToActivity',
+          activityId: activity.id, issueId: issue.id, reason: input.note,
+        }, 'stock.issue');
+        events.push(issueEvent);
+        const payload: IssueRecordedPayload = { issueId: issue.id, activityId: activity.id, locationId: storeLocation, qty: qty.toString() };
+        events.push(await emitEvent(tx, {
+          projectId, actor, eventType: 'issue.recorded', entityType: 'MaterialIssue', entityId: issue.id,
+          payload: payload as unknown as Prisma.InputJsonValue, effectKey: 'issue.recorded', dispatch: {},
+        }));
+        return { resultRef: issue.id, events };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.readIssue(projectId, outcome.resultRef);
+  }
+
+  /**
+   * `stock.consume` — §C: material recorded as USED for the work, AGAINST the referenced
+   * issue (§E): `issuedToActivity` ↓ ONLY. The double-count guard is structural — the CHECK
+   * arm cannot name a store bucket, so consumption can never touch store on-hand.
+   */
+  async consume(projectId: string, input: ConsumeStockInput, user: AuthUser, idempotencyKey?: string): Promise<MaterialIssueDto> {
+    const { actor, scope } = await this.begin(projectId, user);
+    const qty = this.parseQty(input.qty, 'qty');
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'stock.consume', idempotencyKey, requestHash: hashRequest(input),
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        const issue = await this.lockIssue(tx, projectId, input.issueId);
+        const lot = await this.lockLot(tx, projectId, issue.lotId);
+        const rows = await this.lotRows(tx, projectId, lot.id);
+        this.assertIssueCustodyCovers(rows, issue, qty, 'consume');
+        this.assertMovementLegal(rows, { qty, fromBucket: 'issuedToActivity', toBucket: null, storeLocation: issue.storeLocation, toStoreLocation: null });
+        const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
+          lotId: lot.id, storeLocation: issue.storeLocation, type: 'consumption', qty,
+          fromBucket: 'issuedToActivity', toBucket: null,
+          activityId: issue.activityId, issueId: issue.id, reason: input.note,
+        }, 'stock.consume');
+        return { resultRef: row.id, events: [event] };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.readIssue(projectId, input.issueId);
+  }
+
+  /**
+   * `stock.siteReturn` — §C: unused material comes BACK to the store from the site, against
+   * the referenced issue (§E): `issuedToActivity` ↓ → `acceptedOnHand` ↑ at the issue's key.
+   */
+  async siteReturn(projectId: string, input: SiteReturnInput, user: AuthUser, idempotencyKey?: string): Promise<MaterialIssueDto> {
+    const { actor, scope } = await this.begin(projectId, user);
+    const qty = this.parseQty(input.qty, 'qty');
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'stock.siteReturn', idempotencyKey, requestHash: hashRequest(input),
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        const issue = await this.lockIssue(tx, projectId, input.issueId);
+        const lot = await this.lockLot(tx, projectId, issue.lotId);
+        const rows = await this.lotRows(tx, projectId, lot.id);
+        this.assertIssueCustodyCovers(rows, issue, qty, 'return');
+        this.assertMovementLegal(rows, { qty, fromBucket: 'issuedToActivity', toBucket: 'acceptedOnHand', storeLocation: issue.storeLocation, toStoreLocation: null });
+        const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
+          lotId: lot.id, storeLocation: issue.storeLocation, type: 'site_return', qty,
+          fromBucket: 'issuedToActivity', toBucket: 'acceptedOnHand',
+          activityId: issue.activityId, issueId: issue.id, reason: input.note,
+        }, 'stock.siteReturn');
+        return { resultRef: row.id, events: [event] };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.readIssue(projectId, input.issueId);
+  }
+
+  /**
+   * `stock.wastage` — §C: material LOST at site, against the referenced issue (§E):
+   * `issuedToActivity` ↓ with a REASON and photographic EVIDENCE, pmc authority (route
+   * policy `stock.adjust`). The evidence media is thereafter delete-sealed (Task 4).
+   */
+  async wastage(projectId: string, input: WastageInput, user: AuthUser, idempotencyKey?: string): Promise<MaterialIssueDto> {
+    const { actor, scope } = await this.begin(projectId, user);
+    const qty = this.parseQty(input.qty, 'qty');
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'stock.wastage', idempotencyKey, requestHash: hashRequest(input),
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        const issue = await this.lockIssue(tx, projectId, input.issueId);
+        const lot = await this.lockLot(tx, projectId, issue.lotId);
+        await this.assertEvidenceMedia(tx, projectId, input.evidenceMediaId);
+        const rows = await this.lotRows(tx, projectId, lot.id);
+        this.assertIssueCustodyCovers(rows, issue, qty, 'record as wastage');
+        this.assertMovementLegal(rows, { qty, fromBucket: 'issuedToActivity', toBucket: null, storeLocation: issue.storeLocation, toStoreLocation: null });
+        const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
+          lotId: lot.id, storeLocation: issue.storeLocation, type: 'wastage', qty,
+          fromBucket: 'issuedToActivity', toBucket: null,
+          activityId: issue.activityId, issueId: issue.id,
+          reason: input.reason, evidenceMediaId: input.evidenceMediaId,
+        }, 'stock.wastage');
+        return { resultRef: row.id, events: [event] };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.readIssue(projectId, input.issueId);
+  }
+
+  /**
+   * `stock.transfer` — §C: accepted material moves between two STORE locations in ONE ledger
+   * row (`storeLocation` = source, `toStoreLocation` = destination, buckets
+   * acceptedOnHand → acceptedOnHand — the fold applies each side at its own key).
+   * Reservations DO NOT travel: they stay at the source key, so the source's
+   * `freeAvailable ≥ 0` refusal is exactly the §C `freeAvailable@A ≥ qty` guard.
+   */
+  async transfer(projectId: string, input: TransferStockInput, user: AuthUser, idempotencyKey?: string): Promise<StockLotDto> {
+    const { actor, scope } = await this.begin(projectId, user);
+    const qty = this.parseQty(input.qty, 'qty');
+    const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
+    if (input.toStoreLocation === storeLocation) {
+      throw new BadRequestException('A transfer moves between two DIFFERENT store locations');
+    }
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'stock.transfer', idempotencyKey, requestHash: hashRequest(input),
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        const lot = await this.lockLot(tx, projectId, input.lotId);
+        this.assertMovementLegal(await this.lotRows(tx, projectId, lot.id), {
+          qty, fromBucket: 'acceptedOnHand', toBucket: 'acceptedOnHand',
+          storeLocation, toStoreLocation: input.toStoreLocation,
+        });
+        const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
+          lotId: lot.id, storeLocation, type: 'transfer', qty,
+          fromBucket: 'acceptedOnHand', toBucket: 'acceptedOnHand',
+          toStoreLocation: input.toStoreLocation, reason: input.note,
+        }, 'stock.transfer');
+        return { resultRef: row.id, events: [event] };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.readLot(projectId, input.lotId);
+  }
+
+  /** The issue a consumption/site-return/wastage is recorded AGAINST (§E). */
+  private async lockIssue(
+    tx: CommandTx, projectId: string, issueId: string,
+  ): Promise<{ id: string; lotId: string; storeLocation: string; activityId: string }> {
+    const issue = await tx.materialIssue.findFirst({
+      where: { projectId, id: issueId },
+      select: { id: true, lotId: true, storeLocation: true, activityId: true },
+    });
+    if (!issue) throw new NotFoundException('Material issue not found in this project');
+    return issue;
+  }
+
+  /** §E custody guard: the referenced issue's remaining custody must cover the quantity. */
+  private assertIssueCustodyCovers(
+    rows: readonly TxRow[], issue: { id: string; storeLocation: string }, qty: Prisma.Decimal, verb: string,
+  ): void {
+    const custody = this.issueCustody(rows, issue.storeLocation, issue.id);
+    if (custody.lessThan(qty)) {
+      throw new ConflictException(`Refused: the issue's remaining custody is ${custody.toString()} — cannot ${verb} ${qty.toString()} (§E — recorded against the referenced issue)`);
+    }
+  }
+
+  private async readIssue(projectId: string, issueId: string): Promise<MaterialIssueDto> {
+    const issue = await this.prisma.materialIssue.findFirst({ where: { projectId, id: issueId }, include: ISSUE_INCLUDE });
+    if (!issue) throw new NotFoundException('Material issue not found in this project');
+    return serializeIssue(issue);
   }
 
   // ── Query ──────────────────────────────────────────────────────────────────────────────
@@ -433,5 +824,21 @@ export class InventoryService {
       orderBy: [{ receivedAt: 'asc' }, { id: 'asc' }],
     });
     return { lots: lots.map(serializeLot) };
+  }
+
+  /**
+   * `stock.issues` — the §E Daily-Log read: every `MaterialIssue` (what LEFT the store, for
+   * which activity) with its lot's §B identity joined for display and DERIVED remaining
+   * custody. The Daily-Log SCREEN composes this alongside its own observations — nothing is
+   * copied into daily-log rows.
+   */
+  async issues(projectId: string, user: AuthUser): Promise<StockIssuesDto> {
+    await this.begin(projectId, user);
+    const rows = await this.prisma.materialIssue.findMany({
+      where: { projectId },
+      include: ISSUE_INCLUDE,
+      orderBy: [{ issuedAt: 'asc' }, { id: 'asc' }],
+    });
+    return { issues: rows.map(serializeIssue) };
   }
 }
