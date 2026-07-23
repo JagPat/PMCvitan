@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   // hold the PREVIOUS run's state — a stale-served projection by construction. Truncate the generations and
   // every projection table alongside the events/cursors so each run rebuilds its read models from ITS data.
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection"',
+    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "MaterialReadinessProjection"',
   );
   // Phase 3 append-only tables (BEFORE UPDATE/DELETE triggers block deleteMany): the requirement
   // spec/revision/root chain and the immutable decision approval register — TRUNCATEd together
@@ -51,8 +51,10 @@ async function main(): Promise<void> {
   // would otherwise block the DecisionOption/Decision wipes below. The Task-2 procurement chain
   // (RequisitionLine FKs the ActivityRequirement revision row) joins the same statement: PG
   // refuses to truncate a referenced table unless every referencing table truncates with it.
+  // Phase 3 Task 6 — ApprovedSubstitution FKs onto ActivityRequirementRoot (projectId,id), so it
+  // truncates in the same statement for exactly that reason.
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "Vendor", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
+    'TRUNCATE TABLE "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "Vendor", "ApprovedSubstitution", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
   );
   await prisma.projectCapability.deleteMany();
   await prisma.gateOverride.deleteMany();
