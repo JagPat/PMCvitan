@@ -114,6 +114,18 @@ describe('Phase 3 Task 5 — reservations, issues, site flows, mismatch resoluti
     return row.id;
   };
 
+  // Tasks 4–5 integrity correction (F1): a §C ledger row REQUIRES a same-project source command.
+  // The DB-seal probes insert raw rows to reach the §C CHECKs/triggers, so they carry a real one.
+  const freshCommand = async (projectId: string): Promise<string> => {
+    const { orgId } = await t.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { orgId: true } });
+    const c = await t.prisma.commandExecution.create({
+      data: { scopeKind: 'project', organizationId: orgId, projectId, actorId: f.memberUser.id,
+        commandType: 'test.seal', idempotencyKey: `seal-${Date.now() % 1e6}-${seq++}`, requestHash: 'x', status: 'succeeded' },
+      select: { id: true },
+    });
+    return c.id;
+  };
+
   /** The full Tasks 1–4 chain up to an ACCEPTED on-hand quantity at `storeLocation`. */
   const acceptedStock = async (projectId: string, { qty = '100', storeLocation = 'main' } = {}) => {
     const activityId = await freshActivity(projectId);
@@ -383,7 +395,7 @@ describe('Phase 3 Task 5 — reservations, issues, site flows, mismatch resoluti
     const { lotId } = await acceptedStock(projectId, { qty: '100' });
     const actA = await freshActivity(projectId);
     const issue = await inventory.issue(projectId, { lotId, activityId: actA, qty: '10' }, pmc(projectId));
-    const base = { projectId, lotId, storeLocation: 'main', recordedById: f.memberUser.id };
+    const base = { projectId, lotId, storeLocation: 'main', recordedById: f.memberUser.id, sourceCommandId: await freshCommand(projectId) };
 
     // an issue row without its MaterialIssue reference is unrepresentable
     await expect(t.prisma.stockTransaction.create({

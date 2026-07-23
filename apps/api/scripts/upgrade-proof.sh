@@ -602,13 +602,13 @@ assert "the §C conservation CHECKs pin qty > 0, the type vocabulary, the bucket
   "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockTransaction_qty_positive_check','StockTransaction_type_check','StockTransaction_bucket_domain_check','StockTransaction_type_shape_check');" \
   "4"
 assert "the ledger's provenance FKs seal receipt (PO line + commitment), evidence media, the reversal chain and the source command" \
-  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockTransaction_projectId_poLineId_fkey','StockTransaction_projectId_commitmentId_fkey','StockTransaction_projectId_evidenceMediaId_fkey','StockTransaction_projectId_reversedTxId_fkey','StockTransaction_sourceCommandId_fkey') AND contype='f';" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockTransaction_projectId_poLineId_fkey','StockTransaction_projectId_commitmentId_fkey','StockTransaction_projectId_evidenceMediaId_fkey','StockTransaction_projectId_reversedTxId_fkey','StockTransaction_projectId_sourceCommandId_fkey') AND contype='f';" \
   "5"
 assert "each ledger row is reversible AT MOST once (the partial unique exists)" \
   "SELECT COUNT(*) FROM pg_indexes WHERE indexname='StockTransaction_reversedTx_once_key';" \
   "1"
-assert "the lot's §B ref is FK-sealed to its pinned requirement revision and its PO-line/commitment provenance" \
-  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockLot_projectId_requirementId_revision_fkey','StockLot_projectId_poLineId_fkey','StockLot_projectId_commitmentId_fkey') AND contype='f';" \
+assert "the lot's §B ref is FK-sealed to its pinned requirement revision and its (Tasks 4–5 correction) chain-coherent PO-line/commitment provenance" \
+  "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockLot_projectId_requirementId_revision_fkey','StockLot_projectId_poLineId_requirementId_revision_fkey','StockLot_projectId_commitmentId_poLineId_fkey') AND contype='f';" \
   "3"
 
 # Phase 3 Task 5 — the store-to-site tables land row-free with their §§C/E seals installed.
@@ -636,6 +636,96 @@ assert "one resolution per observation (the SiteMaterial unique target + the res
 assert "the Task-5 provenance FKs seal the issue chain (ledger→activity, ledger→issue, issue→lot/activity, resolution→observation)" \
   "SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('StockTransaction_projectId_activityId_fkey','StockTransaction_projectId_issueId_fkey','MaterialIssue_projectId_lotId_fkey','MaterialIssue_projectId_activityId_fkey','MismatchResolution_projectId_siteMaterialId_fkey') AND contype='f';" \
   "5"
+
+# ── Phase 3 Tasks 4–5 integrity correction — EXECUTED hostile inserts over the migrated legacy
+#    database (not merely constraint-name inspection). First a minimal COHERENT §C chain is
+#    planted (its acceptance proves the correction lets valid legacy-shaped data through); then
+#    each hostile insert must be REJECTED by the seal it targets. ──────────────────────────────
+assert_rejects() {
+  local label="$1" sql="$2"
+  if $PSQL -q -c "$sql" >/dev/null 2>&1; then
+    printf 'FAILED  %s\n        (hostile insert was ACCEPTED — a correction seal is missing)\n' "$label"; FAIL=1
+  else
+    printf 'ok      %s (rejected by PostgreSQL)\n' "$label"
+  fi
+}
+
+# a coherent chain on legacy project p1 (org-legacy / USER-1 / ACT-1): requirement → spec →
+# requisition → RFQ → quote → approved comparison → PO → PO line → commitment → lot → receipt,
+# plus a valid MaterialIssue + its canonical issue movement (one transaction so the deferred
+# issue-movement trigger is satisfied), a matched=false observation + its resolution, and a
+# matched=true observation. Any error here fails the proof (ON_ERROR_STOP).
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  integrity-correction fixture chain did not apply"; FAIL=1; }
+BEGIN;
+INSERT INTO "ActivityRequirementRoot"("id","projectId","createdById") VALUES('UP45-ROOT','p1','USER-1');
+INSERT INTO "ActivityRequirement"("id","projectId","requirementId","revision","activityId","type","requiredQty","baseUom","requiredBy","criticality","status","createdById")
+  VALUES('UP45-AR','p1','UP45-ROOT',1,'ACT-1','material',100,'bag','2026-08-15','normal','open','USER-1');
+INSERT INTO "MaterialRequirementSpec"("id","projectId","requirementId","revision","materialCategory","make","grade","normalizedAttributes","specFingerprint")
+  VALUES('UP45-MS','p1','UP45-ROOT',1,'Cement','UltraTech','OPC 53','grey','FP-UP45');
+INSERT INTO "Requisition"("id","projectId","title","status","createdById") VALUES('UP45-REQ','p1','up45','approved','USER-1');
+INSERT INTO "RequisitionLine"("id","projectId","requisitionId","requirementId","revision","qty","status")
+  VALUES('UP45-RL','p1','UP45-REQ','UP45-ROOT',1,100,'ordered');
+INSERT INTO "Vendor"("id","orgId","name","createdById") VALUES('UP45-VEN','org-legacy','V','USER-1');
+INSERT INTO "ProjectVendor"("id","projectId","orgId","vendorId","boundById") VALUES('UP45-PV','p1','org-legacy','UP45-VEN','USER-1');
+INSERT INTO "Rfq"("id","projectId","requisitionId","status","issuedById") VALUES('UP45-RFQ','p1','UP45-REQ','closed','USER-1');
+INSERT INTO "VendorQuote"("id","projectId","rfqId","requisitionId","vendorId","status","validUntil","recordedById")
+  VALUES('UP45-VQ','p1','UP45-RFQ','UP45-REQ','UP45-VEN','recorded','2027-01-01','USER-1');
+INSERT INTO "VendorQuoteLine"("id","projectId","quoteId","requisitionLineId","requisitionId","baseRate","taxAmount","freightAmount","landedCost","quotedMake","matchesSpecification")
+  VALUES('UP45-VQL','p1','UP45-VQ','UP45-RL','UP45-REQ',100,50,25,999.99,'UltraTech OPC',true);
+INSERT INTO "QuoteComparison"("id","projectId","rfqId","requisitionId","status","selectedQuoteId","selectedVendorId","reason","createdById","approvedById","approvedAt")
+  VALUES('UP45-CMP','p1','UP45-RFQ','UP45-REQ','approved','UP45-VQ','UP45-VEN','ok','USER-1','USER-1',now());
+INSERT INTO "PurchaseOrder"("id","projectId","vendorId","requisitionId","comparisonId","comparisonStatus","createdById")
+  VALUES('UP45-PO','p1','UP45-VEN','UP45-REQ','UP45-CMP','approved','USER-1');
+INSERT INTO "PurchaseOrderVersion"("id","projectId","poId","version","requisitionId","status","issuedById","issuedAt","createdById")
+  VALUES('UP45-POV','p1','UP45-PO',1,'UP45-REQ','issued','USER-1',now(),'USER-1');
+INSERT INTO "PurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","specFingerprint","uom","purchaseUom","purchaseQty","conversionToBase","qty","rate","taxAmount","freightAmount","landedAmount","committedAmountBase")
+  VALUES('UP45-POL','p1','UP45-POV','UP45-RL','UP45-REQ','UP45-ROOT',1,'FP-UP45','bag','bag',100,1,100,100,50,25,999.99,100);
+INSERT INTO "DeliveryCommitment"("id","projectId","poLineId","status","createdById") VALUES('UP45-DC','p1','UP45-POL','committed','USER-1');
+INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+  VALUES('UP45-CMD','project','org-legacy','p1','USER-1','test.up45','up45','x','succeeded');
+INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+  VALUES('UP45-CMD2','project','org-legacy','p2','USER-1','test.up45','up45b','x','succeeded');
+INSERT INTO "StockLot"("id","projectId","poLineId","commitmentId","requirementId","revision","materialCategory","make","grade","normalizedAttributes","baseUom","specFingerprint","receivedById")
+  VALUES('UP45-LOT','p1','UP45-POL','UP45-DC','UP45-ROOT',1,'Cement','UltraTech','OPC 53','grey','bag','FP-UP45','USER-1');
+INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","poLineId","commitmentId","recordedById","sourceCommandId")
+  VALUES('UP45-RCPT','p1','UP45-LOT','main','receipt',100,NULL,'quarantine','UP45-POL','UP45-DC','USER-1','UP45-CMD');
+INSERT INTO "MaterialIssue"("id","projectId","lotId","storeLocation","activityId","qty","issuedById")
+  VALUES('UP45-MI','p1','UP45-LOT','main','ACT-1',20,'USER-1');
+INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","activityId","issueId","recordedById","sourceCommandId")
+  VALUES('UP45-ISS','p1','UP45-LOT','main','issue',20,'acceptedOnHand','issuedToActivity','ACT-1','UP45-MI','USER-1','UP45-CMD');
+INSERT INTO "DailyLog"("id","projectId","date","submitted","checkedIn","progress") VALUES('UP45-DL','p1','01 Jun 2026',false,true,10);
+INSERT INTO "SiteMaterial"("id","projectId","dailyLogId","name","qty","zone","matched","swatch","order")
+  VALUES('UP45-SM-F','p1','UP45-DL','Tile','5','Bath',false,'tile',0),
+        ('UP45-SM-T','p1','UP45-DL','Tile OK','5','Bath',true,'tile',1);
+INSERT INTO "MismatchResolution"("id","projectId","siteMaterialId","resolution","reason","resolvedById")
+  VALUES('UP45-MR','p1','UP45-SM-F','returned','wrong batch','USER-1');
+COMMIT;
+SQL
+
+# happy path: the correction ACCEPTS coherent legacy-shaped data (lot, receipt, issue, resolution)
+assert "integrity correction accepts a coherent lot + receipt + issue + resolution over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM \"StockLot\" WHERE id='UP45-LOT') || '|' || (SELECT COUNT(*) FROM \"StockTransaction\" WHERE id IN ('UP45-RCPT','UP45-ISS')) || '|' || (SELECT COUNT(*) FROM \"MaterialIssue\" WHERE id='UP45-MI') || '|' || (SELECT COUNT(*) FROM \"MismatchResolution\" WHERE id='UP45-MR');" \
+  "1|2|1|1"
+
+# F1 — a ledger row with no source command, and one citing a command in ANOTHER project
+assert_rejects "F1: a §C ledger row with a NULL sourceCommandId" \
+  "INSERT INTO \"StockTransaction\"(\"id\",\"projectId\",\"lotId\",\"storeLocation\",\"type\",\"qty\",\"fromBucket\",\"toBucket\",\"reason\",\"recordedById\") VALUES('UP45-H1','p1','UP45-LOT','main','adjustment',1,'acceptedOnHand',NULL,'x','USER-1')"
+assert_rejects "F1: a §C ledger row citing a source command in another project" \
+  "INSERT INTO \"StockTransaction\"(\"id\",\"projectId\",\"lotId\",\"storeLocation\",\"type\",\"qty\",\"fromBucket\",\"toBucket\",\"reason\",\"recordedById\",\"sourceCommandId\") VALUES('UP45-H2','p1','UP45-LOT','main','adjustment',1,'acceptedOnHand',NULL,'x','USER-1','UP45-CMD2')"
+# F2.2 — a lot whose frozen §B spec copy is forged
+assert_rejects "F2.2: a stock lot with a forged §B spec fingerprint" \
+  "INSERT INTO \"StockLot\"(\"id\",\"projectId\",\"poLineId\",\"commitmentId\",\"requirementId\",\"revision\",\"materialCategory\",\"make\",\"grade\",\"normalizedAttributes\",\"baseUom\",\"specFingerprint\",\"receivedById\") VALUES('UP45-H3','p1','UP45-POL','UP45-DC','UP45-ROOT',1,'Cement','UltraTech','OPC 53','grey','bag','FORGED','USER-1')"
+# F3.2 — an orphan MaterialIssue (no canonical issue movement) rejected at commit
+assert_rejects "F3.2: an orphan MaterialIssue is rejected at commit" \
+  "BEGIN; INSERT INTO \"MaterialIssue\"(\"id\",\"projectId\",\"lotId\",\"storeLocation\",\"activityId\",\"qty\",\"issuedById\") VALUES('UP45-H4','p1','UP45-LOT','main','ACT-1',5,'USER-1'); COMMIT;"
+# F3.3 — an issue-scoped movement at a different store location than its MaterialIssue
+assert_rejects "F3.3: an issue-scoped movement mis-scoped against its MaterialIssue" \
+  "INSERT INTO \"StockTransaction\"(\"id\",\"projectId\",\"lotId\",\"storeLocation\",\"type\",\"qty\",\"fromBucket\",\"toBucket\",\"activityId\",\"issueId\",\"recordedById\",\"sourceCommandId\") VALUES('UP45-H5','p1','UP45-LOT','elsewhere','consumption',1,'issuedToActivity',NULL,'ACT-1','UP45-MI','USER-1','UP45-CMD')"
+# F4 — a resolution on a matched=true observation, and a resolved observation reverting to matched=true
+assert_rejects "F4: a resolution on a matched=true observation" \
+  "INSERT INTO \"MismatchResolution\"(\"id\",\"projectId\",\"siteMaterialId\",\"resolution\",\"reason\",\"resolvedById\") VALUES('UP45-H6','p1','UP45-SM-T','x','y','USER-1')"
+assert_rejects "F4: a resolved observation cannot revert to matched=true" \
+  "UPDATE \"SiteMaterial\" SET \"matched\"=true WHERE id='UP45-SM-F'"
 
 echo ""
 if [ "$FAIL" = "0" ]; then

@@ -277,6 +277,10 @@ export class InventoryService {
     },
     auditAction: string,
   ): Promise<{ row: TxRow; event: EmittedEventMeta }> {
+    // F1 — every §C ledger row cites its source command (NOT NULL + project-contained FK). All
+    // inventory commands run with `synthesizeKeyWhenAbsent`, so `ctx.commandId` is always set;
+    // this guard makes the invariant explicit rather than surfacing a raw NOT-NULL error.
+    if (!ctx.commandId) throw new Error('inventory ledger append requires a source command (F1 invariant)');
     const row = await tx.stockTransaction.create({
       data: {
         projectId, lotId: data.lotId, storeLocation: data.storeLocation, type: data.type,
@@ -327,7 +331,7 @@ export class InventoryService {
     const purchaseQty = this.parseQty(input.purchaseQty, 'purchaseQty');
     const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'receipts.record', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'receipts.record', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const line = await this.procurementParticipant.lockPoLineForReceipt(tx, projectId, input.poLineId, input.commitmentId);
@@ -369,7 +373,7 @@ export class InventoryService {
     const qty = this.parseQty(input.qty, 'qty');
     const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'receipts.accept', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'receipts.accept', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const lot = await this.lockLot(tx, projectId, input.lotId);
@@ -396,7 +400,7 @@ export class InventoryService {
     const qty = this.parseQty(input.qty, 'qty');
     const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'receipts.reject', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'receipts.reject', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const lot = await this.lockLot(tx, projectId, input.lotId);
@@ -421,7 +425,7 @@ export class InventoryService {
     const qty = this.parseQty(input.qty, 'qty');
     const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'receipts.vendorReturn', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'receipts.vendorReturn', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const lot = await this.lockLot(tx, projectId, input.lotId);
@@ -452,7 +456,7 @@ export class InventoryService {
     if (!fromBucket && !toBucket) throw new BadRequestException('An adjustment names at least one bucket');
     if (fromBucket === toBucket) throw new BadRequestException('An adjustment must move between two DIFFERENT buckets');
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'stock.adjust', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'stock.adjust', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const lot = await this.lockLot(tx, projectId, input.lotId);
@@ -478,7 +482,7 @@ export class InventoryService {
   async reverse(projectId: string, input: ReverseStockInput, user: AuthUser, idempotencyKey?: string): Promise<StockLotDto> {
     const { actor, scope } = await this.begin(projectId, user);
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'stock.reverse', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'stock.reverse', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const target = await tx.stockTransaction.findFirst({ where: { projectId, id: input.txId } });
@@ -554,7 +558,7 @@ export class InventoryService {
     const qty = this.parseQty(input.qty, 'qty');
     const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'stock.reserve', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'stock.reserve', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const activity = await this.activityParticipant.materialTarget(tx, { projectId, activityId: input.activityId });
@@ -582,7 +586,7 @@ export class InventoryService {
     const qty = this.parseQty(input.qty, 'qty');
     const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'stock.release', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'stock.release', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const lot = await this.lockLot(tx, projectId, input.lotId);
@@ -620,7 +624,7 @@ export class InventoryService {
     const qty = this.parseQty(input.qty, 'qty');
     const storeLocation = input.storeLocation ?? DEFAULT_LOCATION;
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'stock.issue', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'stock.issue', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const activity = await this.activityParticipant.materialTarget(tx, { projectId, activityId: input.activityId });
@@ -671,7 +675,7 @@ export class InventoryService {
     const { actor, scope } = await this.begin(projectId, user);
     const qty = this.parseQty(input.qty, 'qty');
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'stock.consume', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'stock.consume', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const issue = await this.lockIssue(tx, projectId, input.issueId);
@@ -699,7 +703,7 @@ export class InventoryService {
     const { actor, scope } = await this.begin(projectId, user);
     const qty = this.parseQty(input.qty, 'qty');
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'stock.siteReturn', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'stock.siteReturn', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const issue = await this.lockIssue(tx, projectId, input.issueId);
@@ -728,7 +732,7 @@ export class InventoryService {
     const { actor, scope } = await this.begin(projectId, user);
     const qty = this.parseQty(input.qty, 'qty');
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'stock.wastage', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'stock.wastage', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const issue = await this.lockIssue(tx, projectId, input.issueId);
@@ -765,7 +769,7 @@ export class InventoryService {
       throw new BadRequestException('A transfer moves between two DIFFERENT store locations');
     }
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'stock.transfer', idempotencyKey, requestHash: hashRequest(input),
+      scope, actor, commandType: 'stock.transfer', idempotencyKey, requestHash: hashRequest(input), synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const lot = await this.lockLot(tx, projectId, input.lotId);

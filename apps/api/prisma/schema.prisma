@@ -454,6 +454,10 @@ model CommandExecution {
   // Phase 3 Task 4 — stock ledger rows recording this execution as their source action (§C)
   stockTransactions StockTransaction[]
 
+  // Tasks 4–5 integrity correction (F1) — the project-contained candidate key a
+  // StockTransaction's (projectId, sourceCommandId) composite FK references, so a ledger row
+  // can only cite a command execution IN ITS OWN PROJECT.
+  @@unique([projectId, id])
   @@index([organizationId])
   @@index([projectId])
 }
@@ -1474,8 +1478,11 @@ model StockTransaction {
   evidenceMediaId String?
   reason          String? // required on adjustment + reversal (CHECK)
 
-  sourceCommand   CommandExecution? @relation(fields: [sourceCommandId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  sourceCommandId String?
+  // Tasks 4–5 integrity correction (F1) — every ledger row cites the CommandExecution that
+  // appended it (§C rule ii): REQUIRED (a server one-shot command backs even an unkeyed call)
+  // and project-contained by the composite FK (a cross-project source command is unrepresentable).
+  sourceCommand   CommandExecution @relation(fields: [projectId, sourceCommandId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  sourceCommandId String
   recordedAt      DateTime          @default(now())
   recordedBy      User              @relation("stockTransactionsRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   recordedById    String
