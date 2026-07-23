@@ -114,16 +114,47 @@ export interface RequirementReadinessRow {
   readonly commitmentPromisedDate: string | null;
   readonly reason: string;
 }
-export interface ShortageForecastRow extends RequirementReadinessRow {
+
+/**
+ * The ACTIVITY-level readiness roll-up — the CANONICAL unit of material readiness (correction finding 3).
+ * Physical stock is reserved to an ACTIVITY, not a requirement, and Task 6 assigns ONE verdict to every
+ * requirement of an activity (worst-wins, uniform). So readiness and shortage TOTALS are counted per
+ * activity; the per-requirement `requirements` rows are supporting detail, never independent shortages.
+ */
+export interface ActivityReadinessRow {
+  readonly activityId: string;
+  readonly activityName: string;
+  /** the activity's single material verdict (uniform across its requirements) */
+  readonly verdict: MaterialCoverageVerdict;
+  readonly requirementCount: number;
+  /** how many of the activity's requirements are physically short (coverage < required) */
+  readonly shortRequirementCount: number;
+  /** the activity's planned start (civil YYYY-MM-DD) */
+  readonly plannedStartDate: string | null;
+  /** the EARLIEST `requiredBy` across the activity's requirements (civil YYYY-MM-DD) */
+  readonly requiredBy: string | null;
+  /** the EARLIEST applicable need date = min(plannedStartDate, requiredBy) — the date the forecast
+   *  measures a covering delivery against (correction finding 4). Null only when both are absent. */
+  readonly needBy: string | null;
+  /** the activity's combined covering commitment date (at-risk only) — the earliest promised date at
+   *  which inbound saturates the whole activity's demand */
+  readonly commitmentPromisedDate: string | null;
+  readonly reason: string;
+}
+/** One SHORTAGE — one per affected ACTIVITY (verdict ≠ ready), carrying its forecast impact. */
+export interface ActivityShortageRow extends ActivityReadinessRow {
   readonly verdict: 'at-risk' | 'blocked';
   readonly impact: ShortageImpact;
   readonly impactReason: string;
 }
 export interface MaterialReadinessResult {
-  /** every open material requirement's coverage, activity- then requirement-ordered */
+  /** per-requirement coverage — SUPPORTING DETAIL (activity- then requirement-ordered) */
   readonly requirements: readonly RequirementReadinessRow[];
-  /** the shortages only (verdict ≠ ready), worst-first (blocked before at-risk), soonest-needed first */
-  readonly shortages: readonly ShortageForecastRow[];
+  /** the ACTIVITY-level readiness roll-up — the canonical unit (finding 3) */
+  readonly activities: readonly ActivityReadinessRow[];
+  /** the shortages, ONE per affected ACTIVITY, worst-first (blocked before at-risk), soonest-needed first */
+  readonly shortages: readonly ActivityShortageRow[];
+  /** counts of ACTIVITIES by verdict (never requirements) — finding 3 */
   readonly summary: { readonly ready: number; readonly atRisk: number; readonly blocked: number; readonly total: number };
 }
 

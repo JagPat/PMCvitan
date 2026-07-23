@@ -87,9 +87,15 @@ describe('Phase 3 Task 7 — material-readiness read (live PG)', () => {
   const freshMedia = async (projectId: string): Promise<string> =>
     (await t.prisma.media.create({ data: { projectId, kind: 'material', mime: 'image/jpeg', uploadedBy: f.memberUser.id, sizeBytes: 3 } })).id;
 
-  const addRequirement = async (projectId: string, activityId: string, qty = '100', requiredBy = '2026-08-15') => {
+  const addRequirement = async (
+    projectId: string,
+    activityId: string,
+    qty = '100',
+    requiredBy = '2026-08-15',
+    spec: { materialCategory: string; make: string; grade: string } = SPEC_A,
+  ) => {
     const input: CreateRequirementInput = {
-      activityId, ...SPEC_A, attributes: 'grey', baseUom: 'bag', qty, requiredBy,
+      activityId, ...spec, attributes: 'grey', baseUom: 'bag', qty, requiredBy,
       criticality: 'normal', decisionId: null, responsibleId: null, tolerance: null,
     };
     const r = await requirements.create(projectId, input, pmc(projectId));
@@ -128,7 +134,7 @@ describe('Phase 3 Task 7 — material-readiness read (live PG)', () => {
     await inventory.reserve(projectId, { lotId: lot.id, activityId, qty }, pmc(projectId));
   };
 
-  it('READY: reserved stock ≥ requirement → ready; no shortages; summary counts', async () => {
+  it('READY: reserved stock ≥ requirement → ready; no shortages; ACTIVITY-level summary counts', async () => {
     const projectId = await freshProject();
     const activityId = await freshActivity(projectId);
     const req = await addRequirement(projectId, activityId, '100');
@@ -137,11 +143,13 @@ describe('Phase 3 Task 7 — material-readiness read (live PG)', () => {
     const view = await query.materialReadiness(projectId);
     expect(view.requirements).toHaveLength(1);
     expect(view.requirements[0]!).toMatchObject({ activityId, verdict: 'ready', coveredQty: '100', shortfall: '0', material: 'cement · ultratech · opc 53', baseUom: 'bag' });
+    expect(view.activities).toHaveLength(1);
+    expect(view.activities[0]!).toMatchObject({ activityId, verdict: 'ready', requirementCount: 1, shortRequirementCount: 0 });
     expect(view.shortages).toHaveLength(0);
-    expect(view.summary).toEqual({ ready: 1, atRisk: 0, blocked: 0, total: 1 });
+    expect(view.summary).toEqual({ ready: 1, atRisk: 0, blocked: 0, total: 1 }); // counts ACTIVITIES
   });
 
-  it('BLOCKED: no stock, no commitment → blocked + no-supply forecast', async () => {
+  it('BLOCKED: no stock, no commitment → blocked + no-supply forecast (activity-level)', async () => {
     const projectId = await freshProject();
     const activityId = await freshActivity(projectId);
     await addRequirement(projectId, activityId, '100');
@@ -149,21 +157,22 @@ describe('Phase 3 Task 7 — material-readiness read (live PG)', () => {
     const view = await query.materialReadiness(projectId);
     expect(view.requirements[0]!.verdict).toBe('blocked');
     expect(view.shortages).toHaveLength(1);
-    expect(view.shortages[0]!).toMatchObject({ verdict: 'blocked', impact: 'no-supply' });
+    expect(view.shortages[0]!).toMatchObject({ activityId, verdict: 'blocked', impact: 'no-supply' });
     expect(view.shortages[0]!.impactReason).toContain('No covering delivery');
     expect(view.summary).toMatchObject({ blocked: 1, total: 1 });
   });
 
-  it('AT-RISK / covered-in-time: a full covering commitment BEFORE the planned start', async () => {
+  it('AT-RISK / covered-in-time: a full covering commitment BEFORE the earliest need date', async () => {
     const projectId = await freshProject();
     const activityId = await freshActivity(projectId, new Date('2026-09-30T00:00:00.000Z'));
-    const req = await addRequirement(projectId, activityId, '100');
+    // requiredBy AFTER the commitment, so the EARLIEST need date is the planned start (2026-09-30)
+    const req = await addRequirement(projectId, activityId, '100', '2026-10-01');
     const { poLineId } = await receivablePoLine(projectId, req, '100');
-    await commit(projectId, poLineId, '2026-09-15'); // before planned start 2026-09-30
+    await commit(projectId, poLineId, '2026-09-15'); // before the need date 2026-09-30
 
     const view = await query.materialReadiness(projectId);
     expect(view.requirements[0]!.verdict).toBe('at-risk');
-    expect(view.shortages[0]!).toMatchObject({ verdict: 'at-risk', impact: 'covered-in-time', commitmentPromisedDate: '2026-09-15' });
+    expect(view.shortages[0]!).toMatchObject({ verdict: 'at-risk', impact: 'covered-in-time', commitmentPromisedDate: '2026-09-15', needBy: '2026-09-30' });
     expect(view.summary).toMatchObject({ atRisk: 1, total: 1 });
   });
 
@@ -177,6 +186,41 @@ describe('Phase 3 Task 7 — material-readiness read (live PG)', () => {
     const view = await query.materialReadiness(projectId);
     expect(view.shortages[0]!).toMatchObject({ verdict: 'at-risk', impact: 'delays-start', commitmentPromisedDate: '2026-09-15', plannedStartDate: '2026-08-10' });
     expect(view.shortages[0]!.impactReason).toContain('will slip');
+  });
+
+  // ── correction finding 4 (reproduce-first): a commitment AFTER an EARLIER requiredBy must NEVER be
+  //    labelled covered-in-time, even when it precedes the planned start. RED at c642da3 (the old code
+  //    measured against plannedStart ?? requiredBy, so this returned covered-in-time). ──
+  it('FINDING 4: a commitment after requiredBy is delays-start even when it PRECEDES the planned start', async () => {
+    const projectId = await freshProject();
+    const activityId = await freshActivity(projectId, new Date('2026-09-30T00:00:00.000Z')); // planned start LATE
+    const req = await addRequirement(projectId, activityId, '100', '2026-08-15'); // needed EARLY
+    const { poLineId } = await receivablePoLine(projectId, req, '100');
+    await commit(projectId, poLineId, '2026-09-15'); // AFTER requiredBy (08-15), BEFORE planned start (09-30)
+
+    const view = await query.materialReadiness(projectId);
+    expect(view.shortages[0]!).toMatchObject({ verdict: 'at-risk', impact: 'delays-start', commitmentPromisedDate: '2026-09-15', needBy: '2026-08-15' });
+    expect(view.shortages[0]!.impact).not.toBe('covered-in-time');
+  });
+
+  // ── correction finding 3 (reproduce-first): shortage + readiness TOTALS are per ACTIVITY, not per
+  //    requirement. An activity with TWO short requirements is ONE shortage; two activities are TWO. RED
+  //    at c642da3 (the old summary + shortages counted per-requirement rows). ──
+  it('FINDING 3: one activity with two short requirements is ONE shortage; totals are per activity', async () => {
+    const projectId = await freshProject();
+    const a1 = await freshActivity(projectId);
+    await addRequirement(projectId, a1, '100'); // cement
+    await addRequirement(projectId, a1, '100', '2026-08-15', { materialCategory: 'Steel', make: 'TATA', grade: 'Fe500' }); // steel — same activity
+    const a2 = await freshActivity(projectId);
+    await addRequirement(projectId, a2, '100'); // a second, distinct activity
+
+    const view = await query.materialReadiness(projectId);
+    expect(view.requirements).toHaveLength(3);   // supporting detail: 3 requirement rows
+    expect(view.activities).toHaveLength(2);      // TWO activities
+    expect(view.shortages).toHaveLength(2);       // ONE shortage per affected activity (not 3)
+    expect(view.summary).toEqual({ ready: 0, atRisk: 0, blocked: 2, total: 2 }); // ACTIVITIES counted
+    const a1Shortage = view.shortages.find((sh) => sh.activityId === a1)!;
+    expect(a1Shortage).toMatchObject({ requirementCount: 2, shortRequirementCount: 2, verdict: 'blocked' });
   });
 
   it('INERT: a non-pilot project 404s (the read does not exist off-pilot)', async () => {
