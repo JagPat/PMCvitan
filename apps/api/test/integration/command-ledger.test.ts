@@ -56,7 +56,7 @@ describe('Phase 2 Task 5 — command-idempotency ledger (live PG)', () => {
    *  so "executed exactly once" is a row count. Returns the ledger outcome. */
   const runCmd = (opts: {
     scope: CommandScope; actor: Actor; commandType?: string; key?: string | null; hash?: string; marker: string;
-    fail?: boolean;
+    fail?: boolean; synth?: boolean;
   }) =>
     executeCommand(t.prisma, {
       scope: opts.scope,
@@ -64,6 +64,7 @@ describe('Phase 2 Task 5 — command-idempotency ledger (live PG)', () => {
       commandType: opts.commandType ?? 'test.command',
       idempotencyKey: opts.key === undefined ? 'key-1' : opts.key,
       requestHash: opts.hash ?? hashRequest({ marker: opts.marker }),
+      synthesizeKeyWhenAbsent: opts.synth,
       run: async (tx) => {
         await tx.auditLog.create({
           data: { projectId: opts.scope.scopeKind === 'project' ? opts.scope.projectId : null, actor: opts.actor.actorName, actorId: opts.actor.actorId, actorRole: opts.actor.actorRole, action: 'test.command', entity: 'Test', entityId: opts.marker },
@@ -173,6 +174,46 @@ describe('Phase 2 Task 5 — command-idempotency ledger (live PG)', () => {
     try {
       await expect(runCmd({ scope, actor: alpha, key: null, marker: 'refused' })).rejects.toBeInstanceOf(BadRequestException);
       expect(await effectCount('refused'), 'a rejected command never touched the database').toBe(0);
+    } finally {
+      delete process.env.COMMAND_KEY_ENFORCED;
+    }
+  });
+
+  // Tasks 4–5 boundary correction (Finding 1) — server key synthesis must NOT bypass enforcement.
+  // The inventory module opts into `synthesizeKeyWhenAbsent` so its §C ledger rows always cite a
+  // source command. Before this correction, that opt-in slipped past `COMMAND_KEY_ENFORCED`: a
+  // caller with no client key got a fresh srv-* key and EXECUTED — so a lost-response retry could
+  // run the same physical movement again under a second server key. Enforcement must win.
+  it('synthesizeKeyWhenAbsent does NOT bypass enforcement: no client key + enforcement ON → rejected before any effect', async () => {
+    const scope = projScope(f.projectA.id);
+    // enforcement OFF: synthesis records a server (srv-*) receipt and runs the effect once
+    const synthesized = await runCmd({ scope, actor: alpha, key: null, synth: true, marker: 'synth-off' });
+    expect(synthesized.replayed).toBe(false);
+    expect(await effectCount('synth-off')).toBe(1);
+    const srv = await t.prisma.commandExecution.findFirst({ where: { projectId: f.projectA.id, commandType: 'test.command' } });
+    expect(srv?.idempotencyKey?.startsWith('srv-'), 'an unkeyed synthesized call records a server one-shot key').toBe(true);
+
+    // enforcement ON: the SAME synthesize opt-in with no client key is refused BEFORE any write —
+    // no receipt (server or otherwise), no effect, no transaction. This is the correction.
+    process.env.COMMAND_KEY_ENFORCED = 'true';
+    try {
+      await expect(
+        runCmd({ scope, actor: alpha, key: null, synth: true, marker: 'synth-on' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(await effectCount('synth-on'), 'the rejected synthesized command never ran its effect').toBe(0);
+      expect(
+        await t.prisma.commandExecution.count({ where: { projectId: f.projectA.id, resultRef: 'synth-on' } }),
+        'no receipt (server or client) was reserved for the rejected command',
+      ).toBe(0);
+    } finally {
+      delete process.env.COMMAND_KEY_ENFORCED;
+    }
+    // a client key still works under enforcement — synthesis only chooses provenance for allowed calls
+    process.env.COMMAND_KEY_ENFORCED = 'true';
+    try {
+      const keyed = await runCmd({ scope, actor: alpha, key: 'client-key-1', synth: true, marker: 'synth-keyed' });
+      expect(keyed.replayed).toBe(false);
+      expect(await effectCount('synth-keyed')).toBe(1);
     } finally {
       delete process.env.COMMAND_KEY_ENFORCED;
     }
