@@ -67,7 +67,7 @@ import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInp
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
-import { reserveKey, issueKey, consumeKey, requisitionKey } from '@/lib/materialsKeys';
+import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey } from '@/lib/materialsKeys';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -700,6 +700,11 @@ export const useStore = create<Store>()(
      *  state — an older success/failure that resolves later is dropped, so a slow refresh can never
      *  overwrite a newer result. */
     let materialsLoadSeq = 0;
+    /** Per-activity latest-request ownership for the reservation plan (correction 3, finding 2). Each
+     *  `loadReservationPlan(activityId)` claims the next generation for that activity; only the newest
+     *  request in the current project scope may write `reservationPlans[activityId]`, so a slow older
+     *  request can never overwrite a newer post-command reconciliation with stale candidates. */
+    const reservationPlanSeq = new Map<string, number>();
 
     /** The scope a network request is issued FOR — pass to applySnapshot so a reply
      *  that lands after the scope changed (switch, sign-in) is dropped, not applied. */
@@ -1373,19 +1378,20 @@ export const useStore = create<Store>()(
     //    fan-out — the shortage is covered by explicit single user actions. ──
     const MATERIALS_OP_TYPES = new Set<OutboxOp['t']>(['reserveStock', 'issueStock', 'consumeStock', 'createRequisition']);
     const isMaterialsOp = (op: OutboxOp): boolean => MATERIALS_OP_TYPES.has(op.t);
-    /** Dispatch ONE pilot-materials command. No-op off-pilot. Coalesces a duplicate (same stable key
-     *  already queued OR pending) so a double-click runs exactly once; the write-ahead outbox then makes
-     *  a lost/uncertain response replay under the SAME key. The materials view is reconciled after the
-     *  flush by the reconcile hook in `flushOutbox`. */
-    const dispatchMaterials = (op: OutboxOp & { idempotencyKey: string }, label: string, okMsg: string): void => {
+    const coalesceKeyOf = (op: OutboxOp): string | undefined => ('coalesceKey' in op ? op.coalesceKey : undefined);
+    /** Dispatch ONE pilot-materials command. No-op off-pilot. Correction 3 (finding 1): coalescing is by
+     *  the deterministic COALESCE key (double-click / reload while pending), NEVER the idempotency key —
+     *  the op already carries a FRESH per-action `idempotencyKey` (reused on retry, different next time).
+     *  So a double-click runs once, but a later legitimate identical action (after this one resolves and
+     *  leaves `materialsPending`) dispatches afresh under a new idempotency key. */
+    const dispatchMaterials = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
       if (!gateway || !get().capabilities.includes('materials')) return;
-      const key = op.idempotencyKey;
-      // coalesce: an identical command already awaiting (in the durable outbox) or marked pending is a
-      // no-op. The ledger would dedupe a replay anyway, but coalescing keeps one queued op + one disabled
-      // button per action (probe 5: double-click ⇒ one command execution).
-      const queued = get().outbox.some((o) => 'idempotencyKey' in o && o.idempotencyKey === key);
-      if (queued || get().materialsPending.includes(key)) return;
-      set((s) => { s.materialsPending.push(key); });
+      const ck = op.coalesceKey;
+      // coalesce: an EQUIVALENT action already awaiting (in the durable outbox) or marked pending is a
+      // no-op, so one queued op + one disabled button per pending action.
+      const queued = get().outbox.some((o) => coalesceKeyOf(o) === ck);
+      if (queued || get().materialsPending.includes(ck)) return;
+      set((s) => { s.materialsPending.push(ck); });
       runWriteAhead(op, label, okMsg);
     };
 
@@ -2331,42 +2337,45 @@ export const useStore = create<Store>()(
     loadReservationPlan: (activityId) => {
       if (!gateway || !get().capabilities.includes('materials')) return;
       const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      // correction 3 (finding 2) — per-activity newest-wins: claim the next generation; only THIS request,
+      // if it is still the newest AND the project scope is unchanged, may write the plan. A slow older
+      // request that resolves after a newer reconciliation is dropped (never re-displays stale candidates).
+      const gen = (reservationPlanSeq.get(activityId) ?? 0) + 1;
+      reservationPlanSeq.set(activityId, gen);
       gateway.materialReservationPlan(activityId).then((plan) => set((s) => {
-        // scope-guard: a plan that resolves after a project switch/re-auth is dropped, never stored in
-        // the new scope (which owns its own — empty — reservationPlans).
-        if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) {
+        if (reservationPlanSeq.get(activityId) === gen && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) {
           s.reservationPlans[activityId] = castDraft(plan);
         }
       })).catch(() => { /* the cover UI falls back to "no candidates"; the user can retry */ });
     },
     reserveCandidate: (activityId, lotId, storeLocation, qty) => {
-      // §directive — key reservations by (lotId, storeLocation, activityId); the qty is the value, not
-      // the key, so a double-click / lost-response replay of the SAME candidate reserves exactly once.
+      // correction 3 (finding 1) — a FRESH idempotency key per action (reused on retry, DIFFERENT for the
+      // next legitimate reserve after this resolves); coalesced only while pending by (lot, store, activity).
       dispatchMaterials(
-        { t: 'reserveStock', input: { lotId, storeLocation, activityId, qty }, idempotencyKey: reserveKey(activityId, lotId, storeLocation) },
+        { t: 'reserveStock', input: { lotId, storeLocation, activityId, qty }, idempotencyKey: newIdempotencyKey(), coalesceKey: reserveCoalesceKey(activityId, lotId, storeLocation) },
         'Reserve stock to the activity',
         'Stock reserved to the activity.',
       );
     },
     raiseRequisition: (activityId, title, lines) => {
-      // one residual requisition per (activity, residual content): a double-click coalesces; a later,
-      // DIFFERENT residual is a distinct command (content-derived key). Never a fan-out of commands.
+      // one residual requisition per action: a double-click coalesces on the residual content; a later,
+      // DIFFERENT residual is a distinct command. Fresh idempotency key per action. Never a fan-out.
       dispatchMaterials(
-        { t: 'createRequisition', input: { title, lines: lines.map((l) => ({ requirementId: l.requirementId, revision: l.revision, qty: l.qty })) }, idempotencyKey: requisitionKey(activityId, lines) },
+        { t: 'createRequisition', input: { title, lines: lines.map((l) => ({ requirementId: l.requirementId, revision: l.revision, qty: l.qty })) }, idempotencyKey: newIdempotencyKey(), coalesceKey: requisitionCoalesceKey(activityId, lines) },
         'Raise a requisition for the shortfall',
         'Requisition raised to procure the shortfall.',
       );
     },
     issueMaterial: (lotId, storeLocation, activityId, qty) => {
       dispatchMaterials(
-        { t: 'issueStock', input: { lotId, storeLocation, activityId, qty }, idempotencyKey: issueKey(activityId, lotId, storeLocation, qty) },
+        { t: 'issueStock', input: { lotId, storeLocation, activityId, qty }, idempotencyKey: newIdempotencyKey(), coalesceKey: issueCoalesceKey(activityId, lotId, storeLocation, qty) },
         'Issue stock to site',
         'Issued to site.',
       );
     },
     consumeMaterial: (issueId, qty) => {
       dispatchMaterials(
-        { t: 'consumeStock', input: { issueId, qty }, idempotencyKey: consumeKey(issueId, qty) },
+        { t: 'consumeStock', input: { issueId, qty }, idempotencyKey: newIdempotencyKey(), coalesceKey: consumeCoalesceKey(issueId, qty) },
         'Record consumption',
         'Consumption recorded.',
       );
@@ -3087,12 +3096,15 @@ export const useStore = create<Store>()(
       const keyOf = (op: OutboxOp): string | undefined => ('idempotencyKey' in op ? op.idempotencyKey : undefined);
       const succeededKeys: string[] = [];
       const droppedKeys: string[] = [];
-      // Phase 3 Task 7 (correction 2) — the RESOLVED pilot-materials keys (succeeded OR terminally
-      // dropped) this flush processed. After the flush they are cleared from `materialsPending` (unblock
-      // the button) and, if any resolved, the materials view + open reservation plans are reconciled —
-      // reserve/issue/consume return the route's own JSON, not the snapshot, so the base reconcile below
-      // never carries the new stock truth.
-      const resolvedMaterialsKeys: string[] = [];
+      // Phase 3 Task 7 (correction 2/3) — the RESOLVED pilot-materials COALESCE keys (succeeded OR
+      // terminally dropped, i.e. the op LEFT the outbox) are cleared from `materialsPending` (unblock the
+      // button); a still-pending transient-failed op keeps its coalesceKey (button stays disabled while it
+      // retries). `materialsAttempted` (correction 3, finding 3) is true whenever ANY materials op was
+      // ATTEMPTED — succeeded, dropped, OR transient-failed — so a lost/uncertain response still refreshes
+      // the materials TRUTH (reserve/issue/consume return route JSON, not the snapshot, so the base
+      // reconcile below never carries the new stock).
+      const resolvedMaterialsCoalesceKeys: string[] = [];
+      let materialsAttempted = false;
       let lastSnap: ApiSnapshot | null = null;
       let synced = 0;
       let dropped = 0;
@@ -3107,19 +3119,21 @@ export const useStore = create<Store>()(
           scopeMoved = true;
           break;
         }
+        const mat = isMaterialsOp(ops[i]);
         try {
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
-          if (isMaterialsOp(ops[i]) && k) resolvedMaterialsKeys.push(k);
+          if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
         } catch (err) {
           if (isTerminalOutboxError(err)) {
             dropped += 1; // server will never accept this one — discard and keep going
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
-            if (isMaterialsOp(ops[i]) && k) resolvedMaterialsKeys.push(k);
+            if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
             continue;
           }
           stoppedAt = i; // transient — retry this op and the rest on the next reconnect
+          if (mat) materialsAttempted = true; // correction 3 finding 3: still refresh truth, keep the op + its coalesceKey
           break;
         }
       }
@@ -3181,15 +3195,17 @@ export const useStore = create<Store>()(
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
       // to FAILED; an op kept alive by a failed dead-letter write stays covered
       void reconcileEvidence();
-      // Phase 3 Task 7 (correction 2) — the MATERIALS reconcile hook. Every resolved (succeeded OR
-      // terminally-dropped) materials command clears its key from `materialsPending` (unblock the
-      // button); a still-pending op keeps its key (stays disabled). If ANY materials command resolved,
-      // re-derive the materials TRUTH — reserve/issue/consume return the route's own JSON, so the base
-      // snapshot above never carried the new stock — by reloading the bundle and every OPEN reservation
-      // plan, scope-guarded so a switch mid-flush touches nothing here (the new scope owns empty state).
-      if (resolvedMaterialsKeys.length > 0) {
-        const resolved = new Set(resolvedMaterialsKeys);
-        set((s) => { s.materialsPending = s.materialsPending.filter((k) => !resolved.has(k)); });
+      // Phase 3 Task 7 (correction 2/3) — the MATERIALS reconcile hook. A resolved (succeeded OR
+      // terminally-dropped) materials command's COALESCE key is cleared from `materialsPending` (unblock
+      // the button); a still-pending transient-failed op keeps its coalesceKey (stays disabled while it
+      // retries — no success toast, since consumeSnapshotResult only announces okMsg on an APPLIED
+      // snapshot). If ANY materials command was ATTEMPTED (incl. a transient/uncertain failure — finding
+      // 3), re-derive the materials TRUTH by reloading the bundle + every OPEN reservation plan (the
+      // server may have committed despite the lost response), scope-guarded so a switch mid-flush touches
+      // nothing here (the new scope owns empty state).
+      if (materialsAttempted) {
+        const resolved = new Set(resolvedMaterialsCoalesceKeys);
+        if (resolved.size > 0) set((s) => { s.materialsPending = s.materialsPending.filter((k) => !resolved.has(k)); });
         if (scopeStillCurrent(flushScope) && get().capabilities.includes('materials')) {
           get().loadMaterials();
           for (const activityId of Object.keys(get().reservationPlans)) get().loadReservationPlan(activityId);
@@ -3227,6 +3243,10 @@ export const useStore = create<Store>()(
             // outbox, so a reload keeps the checklist frozen until the queued
             // submit replays (also covered from the snapshot side by applySnapshot).
             reconcileSubmission(s);
+            // Phase 3 Task 7 (correction 3, finding 1) — reconstruct the pending materials COALESCE keys
+            // from the persisted ops, so a reload keeps an equivalent still-queued action coalesced (and
+            // its button disabled) until it replays. The op's own idempotency key is untouched.
+            s.materialsPending = s.outbox.flatMap((o) => (isMaterialsOp(o) ? [coalesceKeyOf(o)!] : []));
           });
         }
       } catch {

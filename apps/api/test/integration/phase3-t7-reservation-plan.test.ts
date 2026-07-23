@@ -152,17 +152,22 @@ describe('Phase 3 Task 7 (correction 2) — reservation plan candidates (live PG
     const plan = await query.reservationPlan(projectId, activityId);
     expect(plan.activityId).toBe(activityId);
     expect(plan.candidates).toHaveLength(1);
-    expect(plan.candidates[0]!).toMatchObject({ requirementId: req.requirementId, qty: '10', baseUom: 'bag' });
+    // correction 3: a candidate is activity+lot+location aggregated (no requirementId) and labelled from
+    // the actual lot's §B identity (directive #5).
+    expect(plan.candidates[0]!).toMatchObject({ storeLocation: 'main', qty: '10', baseUom: 'bag', material: 'cement · ultratech · opc 53' });
+    expect(plan.candidates[0]).not.toHaveProperty('requirementId');
     expect(plan.residuals).toHaveLength(1);
     expect(plan.residuals[0]!).toMatchObject({ requirementId: req.requirementId, qty: '90', baseUom: 'bag' });
   });
 
-  // ── PROBE 2 — two 80 shortages sharing 100 stock ⇒ the offered reservations NEVER exceed 100. ──
-  it('PROBE 2: two 80 requirements sharing 100 free stock never offer more than 100 total', async () => {
+  // ── PROBE 2 / DIRECTIVE #2 — two 80 requirements sharing ONE 100 lot ⇒ ONE aggregated candidate for the
+  //    full 100 (activity-level reserve, not requirement-attributed), never two colliding candidates. This
+  //    is the reviewer's acceptance probe: the whole 100 executes without a coalesce collision / 409. ──
+  it('PROBE 2 (directive #2 — aggregate candidate identity): two 80 requirements sharing one 100 lot yield ONE 100-unit candidate', async () => {
     const projectId = await freshProject();
     const activityId = await freshActivity(projectId);
     await addRequirement(projectId, activityId, '80');
-    await addRequirement(projectId, activityId, '80'); // second, same activity + spec
+    await addRequirement(projectId, activityId, '80'); // second, same activity + spec, SAME lot
     // 100 free of the shared fingerprint (procured against a dedicated qty-100 requirement on another
     // activity so the §F bound-1 allocation fits, then left UNRESERVED so both 80s compete for it)
     const stockActivity = await freshActivity(projectId);
@@ -170,9 +175,11 @@ describe('Phase 3 Task 7 (correction 2) — reservation plan candidates (live PG
     await stockFree(projectId, reqStock, '100', '100');
 
     const plan = await query.reservationPlan(projectId, activityId);
+    // ONE candidate per (lot, storeLocation) — the aggregated activity-level reserve of the whole 100.
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0]!).toMatchObject({ storeLocation: 'main', qty: '100', baseUom: 'bag' });
     const offered = sumQty(plan.candidates.map((c) => c.qty));
-    expect(offered.toString()).toBe('100'); // the conserved offer saturates the free pool, no double-count
-    expect(Number(offered.toString())).toBeLessThanOrEqual(100);
+    expect(offered.toString()).toBe('100'); // saturates the free pool, no double-count / no collision
     // the residual is the uncovered remainder: 160 demand − 100 stock = 60
     const residual = sumQty(plan.residuals.map((r) => r.qty));
     expect(residual.toString()).toBe('60');
@@ -190,12 +197,13 @@ describe('Phase 3 Task 7 (correction 2) — reservation plan candidates (live PG
     expect(plan.candidates[0]!).toMatchObject({ storeLocation: 'yard-store', qty: '40' });
   });
 
-  // ── PROBE 4 — an ACTIVE approved substitute is eligible; the same fingerprint with the WRONG base UOM
-  //    is NOT (dimensionally incompatible stock can never be offered). ──
-  it('PROBE 4a: an active approved substitute (A→B) is offered as a reserve candidate', async () => {
+  // ── PROBE 4 / DIRECTIVE #5 — an ACTIVE approved substitute is eligible AND its candidate displays the
+  //    SUBSTITUTE LOT's identity (never the requirement's spec); the same fingerprint with the WRONG base
+  //    UOM is NOT eligible (dimensionally incompatible stock can never be offered). ──
+  it('PROBE 4a (directive #5 — candidate material from the StockLot): an active substitute (A→B) is offered, labelled with the SUBSTITUTE lot identity', async () => {
     const projectId = await freshProject();
     const activityId = await freshActivity(projectId);
-    const reqA = await addRequirement(projectId, activityId, '100', SPEC_A); // requirement is spec A
+    const reqA = await addRequirement(projectId, activityId, '100', SPEC_A); // requirement is spec A (UltraTech)
     await substitutions.approve(projectId, reqA.requirementId, { ...SPEC_B, attributes: 'grey', baseUom: 'bag', reason: 'B ≈ A' }, pmc(projectId));
     // free spec-B stock (bag) on hand, procured via a separate spec-B requirement on another activity
     const otherActivity = await freshActivity(projectId);
@@ -204,7 +212,9 @@ describe('Phase 3 Task 7 (correction 2) — reservation plan candidates (live PG
 
     const plan = await query.reservationPlan(projectId, activityId);
     expect(plan.candidates).toHaveLength(1);
-    expect(plan.candidates[0]!).toMatchObject({ requirementId: reqA.requirementId, qty: '60', baseUom: 'bag' });
+    // the candidate shows the ACC substitute lot's identity — NOT the requirement's UltraTech spec.
+    expect(plan.candidates[0]!).toMatchObject({ qty: '60', baseUom: 'bag', material: 'cement · acc · opc 53' });
+    expect(plan.candidates[0]!.material).not.toContain('ultratech');
   });
 
   it('PROBE 4b: the same fingerprint at the WRONG base UOM is NOT eligible (no candidate, full residual)', async () => {

@@ -356,4 +356,59 @@ describe('Task 7 (correction 2) — Materials single-command actions through the
     expect(s().toast).toBeNull();
     expect(s().materialsPending).toHaveLength(0);
   });
+
+  // ── DIRECTIVE #1 (re-review) — the idempotency key is a COMMAND ATTEMPT, not a RESOURCE. Two legitimate
+  //    identical actions separated by a CONFIRMED completion must use DIFFERENT ledger keys (correction 3).
+  //    Reproduces the reviewer's probe "two different quantities from the same activity/lot/location:
+  //    expected two commands, observed one" — RED at 7abfb565 (permanent key coalesced the second). ──
+  it('DIRECTIVE #1 / acceptance: two legitimate reserves separated by a confirmed completion use DIFFERENT keys', async () => {
+    const g = gw();
+    s()._setGateway(g as unknown as ApiGateway);
+    s().reserveCandidate('ACT-1', 'LOT-1', 'main', '10');
+    await settles(() => g.reserveStock.mock.calls.length === 1);
+    await flush();
+    expect(s().outbox).toHaveLength(0);           // the first resolved and left the outbox
+    expect(s().materialsPending).toHaveLength(0);  // coalesce cleared
+    // a SECOND legitimate reserve of the SAME (lot, store, activity) — now that the first has completed
+    s().reserveCandidate('ACT-1', 'LOT-1', 'main', '10');
+    await settles(() => g.reserveStock.mock.calls.length === 2);
+    const [, key1] = g.reserveStock.mock.calls[0]!;
+    const [, key2] = g.reserveStock.mock.calls[1]!;
+    expect(key2).not.toBe(key1); // DIFFERENT idempotency keys ⇒ two distinct ledger commands, not a replay
+  });
+
+  // ── DIRECTIVE #3 (re-review) — per-activity newest-wins for the reservation plan. Reproduces the
+  //    reviewer's probe "slow old plan after fast new plan: expected 20, stale 80 overwrote it". ──
+  it('DIRECTIVE #3: a newer reservation plan cannot be overwritten by an OLDER slow response', async () => {
+    let releaseOld: (v: unknown) => void = () => {};
+    const plan = (lotId: string, qty: string) => ({ activityId: 'ACT-1', candidates: [{ lotId, storeLocation: 'main', qty, baseUom: 'bag', material: 'cement' }], residuals: [] });
+    const g = gw({
+      materialReservationPlan: vi.fn()
+        .mockImplementationOnce(() => new Promise((res) => { releaseOld = res; })) // OLD: resolves only when released
+        .mockResolvedValueOnce(plan('NEW', '20')),                                  // NEW: resolves immediately
+    });
+    s()._setGateway(g as unknown as ApiGateway);
+    s().loadReservationPlan('ACT-1'); // OLD — pending
+    s().loadReservationPlan('ACT-1'); // NEW — resolves now
+    await settles(() => !!s().reservationPlans['ACT-1']);
+    expect(s().reservationPlans['ACT-1']!.candidates[0]!.qty).toBe('20'); // the NEW plan applied
+    releaseOld(plan('OLD', '80')); // the OLD request resolves LATE
+    await flush();
+    expect(s().reservationPlans['ACT-1']!.candidates[0]!.qty).toBe('20'); // the stale OLD did NOT overwrite it
+  });
+
+  // ── DIRECTIVE #4 (re-review) — a transient/uncertain failure RETAINS the op (and its pending coalesceKey)
+  //    but STILL refreshes material truth, with NO success toast. Reproduces the reviewer's probe "lost
+  //    response: outbox retained correctly, but zero material reconciliation occurred". ──
+  it('DIRECTIVE #4: a transient failure retains the op AND refreshes material truth, with no success toast', async () => {
+    const g = gw({ reserveStock: vi.fn().mockRejectedValue(new TypeError('network aborted')) }); // transient, no status
+    s()._setGateway(g as unknown as ApiGateway);
+    s().reserveCandidate('ACT-1', 'LOT-1', 'main', '10');
+    await settles(() => g.reserveStock.mock.calls.length === 1);
+    await flush();
+    expect(s().outbox).toHaveLength(1);            // retained for retry (lost/uncertain response)
+    expect(s().materialsPending).toHaveLength(1);  // still pending — the button stays disabled while it retries
+    expect(g.materialReadiness).toHaveBeenCalled(); // TRUTH refreshed despite the uncertain outcome (directive #4)
+    expect(s().toast ?? '').not.toMatch(/reserved/i); // NO success toast
+  });
 });
