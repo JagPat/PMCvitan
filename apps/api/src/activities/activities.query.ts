@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { ActivitiesModuleResult, MaterialReadinessResult, RequirementReadinessRow, ActivityReadinessRow, ActivityShortageRow, ShortageImpact } from '@vitan/shared';
+import type { ActivitiesModuleResult, MaterialReadinessResult, RequirementReadinessRow, ActivityReadinessRow, ActivityShortageRow, ShortageImpact, ReservationPlan } from '@vitan/shared';
 import { toIsoCivilDate } from '../common/civil-date';
 import { PrismaService } from '../prisma.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
@@ -293,6 +293,47 @@ export class ActivitiesQueryService {
           blocked: activities.filter((a) => a.verdict === 'blocked').length,
           total: activities.length,
         },
+      };
+    });
+  }
+
+  /**
+   * Phase 3 Task 7 (correction 2) — the CANONICAL reservation plan for covering ONE activity's material
+   * shortage (`GET …/activities/:activityId/reservation-plan`). Capability-gated (404 off-pilot). The
+   * SERVER resolves coverage compatibility (current requirements + active substitutions + base UOM +
+   * lot location + free qty) and returns EXACT single-command reservation candidates + the residual to
+   * requisition — so the browser never recreates compatibility from fingerprints. Read in ONE
+   * transaction from canonical facts (never a projection).
+   */
+  async reservationPlan(projectId: string, activityId: string): Promise<ReservationPlan> {
+    await this.capabilities.assertEnabled(projectId, MATERIALS_CAPABILITY);
+    if (!(await this.existsInProject(projectId, activityId))) {
+      throw new BadRequestException('activityId does not belong to this project');
+    }
+    return this.prisma.$transaction(async (tx) => {
+      const requirements = await loadCoverageRequirements(tx, projectId, this.substitutions, [activityId]);
+      if (requirements.length === 0) return { activityId, candidates: [], residuals: [] };
+      const { candidates, residuals } = await this.inventory.reservationCandidatesFor(tx, projectId, requirements);
+      const heads = await tx.activityRequirement.findMany({
+        where: { projectId, OR: requirements.map((r) => ({ requirementId: r.requirementId, revision: r.revision })) },
+        select: { requirementId: true, revision: true, materialSpec: { select: { materialCategory: true, make: true, grade: true } } },
+      });
+      const labelByPin = new Map(
+        heads.map((h) => [
+          `${h.requirementId}#${h.revision}`,
+          h.materialSpec ? [h.materialSpec.materialCategory, h.materialSpec.make, h.materialSpec.grade].filter(Boolean).join(' · ') : 'Material',
+        ]),
+      );
+      const label = (rid: string, rev: number): string => labelByPin.get(`${rid}#${rev}`) ?? 'Material';
+      return {
+        activityId,
+        candidates: candidates.map((c) => ({
+          requirementId: c.requirementId, revision: c.revision, lotId: c.lotId, storeLocation: c.storeLocation,
+          qty: c.qty, baseUom: c.baseUom, material: label(c.requirementId, c.revision),
+        })),
+        residuals: residuals.map((r) => ({
+          requirementId: r.requirementId, revision: r.revision, qty: r.qty, baseUom: r.baseUom, material: label(r.requirementId, r.revision),
+        })),
       };
     });
   }

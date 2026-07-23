@@ -54,6 +54,7 @@ import {
   type Lang,
   type ModalState,
   type Review,
+  type ReservationPlan,
   type Role,
   type ScreenKey,
   type Worker,
@@ -66,13 +67,7 @@ import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInp
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
-import { decIsPositive, decMin, decSum } from '@/lib/decimal';
-
-/** A lot's free-available quantity across its store locations, summed with EXACT decimal arithmetic
- *  (numeric(18,6)) — never lossy `Number` (correction finding 5). */
-function freeAvailableOf(lot: { locations: readonly { readonly freeAvailable: string }[] }): string {
-  return decSum(lot.locations.map((b) => b.freeAvailable));
-}
+import { reserveKey, issueKey, consumeKey, requisitionKey } from '@/lib/materialsKeys';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -215,6 +210,11 @@ export interface AppState {
   // fallback → no `source`). `null`/'idle' on a non-pilot project; the pilot's shell load triggers it.
   materialsView: MaterialsView | null;
   materialsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  // Phase 3 Task 7 (correction 2) — the SERVER-computed reservation plan per activity whose cover UI is
+  // open (keyed by activityId), and the in-flight materials command keys (coalesce + disable-while-
+  // pending). Both project-owned (torn down on scope change via emptyProjectData).
+  reservationPlans: Record<string, ReservationPlan>;
+  materialsPending: string[];
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
@@ -348,13 +348,23 @@ export interface AppActions {
    *  stock + issues) together, ONLY when the active project has the `materials` capability. Scope-guarded
    *  + honest load states; a non-pilot project is a no-op (the surfaces are absent from nav). */
   loadMaterials: () => void;
-  /** Phase 3 Task 7 correction — pilot MATERIALS operational commands (idempotency-keyed; no-op
-   *  off-pilot; reconcile via loadMaterials). Reserve free stock to an activity, issue it to site,
-   *  record consumption against an issue, and cover a shorted activity with one corrective command. */
-  reserveMaterial: (lotId: string, activityId: string, qty: string, storeLocation?: string) => void;
-  issueMaterial: (lotId: string, activityId: string, qty: string, storeLocation?: string) => void;
+  /** Phase 3 Task 7 (correction 2) — the pilot MATERIALS operational commands. NO browser-side
+   *  multi-command orchestration: the shortage is covered by EXPLICIT single commands the user drives —
+   *  reserve a SERVER-offered candidate, or raise ONE requisition for the server-computed residual. Each
+   *  command is WRITE-AHEAD to the durable outbox with a STABLE idempotency key before the network send
+   *  (a lost/uncertain response replays under the SAME key), coalesced while pending, scope-guarded, and
+   *  reconciled through loadMaterials after the flush. Every one is a no-op off-pilot (capability-gated). */
+  /** Fetch the SERVER's canonical reservation plan for one activity's shortage (candidates + residual). */
+  loadReservationPlan: (activityId: string) => void;
+  /** Reserve ONE server-offered candidate: exact (lotId, storeLocation, qty) to the activity. Keyed by
+   *  (lotId, storeLocation, activityId) so a double-click/lost-response replay reserves exactly once. */
+  reserveCandidate: (activityId: string, lotId: string, storeLocation: string, qty: string) => void;
+  /** Raise ONE requisition for the residual shortage the server computed (never a fan-out of commands). */
+  raiseRequisition: (activityId: string, title: string, lines: ReadonlyArray<{ requirementId: string; revision: number; qty: string }>) => void;
+  /** Issue reserved stock from a SPECIFIC store location to the activity (creates the §E MaterialIssue). */
+  issueMaterial: (lotId: string, storeLocation: string, activityId: string, qty: string) => void;
+  /** Record consumption against a §E MaterialIssue. */
   consumeMaterial: (issueId: string, qty: string) => void;
-  coverMaterialShortage: (activityId: string) => void;
   /** Atomically re-scope to another project. Empties project data BEFORE the auth
    *  request; adopts the SERVER-returned project on success. Resolves true only when
    *  the switch was authenticated. `targetScreen` survives the switch when the new
@@ -623,6 +633,8 @@ export function getInitialState(): AppState {
     capabilities: [],
     materialsView: null,
     materialsLoad: 'idle',
+    reservationPlans: {},
+    materialsPending: [],
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
@@ -1352,6 +1364,29 @@ export const useStore = create<Store>()(
         get().flash(label + ' — saved offline, will sync when you reconnect.');
       }
       return true;
+    };
+
+    // ── Phase 3 Task 7 (correction 2) — the pilot MATERIALS single-command dispatch. Every operational
+    //    materials command (reserve a candidate, raise the residual requisition, issue, consume) goes
+    //    through HERE: one WRITE-AHEAD op with a STABLE idempotency key, COALESCED against an identical
+    //    in-flight op, and tracked in `materialsPending` for disable-while-pending. NO browser-side
+    //    fan-out — the shortage is covered by explicit single user actions. ──
+    const MATERIALS_OP_TYPES = new Set<OutboxOp['t']>(['reserveStock', 'issueStock', 'consumeStock', 'createRequisition']);
+    const isMaterialsOp = (op: OutboxOp): boolean => MATERIALS_OP_TYPES.has(op.t);
+    /** Dispatch ONE pilot-materials command. No-op off-pilot. Coalesces a duplicate (same stable key
+     *  already queued OR pending) so a double-click runs exactly once; the write-ahead outbox then makes
+     *  a lost/uncertain response replay under the SAME key. The materials view is reconciled after the
+     *  flush by the reconcile hook in `flushOutbox`. */
+    const dispatchMaterials = (op: OutboxOp & { idempotencyKey: string }, label: string, okMsg: string): void => {
+      if (!gateway || !get().capabilities.includes('materials')) return;
+      const key = op.idempotencyKey;
+      // coalesce: an identical command already awaiting (in the durable outbox) or marked pending is a
+      // no-op. The ledger would dedupe a replay anyway, but coalescing keeps one queued op + one disabled
+      // button per action (probe 5: double-click ⇒ one command execution).
+      const queued = get().outbox.some((o) => 'idempotencyKey' in o && o.idempotencyKey === key);
+      if (queued || get().materialsPending.includes(key)) return;
+      set((s) => { s.materialsPending.push(key); });
+      runWriteAhead(op, label, okMsg);
     };
 
     /** Adopt a server auth result as the real session — the ONE adoption path for
@@ -2289,65 +2324,52 @@ export const useStore = create<Store>()(
         if (owns(s)) s.materialsLoad = 'error';
       }));
     },
-    // ── Phase 3 Task 7 correction (findings 1, 2-instr) — the pilot MATERIALS is OPERATIONAL, not
-    //    observational. These actions drive the existing Task 4/5/procurement commands (idempotency-keyed)
-    //    and reconcile by re-`loadMaterials()`. Each is a NO-OP off-pilot (capability-gated) so the surface
-    //    stays inert on a non-pilot project. ──
-    reserveMaterial: (lotId, activityId, qty, storeLocation) => {
+    // ── Phase 3 Task 7 (correction 2) — the pilot MATERIALS is OPERATIONAL with NO browser-side
+    //    multi-command orchestration. The SERVER computes the canonical reservation plan (candidates +
+    //    residual); the browser dispatches EXPLICIT single commands, each write-ahead + idempotency-keyed
+    //    + coalesced, reconciling `loadMaterials` after the flush. Every one is inert off-pilot. ──
+    loadReservationPlan: (activityId) => {
       if (!gateway || !get().capabilities.includes('materials')) return;
-      const key = newIdempotencyKey();
-      gateway.reserveStock({ lotId, activityId, qty, ...(storeLocation ? { storeLocation } : {}) }, key)
-        .then(() => { get().flash('Stock reserved to the activity.'); get().loadMaterials(); })
-        .catch(() => get().flash('Could not reserve — the stock may have moved. Refresh and retry.'));
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      gateway.materialReservationPlan(activityId).then((plan) => set((s) => {
+        // scope-guard: a plan that resolves after a project switch/re-auth is dropped, never stored in
+        // the new scope (which owns its own — empty — reservationPlans).
+        if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) {
+          s.reservationPlans[activityId] = castDraft(plan);
+        }
+      })).catch(() => { /* the cover UI falls back to "no candidates"; the user can retry */ });
     },
-    issueMaterial: (lotId, activityId, qty, storeLocation) => {
-      if (!gateway || !get().capabilities.includes('materials')) return;
-      const key = newIdempotencyKey();
-      gateway.issueStock({ lotId, activityId, qty, ...(storeLocation ? { storeLocation } : {}) }, key)
-        .then(() => { get().flash('Issued to site.'); get().loadMaterials(); })
-        .catch(() => get().flash('Could not issue — refresh and retry.'));
+    reserveCandidate: (activityId, lotId, storeLocation, qty) => {
+      // §directive — key reservations by (lotId, storeLocation, activityId); the qty is the value, not
+      // the key, so a double-click / lost-response replay of the SAME candidate reserves exactly once.
+      dispatchMaterials(
+        { t: 'reserveStock', input: { lotId, storeLocation, activityId, qty }, idempotencyKey: reserveKey(activityId, lotId, storeLocation) },
+        'Reserve stock to the activity',
+        'Stock reserved to the activity.',
+      );
+    },
+    raiseRequisition: (activityId, title, lines) => {
+      // one residual requisition per (activity, residual content): a double-click coalesces; a later,
+      // DIFFERENT residual is a distinct command (content-derived key). Never a fan-out of commands.
+      dispatchMaterials(
+        { t: 'createRequisition', input: { title, lines: lines.map((l) => ({ requirementId: l.requirementId, revision: l.revision, qty: l.qty })) }, idempotencyKey: requisitionKey(activityId, lines) },
+        'Raise a requisition for the shortfall',
+        'Requisition raised to procure the shortfall.',
+      );
+    },
+    issueMaterial: (lotId, storeLocation, activityId, qty) => {
+      dispatchMaterials(
+        { t: 'issueStock', input: { lotId, storeLocation, activityId, qty }, idempotencyKey: issueKey(activityId, lotId, storeLocation, qty) },
+        'Issue stock to site',
+        'Issued to site.',
+      );
     },
     consumeMaterial: (issueId, qty) => {
-      if (!gateway || !get().capabilities.includes('materials')) return;
-      const key = newIdempotencyKey();
-      gateway.consumeStock({ issueId, qty }, key)
-        .then(() => { get().flash('Consumption recorded.'); get().loadMaterials(); })
-        .catch(() => get().flash('Could not record consumption — refresh and retry.'));
-    },
-    /** Cover a shorted ACTIVITY: reserve matching free stock for each of its short requirements when
-     *  covering stock is on hand (the operational fix that flips the activity to ready); otherwise raise
-     *  a requisition for the shortfall (the procure-it corrective). One relevant corrective command. */
-    coverMaterialShortage: (activityId) => {
-      const mv = get().materialsView;
-      if (!gateway || !get().capabilities.includes('materials') || !mv) return;
-      const shortRows = mv.readiness.requirements.filter((r) => r.activityId === activityId && decIsPositive(r.shortfall));
-      if (!shortRows.length) return;
-      // pair each short requirement with a free lot of a matching fingerprint (via the requirements read)
-      const reservations: { lotId: string; qty: string; storeLocation?: string }[] = [];
-      const uncovered: { requirementId: string; revision: number; qty: string }[] = [];
-      for (const row of shortRows) {
-        const spec = mv.requirements.find((x) => x.requirementId === row.requirementId);
-        const fp = spec?.spec?.specFingerprint;
-        const lot = fp ? mv.stock.find((l) => l.specFingerprint === fp && decIsPositive(freeAvailableOf(l))) : undefined;
-        if (lot) {
-          reservations.push({ lotId: lot.id, qty: decMin(row.shortfall, freeAvailableOf(lot)) });
-        } else if (spec) {
-          uncovered.push({ requirementId: row.requirementId, revision: spec.revision, qty: row.shortfall });
-        }
-      }
-      const jobs: Promise<unknown>[] = [];
-      for (const r of reservations) jobs.push(gateway.reserveStock({ lotId: r.lotId, activityId, qty: r.qty }, newIdempotencyKey()));
-      if (uncovered.length) {
-        const activityName = mv.readiness.activities.find((a) => a.activityId === activityId)?.activityName ?? activityId;
-        jobs.push(gateway.createMaterialRequisition({ title: `Cover ${activityName}`, lines: uncovered }, newIdempotencyKey()));
-      }
-      if (!jobs.length) return;
-      Promise.all(jobs)
-        .then(() => {
-          get().flash(reservations.length && uncovered.length ? 'Reserved on-hand stock and raised a requisition for the rest.' : reservations.length ? 'Reserved on-hand stock to cover the activity.' : 'Requisition raised to procure the shortfall.');
-          get().loadMaterials();
-        })
-        .catch(() => get().flash('Could not fully cover the shortage — refresh and retry.'));
+      dispatchMaterials(
+        { t: 'consumeStock', input: { issueId, qty }, idempotencyKey: consumeKey(issueId, qty) },
+        'Record consumption',
+        'Consumption recorded.',
+      );
     },
     switchProject: (projectId, targetScreen) => {
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);
@@ -3065,6 +3087,12 @@ export const useStore = create<Store>()(
       const keyOf = (op: OutboxOp): string | undefined => ('idempotencyKey' in op ? op.idempotencyKey : undefined);
       const succeededKeys: string[] = [];
       const droppedKeys: string[] = [];
+      // Phase 3 Task 7 (correction 2) — the RESOLVED pilot-materials keys (succeeded OR terminally
+      // dropped) this flush processed. After the flush they are cleared from `materialsPending` (unblock
+      // the button) and, if any resolved, the materials view + open reservation plans are reconciled —
+      // reserve/issue/consume return the route's own JSON, not the snapshot, so the base reconcile below
+      // never carries the new stock truth.
+      const resolvedMaterialsKeys: string[] = [];
       let lastSnap: ApiSnapshot | null = null;
       let synced = 0;
       let dropped = 0;
@@ -3083,10 +3111,12 @@ export const useStore = create<Store>()(
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
+          if (isMaterialsOp(ops[i]) && k) resolvedMaterialsKeys.push(k);
         } catch (err) {
           if (isTerminalOutboxError(err)) {
             dropped += 1; // server will never accept this one — discard and keep going
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
+            if (isMaterialsOp(ops[i]) && k) resolvedMaterialsKeys.push(k);
             continue;
           }
           stoppedAt = i; // transient — retry this op and the rest on the next reconnect
@@ -3151,6 +3181,20 @@ export const useStore = create<Store>()(
       // evidence reconcile: uploaded bytes were cleaned up; terminal rejections moved
       // to FAILED; an op kept alive by a failed dead-letter write stays covered
       void reconcileEvidence();
+      // Phase 3 Task 7 (correction 2) — the MATERIALS reconcile hook. Every resolved (succeeded OR
+      // terminally-dropped) materials command clears its key from `materialsPending` (unblock the
+      // button); a still-pending op keeps its key (stays disabled). If ANY materials command resolved,
+      // re-derive the materials TRUTH — reserve/issue/consume return the route's own JSON, so the base
+      // snapshot above never carried the new stock — by reloading the bundle and every OPEN reservation
+      // plan, scope-guarded so a switch mid-flush touches nothing here (the new scope owns empty state).
+      if (resolvedMaterialsKeys.length > 0) {
+        const resolved = new Set(resolvedMaterialsKeys);
+        set((s) => { s.materialsPending = s.materialsPending.filter((k) => !resolved.has(k)); });
+        if (scopeStillCurrent(flushScope) && get().capabilities.includes('materials')) {
+          get().loadMaterials();
+          for (const activityId of Object.keys(get().reservationPlans)) get().loadReservationPlan(activityId);
+        }
+      }
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };
       } finally {
         outboxFlushing = false;

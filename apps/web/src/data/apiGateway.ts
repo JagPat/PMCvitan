@@ -40,6 +40,7 @@ import type {
   DrawingsModuleResult,
   InspectionsModuleResult,
   MaterialReadinessResult,
+  ReservationPlan,
   RequirementListItem,
   RequisitionDto,
   PurchaseOrderDto,
@@ -819,29 +820,36 @@ export class ApiGateway {
   materialIssues(): Promise<{ issues: MaterialIssueDto[] }> {
     return this.req<{ issues: MaterialIssueDto[] }>(`/projects/${this.projectId}/stock/issues`);
   }
+  /** Phase 3 Task 7 (correction 2) — the CANONICAL reservation plan for covering ONE activity's shortage.
+   *  The SERVER resolves coverage compatibility (requirements + active substitutions + base UOM + lot
+   *  location + free qty) and returns exact single-command reserve candidates + the residual to
+   *  requisition; the browser never recreates compatibility from fingerprints. 404 off-pilot. */
+  materialReservationPlan(activityId: string): Promise<ReservationPlan> {
+    return this.req<ReservationPlan>(`/projects/${this.projectId}/activities/${activityId}/reservation-plan`);
+  }
 
-  // ── Phase 3 Task 7 correction — the pilot MATERIALS operational COMMANDS (existing Task 4/5/procurement
-  //    endpoints, idempotency-keyed). The Materials hub is OPERATIONAL, not observational: reserving,
-  //    issuing and consuming stock, and raising a requisition to cover a shortage, are real site actions.
-  //    They return the route's own JSON (Phase-3 reads are module-query-only, never an ApiSnapshot), so the
-  //    store reconciles by re-`loadMaterials()`. ──
+  // ── Phase 3 Task 7 (correction 2) — the pilot MATERIALS operational COMMANDS. Each is ONE server
+  //    command (no browser-side fan-out): reserve a SPECIFIC (lot, storeLocation, qty) candidate, issue a
+  //    reservation to site, consume against an issue, or raise ONE requisition. They are routed through the
+  //    durable write-ahead outbox with stable keys (see OutboxOp), so a lost/uncertain response replays the
+  //    SAME command exactly once. They return the route's own JSON (Phase-3 reads are module-query-only),
+  //    so the store reconciles the materials view separately after the flush. ──
 
-  /** Reserve free on-hand stock of a lot to a NAMED activity (§C `stock.reserve`) — makes it exclusively the
-   *  activity's, which is what flips its material readiness to ready. */
-  reserveStock(input: { lotId: string; activityId: string; qty: string; storeLocation?: string }, idempotencyKey?: string): Promise<unknown> {
+  /** Reserve a SPECIFIC quantity of free stock at (lot, store location) to a NAMED activity (§C
+   *  `stock.reserve`) — the exact candidate the server offered. */
+  reserveStock(input: ReserveStockInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/stock/reserve', input, idempotencyKey);
   }
-  /** Issue stock out of the store to an activity — creates the §E MaterialIssue (`stock.issue`). */
-  issueStock(input: { lotId: string; activityId: string; qty: string; storeLocation?: string; note?: string }, idempotencyKey?: string): Promise<unknown> {
+  /** Issue reserved stock from (lot, store location) to an activity — creates the §E MaterialIssue. */
+  issueStock(input: IssueStockInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/stock/issue', input, idempotencyKey);
   }
   /** Record consumption against a MaterialIssue (§E `stock.consume`). */
-  consumeStock(input: { issueId: string; qty: string; note?: string }, idempotencyKey?: string): Promise<unknown> {
+  consumeStock(input: ConsumeStockInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/stock/consume', input, idempotencyKey);
   }
-  /** Raise a procurement requisition for shorted requirement(s) (`requisitions.create`) — the shortage
-   *  corrective command when there is no covering free stock to reserve. */
-  createMaterialRequisition(input: { title: string; notes?: string; lines: { requirementId: string; revision: number; qty: string }[] }, idempotencyKey?: string): Promise<unknown> {
+  /** Raise ONE procurement requisition for the residual shortage (`requisitions.create`). */
+  createMaterialRequisition(input: CreateMaterialRequisitionInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/requisitions', input, idempotencyKey);
   }
 
@@ -1015,6 +1023,44 @@ export interface AddSiteMaterialInput {
   nodeId?: string;
 }
 
+// ── Phase 3 Task 7 (correction 2) — the pilot MATERIALS operational command bodies. Each is ONE server
+//    command with an EXPLICIT `storeLocation` (never the server default): a candidate the SERVER offered
+//    (reserve/issue) or the residual the SERVER computed (requisition). The gateway + the write-ahead
+//    outbox op share the interface, so the online send and any lost-response replay carry the same body. ──
+
+/** `stock.reserve` — reserve an EXACT (lotId, storeLocation, qty) the server offered, to a NAMED activity.
+ *  `storeLocation` is REQUIRED here (the browser sends the candidate's exact store, never the 'main'
+ *  default) so a reservation is keyed by (lotId, storeLocation, activityId). */
+export interface ReserveStockInput {
+  lotId: string;
+  storeLocation: string;
+  activityId: string;
+  qty: string;
+}
+/** `stock.issue` — issue reserved stock from (lotId, storeLocation) to an activity (creates the §E issue).
+ *  `storeLocation` is REQUIRED so an issue draws from the SAME store the reservation was made in. */
+export interface IssueStockInput {
+  lotId: string;
+  storeLocation: string;
+  activityId: string;
+  qty: string;
+  note?: string;
+}
+/** `stock.consume` — record consumption against a §E MaterialIssue. */
+export interface ConsumeStockInput {
+  issueId: string;
+  qty: string;
+  note?: string;
+}
+/** `requisitions.create` — raise ONE requisition for the residual shortage (server-computed residuals).
+ *  `lines` is a MUTABLE array: the op is stored in the durable (immer) outbox draft, which cannot hold a
+ *  `readonly` member. `raiseRequisition` maps its readonly residuals into a fresh array before dispatch. */
+export interface CreateMaterialRequisitionInput {
+  title: string;
+  notes?: string;
+  lines: { requirementId: string; revision: number; qty: string }[];
+}
+
 export type OutboxOp =
   // the decision-pillar ops carry a stable idempotencyKey (Phase 2 Task 5): a queued op replayed
   // on reconnect reaches the server under the SAME key it was first sent with, so a lost-response
@@ -1047,6 +1093,16 @@ export type OutboxOp =
   | { t: 'addSiteMaterial'; input: AddSiteMaterialInput; idempotencyKey: string }
   | { t: 'flagMismatch'; decisionId: string; idempotencyKey: string }
   | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'>; idempotencyKey: string }
+  // Phase 3 Task 7 (correction 2) — the pilot MATERIALS operational commands are WRITE-AHEAD to the
+  // durable outbox before the first network request (online OR offline). Each carries a stable
+  // idempotencyKey (reserve is keyed by (lotId, storeLocation, activityId); the others by their target),
+  // so a lost/uncertain response replays the SAME command under the SAME key and the ledger applies it
+  // exactly once. They return the route's own JSON (Phase-3 reads are module-query-only), so the flush
+  // reconciles the materials view separately (see the store's materials reconcile hook).
+  | { t: 'reserveStock'; input: ReserveStockInput; idempotencyKey: string }
+  | { t: 'issueStock'; input: IssueStockInput; idempotencyKey: string }
+  | { t: 'consumeStock'; input: ConsumeStockInput; idempotencyKey: string }
+  | { t: 'createRequisition'; input: CreateMaterialRequisitionInput; idempotencyKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
@@ -1105,6 +1161,18 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.flagMismatch(op.decisionId, op.idempotencyKey);
     case 'submitDailyLog':
       return gw.submitDailyLog(op.log, op.idempotencyKey);
+    // Phase 3 Task 7 (correction 2) — the pilot materials commands return the route's own JSON (not a
+    // snapshot; Phase-3 reads are module-query-only), so refetch the base snapshot to reconcile the
+    // non-materials view. The store's materials reconcile hook reloads the materials view + open
+    // reservation plans separately after the flush (same key ⇒ the ledger applied the effect once).
+    case 'reserveStock':
+      return gw.reserveStock(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'issueStock':
+      return gw.issueStock(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'consumeStock':
+      return gw.consumeStock(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'createRequisition':
+      return gw.createMaterialRequisition(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'uploadMedia':
       // uploadMedia returns {id,url}, not a snapshot — refetch so the flush
       // reconciles dailyLog.photos (the real, server-stored photo replaces the

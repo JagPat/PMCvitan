@@ -32,6 +32,15 @@ export class ActivitiesController {
     return this.activitiesQuery.materialReadiness(projectId);
   }
 
+  /** Phase 3 Task 7 (correction 2) — the CANONICAL reservation plan for covering one activity's
+   *  shortage: server-resolved single-command reserve candidates + the residual to requisition.
+   *  Capability-gated in the query (404 on non-pilot); pmc/engineer material-planning read. */
+  @Get(':activityId/reservation-plan')
+  @RolesFor('requirement.read')
+  reservationPlan(@Param('projectId') projectId: string, @Param('activityId') activityId: string) {
+    return this.activitiesQuery.reservationPlan(projectId, activityId);
+  }
+
   /** Plan a new activity — the PMC authors the schedule. */
   @Post()
   @RolesFor('activity.manage')

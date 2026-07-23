@@ -6,16 +6,19 @@ import { RefreshCw, WifiOff } from '@/lib/icons';
 import type { MaterialCoverageVerdict, StockLotDto } from '@vitan/shared';
 import { decAdd, decSum, decIsPositive } from '@/lib/decimal';
 import { foldActivityReservations } from '@/lib/reservations';
+import { reserveKey, issueKey, consumeKey, requisitionKey } from '@/lib/materialsKeys';
 import styles from './responsive.module.css';
 
 /**
  * Phase 3 Task 7 — the pilot MATERIALS hub (capability-gated; the nav only surfaces it on a pilot
  * project). ONE screen with tabbed panels for the whole pipeline — requirements → procurement →
  * deliveries → inventory → reservations → issues → readiness. It is OPERATIONAL, not observational
- * (correction findings 1/2): a shorted activity can be covered (reserve on-hand stock, or raise a
- * requisition), a reservation issued to site, and an issue consumed — all through existing commands.
- * Readiness + shortage TOTALS are counted per ACTIVITY (finding 3), and the Reservations pool is folded
- * from the §C ledger's `fromBucket`/`toBucket` with EXACT decimal arithmetic, reversals included (finding 5).
+ * (correction findings 1/2): a shorted activity is covered by EXPLICIT single user actions — reserve a
+ * SERVER-offered candidate (exact lot + store location + qty), or raise ONE requisition for the residual
+ * the server computed — with NO browser-side multi-command orchestration (correction 2). A reservation is
+ * issued to a specific store location, and an issue consumed. Every command is write-ahead + idempotency-
+ * keyed + disabled while pending. Readiness + shortage TOTALS are counted per ACTIVITY (finding 3), and
+ * the Reservations pool is folded from the §C ledger with EXACT decimals, reversals included (finding 5).
  */
 
 type Tab = 'readiness' | 'requirements' | 'procurement' | 'deliveries' | 'inventory' | 'reservations' | 'issues';
@@ -49,31 +52,36 @@ const freeOf = (lot: StockLotDto): string => decSum(lot.locations.map((b) => b.f
 export function MaterialsScreen() {
   const materials = useStore(useShallow((s) => s.materialsView));
   const materialsLoad = useStore((s) => s.materialsLoad);
+  const reservationPlans = useStore(useShallow((s) => s.reservationPlans));
+  const materialsPending = useStore(useShallow((s) => s.materialsPending));
   const loadMaterials = useStore((s) => s.loadMaterials);
+  const loadReservationPlan = useStore((s) => s.loadReservationPlan);
+  const reserveCandidate = useStore((s) => s.reserveCandidate);
+  const raiseRequisition = useStore((s) => s.raiseRequisition);
   const setScreen = useStore((s) => s.setScreen);
   const issueMaterial = useStore((s) => s.issueMaterial);
   const consumeMaterial = useStore((s) => s.consumeMaterial);
-  const coverMaterialShortage = useStore((s) => s.coverMaterialShortage);
   const [tab, setTab] = useState<Tab>('readiness');
+  // which activity's cover panel is expanded — opening it fetches the SERVER's reservation plan.
+  const [openCover, setOpenCover] = useState<string | null>(null);
 
   const reading = (materialsLoad === 'idle' || materialsLoad === 'loading') && !materials;
   const unavailable = materialsLoad === 'error' && !materials;
   const stale = materialsLoad === 'error' && !!materials;
+  const pending = (key: string): boolean => materialsPending.includes(key);
 
-  // Reservations: each activity's ACTIVE reserved pool, folded from the §C ledger's bucket movements
-  // (reversals + issues included) with exact decimal arithmetic (finding 5).
+  // Reservations: each activity's ACTIVE reserved pool per store location, folded from the §C ledger's
+  // bucket movements (reversals + issues included) with exact decimal arithmetic (finding 5).
   const reservations = useMemo(() => foldActivityReservations(materials?.stock ?? []), [materials]);
 
-  // A shorted activity is coverable by RESERVING on-hand stock when a free lot of a matching fingerprint
-  // exists; otherwise the corrective is to RAISE A REQUISITION (procure it).
-  const coverMode = (activityId: string): 'reserve' | 'requisition' => {
-    if (!materials) return 'requisition';
-    const shortRows = materials.readiness.requirements.filter((r) => r.activityId === activityId && decIsPositive(r.shortfall));
-    for (const row of shortRows) {
-      const fp = materials.requirements.find((x) => x.requirementId === row.requirementId)?.spec?.specFingerprint;
-      if (fp && materials.stock.some((l) => l.specFingerprint === fp && decIsPositive(freeOf(l)))) return 'reserve';
-    }
-    return 'requisition';
+  // Open/close a shorted activity's cover panel; opening it (re)loads the SERVER-computed plan so the
+  // browser never recreates coverage compatibility from fingerprints (correction 2).
+  const toggleCover = (activityId: string): void => {
+    setOpenCover((cur) => {
+      if (cur === activityId) return null;
+      loadReservationPlan(activityId);
+      return activityId;
+    });
   };
 
   return (
@@ -154,9 +162,19 @@ export function MaterialsScreen() {
                       ))}
                       {a.verdict !== 'ready' && (
                         <div style={{ marginTop: 9 }}>
-                          <Button variant="outline" data-testid={`materials-cover-${a.activityId}`} onClick={() => coverMaterialShortage(a.activityId)} style={{ fontSize: 12 }}>
-                            {coverMode(a.activityId) === 'reserve' ? 'Reserve available stock' : 'Raise requisition'}
+                          <Button variant="outline" data-testid={`materials-cover-${a.activityId}`} onClick={() => toggleCover(a.activityId)} style={{ fontSize: 12 }}>
+                            {openCover === a.activityId ? 'Close' : 'Cover shortage'}
                           </Button>
+                          {openCover === a.activityId && (
+                            <CoverPanel
+                              activityId={a.activityId}
+                              activityName={a.activityName}
+                              plan={reservationPlans[a.activityId]}
+                              pending={pending}
+                              onReserve={reserveCandidate}
+                              onRequisition={raiseRequisition}
+                            />
+                          )}
                         </div>
                       )}
                     </div>
@@ -244,17 +262,20 @@ export function MaterialsScreen() {
 
             {tab === 'reservations' && (
               <Panel empty={!reservations.length} emptyKey="reservations" emptyText="No stock reserved to an activity yet.">
-                {reservations.map((r) => (
-                  <div key={`${r.lotId}-${r.activityId}`} data-testid={`materials-reservation-${r.lotId}-${r.activityId}`} style={rowCard}>
-                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.material}</div>
-                    <div style={{ ...muted, marginTop: 4 }}>{r.qty} {r.baseUom} reserved to activity {r.activityId}</div>
-                    <div style={{ marginTop: 9 }}>
-                      <Button variant="outline" data-testid={`materials-do-issue-${r.lotId}-${r.activityId}`} onClick={() => issueMaterial(r.lotId, r.activityId, r.qty)} style={{ fontSize: 12 }}>
-                        Issue to site
-                      </Button>
+                {reservations.map((r) => {
+                  const iKey = issueKey(r.activityId, r.lotId, r.storeLocation, r.qty);
+                  return (
+                    <div key={`${r.lotId}-${r.storeLocation}-${r.activityId}`} data-testid={`materials-reservation-${r.lotId}-${r.activityId}`} style={rowCard}>
+                      <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.material}</div>
+                      <div style={{ ...muted, marginTop: 4 }}>{r.qty} {r.baseUom} reserved to activity {r.activityId} · at {r.storeLocation}</div>
+                      <div style={{ marginTop: 9 }}>
+                        <Button variant="outline" disabled={pending(iKey)} data-testid={`materials-do-issue-${r.lotId}-${r.activityId}`} onClick={() => issueMaterial(r.lotId, r.storeLocation, r.activityId, r.qty)} style={{ fontSize: 12 }}>
+                          {pending(iKey) ? 'Issuing…' : 'Issue to site'}
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </Panel>
             )}
 
@@ -267,13 +288,16 @@ export function MaterialsScreen() {
                       <span style={mono}>{i.storeLocation}</span>
                     </div>
                     <div style={{ ...muted, marginTop: 4 }}>issued to activity {i.activityId} · remaining custody {i.remainingCustody} {i.baseUom}</div>
-                    {decIsPositive(i.remainingCustody) && (
-                      <div style={{ marginTop: 9 }}>
-                        <Button variant="outline" data-testid={`materials-do-consume-${i.id}`} onClick={() => consumeMaterial(i.id, i.remainingCustody)} style={{ fontSize: 12 }}>
-                          Record consumption
-                        </Button>
-                      </div>
-                    )}
+                    {decIsPositive(i.remainingCustody) && (() => {
+                      const cKey = consumeKey(i.id, i.remainingCustody);
+                      return (
+                        <div style={{ marginTop: 9 }}>
+                          <Button variant="outline" disabled={pending(cKey)} data-testid={`materials-do-consume-${i.id}`} onClick={() => consumeMaterial(i.id, i.remainingCustody)} style={{ fontSize: 12 }}>
+                            {pending(cKey) ? 'Recording…' : 'Record consumption'}
+                          </Button>
+                        </div>
+                      );
+                    })()}
                   </div>
                 ))}
               </Panel>
@@ -299,6 +323,65 @@ function Panel(props: { empty: boolean; emptyKey: string; emptyText: string; chi
     return <div data-testid={`materials-empty-${props.emptyKey}`} style={{ marginTop: 24, textAlign: 'center', color: 'var(--muted)', fontSize: 13.5 }}>{props.emptyText}</div>;
   }
   return <>{props.children}</>;
+}
+
+/**
+ * Phase 3 Task 7 (correction 2) — the cover-shortage panel for one activity. It renders the SERVER's
+ * canonical reservation plan (never recomputed in the browser): each `candidate` is ONE reserve command
+ * (exact lot + store location + a conserved qty ≤ free, never over-allocating shared stock), and the
+ * `residuals` are the shortfall no on-hand stock covers, raised as ONE requisition. Buttons disable while
+ * their command is pending (double-click coalesces at the same idempotency key).
+ */
+function CoverPanel(props: {
+  activityId: string;
+  activityName: string;
+  plan: import('@vitan/shared').ReservationPlan | undefined;
+  pending: (key: string) => boolean;
+  onReserve: (activityId: string, lotId: string, storeLocation: string, qty: string) => void;
+  onRequisition: (activityId: string, title: string, lines: ReadonlyArray<{ requirementId: string; revision: number; qty: string }>) => void;
+}) {
+  const { activityId, activityName, plan, pending, onReserve, onRequisition } = props;
+  const box: CSSProperties = { marginTop: 10, border: '1px dashed var(--hairline)', borderRadius: 9, padding: '10px 12px', background: 'var(--canvas)' };
+  if (!plan) {
+    return <div data-testid={`materials-cover-loading-${activityId}`} style={{ ...box, ...muted }}>Loading cover options…</div>;
+  }
+  const residualLines = plan.residuals.map((r) => ({ requirementId: r.requirementId, revision: r.revision, qty: r.qty }));
+  const residualTotal = plan.residuals.length ? decSum(plan.residuals.map((r) => r.qty)) : '0';
+  const reqKey = requisitionKey(activityId, residualLines);
+  if (!plan.candidates.length && !residualLines.length) {
+    return <div data-testid={`materials-cover-none-${activityId}`} style={{ ...box, ...muted }}>Nothing to cover — this activity is already served.</div>;
+  }
+  return (
+    <div data-testid={`materials-cover-panel-${activityId}`} style={box}>
+      {plan.candidates.length > 0 && (
+        <div>
+          <div style={{ ...mono, marginBottom: 6 }}>RESERVE ON-HAND STOCK</div>
+          {plan.candidates.map((c) => {
+            const rKey = reserveKey(activityId, c.lotId, c.storeLocation);
+            return (
+              <div key={`${c.lotId}-${c.storeLocation}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 6 }}>
+                <div style={{ fontSize: 12.5 }}>{c.material} · {c.qty} {c.baseUom} @ {c.storeLocation}</div>
+                <Button variant="outline" disabled={pending(rKey)} data-testid={`materials-reserve-${c.lotId}-${c.storeLocation}-${activityId}`} onClick={() => onReserve(activityId, c.lotId, c.storeLocation, c.qty)} style={{ fontSize: 11.5, flex: 'none' }}>
+                  {pending(rKey) ? 'Reserving…' : `Reserve ${c.qty}`}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {residualLines.length > 0 && (
+        <div style={{ marginTop: plan.candidates.length ? 10 : 0 }}>
+          <div style={{ ...mono, marginBottom: 6 }}>PROCURE THE RESIDUAL</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ fontSize: 12.5 }}>{plan.residuals.length} line{plan.residuals.length === 1 ? '' : 's'} · {residualTotal} short</div>
+            <Button variant="outline" disabled={pending(reqKey)} data-testid={`materials-requisition-${activityId}`} onClick={() => onRequisition(activityId, `Cover ${activityName}`, residualLines)} style={{ fontSize: 11.5, flex: 'none' }}>
+              {pending(reqKey) ? 'Raising…' : 'Raise requisition'}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function SummaryTile(props: { label: string; value: number; tone: 'green' | 'amber' | 'red' | 'ink' }) {

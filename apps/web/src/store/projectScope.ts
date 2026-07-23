@@ -13,6 +13,7 @@ import type {
   ProjectMember,
   ProjectNode,
   Review,
+  ReservationPlan,
 } from '@vitan/shared';
 import type { MaterialsView } from './materials';
 
@@ -56,6 +57,12 @@ export interface ProjectDataState {
   // switched project shows NO Materials nav until its shell reloads the capability (never stale).
   capabilities: string[];
   materialsView: MaterialsView | null;
+  // Phase 3 Task 7 (correction 2) — the SERVER-computed reservation plan per activity whose cover UI is
+  // open (canonical reserve candidates + the residual to requisition), and the in-flight materials
+  // command keys (for coalescing + disable-while-pending). BOTH are project-owned: a scope change tears
+  // them down so a stale plan/pending key never leaks into another project's Materials hub.
+  reservationPlans: Record<string, ReservationPlan>;
+  materialsPending: string[];
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */
@@ -79,6 +86,8 @@ export function emptyProjectData(): ProjectDataState {
     companies: [],
     capabilities: [],
     materialsView: null,
+    reservationPlans: {},
+    materialsPending: [],
   };
 }
 

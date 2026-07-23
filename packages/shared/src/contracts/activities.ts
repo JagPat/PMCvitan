@@ -158,6 +158,45 @@ export interface MaterialReadinessResult {
   readonly summary: { readonly ready: number; readonly atRisk: number; readonly blocked: number; readonly total: number };
 }
 
+/**
+ * Phase 3 Task 7 (correction 2) — the CANONICAL reservation plan for covering ONE activity's shortage,
+ * computed on the SERVER. The browser MUST NOT recreate coverage compatibility from fingerprints; the
+ * server resolves it from the current requirements, ACTIVE substitutions, base-UOM compatibility, lot
+ * location and free quantity, and returns:
+ *   • `candidates` — each an EXACT single reserve command the user can dispatch (a specific lot +
+ *     store location + a conserved offerable quantity ≤ the free pool, never over-allocating shared
+ *     stock across the activity's requirements); and
+ *   • `residuals` — the per-requirement quantity that no on-hand stock can cover, to raise as ONE
+ *     requisition.
+ * Capability-gated (404 off-pilot) exactly like `material-readiness`.
+ */
+export interface ReservationCandidate {
+  readonly requirementId: string;
+  readonly revision: number;
+  readonly lotId: string;
+  readonly storeLocation: string;
+  /** the conserved offerable quantity for THIS candidate (base UOM) — reserve this exact amount */
+  readonly qty: string;
+  readonly baseUom: string;
+  /** the §B technical identity label (category · make · grade) of the lot */
+  readonly material: string;
+}
+export interface RequisitionResidual {
+  readonly requirementId: string;
+  readonly revision: number;
+  /** the shortfall no on-hand stock covers — the quantity to requisition (base UOM) */
+  readonly qty: string;
+  readonly baseUom: string;
+  readonly material: string;
+}
+export interface ReservationPlan {
+  readonly activityId: string;
+  /** the reservable candidates (0 when no compatible free stock is on hand) */
+  readonly candidates: readonly ReservationCandidate[];
+  /** the per-requirement residual to requisition (0 when on-hand stock covers the whole shortage) */
+  readonly residuals: readonly RequisitionResidual[];
+}
+
 /** `activities.existsInProject` — validate an activity reference belongs to a project. NOTE the modules
  *  that STORE an `activityId` (inspections, drawings) sit UPSTREAM of activities in the dependsOn graph
  *  (activities depends on them), so they cannot take this query without a cycle — their references are

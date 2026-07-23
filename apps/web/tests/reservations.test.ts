@@ -70,4 +70,18 @@ describe('foldActivityReservations (finding 5)', () => {
     expect(r.find((x) => x.activityId === 'ACT-1')!.qty).toBe('30');
     expect(r.find((x) => x.activityId === 'ACT-2')!.qty).toBe('20');
   });
+
+  // ── correction 2 — the fold keys by (activity, STORE LOCATION), so an issue can draw from the exact
+  //    store the stock was reserved in. Two reservations of ONE activity at DIFFERENT locations stay
+  //    distinct and each carries its `storeLocation`. ──
+  it('reservations of ONE activity at DIFFERENT store locations are kept separate, each with its location', () => {
+    const lots = [lot([
+      tx({ type: 'reservation', activityId: 'ACT-1', storeLocation: 'main', qty: '30', fromBucket: 'acceptedOnHand', toBucket: 'reserved' }),
+      tx({ type: 'reservation', activityId: 'ACT-1', storeLocation: 'yard-store', qty: '20', fromBucket: 'acceptedOnHand', toBucket: 'reserved' }),
+    ])];
+    const r = foldActivityReservations(lots);
+    expect(r).toHaveLength(2);
+    expect(r.find((x) => x.storeLocation === 'main')!).toMatchObject({ activityId: 'ACT-1', qty: '30' });
+    expect(r.find((x) => x.storeLocation === 'yard-store')!).toMatchObject({ activityId: 'ACT-1', qty: '20' });
+  });
 });
