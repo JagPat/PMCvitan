@@ -67,7 +67,7 @@ import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInp
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
-import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey } from '@/lib/materialsKeys';
+import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -1376,8 +1376,7 @@ export const useStore = create<Store>()(
     //    through HERE: one WRITE-AHEAD op with a STABLE idempotency key, COALESCED against an identical
     //    in-flight op, and tracked in `materialsPending` for disable-while-pending. NO browser-side
     //    fan-out — the shortage is covered by explicit single user actions. ──
-    const MATERIALS_OP_TYPES = new Set<OutboxOp['t']>(['reserveStock', 'issueStock', 'consumeStock', 'createRequisition']);
-    const isMaterialsOp = (op: OutboxOp): boolean => MATERIALS_OP_TYPES.has(op.t);
+    const isMaterialsOp = (op: OutboxOp): boolean => isMaterialsOpType(op.t);
     const coalesceKeyOf = (op: OutboxOp): string | undefined => ('coalesceKey' in op ? op.coalesceKey : undefined);
     /** Dispatch ONE pilot-materials command. No-op off-pilot. Correction 3 (finding 1): coalescing is by
      *  the deterministic COALESCE key (double-click / reload while pending), NEVER the idempotency key —
@@ -3236,17 +3235,29 @@ export const useStore = create<Store>()(
           // called again on every sign-in / project switch, so ops queued under a
           // different user or project never leak into the current context.
           const raw = storage.getItem(outboxKey());
-          const ops = raw ? (JSON.parse(raw) as OutboxOp[]) : [];
+          const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+          // Phase 3 Task 7 (correction 4) — a materials op persisted by PR #207 carries only
+          // `idempotencyKey` (no `coalesceKey`); PR #208 keys coalescing on `coalesceKey`, so without this
+          // a legacy queued op would not coalesce and could execute a SECOND time (double reserve). Derive
+          // `coalesceKey` from the legacy `idempotencyKey` (same business-coordinate format), preserve the
+          // `idempotencyKey` byte-for-byte (replay stays exactly-once), and drop malformed materials ops.
+          const { ops, changed } = normalizeMaterialsOutbox(Array.isArray(parsed) ? (parsed as OutboxOp[]) : []);
+          // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable
+          if (changed) storage.setItem(outboxKey(), JSON.stringify(ops));
           set((s) => {
-            s.outbox = Array.isArray(ops) ? ops : [];
+            s.outbox = ops;
             // gate round 8: rebuild an offline submit's freeze from the durable
             // outbox, so a reload keeps the checklist frozen until the queued
             // submit replays (also covered from the snapshot side by applySnapshot).
             reconcileSubmission(s);
-            // Phase 3 Task 7 (correction 3, finding 1) — reconstruct the pending materials COALESCE keys
-            // from the persisted ops, so a reload keeps an equivalent still-queued action coalesced (and
-            // its button disabled) until it replays. The op's own idempotency key is untouched.
-            s.materialsPending = s.outbox.flatMap((o) => (isMaterialsOp(o) ? [coalesceKeyOf(o)!] : []));
+            // Phase 3 Task 7 (correction 3 finding 1 / correction 4) — reconstruct the pending materials
+            // COALESCE keys from the (normalized) persisted ops, so a reload keeps an equivalent still-queued
+            // action coalesced (and its button disabled) until it replays. Never admit a `undefined` pending
+            // entry: only a materials op that actually carries a string coalesce key contributes.
+            s.materialsPending = s.outbox.flatMap((o) => {
+              const ck = coalesceKeyOf(o);
+              return isMaterialsOp(o) && typeof ck === 'string' ? [ck] : [];
+            });
           });
         }
       } catch {
