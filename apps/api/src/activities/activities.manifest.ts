@@ -22,8 +22,8 @@ export const activitiesManifest: ModuleManifest = {
   // Task 10 (Module 4) — a fully-extracted module: it read-encapsulates every model it owns (incl. its
   // rebuildable projection), so no other module reads activity persistence directly — every cross-module
   // read routes through the ActivitiesQueryService contract (the boundary check enforces it).
-  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution'],
-  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution'],
+  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection'],
+  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection'],
   // Task 8/10 — reads decisions + the drawing gate + the inspection-gate readiness/next-id via their query
   // contracts (the readiness BAKE consumes all three at read time). The reverse inspections→activities
   // edge is a workflow participant (cycle-exempt), so this dependsOn graph stays acyclic — which is also

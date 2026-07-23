@@ -404,6 +404,21 @@ model ActivitiesProjection {
   @@unique([generationId, projectId])
 }
 
+// Phase 3 Task 6 — the SIXTH rebuildable projection: per-project UI material-readiness (§A/§G).
+// Recompute-only: a consumer re-derives the material verdict for every activity with a material
+// requirement from CANONICAL facts (coverageFor + the §A truth) on each relevant event. It feeds
+// UI/Inbox/Dashboard/forecast ONLY — command authority (activities.start) reads canonical coverage
+// in-tx, never this projection. Storing a derived verdict produces NO domain event (§G).
+model MaterialReadinessProjection {
+  id           String   @id @default(uuid())
+  generationId String
+  projectId    String
+  dto          Json // { readings: { [activityId]: { v, reason, coveredQty, requiredQty } } }, activityId-sorted
+  updatedAt    DateTime @updatedAt
+
+  @@unique([generationId, projectId])
+}
+
 // Phase 2 Task 10 (Module 3) correction — the INSPECTION-OWNED evidence link. Item-level photo evidence
 // was formerly read off the Media table by the inspections serializer (a cross-module read the projection
 // could not observe when a photo was uploaded/removed). Each row is an inspection-owned link from an

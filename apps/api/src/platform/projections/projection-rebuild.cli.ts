@@ -7,6 +7,11 @@ import { makeDrawingsProjectionConsumer, DRAWINGS_PROJECTION } from '../../drawi
 import { makeDailyLogProjectionConsumer, DAILY_LOG_PROJECTION } from '../../daily-log/daily-log.projection';
 import { makeInspectionsProjectionConsumer, INSPECTIONS_PROJECTION } from '../../inspections/inspections.projection';
 import { makeActivitiesProjectionConsumer, ACTIVITIES_PROJECTION } from '../../activities/activities.projection';
+import { makeMaterialReadinessProjectionConsumer, bindMaterialReadinessDeps, MATERIAL_READINESS_PROJECTION } from '../../activities/material-readiness.projection';
+import { InventoryService } from '../../inventory/inventory.service';
+import { SubstitutionsService } from '../../activities/substitutions.service';
+import { ProcurementParticipant } from '../../procurement/procurement.participant';
+import { RequirementsQueryService } from '../../activities/requirements.query';
 
 /**
  * Module-4 correction + Task 10 finalization + final-review P1 correction — the operator
@@ -61,7 +66,15 @@ async function main(): Promise<void> {
       [DRAWINGS_PROJECTION]: makeDrawingsProjectionConsumer,
       [INSPECTIONS_PROJECTION]: makeInspectionsProjectionConsumer,
       [ACTIVITIES_PROJECTION]: makeActivitiesProjectionConsumer,
+      [MATERIAL_READINESS_PROJECTION]: makeMaterialReadinessProjectionConsumer,
     };
+    // Phase 3 Task 6 — the material-readiness recompute routes coverage through inventory +
+    // substitutions; the CLI runs standalone, so bind the minimal instances (only the read-only
+    // methods `coverageFor`/`coveringCommitments`/`activeTargets` run, all pure over the tx).
+    bindMaterialReadinessDeps({
+      inventory: new InventoryService(prisma, {} as never, new ProcurementParticipant(new RequirementsQueryService()), {} as never, {} as never),
+      substitutions: new SubstitutionsService(prisma, {} as never, {} as never),
+    });
     for (const name of Object.keys(REBUILDABLE_PROJECTIONS)) {
       const make = factories[name];
       if (!make) throw new Error(`no consumer factory wired for rebuildable projection ${name}`);

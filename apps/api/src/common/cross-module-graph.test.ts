@@ -72,8 +72,10 @@ const MODEL_OWNER: Record<string, string> = {
   // 'requirements' (the requirements.service pillar entry writes ONLY this model)
   activityRequirement: 'requirements', activityRequirementRoot: 'requirements', materialRequirementSpec: 'requirements',
   // Phase 3 Task 6 — approved substitutions (§B) are activities-module-owned, written only by
-  // the substitutions service
+  // the substitutions service; the material-readiness projection is activities-owned, written only
+  // by its recompute consumer
   approvedSubstitution: 'activities',
+  materialReadinessProjection: 'activities',
   // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
   rfq: 'procurement', vendorQuote: 'procurement', vendorQuoteLine: 'procurement', quoteComparison: 'procurement',
