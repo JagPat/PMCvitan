@@ -27,7 +27,7 @@ import { InventoryService } from '../inventory/inventory.service';
 import { SubstitutionsService } from './substitutions.service';
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
 import { deriveMaterialReading } from './material-readiness';
-import type { CoverageRequirement } from '../inventory/coverage';
+import { loadCoverageRequirements } from './coverage-requirements';
 
 @Injectable()
 export class ActivitiesService {
@@ -68,38 +68,6 @@ export class ActivitiesService {
    * sees exactly the demand and substitutions committed before it. Activities-owned reads only —
    * the substitution table is never read from inventory.
    */
-  private async coverageRequirements(
-    tx: Prisma.TransactionClient,
-    projectId: string,
-    activityIds: string[],
-  ): Promise<CoverageRequirement[]> {
-    if (activityIds.length === 0) return [];
-    const rows = await tx.activityRequirement.findMany({
-      where: { projectId, activityId: { in: activityIds }, type: 'material' },
-      orderBy: [{ requirementId: 'asc' }, { revision: 'asc' }],
-      select: {
-        requirementId: true, revision: true, activityId: true, requiredQty: true, baseUom: true, status: true,
-        materialSpec: { select: { specFingerprint: true } },
-      },
-    });
-    // reduce to the head revision per requirement, then keep only open material requirements
-    const head = new Map<string, (typeof rows)[number]>();
-    for (const r of rows) {
-      const cur = head.get(r.requirementId);
-      if (!cur || r.revision > cur.revision) head.set(r.requirementId, r);
-    }
-    const heads = [...head.values()].filter((r) => r.status === 'open' && r.materialSpec);
-    const targets = await this.substitutions.activeTargets(tx, projectId, heads.map((h) => h.requirementId));
-    return heads.map((h) => ({
-      requirementId: h.requirementId,
-      revision: h.revision,
-      activityId: h.activityId,
-      requiredQty: h.requiredQty,
-      baseUom: h.baseUom,
-      acceptableFingerprints: [h.materialSpec!.specFingerprint, ...(targets.get(h.requirementId) ?? [])],
-    }));
-  }
-
   /**
    * Phase 3 Task 6 — the CANONICAL material gate for one activity, evaluated on the caller's
    * transaction (under the readiness lock): the §A truth over inventory's `coverageFor`, with an
@@ -111,7 +79,7 @@ export class ActivitiesService {
     projectId: string,
     activity: { id: string; gateMaterial: GateState },
   ) {
-    const requirements = await this.coverageRequirements(tx, projectId, [activity.id]);
+    const requirements = await loadCoverageRequirements(tx, projectId, this.substitutions, [activity.id]);
     const coverage = await this.inventory.coverageFor(tx, projectId, requirements);
     return deriveMaterialReading(coverage, activity.gateMaterial === 'fail');
   }

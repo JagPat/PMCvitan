@@ -123,7 +123,12 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
   // Module 4 correction — activity removal routes the drawing unlink through the drawings
   // participant (owner-aligned signal); unit tests exercise no linked drawings, so a null stub.
   const drawingParticipant = { unlinkFromDeletedActivity: vi.fn(async () => null) } as unknown as DrawingParticipant;
-  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService), drawingsQuery, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant(), inspectionsQuery, drawingParticipant);
+  // Phase 3 Task 6 — these unit tests pin the PHASE-1 stored-gate behavior: the capability is OFF,
+  // so `start` never consults coverage (inventory/substitutions are inert stubs).
+  const inventory = { coverageFor: vi.fn(async () => []) } as unknown as import('../inventory/inventory.service').InventoryService;
+  const substitutions = { activeTargets: vi.fn(async () => new Map()) } as unknown as import('./substitutions.service').SubstitutionsService;
+  const capabilities = { isEnabled: vi.fn(async () => false) } as unknown as import('../platform/capabilities.service').CapabilitiesService;
+  const svc = new ActivitiesService(prisma, snapshot, new DecisionsQueryService(prisma as unknown as PrismaService), drawingsQuery, dispatcher, { today: () => '2026-07-05' }, new InspectionParticipant(), inspectionsQuery, drawingParticipant, inventory, substitutions, capabilities);
   const user = { sub: 'u-eng', role: 'engineer' } as AuthUser;
   return { svc, prisma, user, inspectionCreates, activityUpdates, audits, activity };
 }

@@ -1,6 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { deriveReadiness, type DecisionStatus, type ReadinessDrawing, type ReadinessInspection, type ReadinessOverride } from '../domain/transitions';
 import { toIsoCivilDate } from '../common/civil-date';
+import { deriveMaterialReading } from './material-readiness';
+import type { RequirementCoverage } from '../inventory/coverage';
 import type { ActivityDto, PhaseDto } from '../snapshot/types';
 
 /**
@@ -87,6 +89,9 @@ export interface ActivitiesBakeInputs {
   drawings: ReadinessDrawing[];
   activeMemberIds: string[];
   now: Date;
+  /** Phase 3 Task 6 — per-activity canonical material coverage (§A). Present ONLY on a pilot
+   *  project; absent for non-pilot reads, whose material gate stays the stored flag byte-for-byte. */
+  materialCoverage?: ReadonlyMap<string, RequirementCoverage[]>;
 }
 
 /** stored → wire status remap (moved verbatim from the snapshot service). */
@@ -171,28 +176,8 @@ export async function computeActivitiesBase(
 export function bakeActivities(base: ActivitiesBase, inputs: ActivitiesBakeInputs): ActivitiesSlices {
   const { decisionStatuses, inspections, drawings, activeMemberIds, now } = inputs;
 
-  const activityDtos: ActivityDto[] = base.activities.map((a) => ({
-    id: a.id,
-    name: a.name,
-    zone: a.zone,
-    decisionId: a.decisionId,
-    phaseId: a.phaseId,
-    nodeId: a.nodeId ?? undefined, // location spine: where this work happens
-    ps: a.ps,
-    pe: a.pe,
-    as: a.as,
-    ae: a.ae,
-    plannedStartDate: a.plannedStartDate,
-    plannedEndDate: a.plannedEndDate,
-    actualStartDate: a.actualStartDate,
-    actualEndDate: a.actualEndDate,
-    status: ACTIVITY_STATUS_OUT[a.status],
-    // legacy stored flags (deprecated display fields; `readiness` is the truth)
-    gm: a.gateMaterial as ActivityDto['gm'],
-    gt: a.gateTeam as ActivityDto['gt'],
-    gi: a.gateInspection as ActivityDto['gi'],
-    block: a.block ?? undefined,
-    readiness: deriveReadiness(a.id, {
+  const activityDtos: ActivityDto[] = base.activities.map((a) => {
+    const readiness = deriveReadiness(a.id, {
       decisionStatus: a.decisionId ? ((decisionStatuses.get(a.decisionId) as DecisionStatus | undefined) ?? null) : null,
       gateMaterial: a.gateMaterial as ActivityDto['gm'],
       gateTeam: a.gateTeam as ActivityDto['gt'],
@@ -201,12 +186,44 @@ export function bakeActivities(base: ActivitiesBase, inputs: ActivitiesBakeInput
       activeMemberIds,
       overrides: a.overrides.map((o) => ({ gate: o.gate as ReadinessOverride['gate'], state: o.state as ReadinessOverride['state'], reason: o.reason, expiresAt: o.expiresAt, actorName: o.actorName })),
       now,
-    }),
-    // the ACTIVE manual exceptions, surfaced for the override UI (revoke + expiry)
-    overrides: a.overrides
-      .filter((o) => new Date(o.expiresAt).getTime() > now.getTime())
-      .map((o) => ({ id: o.id, gate: o.gate as ReadinessOverride['gate'], state: o.state as ReadinessOverride['state'], reason: o.reason, actorName: o.actorName, expiresAt: o.expiresAt, evidenceMediaId: o.evidenceMediaId ?? undefined })),
-  }));
+    });
+    // Phase 3 Task 6 (§A/§D): on a PILOT project the material gate is CANONICAL coverage, baked
+    // LIVE here exactly like the other four derived gates (never the stored flag, never behind a
+    // projection). `materialCoverage` is present ONLY when the caller resolved coverage for a
+    // pilot project; it is absent for non-pilot reads, so their material gate stays byte-for-byte
+    // the stored flag. An unexpired material override still supersedes (Phase-1 rule unchanged).
+    if (inputs.materialCoverage && readiness.material.source !== 'override') {
+      readiness.material = deriveMaterialReading(inputs.materialCoverage.get(a.id) ?? [], a.gateMaterial === 'fail');
+    }
+    return {
+      id: a.id,
+      name: a.name,
+      zone: a.zone,
+      decisionId: a.decisionId,
+      phaseId: a.phaseId,
+      nodeId: a.nodeId ?? undefined, // location spine: where this work happens
+      ps: a.ps,
+      pe: a.pe,
+      as: a.as,
+      ae: a.ae,
+      plannedStartDate: a.plannedStartDate,
+      plannedEndDate: a.plannedEndDate,
+      actualStartDate: a.actualStartDate,
+      actualEndDate: a.actualEndDate,
+      status: ACTIVITY_STATUS_OUT[a.status],
+      // legacy stored flags (deprecated display fields; `readiness` is the truth). Under the pilot
+      // the material display flag tracks the derived gate so the two never disagree.
+      gm: (inputs.materialCoverage ? readiness.material.v : a.gateMaterial) as ActivityDto['gm'],
+      gt: a.gateTeam as ActivityDto['gt'],
+      gi: a.gateInspection as ActivityDto['gi'],
+      block: a.block ?? undefined,
+      readiness,
+      // the ACTIVE manual exceptions, surfaced for the override UI (revoke + expiry)
+      overrides: a.overrides
+        .filter((o) => new Date(o.expiresAt).getTime() > now.getTime())
+        .map((o) => ({ id: o.id, gate: o.gate as ReadinessOverride['gate'], state: o.state as ReadinessOverride['state'], reason: o.reason, actorName: o.actorName, expiresAt: o.expiresAt, evidenceMediaId: o.evidenceMediaId ?? undefined })),
+    };
+  });
 
   // Phase rollups: each phase's activities counted by status so the schedule
   // and portfolio can show phase-level progress (done/total → donePct).
