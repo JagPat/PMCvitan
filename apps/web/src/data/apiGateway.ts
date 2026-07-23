@@ -1093,16 +1093,17 @@ export type OutboxOp =
   | { t: 'addSiteMaterial'; input: AddSiteMaterialInput; idempotencyKey: string }
   | { t: 'flagMismatch'; decisionId: string; idempotencyKey: string }
   | { t: 'submitDailyLog'; log: Pick<DailyLog, 'checkedIn' | 'checkinTime' | 'progress' | 'crew'>; idempotencyKey: string }
-  // Phase 3 Task 7 (correction 2) — the pilot MATERIALS operational commands are WRITE-AHEAD to the
-  // durable outbox before the first network request (online OR offline). Each carries a stable
-  // idempotencyKey (reserve is keyed by (lotId, storeLocation, activityId); the others by their target),
-  // so a lost/uncertain response replays the SAME command under the SAME key and the ledger applies it
-  // exactly once. They return the route's own JSON (Phase-3 reads are module-query-only), so the flush
-  // reconciles the materials view separately (see the store's materials reconcile hook).
-  | { t: 'reserveStock'; input: ReserveStockInput; idempotencyKey: string }
-  | { t: 'issueStock'; input: IssueStockInput; idempotencyKey: string }
-  | { t: 'consumeStock'; input: ConsumeStockInput; idempotencyKey: string }
-  | { t: 'createRequisition'; input: CreateMaterialRequisitionInput; idempotencyKey: string }
+  // Phase 3 Task 7 (correction 2/3) — the pilot MATERIALS operational commands are WRITE-AHEAD to the
+  // durable outbox before the first network request (online OR offline). Correction 3 (finding 1) splits
+  // the two identities: `idempotencyKey` is a FRESH per-action key (reused unchanged on every retry/
+  // reload so a lost response replays exactly once; DIFFERENT for the next legitimate action), and
+  // `coalesceKey` is a deterministic identity used ONLY to dedupe an equivalent action WHILE pending
+  // (double-click / reload). They return the route's own JSON (Phase-3 reads are module-query-only), so
+  // the flush reconciles the materials view separately (see the store's materials reconcile hook).
+  | { t: 'reserveStock'; input: ReserveStockInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'issueStock'; input: IssueStockInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'consumeStock'; input: ConsumeStockInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'createRequisition'; input: CreateMaterialRequisitionInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.

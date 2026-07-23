@@ -1095,22 +1095,29 @@ export class InventoryService {
   }
 
   /**
-   * Phase 3 Task 7 (correction 2) — the CANONICAL reservation candidates for covering an activity's
+   * Phase 3 Task 7 (correction 2/3) — the CANONICAL reservation candidates for covering an activity's
    * shortage, computed on the SERVER so the browser never recreates coverage compatibility from
-   * fingerprints alone. Reuses `coverageFor` for each requirement's shortfall, then greedily OFFERS
+   * fingerprints alone. Reuses `coverageFor` for each requirement's shortfall, then greedily allocates
    * free on-hand stock matched by acceptable fingerprint (the caller resolved own + active substitution
    * into `acceptableFingerprints`) AND base UOM, per lot + store location — CONSERVATIVELY: the shared
-   * free pool is decremented as it is offered, so the SUM of offered reservations across the activity's
-   * requirements can never exceed the physical free stock (probe 2). Returns each offerable
-   * (requirement, lot, storeLocation, qty) and the per-requirement residual no on-hand stock covers.
-   * NOT a controller surface — the activities caller gates on the pilot capability.
+   * free pool is decremented as it is allocated, so the SUM of offered reservations can never exceed the
+   * physical free stock.
+   *
+   * Correction 3 (finding 1): a candidate is AGGREGATED per (lotId, storeLocation), NOT per requirement.
+   * `stock.reserve` is ACTIVITY-level (its input is `(lotId, storeLocation, activityId, qty)`; it is
+   * never requirement-attributed), so two requirements drawing from the SAME lot/location are ONE
+   * physical reserve command with the summed quantity — never two candidates that would collide on a
+   * single coalesce identity. Correction 3 (finding 4): a candidate's `material` is the LOT's §B identity
+   * (so an approved substitute shows the substitute lot, not the requirement's spec); the residual keeps
+   * the requirement spec (labelled by the caller). NOT a controller surface — the activities caller gates
+   * on the pilot capability.
    */
   async reservationCandidatesFor(
     tx: CommandTx,
     projectId: string,
     requirements: readonly CoverageRequirement[],
   ): Promise<{
-    candidates: { requirementId: string; revision: number; lotId: string; storeLocation: string; qty: string; baseUom: string; specFingerprint: string }[];
+    candidates: { lotId: string; storeLocation: string; qty: string; baseUom: string; material: string; specFingerprint: string }[];
     residuals: { requirementId: string; revision: number; qty: string; baseUom: string }[];
   }> {
     if (requirements.length === 0) return { candidates: [], residuals: [] };
@@ -1118,28 +1125,32 @@ export class InventoryService {
     const shortfall = new Map(coverage.map((c) => [c.requirementId, new Prisma.Decimal(c.shortfall)]));
     const acceptable = new Set(requirements.flatMap((r) => r.acceptableFingerprints));
 
-    // the free pool per (lotId, storeLocation), folded from the §C ledger (freeAvailable = acceptedOnHand − reserved)
-    type Pool = { lotId: string; storeLocation: string; specFingerprint: string; baseUom: string; free: Prisma.Decimal };
+    // the free pool per (lotId, storeLocation), folded from the §C ledger (freeAvailable = acceptedOnHand − reserved).
+    // `material` is the LOT's §B identity (finding 4), `allocated` accumulates what the greedy pass offers.
+    type Pool = {
+      lotId: string; storeLocation: string; specFingerprint: string; baseUom: string; material: string;
+      free: Prisma.Decimal; allocated: Prisma.Decimal;
+    };
     const pools: Pool[] = [];
     if (acceptable.size > 0) {
       const lots = await tx.stockLot.findMany({
         where: { projectId, specFingerprint: { in: [...acceptable] } },
-        select: { id: true, specFingerprint: true, baseUom: true, transactions: true },
+        select: { id: true, specFingerprint: true, baseUom: true, materialCategory: true, make: true, grade: true, transactions: true },
       });
       for (const lot of lots) {
+        const material = [lot.materialCategory, lot.make, lot.grade].filter(Boolean).join(' · ') || 'Material';
         const rows = lot.transactions as Movement[];
         const locations = [...new Set(rows.flatMap((t) => (t.toStoreLocation ? [t.storeLocation, t.toStoreLocation] : [t.storeLocation])))];
         for (const loc of locations) {
           const b = foldBuckets(rows, loc);
           const free = b.acceptedOnHand.sub(b.reserved);
-          if (free.greaterThan(0)) pools.push({ lotId: lot.id, storeLocation: loc, specFingerprint: lot.specFingerprint, baseUom: lot.baseUom, free });
+          if (free.greaterThan(0)) pools.push({ lotId: lot.id, storeLocation: loc, specFingerprint: lot.specFingerprint, baseUom: lot.baseUom, material, free, allocated: ZERO });
         }
       }
       // deterministic pool order so the conserved offer is reproducible
       pools.sort((a, b) => (a.lotId !== b.lotId ? (a.lotId < b.lotId ? -1 : 1) : a.storeLocation < b.storeLocation ? -1 : a.storeLocation > b.storeLocation ? 1 : 0));
     }
 
-    const candidates: { requirementId: string; revision: number; lotId: string; storeLocation: string; qty: string; baseUom: string; specFingerprint: string }[] = [];
     const residuals: { requirementId: string; revision: number; qty: string; baseUom: string }[] = [];
     // deterministic requirement order so the conserved allocation across shared stock is reproducible
     const reqsSorted = [...requirements].sort((a, b) => (a.requirementId < b.requirementId ? -1 : a.requirementId > b.requirementId ? 1 : 0));
@@ -1151,14 +1162,19 @@ export class InventoryService {
         if (need.lessThanOrEqualTo(0)) break;
         if (pool.free.lessThanOrEqualTo(0)) continue;
         if (!acc.has(pool.specFingerprint)) continue;
-        if (pool.baseUom !== req.baseUom) continue; // base-UOM compatibility (probe 4 — wrong UOM is not eligible)
+        if (pool.baseUom !== req.baseUom) continue; // base-UOM compatibility (wrong UOM is not eligible)
         const take = need.lessThan(pool.free) ? need : pool.free;
-        candidates.push({ requirementId: req.requirementId, revision: req.revision, lotId: pool.lotId, storeLocation: pool.storeLocation, qty: take.toString(), baseUom: req.baseUom, specFingerprint: pool.specFingerprint });
+        pool.allocated = pool.allocated.add(take); // AGGREGATE onto the pool, one candidate per (lot, location)
         pool.free = pool.free.sub(take);
         need = need.sub(take);
       }
       if (need.greaterThan(0)) residuals.push({ requirementId: req.requirementId, revision: req.revision, qty: need.toString(), baseUom: req.baseUom });
     }
+    // ONE candidate per (lotId, storeLocation) that received an allocation — the aggregated activity-level
+    // reserve command. Deterministic order (pools are already sorted).
+    const candidates = pools
+      .filter((p) => p.allocated.greaterThan(0))
+      .map((p) => ({ lotId: p.lotId, storeLocation: p.storeLocation, qty: p.allocated.toString(), baseUom: p.baseUom, material: p.material, specFingerprint: p.specFingerprint }));
     return { candidates, residuals };
   }
 }

@@ -171,14 +171,15 @@ export interface MaterialReadinessResult {
  * Capability-gated (404 off-pilot) exactly like `material-readiness`.
  */
 export interface ReservationCandidate {
-  readonly requirementId: string;
-  readonly revision: number;
   readonly lotId: string;
   readonly storeLocation: string;
-  /** the conserved offerable quantity for THIS candidate (base UOM) — reserve this exact amount */
+  /** the conserved offerable quantity for THIS candidate (base UOM) — reserve this exact amount. It is
+   *  AGGREGATED across every requirement this lot/location helps cover (correction 3, finding 1):
+   *  `stock.reserve` is activity-level, not requirement-attributed, so ONE reserve per (lot, location). */
   readonly qty: string;
   readonly baseUom: string;
-  /** the §B technical identity label (category · make · grade) of the lot */
+  /** the §B technical identity label (category · make · grade) of the ACTUAL lot — an approved substitute
+   *  shows the SUBSTITUTE lot's identity, never the requirement's spec (correction 3, finding 4). */
   readonly material: string;
 }
 export interface RequisitionResidual {

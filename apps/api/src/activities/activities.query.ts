@@ -314,8 +314,10 @@ export class ActivitiesQueryService {
       const requirements = await loadCoverageRequirements(tx, projectId, this.substitutions, [activityId]);
       if (requirements.length === 0) return { activityId, candidates: [], residuals: [] };
       const { candidates, residuals } = await this.inventory.reservationCandidatesFor(tx, projectId, requirements);
+      // Residuals are labelled from the REQUIREMENT spec (what to procure); candidates already carry the
+      // ACTUAL lot's §B identity from the allocator (correction 3, finding 4 — a substitute shows its lot).
       const heads = await tx.activityRequirement.findMany({
-        where: { projectId, OR: requirements.map((r) => ({ requirementId: r.requirementId, revision: r.revision })) },
+        where: { projectId, OR: residuals.map((r) => ({ requirementId: r.requirementId, revision: r.revision })) },
         select: { requirementId: true, revision: true, materialSpec: { select: { materialCategory: true, make: true, grade: true } } },
       });
       const labelByPin = new Map(
@@ -328,8 +330,7 @@ export class ActivitiesQueryService {
       return {
         activityId,
         candidates: candidates.map((c) => ({
-          requirementId: c.requirementId, revision: c.revision, lotId: c.lotId, storeLocation: c.storeLocation,
-          qty: c.qty, baseUom: c.baseUom, material: label(c.requirementId, c.revision),
+          lotId: c.lotId, storeLocation: c.storeLocation, qty: c.qty, baseUom: c.baseUom, material: c.material,
         })),
         residuals: residuals.map((r) => ({
           requirementId: r.requirementId, revision: r.revision, qty: r.qty, baseUom: r.baseUom, material: label(r.requirementId, r.revision),

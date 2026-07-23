@@ -6,7 +6,7 @@ import { RefreshCw, WifiOff } from '@/lib/icons';
 import type { MaterialCoverageVerdict, StockLotDto } from '@vitan/shared';
 import { decAdd, decSum, decIsPositive } from '@/lib/decimal';
 import { foldActivityReservations } from '@/lib/reservations';
-import { reserveKey, issueKey, consumeKey, requisitionKey } from '@/lib/materialsKeys';
+import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey } from '@/lib/materialsKeys';
 import styles from './responsive.module.css';
 
 /**
@@ -263,7 +263,7 @@ export function MaterialsScreen() {
             {tab === 'reservations' && (
               <Panel empty={!reservations.length} emptyKey="reservations" emptyText="No stock reserved to an activity yet.">
                 {reservations.map((r) => {
-                  const iKey = issueKey(r.activityId, r.lotId, r.storeLocation, r.qty);
+                  const iKey = issueCoalesceKey(r.activityId, r.lotId, r.storeLocation, r.qty);
                   return (
                     <div key={`${r.lotId}-${r.storeLocation}-${r.activityId}`} data-testid={`materials-reservation-${r.lotId}-${r.activityId}`} style={rowCard}>
                       <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.material}</div>
@@ -289,7 +289,7 @@ export function MaterialsScreen() {
                     </div>
                     <div style={{ ...muted, marginTop: 4 }}>issued to activity {i.activityId} · remaining custody {i.remainingCustody} {i.baseUom}</div>
                     {decIsPositive(i.remainingCustody) && (() => {
-                      const cKey = consumeKey(i.id, i.remainingCustody);
+                      const cKey = consumeCoalesceKey(i.id, i.remainingCustody);
                       return (
                         <div style={{ marginTop: 9 }}>
                           <Button variant="outline" disabled={pending(cKey)} data-testid={`materials-do-consume-${i.id}`} onClick={() => consumeMaterial(i.id, i.remainingCustody)} style={{ fontSize: 12 }}>
@@ -347,7 +347,7 @@ function CoverPanel(props: {
   }
   const residualLines = plan.residuals.map((r) => ({ requirementId: r.requirementId, revision: r.revision, qty: r.qty }));
   const residualTotal = plan.residuals.length ? decSum(plan.residuals.map((r) => r.qty)) : '0';
-  const reqKey = requisitionKey(activityId, residualLines);
+  const reqKey = requisitionCoalesceKey(activityId, residualLines);
   if (!plan.candidates.length && !residualLines.length) {
     return <div data-testid={`materials-cover-none-${activityId}`} style={{ ...box, ...muted }}>Nothing to cover — this activity is already served.</div>;
   }
@@ -357,7 +357,7 @@ function CoverPanel(props: {
         <div>
           <div style={{ ...mono, marginBottom: 6 }}>RESERVE ON-HAND STOCK</div>
           {plan.candidates.map((c) => {
-            const rKey = reserveKey(activityId, c.lotId, c.storeLocation);
+            const rKey = reserveCoalesceKey(activityId, c.lotId, c.storeLocation);
             return (
               <div key={`${c.lotId}-${c.storeLocation}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 6 }}>
                 <div style={{ fontSize: 12.5 }}>{c.material} · {c.qty} {c.baseUom} @ {c.storeLocation}</div>

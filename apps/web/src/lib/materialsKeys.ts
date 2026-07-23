@@ -1,27 +1,33 @@
 /**
- * Phase 3 Task 7 (correction 2) — the STABLE idempotency keys for the pilot MATERIALS single commands.
+ * Phase 3 Task 7 (correction 3) — the DETERMINISTIC COALESCE keys for the pilot MATERIALS commands.
  *
- * Every operational materials command carries a DETERMINISTIC key derived from its target (never a random
- * UUID), so:
- *  • a double-click / lost-response replay reaches the server under the SAME key ⇒ the command-ledger
- *    applies the effect exactly once (the reliability requirement), and
- *  • the store can COALESCE a duplicate dispatch, and the screen can DISABLE the button while the same key
- *    is pending — both re-derive the key from the same builder, so they never drift.
+ * These are NOT idempotency keys. Correction 2 conflated the two; the re-review (finding 1) showed why
+ * that is wrong: a permanently-derived key identifies a RESOURCE, not a command ATTEMPT, so it blocks
+ * legitimate future repetitions (reserve → release → reserve again; issuing the same quantity twice) and
+ * collides when the planner offers two candidates from the same lot.
  *
- * A reservation is keyed by (lotId, storeLocation, activityId) per the directive (the offered qty is the
- * value, not the key). Issue/consume include the qty and requisition includes the residual content, so a
- * genuinely different amount is a distinct command while an identical repeat coalesces.
+ * The split (correction 3):
+ *  • the IDEMPOTENCY key — a FRESH `newIdempotencyKey()` minted ONCE per deliberate user action, persisted
+ *    on the outbox op and reused unchanged for every retry/reload (so a lost response replays exactly once),
+ *    and DIFFERENT for the next legitimate action after this one resolves; and
+ *  • the COALESCE key (here) — a deterministic identity used ONLY to dedupe an EQUIVALENT action while it
+ *    is still PENDING (a double-click, or a reload that finds the op still queued). Once the action
+ *    resolves it leaves `materialsPending`, so a later identical legitimate action dispatches afresh.
+ *
+ * A reserve coalesces by `(activityId, lotId, storeLocation)` — the planner now aggregates candidates per
+ * `(lotId, storeLocation)` (finding 1), so this uniquely identifies one pending reserve. Issue/consume/
+ * requisition include the quantity / residual content so distinct amounts are distinct pending actions.
  */
-export const reserveKey = (activityId: string, lotId: string, storeLocation: string): string =>
+export const reserveCoalesceKey = (activityId: string, lotId: string, storeLocation: string): string =>
   `mat:res:${activityId}:${lotId}:${storeLocation}`;
 
-export const issueKey = (activityId: string, lotId: string, storeLocation: string, qty: string): string =>
+export const issueCoalesceKey = (activityId: string, lotId: string, storeLocation: string, qty: string): string =>
   `mat:iss:${activityId}:${lotId}:${storeLocation}:${qty}`;
 
-export const consumeKey = (issueId: string, qty: string): string =>
+export const consumeCoalesceKey = (issueId: string, qty: string): string =>
   `mat:con:${issueId}:${qty}`;
 
-export const requisitionKey = (
+export const requisitionCoalesceKey = (
   activityId: string,
   lines: ReadonlyArray<{ requirementId: string; revision: number; qty: string }>,
 ): string => {
