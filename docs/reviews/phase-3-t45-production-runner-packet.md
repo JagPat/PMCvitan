@@ -54,12 +54,17 @@ Result: **T45 PRODUCTION-RUNNER PROOF PASSED** (all six cases; see `scripts/t45-
 
 ## Gates (actual exit codes)
 
-- `pnpm check` — _<to fill: EXIT 0>_.
-- Full live-PG integration battery — _<to fill>_.
-- `scripts/t45-repair-proof.sh` — _<to fill: PASSED>_ (the accepted engine, unchanged).
-- `scripts/t45-production-runner-proof.sh` — **PASSED** (six cases).
-- `scripts/upgrade-proof.sh` — _<to fill: PASSED>_.
-- `test:e2e:api:allmodules` / `:outbox` — _<to fill: 27/27 each>_.
+- `pnpm check` — **EXIT 0** (API unit 605/605 / 55 files; web unit 396/396 / 37 files).
+- Full live-PG integration battery — **EXIT 0, 469/469 across 51 files** (unchanged from PR #200 —
+  this correction adds no integration tests; the CLI/service edits are covered by the proofs).
+- `scripts/t45-repair-proof.sh` — **PASSED** (the accepted repair engine, unchanged).
+- `scripts/t45-production-runner-proof.sh` — **PASSED** (six cases, incl. the dirty-F3.1 runner proof).
+- `scripts/upgrade-proof.sh` — **EXIT 0, UPGRADE PROOF PASSED**.
+- `test:e2e:api:allmodules` — **27/27**; `test:e2e:api:allmodules:outbox` — **27/27**. As on PR #200,
+  the allmodules battery has an intermittent single browser-navigation flake (a different spec each
+  run — here `drawings-module-query`, an 11.5s timeout — passing on the next run); the identical
+  specs pass 27/27 first-try under outbox mode. The changed code touches only `migrate.sh` + the
+  compiled preflight, none of the browser/read paths.
 
 ## Scope / non-goals
 
