@@ -718,6 +718,9 @@ assert_rejects "F2.2: a stock lot with a forged §B spec fingerprint" \
 # F3.2 — an orphan MaterialIssue (no canonical issue movement) rejected at commit
 assert_rejects "F3.2: an orphan MaterialIssue is rejected at commit" \
   "BEGIN; INSERT INTO \"MaterialIssue\"(\"id\",\"projectId\",\"lotId\",\"storeLocation\",\"activityId\",\"qty\",\"issuedById\") VALUES('UP45-H4','p1','UP45-LOT','main','ACT-1',5,'USER-1'); COMMIT;"
+# F3.1 — a SECOND canonical issue movement for a MaterialIssue that already has one (partial unique)
+assert_rejects "F3.1: a second canonical issue movement for the same MaterialIssue" \
+  "INSERT INTO \"StockTransaction\"(\"id\",\"projectId\",\"lotId\",\"storeLocation\",\"type\",\"qty\",\"fromBucket\",\"toBucket\",\"activityId\",\"issueId\",\"recordedById\",\"sourceCommandId\") VALUES('UP45-H7','p1','UP45-LOT','main','issue',20,'acceptedOnHand','issuedToActivity','ACT-1','UP45-MI','USER-1','UP45-CMD')"
 # F3.3 — an issue-scoped movement at a different store location than its MaterialIssue
 assert_rejects "F3.3: an issue-scoped movement mis-scoped against its MaterialIssue" \
   "INSERT INTO \"StockTransaction\"(\"id\",\"projectId\",\"lotId\",\"storeLocation\",\"type\",\"qty\",\"fromBucket\",\"toBucket\",\"activityId\",\"issueId\",\"recordedById\",\"sourceCommandId\") VALUES('UP45-H5','p1','UP45-LOT','elsewhere','consumption',1,'issuedToActivity',NULL,'ACT-1','UP45-MI','USER-1','UP45-CMD')"

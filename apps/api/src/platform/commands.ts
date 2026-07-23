@@ -77,6 +77,10 @@ export interface ExecuteInput<T> {
    * legacy unkeyed behavior exactly: the synthesized key is unique per call, so it is never a
    * replay and two unkeyed retries each execute once (today's compare-and-set semantics) — it
    * only guarantees provenance. A CLIENT-supplied key keeps its exactly-once replay unchanged.
+   *
+   * Enforcement takes precedence: when `commandKeyEnforced()` is on, a MISSING client key is
+   * refused BEFORE synthesis is considered (synthesis never substitutes for the required client
+   * key — see `executeCommand` step 2), so a lost-response retry cannot re-run the movement.
    */
   synthesizeKeyWhenAbsent?: boolean;
   /** The canonical mutation, run INSIDE the reserve/receipt transaction. Returns the resultRef. */
@@ -161,23 +165,33 @@ async function resolveTenant(tx: CommandTx, scope: CommandScope): Promise<{ orga
 }
 
 export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInput<T>): Promise<ExecuteOutcome<T>> {
+  // 1. Normalize the client key (an all-whitespace header is no key).
   const clientKey = input.idempotencyKey?.trim() || null;
 
-  // ── Legacy / unkeyed path: today's compare-and-set behavior, unchanged ─────────────────────
-  // F1: a caller that opts into `synthesizeKeyWhenAbsent` (inventory) instead falls through to
-  // the reserve/execute/receipt path below with a SERVER one-shot key, so `run` still gets a
-  // real `commandId`. Every OTHER module keeps the ledger-less unkeyed path exactly as before.
+  // 2. Enforcement — evaluated for ANY missing client key, BEFORE any transaction / receipt /
+  //    audit / DomainEvent / ledger write. When `COMMAND_KEY_ENFORCED=true`, a caller that sends
+  //    no client `Idempotency-Key` is refused REGARDLESS of `synthesizeKeyWhenAbsent`. Server
+  //    synthesis chooses provenance; it must NEVER stand in for the client key the enforcement
+  //    contract requires. Without this, an inventory call (which opts into synthesis) would slip
+  //    past enforcement and a lost-response retry could execute the same physical movement again
+  //    under a second server key. The throw happens here, so zero side effects have occurred.
+  if (!clientKey && commandKeyEnforced()) {
+    throw new BadRequestException('This action requires an Idempotency-Key — please update the app to continue.');
+  }
+
+  // 3. Legacy / unkeyed path: today's compare-and-set behavior, unchanged. A caller with no
+  //    client key that does NOT opt into synthesis reserves no ledger row and runs the
+  //    ledger-less mutation exactly as before (`run` receives a null `commandId`). Reached only
+  //    when enforcement is OFF (step 2 already refused a missing key under enforcement).
   if (!clientKey && !input.synthesizeKeyWhenAbsent) {
-    if (commandKeyEnforced()) {
-      throw new BadRequestException('This action requires an Idempotency-Key — please update the app to continue.');
-    }
     const r = await prisma.$transaction((tx) => input.run(tx, { commandId: null }));
     return { replayed: false, resultRef: r.resultRef, value: r.value, events: r.events ?? [] };
   }
 
-  // The key the receipt is stored under: the client's (exactly-once replay) or, when the caller
-  // synthesizes, a per-call server key (unique → never a replay; two unkeyed retries each run
-  // once, exactly as the legacy compare-and-set path did — this only secures provenance).
+  // 4. Keyed or synthesized path. The key the receipt is stored under: the client's
+  //    (exactly-once replay) or, when the caller synthesizes, a per-call server key (unique →
+  //    never a replay; two unkeyed retries each run once, exactly as the legacy compare-and-set
+  //    path did — this only secures provenance).
   const key = clientKey ?? `srv-${randomUUID()}`;
 
   // ── Fast path: replay a prior committed receipt for THIS actor + scope ─────────────────────

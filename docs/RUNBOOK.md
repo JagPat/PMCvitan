@@ -53,7 +53,7 @@ In ALL states the deploy aborts loudly (sampled rows, named repair) on forged/un
 spec provenance or approver identities naming no user — repair the data explicitly and re-run
 `prisma migrate deploy`; never null provenance to force it through.
 
-## §T45. Tasks 4–5 integrity-correction migration note (one-time, diagnostic-first)
+## §T45. Tasks 4–5 integrity-correction migration + repair (one-time, diagnostic-first)
 
 `20261231000000_phase3_t45_integrity_correction` makes PostgreSQL enforce the physical-truth
 invariants the inventory + daily-log services already enforce (command provenance F1, receipt/
@@ -62,39 +62,113 @@ DO block FIRST** and ABORTS — before adding any constraint — if legacy rows 
 invariant, listing a per-finding count. It NEVER invents provenance.
 
 On a clean or capability-gated **pilot** database (no production pilot has been activated yet)
-there are zero offending rows: the diagnostics pass and the constraints apply. If the deploy
-aborts with `Phase 3 Tasks 4–5 integrity correction ABORTED …`, the transaction rolled back and
-NO constraint was added; classify and repair each listed finding, then re-run `prisma migrate
-deploy`:
+there are zero offending rows: the diagnostics pass and the constraints apply. **If a legacy
+database might hold offending rows, run the preflight FIRST** — do not discover a violation by
+watching `migrate deploy` abort.
 
-- **F1 — NULL / cross-project `sourceCommandId`.** Only legacy UNKEYED inventory calls made
-  before this release could have left a null (keyed calls always recorded one; the app now
-  synthesizes a server one-shot command for unkeyed calls too). These rows cannot be
-  auto-repaired — the appending command is unknowable. The operator records an explicit,
-  audited reconciliation `CommandExecution` (scopeKind `project`, the row's `projectId`,
-  `commandType='ops.t45_reconciliation'`, a unique `idempotencyKey`, `status='succeeded'`) and
-  sets the offending rows' `sourceCommandId` to it — an attributable operator action, logged in
-  the change record. A cross-project `sourceCommandId` is a real defect: identify the correct
-  same-project command from the audit log; do not repoint blindly.
-- **F2.1 / F2.2 / F2.3 — broken lot chain, forged spec copy, or receipt≠lot.** A lot whose
-  procurement chain or frozen §B copy does not match its pinned requirement revision, or a
-  receipt row whose PO-line/commitment differs from its lot, indicates corrupted provenance.
-  Because `StockLot`/`StockTransaction` are append-only, reverse the affected receipt through
-  `stock.reverse` (attributable) and re-record it against the correct chain; do NOT edit the
-  frozen columns.
-- **F3.2 / F3.3 — orphan or mis-scoped issue.** An orphan `MaterialIssue` (no canonical `issue`
-  movement) or an issue-scoped row disagreeing with its issue is a broken §E record. Append the
-  missing/ correcting movement through the normal issue command, or reverse the mis-scoped row;
-  the register itself is never edited.
-- **F4 — a resolution on a matched=true observation.** The observation was re-matched after
-  resolution (impossible once this migration is in place). Confirm which state is correct from
-  the audit log and reconcile: either the resolution stands (set the observation back to
-  `matched=false`, its historical truth) or the resolution was erroneous and is removed by an
-  operator action recorded in the change log.
+### §T45.0 Preflight — ALWAYS run before `migrate deploy` on a legacy database
+
+```
+pnpm --filter api t45:preflight
+```
+
+Read-only. It runs EVERY diagnostic — `F1.null`, `F1.foreign`, `F2.1`, `F2.2`, `F2.3`, **`F3.1`
+(more than one canonical `issue` movement per MaterialIssue)**, `F3.2`, `F3.3`, `F4` — and prints
+a per-finding count + bounded samples, plus the `20261231…` migration state. Exit `0` ⇒ clean,
+safe to deploy. Exit `3` ⇒ violations; repair them (§T45.2) before deploying. The preflight is the
+authority the migration's in-line DO block cannot fully be: the DO block aborts LOUDLY on
+F1/F2/F3.2/F3.3/F4, but a **duplicate `issue` movement (F3.1)** passes the DO block and would
+otherwise fail OPAQUELY inside `CREATE UNIQUE INDEX "StockTransaction_one_issue_movement_per_issue_key"`.
+The preflight names F3.1 explicitly, with the offending `(projectId, issueId)` group and its
+transaction ids, so the operator can decide which movement is canonical.
+
+### §T45.1 Classify the migration record (three states, same as §0)
+
+If a `migrate deploy` was already attempted and aborted, `20261231…` is recorded FAILED and Prisma
+refuses every LATER migration until it is resolved. Classify with the full record, not the name:
+
+```sql
+SELECT migration_name, finished_at, rolled_back_at, logs
+FROM "_prisma_migrations" WHERE migration_name LIKE '20261231%';
+```
+
+- **No row** — not yet attempted. Repair (if the preflight is dirty), then `migrate deploy`.
+- **`finished_at` set** — already applied; the correction is enforced. No repair needed.
+- **`finished_at IS NULL AND rolled_back_at IS NULL`** — a FAILED attempt (its transaction rolled
+  back, so NO F1–F4 constraint was added and the append-only triggers from the earlier Task 4/5
+  migrations still stand). Repair (§T45.2), then mark the record rolled back and redeploy:
+  ```
+  pnpm --filter api exec prisma migrate resolve --rolled-back 20261231000000_phase3_t45_integrity_correction
+  pnpm --filter api prisma:migrate
+  ```
+
+### §T45.2 Repair — the ONE sanctioned path (`t45:repair`)
+
+The offending rows live in append-only tables (`StockLot`, `StockTransaction`, `MaterialIssue`,
+`MismatchResolution`), so they cannot be fixed with an ordinary UPDATE/DELETE (`phase3_immutable_row`
+forbids it) and an F2/F3 shape cannot be fixed by reversing it (the corrupt row stays and the
+diagnostic counts it again). Repair runs through the tool, which does the impossible-by-hand
+sequence safely, in ONE bounded transaction:
+
+1. **Back up** the database (or snapshot the pilot) and enter maintenance mode — stop application
+   writes to the affected project(s). The repair takes a brief `ACCESS EXCLUSIVE` lock to toggle
+   triggers.
+2. **Author an explicit plan** — a JSON file naming exactly what to do to each offending row. The
+   tool never guesses provenance; you supply the decision. One action per row:
+
+   | finding | op | what it does |
+   |---|---|---|
+   | `F1.null` / `F1.foreign` | `set-source-command` (`id`, `commandId`) | repoint a stock row to an explicit SAME-PROJECT `CommandExecution` (validated) |
+   | `F2.1` / `F2.2` | `delete-stock-lot` (`id`) | delete a structurally corrupt lot (delete its receipt rows first) |
+   | `F2.3` / `F3.1` / `F3.3` | `delete-stock-transaction` (`id`) | delete a mis-provenanced, **duplicate-canonical**, or mis-scoped stock row |
+   | `F3.2` | `delete-material-issue` (`id`) | delete an orphan MaterialIssue (no canonical movement) |
+   | `F4` | `delete-mismatch-resolution` (`id`) | remove an erroneous resolution on a matched observation |
+   | `F4` | `set-site-material-unmatched` (`id`) | restore an observation's historical `matched=false` truth |
+
+   For **F1**, first record the reconciliation command the plan points at (an attributable,
+   audited row), e.g.:
+   ```sql
+   INSERT INTO "CommandExecution"
+     ("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+   VALUES ('recon-<uuid>','project','<orgId>','<projectId>','<you>','ops.t45_reconciliation','<unique>','x','succeeded');
+   ```
+   For **F3.1**, YOU choose which of the duplicate `issue` movements is canonical (the preflight
+   lists their ids); list the OTHERS as `delete-stock-transaction`. The tool never auto-selects.
+
+   Example plan:
+   ```json
+   { "actions": [
+     { "finding": "F1.null",    "op": "set-source-command",          "id": "<txId>", "commandId": "recon-<uuid>" },
+     { "finding": "F2.2",       "op": "delete-stock-lot",            "id": "<lotId>" },
+     { "finding": "F3.1",       "op": "delete-stock-transaction",    "id": "<duplicateIssueTxId>" },
+     { "finding": "F4",         "op": "delete-mismatch-resolution",  "id": "<resolutionId>" }
+   ] }
+   ```
+3. **Run the repair:**
+   ```
+   pnpm --filter api t45:repair --plan <plan.json> --operator <you@example.com> --reason "<ticket>: T45 legacy reconciliation"
+   ```
+   In one transaction the tool: writes a complete **before-image + your identity + reason +
+   timestamp + row id** for every action into the durable `T45RepairAction` evidence table
+   (created idempotently — a later Prisma migration cannot, since `20261231…` is unresolved);
+   disables ONLY the four `*_append_only` triggers by name; applies your decisions; **re-enables
+   and verifies** every immutability trigger; and **re-runs every diagnostic**. It COMMITS only if
+   every diagnostic reads zero AND every trigger is back to enabled — otherwise the whole
+   transaction ROLLS BACK (data, evidence, trigger-toggle and all), leaving the database exactly as
+   it was with the triggers firing, and exits non-zero. A partial or wrong plan therefore cannot
+   half-repair or leave a trigger disabled.
+4. **Confirm clean and deploy.** `pnpm --filter api t45:preflight` must now exit `0`; then apply
+   the migration record fix from §T45.1 (`migrate resolve --rolled-back` if it had failed) and
+   `pnpm --filter api prisma:migrate`. `t45:preflight` a final time to confirm `state: applied`.
+5. **Redeploy the app** and leave maintenance mode. Keep `T45RepairAction` — it is the durable,
+   operator-attributed record of exactly which rows were changed and their before-images.
 
 The reproduce-first adversarial suite (`test/integration/phase3-t45-integrity.test.ts`, RED at
-`b0edc5a`) and the upgrade-proof's executed hostile inserts prove every seal rejects the shapes
-above; this note is the operator's repair path if a legacy database presents them.
+`b0edc5a`), the boundary-correction repair proof (`scripts/t45-repair-proof.sh` — preflight names
+every finding incl. F3.1, the migration aborts over violations, a forced repair failure rolls back
+with triggers intact, the explicit repair clears every finding, the correction then deploys), and
+the upgrade-proof's executed hostile inserts together prove every seal AND every repair path against
+real PostgreSQL.
 
 ## 1. Drain all OLD application instances
 

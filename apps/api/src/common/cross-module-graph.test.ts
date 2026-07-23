@@ -163,6 +163,7 @@ const NON_PILLAR_WRITERS: Record<string, string> = {
   'platform/outbox/relay.service.ts': 'platform infra (Task 6) — the outbox relay writes the SHARED OutboxDelivery/ProcessedEvent/ProjectionCursor delivery-state tables and dispatches to consumers; no module domain table',
   'platform/outbox/outbox-operations.service.ts': 'platform infra (PR B Task 4) — operator dead-letter status/retry writes the SHARED OutboxDelivery/ProjectionCursor delivery-state + the OutboxOperatorAction audit; no module domain table',
   'platform/projections/rebuilder.service.ts': 'platform infra (Task 9) — the projection rebuilder writes the SHARED ProjectionGeneration lifecycle table and replays events into a building generation via each consumer\'s own handler; no module domain table',
+  'platform/t45/t45-repair.service.ts': 'platform infra (Phase 3 Tasks 4–5 boundary correction) — the OFFLINE operator repair for pre-correction §C/§E violations: one bounded maintenance transaction disables the append-only triggers by name, applies an explicit plan, re-enables+verifies triggers, re-runs the diagnostics, and writes the SHARED T45RepairAction before-image evidence; never invoked from a request path, no module domain table, no signal',
 };
 
 // Services that perform NO Prisma write (readers, token/OTP/blob helpers, the
