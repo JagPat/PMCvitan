@@ -77,8 +77,8 @@ export async function computeMaterialReadingsDto(tx: Prisma.TransactionClient, p
 const READINESS_EVENTS = new Set([
   'requirement.created', 'requirement.revised', 'requirement.cancelled',
   'substitution.approved', 'substitution.revoked',
-  'po.issued', 'po.amended', 'po.cancelled',
-  'delivery.committed', 'delivery.revised', 'delivery.defaulted',
+  'po.issued', 'po.amended', 'po.cancelled', 'po.closed_short',
+  'delivery.committed', 'delivery.revised', 'delivery.defaulted', 'delivery.fulfilled',
   'stock.transacted', 'issue.recorded', 'mismatch.resolved',
   'activity.material_blocked', 'activity.material_unblocked',
 ]);

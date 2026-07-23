@@ -68,25 +68,30 @@ export class SubstitutionsService {
   ) {}
 
   /**
-   * The ACTIVE substitution targets per requirement — used by the coverage requirement loader
-   * to build `acceptableFingerprints`. Read INSIDE the caller's readiness transaction so the
-   * coverage answer reflects approvals/revocations committed before it. Returns
-   * `requirementId → [toFingerprint, …]` for substitutions with `revokedAt IS NULL`.
+   * The ACTIVE substitution edges per requirement — used by the coverage requirement loader to
+   * build `acceptableFingerprints`. Read INSIDE the caller's readiness transaction so the coverage
+   * answer reflects approvals/revocations committed before it. Returns
+   * `requirementId → [{ fromFingerprint, toFingerprint }, …]` for substitutions with
+   * `revokedAt IS NULL`.
+   *
+   * F2 correction: the edge carries its `fromFingerprint` so the loader can apply a substitution
+   * ONLY while the requirement's CURRENT head fingerprint still equals what was approved. An
+   * A→B approval must stop satisfying the requirement once it is revised A→C.
    */
   async activeTargets(
     tx: Prisma.TransactionClient,
     projectId: string,
     requirementIds: readonly string[],
-  ): Promise<Map<string, string[]>> {
-    const map = new Map<string, string[]>();
+  ): Promise<Map<string, Array<{ fromFingerprint: string; toFingerprint: string }>>> {
+    const map = new Map<string, Array<{ fromFingerprint: string; toFingerprint: string }>>();
     if (requirementIds.length === 0) return map;
     const rows = await tx.approvedSubstitution.findMany({
       where: { projectId, requirementId: { in: [...requirementIds] }, revokedAt: null },
-      select: { requirementId: true, toFingerprint: true },
+      select: { requirementId: true, fromFingerprint: true, toFingerprint: true },
     });
     for (const r of rows) {
       const list = map.get(r.requirementId) ?? [];
-      list.push(r.toFingerprint);
+      list.push({ fromFingerprint: r.fromFingerprint, toFingerprint: r.toFingerprint });
       map.set(r.requirementId, list);
     }
     return map;
@@ -122,9 +127,20 @@ export class SubstitutionsService {
         if (head.baseUom !== input.baseUom) throw new BadRequestException('The substitute material must share the requirement base UOM (coverage arithmetic runs in base UOM only)');
         const fromFingerprint = head.materialSpec.specFingerprint;
         if (toFingerprint === fromFingerprint) throw new BadRequestException('The substitute material is identical to the requirement — no substitution needed');
-        const created = await tx.approvedSubstitution.create({
-          data: { projectId, requirementId, fromFingerprint, toFingerprint, reason: input.reason, approvedById: actor.actorId },
-        });
+        // F2: a partial unique index forbids a SECOND active row for the same
+        // (projectId, requirementId, fromFingerprint, toFingerprint). A concurrent duplicate hits
+        // it and this call loses; a revoked row (revokedAt set) is excluded, so re-approval after
+        // revocation is allowed.
+        const created = await tx.approvedSubstitution
+          .create({
+            data: { projectId, requirementId, fromFingerprint, toFingerprint, reason: input.reason, approvedById: actor.actorId },
+          })
+          .catch((e: unknown) => {
+            if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+              throw new ConflictException('An active substitution for this material pair already exists — revoke it before re-approving');
+            }
+            throw e;
+          });
         await recordAudit(tx, { projectId, actor, action: 'substitution.approve', entity: 'ApprovedSubstitution', entityId: created.id });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'substitution.approved', entityType: 'ApprovedSubstitution', entityId: created.id,

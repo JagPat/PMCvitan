@@ -401,6 +401,10 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     await pos.issue(projectId, po2.id, {}, pmc(projectId));
     const line2 = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { projectId, requisitionLineId: chain2.lineId } });
     const c2 = await pos.commitDelivery(projectId, { poLineId: line2.id, promisedDate: '2026-09-20' }, pmc(projectId));
+    // Task 6 F4: fulfilment now requires an accepted receipt (an unreceived commitment cannot be
+    // fulfilled). Simulate the received progress directly — this suite exercises the delivery
+    // lifecycle, not the inventory receipt path (receivedQty is the frozen-line's admitted column).
+    await t.prisma.purchaseOrderLine.update({ where: { id: line2.id }, data: { receivedQty: '3' } });
     const fulfilled = await pos.fulfillDelivery(projectId, c2.id, pmc(projectId));
     expect(fulfilled.status).toBe('fulfilled');
 
@@ -408,8 +412,9 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
       where: { projectId, eventType: { startsWith: 'delivery.' } },
       orderBy: { streamPosition: 'asc' },
     });
+    // Task 6 F4: fulfilment now emits `delivery.fulfilled` (it removes inbound coverage).
     expect(evs.map((e) => e.eventType)).toEqual([
-      'delivery.committed', 'delivery.revised', 'delivery.revised', 'delivery.defaulted', 'delivery.committed',
+      'delivery.committed', 'delivery.revised', 'delivery.revised', 'delivery.defaulted', 'delivery.committed', 'delivery.fulfilled',
     ]);
     const lastRevised = evs[2]!.payload as { commitmentId: string; poLineId: string; promisedDate: string; history: unknown[] };
     expect(lastRevised).toMatchObject({ commitmentId: commitment.id, poLineId: draftLine.id, promisedDate: '2026-09-15' });
