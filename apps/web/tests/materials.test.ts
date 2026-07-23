@@ -24,13 +24,6 @@ const shortage = (over: Partial<ActivityShortageRow> = {}): ActivityShortageRow 
   impact: 'no-supply', impactReason: 'No covering delivery — must be procured', ...over,
 });
 
-const reqRow = (over: Partial<RequirementReadinessRow> = {}): RequirementReadinessRow => ({
-  requirementId: 'REQ-1', revision: 1, activityId: 'ACT-1', activityName: 'Waterproofing — Terrace',
-  material: 'cement · ultratech · opc 53', baseUom: 'bag', requiredQty: '100', coveredQty: '0', shortfall: '100',
-  verdict: 'blocked', requiredBy: '2026-08-15', plannedStartDate: '2026-08-10', commitmentPromisedDate: null,
-  reason: 'Short by 100 bag', ...over,
-});
-
 const readiness = (shortages: ActivityShortageRow[], requirements: RequirementReadinessRow[] = []): MaterialReadinessResult => {
   const activities: ActivityReadinessRow[] = shortages.map((x) => ({ ...x }));
   return {
@@ -228,82 +221,139 @@ describe('Task 7 — loadMaterials (module-query bundle, honest states, capabili
   });
 });
 
-describe('Task 7 correction — Materials is OPERATIONAL (findings 1/2)', () => {
+describe('Task 7 (correction 2) — Materials single-command actions through the write-ahead outbox', () => {
+  const settles = (cond: () => boolean) =>
+    vi.waitFor(() => { if (!cond()) throw new Error('not settled yet'); }, { timeout: 5000, interval: 5 });
+
   beforeEach(() => {
     useStore.setState(getInitialState());
     s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; st.activeProjectId = 'ambli'; st.toast = null; st.capabilities = ['materials']; });
   });
 
-  // a lot with a matching fingerprint and free-available stock on hand
-  const lot = (fp: string, free: string) => ({
-    id: 'LOT-1', specFingerprint: fp, materialCategory: 'Cement', make: 'UltraTech', grade: 'OPC 53', baseUom: 'bag',
-    locations: [{ storeLocation: 'main', acceptedOnHand: free, reserved: '0', freeAvailable: free, quarantine: '0', rejected: '0', issuedToActivity: '0' }],
-    transactions: [],
+  // a minimal base snapshot (materials are module-query-only, so they are NEVER in it — the reconcile
+  // hook reloads the materials bundle separately). Keep it close to the real ApiSnapshot shape.
+  const makeSnapshot = () => ({
+    project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: 'G+2', stage: 'Finishing', siteCode: 'AMB', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+    decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+    drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
   });
-  const reqItem = (fp: string) => ({ requirementId: 'REQ-1', revision: 1, spec: { specFingerprint: fp }, activityId: 'ACT-1', qty: '100', baseUom: 'bag' });
 
-  const gw = () => ({
+  const gw = (over: Partial<Record<string, unknown>> = {}) => ({
     materialReadiness: vi.fn().mockResolvedValue(readiness([])),
     materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
     materialRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
     materialPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
     materialStock: vi.fn().mockResolvedValue({ lots: [] }),
     materialIssues: vi.fn().mockResolvedValue({ issues: [] }),
+    materialReservationPlan: vi.fn().mockResolvedValue({ activityId: 'ACT-1', candidates: [], residuals: [] }),
     reserveStock: vi.fn().mockResolvedValue({}),
     issueStock: vi.fn().mockResolvedValue({}),
     consumeStock: vi.fn().mockResolvedValue({}),
     createMaterialRequisition: vi.fn().mockResolvedValue({}),
+    snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
+    ...over,
   });
 
-  it('coverMaterialShortage RESERVES matching free stock (with an idempotency key) then reconciles', async () => {
+  it('reserveCandidate passes the EXACT (lot, storeLocation, qty), reconciles, and clears pending', async () => {
     const g = gw();
     s()._setGateway(g as unknown as ApiGateway);
-    useStore.setState({
-      capabilities: ['materials'],
-      materialsView: bundle(readiness([shortage()], [reqRow({ shortfall: '60' })]), { stock: [lot('fp-1', '100')] as never, requirements: [reqItem('fp-1')] as never }),
-    });
-    s().coverMaterialShortage('ACT-1');
+    s().reserveCandidate('ACT-1', 'LOT-1', 'yard-store', '10');
+    await settles(() => g.reserveStock.mock.calls.length === 1);
     await flush();
-    expect(g.reserveStock).toHaveBeenCalledTimes(1);
     const [input, key] = g.reserveStock.mock.calls[0]!;
-    expect(input).toMatchObject({ lotId: 'LOT-1', activityId: 'ACT-1', qty: '60' });
+    expect(input).toEqual({ lotId: 'LOT-1', storeLocation: 'yard-store', activityId: 'ACT-1', qty: '10' });
     expect(typeof key).toBe('string');
-    expect(g.createMaterialRequisition).not.toHaveBeenCalled();
-    expect(g.materialReadiness).toHaveBeenCalled(); // reconciled via loadMaterials
+    expect(g.materialReadiness).toHaveBeenCalled(); // materials reconciled after the flush
+    expect(s().materialsPending).toHaveLength(0);   // the key cleared once resolved
   });
 
-  it('coverMaterialShortage RAISES A REQUISITION when there is no covering free stock', async () => {
+  it('issueMaterial passes storeLocation through; consume keys by issue; both inert off-pilot', async () => {
     const g = gw();
     s()._setGateway(g as unknown as ApiGateway);
-    useStore.setState({
-      capabilities: ['materials'],
-      materialsView: bundle(readiness([shortage()], [reqRow({ shortfall: '100' })]), { stock: [lot('fp-OTHER', '100')] as never, requirements: [reqItem('fp-1')] as never }),
-    });
-    s().coverMaterialShortage('ACT-1');
-    await flush();
-    expect(g.reserveStock).not.toHaveBeenCalled();
-    expect(g.createMaterialRequisition).toHaveBeenCalledTimes(1);
-    const [input] = g.createMaterialRequisition.mock.calls[0]!;
-    expect(input.lines).toEqual([{ requirementId: 'REQ-1', revision: 1, qty: '100' }]);
-  });
-
-  it('issueMaterial / consumeMaterial call their commands and reconcile; both are NO-OPs off-pilot', async () => {
-    const g = gw();
-    s()._setGateway(g as unknown as ApiGateway);
-    // off-pilot: no capability → inert
+    // off-pilot → inert
     useStore.setState({ capabilities: [] });
-    s().issueMaterial('LOT-1', 'ACT-1', '10');
+    s().issueMaterial('LOT-1', 'yard-store', 'ACT-1', '10');
     s().consumeMaterial('ISS-1', '5');
     await flush();
     expect(g.issueStock).not.toHaveBeenCalled();
     expect(g.consumeStock).not.toHaveBeenCalled();
-
     // on pilot
     useStore.setState({ capabilities: ['materials'] });
-    s().issueMaterial('LOT-1', 'ACT-1', '10');
+    s().issueMaterial('LOT-1', 'yard-store', 'ACT-1', '10');
+    await settles(() => g.issueStock.mock.calls.length === 1);
     s().consumeMaterial('ISS-1', '5');
+    await settles(() => g.consumeStock.mock.calls.length === 1);
+    expect(g.issueStock).toHaveBeenCalledWith({ lotId: 'LOT-1', storeLocation: 'yard-store', activityId: 'ACT-1', qty: '10' }, expect.any(String));
+    expect(g.consumeStock).toHaveBeenCalledWith({ issueId: 'ISS-1', qty: '5' }, expect.any(String));
+  });
+
+  it('raiseRequisition sends ONE requisition for the residual lines and reconciles', async () => {
+    const g = gw();
+    s()._setGateway(g as unknown as ApiGateway);
+    s().raiseRequisition('ACT-1', 'Cover Waterproofing', [{ requirementId: 'REQ-1', revision: 1, qty: '90' }]);
+    await settles(() => g.createMaterialRequisition.mock.calls.length === 1);
+    const [input] = g.createMaterialRequisition.mock.calls[0]!;
+    expect(input).toMatchObject({ title: 'Cover Waterproofing', lines: [{ requirementId: 'REQ-1', revision: 1, qty: '90' }] });
+    expect(g.reserveStock).not.toHaveBeenCalled(); // never a fan-out
+  });
+
+  // ── PROBE 5 — a double-click COALESCES (one command), and a lost/uncertain response RETRIES with the
+  //    SAME key (so the ledger applies the effect exactly once). ──
+  it('PROBE 5a: a double-click of the same candidate dispatches exactly ONE command', async () => {
+    const g = gw();
+    s()._setGateway(g as unknown as ApiGateway);
+    s().reserveCandidate('ACT-1', 'LOT-1', 'yard-store', '10');
+    s().reserveCandidate('ACT-1', 'LOT-1', 'yard-store', '10'); // the duplicate coalesces on the stable key
+    await settles(() => g.reserveStock.mock.calls.length >= 1);
     await flush();
-    expect(g.issueStock).toHaveBeenCalledWith(expect.objectContaining({ lotId: 'LOT-1', activityId: 'ACT-1', qty: '10' }), expect.any(String));
-    expect(g.consumeStock).toHaveBeenCalledWith(expect.objectContaining({ issueId: 'ISS-1', qty: '5' }), expect.any(String));
+    expect(g.reserveStock).toHaveBeenCalledTimes(1);
+  });
+
+  it('PROBE 5b: a lost (transient) response replays the SAME key on the next flush', async () => {
+    const g = gw({ reserveStock: vi.fn().mockRejectedValueOnce(new TypeError('network aborted')).mockResolvedValue({}) });
+    s()._setGateway(g as unknown as ApiGateway);
+    s().reserveCandidate('ACT-1', 'LOT-1', 'yard-store', '10');
+    await settles(() => g.reserveStock.mock.calls.length === 1); // first attempt aborts (op kept)
+    await s().flushOutbox();                                     // the retry (reconnect / reload)
+    await settles(() => g.reserveStock.mock.calls.length === 2);
+    const [, key1] = g.reserveStock.mock.calls[0]!;
+    const [, key2] = g.reserveStock.mock.calls[1]!;
+    expect(key2).toBe(key1); // identical key ⇒ the command-ledger applies it exactly once
+  });
+
+  // ── PROBE 6 — a terminally-rejected request leaves NO hidden committed state (the op is dropped from
+  //    the durable outbox), clears the pending key, and refreshes the materials truth. ──
+  it('PROBE 6: a terminal 4xx drops the op, clears pending, and refreshes the materials view', async () => {
+    const rejected = Object.assign(new Error('/stock/reserve 422'), { status: 422 });
+    const g = gw({ reserveStock: vi.fn().mockRejectedValue(rejected) });
+    s()._setGateway(g as unknown as ApiGateway);
+    s().reserveCandidate('ACT-1', 'LOT-1', 'yard-store', '10');
+    await settles(() => g.reserveStock.mock.calls.length === 1);
+    await flush();
+    expect(s().outbox).toHaveLength(0);            // dropped — no hidden committed state
+    expect(s().materialsPending).toHaveLength(0);  // unblocked
+    expect(g.materialReadiness).toHaveBeenCalled(); // truth refreshed
+  });
+
+  // ── PROBE 7 — a scope switch (project change / re-auth) landing mid-command must NOT toast or mutate
+  //    the NEW scope: the write-ahead flush's scope guard skips its reconcile entirely. ──
+  it('PROBE 7: a scope switch during the command never mutates or toasts the new scope', async () => {
+    let release: () => void = () => {};
+    const held = new Promise<unknown>((res) => { release = () => res({}); });
+    const g = gw({ reserveStock: vi.fn().mockReturnValue(held) });
+    s()._setGateway(g as unknown as ApiGateway);
+    s().reserveCandidate('ACT-1', 'LOT-1', 'yard-store', '10'); // command in flight (reserveStock pending)
+    await settles(() => g.reserveStock.mock.calls.length === 1);
+    // the project switches while the command is in flight (new generation = new scope)
+    useStore.setState((st) => { st.projectScopeGeneration = 2; st.toast = null; st.materialsPending = []; });
+    const readsBefore = g.materialReadiness.mock.calls.length;
+    release();
+    await flush();
+    await flush();
+    // the flush saw the moved scope → skipped its materials reconcile; the NEW scope is untouched
+    expect(g.materialReadiness.mock.calls.length).toBe(readsBefore);
+    expect(s().toast).toBeNull();
+    expect(s().materialsPending).toHaveLength(0);
   });
 });

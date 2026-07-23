@@ -1093,4 +1093,72 @@ export class InventoryService {
     // preserve the caller's input order
     return requirements.map((req) => byReq.get(req.requirementId)!);
   }
+
+  /**
+   * Phase 3 Task 7 (correction 2) — the CANONICAL reservation candidates for covering an activity's
+   * shortage, computed on the SERVER so the browser never recreates coverage compatibility from
+   * fingerprints alone. Reuses `coverageFor` for each requirement's shortfall, then greedily OFFERS
+   * free on-hand stock matched by acceptable fingerprint (the caller resolved own + active substitution
+   * into `acceptableFingerprints`) AND base UOM, per lot + store location — CONSERVATIVELY: the shared
+   * free pool is decremented as it is offered, so the SUM of offered reservations across the activity's
+   * requirements can never exceed the physical free stock (probe 2). Returns each offerable
+   * (requirement, lot, storeLocation, qty) and the per-requirement residual no on-hand stock covers.
+   * NOT a controller surface — the activities caller gates on the pilot capability.
+   */
+  async reservationCandidatesFor(
+    tx: CommandTx,
+    projectId: string,
+    requirements: readonly CoverageRequirement[],
+  ): Promise<{
+    candidates: { requirementId: string; revision: number; lotId: string; storeLocation: string; qty: string; baseUom: string; specFingerprint: string }[];
+    residuals: { requirementId: string; revision: number; qty: string; baseUom: string }[];
+  }> {
+    if (requirements.length === 0) return { candidates: [], residuals: [] };
+    const coverage = await this.coverageFor(tx, projectId, requirements);
+    const shortfall = new Map(coverage.map((c) => [c.requirementId, new Prisma.Decimal(c.shortfall)]));
+    const acceptable = new Set(requirements.flatMap((r) => r.acceptableFingerprints));
+
+    // the free pool per (lotId, storeLocation), folded from the §C ledger (freeAvailable = acceptedOnHand − reserved)
+    type Pool = { lotId: string; storeLocation: string; specFingerprint: string; baseUom: string; free: Prisma.Decimal };
+    const pools: Pool[] = [];
+    if (acceptable.size > 0) {
+      const lots = await tx.stockLot.findMany({
+        where: { projectId, specFingerprint: { in: [...acceptable] } },
+        select: { id: true, specFingerprint: true, baseUom: true, transactions: true },
+      });
+      for (const lot of lots) {
+        const rows = lot.transactions as Movement[];
+        const locations = [...new Set(rows.flatMap((t) => (t.toStoreLocation ? [t.storeLocation, t.toStoreLocation] : [t.storeLocation])))];
+        for (const loc of locations) {
+          const b = foldBuckets(rows, loc);
+          const free = b.acceptedOnHand.sub(b.reserved);
+          if (free.greaterThan(0)) pools.push({ lotId: lot.id, storeLocation: loc, specFingerprint: lot.specFingerprint, baseUom: lot.baseUom, free });
+        }
+      }
+      // deterministic pool order so the conserved offer is reproducible
+      pools.sort((a, b) => (a.lotId !== b.lotId ? (a.lotId < b.lotId ? -1 : 1) : a.storeLocation < b.storeLocation ? -1 : a.storeLocation > b.storeLocation ? 1 : 0));
+    }
+
+    const candidates: { requirementId: string; revision: number; lotId: string; storeLocation: string; qty: string; baseUom: string; specFingerprint: string }[] = [];
+    const residuals: { requirementId: string; revision: number; qty: string; baseUom: string }[] = [];
+    // deterministic requirement order so the conserved allocation across shared stock is reproducible
+    const reqsSorted = [...requirements].sort((a, b) => (a.requirementId < b.requirementId ? -1 : a.requirementId > b.requirementId ? 1 : 0));
+    for (const req of reqsSorted) {
+      let need = shortfall.get(req.requirementId) ?? ZERO;
+      if (need.lessThanOrEqualTo(0)) continue;
+      const acc = new Set(req.acceptableFingerprints);
+      for (const pool of pools) {
+        if (need.lessThanOrEqualTo(0)) break;
+        if (pool.free.lessThanOrEqualTo(0)) continue;
+        if (!acc.has(pool.specFingerprint)) continue;
+        if (pool.baseUom !== req.baseUom) continue; // base-UOM compatibility (probe 4 — wrong UOM is not eligible)
+        const take = need.lessThan(pool.free) ? need : pool.free;
+        candidates.push({ requirementId: req.requirementId, revision: req.revision, lotId: pool.lotId, storeLocation: pool.storeLocation, qty: take.toString(), baseUom: req.baseUom, specFingerprint: pool.specFingerprint });
+        pool.free = pool.free.sub(take);
+        need = need.sub(take);
+      }
+      if (need.greaterThan(0)) residuals.push({ requirementId: req.requirementId, revision: req.revision, qty: need.toString(), baseUom: req.baseUom });
+    }
+    return { candidates, residuals };
+  }
 }
