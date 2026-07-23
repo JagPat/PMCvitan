@@ -3,6 +3,8 @@ import type { PrismaService } from '../../prisma.service';
 import {
   runT45Diagnostics,
   summarizeT45,
+  T45_REFERENCED_TABLES,
+  T45_TASK5_COLUMN,
   type T45DiagnosticsReport,
   type T45TxClient,
 } from './t45-diagnostics';
@@ -103,8 +105,42 @@ export class T45RepairService {
     return runT45Diagnostics(this.prisma);
   }
 
-  /** Inspect the `_prisma_migrations` record for the correction migration (three-state classify). */
+  /**
+   * Is the §C/§E schema the diagnostics read even present? A fresh/empty database, or one older than
+   * Task 5 (no `MaterialIssue` / `MismatchResolution` / `StockTransaction.issueId`), is NOT eligible
+   * — the preflight reports "not applicable" and lets normal migrations run. All checks are over
+   * `information_schema`, so this is safe on a database with no application tables at all.
+   */
+  async schemaEligible(): Promise<{ applicable: boolean; reason: string; missing: string[] }> {
+    const present = await this.prisma.$queryRawUnsafe<Array<{ table_name: string }>>(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ANY($1::text[])`,
+      T45_REFERENCED_TABLES as unknown as string[],
+    );
+    const have = new Set(present.map((r) => r.table_name));
+    const missing = T45_REFERENCED_TABLES.filter((t) => !have.has(t));
+    const col = await this.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+      `SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`,
+      T45_TASK5_COLUMN.table,
+      T45_TASK5_COLUMN.column,
+    );
+    if (Number(col[0]?.n ?? 0) === 0) missing.push(`${T45_TASK5_COLUMN.table}.${T45_TASK5_COLUMN.column}`);
+    if (missing.length > 0) {
+      return {
+        applicable: false,
+        reason: `Task-5 §C/§E schema not present (missing: ${missing.join(', ')}) — T45 diagnostics not applicable`,
+        missing,
+      };
+    }
+    return { applicable: true, reason: 'Task-5 §C/§E schema present', missing: [] };
+  }
+
+  /** Inspect the `_prisma_migrations` record for the correction migration (three-state classify).
+   *  Robust to a pre-baseline database where `_prisma_migrations` does not exist yet (P3005 origin). */
   async migrationState(): Promise<{ state: 'applied' | 'failed-pending' | 'not-applied'; row: Record<string, unknown> | null }> {
+    const ledger = await this.prisma.$queryRawUnsafe<Array<{ present: boolean }>>(
+      `SELECT to_regclass('"_prisma_migrations"') IS NOT NULL AS present`,
+    );
+    if (!ledger[0]?.present) return { state: 'not-applied', row: null };
     const rows = await this.prisma.$queryRawUnsafe<Array<{ migration_name: string; finished_at: Date | null; rolled_back_at: Date | null }>>(
       `SELECT migration_name, finished_at, rolled_back_at FROM "_prisma_migrations" WHERE migration_name = '20261231000000_phase3_t45_integrity_correction' ORDER BY started_at DESC LIMIT 1`,
     );
