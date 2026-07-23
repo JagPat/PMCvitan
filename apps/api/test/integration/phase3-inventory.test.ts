@@ -129,6 +129,20 @@ describe('Phase 3 Task 4 — inventory: receipts, acceptance, the §C stock ledg
     return row.id;
   };
 
+  // Tasks 4–5 integrity correction (F1): a §C ledger row now REQUIRES a same-project source
+  // command (NOT NULL + composite FK). The DB-seal probes below insert raw rows to reach the
+  // §C CHECKs/triggers, so they carry a real CommandExecution — otherwise they would fail on the
+  // NOT NULL before reaching the constraint under test.
+  const freshCommand = async (projectId: string): Promise<string> => {
+    const { orgId } = await t.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { orgId: true } });
+    const c = await t.prisma.commandExecution.create({
+      data: { scopeKind: 'project', organizationId: orgId, projectId, actorId: f.memberUser.id,
+        commandType: 'test.seal', idempotencyKey: `seal-${Date.now() % 1e6}-${seq++}`, requestHash: 'x', status: 'succeeded' },
+      select: { id: true },
+    });
+    return c.id;
+  };
+
   /** The full §F pipeline: requirement → approved requisition → quote → approved comparison. */
   const approvedChain = async (
     projectId: string,
@@ -483,6 +497,7 @@ describe('Phase 3 Task 4 — inventory: receipts, acceptance, the §C stock ledg
 
     const base = {
       projectId, lotId: lot.id, storeLocation: 'main', recordedById: f.memberUser.id,
+      sourceCommandId: await freshCommand(projectId), // F1: reach the §C CHECK, not the NOT NULL
     };
     // §C equations are CHECK-pinned: a receipt that fills anything but quarantine is unrepresentable
     await expect(t.prisma.stockTransaction.create({

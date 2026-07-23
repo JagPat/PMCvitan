@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma.service';
@@ -69,6 +69,16 @@ export interface ExecuteInput<T> {
   idempotencyKey?: string | null;
   /** Canonical hash of the EXACT request DTO fields — the same-key/different-payload → 409 key. */
   requestHash: string;
+  /**
+   * Tasks 4–5 integrity correction (F1) — when the caller sends NO client key, synthesize a
+   * SERVER one-shot command so the execution still reserves a `CommandExecution` row and `run`
+   * receives a non-null `ctx.commandId`. Used by the inventory module, whose §C ledger rows
+   * REQUIRE a source command (`StockTransaction.sourceCommandId` is NOT NULL). This preserves
+   * legacy unkeyed behavior exactly: the synthesized key is unique per call, so it is never a
+   * replay and two unkeyed retries each execute once (today's compare-and-set semantics) — it
+   * only guarantees provenance. A CLIENT-supplied key keeps its exactly-once replay unchanged.
+   */
+  synthesizeKeyWhenAbsent?: boolean;
   /** The canonical mutation, run INSIDE the reserve/receipt transaction. Returns the resultRef. */
   run: (tx: CommandTx, ctx: CommandRunContext) => Promise<CommandResult<T>>;
 }
@@ -151,16 +161,24 @@ async function resolveTenant(tx: CommandTx, scope: CommandScope): Promise<{ orga
 }
 
 export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInput<T>): Promise<ExecuteOutcome<T>> {
-  const key = input.idempotencyKey?.trim() || null;
+  const clientKey = input.idempotencyKey?.trim() || null;
 
   // ── Legacy / unkeyed path: today's compare-and-set behavior, unchanged ─────────────────────
-  if (!key) {
+  // F1: a caller that opts into `synthesizeKeyWhenAbsent` (inventory) instead falls through to
+  // the reserve/execute/receipt path below with a SERVER one-shot key, so `run` still gets a
+  // real `commandId`. Every OTHER module keeps the ledger-less unkeyed path exactly as before.
+  if (!clientKey && !input.synthesizeKeyWhenAbsent) {
     if (commandKeyEnforced()) {
       throw new BadRequestException('This action requires an Idempotency-Key — please update the app to continue.');
     }
     const r = await prisma.$transaction((tx) => input.run(tx, { commandId: null }));
     return { replayed: false, resultRef: r.resultRef, value: r.value, events: r.events ?? [] };
   }
+
+  // The key the receipt is stored under: the client's (exactly-once replay) or, when the caller
+  // synthesizes, a per-call server key (unique → never a replay; two unkeyed retries each run
+  // once, exactly as the legacy compare-and-set path did — this only secures provenance).
+  const key = clientKey ?? `srv-${randomUUID()}`;
 
   // ── Fast path: replay a prior committed receipt for THIS actor + scope ─────────────────────
   const prior = await prisma.commandExecution.findFirst({ where: receiptWhere(input.scope, input.actor.actorId, input.commandType, key) });

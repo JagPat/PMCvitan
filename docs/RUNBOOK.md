@@ -53,6 +53,49 @@ In ALL states the deploy aborts loudly (sampled rows, named repair) on forged/un
 spec provenance or approver identities naming no user — repair the data explicitly and re-run
 `prisma migrate deploy`; never null provenance to force it through.
 
+## §T45. Tasks 4–5 integrity-correction migration note (one-time, diagnostic-first)
+
+`20261231000000_phase3_t45_integrity_correction` makes PostgreSQL enforce the physical-truth
+invariants the inventory + daily-log services already enforce (command provenance F1, receipt/
+lot provenance F2, issue canonicity F3, mismatch-resolution guards F4). It runs a **diagnostic
+DO block FIRST** and ABORTS — before adding any constraint — if legacy rows already violate an
+invariant, listing a per-finding count. It NEVER invents provenance.
+
+On a clean or capability-gated **pilot** database (no production pilot has been activated yet)
+there are zero offending rows: the diagnostics pass and the constraints apply. If the deploy
+aborts with `Phase 3 Tasks 4–5 integrity correction ABORTED …`, the transaction rolled back and
+NO constraint was added; classify and repair each listed finding, then re-run `prisma migrate
+deploy`:
+
+- **F1 — NULL / cross-project `sourceCommandId`.** Only legacy UNKEYED inventory calls made
+  before this release could have left a null (keyed calls always recorded one; the app now
+  synthesizes a server one-shot command for unkeyed calls too). These rows cannot be
+  auto-repaired — the appending command is unknowable. The operator records an explicit,
+  audited reconciliation `CommandExecution` (scopeKind `project`, the row's `projectId`,
+  `commandType='ops.t45_reconciliation'`, a unique `idempotencyKey`, `status='succeeded'`) and
+  sets the offending rows' `sourceCommandId` to it — an attributable operator action, logged in
+  the change record. A cross-project `sourceCommandId` is a real defect: identify the correct
+  same-project command from the audit log; do not repoint blindly.
+- **F2.1 / F2.2 / F2.3 — broken lot chain, forged spec copy, or receipt≠lot.** A lot whose
+  procurement chain or frozen §B copy does not match its pinned requirement revision, or a
+  receipt row whose PO-line/commitment differs from its lot, indicates corrupted provenance.
+  Because `StockLot`/`StockTransaction` are append-only, reverse the affected receipt through
+  `stock.reverse` (attributable) and re-record it against the correct chain; do NOT edit the
+  frozen columns.
+- **F3.2 / F3.3 — orphan or mis-scoped issue.** An orphan `MaterialIssue` (no canonical `issue`
+  movement) or an issue-scoped row disagreeing with its issue is a broken §E record. Append the
+  missing/ correcting movement through the normal issue command, or reverse the mis-scoped row;
+  the register itself is never edited.
+- **F4 — a resolution on a matched=true observation.** The observation was re-matched after
+  resolution (impossible once this migration is in place). Confirm which state is correct from
+  the audit log and reconcile: either the resolution stands (set the observation back to
+  `matched=false`, its historical truth) or the resolution was erroneous and is removed by an
+  operator action recorded in the change log.
+
+The reproduce-first adversarial suite (`test/integration/phase3-t45-integrity.test.ts`, RED at
+`b0edc5a`) and the upgrade-proof's executed hostile inserts prove every seal rejects the shapes
+above; this note is the operator's repair path if a legacy database presents them.
+
 ## 1. Drain all OLD application instances
 
 Stop routing to and shut down every instance running the PREVIOUS build. The single-sender
