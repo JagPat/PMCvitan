@@ -171,3 +171,30 @@ forecast); `activities/activities.controller.ts` (`GET material-readiness`, `req
 Labour readiness (Phase 4); commercial control — budgets, bills, measurement, certification, payments
 (Phase 5); portals + vendor-org promotion (Phase 6); accounting (Phase 7). **Phase 4 is NOT begun.**
 This is the final Phase-3 review stop.
+
+## GREEN SIGNAL — PHASE 3 CLEARED
+
+The final Phase-3 independent review returned **BLOCKED NARROWLY** on the Task-7 PR (#205): the pilot
+was observational, not operational, plus readiness-correctness findings — resolved across a focused
+correction lineage, each ONE held PR reviewed and merged before the next:
+
+| Round | PR | Merge `main` | What it resolved |
+|---|---|---|---|
+| Task 7 | #205 | `c642da3` | Frontend surfaces + shortage Inbox + acceptance chain (additive; Tasks 1–6 unaffected). |
+| T7 correction | #206 | `248212b4` | F1/F7 operational hub, F2 latest-request load, F3 per-activity totals, F4 earliest-need forecast, F5 exact-decimal reservation fold. |
+| T7 correction 2 | #207 | `a1d78807` | Single-command pilot without browser-side orchestration — server reservation-plan candidates + write-ahead single commands. |
+| T7 correction 3 | #208 | `8b7fabf` | Reservation-plan lifecycle: operation identity vs coalescing, candidate aggregation, per-activity plan generations, uncertain-failure truth. |
+| T7 correction 4 | #209 | `ad5da17` | Backward-compatible hydration of PR-#207 outbox ops (derive coalesce key, preserve idempotency key, drop malformed, persist migrated queue). |
+
+**The narrow mechanical re-review of PR #209 (reviewed base `8b7fabf` → head `14c0e89` → merge
+`ad5da17`; merge tree matches the reviewed head; 10/10 GitHub checks passed) returned GREEN SIGNAL:
+PHASE 3 CLEARED — no remaining P0/P1/P2 findings.** Verified: all four PR-#207 material-op formats
+normalize correctly; original idempotency keys byte-for-byte unchanged; equivalent post-hydration
+clicks coalesce; a confirmed completion permits a new action with a fresh key; malformed rows cannot
+place `undefined` into `materialsPending`; normalized queues persist to the same user/project storage
+scope; focused tests 36/36; the independent reproduction that failed on PR #208 now passes.
+
+**Phase 3 Tasks 1–7 — the canonical material-readiness spine and the operational Materials pilot with
+its full correction lineage — are COMPLETE and INDEPENDENTLY CLEARED.** Capability-enabled internal
+(pilot) projects may use the Materials workflow; non-pilot projects remain unaffected (§D). **Phase 4
+has NOT begun and does not begin until JagPat explicitly approves Phase 4 planning.**
