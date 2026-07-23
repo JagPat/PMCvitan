@@ -39,6 +39,12 @@ import type {
   DailyLogModuleResult,
   DrawingsModuleResult,
   InspectionsModuleResult,
+  MaterialReadinessResult,
+  RequirementListItem,
+  RequisitionDto,
+  PurchaseOrderDto,
+  StockLotDto,
+  MaterialIssueDto,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -387,6 +393,9 @@ export interface ProjectShell {
   siteCode: string;
   org: { id: string; name: string } | null;
   enabledModules: string[];
+  /** Phase 3 Task 7 (§D) — the PER-PROJECT pilot capabilities (`['materials']` on a pilot project,
+   *  `[]` otherwise); the client gates the Materials surfaces on this. */
+  capabilities: string[];
   counts: { pendingDecisions: number; decisionsGeneration: number | null };
 }
 
@@ -776,9 +785,39 @@ export class ApiGateway {
     return this.req<ModuleActivities>(`/projects/${this.projectId}/activities`);
   }
 
-  /** Phase 2 Task 9 — the project-shell summary (identity + enabledModules + projection counts). */
+  /** Phase 2 Task 9 — the project-shell summary (identity + enabledModules + capabilities + counts). */
   shell(): Promise<ProjectShell> {
     return this.req<ProjectShell>(`/projects/${this.projectId}/shell`);
+  }
+
+  // ── Phase 3 Task 7 — the pilot MATERIALS reads (capability-gated on the server; 404 off-pilot). These
+  //    are greenfield module reads (never in the snapshot), so they are module-query-only — the store
+  //    fetches them together in `loadMaterials()` only when the project has the `materials` capability. ──
+
+  /** The material-readiness view (per-requirement coverage + shortage forecast) — activities-owned. */
+  materialReadiness(): Promise<MaterialReadinessResult> {
+    return this.req<MaterialReadinessResult>(`/projects/${this.projectId}/activities/material-readiness`);
+  }
+  /** The activity material requirements (head revision per requirement + revision count). */
+  materialRequirements(): Promise<{ requirements: RequirementListItem[] }> {
+    return this.req<{ requirements: RequirementListItem[] }>(`/projects/${this.projectId}/requirements`);
+  }
+  /** The procurement requisitions (each with its lines). */
+  materialRequisitions(): Promise<{ requisitions: RequisitionDto[] }> {
+    return this.req<{ requisitions: RequisitionDto[] }>(`/projects/${this.projectId}/requisitions`);
+  }
+  /** The purchase orders (versions → lines → delivery commitments) — the deliveries view reads these too. */
+  materialPurchaseOrders(): Promise<{ purchaseOrders: PurchaseOrderDto[] }> {
+    return this.req<{ purchaseOrders: PurchaseOrderDto[] }>(`/projects/${this.projectId}/pos`);
+  }
+  /** The stock store (lots → per-location buckets incl. reserved/freeAvailable + the §C ledger) — the
+   *  reservations view derives its per-activity reserved pool from these buckets + reservation ledger rows. */
+  materialStock(): Promise<{ lots: StockLotDto[] }> {
+    return this.req<{ lots: StockLotDto[] }>(`/projects/${this.projectId}/stock`);
+  }
+  /** The material issues (what LEFT the store for an activity/location — the §E canonical record). */
+  materialIssues(): Promise<{ issues: MaterialIssueDto[] }> {
+    return this.req<{ issues: MaterialIssueDto[] }>(`/projects/${this.projectId}/stock/issues`);
   }
 
   approveDecision(decisionId: string, optionIndex: number, idempotencyKey?: string): Promise<ApiSnapshot> {

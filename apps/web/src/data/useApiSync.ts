@@ -44,6 +44,10 @@ export function useApiSync(): void {
       // superseded/scope-moved by the coordinator — but still gates the socket
       // handler below so we don't schedule a pull after unmount.
       useStore.getState().requestFreshSnapshot();
+      // Phase 3 Task 7 — keep the pilot Materials bundle fresh on the same pings (a no-op off-pilot,
+      // gated by the `materials` capability). The initial call before the shell loads is a no-op; the
+      // shell load then triggers the first real fetch, and subsequent `changed` pings refresh it.
+      useStore.getState().loadMaterials();
     };
 
     (async () => {

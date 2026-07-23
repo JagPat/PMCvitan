@@ -15,6 +15,7 @@ import {
   Users,
   LayoutGrid,
   LogIn,
+  Package,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -43,6 +44,18 @@ export const SCREEN_META: Record<ScreenKey, ScreenMeta> = {
   team: { key: 'team', label: 'Team', short: 'Team', path: '/team', icon: Users },
   portfolio: { key: 'portfolio', label: 'Portfolio', short: 'Portfolio', path: '/portfolio', icon: LayoutGrid },
   'team-access': { key: 'team-access', label: 'Team Access & Login', short: 'Access', path: '/access', icon: LogIn },
+  materials: { key: 'materials', label: 'Materials', short: 'Materials', path: '/materials', icon: Package },
+};
+
+/**
+ * Phase 3 Task 7 (§D) — the per-project CAPABILITY a screen requires, or `null` for a screen with no
+ * capability gate. A capability-gated screen (`materials` → `'materials'`) is present ONLY when the
+ * active project's shell reports that capability; a non-pilot project shows none — matching the server's
+ * 404 stance. Unlike `SCREEN_MODULE` (registry-global — `inventory`/`procurement` are enabled for every
+ * project), this is the PER-PROJECT pilot gate.
+ */
+export const SCREEN_CAPABILITY: Partial<Record<ScreenKey, string>> = {
+  materials: 'materials',
 };
 
 /**
@@ -67,6 +80,10 @@ export const SCREEN_MODULE: Record<ScreenKey, string | null> = {
   team: 'orgs',
   portfolio: null,
   'team-access': null,
+  // Materials is gated by the per-project `materials` CAPABILITY (SCREEN_CAPABILITY), not a global
+  // module — `inventory`/`procurement` are registry-enabled for every project, so a module gate can't
+  // pilot-gate it. `null` here so the module filter is a no-op; the capability filter does the gating.
+  materials: null,
 };
 
 /**
@@ -75,8 +92,19 @@ export const SCREEN_MODULE: Record<ScreenKey, string | null> = {
  * full role list shows — behaviour-preserving until the shell lands. A shell-surface screen (module
  * `null`) is always kept.
  */
-export function enabledScreensFor(role: Role, enabledModules: readonly string[]): ScreenMeta[] {
-  const screens = screensFor(role);
+export function enabledScreensFor(
+  role: Role,
+  enabledModules: readonly string[],
+  capabilities: readonly string[] = [],
+): ScreenMeta[] {
+  const caps = new Set(capabilities);
+  // The CAPABILITY gate (Phase 3 Task 7) always applies — a capability-gated screen is hidden until the
+  // project's shell reports that capability. This runs even when `enabledModules` is empty (not yet
+  // loaded / local demo), so a Materials screen never flashes for a project that lacks the pilot.
+  const screens = screensFor(role).filter((m) => {
+    const cap = SCREEN_CAPABILITY[m.key];
+    return cap === undefined || caps.has(cap);
+  });
   if (!enabledModules.length) return screens;
   const enabled = new Set(enabledModules);
   return screens.filter((m) => {
@@ -90,11 +118,11 @@ export function screensFor(role: Role): ScreenMeta[] {
   // 'inbox' ("For You") is the home for every role — a live, cross-cutting to-do list, first
   // in the nav so everyone lands on exactly what needs them before drilling into a screen.
   const keys: Record<Role, ScreenKey[]> = {
-    pmc: ['inbox', 'dashboard', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'places', 'team', 'portfolio'],
+    pmc: ['inbox', 'dashboard', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'places', 'team', 'portfolio'],
     client: ['inbox', 'client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
     // engineers hold activity.start/complete, so they get the Schedule (its authoring
-    // controls stay behind activity.manage — pmc only)
-    engineer: ['inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'places', 'team-access', 'decision-log'],
+    // controls stay behind activity.manage — pmc only). Materials is a pmc/engineer planning surface.
+    engineer: ['inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'materials', 'places', 'team-access', 'decision-log'],
     contractor: ['inbox', 'drawings', 'places', 'team-access', 'decision-log'],
     // a discipline consultant: read-mostly reviewer — drawings, the register, the Site Map, project health
     consultant: ['inbox', 'drawings', 'decision-log', 'places', 'client-health'],

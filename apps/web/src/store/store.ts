@@ -59,6 +59,7 @@ import {
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
+import type { MaterialsView } from './materials';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
@@ -198,6 +199,14 @@ export interface AppState {
   // source). Drives manifest-driven nav: a screen whose module is disabled is hidden. Empty = not yet
   // loaded → the nav shows every role screen (no flash), matching today's behaviour.
   enabledModules: string[];
+  // Phase 3 Task 7 (§D) — the PER-PROJECT pilot capabilities from the shell (`['materials']` on a pilot
+  // project, `[]` otherwise). The Materials nav/screens gate on `'materials'`, so a non-pilot project
+  // shows none. Project-owned → torn down on scope change (never leaks a pilot flag across a switch).
+  capabilities: string[];
+  // Phase 3 Task 7 — the pilot Materials bundle + its module-query load status (greenfield, no snapshot
+  // fallback → no `source`). `null`/'idle' on a non-pilot project; the pilot's shell load triggers it.
+  materialsView: MaterialsView | null;
+  materialsLoad: 'idle' | 'loading' | 'ready' | 'error';
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
@@ -327,6 +336,10 @@ export interface AppActions {
   loadOrgData: () => void;
   loadPortfolio: () => void;
   loadShell: () => void;
+  /** Phase 3 Task 7 — fetch the pilot Materials bundle (readiness + requirements + procurement + POs +
+   *  stock + issues) together, ONLY when the active project has the `materials` capability. Scope-guarded
+   *  + honest load states; a non-pilot project is a no-op (the surfaces are absent from nav). */
+  loadMaterials: () => void;
   /** Atomically re-scope to another project. Empties project data BEFORE the auth
    *  request; adopts the SERVER-returned project on success. Resolves true only when
    *  the switch was authenticated. `targetScreen` survives the switch when the new
@@ -592,6 +605,9 @@ export function getInitialState(): AppState {
     activitiesLoad: 'idle',
     activitiesSource: null,
     enabledModules: [],
+    capabilities: [],
+    materialsView: null,
+    materialsLoad: 'idle',
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
@@ -2202,9 +2218,46 @@ export const useStore = create<Store>()(
     loadShell: () => {
       if (!gateway) return;
       const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
-      gateway.shell().then((shell) => set((s) => {
-        if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) s.enabledModules = shell.enabledModules;
-      })).catch(() => {});
+      gateway.shell().then((shell) => {
+        set((s) => {
+          if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) {
+            s.enabledModules = shell.enabledModules;
+            s.capabilities = shell.capabilities;
+          }
+        });
+        // Phase 3 Task 7 — on a PILOT project, pull the Materials bundle once the capability is known.
+        if (isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope) && shell.capabilities.includes('materials')) {
+          get().loadMaterials();
+        }
+      }).catch(() => {});
+    },
+    loadMaterials: () => {
+      if (!gateway) return;
+      if (!get().capabilities.includes('materials')) return; // inert off-pilot
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      if (get().materialsLoad !== 'ready') set((s) => { s.materialsLoad = 'loading'; }); // stale-while-revalidate
+      Promise.all([
+        gateway.materialReadiness(),
+        gateway.materialRequirements(),
+        gateway.materialRequisitions(),
+        gateway.materialPurchaseOrders(),
+        gateway.materialStock(),
+        gateway.materialIssues(),
+      ]).then(([readiness, requirements, requisitions, purchaseOrders, stock, issues]) => set((s) => {
+        if (!isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) return; // dropped after a switch/re-auth
+        s.materialsView = {
+          readiness,
+          requirements: requirements.requirements,
+          requisitions: requisitions.requisitions,
+          purchaseOrders: purchaseOrders.purchaseOrders,
+          stock: stock.lots,
+          issues: issues.issues,
+        };
+        s.materialsLoad = 'ready';
+      })).catch(() => set((s) => {
+        // keep the last-good bundle; expose a Retry boundary (finding 4: honest, not stale-'ready')
+        if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) s.materialsLoad = 'error';
+      }));
     },
     switchProject: (projectId, targetScreen) => {
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);

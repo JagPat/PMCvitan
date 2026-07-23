@@ -14,6 +14,7 @@ import type {
   ProjectNode,
   Review,
 } from '@vitan/shared';
+import type { MaterialsView } from './materials';
 
 /**
  * The frontend project-scope lifecycle (Phase 0 Task 2).
@@ -50,6 +51,11 @@ export interface ProjectDataState {
   dailyLog: DailyLog | null;
   notifications: AppNotification[];
   companies: ProjectCompany[];
+  // Phase 3 Task 7 — the PER-PROJECT pilot capabilities (`['materials']` on a pilot project) + the
+  // Materials bundle. Project-owned, so they tear down on every scope change: a non-pilot / freshly
+  // switched project shows NO Materials nav until its shell reloads the capability (never stale).
+  capabilities: string[];
+  materialsView: MaterialsView | null;
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */
@@ -71,6 +77,8 @@ export function emptyProjectData(): ProjectDataState {
     dailyLog: null,
     notifications: [],
     companies: [],
+    capabilities: [],
+    materialsView: null,
   };
 }
 
@@ -95,6 +103,9 @@ export interface ModuleReadState {
   inspectionsSource: 'projection' | 'live' | null;
   activitiesLoad: 'idle' | 'loading' | 'ready' | 'error';
   activitiesSource: 'projection' | 'live' | null;
+  // Phase 3 Task 7 — the pilot Materials bundle load status (module-query-only, greenfield; no snapshot
+  // fallback, so no `source`). 'idle' on a non-pilot project; the pilot's shell load triggers 'loading'.
+  materialsLoad: 'idle' | 'loading' | 'ready' | 'error';
 }
 export function emptyModuleReadState(): ModuleReadState {
   return {

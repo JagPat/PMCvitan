@@ -86,7 +86,10 @@ export type ScreenKey =
   | 'places'
   | 'team'
   | 'portfolio'
-  | 'team-access';
+  | 'team-access'
+  // Phase 3 Task 7 — the pilot Materials hub (requirements → procurement → deliveries → inventory →
+  // reservations → issues → readiness). Capability-gated: present ONLY on a project with `materials`.
+  | 'materials';
 
 export type Lang = 'en' | 'hi' | 'gu';
 
