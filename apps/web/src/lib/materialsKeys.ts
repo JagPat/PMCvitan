@@ -34,3 +34,43 @@ export const requisitionCoalesceKey = (
   const sig = lines.map((l) => `${l.requirementId}@${l.revision}x${l.qty}`).sort().join(',');
   return `mat:req:${activityId}:${sig}`;
 };
+
+/** The materials operation `t` discriminants persisted to the durable outbox. */
+export const MATERIALS_OUTBOX_OP_TYPES = ['reserveStock', 'issueStock', 'consumeStock', 'createRequisition'] as const;
+const MATERIALS_OP_TYPE_SET: ReadonlySet<string> = new Set(MATERIALS_OUTBOX_OP_TYPES);
+/** True iff `t` is a materials outbox-op discriminant. Accepts `unknown` so it can screen parsed storage. */
+export const isMaterialsOpType = (t: unknown): boolean => typeof t === 'string' && MATERIALS_OP_TYPE_SET.has(t);
+
+/** The minimal shape the outbox normalizer inspects on each persisted op. */
+type OutboxOpShape = { t?: unknown; idempotencyKey?: unknown; coalesceKey?: unknown };
+
+/**
+ * Phase 3 Task 7 (correction 4) — backward-compatible normalization of the persisted materials outbox.
+ *
+ * A materials op persisted by PR #207 carries only `idempotencyKey` (no `coalesceKey`); PR #208 keys
+ * coalescing/disable-while-pending on `coalesceKey`, so on a legacy queue an equivalent action would NOT
+ * coalesce and could execute a SECOND time (double reserve). The old PR #207 idempotency key used the
+ * SAME deterministic business-coordinate format as the new coalesce key — `reserveKey`→`reserveCoalesceKey`
+ * (etc.) were renamed with identical bodies — so we DERIVE `coalesceKey` from the legacy `idempotencyKey`
+ * and PRESERVE the `idempotencyKey` byte-for-byte (replay stays exactly-once). A malformed materials op
+ * (not an object, or neither key present) is DROPPED so a `undefined` can never reach `materialsPending`.
+ * Non-materials ops pass through untouched. `changed` lets the caller persist the migrated queue back.
+ */
+export function normalizeMaterialsOutbox<T extends OutboxOpShape>(ops: readonly T[]): { ops: T[]; changed: boolean } {
+  let changed = false;
+  const out: T[] = [];
+  for (const op of ops) {
+    if (op === null || typeof op !== 'object') { changed = true; continue; } // drop non-object junk
+    if (!isMaterialsOpType(op.t)) { out.push(op); continue; } // non-materials op — untouched
+    if (typeof op.coalesceKey === 'string') { out.push(op); continue; } // already PR #208 shape
+    if (typeof op.idempotencyKey === 'string' && op.idempotencyKey.length > 0) {
+      // legacy PR #207 materials op: derive the coalesce key from the (same-format) idempotency key,
+      // keep the idempotency key untouched.
+      out.push({ ...op, coalesceKey: op.idempotencyKey } as T);
+      changed = true;
+      continue;
+    }
+    changed = true; // malformed materials op (no usable key) — drop rather than admit `undefined`
+  }
+  return { ops: out, changed };
+}

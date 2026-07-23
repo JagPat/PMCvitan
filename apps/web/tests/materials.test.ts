@@ -4,6 +4,7 @@ import { enabledScreensFor } from '@/lib/screens';
 import { selectActionItems } from '@/store/selectors';
 import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { MaterialsView } from '@/store/materials';
+import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import type { MaterialReadinessResult, ActivityShortageRow, ActivityReadinessRow, RequirementReadinessRow } from '@vitan/shared';
 
 /**
@@ -410,5 +411,132 @@ describe('Task 7 (correction 2) — Materials single-command actions through the
     expect(s().materialsPending).toHaveLength(1);  // still pending — the button stays disabled while it retries
     expect(g.materialReadiness).toHaveBeenCalled(); // TRUTH refreshed despite the uncertain outcome (directive #4)
     expect(s().toast ?? '').not.toMatch(/reserved/i); // NO success toast
+  });
+
+  // ── Correction 4 (re-review P1) — BACKWARD-COMPATIBLE hydration of a materials op persisted by PR #207.
+  //    A PR #207 op carries ONLY `idempotencyKey` (no `coalesceKey`). PR #208 keys coalescing/disable-while-
+  //    pending on `coalesceKey`, so without normalization the reload puts `undefined` in `materialsPending`,
+  //    the equivalent button is NOT disabled, and a second click queues a SECOND ledger command — a double
+  //    reserve. The old idempotency key used the SAME business-coordinate format as the new coalesce key,
+  //    so hydration derives the coalesce key from it and preserves the idempotency key byte-for-byte. ──
+  const OUTBOX_KEY = 'vitan.outbox.anon.ambli'; // sub='anon' (no session token) + activeProjectId='ambli' (beforeEach)
+  const seedLegacyQueue = (ops: unknown[]) => { globalThis.localStorage.setItem(OUTBOX_KEY, JSON.stringify(ops)); };
+
+  // The four legacy materials op shapes, each with a PR #207 idempotencyKey (the SAME deterministic string
+  // the coalesce key now produces) and the equivalent single-command action.
+  const LEGACY_CASES = [
+    {
+      t: 'reserveStock',
+      op: { t: 'reserveStock', input: { lotId: 'LOT-1', storeLocation: 'main', activityId: 'ACT-1', qty: '10' }, idempotencyKey: reserveCoalesceKey('ACT-1', 'LOT-1', 'main') },
+      coalesceKey: reserveCoalesceKey('ACT-1', 'LOT-1', 'main'),
+      method: 'reserveStock' as const,
+      equivalent: () => s().reserveCandidate('ACT-1', 'LOT-1', 'main', '10'),
+    },
+    {
+      t: 'issueStock',
+      op: { t: 'issueStock', input: { lotId: 'LOT-1', storeLocation: 'main', activityId: 'ACT-1', qty: '10' }, idempotencyKey: issueCoalesceKey('ACT-1', 'LOT-1', 'main', '10') },
+      coalesceKey: issueCoalesceKey('ACT-1', 'LOT-1', 'main', '10'),
+      method: 'issueStock' as const,
+      equivalent: () => s().issueMaterial('LOT-1', 'main', 'ACT-1', '10'),
+    },
+    {
+      t: 'consumeStock',
+      op: { t: 'consumeStock', input: { issueId: 'ISS-1', qty: '5' }, idempotencyKey: consumeCoalesceKey('ISS-1', '5') },
+      coalesceKey: consumeCoalesceKey('ISS-1', '5'),
+      method: 'consumeStock' as const,
+      equivalent: () => s().consumeMaterial('ISS-1', '5'),
+    },
+    {
+      t: 'createRequisition',
+      op: { t: 'createRequisition', input: { title: 'Cover', lines: [{ requirementId: 'REQ-1', revision: 1, qty: '90' }] }, idempotencyKey: requisitionCoalesceKey('ACT-1', [{ requirementId: 'REQ-1', revision: 1, qty: '90' }]) },
+      coalesceKey: requisitionCoalesceKey('ACT-1', [{ requirementId: 'REQ-1', revision: 1, qty: '90' }]),
+      method: 'createMaterialRequisition' as const,
+      equivalent: () => s().raiseRequisition('ACT-1', 'Cover', [{ requirementId: 'REQ-1', revision: 1, qty: '90' }]),
+    },
+  ];
+
+  for (const c of LEGACY_CASES) {
+    it(`correction 4: legacy ${c.t} — hydration derives the coalesce key (no undefined), an equivalent click adds no second op, replay retains the key`, async () => {
+      globalThis.localStorage.clear();
+      seedLegacyQueue([c.op]);
+      const g = gw();
+      s()._setGateway(g as unknown as ApiGateway);
+
+      // (a) hydration reconstructs the correct coalesce key; the idempotency key is preserved byte-for-byte;
+      //     `materialsPending` never contains `undefined`; the migrated queue is persisted back.
+      s().hydrateOutbox();
+      expect(s().outbox).toHaveLength(1);
+      expect((s().outbox[0] as { coalesceKey?: unknown }).coalesceKey).toBe(c.coalesceKey);
+      expect((s().outbox[0] as { idempotencyKey?: unknown }).idempotencyKey).toBe(c.coalesceKey); // unchanged
+      expect(s().materialsPending).toEqual([c.coalesceKey]);
+      expect(s().materialsPending).not.toContain(undefined);
+      const persisted = JSON.parse(globalThis.localStorage.getItem(OUTBOX_KEY)!) as Array<{ coalesceKey?: string }>;
+      expect(persisted[0]!.coalesceKey).toBe(c.coalesceKey);
+
+      // (b) an equivalent action while the legacy op is pending produces NO second op (coalesced)
+      c.equivalent();
+      await flush();
+      expect(s().outbox).toHaveLength(1);
+
+      // (c) replay retains the ORIGINAL idempotency key (the ledger applies it exactly once)
+      const method = g[c.method] as ReturnType<typeof vi.fn>;
+      await s().flushOutbox();
+      await settles(() => method.mock.calls.length >= 1);
+      expect(method.mock.calls[0]![1]).toBe(c.coalesceKey); // legacy idempotency key replayed unchanged
+    });
+  }
+
+  it('correction 4: after a legacy op is CONFIRMED (leaves the outbox), the next legitimate action gets a FRESH idempotency key', async () => {
+    globalThis.localStorage.clear();
+    const legacyKey = reserveCoalesceKey('ACT-1', 'LOT-1', 'main');
+    seedLegacyQueue([{ t: 'reserveStock', input: { lotId: 'LOT-1', storeLocation: 'main', activityId: 'ACT-1', qty: '10' }, idempotencyKey: legacyKey }]);
+    const g = gw();
+    s()._setGateway(g as unknown as ApiGateway);
+    s().hydrateOutbox();
+    await s().flushOutbox();                                    // the legacy op replays and resolves
+    await settles(() => g.reserveStock.mock.calls.length === 1);
+    expect(s().outbox).toHaveLength(0);
+    expect(s().materialsPending).toHaveLength(0);               // confirmation cleared the coalesce key
+    // a LATER legitimate reserve of the SAME coordinates dispatches afresh
+    s().reserveCandidate('ACT-1', 'LOT-1', 'main', '10');
+    await settles(() => g.reserveStock.mock.calls.length === 2);
+    expect(g.reserveStock.mock.calls[0]![1]).toBe(legacyKey);   // replay retained the legacy key
+    expect(g.reserveStock.mock.calls[1]![1]).not.toBe(legacyKey); // the fresh action gets a NEW idempotency key
+  });
+
+  it('correction 4: malformed stored materials ops are dropped and never introduce `undefined` pending entries', async () => {
+    globalThis.localStorage.clear();
+    const goodKey = reserveCoalesceKey('ACT-1', 'LOT-1', 'main');
+    seedLegacyQueue([
+      { t: 'reserveStock', input: { lotId: 'LOT-1', storeLocation: 'main', activityId: 'ACT-1', qty: '10' }, idempotencyKey: goodKey }, // valid legacy op
+      { t: 'issueStock', input: { lotId: 'LOT-2', storeLocation: 'main', activityId: 'ACT-1', qty: '5' } }, // materials op with NEITHER key — malformed
+      null,                                                                                                  // junk
+      42,                                                                                                    // junk
+    ]);
+    s()._setGateway(gw() as unknown as ApiGateway);
+    s().hydrateOutbox();
+    expect(s().materialsPending).toEqual([goodKey]);
+    expect(s().materialsPending).not.toContain(undefined);
+    expect(s().outbox).toHaveLength(1); // the malformed op + junk were dropped
+    expect((s().outbox[0] as { t: string }).t).toBe('reserveStock');
+  });
+
+  // ── the pure normalizer (table-driven, no store) — the crisp unit proof of the derivation + filtering. ──
+  it('correction 4: normalizeMaterialsOutbox derives keys, preserves idempotency, and filters malformed rows', () => {
+    for (const c of LEGACY_CASES) {
+      const { ops, changed } = normalizeMaterialsOutbox([c.op]);
+      expect(changed).toBe(true);
+      expect((ops[0] as { coalesceKey?: unknown }).coalesceKey).toBe(c.coalesceKey);
+      expect((ops[0] as { idempotencyKey?: unknown }).idempotencyKey).toBe(c.coalesceKey); // preserved
+    }
+    // an already-migrated PR #208 op is untouched (changed=false)
+    const migrated = { t: 'reserveStock', input: {}, idempotencyKey: 'idem-abc', coalesceKey: 'mat:res:A:L:main' };
+    expect(normalizeMaterialsOutbox([migrated])).toEqual({ ops: [migrated], changed: false });
+    // non-materials ops pass through; malformed materials ops + junk are dropped
+    const nonMaterials = { t: 'submitDailyLog', idempotencyKey: 'dl-1' };
+    const rows = [nonMaterials, { t: 'reserveStock', input: {} }, null, 42] as Array<{ t?: unknown; idempotencyKey?: unknown; coalesceKey?: unknown }>;
+    const out = normalizeMaterialsOutbox(rows);
+    expect(out.ops).toEqual([nonMaterials]);
+    expect(out.changed).toBe(true);
   });
 });
