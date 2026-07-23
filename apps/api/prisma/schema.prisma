@@ -97,6 +97,7 @@ model Project {
   requirements     ActivityRequirement[]
   requirementRoots ActivityRequirementRoot[]
   materialSpecs    MaterialRequirementSpec[]
+  approvedSubstitutions ApprovedSubstitution[]
   vendorBindings   ProjectVendor[]           @relation("projectVendorProject")
   requisitions     Requisition[]
   purchaseOrders   PurchaseOrder[]           @relation("purchaseOrderProject")
@@ -808,6 +809,8 @@ model User {
   stockTransactionsRecorded StockTransaction[] @relation("stockTransactionsRecorded")
   materialIssuesIssued      MaterialIssue[]      @relation("materialIssuesIssued")
   mismatchesResolved        MismatchResolution[] @relation("mismatchesResolved")
+  substitutionsApproved     ApprovedSubstitution[] @relation("substitutionsApproved")
+  substitutionsRevoked      ApprovedSubstitution[] @relation("substitutionsRevoked")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -934,6 +937,7 @@ model ActivityRequirementRoot {
   createdBy   User                  @relation("requirementRootsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById String
   revisions   ActivityRequirement[]
+  substitutions ApprovedSubstitution[]
 
   @@unique([projectId, id])
 }
@@ -1011,6 +1015,34 @@ model MaterialRequirementSpec {
 
   @@unique([projectId, requirementId, revision])
   @@index([projectId, specFingerprint])
+}
+
+// Phase 3 Task 6 — an ACTIVE substitution admits stock of `toFingerprint` as satisfying a
+// requirement whose §B identity is `fromFingerprint` (plan §B satisfaction rule). Keyed on the
+// requirement ROOT (stable across revisions), pmc authority, audited, event-bearing. Revocation
+// NEVER deletes — it stamps `revokedAt`; coverage re-derives WITHOUT the substitution from that
+// point on. `coverageFor` (inventory) reads it ONLY indirectly: activities resolves each
+// requirement's acceptable fingerprint set and passes it in, keeping the activities→inventory edge.
+model ApprovedSubstitution {
+  id            String                  @id @default(cuid())
+  project       Project                 @relation(fields: [projectId], references: [id])
+  projectId     String
+  root          ActivityRequirementRoot @relation(fields: [projectId, requirementId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requirementId String
+  fromFingerprint String // the requirement's own §B technical-identity fingerprint
+  toFingerprint   String // the substitute stock identity admitted as satisfying it
+  reason        String
+  approvedBy    User     @relation("substitutionsApproved", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approvedById  String
+  at            DateTime @default(now())
+  // revocation (append-in-place: the row survives, coverage re-derives without it)
+  revokedAt     DateTime?
+  revokedBy     User?     @relation("substitutionsRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revokedById   String?
+  revokeReason  String?
+
+  @@index([projectId, requirementId])
+  @@index([projectId, toFingerprint])
 }
 
 
