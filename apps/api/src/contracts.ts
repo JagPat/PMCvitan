@@ -671,6 +671,24 @@ export type ReviseRequirementInput = z.infer<typeof reviseRequirementSchema>;
 export const cancelRequirementSchema = z.object({ expectedRevision: z.number().int().min(1), reason: z.string().trim().min(1) }).strict();
 export type CancelRequirementInput = z.infer<typeof cancelRequirementSchema>;
 
+// ── Phase 3 Task 6 — approved material substitutions (plan §B). Approve DESCRIBES the
+// alternative material (the server computes its `toFingerprint` via the ONE shared fingerprint
+// function — never caller-authored) plus the audit reason; the requirement's own `fromFingerprint`
+// is server-resolved from its head revision. Revoke stamps the row (never deletes it).
+export const approveSubstitutionSchema = z
+  .object({
+    materialCategory: z.string().trim().min(1),
+    make: z.string().trim().min(1),
+    grade: z.string().trim().min(1),
+    attributes: z.string().trim().default(''),
+    baseUom: z.string().trim().min(1),
+    reason: z.string().trim().min(1),
+  })
+  .strict();
+export type ApproveSubstitutionInput = z.infer<typeof approveSubstitutionSchema>;
+export const revokeSubstitutionSchema = z.object({ reason: z.string().trim().min(1) }).strict();
+export type RevokeSubstitutionInput = z.infer<typeof revokeSubstitutionSchema>;
+
 // ── Phase 3 Task 2 — procurement (plan §§F/H). Strict schemas: no caller-authored server
 // facts; quantities are positive decimal STRINGS (≤6 dp, parseQuantity-canonicalized in the
 // service); money is a positive decimal STRING with at most 2 fractional digits (INR).

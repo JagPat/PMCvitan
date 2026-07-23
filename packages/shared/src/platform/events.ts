@@ -64,6 +64,12 @@ export const DOMAIN_EVENT_TYPES = [
   'requirement.created',
   'requirement.revised',
   'requirement.cancelled',
+  // Phase 3 Task 6 — approved substitutions (§B satisfaction rule): a canonical, audited,
+  // activities-owned fact that changes material coverage. Approval and revocation each emit an
+  // event the readiness projection consumes to RECOMPUTE verdicts (there is still NO
+  // material.readiness_changed event — a derived verdict is never a domain fact).
+  'substitution.approved',
+  'substitution.revoked',
   // Phase 3 Task 2 — the procurement pipeline (plan §G catalog: submitted/approved and the
   // comparison approval ONLY; drafts, rejections and RFQ/quote bookkeeping are audit facts)
   'requisition.submitted',

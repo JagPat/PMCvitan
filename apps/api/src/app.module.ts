@@ -26,6 +26,8 @@ import { PhasesService } from './activities/phases.service';
 import { PhasesController } from './activities/phases.controller';
 import { RequirementsController } from './activities/requirements.controller';
 import { RequirementsQueryService } from './activities/requirements.query';
+import { SubstitutionsService } from './activities/substitutions.service';
+import { SubstitutionsController } from './activities/substitutions.controller';
 import { VendorsController } from './procurement/vendors.controller';
 import { ProcurementController } from './procurement/procurement.controller';
 import { VendorsService } from './procurement/vendors.service';
@@ -92,6 +94,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     ActivitiesController,
     PhasesController,
     RequirementsController,
+    SubstitutionsController,
     VendorsController,
     ProcurementController,
     InventoryController,
@@ -108,6 +111,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
   providers: [
     RequirementsService,
     RequirementsQueryService,
+    SubstitutionsService,
     VendorsService,
     ProcurementService,
     PurchaseOrdersService,

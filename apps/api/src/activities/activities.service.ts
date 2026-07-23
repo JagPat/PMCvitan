@@ -23,6 +23,11 @@ import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { DrawingParticipant } from '../drawings/drawing.participant';
+import { InventoryService } from '../inventory/inventory.service';
+import { SubstitutionsService } from './substitutions.service';
+import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
+import { deriveMaterialReading } from './material-readiness';
+import type { CoverageRequirement } from '../inventory/coverage';
 
 @Injectable()
 export class ActivitiesService {
@@ -48,7 +53,68 @@ export class ActivitiesService {
     // drawings participant (in-tx), which appends `drawing.activity_unlinked` so the drawings.inbox
     // projection observes the unlink (never the silent SET NULL alone).
     private readonly drawingParticipant: DrawingParticipant,
+    // Phase 3 Task 6 — the §G `activities → inventory` read edge (canonical material coverage),
+    // the substitution targets that widen a requirement's acceptable fingerprints (§B), and the
+    // pilot capability gate that decides whether `start` consults coverage at all (§D).
+    private readonly inventory: InventoryService,
+    private readonly substitutions: SubstitutionsService,
+    private readonly capabilities: CapabilitiesService,
   ) {}
+
+  /**
+   * Phase 3 Task 6 — the activity's open MATERIAL requirements as coverage inputs (§A/§B): the
+   * HEAD revision per requirement (open + material), with `acceptableFingerprints` = its own spec
+   * fingerprint PLUS every ACTIVE substitution target. Read on the caller's tx so `coverageFor`
+   * sees exactly the demand and substitutions committed before it. Activities-owned reads only —
+   * the substitution table is never read from inventory.
+   */
+  private async coverageRequirements(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    activityIds: string[],
+  ): Promise<CoverageRequirement[]> {
+    if (activityIds.length === 0) return [];
+    const rows = await tx.activityRequirement.findMany({
+      where: { projectId, activityId: { in: activityIds }, type: 'material' },
+      orderBy: [{ requirementId: 'asc' }, { revision: 'asc' }],
+      select: {
+        requirementId: true, revision: true, activityId: true, requiredQty: true, baseUom: true, status: true,
+        materialSpec: { select: { specFingerprint: true } },
+      },
+    });
+    // reduce to the head revision per requirement, then keep only open material requirements
+    const head = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) {
+      const cur = head.get(r.requirementId);
+      if (!cur || r.revision > cur.revision) head.set(r.requirementId, r);
+    }
+    const heads = [...head.values()].filter((r) => r.status === 'open' && r.materialSpec);
+    const targets = await this.substitutions.activeTargets(tx, projectId, heads.map((h) => h.requirementId));
+    return heads.map((h) => ({
+      requirementId: h.requirementId,
+      revision: h.revision,
+      activityId: h.activityId,
+      requiredQty: h.requiredQty,
+      baseUom: h.baseUom,
+      acceptableFingerprints: [h.materialSpec!.specFingerprint, ...(targets.get(h.requirementId) ?? [])],
+    }));
+  }
+
+  /**
+   * Phase 3 Task 6 — the CANONICAL material gate for one activity, evaluated on the caller's
+   * transaction (under the readiness lock): the §A truth over inventory's `coverageFor`, with an
+   * unresolved site mismatch (the stored `gateMaterial === 'fail'` the daily-log participant
+   * maintains) taking precedence. Used by `start` (authority) and the readiness projection.
+   */
+  async materialReading(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    activity: { id: string; gateMaterial: GateState },
+  ) {
+    const requirements = await this.coverageRequirements(tx, projectId, [activity.id]);
+    const coverage = await this.inventory.coverageFor(tx, projectId, requirements);
+    return deriveMaterialReading(coverage, activity.gateMaterial === 'fail');
+  }
 
   /** Planned civil dates for a write: prefer explicit ISO input; else derive from the
    *  project's schedule anchor + the legacy day-offset (offset 0 IS the anchor day). */
@@ -306,6 +372,14 @@ export class ActivitiesService {
         if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
 
         const readiness = await this.loadReadiness(projectId, a, tx);
+        // Phase 3 Task 6 (§A): on a PILOT project, the material gate is CANONICAL coverage — never
+        // the stored flag or a projection. Evaluated on THIS transaction under the readiness lock,
+        // so a concurrent reservation/issue/adjustment/requirement-revision/substitution-revocation
+        // serializes: it lands strictly before (this start observes it) or strictly after (it waits
+        // for this commit). An unexpired material OVERRIDE still supersedes (Phase-1 rule unchanged).
+        if (readiness.material.source !== 'override' && (await this.capabilities.isEnabled(projectId, MATERIALS_CAPABILITY, tx))) {
+          readiness.material = await this.materialReading(tx, projectId, a);
+        }
         if (!readinessReady(readiness)) {
           const blocking = (Object.entries(readiness) as Array<[string, { v: GateState; reason: string }]>)
             .filter(([, g]) => !gateReady(g.v))
