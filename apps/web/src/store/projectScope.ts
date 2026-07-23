@@ -119,6 +119,7 @@ export function emptyModuleReadState(): ModuleReadState {
     inspectionsSource: null,
     activitiesLoad: 'idle',
     activitiesSource: null,
+    materialsLoad: 'idle',
   };
 }
 

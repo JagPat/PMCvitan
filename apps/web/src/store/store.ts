@@ -14,6 +14,7 @@
 
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
+import { castDraft } from 'immer';
 import {
   SEED_ACTIVITIES,
   SEED_CHECKLIST,
@@ -2245,14 +2246,16 @@ export const useStore = create<Store>()(
         gateway.materialIssues(),
       ]).then(([readiness, requirements, requisitions, purchaseOrders, stock, issues]) => set((s) => {
         if (!isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) return; // dropped after a switch/re-auth
-        s.materialsView = {
+        // castDraft: the Phase-3 read DTOs are `readonly` (immutable server snapshots stored as-is,
+        // never mutated in the draft), so immer's WritableDraft recursion needs the explicit cast.
+        s.materialsView = castDraft<MaterialsView>({
           readiness,
           requirements: requirements.requirements,
           requisitions: requisitions.requisitions,
           purchaseOrders: purchaseOrders.purchaseOrders,
           stock: stock.lots,
           issues: issues.issues,
-        };
+        });
         s.materialsLoad = 'ready';
       })).catch(() => set((s) => {
         // keep the last-good bundle; expose a Retry boundary (finding 4: honest, not stale-'ready')
