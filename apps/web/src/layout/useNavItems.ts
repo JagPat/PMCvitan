@@ -19,13 +19,18 @@ export function useNavItems(): NavItem[] {
   // Task 9 — manifest-driven: filter the role's screens by the shell's enabled modules (a no-op until
   // the shell lands / in the local demo, so nav never flashes).
   const enabledModules = useStore((s) => s.enabledModules);
+  // Phase 3 Task 7 — the per-project pilot capabilities gate the Materials screen (absent on non-pilot).
+  const capabilities = useStore((s) => s.capabilities);
+  // the count of material shortages (blocked/at-risk requirements) drives the Materials nav badge
+  const shortageCount = useStore((s) => s.materialsView?.readiness.shortages.length ?? 0);
 
-  return enabledScreensFor(role, enabledModules).map((m) => {
+  return enabledScreensFor(role, enabledModules, capabilities).map((m) => {
     let badge = 0;
     if (m.key === 'inbox') badge = actionCount;
     if (m.key === 'drafts') badge = draftCount;
     if (m.key === 'client-decisions') badge = pending;
     if (m.key === 'inspect-review') badge = reviewPending;
+    if (m.key === 'materials') badge = shortageCount;
     return { ...m, badge, active: screen === m.key };
   });
 }

@@ -305,6 +305,30 @@ export function selectActionItems(s: AppState): ActionItem[] {
     }
   }
 
+  // Phase 3 Task 7 (§25) — material SHORTAGES produce an Inbox action carrying FORECAST IMPACT. A pilot
+  // pmc/engineer sees one actionable item when any open requirement is at-risk/blocked, with the worst
+  // forecast in the detail (the shortages are backend-sorted worst-first: blocked before at-risk, then
+  // soonest-needed). Jumps to the Materials hub to resolve. Absent on a non-pilot project (no bundle).
+  if ((s.role === 'pmc' || s.role === 'engineer') && s.materialsView) {
+    const shortages = s.materialsView.readiness.shortages;
+    if (shortages.length) {
+      const blockedN = shortages.filter((x) => x.verdict === 'blocked').length;
+      const atRiskN = shortages.length - blockedN;
+      const parts: string[] = [];
+      if (blockedN) parts.push(`${blockedN} blocked`);
+      if (atRiskN) parts.push(`${atRiskN} at-risk`);
+      const hardImpact = shortages.some((x) => x.verdict === 'blocked' || x.impact === 'delays-start');
+      items.push({
+        key: 'material-shortage',
+        title: `${shortages.length} material shortage${plural(shortages.length)} (${parts.join(', ')})`,
+        detail: shortages[0].impactReason,
+        screen: 'materials',
+        cta: 'Open materials',
+        tone: hardImpact ? 'red' : 'amber',
+      });
+    }
+  }
+
   if (s.role === 'consultant') {
     const disc = s.memberships.find((m) => m.projectId === s.activeProjectId)?.discipline ?? (s.memberships.length === 0 ? 'structural' : undefined);
     if (disc) {

@@ -24,6 +24,14 @@ export class ActivitiesController {
     return this.activitiesQuery.moduleActivities(projectId);
   }
 
+  /** Phase 3 Task 7 — the pilot MATERIAL-READINESS view (per-requirement coverage + shortage
+   *  forecast). Capability-gated in the query (404 on non-pilot); pmc/engineer material-planning read. */
+  @Get('material-readiness')
+  @RolesFor('requirement.read')
+  materialReadiness(@Param('projectId') projectId: string) {
+    return this.activitiesQuery.materialReadiness(projectId);
+  }
+
   /** Plan a new activity — the PMC authors the schedule. */
   @Post()
   @RolesFor('activity.manage')
