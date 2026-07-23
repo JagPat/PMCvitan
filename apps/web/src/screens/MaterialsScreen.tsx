@@ -3,15 +3,19 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import type { MaterialCoverageVerdict } from '@vitan/shared';
+import type { MaterialCoverageVerdict, StockLotDto } from '@vitan/shared';
+import { decAdd, decSum, decIsPositive } from '@/lib/decimal';
+import { foldActivityReservations } from '@/lib/reservations';
 import styles from './responsive.module.css';
 
 /**
  * Phase 3 Task 7 — the pilot MATERIALS hub (capability-gated; the nav only surfaces it on a pilot
  * project). ONE screen with tabbed panels for the whole pipeline — requirements → procurement →
- * deliveries → inventory → reservations → issues → readiness — each a module-owned read (greenfield,
- * so module-query-only) with honest load states (loading / unavailable+Retry / stale banner). The
- * Readiness panel is the §A canonical coverage the shortage Inbox links to.
+ * deliveries → inventory → reservations → issues → readiness. It is OPERATIONAL, not observational
+ * (correction findings 1/2): a shorted activity can be covered (reserve on-hand stock, or raise a
+ * requisition), a reservation issued to site, and an issue consumed — all through existing commands.
+ * Readiness + shortage TOTALS are counted per ACTIVITY (finding 3), and the Reservations pool is folded
+ * from the §C ledger's `fromBucket`/`toBucket` with EXACT decimal arithmetic, reversals included (finding 5).
  */
 
 type Tab = 'readiness' | 'requirements' | 'procurement' | 'deliveries' | 'inventory' | 'reservations' | 'issues';
@@ -39,33 +43,38 @@ const rowCard: CSSProperties = { border: '1px solid var(--hairline)', borderRadi
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--faint)' };
 const muted: CSSProperties = { fontSize: 12.5, color: 'var(--muted)' };
 
+/** A lot's free-available quantity across its store locations, summed with EXACT decimal arithmetic. */
+const freeOf = (lot: StockLotDto): string => decSum(lot.locations.map((b) => b.freeAvailable));
+
 export function MaterialsScreen() {
   const materials = useStore(useShallow((s) => s.materialsView));
   const materialsLoad = useStore((s) => s.materialsLoad);
   const loadMaterials = useStore((s) => s.loadMaterials);
   const setScreen = useStore((s) => s.setScreen);
+  const issueMaterial = useStore((s) => s.issueMaterial);
+  const consumeMaterial = useStore((s) => s.consumeMaterial);
+  const coverMaterialShortage = useStore((s) => s.coverMaterialShortage);
   const [tab, setTab] = useState<Tab>('readiness');
 
   const reading = (materialsLoad === 'idle' || materialsLoad === 'loading') && !materials;
   const unavailable = materialsLoad === 'error' && !materials;
   const stale = materialsLoad === 'error' && !!materials;
 
-  // reservations: fold each lot's §C ledger by activity — Σ(reservation) − Σ(reservation_release), > 0.
-  const reservations = useMemo(() => {
-    const out: { lotId: string; material: string; activityId: string; qty: number; baseUom: string }[] = [];
-    for (const lot of materials?.stock ?? []) {
-      const byActivity = new Map<string, number>();
-      for (const t of lot.transactions) {
-        if (!t.activityId) continue;
-        if (t.type === 'reservation') byActivity.set(t.activityId, (byActivity.get(t.activityId) ?? 0) + Number(t.qty));
-        else if (t.type === 'reservation_release') byActivity.set(t.activityId, (byActivity.get(t.activityId) ?? 0) - Number(t.qty));
-      }
-      for (const [activityId, qty] of byActivity) {
-        if (qty > 0) out.push({ lotId: lot.id, material: [lot.materialCategory, lot.make, lot.grade].filter(Boolean).join(' · '), activityId, qty, baseUom: lot.baseUom });
-      }
+  // Reservations: each activity's ACTIVE reserved pool, folded from the §C ledger's bucket movements
+  // (reversals + issues included) with exact decimal arithmetic (finding 5).
+  const reservations = useMemo(() => foldActivityReservations(materials?.stock ?? []), [materials]);
+
+  // A shorted activity is coverable by RESERVING on-hand stock when a free lot of a matching fingerprint
+  // exists; otherwise the corrective is to RAISE A REQUISITION (procure it).
+  const coverMode = (activityId: string): 'reserve' | 'requisition' => {
+    if (!materials) return 'requisition';
+    const shortRows = materials.readiness.requirements.filter((r) => r.activityId === activityId && decIsPositive(r.shortfall));
+    for (const row of shortRows) {
+      const fp = materials.requirements.find((x) => x.requirementId === row.requirementId)?.spec?.specFingerprint;
+      if (fp && materials.stock.some((l) => l.specFingerprint === fp && decIsPositive(freeOf(l)))) return 'reserve';
     }
-    return out;
-  }, [materials]);
+    return 'requisition';
+  };
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
@@ -73,7 +82,7 @@ export function MaterialsScreen() {
         <div>
           <Eyebrow>MATERIALS · PILOT</Eyebrow>
           <div style={{ ...muted, marginTop: 6, maxWidth: 560 }}>
-            One material flow, end to end — requirement → requisition → comparison → purchase order → delivery → stock → reservation → issue → readiness. Readiness reflects <b>physical truth</b>: an activity is ready only when its material is actually, exclusively there.
+            One material flow, end to end — requirement → requisition → comparison → purchase order → delivery → stock → reservation → issue → consumption. Readiness reflects <b>physical truth</b>: an activity is ready only when its material is actually, exclusively there.
           </div>
         </div>
         <Button variant="outline" onClick={() => loadMaterials()} data-testid="materials-refresh" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 13px', fontSize: 13 }}>
@@ -108,12 +117,12 @@ export function MaterialsScreen() {
 
       {materials && (
         <>
-          {/* readiness summary + shortage jump */}
+          {/* readiness summary — counted per ACTIVITY (finding 3) */}
           <div data-testid="materials-summary" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16 }}>
             <SummaryTile label="Ready" value={materials.readiness.summary.ready} tone="green" />
             <SummaryTile label="At-risk" value={materials.readiness.summary.atRisk} tone="amber" />
             <SummaryTile label="Blocked" value={materials.readiness.summary.blocked} tone="red" />
-            <SummaryTile label="Requirements" value={materials.readiness.summary.total} tone="ink" />
+            <SummaryTile label="Activities" value={materials.readiness.summary.total} tone="ink" />
           </div>
 
           {/* tabs */}
@@ -127,17 +136,29 @@ export function MaterialsScreen() {
 
           <div style={{ marginTop: 8 }}>
             {tab === 'readiness' && (
-              <Panel empty={!materials.readiness.requirements.length} emptyKey="readiness" emptyText="No material requirements yet.">
-                {materials.readiness.requirements.map((r) => {
-                  const m = verdictChip(r.verdict);
+              <Panel empty={!materials.readiness.activities.length} emptyKey="readiness" emptyText="No material requirements yet.">
+                {materials.readiness.activities.map((a) => {
+                  const m = verdictChip(a.verdict);
+                  const reqs = materials.readiness.requirements.filter((r) => r.activityId === a.activityId);
                   return (
-                    <div key={r.requirementId} data-testid={`materials-req-${r.requirementId}`} style={rowCard}>
+                    <div key={a.activityId} data-testid={`materials-activity-${a.activityId}`} style={rowCard}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
-                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.activityName}</div>
-                        <span style={chip(m)} data-testid={`materials-verdict-${r.requirementId}`}>{m.label}</span>
+                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>{a.activityName}</div>
+                        <span style={chip(m)} data-testid={`materials-verdict-${a.activityId}`}>{m.label}</span>
                       </div>
-                      <div style={{ ...muted, marginTop: 4 }}>{r.material} · covered {r.coveredQty} / {r.requiredQty} {r.baseUom}{Number(r.shortfall) > 0 ? ` · short ${r.shortfall}` : ''}</div>
-                      <div style={{ ...mono, marginTop: 4 }}>{r.reason}</div>
+                      <div style={{ ...muted, marginTop: 4 }}>{a.reason}</div>
+                      {reqs.map((r) => (
+                        <div key={r.requirementId} data-testid={`materials-reqdetail-${r.requirementId}`} style={{ ...mono, marginTop: 4 }}>
+                          {r.material} · covered {r.coveredQty} / {r.requiredQty} {r.baseUom}{decIsPositive(r.shortfall) ? ` · short ${r.shortfall}` : ''}
+                        </div>
+                      ))}
+                      {a.verdict !== 'ready' && (
+                        <div style={{ marginTop: 9 }}>
+                          <Button variant="outline" data-testid={`materials-cover-${a.activityId}`} onClick={() => coverMaterialShortage(a.activityId)} style={{ fontSize: 12 }}>
+                            {coverMode(a.activityId) === 'reserve' ? 'Reserve available stock' : 'Raise requisition'}
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -177,7 +198,7 @@ export function MaterialsScreen() {
                         <div style={{ fontWeight: 600, fontSize: 13.5 }}>Purchase order</div>
                         <span style={mono}>PO v{v?.version} · {v?.status}</span>
                       </div>
-                      <div style={{ ...muted, marginTop: 4 }}>{v?.lines.length ?? 0} line{(v?.lines.length ?? 0) === 1 ? '' : 's'} · ₹{v?.lines.reduce((s, l) => s + Number(l.committedAmountBase), 0).toLocaleString('en-IN')} committed</div>
+                      <div style={{ ...muted, marginTop: 4 }}>{v?.lines.length ?? 0} line{(v?.lines.length ?? 0) === 1 ? '' : 's'} · ₹{v?.lines.reduce((s, l) => decAdd(s, l.committedAmountBase), '0')} committed</div>
                     </div>
                   );
                 })}
@@ -207,10 +228,10 @@ export function MaterialsScreen() {
             {tab === 'inventory' && (
               <Panel empty={!materials.stock.length} emptyKey="inventory" emptyText="No stock received yet.">
                 {materials.stock.map((lot) => {
-                  const onHand = lot.locations.reduce((s, b) => s + Number(b.acceptedOnHand), 0);
-                  const reserved = lot.locations.reduce((s, b) => s + Number(b.reserved), 0);
-                  const free = lot.locations.reduce((s, b) => s + Number(b.freeAvailable), 0);
-                  const issued = lot.locations.reduce((s, b) => s + Number(b.issuedToActivity), 0);
+                  const onHand = decSum(lot.locations.map((b) => b.acceptedOnHand));
+                  const reserved = decSum(lot.locations.map((b) => b.reserved));
+                  const free = freeOf(lot);
+                  const issued = decSum(lot.locations.map((b) => b.issuedToActivity));
                   return (
                     <div key={lot.id} data-testid={`materials-lot-${lot.id}`} style={rowCard}>
                       <div style={{ fontWeight: 600, fontSize: 13.5 }}>{[lot.materialCategory, lot.make, lot.grade].filter(Boolean).join(' · ')}</div>
@@ -227,6 +248,11 @@ export function MaterialsScreen() {
                   <div key={`${r.lotId}-${r.activityId}`} data-testid={`materials-reservation-${r.lotId}-${r.activityId}`} style={rowCard}>
                     <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.material}</div>
                     <div style={{ ...muted, marginTop: 4 }}>{r.qty} {r.baseUom} reserved to activity {r.activityId}</div>
+                    <div style={{ marginTop: 9 }}>
+                      <Button variant="outline" data-testid={`materials-do-issue-${r.lotId}-${r.activityId}`} onClick={() => issueMaterial(r.lotId, r.activityId, r.qty)} style={{ fontSize: 12 }}>
+                        Issue to site
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </Panel>
@@ -241,6 +267,13 @@ export function MaterialsScreen() {
                       <span style={mono}>{i.storeLocation}</span>
                     </div>
                     <div style={{ ...muted, marginTop: 4 }}>issued to activity {i.activityId} · remaining custody {i.remainingCustody} {i.baseUom}</div>
+                    {decIsPositive(i.remainingCustody) && (
+                      <div style={{ marginTop: 9 }}>
+                        <Button variant="outline" data-testid={`materials-do-consume-${i.id}`} onClick={() => consumeMaterial(i.id, i.remainingCustody)} style={{ fontSize: 12 }}>
+                          Record consumption
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </Panel>

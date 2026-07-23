@@ -820,6 +820,41 @@ export class ApiGateway {
     return this.req<{ issues: MaterialIssueDto[] }>(`/projects/${this.projectId}/stock/issues`);
   }
 
+  // ── Phase 3 Task 7 correction — the pilot MATERIALS operational COMMANDS (existing Task 4/5/procurement
+  //    endpoints, idempotency-keyed). The Materials hub is OPERATIONAL, not observational: reserving,
+  //    issuing and consuming stock, and raising a requisition to cover a shortage, are real site actions.
+  //    They return the route's own JSON (Phase-3 reads are module-query-only, never an ApiSnapshot), so the
+  //    store reconciles by re-`loadMaterials()`. ──
+
+  /** Reserve free on-hand stock of a lot to a NAMED activity (§C `stock.reserve`) — makes it exclusively the
+   *  activity's, which is what flips its material readiness to ready. */
+  reserveStock(input: { lotId: string; activityId: string; qty: string; storeLocation?: string }, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/stock/reserve', input, idempotencyKey);
+  }
+  /** Issue stock out of the store to an activity — creates the §E MaterialIssue (`stock.issue`). */
+  issueStock(input: { lotId: string; activityId: string; qty: string; storeLocation?: string; note?: string }, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/stock/issue', input, idempotencyKey);
+  }
+  /** Record consumption against a MaterialIssue (§E `stock.consume`). */
+  consumeStock(input: { issueId: string; qty: string; note?: string }, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/stock/consume', input, idempotencyKey);
+  }
+  /** Raise a procurement requisition for shorted requirement(s) (`requisitions.create`) — the shortage
+   *  corrective command when there is no covering free stock to reserve. */
+  createMaterialRequisition(input: { title: string; notes?: string; lines: { requirementId: string; revision: number; qty: string }[] }, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/requisitions', input, idempotencyKey);
+  }
+
+  /** POST to a project-scoped route returning the ROUTE's own JSON (not an ApiSnapshot). Mirrors `p`'s
+   *  idempotency-key behavior for the module-owned Phase-3 operational commands. */
+  private cmd<T = unknown>(path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
+    return this.req<T>(`/projects/${this.projectId}${path}`, {
+      method: 'POST',
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
+    });
+  }
+
   approveDecision(decisionId: string, optionIndex: number, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/decisions/${decisionId}/approve`, { optionIndex }, idempotencyKey);
   }

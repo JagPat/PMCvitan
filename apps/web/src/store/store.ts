@@ -66,6 +66,13 @@ import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInp
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
+import { decIsPositive, decMin, decSum } from '@/lib/decimal';
+
+/** A lot's free-available quantity across its store locations, summed with EXACT decimal arithmetic
+ *  (numeric(18,6)) — never lossy `Number` (correction finding 5). */
+function freeAvailableOf(lot: { locations: readonly { readonly freeAvailable: string }[] }): string {
+  return decSum(lot.locations.map((b) => b.freeAvailable));
+}
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -341,6 +348,13 @@ export interface AppActions {
    *  stock + issues) together, ONLY when the active project has the `materials` capability. Scope-guarded
    *  + honest load states; a non-pilot project is a no-op (the surfaces are absent from nav). */
   loadMaterials: () => void;
+  /** Phase 3 Task 7 correction — pilot MATERIALS operational commands (idempotency-keyed; no-op
+   *  off-pilot; reconcile via loadMaterials). Reserve free stock to an activity, issue it to site,
+   *  record consumption against an issue, and cover a shorted activity with one corrective command. */
+  reserveMaterial: (lotId: string, activityId: string, qty: string, storeLocation?: string) => void;
+  issueMaterial: (lotId: string, activityId: string, qty: string, storeLocation?: string) => void;
+  consumeMaterial: (issueId: string, qty: string) => void;
+  coverMaterialShortage: (activityId: string) => void;
   /** Atomically re-scope to another project. Empties project data BEFORE the auth
    *  request; adopts the SERVER-returned project on success. Resolves true only when
    *  the switch was authenticated. `targetScreen` survives the switch when the new
@@ -668,6 +682,12 @@ export const useStore = create<Store>()(
     // When present, mutating actions persist through the API and reconcile from
     // the returned snapshot; when null, they mutate the seeded local store.
     let gateway: ApiGateway | null = null;
+
+    /** Latest-request ownership for the Materials bundle (correction finding 2). Each `loadMaterials()`
+     *  claims the next token; only the newest same-project load may write the view or change its load
+     *  state — an older success/failure that resolves later is dropped, so a slow refresh can never
+     *  overwrite a newer result. */
+    let materialsLoadSeq = 0;
 
     /** The scope a network request is issued FOR — pass to applySnapshot so a reply
      *  that lands after the scope changed (switch, sign-in) is dropped, not applied. */
@@ -2236,6 +2256,12 @@ export const useStore = create<Store>()(
       if (!gateway) return;
       if (!get().capabilities.includes('materials')) return; // inert off-pilot
       const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      // correction finding 2 — latest-request ownership: claim the next token; a stale reply (older
+      // token) is dropped even when the project scope is unchanged, so a slow refresh can never
+      // overwrite a newer one or flip its load state.
+      const seq = ++materialsLoadSeq;
+      const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
+        seq === materialsLoadSeq && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
       if (get().materialsLoad !== 'ready') set((s) => { s.materialsLoad = 'loading'; }); // stale-while-revalidate
       Promise.all([
         gateway.materialReadiness(),
@@ -2245,7 +2271,7 @@ export const useStore = create<Store>()(
         gateway.materialStock(),
         gateway.materialIssues(),
       ]).then(([readiness, requirements, requisitions, purchaseOrders, stock, issues]) => set((s) => {
-        if (!isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) return; // dropped after a switch/re-auth
+        if (!owns(s)) return; // dropped after a switch/re-auth OR superseded by a newer load
         // castDraft: the Phase-3 read DTOs are `readonly` (immutable server snapshots stored as-is,
         // never mutated in the draft), so immer's WritableDraft recursion needs the explicit cast.
         s.materialsView = castDraft<MaterialsView>({
@@ -2258,9 +2284,70 @@ export const useStore = create<Store>()(
         });
         s.materialsLoad = 'ready';
       })).catch(() => set((s) => {
-        // keep the last-good bundle; expose a Retry boundary (finding 4: honest, not stale-'ready')
-        if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) s.materialsLoad = 'error';
+        // keep the last-good bundle; expose a Retry boundary (finding 4: honest, not stale-'ready').
+        // An OLDER failure never overwrites a NEWER result's load state (finding 2).
+        if (owns(s)) s.materialsLoad = 'error';
       }));
+    },
+    // ── Phase 3 Task 7 correction (findings 1, 2-instr) — the pilot MATERIALS is OPERATIONAL, not
+    //    observational. These actions drive the existing Task 4/5/procurement commands (idempotency-keyed)
+    //    and reconcile by re-`loadMaterials()`. Each is a NO-OP off-pilot (capability-gated) so the surface
+    //    stays inert on a non-pilot project. ──
+    reserveMaterial: (lotId, activityId, qty, storeLocation) => {
+      if (!gateway || !get().capabilities.includes('materials')) return;
+      const key = newIdempotencyKey();
+      gateway.reserveStock({ lotId, activityId, qty, ...(storeLocation ? { storeLocation } : {}) }, key)
+        .then(() => { get().flash('Stock reserved to the activity.'); get().loadMaterials(); })
+        .catch(() => get().flash('Could not reserve — the stock may have moved. Refresh and retry.'));
+    },
+    issueMaterial: (lotId, activityId, qty, storeLocation) => {
+      if (!gateway || !get().capabilities.includes('materials')) return;
+      const key = newIdempotencyKey();
+      gateway.issueStock({ lotId, activityId, qty, ...(storeLocation ? { storeLocation } : {}) }, key)
+        .then(() => { get().flash('Issued to site.'); get().loadMaterials(); })
+        .catch(() => get().flash('Could not issue — refresh and retry.'));
+    },
+    consumeMaterial: (issueId, qty) => {
+      if (!gateway || !get().capabilities.includes('materials')) return;
+      const key = newIdempotencyKey();
+      gateway.consumeStock({ issueId, qty }, key)
+        .then(() => { get().flash('Consumption recorded.'); get().loadMaterials(); })
+        .catch(() => get().flash('Could not record consumption — refresh and retry.'));
+    },
+    /** Cover a shorted ACTIVITY: reserve matching free stock for each of its short requirements when
+     *  covering stock is on hand (the operational fix that flips the activity to ready); otherwise raise
+     *  a requisition for the shortfall (the procure-it corrective). One relevant corrective command. */
+    coverMaterialShortage: (activityId) => {
+      const mv = get().materialsView;
+      if (!gateway || !get().capabilities.includes('materials') || !mv) return;
+      const shortRows = mv.readiness.requirements.filter((r) => r.activityId === activityId && decIsPositive(r.shortfall));
+      if (!shortRows.length) return;
+      // pair each short requirement with a free lot of a matching fingerprint (via the requirements read)
+      const reservations: { lotId: string; qty: string; storeLocation?: string }[] = [];
+      const uncovered: { requirementId: string; revision: number; qty: string }[] = [];
+      for (const row of shortRows) {
+        const spec = mv.requirements.find((x) => x.requirementId === row.requirementId);
+        const fp = spec?.spec?.specFingerprint;
+        const lot = fp ? mv.stock.find((l) => l.specFingerprint === fp && decIsPositive(freeAvailableOf(l))) : undefined;
+        if (lot) {
+          reservations.push({ lotId: lot.id, qty: decMin(row.shortfall, freeAvailableOf(lot)) });
+        } else if (spec) {
+          uncovered.push({ requirementId: row.requirementId, revision: spec.revision, qty: row.shortfall });
+        }
+      }
+      const jobs: Promise<unknown>[] = [];
+      for (const r of reservations) jobs.push(gateway.reserveStock({ lotId: r.lotId, activityId, qty: r.qty }, newIdempotencyKey()));
+      if (uncovered.length) {
+        const activityName = mv.readiness.activities.find((a) => a.activityId === activityId)?.activityName ?? activityId;
+        jobs.push(gateway.createMaterialRequisition({ title: `Cover ${activityName}`, lines: uncovered }, newIdempotencyKey()));
+      }
+      if (!jobs.length) return;
+      Promise.all(jobs)
+        .then(() => {
+          get().flash(reservations.length && uncovered.length ? 'Reserved on-hand stock and raised a requisition for the rest.' : reservations.length ? 'Reserved on-hand stock to cover the activity.' : 'Requisition raised to procure the shortfall.');
+          get().loadMaterials();
+        })
+        .catch(() => get().flash('Could not fully cover the shortage — refresh and retry.'));
     },
     switchProject: (projectId, targetScreen) => {
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);

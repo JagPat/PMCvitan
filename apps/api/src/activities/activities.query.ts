@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { ActivitiesModuleResult, MaterialReadinessResult, RequirementReadinessRow, ShortageForecastRow, ShortageImpact } from '@vitan/shared';
+import type { ActivitiesModuleResult, MaterialReadinessResult, RequirementReadinessRow, ActivityReadinessRow, ActivityShortageRow, ShortageImpact } from '@vitan/shared';
 import { toIsoCivilDate } from '../common/civil-date';
 import { PrismaService } from '../prisma.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
@@ -174,7 +174,7 @@ export class ActivitiesQueryService {
       const requirements = await loadCoverageRequirements(tx, projectId, this.substitutions);
       const coverage = await this.inventory.coverageFor(tx, projectId, requirements);
       if (coverage.length === 0) {
-        return { requirements: [], shortages: [], summary: { ready: 0, atRisk: 0, blocked: 0, total: 0 } };
+        return { requirements: [], activities: [], shortages: [], summary: { ready: 0, atRisk: 0, blocked: 0, total: 0 } };
       }
       const activityIds = [...new Set(coverage.map((c) => c.activityId))];
       const [acts, heads] = await Promise.all([
@@ -212,49 +212,86 @@ export class ActivitiesQueryService {
         })
         .sort((a, b) => (a.activityName !== b.activityName ? (a.activityName < b.activityName ? -1 : 1) : a.requirementId < b.requirementId ? -1 : a.requirementId > b.requirementId ? 1 : 0));
 
-      const shortages: ShortageForecastRow[] = rows
-        .filter((r) => r.verdict !== 'ready')
-        .map((r) => {
-          const verdict = r.verdict as 'at-risk' | 'blocked';
-          const target = r.plannedStartDate ?? r.requiredBy;
+      // ── ACTIVITY-level roll-up (finding 3). Stock is reserved to an ACTIVITY, and Task 6 gives every
+      //    requirement of an activity ONE verdict (worst-wins, uniform). So readiness + shortage TOTALS
+      //    are counted per activity; the per-requirement `rows` are supporting detail, never counted as
+      //    independent shortages. The forecast (finding 4) measures the covering delivery against the
+      //    EARLIEST applicable need date = min(plannedStartDate, earliest requiredBy). ──
+      const earliestDate = (dates: (string | null)[]): string | null =>
+        dates.filter((d): d is string => d !== null).sort()[0] ?? null;
+      const activities: ActivityReadinessRow[] = activityIds
+        .map((activityId) => {
+          const reqRows = rows.filter((r) => r.activityId === activityId);
+          const act = actById.get(activityId);
+          const verdict = reqRows[0]!.verdict; // uniform across the activity (Task 6)
+          const activityName = act?.name ?? activityId;
+          const plannedStartDate = act?.plannedStartDate ? toIsoCivilDate(act.plannedStartDate) : null;
+          const requiredBy = earliestDate(reqRows.map((r) => r.requiredBy));
+          const needBy = earliestDate([plannedStartDate, requiredBy]);
+          // the activity's combined covering date (uniform on at-risk rows); null when ready/blocked
+          const commitmentPromisedDate = reqRows.find((r) => r.commitmentPromisedDate)?.commitmentPromisedDate ?? null;
+          const shortRequirementCount = reqRows.filter((r) => Number(r.shortfall) > 0).length;
+          const n = reqRows.length;
+          const rl = (k: number) => (k === 1 ? '' : 's');
+          let reason: string;
+          if (verdict === 'ready') {
+            reason = `All ${n} material requirement${rl(n)} covered (reserved + issued)`;
+          } else if (verdict === 'at-risk') {
+            reason = `${shortRequirementCount} of ${n} requirement${rl(n)} short; covering deliveries meet demand by ${commitmentPromisedDate}`;
+          } else {
+            reason = `${shortRequirementCount} of ${n} requirement${rl(n)} short — inbound commitments cannot cover demand`;
+          }
+          return { activityId, activityName, verdict, requirementCount: n, shortRequirementCount, plannedStartDate, requiredBy, needBy, commitmentPromisedDate, reason };
+        })
+        .sort((a, b) => (a.activityName !== b.activityName ? (a.activityName < b.activityName ? -1 : 1) : a.activityId < b.activityId ? -1 : a.activityId > b.activityId ? 1 : 0));
+
+      // ── shortages: ONE per affected ACTIVITY (finding 3), forecast against the EARLIEST need date (finding 4) ──
+      const shortages: ActivityShortageRow[] = activities
+        .filter((a) => a.verdict !== 'ready')
+        .map((a) => {
+          const verdict = a.verdict as 'at-risk' | 'blocked';
+          const need = a.needBy;
           let impact: ShortageImpact;
           let impactReason: string;
           if (verdict === 'blocked') {
             impact = 'no-supply';
-            impactReason = target
-              ? `No covering delivery — ${r.material} must be procured before ${r.activityName} starts (planned ${target})`
-              : `No covering delivery — ${r.material} must be procured for ${r.activityName}`;
-          } else if (target && r.commitmentPromisedDate && r.commitmentPromisedDate > target) {
+            impactReason = need
+              ? `No covering delivery — ${a.activityName} needs material by ${need}`
+              : `No covering delivery — ${a.activityName} cannot be supplied`;
+          } else if (need && a.commitmentPromisedDate && a.commitmentPromisedDate > need) {
+            // a covering delivery AFTER the earliest need date slips the activity — even if it precedes
+            // the planned start (an earlier requiredBy still governs the need).
             impact = 'delays-start';
-            impactReason = `Covering delivery by ${r.commitmentPromisedDate} lands AFTER the planned start ${target} — ${r.activityName} will slip`;
+            impactReason = `Covering delivery by ${a.commitmentPromisedDate} lands AFTER the need date ${need} — ${a.activityName} will slip`;
           } else {
             impact = 'covered-in-time';
-            impactReason = r.commitmentPromisedDate
-              ? target
-                ? `Covering delivery by ${r.commitmentPromisedDate}, before the planned start ${target}`
-                : `Covering delivery by ${r.commitmentPromisedDate}`
+            impactReason = a.commitmentPromisedDate
+              ? need
+                ? `Covering delivery by ${a.commitmentPromisedDate}, before the need date ${need}`
+                : `Covering delivery by ${a.commitmentPromisedDate}`
               : 'Covered by inbound delivery';
           }
-          return { ...r, verdict, impact, impactReason };
+          return { ...a, verdict, impact, impactReason };
         });
-      // worst-first (blocked before at-risk), then soonest-needed, then requirement id
+      // worst-first (blocked before at-risk), then soonest-needed, then activity id
       const sev = { blocked: 0, 'at-risk': 1 } as const;
       shortages.sort((a, b) => {
         if (sev[a.verdict] !== sev[b.verdict]) return sev[a.verdict] - sev[b.verdict];
-        const ad = a.plannedStartDate ?? a.requiredBy ?? '9999-12-31';
-        const bd = b.plannedStartDate ?? b.requiredBy ?? '9999-12-31';
+        const ad = a.needBy ?? '9999-12-31';
+        const bd = b.needBy ?? '9999-12-31';
         if (ad !== bd) return ad < bd ? -1 : 1;
-        return a.requirementId < b.requirementId ? -1 : a.requirementId > b.requirementId ? 1 : 0;
+        return a.activityId < b.activityId ? -1 : a.activityId > b.activityId ? 1 : 0;
       });
 
       return {
         requirements: rows,
+        activities,
         shortages,
         summary: {
-          ready: rows.filter((r) => r.verdict === 'ready').length,
-          atRisk: rows.filter((r) => r.verdict === 'at-risk').length,
-          blocked: rows.filter((r) => r.verdict === 'blocked').length,
-          total: rows.length,
+          ready: activities.filter((a) => a.verdict === 'ready').length,
+          atRisk: activities.filter((a) => a.verdict === 'at-risk').length,
+          blocked: activities.filter((a) => a.verdict === 'blocked').length,
+          total: activities.length,
         },
       };
     });

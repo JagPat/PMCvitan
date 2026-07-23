@@ -2,17 +2,18 @@ import { test, expect, type APIRequestContext, type Page } from '@playwright/tes
 import { execSync } from 'node:child_process';
 
 /**
- * Phase 3 Task 7 — the pilot MATERIALS acceptance chain, in a REAL browser over live PostgreSQL, in
- * BOTH capability states. On a dedicated PILOT project (materials capability enabled by the operator
- * CLI — the only enable path, §D) the full pipeline is authored over the API —
- *   requirement → requisition → comparison → purchase order → delivery commitment → receipt →
- *   acceptance → stock → reservation → issue → consumption
- * — then the browser drives the Materials hub and asserts each surface, the readiness verdicts, the
- * shortage Inbox forecast, and the §E Daily-Log read. A second PLAIN project proves the INERT
- * non-pilot state: no Materials nav, and the Phase-3 read 404s.
+ * Phase 3 Task 7 (+ correction) — the pilot MATERIALS acceptance chain, in a REAL browser over live
+ * PostgreSQL, in BOTH capability states.
  *
- * Isolation: this spec creates its OWN two projects (never the seeded ones), so it cannot pollute the
- * other suites (project-scope's "empty project" proof, etc.).
+ * The pilot is OPERATIONAL, not observational (correction findings 1/7): the upstream procurement chain
+ * (requirement → requisition → comparison → PO → commitment → receipt → ACCEPTANCE) is set up over the API
+ * as a FIXTURE only, leaving accepted stock FREE on hand. The BROWSER then drives the operational site
+ * commands and proves a readiness TRANSITION: it RESERVES the on-hand stock to the activity (BLOCKED →
+ * READY, visible), ISSUES it to site, and records CONSUMPTION — all through the UI. A blocked no-supply
+ * requirement produces a shortage Inbox card whose corrective action raises a requisition. A second PLAIN
+ * project proves the INERT non-pilot state: no Materials nav, and the Phase-3 read 404s.
+ *
+ * Isolation: this spec creates its OWN two projects (never the seeded ones).
  */
 
 const API = 'http://localhost:3000';
@@ -66,10 +67,18 @@ async function signInToProject(page: Page, email: string, projectName: string): 
   await expect(switcher).toContainText(projectName);
 }
 
+async function openMaterials(page: Page): Promise<void> {
+  // scope to the navigation landmark — `/Materials/i` also matches the project-switcher button
+  await page.getByRole('navigation').getByRole('button', { name: /Materials/ }).click();
+  await expect(page.getByTestId('materials-summary')).toBeVisible();
+}
+
 let pilotId = '';
 let plainId = '';
 let pmcPilot = '';
 let pmcPlain = '';
+let coveredActivity = '';
+let shortActivity = '';
 
 /** Create (idempotently, by name) a project in the PMC's org. */
 async function ensureProject(request: APIRequestContext, home: string, orgId: string, name: string): Promise<string> {
@@ -80,9 +89,9 @@ async function ensureProject(request: APIRequestContext, home: string, orgId: st
   return created.id;
 }
 
-/** Author the requirement → … → issue chain for a requirement on `activityId`, returning nothing.
- *  Reused for the covered head requirement (procure + receive + accept + reserve + issue). */
-async function fullChain(request: APIRequestContext, token: string, projectId: string, orgId: string, home: string, activityId: string, qty: string) {
+/** FIXTURE (API-only, per finding 7): procure the requirement and RECEIVE + ACCEPT the full qty, leaving
+ *  it FREE on hand (NOT reserved) — so the activity starts BLOCKED and the browser drives the rest. */
+async function procureAndAccept(request: APIRequestContext, token: string, projectId: string, orgId: string, home: string, activityId: string, qty: string) {
   const req = await post(request, token, `/projects/${projectId}/requirements`, {
     activityId, materialCategory: 'Cement', make: 'UltraTech', grade: 'OPC 53', attributes: 'grey',
     baseUom: 'bag', qty, requiredBy: '2026-09-01', criticality: 'normal', decisionId: null, responsibleId: null, tolerance: null,
@@ -108,9 +117,7 @@ async function fullChain(request: APIRequestContext, token: string, projectId: s
   const lot = await post(request, token, `/projects/${projectId}/stock/receipts`, { poLineId: poLine.id, commitmentId: commitment.id, purchaseQty: qty });
   const media = await post(request, token, `/projects/${projectId}/media`, { kind: 'material', mime: 'image/png', data: PX });
   await post(request, token, `/projects/${projectId}/stock/accept`, { lotId: lot.id, qty, qualityResult: 'passed', evidenceMediaId: media.id });
-  await post(request, token, `/projects/${projectId}/stock/reserve`, { lotId: lot.id, activityId, qty });
-  const issued = (Number(qty) / 2).toString();
-  await post(request, token, `/projects/${projectId}/stock/issue`, { lotId: lot.id, activityId, qty: issued });
+  // NOTE: intentionally NOT reserved/issued — the browser drives reserve → issue → consume.
   return { requirementId: req.requirementId as string, lotId: lot.id as string };
 }
 
@@ -128,13 +135,18 @@ test.beforeAll(async ({ request }) => {
   pmcPlain = await scoped(request, home, plainId);
 
   // idempotent: a worker retry re-runs beforeAll — author the chain only once
-  const alreadyAuthored = (await get(request, pmcPilot, `/projects/${pilotId}/requirements`)).requirements.length > 0;
-  if (!alreadyAuthored) {
-    // a COVERED head requirement: an activity with reserved + issued stock → ready
-    const coveredActivity = (await post(request, pmcPilot, `/projects/${pilotId}/activities`, { name: 'Slab casting', zone: 'Terrace', plannedStart: 0, plannedEnd: 30, plannedStartDate: '2026-09-30', plannedEndDate: '2026-10-30' })).activities.find((a: { name: string }) => a.name === 'Slab casting')!.id;
-    await fullChain(request, pmcPilot, pilotId, orgId, home, coveredActivity, '100');
-    // a BLOCKED requirement with no supply → a shortage with a no-supply forecast
-    const shortActivity = (await post(request, pmcPilot, `/projects/${pilotId}/activities`, { name: 'Plastering', zone: 'GF', plannedStart: 0, plannedEnd: 15, plannedStartDate: '2026-08-10', plannedEndDate: '2026-08-25' })).activities.find((a: { name: string }) => a.name === 'Plastering')!.id;
+  const existing = (await get(request, pmcPilot, `/projects/${pilotId}/activities`)).activities as Array<{ id: string; name: string }>;
+  const findAct = (name: string) => existing.find((a) => a.name === name)?.id;
+  coveredActivity = findAct('Slab casting') ?? '';
+  shortActivity = findAct('Plastering') ?? '';
+  if (!coveredActivity) {
+    // an activity with ACCEPTED-but-unreserved stock → starts BLOCKED; the browser reserves it to READY
+    coveredActivity = (await post(request, pmcPilot, `/projects/${pilotId}/activities`, { name: 'Slab casting', zone: 'Terrace', plannedStart: 0, plannedEnd: 30, plannedStartDate: '2026-09-30', plannedEndDate: '2026-10-30' })).activities.find((a: { name: string }) => a.name === 'Slab casting')!.id;
+    await procureAndAccept(request, pmcPilot, pilotId, orgId, home, coveredActivity, '100');
+  }
+  if (!shortActivity) {
+    // a BLOCKED requirement with no supply → a shortage with a no-supply forecast + a "Raise requisition" corrective
+    shortActivity = (await post(request, pmcPilot, `/projects/${pilotId}/activities`, { name: 'Plastering', zone: 'GF', plannedStart: 0, plannedEnd: 15, plannedStartDate: '2026-08-10', plannedEndDate: '2026-08-25' })).activities.find((a: { name: string }) => a.name === 'Plastering')!.id;
     await post(request, pmcPilot, `/projects/${pilotId}/requirements`, {
       activityId: shortActivity, materialCategory: 'Cement', make: 'UltraTech', grade: 'OPC 53', attributes: 'grey',
       baseUom: 'bag', qty: '100', requiredBy: '2026-08-15', criticality: 'critical', decisionId: null, responsibleId: null, tolerance: null,
@@ -142,67 +154,70 @@ test.beforeAll(async ({ request }) => {
   }
 });
 
-test('PILOT: the Materials hub renders the authored pipeline and the readiness verdicts', async ({ page, request }) => {
+test('PILOT operational: the browser RESERVES on-hand stock (BLOCKED → READY), ISSUES it, and records CONSUMPTION', async ({ page }) => {
   await signInToProject(page, PMC, PILOT_NAME);
-  // click the nav item (scoped to the navigation landmark — `/Materials/i` also matches the
-  // "T7 Materials Pilot" project-switcher button, which is NOT the screen entry).
-  await page.getByRole('navigation').getByRole('button', { name: /Materials/ }).click();
+  await openMaterials(page);
 
-  // the readiness summary + both verdicts (one ready, one blocked)
-  await expect(page.getByTestId('materials-summary')).toBeVisible();
-  const view = await get(request, pmcPilot, `/projects/${pilotId}/activities/material-readiness`);
-  expect(view.summary.ready).toBe(1);
-  expect(view.summary.blocked).toBe(1);
-  const blocked = view.requirements.find((r: { verdict: string }) => r.verdict === 'blocked');
-  await expect(page.getByTestId(`materials-verdict-${blocked.requirementId}`)).toHaveText('BLOCKED');
-  const ready = view.requirements.find((r: { verdict: string }) => r.verdict === 'ready');
-  await expect(page.getByTestId(`materials-verdict-${ready.requirementId}`)).toHaveText('READY');
+  // Readiness — the covered activity is BLOCKED (stock accepted but not reserved to it). Reserving flips it.
+  const verdict = page.getByTestId(`materials-verdict-${coveredActivity}`);
+  await expect(verdict).toBeVisible();
+  if ((await verdict.textContent())?.trim() !== 'READY') {
+    await expect(verdict).toHaveText('BLOCKED');
+    await page.getByTestId(`materials-cover-${coveredActivity}`).click(); // the corrective reserve command
+  }
+  await expect(verdict).toHaveText('READY'); // the readiness TRANSITION, proven in the browser
 
-  // procurement panel — the issued PO is there
-  await page.getByTestId('materials-tab-procurement').click();
-  await expect(page.locator('[data-testid^="materials-po-"]').first()).toBeVisible();
-
-  // inventory panel — the received + accepted lot
-  await page.getByTestId('materials-tab-inventory').click();
-  await expect(page.locator('[data-testid^="materials-lot-"]').first()).toBeVisible();
-
-  // reservations panel — stock reserved to the covered activity
+  // Reservations — issue the reserved stock to site (creates the §E MaterialIssue). Skip if already issued.
   await page.getByTestId('materials-tab-reservations').click();
-  await expect(page.locator('[data-testid^="materials-reservation-"]').first()).toBeVisible();
+  const issueBtn = page.locator('[data-testid^="materials-do-issue-"]').first();
+  if (await issueBtn.count()) await issueBtn.click();
 
-  // issues panel — the §E MaterialIssue that LEFT the store
+  // Issues — the §E issue exists; record consumption against it (custody derived). Skip if already consumed.
   await page.getByTestId('materials-tab-issues').click();
   await expect(page.locator('[data-testid^="materials-issue-"]').first()).toBeVisible();
+  const consumeBtn = page.locator('[data-testid^="materials-do-consume-"]').first();
+  if (await consumeBtn.count()) {
+    await consumeBtn.click();
+    await expect(page.locator('[data-testid^="materials-do-consume-"]')).toHaveCount(0); // custody exhausted
+  }
+
+  // the pipeline panels render the authored + operated facts
+  await page.getByTestId('materials-tab-procurement').click();
+  await expect(page.locator('[data-testid^="materials-po-"]').first()).toBeVisible();
+  await page.getByTestId('materials-tab-inventory').click();
+  await expect(page.locator('[data-testid^="materials-lot-"]').first()).toBeVisible();
 });
 
-test('PILOT: the blocked requirement produces a shortage Inbox action with forecast impact (§25)', async ({ page }) => {
+test('PILOT: the blocked requirement produces a shortage Inbox action, and its corrective RAISES A REQUISITION (§25)', async ({ page }) => {
   await signInToProject(page, PMC, PILOT_NAME);
   // the For-You inbox is the home — the shortage action is there with its forecast detail
   await expect(page.getByText(/material shortage/i).first()).toBeVisible();
   await expect(page.getByText(/No covering delivery/i).first()).toBeVisible();
+
+  // the shortage's corrective on the Materials hub is a real command, not a read-only panel (finding 2)
+  await openMaterials(page);
+  const cover = page.getByTestId(`materials-cover-${shortActivity}`);
+  await expect(cover).toHaveText(/Raise requisition/);
+  await cover.click();
+  await page.getByTestId('materials-tab-procurement').click();
+  await expect(page.getByText(/Cover Plastering/).first()).toBeVisible(); // the raised requisition surfaced
 });
 
-test('PILOT: the §E stock-issues read surfaces the issued material — and an issue is NOT a daily-log delivery', async ({ request }) => {
-  // §E — "an issue is NOT a delivery". The issued material is surfaced by inventory's stock.issues
-  // read, which JOINS the lot's §B identity + derives activity custody. Nothing is copied into the
-  // daily-log's SiteMaterial (delivery) rows — the Daily Log screen reads stock.issues separately.
+test('PILOT: the §E stock-issues read surfaces the browser-issued material — and an issue is NOT a daily-log delivery', async ({ request }) => {
+  // §E — "an issue is NOT a delivery". The material the browser issued is surfaced by inventory's
+  // stock.issues read (lot §B identity joined, custody derived), never copied into the daily-log deliveries.
   const issues = await get(request, pmcPilot, `/projects/${pilotId}/stock/issues`);
   expect(issues.issues.length).toBeGreaterThan(0);
   const issue = issues.issues[0];
-  expect(issue.activityId).toBeTruthy(); // issued to the covered activity
-  expect(String(issue.materialCategory).toLowerCase()).toContain('cement'); // lot §B identity joined
-  expect(Number(issue.remainingCustody)).toBeGreaterThan(0); // custody derived, not copied
-  // the daily-log module read carries SiteMaterial deliveries only — the issue is not among them
+  expect(issue.activityId).toBeTruthy();
+  expect(String(issue.materialCategory).toLowerCase()).toContain('cement');
   const daily = await get(request, pmcPilot, `/projects/${pilotId}/daily-log`);
   expect(JSON.stringify(daily.materials ?? [])).not.toContain(issue.id);
 });
 
 test('INERT: a non-pilot project has NO Materials nav and the Phase-3 read 404s', async ({ page, request }) => {
-  // the browser: no Materials entry in the nav for a non-pilot project (scope to the navigation
-  // landmark — the project-switcher lists "T7 Materials Plain", which must NOT be mistaken for a nav item)
   await signInToProject(page, PMC, PLAIN_NAME);
   await expect(page.getByRole('navigation').getByRole('button', { name: /Materials/ })).toHaveCount(0);
-  // the API: the material-readiness read does not exist off-pilot
   const res = await request.get(`${API}/projects/${plainId}/activities/material-readiness`, { headers: bearer(pmcPlain) });
   expect(res.status()).toBe(404);
 });
