@@ -85,9 +85,14 @@ export const EXTERNAL_EFFECTS = {
   'po.issued': { eventType: 'po.issued', invalidate: true, push: null },
   'po.amended': { eventType: 'po.amended', invalidate: true, push: null },
   'po.cancelled': { eventType: 'po.cancelled', invalidate: true, push: null },
+  // Task 6 correction (F4): closing a PO short removes its lines' inbound coverage (the readiness
+  // projection consumes it). Snapshot-invalidate only, like the other PO lifecycle events.
+  'po.closed_short': { eventType: 'po.closed_short', invalidate: true, push: null },
   'delivery.committed': { eventType: 'delivery.committed', invalidate: true, push: null },
   'delivery.revised': { eventType: 'delivery.revised', invalidate: true, push: null },
   'delivery.defaulted': { eventType: 'delivery.defaulted', invalidate: true, push: null },
+  // Task 6 correction (F4): fulfilling a commitment removes it from inbound coverage.
+  'delivery.fulfilled': { eventType: 'delivery.fulfilled', invalidate: true, push: null },
   // Task 4 — the §G inventory ledger event (ONE per appended §C stock transaction).
   // Snapshot-invalidate only; the readiness/store projections consume it in Tasks 5–6.
   'stock.transacted': { eventType: 'stock.transacted', invalidate: true, push: null },

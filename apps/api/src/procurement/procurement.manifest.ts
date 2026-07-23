@@ -33,8 +33,8 @@ export const procurementManifest: ModuleManifest = {
   workflowParticipants: [],
   producesEvents: [
     'requisition.submitted', 'requisition.approved', 'comparison.approved',
-    'po.issued', 'po.amended', 'po.cancelled',
-    'delivery.committed', 'delivery.revised', 'delivery.defaulted',
+    'po.issued', 'po.amended', 'po.cancelled', 'po.closed_short',
+    'delivery.committed', 'delivery.revised', 'delivery.defaulted', 'delivery.fulfilled',
   ],
   consumesEvents: [],
   commands: [...PROCUREMENT_COMMANDS],

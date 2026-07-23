@@ -197,8 +197,9 @@ describe('Phase 3 Task 6 — the material-readiness projection (live == projecti
     expect((stale as { readings: Record<string, { v: string }> }).readings[activityId]?.v).toBe('ok'); // projection has NOT caught up
     // the start authority reads CANONICAL coverage in-tx (never the stale 'ok' projection) → refuses
     await expect(activities.start(projectId, activityId, pmc(projectId))).rejects.toMatchObject({ status: 409 });
-    // and the live recompute already reflects the release — the reserved 100 is gone, so the open
-    // delivery commitment now merely puts it AT-RISK ('wait'), never ready
-    expect((await liveDto(projectId)).readings[activityId]?.v).toBe('wait');
+    // and the live recompute already reflects the release — the reserved 100 is gone; the delivery
+    // commitment was FULLY received (F3: zero outstanding, no longer inbound), so nothing covers the
+    // shortfall → 'fail'. Either way it is never 'ok': lag cannot make a released activity startable.
+    expect((await liveDto(projectId)).readings[activityId]?.v).toBe('fail');
   });
 });

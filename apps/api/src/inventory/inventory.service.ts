@@ -108,6 +108,83 @@ function foldBuckets(rows: readonly Movement[], storeLocation: string): Buckets 
   return b;
 }
 
+/**
+ * Phase 3 Task 6 F1 — the CONSERVED per-activity stock allocator. Given an activity's supply pools
+ * (`fingerprint → available base qty`, that activity's reserved-for-it + issued-to-it stock) and
+ * its material requirements (each accepting a set of fingerprints — its own + active substitution
+ * targets), allocate every physical unit to AT MOST ONE requirement, maximizing total coverage.
+ *
+ * Modelled as a max-flow so exact fingerprints and overlapping substitution edges are handled
+ * correctly and deterministically: `source → pool(cap=supply) → requirement(if acceptable) →
+ * sink(cap=demand)`. Edmonds-Karp (shortest augmenting path) is strongly polynomial, so decimal
+ * capacities terminate; node/edge insertion is in sorted order, so the augmenting sequence — and
+ * therefore each requirement's covered amount — is deterministic. When simultaneous full coverage
+ * is feasible the max-flow saturates every demand edge (so all requirements read `covered ==
+ * required`); when it is not, at least one requirement is left short in EVERY allocation, so the
+ * worst-wins activity verdict is correct regardless of which one this deterministic flow flags.
+ */
+function allocateStock(
+  pools: ReadonlyMap<string, Prisma.Decimal>,
+  fingerprintBaseUom: ReadonlyMap<string, string>,
+  reqs: ReadonlyArray<{ requirementId: string; requiredQty: Prisma.Decimal; baseUom: string; acceptableFingerprints: readonly string[] }>,
+): Map<string, Prisma.Decimal> {
+  const covered = new Map<string, Prisma.Decimal>();
+  for (const r of reqs) covered.set(r.requirementId, ZERO);
+  const fps = [...pools.keys()].filter((fp) => pools.get(fp)!.greaterThan(0)).sort();
+  const sortedReqs = [...reqs].sort((a, b) => (a.requirementId < b.requirementId ? -1 : a.requirementId > b.requirementId ? 1 : 0));
+  if (fps.length === 0 || sortedReqs.length === 0) return covered;
+
+  const S = 'S', T = 'T';
+  const res = new Map<string, Map<string, Prisma.Decimal>>();
+  const ensure = (u: string): Map<string, Prisma.Decimal> => {
+    let m = res.get(u);
+    if (!m) { m = new Map(); res.set(u, m); }
+    return m;
+  };
+  const addEdge = (u: string, v: string, cap: Prisma.Decimal): void => {
+    ensure(u).set(v, (ensure(u).get(v) ?? ZERO).add(cap));
+    if (!ensure(v).has(u)) ensure(v).set(u, ZERO); // reverse residual
+  };
+  for (const fp of fps) addEdge(S, `P:${fp}`, pools.get(fp)!);
+  for (const r of sortedReqs) {
+    addEdge(`R:${r.requirementId}`, T, r.requiredQty);
+    const acc = new Set(r.acceptableFingerprints);
+    for (const fp of fps) {
+      if (acc.has(fp) && fingerprintBaseUom.get(fp) === r.baseUom) addEdge(`P:${fp}`, `R:${r.requirementId}`, r.requiredQty);
+    }
+  }
+
+  for (;;) {
+    const parent = new Map<string, string>([[S, S]]);
+    const queue: string[] = [S];
+    let qi = 0;
+    while (qi < queue.length && !parent.has(T)) {
+      const u = queue[qi++]!;
+      for (const [v, cap] of res.get(u) ?? []) {
+        if (!parent.has(v) && cap.greaterThan(0)) { parent.set(v, u); queue.push(v); }
+      }
+    }
+    if (!parent.has(T)) break;
+    let bottleneck: Prisma.Decimal | null = null;
+    for (let v = T; v !== S; v = parent.get(v)!) {
+      const cap = res.get(parent.get(v)!)!.get(v)!;
+      bottleneck = bottleneck === null || cap.lessThan(bottleneck) ? cap : bottleneck;
+    }
+    if (!bottleneck || bottleneck.lessThanOrEqualTo(0)) break;
+    for (let v = T; v !== S; v = parent.get(v)!) {
+      const u = parent.get(v)!;
+      res.get(u)!.set(v, res.get(u)!.get(v)!.sub(bottleneck));
+      res.get(v)!.set(u, (res.get(v)!.get(u) ?? ZERO).add(bottleneck));
+    }
+  }
+
+  for (const r of sortedReqs) {
+    const residualToSink = res.get(`R:${r.requirementId}`)?.get(T) ?? ZERO;
+    covered.set(r.requirementId, r.requiredQty.sub(residualToSink)); // flow into sink = demand − residual
+  }
+  return covered;
+}
+
 function serializeTx(t: TxRow): StockTransactionDto {
   return {
     id: t.id, lotId: t.lotId, storeLocation: t.storeLocation, type: t.type,
@@ -896,25 +973,42 @@ export class InventoryService {
       ),
     ]);
 
-    return requirements.map((req) => {
-      const fps = new Set(req.acceptableFingerprints);
-      let covered = ZERO;
-      // reserved for THIS activity, matching fingerprint + base UOM, summed across every store key
-      for (const lot of lots) {
-        if (!fps.has(lot.specFingerprint) || lot.baseUom !== req.baseUom) continue;
-        const rows = lot.transactions as ScopedMovement[];
-        const locations = new Set(
-          rows.flatMap((t) => (t.toStoreLocation ? [t.storeLocation, t.toStoreLocation] : [t.storeLocation])),
-        );
-        for (const loc of locations) covered = covered.add(this.reservedForActivity(rows, loc, req.activityId));
+    // ── F1: build supply per (activityId, fingerprint) = reserved-for-it + issued-to-it (base UOM),
+    // then allocate each activity's supply across its requirements so every unit is counted ONCE. ──
+    const supply = new Map<string, Map<string, Prisma.Decimal>>(); // activityId → fingerprint → qty
+    const fingerprintBaseUom = new Map<string, string>();
+    const addSupply = (activityId: string, fp: string, qty: Prisma.Decimal): void => {
+      if (qty.lessThanOrEqualTo(0)) return;
+      const perAct = supply.get(activityId) ?? new Map<string, Prisma.Decimal>();
+      perAct.set(fp, (perAct.get(fp) ?? ZERO).add(qty));
+      supply.set(activityId, perAct);
+    };
+    for (const lot of lots) {
+      fingerprintBaseUom.set(lot.specFingerprint, lot.baseUom);
+      const rows = lot.transactions as ScopedMovement[];
+      const locations = new Set(
+        rows.flatMap((t) => (t.toStoreLocation ? [t.storeLocation, t.toStoreLocation] : [t.storeLocation])),
+      );
+      for (const activityId of activityIds) {
+        let reserved = ZERO;
+        for (const loc of locations) reserved = reserved.add(this.reservedForActivity(rows, loc, activityId));
+        addSupply(activityId, lot.specFingerprint, reserved);
       }
+    }
+    for (const issue of issues) {
+      fingerprintBaseUom.set(issue.lot.specFingerprint, issue.lot.baseUom);
       // already ISSUED to THIS activity (remaining custody) counts as coverage (§A guardrail)
-      for (const issue of issues) {
-        if (issue.activityId !== req.activityId) continue;
-        if (!fps.has(issue.lot.specFingerprint) || issue.lot.baseUom !== req.baseUom) continue;
-        covered = covered.add(foldBuckets(issue.transactions as ScopedMovement[], issue.storeLocation).issuedToActivity);
-      }
+      addSupply(issue.activityId, issue.lot.specFingerprint, foldBuckets(issue.transactions as ScopedMovement[], issue.storeLocation).issuedToActivity);
+    }
 
+    const coveredByReq = new Map<string, Prisma.Decimal>();
+    for (const activityId of activityIds) {
+      const alloc = allocateStock(supply.get(activityId) ?? new Map(), fingerprintBaseUom, requirements.filter((r) => r.activityId === activityId));
+      for (const [requirementId, qty] of alloc) coveredByReq.set(requirementId, qty);
+    }
+
+    return requirements.map((req) => {
+      const covered = coveredByReq.get(req.requirementId) ?? ZERO;
       const shortfall = req.requiredQty.sub(covered);
       const base = {
         requirementId: req.requirementId,
@@ -932,22 +1026,35 @@ export class InventoryService {
           reason: `Covered ${covered.toString()} of ${req.requiredQty.toString()} ${req.baseUom} (reserved + issued)`,
         };
       }
-      const promised = commitments.get(`${req.requirementId}#${req.revision}`) ?? null;
-      if (promised) {
+      // ── F3: accumulate covering commitments by promised date; at-risk ONLY once cumulative inbound
+      // reaches the ACTUAL shortfall, dated at the promise that first covers it. ──
+      const inbound = (commitments.get(`${req.requirementId}#${req.revision}`) ?? [])
+        .slice()
+        .sort((a, b) => (a.promisedDate < b.promisedDate ? -1 : a.promisedDate > b.promisedDate ? 1 : 0));
+      let cumulative = ZERO;
+      let coveringDate: string | null = null;
+      for (const c of inbound) {
+        cumulative = cumulative.add(c.outstanding);
+        if (cumulative.greaterThanOrEqualTo(shortfall)) { coveringDate = c.promisedDate; break; }
+      }
+      if (coveringDate) {
         return {
           ...base,
           shortfall: shortfall.toString(),
           verdict: 'at-risk' as const,
-          commitmentPromisedDate: promised,
-          reason: `Short by ${shortfall.toString()} ${req.baseUom}; covering delivery promised ${promised}`,
+          commitmentPromisedDate: coveringDate,
+          reason: `Short by ${shortfall.toString()} ${req.baseUom}; covering deliveries total ${cumulative.toString()} promised by ${coveringDate}`,
         };
       }
+      const totalInbound = inbound.reduce((s, c) => s.add(c.outstanding), ZERO);
       return {
         ...base,
         shortfall: shortfall.toString(),
         verdict: 'blocked' as const,
         commitmentPromisedDate: null,
-        reason: `Short by ${shortfall.toString()} ${req.baseUom} with no covering delivery commitment`,
+        reason: totalInbound.greaterThan(0)
+          ? `Short by ${shortfall.toString()} ${req.baseUom}; only ${totalInbound.toString()} inbound — insufficient to cover the shortfall`
+          : `Short by ${shortfall.toString()} ${req.baseUom} with no covering delivery commitment`,
       };
     });
   }

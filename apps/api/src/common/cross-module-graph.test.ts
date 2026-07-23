@@ -135,7 +135,7 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   'procurement/procurement.service.ts': { domain: 'procurement', foreign: {}, dispatch: 3 },
   // Phase 3 Task 3 — versioned POs + delivery commitments. issue/amend/cancel and the
   // commit/revise/default delivery commands dispatch their committed events post-commit (6).
-  'procurement/purchase-orders.service.ts': { domain: 'procurement', foreign: {}, dispatch: 6 },
+  'procurement/purchase-orders.service.ts': { domain: 'procurement', foreign: {}, dispatch: 8 },
   // Phase 3 Task 4 — the inventory pillar: receipt/accept/reject/vendor-return/adjust/reverse
   // each append ONE §C ledger row and dispatch its committed stock.transacted event. The
   // §G inventory→procurement receipt edge routes through the procurement PARTICIPANT (the
@@ -374,9 +374,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('56 external-effect dispatch sites total across the pillar services (48 + the seven Task-5 stock-flow emitters + resolveMismatch)', () => {
+    it('60 external-effect dispatch sites total across the pillar services (58 + Task-6 F4 po.closeShort + delivery.fulfill)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(58);
+      expect(total).toBe(60);
     });
   });
 

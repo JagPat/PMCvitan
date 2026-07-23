@@ -46,9 +46,11 @@ import type {
  * approvedOverage (§F bound-3 headroom for Task-4 receipts) is accepted ONLY by the
  * issue/amend commands, with a reason, per line.
  *
- * EVENTS (§G catalog, exactly): `po.issued|amended|cancelled` (cancelled only for a version
- * that was ANNOUNCED as issued — a draft cancel is an audit fact) and
- * `delivery.committed|revised|defaulted`. Close-short and fulfilment are audited commands.
+ * EVENTS (§G catalog): `po.issued|amended|cancelled` (cancelled only for a version that was
+ * ANNOUNCED as issued — a draft cancel is an audit fact), `po.closed_short`,
+ * `delivery.committed|revised|defaulted` and `delivery.fulfilled`. Task 6 F4: close-short and
+ * fulfilment REMOVE inbound coverage, so both are readiness-locked and event-bearing (the
+ * readiness projection consumes them) — no longer audit-only.
  */
 
 const LIVE_PO_STATUSES = ['draft', 'issued', 'partially_received', 'completed'] as const;
@@ -426,7 +428,7 @@ export class PurchaseOrdersService {
   /** issued|partially_received → closed_short with reason: the un-received remainder is released. */
   async closeShort(projectId: string, poId: string, input: CloseShortPoInput, user: AuthUser, idempotencyKey?: string): Promise<PurchaseOrderDto> {
     const { actor, scope } = await this.begin(projectId, user);
-    await executeCommand(this.prisma, {
+    const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'pos.closeShort', idempotencyKey, requestHash: hashRequest({ poId, ...input }),
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
@@ -438,9 +440,19 @@ export class PurchaseOrdersService {
         if (count === 0) throw new ConflictException('Only an issued or partially received purchase order can be closed short — reload and retry');
         for (const l of current.lines) await this.refreshOrderedFlag(tx, projectId, l.requisitionLineId);
         await recordAudit(tx, { projectId, actor, action: 'po.closeShort', entity: 'PurchaseOrderVersion', entityId: current.id });
-        return { resultRef: poId, events: [] };
+        // §G (Task 6 F4): a closed-short version releases its lines' UN-received inbound coverage —
+        // announce it so the readiness projection re-derives. A closeable version was always issued,
+        // so it was always announced (unlike a draft cancel, which stays an audit fact).
+        const closed = await this.currentVersion(tx, projectId, poId);
+        const ev = await emitEvent(tx, {
+          projectId, actor, eventType: 'po.closed_short', entityType: 'PurchaseOrder', entityId: poId,
+          payload: poPayload(poId, closed) as unknown as Prisma.InputJsonValue,
+          effectKey: 'po.closed_short', dispatch: {},
+        });
+        return { resultRef: poId, events: [ev] };
       },
     });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.readPo(projectId, poId, user);
   }
 
@@ -521,21 +533,43 @@ export class PurchaseOrdersService {
     return this.readCommitment(projectId, commitmentId);
   }
 
-  /** committed|revised → fulfilled (an audited terminal fact; §G lists no fulfilment event). */
+  /**
+   * committed|revised → fulfilled. Task 6 F4: fulfilment REMOVES the commitment from inbound
+   * coverage (a fulfilled delivery's stock is received, not still coming), so it joins the
+   * readiness-lock protocol AND emits `delivery.fulfilled` for the projection. Fulfilling a
+   * commitment with NO accepted receipts is refused — it would drop inbound coverage for material
+   * that never arrived.
+   */
   async fulfillDelivery(projectId: string, commitmentId: string, user: AuthUser, idempotencyKey?: string): Promise<DeliveryCommitmentDto> {
     const { actor, scope } = await this.begin(projectId, user);
-    await executeCommand(this.prisma, {
+    const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'deliveries.fulfill', idempotencyKey, requestHash: hashRequest({ commitmentId }),
       run: async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        const commitment = await tx.deliveryCommitment.findFirst({
+          where: { projectId, id: commitmentId },
+          select: { id: true, poLine: { select: { receivedQty: true } } },
+        });
+        if (!commitment) throw new NotFoundException('Delivery commitment not found in this project');
+        if (commitment.poLine.receivedQty.lessThanOrEqualTo(0)) {
+          throw new ConflictException('Cannot fulfil a delivery commitment with no accepted receipts — record the receipt first (§F/Task 6 F4)');
+        }
         const { count } = await tx.deliveryCommitment.updateMany({
           where: { id: commitmentId, projectId, status: { in: ['committed', 'revised'] } },
           data: { status: 'fulfilled', fulfilledAt: new Date() },
         });
         if (count === 0) throw new ConflictException('Only a live (committed/revised) delivery commitment can be fulfilled — reload and retry');
         await recordAudit(tx, { projectId, actor, action: 'delivery.fulfill', entity: 'DeliveryCommitment', entityId: commitmentId });
-        return { resultRef: commitmentId, events: [] };
+        const full = await tx.deliveryCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, include: { promises: true } });
+        const ev = await emitEvent(tx, {
+          projectId, actor, eventType: 'delivery.fulfilled', entityType: 'DeliveryCommitment', entityId: commitmentId,
+          payload: deliveryPayload(full) as unknown as Prisma.InputJsonValue,
+          effectKey: 'delivery.fulfilled', dispatch: {},
+        });
+        return { resultRef: commitmentId, events: [ev] };
       },
     });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     return this.readCommitment(projectId, commitmentId);
   }
 

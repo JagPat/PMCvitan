@@ -1058,6 +1058,11 @@ model ApprovedSubstitution {
 
   @@index([projectId, requirementId])
   @@index([projectId, toFingerprint])
+  // Task 6 correction (F2): a PARTIAL unique index on
+  // (projectId, requirementId, fromFingerprint, toFingerprint) WHERE "revokedAt" IS NULL forbids a
+  // second ACTIVE row for the same material pair (revoked rows are excluded, so history survives and
+  // re-approval after revocation is allowed). Prisma cannot express a partial index, so it lives in
+  // migration 20270103000000_phase3_t6_correction (like the other DB-only Phase-3 constructs).
 }
 
 

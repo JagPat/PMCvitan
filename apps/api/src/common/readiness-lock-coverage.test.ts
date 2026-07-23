@@ -135,6 +135,10 @@ const SECTION_A_COMMANDS: Array<{ label: string; file: string; method: string }>
   { label: 'wastage', file: 'inventory/inventory.service.ts', method: 'wastage' },
   { label: 'adjustment', file: 'inventory/inventory.service.ts', method: 'adjust' },
   { label: 'mismatch.resolution', file: 'daily-log/daily-log.service.ts', method: 'resolveMismatch' },
+  // Phase 3 Task 6 correction (F4): close-short and fulfil REMOVE a PO line's inbound coverage
+  // (the at-risk determination reads it), so both join the §A readiness-lock protocol.
+  { label: 'delivery.fulfill', file: 'procurement/purchase-orders.service.ts', method: 'fulfillDelivery' },
+  { label: 'po.close-short', file: 'procurement/purchase-orders.service.ts', method: 'closeShort' },
 ];
 
 /** The body of `async <method>(` up to the next same-indent `async ` (or end of file). */
@@ -158,9 +162,10 @@ describe('readiness-lock §A COMMAND-LEVEL coverage (Phase 3 Task 6)', () => {
     });
   }
 
-  it('enumerates every command in the §A lock-coverage table (20 commands)', () => {
-    // A mechanical guard on completeness: the table has 20 rows across activities/procurement/
-    // inventory/daily-log. Adding a §A command without listing it here is a visible, reviewed change.
-    expect(SECTION_A_COMMANDS).toHaveLength(20);
+  it('enumerates every command in the §A lock-coverage table (22 commands)', () => {
+    // A mechanical guard on completeness: the table has 22 rows across activities/procurement/
+    // inventory/daily-log (Task 6 correction added delivery.fulfill + po.close-short — both remove
+    // inbound coverage). Adding a §A command without listing it here is a visible, reviewed change.
+    expect(SECTION_A_COMMANDS).toHaveLength(22);
   });
 });

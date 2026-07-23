@@ -76,13 +76,17 @@ export const DOMAIN_EVENT_TYPES = [
   'requisition.approved',
   'comparison.approved',
   // Phase 3 Task 3 — POs + delivery commitments (plan §G catalog: issued/amended/cancelled
-  // and committed/revised/defaulted ONLY; drafts, close-short and fulfilment are audit facts)
+  // and committed/revised/defaulted). Phase 3 Task 6 correction (F4): close-short and fulfilment
+  // ALSO remove inbound coverage the readiness projection must observe, so they now carry
+  // `po.closed_short` / `delivery.fulfilled` owner events (still audited, additionally event-bearing).
   'po.issued',
   'po.amended',
   'po.cancelled',
+  'po.closed_short',
   'delivery.committed',
   'delivery.revised',
   'delivery.defaulted',
+  'delivery.fulfilled',
   // Phase 3 Task 4 — the inventory stock ledger (plan §G catalog: ONE event per appended §C
   // ledger row — receipts, acceptance, rejection, vendor-return, adjustment, reversal; buckets
   // are derived, so there is no bucket-changed event)

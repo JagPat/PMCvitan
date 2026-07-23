@@ -9,10 +9,12 @@ import type { SubstitutionsService } from './substitutions.service';
  * SAME demand + substitution facts.
  *
  * Per requirement it keeps the HEAD revision (open + material) and resolves
- * `acceptableFingerprints` = the requirement's own spec fingerprint PLUS every ACTIVE
- * substitution target — so the substitution table stays activities-owned (inventory never reads
- * it). Pass `activityIds` to scope to specific activities; omit for every material requirement in
- * the project (the whole-project read path).
+ * `acceptableFingerprints` = the requirement's own spec fingerprint PLUS every ACTIVE substitution
+ * target WHOSE `fromFingerprint` still equals the head fingerprint — so the substitution table
+ * stays activities-owned (inventory never reads it). F2 correction: an A→B approval stops widening
+ * the acceptable set once the requirement is revised A→C, because the edge's `fromFingerprint` (A)
+ * no longer matches the current head fingerprint (C). Pass `activityIds` to scope to specific
+ * activities; omit for every material requirement in the project (the whole-project read path).
  */
 export async function loadCoverageRequirements(
   tx: Prisma.TransactionClient,
@@ -36,12 +38,20 @@ export async function loadCoverageRequirements(
   }
   const heads = [...head.values()].filter((r) => r.status === 'open' && r.materialSpec);
   const targets = await substitutions.activeTargets(tx, projectId, heads.map((h) => h.requirementId));
-  return heads.map((h) => ({
-    requirementId: h.requirementId,
-    revision: h.revision,
-    activityId: h.activityId,
-    requiredQty: h.requiredQty,
-    baseUom: h.baseUom,
-    acceptableFingerprints: [h.materialSpec!.specFingerprint, ...(targets.get(h.requirementId) ?? [])],
-  }));
+  return heads.map((h) => {
+    const own = h.materialSpec!.specFingerprint;
+    // F2: apply a substitution edge ONLY while its approved `fromFingerprint` still equals the
+    // CURRENT head fingerprint — a revision that changes the spec silently drops stale edges.
+    const substituteTargets = (targets.get(h.requirementId) ?? [])
+      .filter((t) => t.fromFingerprint === own)
+      .map((t) => t.toFingerprint);
+    return {
+      requirementId: h.requirementId,
+      revision: h.revision,
+      activityId: h.activityId,
+      requiredQty: h.requiredQty,
+      baseUom: h.baseUom,
+      acceptableFingerprints: [own, ...substituteTargets],
+    };
+  });
 }
