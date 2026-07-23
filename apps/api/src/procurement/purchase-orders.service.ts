@@ -548,11 +548,18 @@ export class PurchaseOrdersService {
         await lockProjectReadiness(tx, projectId);
         const commitment = await tx.deliveryCommitment.findFirst({
           where: { projectId, id: commitmentId },
-          select: { id: true, poLine: { select: { receivedQty: true } } },
+          select: { id: true, poLine: { select: { qty: true, receivedQty: true } } },
         });
         if (!commitment) throw new NotFoundException('Delivery commitment not found in this project');
-        if (commitment.poLine.receivedQty.lessThanOrEqualTo(0)) {
-          throw new ConflictException('Cannot fulfil a delivery commitment with no accepted receipts — record the receipt first (§F/Task 6 F4)');
+        // Task 6 correction (finding 1): fulfilment requires the FULL ordered quantity received —
+        // no outstanding committed quantity (`receivedQty >= qty`). A partial receipt cannot
+        // terminalize the commitment (that would silently drop the outstanding balance from inbound
+        // coverage); the balance stays committed/revised, or the PO is closed short with a reason.
+        if (commitment.poLine.receivedQty.lessThan(commitment.poLine.qty)) {
+          const outstanding = commitment.poLine.qty.sub(commitment.poLine.receivedQty);
+          throw new ConflictException(
+            `Cannot fulfil a delivery commitment with ${outstanding.toString()} still outstanding — receive the full ordered quantity, or close the purchase order short (§F/Task 6 finding 1)`,
+          );
         }
         const { count } = await tx.deliveryCommitment.updateMany({
           where: { id: commitmentId, projectId, status: { in: ['committed', 'revised'] } },

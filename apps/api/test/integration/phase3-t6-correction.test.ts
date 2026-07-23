@@ -15,6 +15,7 @@ import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { MATERIAL_READINESS_PROJECTION } from '../../src/activities/material-readiness.projection';
 import { readServableGeneration } from '../../src/platform/projections/generation';
 import { loadCoverageRequirements } from '../../src/activities/coverage-requirements';
+import { deriveMaterialReading } from '../../src/activities/material-readiness';
 import type { RequirementCoverage } from '../../src/inventory/coverage';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
@@ -328,26 +329,34 @@ describe('Phase 3 Task 6 — canonical readiness correction (F1–F4, live PG)',
     expect((await storedReadings(projectId))?.[activityId]?.v).toBe('fail');
   });
 
-  it('F4 PROJECTION: fulfilling a partially-received commitment removes it from inbound and the projection follows', async () => {
+  it('F4 PROJECTION: a fully-received commitment can be fulfilled and the projection stays consistent (live == projection == rebuild)', async () => {
     const projectId = await freshProject();
     const activityId = await freshActivity(projectId);
     const req = await addRequirement(projectId, activityId, '100', SPEC_A);
-    // order 100, receive+accept 50 and RESERVE it (covered 50) — the remaining outstanding 50 covers
-    // the residual shortfall 50 → at-risk. Fulfilment (legal: 50 received) then makes the vendor
-    // "done", dropping the outstanding 50 from inbound → still short 50 → blocked.
+    // order 100, receive+accept the FULL 100 and RESERVE it to the activity → ready on physical
+    // stock (the commitment's outstanding is already 0). Fulfilment is then legal (finding 1) and
+    // must NOT change the verdict — the projection follows the `delivery.fulfilled` event to the
+    // same reading, so live == projection == rebuild.
     const { poLineId } = await receivablePoLine(projectId, req, '100');
     const commitmentId = await commit(projectId, poLineId, '2026-09-15');
-    const lotId = await receiveAndAccept(projectId, poLineId, commitmentId, '50');
-    await inventory.reserve(projectId, { lotId, activityId, qty: '50' }, pmc(projectId));
+    const lotId = await receiveAndAccept(projectId, poLineId, commitmentId, '100');
+    await inventory.reserve(projectId, { lotId, activityId, qty: '100' }, pmc(projectId));
     await drainRelay();
-    expect((await coverageOf(projectId, activityId))[0]!.verdict).toBe('at-risk'); // covered 50, outstanding 50 ≥ shortfall 50
-    expect((await storedReadings(projectId))?.[activityId]?.v).toBe('wait');
+    expect((await coverageOf(projectId, activityId))[0]!.verdict).toBe('ready'); // covered 100 by reserved stock
+    expect((await storedReadings(projectId))?.[activityId]?.v).toBe('ok');
 
-    await pos.fulfillDelivery(projectId, commitmentId, pmc(projectId));
+    const done = await pos.fulfillDelivery(projectId, commitmentId, pmc(projectId)); // 100/100 received → legal
+    expect(done.status).toBe('fulfilled');
     await drainRelay();
     const live = (await coverageOf(projectId, activityId))[0]!;
-    expect(live.verdict).toBe('blocked'); // fulfilled → no longer inbound; still short 50
-    expect((await storedReadings(projectId))?.[activityId]?.v).toBe('fail'); // projection LEARNED via delivery.fulfilled
+    expect(live.verdict).toBe('ready'); // fulfilment terminalizes the commitment; reserved stock still covers
+    expect((await storedReadings(projectId))?.[activityId]?.v).toBe('ok'); // projection consumed delivery.fulfilled
+
+    const before = await t.prisma.domainEvent.count({ where: { projectId } });
+    const report = await rebuildReadiness();
+    expect(report.ok).toBe(true);
+    expect(await t.prisma.domainEvent.count({ where: { projectId } })).toBe(before); // rebuild emits nothing
+    expect((await storedReadings(projectId))?.[activityId]?.v).toBe('ok'); // live == projection == rebuild
   });
 
   it('F4 SERIALIZED: fulfill and activities.start race against the readiness lock without corruption (both orderings)', async () => {
@@ -370,5 +379,65 @@ describe('Phase 3 Task 6 — canonical readiness correction (F1–F4, live PG)',
       expect(['committed', 'fulfilled']).toContain(commitment.status);
       expect(await status(activityId)).toBe('not_started');
     }
+  });
+
+  // ── C2 composition defects (RED at c910320) ─────────────────────────────────────────────────
+  //  F5  COMBINED-FLOW: physical stock and inbound commitments are decided in ONE conserved network,
+  //      not two stages. A shared physical pool + a per-requirement commitment is at-risk regardless
+  //      of which requirement (smaller/larger requirementId) holds the commitment.
+  //  F6  FULFIL GUARD: a partial receipt cannot fulfil a whole commitment — fulfilment needs the full
+  //      ordered quantity received (`receivedQty >= qty`), or the explicit close-short workflow.
+
+  it('F5 COMBINED-FLOW: shared physical + a per-requirement commitment is at-risk, invariant to which requirement holds the commitment', async () => {
+    // Two same-spec 100-bag requirements on ONE activity; 100 reserved bags form a SHARED physical
+    // pool; ONE requirement carries a 100-bag confirmed commitment. A feasible plan exists —
+    // physical covers the UNCOMMITTED requirement, the commitment covers the OTHER — so the activity
+    // is AT-RISK (wait), never blocked. This must hold no matter WHICH requirement (smaller or larger
+    // requirementId) holds the commitment; the two-stage 'allocate physical, then inspect inbound'
+    // calculation allocated physical to the committed requirement first and left the other blocked.
+    for (const commitSmaller of [true, false]) {
+      const projectId = await freshProject();
+      const activityId = await freshActivity(projectId);
+      const r1 = await addRequirement(projectId, activityId, '100', SPEC_A);
+      const r2 = await addRequirement(projectId, activityId, '100', SPEC_A);
+      const [smaller, larger] = [r1, r2].sort((a, b) => (a.requirementId < b.requirementId ? -1 : 1));
+      const committed = commitSmaller ? smaller : larger;
+      // 100 shared physical bags reserved to the activity
+      await reservedStockFor(projectId, activityId, '100', SPEC_A);
+      // a 100-bag confirmed commitment on exactly ONE of the two requirements
+      const { poLineId } = await receivablePoLine(projectId, committed, '100');
+      await commit(projectId, poLineId, '2026-09-20');
+
+      const cov = await coverageOf(projectId, activityId);
+      // combined-flow: physical → the uncommitted requirement, inbound → the committed one ⇒ every
+      // demand meets ⇒ at-risk, dated at the covering promise. Order-INVARIANT.
+      expect(deriveMaterialReading(cov, false).v).toBe('wait');
+      expect(cov.every((c) => c.verdict === 'at-risk')).toBe(true);
+      expect(cov.some((c) => c.commitmentPromisedDate === '2026-09-20')).toBe(true);
+      // the 100 physical bags are still counted at most once (conserved)
+      expect(sum(cov, 'coveredQty')).toBe(100);
+    }
+  });
+
+  it('F6 FULFIL GUARD: a partially-received commitment cannot be fulfilled until the full ordered quantity is received', async () => {
+    const projectId = await freshProject();
+    const activityId = await freshActivity(projectId);
+    const req = await addRequirement(projectId, activityId, '100', SPEC_A);
+    const { poLineId } = await receivablePoLine(projectId, req, '100');
+    const commitmentId = await commit(projectId, poLineId, '2026-09-20');
+
+    // 1 of 100 received — outstanding 99. Fulfilling would terminalize the commitment and silently
+    // drop 99 units from inbound coverage. Refused.
+    await receiveAndAccept(projectId, poLineId, commitmentId, '1');
+    await expect(pos.fulfillDelivery(projectId, commitmentId, pmc(projectId))).rejects.toMatchObject({ status: 409 });
+
+    // up to 99 of 100 — outstanding 1. Still refused.
+    await receiveAndAccept(projectId, poLineId, commitmentId, '98');
+    await expect(pos.fulfillDelivery(projectId, commitmentId, pmc(projectId))).rejects.toMatchObject({ status: 409 });
+
+    // the last unit — fully received (100/100), no outstanding committed quantity. Fulfil succeeds.
+    await receiveAndAccept(projectId, poLineId, commitmentId, '1');
+    const done = await pos.fulfillDelivery(projectId, commitmentId, pmc(projectId));
+    expect(done.status).toBe('fulfilled');
   });
 });

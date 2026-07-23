@@ -6,7 +6,7 @@ import {
   type StockLotDto, type StockStoreDto, type StockTransactedPayload, type StockTransactionDto,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
-import type { CoverageRequirement, RequirementCoverage } from './coverage';
+import type { CoverageRequirement, CoverageVerdict, RequirementCoverage } from './coverage';
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
 import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
@@ -109,30 +109,38 @@ function foldBuckets(rows: readonly Movement[], storeLocation: string): Buckets 
 }
 
 /**
- * Phase 3 Task 6 F1 — the CONSERVED per-activity stock allocator. Given an activity's supply pools
- * (`fingerprint → available base qty`, that activity's reserved-for-it + issued-to-it stock) and
- * its material requirements (each accepting a set of fingerprints — its own + active substitution
- * targets), allocate every physical unit to AT MOST ONE requirement, maximizing total coverage.
+ * Phase 3 Task 6 F1/composition — the CONSERVED per-activity coverage network (a max-flow). Given
+ * an activity's PHYSICAL supply pools (`fingerprint → available base qty`, that activity's
+ * reserved-for-it + issued-to-it stock), the per-requirement DEDICATED inbound quantities
+ * (`requirementId → confirmed inbound committed to THAT pinned requirement revision`), and its
+ * material requirements (each accepting a set of fingerprints — its own + active substitution
+ * targets), it computes the max flow of supply into demand where every physical unit satisfies AT
+ * MOST ONE requirement.
  *
- * Modelled as a max-flow so exact fingerprints and overlapping substitution edges are handled
- * correctly and deterministically: `source → pool(cap=supply) → requirement(if acceptable) →
- * sink(cap=demand)`. Edmonds-Karp (shortest augmenting path) is strongly polynomial, so decimal
- * capacities terminate; node/edge insertion is in sorted order, so the augmenting sequence — and
- * therefore each requirement's covered amount — is deterministic. When simultaneous full coverage
- * is feasible the max-flow saturates every demand edge (so all requirements read `covered ==
- * required`); when it is not, at least one requirement is left short in EVERY allocation, so the
- * worst-wins activity verdict is correct regardless of which one this deterministic flow flags.
+ * Network: `source → pool(cap=physical supply)`; a shared physical pool connects to EVERY
+ * compatible requirement (`pool → requirement`, cap=demand, when the fingerprint is acceptable and
+ * the base UOM matches); `source → requirement` carries that requirement's DEDICATED inbound
+ * (it cannot serve another requirement); `requirement → sink`, cap=demand. Physical is fungible
+ * across compatible requirements; inbound is pinned to one requirement.
+ *
+ * Edmonds-Karp (shortest augmenting path) is strongly polynomial, so decimal capacities terminate;
+ * its residual (reverse) edges let physical stock move AWAY from a commitment-covered requirement
+ * onto an uncovered one. The max-flow VALUE is unique, so "every demand saturated" (each
+ * `requirement → sink` edge full) is INVARIANT to the requirement-id / creation order — the
+ * aggregate readiness verdict never depends on which requirement the flow happens to route through.
+ * Returns each requirement's flow into its sink (its covered amount in this network).
  */
-function allocateStock(
+function maxFlowCoverage(
   pools: ReadonlyMap<string, Prisma.Decimal>,
   fingerprintBaseUom: ReadonlyMap<string, string>,
   reqs: ReadonlyArray<{ requirementId: string; requiredQty: Prisma.Decimal; baseUom: string; acceptableFingerprints: readonly string[] }>,
+  inbound: ReadonlyMap<string, Prisma.Decimal>,
 ): Map<string, Prisma.Decimal> {
   const covered = new Map<string, Prisma.Decimal>();
   for (const r of reqs) covered.set(r.requirementId, ZERO);
   const fps = [...pools.keys()].filter((fp) => pools.get(fp)!.greaterThan(0)).sort();
   const sortedReqs = [...reqs].sort((a, b) => (a.requirementId < b.requirementId ? -1 : a.requirementId > b.requirementId ? 1 : 0));
-  if (fps.length === 0 || sortedReqs.length === 0) return covered;
+  if (sortedReqs.length === 0) return covered;
 
   const S = 'S', T = 'T';
   const res = new Map<string, Map<string, Prisma.Decimal>>();
@@ -148,6 +156,8 @@ function allocateStock(
   for (const fp of fps) addEdge(S, `P:${fp}`, pools.get(fp)!);
   for (const r of sortedReqs) {
     addEdge(`R:${r.requirementId}`, T, r.requiredQty);
+    const inb = inbound.get(r.requirementId) ?? ZERO;
+    if (inb.greaterThan(0)) addEdge(S, `R:${r.requirementId}`, inb); // dedicated inbound, pinned to this requirement
     const acc = new Set(r.acceptableFingerprints);
     for (const fp of fps) {
       if (acc.has(fp) && fingerprintBaseUom.get(fp) === r.baseUom) addEdge(`P:${fp}`, `R:${r.requirementId}`, r.requiredQty);
@@ -184,6 +194,8 @@ function allocateStock(
   }
   return covered;
 }
+
+const NO_INBOUND: ReadonlyMap<string, Prisma.Decimal> = new Map();
 
 function serializeTx(t: TxRow): StockTransactionDto {
   return {
@@ -1001,61 +1013,84 @@ export class InventoryService {
       addSupply(issue.activityId, issue.lot.specFingerprint, foldBuckets(issue.transactions as ScopedMovement[], issue.storeLocation).issuedToActivity);
     }
 
-    const coveredByReq = new Map<string, Prisma.Decimal>();
+    // ── combined-flow decision (finding 2), PER ACTIVITY. Physical pools are fungible across
+    // compatible requirements; inbound is dedicated per pinned requirement revision. TWO max-flows
+    // over ONE conserved network decide the activity verdict from ORDER-INVARIANT flow values:
+    //   • physical-only saturates every demand   → ready
+    //   • physical + all inbound saturates it too → at-risk
+    //   • otherwise                                → blocked
+    // The at-risk covering date is the EARLIEST promised date at which the combined network (physical
+    // + inbound up to that date) first saturates demand — chronological commitment accumulation over
+    // the whole activity, not per requirement in isolation. The verdict is the SAME for every
+    // requirement of the activity (worst-wins reproduces it), so both the aggregate and the
+    // per-requirement verdict are invariant under requirement-id and creation-order permutations. ──
+    const byReq = new Map<string, RequirementCoverage>();
     for (const activityId of activityIds) {
-      const alloc = allocateStock(supply.get(activityId) ?? new Map(), fingerprintBaseUom, requirements.filter((r) => r.activityId === activityId));
-      for (const [requirementId, qty] of alloc) coveredByReq.set(requirementId, qty);
-    }
+      const acts = requirements.filter((r) => r.activityId === activityId);
+      const pools = supply.get(activityId) ?? new Map<string, Prisma.Decimal>();
+      const saturatesAll = (flow: Map<string, Prisma.Decimal>): boolean =>
+        acts.every((r) => (flow.get(r.requirementId) ?? ZERO).greaterThanOrEqualTo(r.requiredQty));
 
-    return requirements.map((req) => {
-      const covered = coveredByReq.get(req.requirementId) ?? ZERO;
-      const shortfall = req.requiredQty.sub(covered);
-      const base = {
-        requirementId: req.requirementId,
-        revision: req.revision,
-        activityId: req.activityId,
-        requiredQty: req.requiredQty.toString(),
-        coveredQty: covered.toString(),
-      };
-      if (shortfall.lessThanOrEqualTo(0)) {
-        return {
-          ...base,
-          shortfall: '0',
-          verdict: 'ready' as const,
-          commitmentPromisedDate: null,
-          reason: `Covered ${covered.toString()} of ${req.requiredQty.toString()} ${req.baseUom} (reserved + issued)`,
-        };
-      }
-      // ── F3: accumulate covering commitments by promised date; at-risk ONLY once cumulative inbound
-      // reaches the ACTUAL shortfall, dated at the promise that first covers it. ──
-      const inbound = (commitments.get(`${req.requirementId}#${req.revision}`) ?? [])
-        .slice()
-        .sort((a, b) => (a.promisedDate < b.promisedDate ? -1 : a.promisedDate > b.promisedDate ? 1 : 0));
-      let cumulative = ZERO;
+      // physical-only flow → per-requirement PHYSICAL covered (reported as coveredQty) and the
+      // ready decision. coveredQty never counts inbound: it is on-hand/reserved physical truth.
+      const physCovered = maxFlowCoverage(pools, fingerprintBaseUom, acts, NO_INBOUND);
+      const physReady = saturatesAll(physCovered);
+
+      let verdict: CoverageVerdict;
       let coveringDate: string | null = null;
-      for (const c of inbound) {
-        cumulative = cumulative.add(c.outstanding);
-        if (cumulative.greaterThanOrEqualTo(shortfall)) { coveringDate = c.promisedDate; break; }
+      if (physReady) {
+        verdict = 'ready';
+      } else {
+        // gather this activity's covering commitments (across all its requirements), chronologically;
+        // add dedicated inbound in date order and re-solve until the combined network saturates.
+        const events = acts
+          .flatMap((r) => (commitments.get(`${r.requirementId}#${r.revision}`) ?? []).map((c) => ({ ...c, requirementId: r.requirementId })))
+          .sort((a, b) => (a.promisedDate < b.promisedDate ? -1 : a.promisedDate > b.promisedDate ? 1 : 0));
+        const inbound = new Map<string, Prisma.Decimal>();
+        let i = 0;
+        while (i < events.length && coveringDate === null) {
+          const date = events[i]!.promisedDate;
+          while (i < events.length && events[i]!.promisedDate === date) {
+            inbound.set(events[i]!.requirementId, (inbound.get(events[i]!.requirementId) ?? ZERO).add(events[i]!.outstanding));
+            i++;
+          }
+          if (saturatesAll(maxFlowCoverage(pools, fingerprintBaseUom, acts, inbound))) coveringDate = date;
+        }
+        verdict = coveringDate !== null ? 'at-risk' : 'blocked';
       }
-      if (coveringDate) {
-        return {
-          ...base,
-          shortfall: shortfall.toString(),
-          verdict: 'at-risk' as const,
-          commitmentPromisedDate: coveringDate,
-          reason: `Short by ${shortfall.toString()} ${req.baseUom}; covering deliveries total ${cumulative.toString()} promised by ${coveringDate}`,
-        };
+
+      for (const req of acts) {
+        const covered = physCovered.get(req.requirementId) ?? ZERO;
+        const shortByThis = req.requiredQty.sub(covered);
+        const isShort = shortByThis.greaterThan(0);
+        const coveredStr = covered.toString();
+        const shortStr = (isShort ? shortByThis : ZERO).toString();
+        let reason: string;
+        if (verdict === 'ready') {
+          reason = `Covered ${coveredStr} of ${req.requiredQty.toString()} ${req.baseUom} (reserved + issued)`;
+        } else if (verdict === 'at-risk') {
+          reason = isShort
+            ? `Short by ${shortStr} ${req.baseUom}; covering deliveries meet the activity's demand by ${coveringDate}`
+            : `Covered ${coveredStr} of ${req.requiredQty.toString()} ${req.baseUom}; the activity is at-risk on another requirement (covering delivery by ${coveringDate})`;
+        } else {
+          reason = isShort
+            ? `Short by ${shortStr} ${req.baseUom} — inbound commitments cannot cover the activity's demand`
+            : `Covered ${coveredStr} of ${req.requiredQty.toString()} ${req.baseUom}; the activity is blocked on another requirement`;
+        }
+        byReq.set(req.requirementId, {
+          requirementId: req.requirementId,
+          revision: req.revision,
+          activityId: req.activityId,
+          requiredQty: req.requiredQty.toString(),
+          coveredQty: coveredStr,
+          shortfall: shortStr,
+          verdict,
+          commitmentPromisedDate: verdict === 'at-risk' ? coveringDate : null,
+          reason,
+        });
       }
-      const totalInbound = inbound.reduce((s, c) => s.add(c.outstanding), ZERO);
-      return {
-        ...base,
-        shortfall: shortfall.toString(),
-        verdict: 'blocked' as const,
-        commitmentPromisedDate: null,
-        reason: totalInbound.greaterThan(0)
-          ? `Short by ${shortfall.toString()} ${req.baseUom}; only ${totalInbound.toString()} inbound — insufficient to cover the shortfall`
-          : `Short by ${shortfall.toString()} ${req.baseUom} with no covering delivery commitment`,
-      };
-    });
+    }
+    // preserve the caller's input order
+    return requirements.map((req) => byReq.get(req.requirementId)!);
   }
 }

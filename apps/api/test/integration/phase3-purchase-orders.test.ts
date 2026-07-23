@@ -401,10 +401,11 @@ describe('Phase 3 Task 3 — purchase orders + deliveries (live PG)', () => {
     await pos.issue(projectId, po2.id, {}, pmc(projectId));
     const line2 = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { projectId, requisitionLineId: chain2.lineId } });
     const c2 = await pos.commitDelivery(projectId, { poLineId: line2.id, promisedDate: '2026-09-20' }, pmc(projectId));
-    // Task 6 F4: fulfilment now requires an accepted receipt (an unreceived commitment cannot be
-    // fulfilled). Simulate the received progress directly — this suite exercises the delivery
-    // lifecycle, not the inventory receipt path (receivedQty is the frozen-line's admitted column).
-    await t.prisma.purchaseOrderLine.update({ where: { id: line2.id }, data: { receivedQty: '3' } });
+    // Task 6 correction (finding 1): fulfilment now requires the FULL ordered quantity received
+    // (`receivedQty >= qty`) — a partial receipt cannot terminalize the commitment. Simulate the
+    // full received progress directly — this suite exercises the delivery lifecycle, not the
+    // inventory receipt path (receivedQty is the frozen-line's admitted column). Ordered qty is 5.
+    await t.prisma.purchaseOrderLine.update({ where: { id: line2.id }, data: { receivedQty: '5' } });
     const fulfilled = await pos.fulfillDelivery(projectId, c2.id, pmc(projectId));
     expect(fulfilled.status).toBe('fulfilled');
 
