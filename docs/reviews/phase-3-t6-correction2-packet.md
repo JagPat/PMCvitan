@@ -91,3 +91,15 @@ guard), and the reproduce-first probes + two updated existing tests
 
 HELD draft PR from `main` @ `c910320`. **STOP for the mechanical re-review.** Do not begin Task 7. Do
 not enable or rely on Phase 3 material readiness for live projects until this correction clears.
+
+## Review outcome — CLEARED
+
+Merged as **PR #204** (head `d45de9d`, merge `main` `5b7b8c4`). The independent re-review returned
+**GREEN SIGNAL — PHASE 3 TASK 6 CLEARED** at `5b7b8c4`, with no P0/P1/P2 findings: partial receipts
+at `1/100` and `99/100` cannot fulfil a commitment while `100/100` succeeds; the combined max-flow
+conserves physical stock, keeps inbound requirement-bound, reroutes shared stock correctly and
+produces an order-independent activity verdict; the earliest covering delivery date remains
+chronological. Independently verified on live PostgreSQL (correction suite 12/12; adjacent readiness/
+race/projection/PO suites 28/28; readiness-lock tripwire 26/26), `pnpm check` (web 396/396, API
+631/631, production builds successful), and all 10 GitHub checks passed. Task 6 is not reopened
+absent a direct Task-7 regression. Task 7 authorized.
