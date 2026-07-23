@@ -62,25 +62,41 @@ DO block FIRST** and ABORTS — before adding any constraint — if legacy rows 
 invariant, listing a per-finding count. It NEVER invents provenance.
 
 On a clean or capability-gated **pilot** database (no production pilot has been activated yet)
-there are zero offending rows: the diagnostics pass and the constraints apply. **If a legacy
-database might hold offending rows, run the preflight FIRST** — do not discover a violation by
-watching `migrate deploy` abort.
+there are zero offending rows: the diagnostics pass and the constraints apply. **The preflight runs
+AUTOMATICALLY in the production deploy path — you do not have to remember it.**
 
-### §T45.0 Preflight — ALWAYS run before `migrate deploy` on a legacy database
+### §T45.0 Preflight — ENFORCED by the production runner (`scripts/migrate.sh`)
+
+The production container starts by running `scripts/migrate.sh` (see the API `Dockerfile` CMD).
+**Before** `prisma migrate deploy`, that script runs the COMPILED preflight (never `tsx`):
 
 ```
-pnpm --filter api t45:preflight
+node dist/platform/t45/t45.cli.js preflight
 ```
 
-Read-only. It runs EVERY diagnostic — `F1.null`, `F1.foreign`, `F2.1`, `F2.2`, `F2.3`, **`F3.1`
-(more than one canonical `issue` movement per MaterialIssue)**, `F3.2`, `F3.3`, `F4` — and prints
-a per-finding count + bounded samples, plus the `20261231…` migration state. Exit `0` ⇒ clean,
-safe to deploy. Exit `3` ⇒ violations; repair them (§T45.2) before deploying. The preflight is the
-authority the migration's in-line DO block cannot fully be: the DO block aborts LOUDLY on
+It is **schema-aware** and gates the deploy so the F3.1 gap can never be reached in production:
+
+- **Fresh / empty or pre-Task-5 database** (no `MaterialIssue` / `MismatchResolution` /
+  `StockTransaction.issueId`): reports `"applicable": false` and exits 0, so the migrations that
+  CREATE the §C/§E schema still run.
+- **Eligible database** (Task-5 schema present — including one already corrected): runs EVERY
+  diagnostic — `F1.null`, `F1.foreign`, `F2.1`, `F2.2`, `F2.3`, **`F3.1` (more than one canonical
+  `issue` movement per MaterialIssue)**, `F3.2`, `F3.3`, `F4` — printing per-finding counts +
+  bounded samples and the `20261231…` migration state. Clean ⇒ exit 0, the deploy proceeds. Any
+  unrepaired finding ⇒ the named report + a **non-zero exit**, so `migrate.sh` aborts and **Prisma
+  is never started — migration 20261231 is never recorded as failed.**
+- **P3005 pre-baseline database** (schema present, no `_prisma_migrations`): the preflight runs
+  clean (its migration-state check tolerates the missing ledger), then `migrate deploy` hits P3005
+  and the existing baseline-and-retry path runs unchanged.
+
+This closes the gap the migration's in-line DO block cannot: the DO block aborts LOUDLY on
 F1/F2/F3.2/F3.3/F4, but a **duplicate `issue` movement (F3.1)** passes the DO block and would
 otherwise fail OPAQUELY inside `CREATE UNIQUE INDEX "StockTransaction_one_issue_movement_per_issue_key"`.
-The preflight names F3.1 explicitly, with the offending `(projectId, issueId)` group and its
-transaction ids, so the operator can decide which movement is canonical.
+The enforced preflight names F3.1 explicitly, with the offending `(projectId, issueId)` group and
+its transaction ids, so the operator can decide which movement is canonical.
+
+Run the same check by hand at any time (e.g. before a manual `migrate deploy`, or to inspect a
+staging database) with `pnpm --filter api t45:preflight` (exit 3 = eligible + dirty).
 
 ### §T45.1 Classify the migration record (three states, same as §0)
 

@@ -40,10 +40,20 @@ async function main(): Promise<void> {
   const svc = new T45RepairService(prisma);
   try {
     if (cmd === 'preflight') {
+      // Schema-aware: a fresh/empty or pre-Task-5 database has no §C/§E schema to diagnose. Report
+      // "not applicable" and exit 0 so `scripts/migrate.sh` proceeds to apply the migrations that
+      // CREATE that schema. Only an ELIGIBLE database runs the diagnostics and can block the deploy.
+      const eligibility = await svc.schemaEligible();
+      if (!eligibility.applicable) {
+        process.stdout.write(
+          JSON.stringify({ ok: true, applicable: false, reason: eligibility.reason, missing: eligibility.missing }, null, 2) + '\n',
+        );
+        return; // exit 0 — normal migrations may run
+      }
       const report = await svc.preflight();
       const migration = await svc.migrationState();
       process.stdout.write(
-        JSON.stringify({ ok: report.clean, migration, report }, null, 2) + '\n',
+        JSON.stringify({ ok: report.clean, applicable: true, migration, report }, null, 2) + '\n',
       );
       if (!report.clean) {
         process.stderr.write(

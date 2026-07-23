@@ -116,6 +116,28 @@ const DIAGS: Diag[] = [
 export const T45_FINDING_CODES: string[] = DIAGS.map((d) => d.code);
 
 /**
+ * Every table the diagnostics READ. The preflight checks these exist before running any diagnostic,
+ * so a fresh/empty or pre-Task-5 database reports "not applicable" instead of erroring on a missing
+ * relation. Task 4 introduced most of them; `MaterialIssue` / `MismatchResolution` are Task 5.
+ */
+export const T45_REFERENCED_TABLES: readonly string[] = [
+  'StockTransaction',
+  'CommandExecution',
+  'StockLot',
+  'DeliveryCommitment',
+  'PurchaseOrderLine',
+  'MaterialRequirementSpec',
+  'ActivityRequirement',
+  'MaterialIssue',
+  'SiteMaterial',
+  'MismatchResolution',
+];
+
+/** The Task-5 column the F3.1 (and F3.2/F3.3) diagnostics need. Its presence is the schema marker
+ *  that distinguishes a Task-5-capable database from a Task-4-or-earlier one. */
+export const T45_TASK5_COLUMN = { table: 'StockTransaction', column: 'issueId' } as const;
+
+/**
  * Run every diagnostic READ-ONLY over `client` (a top-level Prisma client or a transaction). Returns
  * a per-finding count + bounded samples and a `clean` flag. Never writes; safe to run on production.
  */
