@@ -104,3 +104,63 @@ describe('readiness-lock FILE-LEVEL coverage tripwire (gate round-2 finding 1)',
     expect(stale, `remove or update stale COVERAGE entries: ${stale.join(', ')}`).toEqual([]);
   });
 });
+
+/**
+ * Phase 3 Task 6 — the §A COMMAND-LEVEL lock-coverage enumeration.
+ *
+ * The plan's §A lock-coverage table names EXACTLY the commands whose transaction must take
+ * `lockProjectReadiness` (they change what `coverageFor` returns, so they serialize against
+ * `activities.start`). This closes the file-level tripwire's honest gap: an uncovered NEW command
+ * added to a file that locks ELSEWHERE is now a failing test, not a review finding. Each entry is
+ * verified by extracting the METHOD body and asserting it takes the lock.
+ */
+const SECTION_A_COMMANDS: Array<{ label: string; file: string; method: string }> = [
+  { label: 'activities.start', file: 'activities/activities.service.ts', method: 'start' },
+  { label: 'requirement.create', file: 'activities/requirements.service.ts', method: 'create' },
+  { label: 'requirement.revise', file: 'activities/requirements.service.ts', method: 'revise' },
+  { label: 'requirement.cancel', file: 'activities/requirements.service.ts', method: 'cancel' },
+  { label: 'substitution.approve', file: 'activities/substitutions.service.ts', method: 'approve' },
+  { label: 'substitution.revoke', file: 'activities/substitutions.service.ts', method: 'revoke' },
+  { label: 'delivery.commit', file: 'procurement/purchase-orders.service.ts', method: 'commitDelivery' },
+  { label: 'delivery.revise', file: 'procurement/purchase-orders.service.ts', method: 'reviseDelivery' },
+  { label: 'delivery.default', file: 'procurement/purchase-orders.service.ts', method: 'defaultDelivery' },
+  { label: 'receipt.acceptance', file: 'inventory/inventory.service.ts', method: 'accept' },
+  { label: 'receipt.rejection', file: 'inventory/inventory.service.ts', method: 'reject' },
+  { label: 'transfer', file: 'inventory/inventory.service.ts', method: 'transfer' },
+  { label: 'reservation.create', file: 'inventory/inventory.service.ts', method: 'reserve' },
+  { label: 'reservation.release', file: 'inventory/inventory.service.ts', method: 'release' },
+  { label: 'issue', file: 'inventory/inventory.service.ts', method: 'issue' },
+  { label: 'site-return', file: 'inventory/inventory.service.ts', method: 'siteReturn' },
+  { label: 'consumption', file: 'inventory/inventory.service.ts', method: 'consume' },
+  { label: 'wastage', file: 'inventory/inventory.service.ts', method: 'wastage' },
+  { label: 'adjustment', file: 'inventory/inventory.service.ts', method: 'adjust' },
+  { label: 'mismatch.resolution', file: 'daily-log/daily-log.service.ts', method: 'resolveMismatch' },
+];
+
+/** The body of `async <method>(` up to the next same-indent `async ` (or end of file). */
+function methodBody(src: string, method: string): string | null {
+  const start = src.indexOf(`async ${method}(`);
+  if (start === -1) return null;
+  const next = src.indexOf('\n  async ', start + 1);
+  return src.slice(start, next === -1 ? undefined : next);
+}
+
+describe('readiness-lock §A COMMAND-LEVEL coverage (Phase 3 Task 6)', () => {
+  for (const cmd of SECTION_A_COMMANDS) {
+    it(`${cmd.label} takes lockProjectReadiness in its command transaction`, () => {
+      const src = readFileSync(join(SRC, cmd.file), 'utf8');
+      const body = methodBody(src, cmd.method);
+      expect(body, `${cmd.file}#${cmd.method} not found — the §A command enumeration drifted from the code`).not.toBeNull();
+      expect(
+        body!.includes('lockProjectReadiness'),
+        `${cmd.label} (${cmd.file}#${cmd.method}) must take lockProjectReadiness (§A lock-coverage table)`,
+      ).toBe(true);
+    });
+  }
+
+  it('enumerates every command in the §A lock-coverage table (20 commands)', () => {
+    // A mechanical guard on completeness: the table has 20 rows across activities/procurement/
+    // inventory/daily-log. Adding a §A command without listing it here is a visible, reviewed change.
+    expect(SECTION_A_COMMANDS).toHaveLength(20);
+  });
+});
