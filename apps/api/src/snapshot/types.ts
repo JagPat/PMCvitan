@@ -16,6 +16,10 @@ export interface ProjectShellCounts {
 export interface ProjectShellDto extends ProjectShellCounts {
   /** the single enablement source (all compiled registry modules — finding 7) */
   enabledModules: string[];
+  /** Phase 3 Task 7 (§D) — the PER-PROJECT pilot capabilities this project has enabled (e.g.
+   *  `'materials'`); `[]` for a non-pilot project. The frontend gates the Materials surfaces on this,
+   *  so a non-pilot project shows no Materials nav/screens — matching the server's 404 stance. */
+  capabilities: string[];
 }
 
 export interface OptionDto {

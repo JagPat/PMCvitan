@@ -52,6 +52,9 @@ export const ACTIVITIES_QUERIES = [
   // revision FOR UPDATE and reads its required qty/UOM for the §F bound-1 guard.
   'requirements.revisionForAllocation',
   'requirements.revisionSnapshotForOrder',
+  // Phase 3 Task 7 — the pilot material-readiness view (per-requirement coverage + shortage
+  // forecast). Activities-owned canonical read (§A/§G/§25); capability-gated (404 on non-pilot).
+  'materialReadiness.get',
 ] as const;
 export type ActivitiesQuery = (typeof ACTIVITIES_QUERIES)[number];
 
@@ -76,6 +79,52 @@ export interface ActivitiesModuleResult {
   readonly phases: readonly Phase[];
   readonly source: 'projection' | 'live';
   readonly generation: number | null;
+}
+
+/**
+ * Phase 3 Task 7 (`GET …/activities/material-readiness`) — the pilot MATERIAL-READINESS view.
+ * Activities owns the §A readiness derivation; this is its canonical READ (capability-gated, 404 on
+ * non-pilot). Per-requirement coverage comes from inventory's `coverageFor` (the SAME authority
+ * `activities.start` reads); the shortage list adds FORECAST IMPACT — whether the earliest covering
+ * delivery lands before the activity's planned start (§25: "shortages produce forecast impact and
+ * Inbox actions"). A live canonical read (never a projection), so it can never be a stale conclusion.
+ */
+export type MaterialCoverageVerdict = 'ready' | 'at-risk' | 'blocked';
+/** covered-in-time = at-risk but the covering delivery lands before the planned start; delays-start =
+ *  the covering delivery is after the planned start; no-supply = blocked with no covering commitment. */
+export type ShortageImpact = 'covered-in-time' | 'delays-start' | 'no-supply';
+
+export interface RequirementReadinessRow {
+  readonly requirementId: string;
+  readonly revision: number;
+  readonly activityId: string;
+  readonly activityName: string;
+  /** human label of the §B technical identity (category · make · grade) */
+  readonly material: string;
+  readonly baseUom: string;
+  readonly requiredQty: string; // Decimal string, base UOM
+  readonly coveredQty: string; // reserved-for-this-activity + issued custody, base UOM
+  readonly shortfall: string; // max(required − covered, 0)
+  readonly verdict: MaterialCoverageVerdict;
+  /** the requirement's civil due date (YYYY-MM-DD) */
+  readonly requiredBy: string | null;
+  /** the activity's planned start (civil YYYY-MM-DD) */
+  readonly plannedStartDate: string | null;
+  /** the soonest covering commitment's civil promised date (at-risk only) */
+  readonly commitmentPromisedDate: string | null;
+  readonly reason: string;
+}
+export interface ShortageForecastRow extends RequirementReadinessRow {
+  readonly verdict: 'at-risk' | 'blocked';
+  readonly impact: ShortageImpact;
+  readonly impactReason: string;
+}
+export interface MaterialReadinessResult {
+  /** every open material requirement's coverage, activity- then requirement-ordered */
+  readonly requirements: readonly RequirementReadinessRow[];
+  /** the shortages only (verdict ≠ ready), worst-first (blocked before at-risk), soonest-needed first */
+  readonly shortages: readonly ShortageForecastRow[];
+  readonly summary: { readonly ready: number; readonly atRisk: number; readonly blocked: number; readonly total: number };
 }
 
 /** `activities.existsInProject` — validate an activity reference belongs to a project. NOTE the modules

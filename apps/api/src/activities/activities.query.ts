@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { ActivitiesModuleResult } from '@vitan/shared';
+import type { ActivitiesModuleResult, MaterialReadinessResult, RequirementReadinessRow, ShortageForecastRow, ShortageImpact } from '@vitan/shared';
+import { toIsoCivilDate } from '../common/civil-date';
 import { PrismaService } from '../prisma.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { DrawingsQueryService } from '../drawings/drawings.query';
@@ -156,6 +157,107 @@ export class ActivitiesQueryService {
     }
     const live = await this.snapshotSlice(projectId);
     return { ...live, source: 'live', generation: null };
+  }
+
+  /**
+   * Phase 3 Task 7 (`GET …/activities/material-readiness`) — the pilot MATERIAL-READINESS view (§A/§G/
+   * §25). Capability-gated: a non-pilot project 404s exactly like every other Phase-3 read (no route, no
+   * behavior). Reads per-requirement coverage from inventory's `coverageFor` (the SAME canonical authority
+   * `activities.start` reads, in one read transaction — never the projection, so never a stale conclusion),
+   * joins each requirement's display identity + its activity's planned start, and derives the SHORTAGE
+   * forecast: a `blocked` requirement has no supply; an `at-risk` requirement is `delays-start` when its
+   * earliest covering delivery lands AFTER the planned start, else `covered-in-time`.
+   */
+  async materialReadiness(projectId: string): Promise<MaterialReadinessResult> {
+    await this.capabilities.assertEnabled(projectId, MATERIALS_CAPABILITY);
+    return this.prisma.$transaction(async (tx) => {
+      const requirements = await loadCoverageRequirements(tx, projectId, this.substitutions);
+      const coverage = await this.inventory.coverageFor(tx, projectId, requirements);
+      if (coverage.length === 0) {
+        return { requirements: [], shortages: [], summary: { ready: 0, atRisk: 0, blocked: 0, total: 0 } };
+      }
+      const activityIds = [...new Set(coverage.map((c) => c.activityId))];
+      const [acts, heads] = await Promise.all([
+        tx.activity.findMany({ where: { projectId, id: { in: activityIds } }, select: { id: true, name: true, plannedStartDate: true } }),
+        tx.activityRequirement.findMany({
+          where: { projectId, OR: coverage.map((c) => ({ requirementId: c.requirementId, revision: c.revision })) },
+          select: { requirementId: true, revision: true, requiredBy: true, materialSpec: { select: { materialCategory: true, make: true, grade: true } } },
+        }),
+      ]);
+      const actById = new Map(acts.map((a) => [a.id, a]));
+      const headByPin = new Map(heads.map((h) => [`${h.requirementId}#${h.revision}`, h]));
+      const uomByPin = new Map(requirements.map((r) => [`${r.requirementId}#${r.revision}`, r.baseUom]));
+
+      const rows: RequirementReadinessRow[] = coverage
+        .map((c) => {
+          const act = actById.get(c.activityId);
+          const head = headByPin.get(`${c.requirementId}#${c.revision}`);
+          const spec = head?.materialSpec;
+          return {
+            requirementId: c.requirementId,
+            revision: c.revision,
+            activityId: c.activityId,
+            activityName: act?.name ?? c.activityId,
+            material: spec ? [spec.materialCategory, spec.make, spec.grade].filter(Boolean).join(' · ') : 'Material',
+            baseUom: uomByPin.get(`${c.requirementId}#${c.revision}`) ?? '',
+            requiredQty: c.requiredQty,
+            coveredQty: c.coveredQty,
+            shortfall: c.shortfall,
+            verdict: c.verdict,
+            requiredBy: head?.requiredBy ? toIsoCivilDate(head.requiredBy) : null,
+            plannedStartDate: act?.plannedStartDate ? toIsoCivilDate(act.plannedStartDate) : null,
+            commitmentPromisedDate: c.commitmentPromisedDate,
+            reason: c.reason,
+          };
+        })
+        .sort((a, b) => (a.activityName !== b.activityName ? (a.activityName < b.activityName ? -1 : 1) : a.requirementId < b.requirementId ? -1 : a.requirementId > b.requirementId ? 1 : 0));
+
+      const shortages: ShortageForecastRow[] = rows
+        .filter((r) => r.verdict !== 'ready')
+        .map((r) => {
+          const verdict = r.verdict as 'at-risk' | 'blocked';
+          const target = r.plannedStartDate ?? r.requiredBy;
+          let impact: ShortageImpact;
+          let impactReason: string;
+          if (verdict === 'blocked') {
+            impact = 'no-supply';
+            impactReason = target
+              ? `No covering delivery — ${r.material} must be procured before ${r.activityName} starts (planned ${target})`
+              : `No covering delivery — ${r.material} must be procured for ${r.activityName}`;
+          } else if (target && r.commitmentPromisedDate && r.commitmentPromisedDate > target) {
+            impact = 'delays-start';
+            impactReason = `Covering delivery by ${r.commitmentPromisedDate} lands AFTER the planned start ${target} — ${r.activityName} will slip`;
+          } else {
+            impact = 'covered-in-time';
+            impactReason = r.commitmentPromisedDate
+              ? target
+                ? `Covering delivery by ${r.commitmentPromisedDate}, before the planned start ${target}`
+                : `Covering delivery by ${r.commitmentPromisedDate}`
+              : 'Covered by inbound delivery';
+          }
+          return { ...r, verdict, impact, impactReason };
+        });
+      // worst-first (blocked before at-risk), then soonest-needed, then requirement id
+      const sev = { blocked: 0, 'at-risk': 1 } as const;
+      shortages.sort((a, b) => {
+        if (sev[a.verdict] !== sev[b.verdict]) return sev[a.verdict] - sev[b.verdict];
+        const ad = a.plannedStartDate ?? a.requiredBy ?? '9999-12-31';
+        const bd = b.plannedStartDate ?? b.requiredBy ?? '9999-12-31';
+        if (ad !== bd) return ad < bd ? -1 : 1;
+        return a.requirementId < b.requirementId ? -1 : a.requirementId > b.requirementId ? 1 : 0;
+      });
+
+      return {
+        requirements: rows,
+        shortages,
+        summary: {
+          ready: rows.filter((r) => r.verdict === 'ready').length,
+          atRisk: rows.filter((r) => r.verdict === 'at-risk').length,
+          blocked: rows.filter((r) => r.verdict === 'blocked').length,
+          total: rows.length,
+        },
+      };
+    });
   }
 
   /**

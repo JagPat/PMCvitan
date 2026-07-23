@@ -1,6 +1,7 @@
 import { Controller, Get, Param, UseGuards } from '@nestjs/common';
 import { SnapshotService } from './snapshot.service';
 import { ModuleRegistryService } from '../platform/module-registry/module-registry.service';
+import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
 import type { ProjectShellDto } from './types';
@@ -12,16 +13,22 @@ export class ProjectController {
     private readonly snapshot: SnapshotService,
     // Task 9 — the single enablement source for the manifest-driven shell/nav.
     private readonly registry: ModuleRegistryService,
+    // Phase 3 Task 7 (§D) — the PER-PROJECT pilot capabilities, so the client can gate Materials.
+    private readonly capabilities: CapabilitiesService,
   ) {}
 
   /** Phase 2 Task 9 — the PROJECT-SHELL summary: identity + `enabledModules` + projection counts, the
    *  light payload the app loads FIRST so the shell + nav render before the full data. Additive; the
-   *  full snapshot below stays authoritative for the rest of the store. */
+   *  full snapshot below stays authoritative for the rest of the store. Phase 3 Task 7 adds the
+   *  per-project `capabilities` (`['materials']` on a pilot project, `[]` otherwise). */
   @Get('shell')
   @RolesFor('project.read')
   async shell(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser): Promise<ProjectShellDto> {
-    const summary = await this.snapshot.shellSummary(projectId, user.role, user.sub);
-    return { ...summary, enabledModules: this.registry.enabledModules };
+    const [summary, materials] = await Promise.all([
+      this.snapshot.shellSummary(projectId, user.role, user.sub),
+      this.capabilities.isEnabled(projectId, MATERIALS_CAPABILITY),
+    ]);
+    return { ...summary, enabledModules: this.registry.enabledModules, capabilities: materials ? [MATERIALS_CAPABILITY] : [] };
   }
 
   /** Full project snapshot the frontend hydrates its store from (RBAC-filtered by role).
