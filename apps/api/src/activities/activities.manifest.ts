@@ -22,14 +22,18 @@ export const activitiesManifest: ModuleManifest = {
   // Task 10 (Module 4) — a fully-extracted module: it read-encapsulates every model it owns (incl. its
   // rebuildable projection), so no other module reads activity persistence directly — every cross-module
   // read routes through the ActivitiesQueryService contract (the boundary check enforces it).
-  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec'],
-  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec'],
+  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection'],
+  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection'],
   // Task 8/10 — reads decisions + the drawing gate + the inspection-gate readiness/next-id via their query
   // contracts (the readiness BAKE consumes all three at read time). The reverse inspections→activities
   // edge is a workflow participant (cycle-exempt), so this dependsOn graph stays acyclic — which is also
   // why the UPSTREAM modules that store an `activityId` (inspections, drawings) validate it via the
   // composite tenant FK instead of a query edge here.
-  dependsOn: ['decisions', 'drawings', 'inspections'],
+  // Phase 3 Task 6 — the §G `activities → inventory` READ edge: the start command and the
+  // material-readiness projection call inventory's `coverageFor` (canonical coverage). inventory
+  // reaches BACK only through the cycle-exempt ActivityParticipant workflow channel, so this
+  // dependsOn graph stays acyclic.
+  dependsOn: ['decisions', 'drawings', 'inspections', 'inventory'],
   // Module 4 correction — `remove` also routes the drawing unlink (Drawing.activityId, previously
   // ON DELETE SET NULL only) through the drawings participant on the same transaction.
   // Phase 3 Task 2 — `requirements.cancel` invokes the procurement participant (the §F
@@ -59,6 +63,10 @@ export const activitiesManifest: ModuleManifest = {
     'requirement.created',
     'requirement.revised',
     'requirement.cancelled',
+    // Phase 3 Task 6 — approved-substitution facts (§B). Audited, event-bearing; the readiness
+    // projection consumes them to recompute coverage (still NO material.readiness_changed event).
+    'substitution.approved',
+    'substitution.revoked',
   ],
   consumesEvents: [],
   commands: [...ACTIVITIES_COMMANDS],
@@ -81,6 +89,9 @@ export const activitiesManifest: ModuleManifest = {
     'POST /projects/:projectId/requirements',
     'POST /projects/:projectId/requirements/:requirementId/revise',
     'POST /projects/:projectId/requirements/:requirementId/cancel',
+    // substitutions.controller (Phase 3 Task 6 — capability-gated, pmc-only)
+    'POST /projects/:projectId/requirements/:requirementId/substitutions',
+    'POST /projects/:projectId/substitutions/:substitutionId/revoke',
   ],
   permissions: ['pmc', 'engineer'],
 };

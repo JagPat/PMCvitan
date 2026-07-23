@@ -8,6 +8,11 @@ import { InspectionsQueryService } from '../inspections/inspections.query';
 import { bakeActivities, computeActivitiesBase, type ActivitiesBakeInputs, type ActivitiesBase, type ActivitiesSlices } from './activities-serialize';
 import { ACTIVITIES_PROJECTION } from './activities.projection';
 import { readServableGeneration } from '../platform/projections/generation';
+import { InventoryService } from '../inventory/inventory.service';
+import { SubstitutionsService } from './substitutions.service';
+import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
+import { loadCoverageRequirements } from './coverage-requirements';
+import type { RequirementCoverage } from '../inventory/coverage';
 
 /** A phase's copyable STRUCTURE (never actuals) a project-copy/module-extract reads through this
  *  boundary. */
@@ -52,17 +57,39 @@ export class ActivitiesQueryService {
     private readonly decisionsQuery: DecisionsQueryService,
     private readonly drawingsQuery: DrawingsQueryService,
     private readonly inspectionsQuery: InspectionsQueryService,
+    // Phase 3 Task 6 — the §A material gate is baked LIVE from canonical coverage on a pilot
+    // project (the same authority `activities.start` reads), so the read path is never stale.
+    private readonly inventory: InventoryService,
+    private readonly substitutions: SubstitutionsService,
+    private readonly capabilities: CapabilitiesService,
   ) {}
+
+  /** Per-activity canonical material coverage for a PILOT project (§A/§D) — undefined on a
+   *  non-pilot project, so the bake keeps the stored material gate byte-for-byte. Read LIVE
+   *  (like every other readiness input); the start command reads the same authority in-tx. */
+  private async materialCoverage(projectId: string): Promise<ReadonlyMap<string, RequirementCoverage[]> | undefined> {
+    if (!(await this.capabilities.isEnabled(projectId, MATERIALS_CAPABILITY))) return undefined;
+    const requirements = await loadCoverageRequirements(this.prisma, projectId, this.substitutions);
+    const coverage = await this.inventory.coverageFor(this.prisma, projectId, requirements);
+    const map = new Map<string, RequirementCoverage[]>();
+    for (const c of coverage) {
+      const list = map.get(c.activityId) ?? [];
+      list.push(c);
+      map.set(c.activityId, list);
+    }
+    return map;
+  }
 
   /** Fetch the FOREIGN readiness inputs fresh — through the owning modules' query contracts. The
    *  snapshot passes its already-fetched decision status map to avoid a duplicate read; the module GET
    *  fetches its own. */
   private async bakeInputs(projectId: string, decisionStatuses?: ReadonlyMap<string, string>): Promise<ActivitiesBakeInputs> {
-    const [statuses, inspections, drawings, activeMembers] = await Promise.all([
+    const [statuses, inspections, drawings, activeMembers, materialCoverage] = await Promise.all([
       decisionStatuses ?? this.decisionsQuery.statusMap(projectId),
       this.inspectionsQuery.readinessSlice(projectId),
       this.drawingsQuery.readinessSlice(projectId),
       this.prisma.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
+      this.materialCoverage(projectId),
     ]);
     return {
       decisionStatuses: statuses,
@@ -70,6 +97,7 @@ export class ActivitiesQueryService {
       drawings,
       activeMemberIds: activeMembers.map((m) => m.userId),
       now: new Date(),
+      materialCoverage,
     };
   }
 

@@ -70,6 +70,10 @@ export const EXTERNAL_EFFECTS = {
   'requirement.created': { eventType: 'requirement.created', invalidate: true, push: null },
   'requirement.revised': { eventType: 'requirement.revised', invalidate: true, push: null },
   'requirement.cancelled': { eventType: 'requirement.cancelled', invalidate: true, push: null },
+  // Phase 3 Task 6 — approved-substitution events (§B). The readiness projection consumes them
+  // to recompute coverage; snapshot-invalidate only, no push.
+  'substitution.approved': { eventType: 'substitution.approved', invalidate: true, push: null },
+  'substitution.revoked': { eventType: 'substitution.revoked', invalidate: true, push: null },
   // ── procurement (Phase 3 Task 2) ───────────────────────────────────────────────────────────
   // The §G pipeline events (submitted/approved + the comparison approval ONLY). Snapshot-
   // invalidate only; Inbox/notification semantics arrive with the readiness surfaces later.

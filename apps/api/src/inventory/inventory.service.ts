@@ -6,6 +6,7 @@ import {
   type StockLotDto, type StockStoreDto, type StockTransactedPayload, type StockTransactionDto,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
+import type { CoverageRequirement, RequirementCoverage } from './coverage';
 import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
 import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
@@ -844,5 +845,110 @@ export class InventoryService {
       orderBy: [{ issuedAt: 'asc' }, { id: 'asc' }],
     });
     return { issues: rows.map(serializeIssue) };
+  }
+
+  /**
+   * Phase 3 Task 6 (§A/§G) — the CANONICAL material-coverage authority. Called by activities
+   * (`activities.start` and the readiness projection consumer) INSIDE the caller's transaction,
+   * AFTER it has taken `lockProjectReadiness` — so the answer is a canonical physical-truth
+   * fact, never a projection. NOT a controller surface (no capability `begin`): the activities
+   * caller already gated on the pilot capability.
+   *
+   * Per requirement, coverage = reserved-for-this-activity + already-issued-to-this-activity of
+   * stock whose fingerprint the requirement accepts (its own OR an approved substitution — the
+   * caller resolves `acceptableFingerprints`, keeping the substitution table activities-owned)
+   * at the requirement's base UOM. Issued stock COUNTS as coverage for its activity (the §A
+   * Task-1 GO guardrail — issuing reserved stock must never make the activity unready). A
+   * covered ≥ required requirement is `ready`; a shortfall with a confirmed covering commitment
+   * (procurement, §A at-risk) is `at-risk`; a shortfall with none is `blocked`.
+   */
+  async coverageFor(
+    tx: CommandTx,
+    projectId: string,
+    requirements: readonly CoverageRequirement[],
+  ): Promise<RequirementCoverage[]> {
+    if (requirements.length === 0) return [];
+
+    const acceptable = new Set(requirements.flatMap((r) => r.acceptableFingerprints));
+    const activityIds = [...new Set(requirements.map((r) => r.activityId))];
+
+    const [lots, issues, commitments] = await Promise.all([
+      acceptable.size === 0
+        ? Promise.resolve([])
+        : tx.stockLot.findMany({
+            where: { projectId, specFingerprint: { in: [...acceptable] } },
+            select: { specFingerprint: true, baseUom: true, transactions: true },
+          }),
+      tx.materialIssue.findMany({
+        where: { projectId, activityId: { in: activityIds } },
+        select: {
+          activityId: true,
+          storeLocation: true,
+          lot: { select: { specFingerprint: true, baseUom: true } },
+          transactions: true,
+        },
+      }),
+      // one batched procurement read (§G inventory → procurement) for the at-risk determination
+      this.procurementParticipant.coveringCommitments(
+        tx,
+        projectId,
+        requirements.map((r) => ({ requirementId: r.requirementId, revision: r.revision })),
+      ),
+    ]);
+
+    return requirements.map((req) => {
+      const fps = new Set(req.acceptableFingerprints);
+      let covered = ZERO;
+      // reserved for THIS activity, matching fingerprint + base UOM, summed across every store key
+      for (const lot of lots) {
+        if (!fps.has(lot.specFingerprint) || lot.baseUom !== req.baseUom) continue;
+        const rows = lot.transactions as ScopedMovement[];
+        const locations = new Set(
+          rows.flatMap((t) => (t.toStoreLocation ? [t.storeLocation, t.toStoreLocation] : [t.storeLocation])),
+        );
+        for (const loc of locations) covered = covered.add(this.reservedForActivity(rows, loc, req.activityId));
+      }
+      // already ISSUED to THIS activity (remaining custody) counts as coverage (§A guardrail)
+      for (const issue of issues) {
+        if (issue.activityId !== req.activityId) continue;
+        if (!fps.has(issue.lot.specFingerprint) || issue.lot.baseUom !== req.baseUom) continue;
+        covered = covered.add(foldBuckets(issue.transactions as ScopedMovement[], issue.storeLocation).issuedToActivity);
+      }
+
+      const shortfall = req.requiredQty.sub(covered);
+      const base = {
+        requirementId: req.requirementId,
+        revision: req.revision,
+        activityId: req.activityId,
+        requiredQty: req.requiredQty.toString(),
+        coveredQty: covered.toString(),
+      };
+      if (shortfall.lessThanOrEqualTo(0)) {
+        return {
+          ...base,
+          shortfall: '0',
+          verdict: 'ready' as const,
+          commitmentPromisedDate: null,
+          reason: `Covered ${covered.toString()} of ${req.requiredQty.toString()} ${req.baseUom} (reserved + issued)`,
+        };
+      }
+      const promised = commitments.get(`${req.requirementId}#${req.revision}`) ?? null;
+      if (promised) {
+        return {
+          ...base,
+          shortfall: shortfall.toString(),
+          verdict: 'at-risk' as const,
+          commitmentPromisedDate: promised,
+          reason: `Short by ${shortfall.toString()} ${req.baseUom}; covering delivery promised ${promised}`,
+        };
+      }
+      return {
+        ...base,
+        shortfall: shortfall.toString(),
+        verdict: 'blocked' as const,
+        commitmentPromisedDate: null,
+        reason: `Short by ${shortfall.toString()} ${req.baseUom} with no covering delivery commitment`,
+      };
+    });
   }
 }

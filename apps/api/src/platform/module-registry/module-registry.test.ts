@@ -55,7 +55,7 @@ describe('Phase 2 Task 7 — module registry', () => {
       // Task 10 — `activities` additionally reads the DRAWING gate through the drawings query
       // (read-encapsulation), so it declares `drawings` too; `drawings` depends only on `decisions`,
       // so activities→drawings→decisions stays ACYCLIC (drawings never depends back on activities).
-      activities: ['decisions', 'drawings', 'inspections'], 'daily-log': ['decisions'], nodes: ['decisions'],
+      activities: ['decisions', 'drawings', 'inspections', 'inventory'], 'daily-log': ['decisions'], nodes: ['decisions'],
       orgs: ['decisions', 'inspections'], drawings: ['decisions'],
       media: ['decisions', 'daily-log', 'inspections'],
       // Phase 3 Task 2 — procurement reads requirement revisions through the activities query

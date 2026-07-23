@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 
 /**
@@ -16,8 +17,11 @@ export const MATERIALS_CAPABILITY = 'materials';
 export class CapabilitiesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async isEnabled(projectId: string, capability: string): Promise<boolean> {
-    const row = await this.prisma.projectCapability.findUnique({
+  /** Pass a transaction client to read the capability under the caller's lock (Task 6: the
+   *  start command evaluates material coverage in-tx and needs the gate on the same client). */
+  async isEnabled(projectId: string, capability: string, tx?: Prisma.TransactionClient): Promise<boolean> {
+    const db = tx ?? this.prisma;
+    const row = await db.projectCapability.findUnique({
       where: { projectId_capability: { projectId, capability } },
       select: { projectId: true },
     });

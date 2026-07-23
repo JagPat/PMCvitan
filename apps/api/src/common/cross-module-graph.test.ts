@@ -71,6 +71,11 @@ const MODEL_OWNER: Record<string, string> = {
   // Phase 3 Task 1 — the demand contract is activities-module-owned; its classifier domain is
   // 'requirements' (the requirements.service pillar entry writes ONLY this model)
   activityRequirement: 'requirements', activityRequirementRoot: 'requirements', materialRequirementSpec: 'requirements',
+  // Phase 3 Task 6 — approved substitutions (§B) are activities-module-owned, written only by
+  // the substitutions service; the material-readiness projection is activities-owned, written only
+  // by its recompute consumer
+  approvedSubstitution: 'activities',
+  materialReadinessProjection: 'activities',
   // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
   rfq: 'procurement', vendorQuote: 'procurement', vendorQuoteLine: 'procurement', quoteComparison: 'procurement',
@@ -120,6 +125,9 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   'activities/phases.service.ts': { domain: 'phases', foreign: {}, dispatch: 2 },
   // Phase 3 Task 1 — requirement create/revise/cancel (capability-gated; append-only revisions)
   'activities/requirements.service.ts': { domain: 'requirements', foreign: {}, dispatch: 3 },
+  // Phase 3 Task 6 — substitution approve/revoke (capability-gated; writes only its own
+  // activities-owned ApprovedSubstitution; each command dispatches its committed event)
+  'activities/substitutions.service.ts': { domain: 'activities', foreign: {}, dispatch: 2 },
   // Phase 3 Task 2 — the procurement pillar. vendors.service writes the org party + binding
   // (no domain events); procurement.service runs the §F pipeline through comparison approval
   // (submit/approve/comparison-approve dispatch their committed events post-commit).
@@ -256,6 +264,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'inspections/inspections.controller.ts': ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')"],
   'activities/phases.controller.ts': ['Post()', "Delete(':phaseId')"],
   'activities/requirements.controller.ts': ['Post()', "Post(':requirementId/revise')", "Post(':requirementId/cancel')"],
+  // Phase 3 Task 6 — substitution approve (per requirement) + revoke (per substitution)
+  'activities/substitutions.controller.ts': ["Post('requirements/:requirementId/substitutions')", "Post('substitutions/:substitutionId/revoke')"],
   // Phase 3 Task 2 — the procurement pipeline (§F through comparison approval) + the §H
   // vendor registry (org-admin CRUD) and project binding
   'procurement/vendors.controller.ts': ["Post('orgs/:orgId/vendors')", "Post('projects/:projectId/vendors')"],
@@ -366,7 +376,7 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
     it('56 external-effect dispatch sites total across the pillar services (48 + the seven Task-5 stock-flow emitters + resolveMismatch)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(56);
+      expect(total).toBe(58);
     });
   });
 
@@ -379,10 +389,10 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
     }
     it('106 mutating routes total (the documented command inventory §4)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(106);
+      expect(total).toBe(108);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(106);
+      expect(live).toBe(108);
     });
   });
 
@@ -397,13 +407,15 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
   describe('read + sender coupling (SnapshotService + ExternalEffectDispatcher injected in every emitter)', () => {
     const emitters = Object.entries(SERVICES).filter(([, s]) => s.dispatch > 0).map(([f]) => f);
     it('all twelve dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning eight also read through SnapshotService', () => {
-      expect(emitters.length).toBe(12);
+      expect(emitters.length).toBe(13);
       const moduleReadServices = [
         // Phase 3 — requirements (Task 1), procurement (Tasks 2-3) and inventory (Task 4)
         // return MODULE-OWNED dtos (the Task-10 module-read pattern), never the snapshot, so
         // they carry no SnapshotService dependency by design.
         'activities/requirements.service.ts', 'procurement/procurement.service.ts', 'procurement/purchase-orders.service.ts',
         'inventory/inventory.service.ts',
+        // Phase 3 Task 6 — substitutions returns a module-owned SubstitutionDto, never the snapshot
+        'activities/substitutions.service.ts',
       ];
       for (const file of emitters) {
         if (!moduleReadServices.includes(file)) {

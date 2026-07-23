@@ -545,6 +545,11 @@ export class PurchaseOrdersService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'deliveries.default', idempotencyKey, requestHash: hashRequest({ commitmentId }),
       run: async (tx) => {
+        // §A: a default removes a covering commitment (a shortfall that WAS at-risk becomes
+        // blocked), so this command joins the readiness-lock protocol — it serializes against
+        // `activities.start` exactly like commit/revise. (fulfil is exempt: it only marks a
+        // commitment terminal once its stock is already accepted through the LOCKED receipts.)
+        await lockProjectReadiness(tx, projectId);
         const { count } = await tx.deliveryCommitment.updateMany({
           where: { id: commitmentId, projectId, status: { in: ['committed', 'revised'] } },
           data: { status: 'defaulted', defaultedAt: new Date() },

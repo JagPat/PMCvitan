@@ -11,6 +11,7 @@ import { DRAWINGS_PROJECTION } from '../../src/drawings/drawings.projection';
 import { DAILY_LOG_PROJECTION } from '../../src/daily-log/daily-log.projection';
 import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projection';
 import { ACTIVITIES_PROJECTION } from '../../src/activities/activities.projection';
+import { MATERIAL_READINESS_PROJECTION } from '../../src/activities/material-readiness.projection';
 import type { AuthUser } from '../../src/common/auth';
 import { Prisma } from '@prisma/client';
 
@@ -161,7 +162,7 @@ describe('Task 10 finalization — checkpoint-aware operator rebuild diagnostics
     expect(audits[0]!.reason).toBe('repair corrupted probe generation');
     const outcomes = audits.filter((a) => a.action === 'projection.rebuild.result');
     expect(outcomes.map((o) => o.consumer).sort()).toEqual(
-      [DECISIONS_PROJECTION, DAILY_LOG_PROJECTION, DRAWINGS_PROJECTION, INSPECTIONS_PROJECTION, ACTIVITIES_PROJECTION].sort(),
+      [DECISIONS_PROJECTION, DAILY_LOG_PROJECTION, DRAWINGS_PROJECTION, INSPECTIONS_PROJECTION, ACTIVITIES_PROJECTION, MATERIAL_READINESS_PROJECTION].sort(),
     );
     for (const o of outcomes) {
       expect(o.projectId).toBe(projectId);

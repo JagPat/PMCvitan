@@ -28,7 +28,7 @@ describe('Task 10 — the activities module implements its shared command/query 
     expect(activitiesManifest.readEncapsulated).toEqual(activitiesManifest.ownsModels);
     // the activity spine owns EXACTLY its canonical models + the rebuildable projection table — no other
     // module reads any of them directly (the boundary check enforces it).
-    expect(activitiesManifest.ownsModels).toEqual(['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec']);
+    expect(activitiesManifest.ownsModels).toEqual(['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection']);
   });
 
   it('the manifest publishes the activity/phase lifecycle + the participant signal events', () => {
@@ -56,6 +56,9 @@ describe('Task 10 — the activities module implements its shared command/query 
         'requirement.cancelled',
         'requirement.created',
         'requirement.revised',
+        // Phase 3 Task 6 — approved-substitution facts (§B); the readiness projection consumes them
+        'substitution.approved',
+        'substitution.revoked',
       ].sort(),
     );
     // the atomic activity↔inspection edges stay WORKFLOW contracts (participant), not cross-module
@@ -64,7 +67,7 @@ describe('Task 10 — the activities module implements its shared command/query 
     expect(activitiesManifest.workflowParticipants).toEqual(['inspections', 'drawings', 'procurement']);
     // the readiness BAKE reads decisions + drawings + inspections via their query contracts (dependsOn);
     // the reverse inspections→activities edge is the cycle-exempt participant, keeping this graph acyclic.
-    expect(activitiesManifest.dependsOn).toEqual(['decisions', 'drawings', 'inspections']);
+    expect(activitiesManifest.dependsOn).toEqual(['decisions', 'drawings', 'inspections', 'inventory']);
   });
 
   it('the query service implements every declared query + the structure/rollup boundary read surface', () => {

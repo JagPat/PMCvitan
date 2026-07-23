@@ -175,6 +175,59 @@ export class ProcurementParticipant {
     });
   }
 
+  /**
+   * Phase 3 Task 6 (§A at-risk, §G `inventory → procurement` edge) — for each requirement pin
+   * `(requirementId, revision)`, is there a CONFIRMED-INBOUND covering delivery commitment, and
+   * when is it promised? A commitment covers a pin when it sits on a PO line executing THAT
+   * pinned revision, on a LIVE issued version (`issued|partially_received|completed` — a draft
+   * is not announced, an amended/cancelled/closed-short version has released its allocation),
+   * and is still OPEN (`committed|revised` — a fulfilled commitment's stock is already received
+   * and counted as coverage; a defaulted one is not inbound).
+   *
+   * Returns a map keyed `requirementId#revision` → the SOONEST current promised date (civil
+   * `YYYY-MM-DD`) across covering commitments. A pin ABSENT from the map has no covering
+   * commitment → §A `blocked`; a pin present with a date → §A `at-risk`. Called INSIDE the
+   * readiness transaction (inventory's `coverageFor`), so the answer is canonical, not a
+   * projection.
+   */
+  async coveringCommitments(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    pins: ReadonlyArray<{ requirementId: string; revision: number }>,
+  ): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    if (pins.length === 0) return result;
+    const pairs = Prisma.join(pins.map((p) => Prisma.sql`(${p.requirementId}, ${p.revision})`));
+    const rows = await tx.$queryRaw<Array<{ requirementId: string; revision: number; soonest: Date | null }>>(Prisma.sql`
+      SELECT pol."requirementId" AS "requirementId", pol."revision" AS "revision",
+             MIN(dp."promisedDate") AS "soonest"
+      FROM "PurchaseOrderLine" pol
+      JOIN "PurchaseOrderVersion" pov
+        ON pov."projectId" = pol."projectId" AND pov."id" = pol."poVersionId"
+      JOIN "DeliveryCommitment" dc
+        ON dc."projectId" = pol."projectId" AND dc."poLineId" = pol."id"
+      JOIN LATERAL (
+        SELECT dp2."promisedDate"
+        FROM "DeliveryPromise" dp2
+        WHERE dp2."projectId" = dc."projectId" AND dp2."commitmentId" = dc."id"
+        ORDER BY dp2."seq" DESC
+        LIMIT 1
+      ) dp ON TRUE
+      WHERE pol."projectId" = ${projectId}
+        AND pov."status" IN ('issued', 'partially_received', 'completed')
+        AND dc."status" IN ('committed', 'revised')
+        AND (pol."requirementId", pol."revision") IN (${pairs})
+      GROUP BY pol."requirementId", pol."revision"
+    `);
+    for (const r of rows) {
+      if (!r.soonest) continue;
+      // `promisedDate` is a DATE column — format as a civil YYYY-MM-DD without a timezone shift.
+      const iso = r.soonest.toISOString().slice(0, 10);
+      result.set(`${r.requirementId}#${r.revision}`, iso);
+    }
+    return result;
+  }
+
   /** §F bound 3: Σ (accepted + quarantined) per PO line ≤ ordered + approvedOverage. */
   private assertReceiptFits(
     ordered: Prisma.Decimal,

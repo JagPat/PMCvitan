@@ -6,6 +6,7 @@ import { DRAWINGS_PROJECTION } from '../../drawings/drawings.projection';
 import { DAILY_LOG_PROJECTION } from '../../daily-log/daily-log.projection';
 import { INSPECTIONS_PROJECTION } from '../../inspections/inspections.projection';
 import { ACTIVITIES_PROJECTION } from '../../activities/activities.projection';
+import { MATERIAL_READINESS_PROJECTION, computeMaterialReadingsDto } from '../../activities/material-readiness.projection';
 import { computeDrawingsBase } from '../../drawings/drawings-serialize';
 import { computeDailyLogSlice } from '../../daily-log/daily-log-serialize';
 import { computeInspectionsBase } from '../../inspections/inspections-serialize';
@@ -129,6 +130,15 @@ export const REBUILDABLE_PROJECTIONS: Record<string, Rebuildable> = {
     stored: async (tx, generationId, projectId) =>
       (await tx.activitiesProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
     canonical: (tx, projectId) => computeActivitiesBase(tx, projectId),
+  },
+  // Phase 3 Task 6 — the SIXTH projection: per-project material readiness. Its stored composite
+  // (or null for a project with no material demand) is compared against the CANONICAL §A recompute
+  // through the SAME `computeMaterialReadingsDto` the consumer refreshes with — so live == projection
+  // == rebuild, and an operator diagnosis reports drift exactly as it does for the other five.
+  [MATERIAL_READINESS_PROJECTION]: {
+    stored: async (tx, generationId, projectId) =>
+      (await tx.materialReadinessProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
+    canonical: (tx, projectId) => computeMaterialReadingsDto(tx, projectId),
   },
 };
 

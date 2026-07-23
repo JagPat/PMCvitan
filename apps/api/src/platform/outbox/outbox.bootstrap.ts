@@ -10,6 +10,9 @@ import { makeDailyLogProjectionConsumer } from '../../daily-log/daily-log.projec
 import { makeDrawingsProjectionConsumer } from '../../drawings/drawings.projection';
 import { makeInspectionsProjectionConsumer } from '../../inspections/inspections.projection';
 import { makeActivitiesProjectionConsumer } from '../../activities/activities.projection';
+import { makeMaterialReadinessProjectionConsumer, bindMaterialReadinessDeps } from '../../activities/material-readiness.projection';
+import { InventoryService } from '../../inventory/inventory.service';
+import { SubstitutionsService } from '../../activities/substitutions.service';
 import { effectCoverageVersion } from '../external-effects';
 
 /**
@@ -27,6 +30,10 @@ export class OutboxBootstrap implements OnModuleInit {
     private readonly realtime: RealtimeGateway,
     private readonly push: PushService,
     private readonly prisma: PrismaService,
+    // Phase 3 Task 6 — the material-readiness projection recompute routes coverage through these
+    // owning services; boot binds them once for both the consumer and the operator rebuild diagnostic.
+    private readonly inventory: InventoryService,
+    private readonly substitutions: SubstitutionsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -59,6 +66,11 @@ export class OutboxBootstrap implements OnModuleInit {
     // once). Same additive cutover — the live snapshot slice stays authoritative until the frontend
     // switches to the module query (the capability-versioned XOR read-ownership).
     registerConsumer(makeActivitiesProjectionConsumer());
+    // Phase 3 Task 6 — the SIXTH rebuildable projection: per-project material readiness (§A/§G),
+    // recompute-only from the coverage-affecting canonical events. Bind the cross-module recompute
+    // deps first so both the consumer and the operator rebuild diagnostic share one computation.
+    bindMaterialReadinessDeps({ inventory: this.inventory, substitutions: this.substitutions });
+    registerConsumer(makeMaterialReadinessProjectionConsumer());
     // PR B — persist each consumer's contract BEFORE the relay starts, so the (consumer,
     // consumerKind) delivery FK always resolves and the durable obligation is complete. A contract
     // drift or a failed sync ABORTS boot (never downgraded to a warning): an unsynced catalog would
