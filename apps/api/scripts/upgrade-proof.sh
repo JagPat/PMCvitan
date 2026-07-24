@@ -809,6 +809,116 @@ INSERT INTO "LabourDemandSlice"("id","projectId","requirementId","revision","civ
 COMMIT;
 SQL
 
+# ── Phase 4 Task 1 CORRECTION 2 — the seals are DURABLE under LATER mutations (re-review findings 1+2) ──
+assert "the correction-2 durable triggers (slice-insert demand seal + LabourSkill reverse guard) are installed" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('LabourDemandSlice_demand_sealed','LabourSkill_referenced_guard') AND NOT tgisinternal;" \
+  "2"
+# Finding 1 — a slice appended to the coherent UPL-F2OK revision (rev 1, requiredQty 3) in a LATER
+# statement is REJECTED at commit (the sealed aggregate would drift: sum 4 != 3, max date drifts).
+assert_rejects "labour C2 finding-1: a slice appended to a sealed revision after the fact (durable demand seal)" \
+  "INSERT INTO \"LabourDemandSlice\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"civilDate\",\"personShiftQty\") VALUES('UPL-C2D','p1','UPL-F2OK',1,'2026-08-13',1)"
+assert "the sealed revision's aggregate is UNCHANGED after the rejected append (still one slice)" \
+  "SELECT COUNT(*)::text FROM \"LabourDemandSlice\" WHERE \"projectId\"='p1' AND \"requirementId\"='UPL-F2OK' AND \"revision\"=1;" \
+  "1"
+# Finding 2 — a LabourSkill referenced ONLY by a Worker.skillCodes element (no spec references it) can
+# no longer be deleted or re-keyed out from under the worker (the reverse guard).
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  labour C2 finding-2 fixture did not apply"; FAIL=1; }
+INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('p1','plumbing','Plumbing','USER-1');
+INSERT INTO "Worker"("id","projectId","name","tradeCode","skillCodes","activeFrom","createdById")
+  VALUES ('UPL-C2W','p1','Meena','mason','{plumbing}','2026-06-01','USER-1');
+SQL
+assert_rejects "labour C2 finding-2: deleting a worker-referenced LabourSkill (reverse guard)" \
+  "DELETE FROM \"LabourSkill\" WHERE \"projectId\"='p1' AND \"code\"='plumbing'"
+assert_rejects "labour C2 finding-2: re-keying a worker-referenced LabourSkill (reverse guard)" \
+  "UPDATE \"LabourSkill\" SET \"code\"='plumbing-2' WHERE \"projectId\"='p1' AND \"code\"='plumbing'"
+# the guard is PRECISE — a NON-referenced skill still deletes cleanly.
+$PSQL >/dev/null <<'SQL' && printf 'ok      %s\n' "labour C2 finding-2: a non-referenced skill still deletes (precise guard)" || { printf 'FAILED  %s\n' "labour C2: a non-referenced skill could not be deleted"; FAIL=1; }
+INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('p1','tiling','Tiling','USER-1');
+DELETE FROM "LabourSkill" WHERE "projectId"='p1' AND "code"='tiling';
+SQL
+
+# ── Phase 4 Task 1 CORRECTION 2 — the diagnostic-first migration ABORTS on a pre-existing inconsistency,
+#    the operator repairs it, and the migration then redeploys cleanly. Proven end-to-end on a SECOND
+#    scratch database that applies the full ledger EXCEPT 20270120, plants a coherent labour revision +
+#    worker, then breaks BOTH invariants exactly as the runtime gap allowed (a later slice; a deleted
+#    referenced skill) before the correction's triggers exist. ─────────────────────────────────────────
+echo ""
+echo "=== correction-2 abort -> operator repair -> redeploy (fresh scratch DB) ==="
+DB2="${DB}_c2repair"
+NEWMIG="$MIG_DIR/20270120000000_phase4_t1_correction2"
+PSQL2="psql -X -v ON_ERROR_STOP=1 -d $DB2"
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" >/dev/null 2>&1
+$PSQL_ADMIN -c "CREATE DATABASE $DB2;" >/dev/null 2>&1
+# apply the full ledger EXCEPT the correction-2 migration (a fresh deploy minus the newest migration).
+for d in $(ls -d "$MIG_DIR"/*/ | sort); do
+  [ "$(basename "$d")" = "20270120000000_phase4_t1_correction2" ] && continue
+  psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB2" -f "$d/migration.sql" >/dev/null 2>&1 \
+    || { echo "FAILED  correction-2 repair proof: base migration $(basename "$d") did not apply"; FAIL=1; break; }
+done
+# a COHERENT labour revision (rev 1, requiredQty 3, one slice) + a worker referencing only 'tiling'.
+# The AR + spec + slice land in ONE transaction so the deferred type<->detail + demand seals see the
+# whole coherent revision at commit (a bare labour AR would otherwise be rejected for having no detail).
+$PSQL2 -q >/dev/null 2>&1 <<'SQL' || { echo "FAILED  correction-2 repair proof: coherent fixture did not apply"; FAIL=1; }
+INSERT INTO "Org"("id","name","slug") VALUES ('org-c2','C2 Org','c2-org');
+INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+  VALUES ('pc2','org-c2','C2 Site','C2','','Finishing','C2-01','01 Jan 2026','31 Dec 2026',50,30,60);
+INSERT INTO "User"("id","projectId","role","name","email","passwordHash") VALUES ('UC2','pc2','pmc','C2 PMC','c2@vitan.in','h');
+INSERT INTO "Activity"("id","projectId","name","zone","plannedStart","plannedEnd") VALUES ('AC2','pc2','Slab','Zone',0,5);
+INSERT INTO "LabourTrade"("projectId","code","name","createdById") VALUES ('pc2','mason','Mason','UC2');
+INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('pc2','bar-bending','Bar Bending','UC2'),('pc2','tiling','Tiling','UC2');
+INSERT INTO "Worker"("id","projectId","name","tradeCode","skillCodes","activeFrom","createdById") VALUES ('WC2','pc2','Tara','mason','{tiling}','2026-06-01','UC2');
+BEGIN;
+INSERT INTO "ActivityRequirementRoot"("id","projectId","createdById") VALUES ('RC2','pc2','UC2');
+INSERT INTO "ActivityRequirement"("id","projectId","requirementId","revision","activityId","type","requiredQty","baseUom","requiredBy","createdById")
+  VALUES ('ARC2','pc2','RC2',1,'AC2','labour',3,'person-shift','2026-08-12','UC2');
+INSERT INTO "LabourRequirementSpec"("id","projectId","requirementId","revision","tradeCode","skillCode","shift","labourSpecFingerprint")
+  VALUES ('SC2','pc2','RC2',1,'mason','bar-bending','day', encode(digest('lsf.v1'||chr(31)||'trade:mason'||chr(31)||'skill:bar-bending'||chr(31)||'shift:day','sha256'),'hex'));
+INSERT INTO "LabourDemandSlice"("id","projectId","requirementId","revision","civilDate","personShiftQty") VALUES ('DC2','pc2','RC2',1,'2026-08-12',3);
+COMMIT;
+SQL
+# break BOTH invariants exactly as the runtime gap allowed (no correction-2 triggers yet).
+$PSQL2 -q >/dev/null 2>&1 <<'SQL' || { echo "FAILED  correction-2 repair proof: the pre-fix gap did not allow the corrupting mutations"; FAIL=1; }
+INSERT INTO "LabourDemandSlice"("id","projectId","requirementId","revision","civilDate","personShiftQty") VALUES ('DC2X','pc2','RC2',1,'2026-08-13',1);
+DELETE FROM "LabourSkill" WHERE "projectId"='pc2' AND "code"='tiling';
+SQL
+# 1) the migration ABORTS on the inconsistent demand aggregate (diagnostic-first).
+if psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB2" -f "$NEWMIG/migration.sql" >/tmp/c2-abort1.log 2>&1; then
+  echo "FAILED  correction-2 repair proof: the migration APPLIED over an inconsistent demand aggregate"; FAIL=1
+elif grep -q 'inconsistent demand aggregate' /tmp/c2-abort1.log; then
+  printf 'ok      %s\n' "correction-2 repair: migration ABORTS on the inconsistent demand aggregate (names the finding)"
+else
+  echo "FAILED  correction-2 repair proof: aborted but not for the demand finding"; cat /tmp/c2-abort1.log; FAIL=1
+fi
+# operator repair 1 — remove the appended slice (append-only briefly toggled in the maintenance window).
+$PSQL2 -q >/dev/null 2>&1 <<'SQL' || { echo "FAILED  correction-2 repair proof: demand repair failed"; FAIL=1; }
+ALTER TABLE "LabourDemandSlice" DISABLE TRIGGER "LabourDemandSlice_append_only";
+DELETE FROM "LabourDemandSlice" WHERE "id"='DC2X';
+ALTER TABLE "LabourDemandSlice" ENABLE TRIGGER "LabourDemandSlice_append_only";
+SQL
+# 2) the migration now ABORTS on the orphaned worker skill (the second invariant).
+if psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB2" -f "$NEWMIG/migration.sql" >/tmp/c2-abort2.log 2>&1; then
+  echo "FAILED  correction-2 repair proof: the migration APPLIED over an orphaned worker skill"; FAIL=1
+elif grep -q 'no longer exists in the project catalog' /tmp/c2-abort2.log; then
+  printf 'ok      %s\n' "correction-2 repair: migration ABORTS on the orphaned Worker.skillCodes element (names the finding)"
+else
+  echo "FAILED  correction-2 repair proof: aborted but not for the worker-skill finding"; cat /tmp/c2-abort2.log; FAIL=1
+fi
+# operator repair 2 — restore the referenced skill.
+$PSQL2 -q >/dev/null 2>&1 -c "INSERT INTO \"LabourSkill\"(\"projectId\",\"code\",\"name\",\"createdById\") VALUES ('pc2','tiling','Tiling','UC2');" \
+  || { echo "FAILED  correction-2 repair proof: skill restore failed"; FAIL=1; }
+# 3) with the data repaired, the migration REDEPLOYS cleanly and installs the durable triggers.
+if psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB2" -f "$NEWMIG/migration.sql" >/tmp/c2-redeploy.log 2>&1; then
+  installed=$($PSQL2 -tAc "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('LabourDemandSlice_demand_sealed','LabourSkill_referenced_guard') AND NOT tgisinternal;")
+  if [ "$installed" = "2" ]; then
+    printf 'ok      %s\n' "correction-2 repair: after the operator repair the migration REDEPLOYS cleanly and installs both durable triggers"
+  else
+    echo "FAILED  correction-2 repair proof: redeployed but the durable triggers are missing ($installed/2)"; FAIL=1
+  fi
+else
+  echo "FAILED  correction-2 repair proof: the migration did not redeploy after the repair"; cat /tmp/c2-redeploy.log; FAIL=1
+fi
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" >/dev/null 2>&1
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

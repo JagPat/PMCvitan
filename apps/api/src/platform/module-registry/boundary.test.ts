@@ -86,7 +86,10 @@ interface FixtureWaivers {
 // its foreign delegate exactly as the live DMMF map does for real models.
 const FIXTURE_RELATIONS = new Map<string, Map<string, string>>([
   ['decision', new Map([['drawings', 'drawing'], ['activities', 'activity'], ['media', 'media']])],
-  ['activity', new Map([['inspections', 'inspection']])],
+  // Activity really carries a `decision` relation (Activity.decisionId → Decision) — it is the
+  // relation the correction-2 nested-read fixtures exercise, and the one whose latent read the
+  // analyzer caught in activities.service.ts.
+  ['activity', new Map([['inspections', 'inspection'], ['decision', 'decision']])],
 ]);
 
 // Synthetic read-encapsulation for the fixtures: `decision` is read-private to the `decisions` module
@@ -286,6 +289,39 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     it('the OWNING module reading its own read-encapsulated model is NOT a finding', () => {
       const f = analyzeFixture({
         'decisions/own-read.ts': `export async function ownRead(prisma: PrismaLike) { await prisma.decision.count({ where: {} }); }`,
+      });
+      expect(f).toEqual([]);
+    });
+
+    // Phase 4 Task 1 correction 2 (re-review finding 3) — permanently pin the NESTED foreign read
+    // detection the packet claimed. An own-module delegate call whose include/select pulls a
+    // read-encapsulated FOREIGN relation is a cross-module-read, exactly like a direct foreign read.
+    it('a foreign relation pulled through a NESTED include → cross-module-read (own delegate, foreign read-encapsulated relation)', () => {
+      const f = analyzeFixture({
+        'activities/evil-nested-read.ts': `export async function evilNestedRead(prisma: PrismaLike) { await prisma.activity.findFirst({ where: {}, include: { decision: true } }); }`,
+      });
+      // the activity.findFirst is own-module (no finding); the nested `decision` relation resolves to
+      // the decisions-owned, read-encapsulated Decision model — the cross read.
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('a foreign relation pulled through a NESTED select → cross-module-read', () => {
+      const f = analyzeFixture({
+        'activities/evil-nested-select.ts': `export async function evilNestedSelect(prisma: PrismaLike) { await prisma.activity.findMany({ select: { id: true, decision: { select: { status: true } } } }); }`,
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('the OWNING module pulling its OWN read-encapsulated model through a nested include is NOT a finding', () => {
+      const f = analyzeFixture({
+        // a decisions file reading activity with a nested `decision` include: the nested Decision is
+        // owned by decisions (== this module), so it is NOT a cross read — and activity itself is not
+        // read-encapsulated, so the outer read is fine too.
+        'decisions/own-nested-read.ts': `export async function ownNestedRead(prisma: PrismaLike) { await prisma.activity.findFirst({ include: { decision: true } }); }`,
       });
       expect(f).toEqual([]);
     });

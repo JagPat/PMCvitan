@@ -186,6 +186,38 @@ with triggers intact, the explicit repair clears every finding, the correction t
 the upgrade-proof's executed hostile inserts together prove every seal AND every repair path against
 real PostgreSQL.
 
+## §P4LC2. Phase 4 labour durability correction migration + repair (one-time, diagnostic-first)
+
+`20270120000000_phase4_t1_correction2` makes the labour-demand and worker-skill invariants DURABLE
+under later mutations. It is DIAGNOSTIC-FIRST: before installing the slice-insert demand seal and the
+`LabourSkill` reverse guard, it ABORTS (no partial apply) if any pre-existing labour row already
+violates them — never fabricating or silently repairing data. On a database whose labour pilot has
+not run, or whose labour rows are coherent, every count is zero and it applies cleanly. Two abort
+messages, each self-describing:
+
+- **inconsistent demand aggregate** — a `LabourDemandSlice` was appended to a sealed revision after the
+  fact, so `requiredQty`/`requiredBy` no longer match `SUM(personShiftQty)`/`MAX(civilDate)`. **Repair:**
+  within a maintenance window, remove the offending slice(s) so the aggregate matches the frozen
+  revision. Because slices are append-only, briefly disable the immutability trigger, delete, re-enable:
+
+  ```sql
+  BEGIN;
+  ALTER TABLE "LabourDemandSlice" DISABLE TRIGGER "LabourDemandSlice_append_only";
+  -- delete ONLY the extra slice(s) that were appended after the seal (identify by inspecting the
+  -- revision's slices against its ActivityRequirement.requiredQty / requiredBy):
+  DELETE FROM "LabourDemandSlice" WHERE "id" = '<the-appended-slice-id>';
+  ALTER TABLE "LabourDemandSlice" ENABLE TRIGGER "LabourDemandSlice_append_only";
+  COMMIT;
+  ```
+
+- **orphaned `Worker.skillCodes` element** — a `LabourSkill` was deleted (or re-keyed) out from under a
+  worker still referencing it. **Repair:** restore the catalog row (`INSERT INTO "LabourSkill" …` with
+  the original `(projectId, code)`), or remove the dangling code from the worker's `skillCodes` array.
+
+Re-run `prisma migrate deploy` after the repair; the migration then applies cleanly and installs the
+two durable triggers. `scripts/upgrade-proof.sh` executes this exact abort → operator repair →
+redeploy cycle end-to-end against real PostgreSQL.
+
 ## 1. Drain all OLD application instances
 
 Stop routing to and shut down every instance running the PREVIOUS build. The single-sender
