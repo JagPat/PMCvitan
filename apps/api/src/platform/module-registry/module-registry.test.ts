@@ -27,6 +27,19 @@ describe('Phase 2 Task 7 — module registry', () => {
     }
   });
 
+  // Phase 4 Task 1 correction 4 — pin the Labour manifest contract: WorkerSkill (the normalized
+  // worker-skill relation from correction 3) must be Labour-OWNED and Labour-READ-ENCAPSULATED, so
+  // the boundary analyzer flags any foreign read of it. Assert the COMPLETE expected read-encapsulated
+  // set so a future model added to ownsModels but forgotten in readEncapsulated is caught here.
+  it('the Labour manifest owns AND read-encapsulates WorkerSkill (complete read-encapsulated set)', () => {
+    const labour = MODULE_MANIFESTS.find((m) => m.id === 'labour');
+    expect(labour, 'the labour manifest exists').toBeDefined();
+    expect(moduleModelOwnership().get('workerSkill')).toBe('labour');
+    const expected = ['crew', 'crewMembership', 'labourDemandSlice', 'labourRequirementSpec', 'labourSkill', 'labourTrade', 'worker', 'workerSkill'];
+    expect([...(labour!.readEncapsulated ?? [])].sort()).toEqual(expected);
+    expect(labour!.readEncapsulated).toContain('workerSkill');
+  });
+
   it('every produced/consumed event is a known catalog type', () => {
     const known = new Set<string>(DOMAIN_EVENT_TYPES);
     for (const m of MODULE_MANIFESTS) {
