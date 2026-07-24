@@ -245,30 +245,102 @@ findings (F2 requisition-line frozen identity + DB-bound spec/slice; F3 commitme
 F4 PO-line rate/premium provenance-bound to the comparison-selected quote line via new
 `comparisonId`/`selectedQuoteId`/`selectedQuoteLineId` columns; F5 `0 ≤ committedQty ≤ personShiftQty`).
 It is DIAGNOSTIC-FIRST and ADDITIVE — migration `20270201000000` is left byte-for-byte unchanged; the
-labour pilot is ROW-FREE in production, so every backfill is a no-op there. Before adding a bound/FK it
-ABORTS (no partial apply) if any pre-existing row violates it, naming the finding + a bounded id sample:
+labour pilot is ROW-FREE in production, so every diagnostic is zero there and the correction applies
+cleanly. Where a table COULD hold a violating row the migration ABORTS (single-transaction rollback, no
+partial apply) naming the finding + a bounded id sample.
 
-- **`F5 ABORT: % LabourPurchaseOrderLine row(s) have committedQty > personShiftQty …`** — **Repair:** the
-  ledger truth is the live commitment; set the over-committed line back to its real committed quantity
-  (`UPDATE "LabourPurchaseOrderLine" SET "committedQty" = LEAST("committedQty","personShiftQty") WHERE …`
-  after confirming the intended value against `CapacityCommitment`).
-- **`F3 ABORT: % CapacityCommitment row(s) carry a slice identity that differs from their PO line …`** —
-  **Repair:** a commitment's slice identity is a COPY of its PO line; correct the drifted commitment
-  columns to match `LabourPurchaseOrderLine` (`labourSpecFingerprint`/`civilDate`/`shift`/`personShiftQty`),
-  or, if the commitment is bogus, mark it `defaulted` (the F3 FK only binds LIVE identity on insert).
-- **`F2 ABORT: % LabourRequisitionLine row(s) carry a fingerprint/shift that is not the pinned spec's …`**
-  / **`… name a civil date with no demand slice …`** — **Repair:** restore the line's frozen identity to
-  its pinned `LabourRequirementSpec` (fingerprint + shift) and a real `LabourDemandSlice` civil date, or
-  cancel the line; the correction NEVER invents a spec/slice.
-- **`F4 ABORT: % LabourPurchaseOrder{Version|Line} row(s) … not traceable to the comparison-selected quote
-  line …`** — **Repair:** re-point the PO/line at its true approved comparison and the selected quote line
-  whose rate/premium match the frozen PO-line terms; if the terms came from nowhere the line is a forgery
-  and must be removed by the owning-team's audited path (the migration never fabricates provenance).
+### §P4T2C.0 Preflight — run BEFORE `prisma migrate deploy`
 
-After repairing, mark the failed record rolled back if Prisma recorded it as failed
-(`prisma migrate resolve --rolled-back 20270205000000_phase4_t2_correction`) and re-run `prisma migrate
-deploy`; the migration applies and the F2..F5 seals install. `scripts/phase4-t2-correction-abort-proof.sh`
-executes this exact abort → operator repair → redeploy cycle against real PostgreSQL.
+Two of the seals (F2's PO-line↔requisition-line slice FK, and F4's provenance chain) would otherwise
+fail OPAQUELY inside `ALTER TABLE … ADD CONSTRAINT` rather than as a named diagnostic. Run the schema-
+aware preflight first — it names every finding (F5, F3, F2.spec, F2.slice, F2.poline, F4) with counts +
+bounded samples, and is a no-op ("not applicable") on a fresh/empty or pre-Task-2 database:
+
+```
+pnpm --filter api t2c:preflight
+```
+
+Exit `0` (clean or not-applicable) ⇒ safe to `prisma migrate deploy`. Exit `3` ⇒ repair first (§P4T2C.2).
+
+### §P4T2C.1 Classify the migration record (three states, same as §T45.1)
+
+```sql
+SELECT migration_name, finished_at, rolled_back_at, logs
+FROM "_prisma_migrations" WHERE migration_name LIKE '20270205%';
+```
+
+- **No row** — not yet attempted. Repair (if the preflight is dirty), then `migrate deploy`.
+- **`finished_at` set** — already applied; the F2..F5 seals are enforced. No repair needed.
+- **`finished_at IS NULL AND rolled_back_at IS NULL`** — a FAILED attempt (its transaction rolled back,
+  so NO F2..F5 constraint/column was added and the Task-2 frozen/lifecycle triggers still stand).
+  Repair (§P4T2C.2), then mark the record rolled back and redeploy:
+  ```
+  pnpm --filter api exec prisma migrate resolve --rolled-back 20270205000000_phase4_t2_correction
+  pnpm --filter api prisma:migrate
+  ```
+
+### §P4T2C.2 Repair — the ONE sanctioned path (`t2c:repair`)
+
+The offending rows live behind the Task-2 frozen/lifecycle triggers (`LabourPurchaseOrderLine_frozen`,
+`CapacityCommitment_lifecycle_only`, …), so an F2/F3/F4 identity cannot be fixed with an ordinary
+UPDATE, and cancelling/defaulting a bad row does NOT clear the diagnostic (it counts every row
+regardless of status). Repair runs through the tool, which does the guarded sequence in ONE bounded
+transaction — exactly like `t45:repair`:
+
+1. **Back up** the pilot and enter maintenance mode — stop application writes to the affected
+   project(s). The repair briefly toggles named triggers.
+2. **Author an explicit plan** — a JSON file naming exactly what to do to each offending row. The tool
+   never fabricates provenance; you supply the decision, and an F2/F4 identity is VALIDATED against the
+   canonical tables before it is applied. One action per row:
+
+   | finding | op | what it does |
+   |---|---|---|
+   | `F5` | `f5-set-committed-qty` (`id`, `committedQty`) | set a PO line's committedQty to the ledger truth (`0 ≤ q ≤ personShiftQty`, validated) — no trigger disabled |
+   | `F3` | `f3-align-commitment` (`id`) | copy a commitment's slice identity FROM its own PO line (the canonical source) — disables `CapacityCommitment_lifecycle_only` |
+   | `F2.spec` / `F2.slice` | `f2-restore-reqline-identity` (`id`, `labourSpecFingerprint`, `shift`, `civilDate`) | restore a requisition line's frozen identity to a REAL pinned spec + demand slice (validated) — no trigger disabled |
+   | `F2.poline` | `f2c-align-poline-slice` (`id`) | copy a PO line's slice FROM its requisition line (the canonical source) — disables `LabourPurchaseOrderLine_frozen` |
+   | `F4` | `f4-align-poline-terms` (`id`, `ratePerPersonShift`, `shiftPremium`) | set a PO line's rate/premium to the comparison-selected quote line's terms (validated to MATCH a real quote line); `committedAmountBase` is re-derived — disables `LabourPurchaseOrderLine_frozen` |
+
+   To read a line's canonical identity for an F2/F4 plan: the pinned spec is
+   `SELECT "labourSpecFingerprint","shift" FROM "LabourRequirementSpec" WHERE "projectId"=… AND
+   "requirementId"=… AND "revision"=…`; the selected quote line's terms are
+   `SELECT ql."ratePerPersonShift", ql."shiftPremium" FROM "SupplierLabourQuoteLine" ql JOIN
+   "LabourQuoteComparison" cmp ON cmp."selectedQuoteId"=ql."quoteId" WHERE cmp."id"=<the PO's
+   comparisonId> AND ql."requisitionLineId"=<the PO line's requisitionLineId>`.
+
+   Example plan:
+   ```json
+   { "actions": [
+     { "finding": "F5",       "op": "f5-set-committed-qty",       "id": "<poLineId>", "committedQty": 3 },
+     { "finding": "F3",       "op": "f3-align-commitment",        "id": "<commitmentId>" },
+     { "finding": "F2.spec",  "op": "f2-restore-reqline-identity","id": "<reqLineId>", "labourSpecFingerprint": "<hex>", "shift": "day", "civilDate": "2026-08-12" },
+     { "finding": "F4",       "op": "f4-align-poline-terms",      "id": "<poLineId>", "ratePerPersonShift": "1000", "shiftPremium": "100" }
+   ] }
+   ```
+3. **Run the repair:**
+   ```
+   pnpm --filter api t2c:repair --plan <plan.json> --operator <you@example.com> --reason "<ticket>: P4T2C labour commercial reconciliation"
+   ```
+   In one transaction the tool: writes a complete **before-image + your identity + reason + timestamp +
+   row id** for every action into the durable `T2CRepairAction` evidence table (created idempotently —
+   a later Prisma migration cannot, since `20270205…` is unresolved); disables ONLY the named trigger(s)
+   the plan's ops actually require (minimal, "where unavoidable" — an F5 fix disables nothing); applies
+   your decisions; **re-enables and verifies** every labour-commercial immutability trigger; and
+   **re-runs every diagnostic**. It COMMITS only if every diagnostic reads zero AND every trigger is
+   back to enabled — otherwise the whole transaction ROLLS BACK (data, evidence, trigger-toggle and
+   all), leaving the database exactly as it was with the triggers firing, and exits non-zero. A partial
+   or wrong plan (including one that supplies a fabricated identity, which is refused before it is
+   applied) therefore cannot half-repair or leave a trigger disabled.
+4. **Confirm clean and deploy.** `pnpm --filter api t2c:preflight` must now exit `0`; then apply the
+   migration record fix from §P4T2C.1 (`migrate resolve --rolled-back` if it had failed) and
+   `pnpm --filter api prisma:migrate`. `t2c:preflight` a final time to confirm `state: applied`.
+5. **Redeploy the app** and leave maintenance mode. Keep `T2CRepairAction` — it is the durable,
+   operator-attributed record of exactly which rows were changed and their before-images.
+
+`scripts/phase4-t2-correction2-abort-proof.sh` drives this exact sequence end-to-end against real
+PostgreSQL, INDEPENDENTLY for F5, F3, F2 and F4 (each finding alone aborts the migration, is repaired by
+`t2c:repair`, and redeploys), and proves a fabricating plan is refused and rolled back. (The round-1
+`scripts/phase4-t2-correction-abort-proof.sh` covers the F5 raw-repair path.)
 
 ## 1. Drain all OLD application instances
 

@@ -23,7 +23,10 @@
     "capability:enable": "tsx src/platform/capability.cli.ts",
     "t45:preflight": "tsx src/platform/t45/t45.cli.ts preflight",
     "t45:migration-state": "tsx src/platform/t45/t45.cli.ts migration-state",
-    "t45:repair": "tsx src/platform/t45/t45.cli.ts repair"
+    "t45:repair": "tsx src/platform/t45/t45.cli.ts repair",
+    "t2c:preflight": "tsx src/labour/t2c/t2c.cli.ts preflight",
+    "t2c:migration-state": "tsx src/labour/t2c/t2c.cli.ts migration-state",
+    "t2c:repair": "tsx src/labour/t2c/t2c.cli.ts repair"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -6,6 +6,7 @@ import { LabourService } from '../../src/labour/labour.service';
 import { LabourProcurementService } from '../../src/labour/labour-procurement.service';
 import { VendorsService } from '../../src/procurement/vendors.service';
 import { CapabilitiesService, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
+import { lockProjectReadiness } from '../../src/common/readiness-lock';
 import type { AuthUser } from '../../src/common/auth';
 
 /**
@@ -247,31 +248,145 @@ describe('Phase 4 Task 2 correction — labour commercial integrity (live PG)', 
     expect(await intendedInboundForSlice(projectId, '2026-08-11')).toBe(0); // released slice frees for re-procurement
   });
 
-  // ── F1 — concurrency: commit vs close-short (both orderings, 10×) ─────────────────────────────
-  it('F1 race: commit vs close-short (10×) — exactly one wins; never doubles or orphans capacity', async () => {
-    for (let i = 0; i < 10; i++) {
+  // ── DETERMINISTIC race barrier (Task-1 round-3 pattern) ───────────────────────────────────────
+  // Every racing command takes lockProjectReadiness as its FIRST statement, so the test holds that
+  // advisory lock, parks both commands in the wait queue (verified via pg_stat_activity), then
+  // releases — the FIFO advisory-lock grant order EQUALS the enqueue order. Enqueuing `first` before
+  // `second` therefore proves the "first wins the lock" ordering; swapping them proves the other.
+  const readinessWaiters = async (): Promise<number> => {
+    const rows = await t.prisma.$queryRaw<Array<{ c: number }>>`
+      SELECT COUNT(*)::int AS c FROM pg_stat_activity
+      WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'
+        AND query LIKE '%pg_advisory_xact_lock%'`;
+    return rows[0]!.c;
+  };
+  const waitForReadinessWaiters = async (n: number): Promise<void> => {
+    for (let i = 0; i < 400; i++) {
+      if ((await readinessWaiters()) >= n) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`barrier timeout: expected ${n} readiness-lock waiter(s)`);
+  };
+  /** Grant `first` the readiness lock strictly before `second` (deterministic FIFO ordering). */
+  const raceUnderBarrier = async <A, B>(
+    projectId: string, first: () => Promise<A>, second: () => Promise<B>,
+  ): Promise<[PromiseSettledResult<A>, PromiseSettledResult<B>]> => {
+    let release!: () => void;
+    let acquired!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const held = new Promise<void>((r) => (acquired = r));
+    const holder = t.prisma.$transaction(
+      async (tx) => { await lockProjectReadiness(tx, projectId); acquired(); await gate; },
+      { timeout: 20_000, maxWait: 10_000 },
+    );
+    await held;
+    const a = first();
+    await waitForReadinessWaiters(1);
+    const b = second();
+    await waitForReadinessWaiters(2);
+    release();
+    await holder;
+    const [ra, rb] = await Promise.allSettled([a, b]);
+    return [ra as PromiseSettledResult<A>, rb as PromiseSettledResult<B>];
+  };
+  const reqStatus = (projectId: string, requisitionId: string): Promise<string> =>
+    t.prisma.labourRequisition.findFirstOrThrow({ where: { projectId, id: requisitionId }, select: { status: true } }).then((r) => r.status);
+
+  // ── F1 — concurrency: commit vs close-short (BOTH lock orderings, deterministic) ──────────────
+  it('F1 race (barrier): commit vs close-short — both orderings; capacity is never doubled or orphaned', async () => {
+    // ordering A — commit wins the lock: the single line becomes fully committed (version COMPLETED),
+    // so close-short is then REFUSED (nothing is short). The committed slice is retained.
+    {
       const { projectId, poId, poLine } = await issuedPo(10, 10);
-      const results = await Promise.allSettled([
-        commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: '2026-08-05' }, pmc(projectId)),
-        commercial.closeShortPo(projectId, poId, { reason: 'race' }, pmc(projectId)),
-      ]);
-      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-      expect(await intendedInboundForSlice(projectId, '2026-08-10')).toBeLessThanOrEqual(10);
-      expect(await liveCommitmentCount(projectId)).toBeLessThanOrEqual(1);
+      const [commit, close] = await raceUnderBarrier(projectId,
+        () => commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: '2026-08-05' }, pmc(projectId)),
+        () => commercial.closeShortPo(projectId, poId, { reason: 'race A' }, pmc(projectId)),
+      );
+      expect(commit.status).toBe('fulfilled');
+      expect(close.status).toBe('rejected');
+      expect((close as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
+      const po = await commercial.readPo(projectId, poId, pmc(projectId));
+      expect(po.currentVersion.status).toBe('completed');
+      expect(po.currentVersion.lines[0]!.committedQty).toBe(10); // committed slice retained
+      expect(await liveCommitmentCount(projectId)).toBe(1);
+      expect(await intendedInboundForSlice(projectId, '2026-08-10')).toBe(10);
+    }
+    // ordering B — close-short wins the lock: it releases the uncommitted line, so commit is REFUSED.
+    {
+      const { projectId, poId, poLine } = await issuedPo(10, 10);
+      const [close, commit] = await raceUnderBarrier(projectId,
+        () => commercial.closeShortPo(projectId, poId, { reason: 'race B' }, pmc(projectId)),
+        () => commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: '2026-08-05' }, pmc(projectId)),
+      );
+      expect(close.status).toBe('fulfilled');
+      expect(commit.status).toBe('rejected');
+      expect((commit as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
+      expect(await liveCommitmentCount(projectId)).toBe(0);
+      expect(await intendedInboundForSlice(projectId, '2026-08-10')).toBe(0);
     }
   });
 
-  // ── F1 — concurrency: commit vs amend (both orderings, 10×) ───────────────────────────────────
-  it('F1 race: commit vs amend (10×) — a live commitment is never orphaned by an amend', async () => {
-    for (let i = 0; i < 10; i++) {
+  // ── F1 — concurrency: commit vs amend (BOTH lock orderings, deterministic) ────────────────────
+  it('F1 race (barrier): commit vs amend — both orderings; a live commitment is never orphaned', async () => {
+    // ordering A — commit wins the lock: the live commitment then BLOCKS the amend.
+    {
       const { projectId, poId, lineId, poLine } = await issuedPo(10, 10);
-      const results = await Promise.allSettled([
-        commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: '2026-08-05' }, pmc(projectId)),
-        commercial.amendPo(projectId, poId, { reason: 'race', lines: [{ requisitionLineId: lineId, personShiftQty: 10 }] }, pmc(projectId)),
-      ]);
-      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-      expect(await intendedInboundForSlice(projectId, '2026-08-10')).toBeLessThanOrEqual(10);
-      expect(await liveCommitmentCount(projectId)).toBeLessThanOrEqual(1);
+      const [commit, amend] = await raceUnderBarrier(projectId,
+        () => commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: '2026-08-05' }, pmc(projectId)),
+        () => commercial.amendPo(projectId, poId, { reason: 'race A', lines: [{ requisitionLineId: lineId, personShiftQty: 10 }] }, pmc(projectId)),
+      );
+      expect(commit.status).toBe('fulfilled');
+      expect(amend.status).toBe('rejected');
+      expect((amend as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
+      expect(await liveCommitmentCount(projectId)).toBe(1);
+      expect(await intendedInboundForSlice(projectId, '2026-08-10')).toBe(10);
+    }
+    // ordering B — amend wins the lock: the old version is amended, so committing its line is REFUSED.
+    {
+      const { projectId, poId, lineId, poLine } = await issuedPo(10, 10);
+      const [amend, commit] = await raceUnderBarrier(projectId,
+        () => commercial.amendPo(projectId, poId, { reason: 'race B', lines: [{ requisitionLineId: lineId, personShiftQty: 10 }] }, pmc(projectId)),
+        () => commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: '2026-08-05' }, pmc(projectId)),
+      );
+      expect(amend.status).toBe('fulfilled');
+      expect(commit.status).toBe('rejected');
+      expect((commit as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
+      expect(await liveCommitmentCount(projectId)).toBe(0);
+      // the amend re-issued version 2 (uncommitted) for the same slice — inbound stays 10, never doubled.
+      expect(await intendedInboundForSlice(projectId, '2026-08-10')).toBe(10);
+    }
+  });
+
+  // ── R2 — concurrency: default vs closeRequisition (BOTH lock orderings, deterministic) ────────
+  it('R2 race (barrier): default vs closeRequisition — a default that lands first blocks the close', async () => {
+    const committedPo = async () => {
+      const { projectId, requisitionId, poLine } = await issuedPo(10, 10);
+      const commitment = await commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: '2026-08-05' }, pmc(projectId));
+      return { projectId, requisitionId, commitmentId: commitment.id };
+    };
+    // ordering A — default wins the lock: the line reopens, so closeRequisition REFUSES (uncovered).
+    {
+      const { projectId, requisitionId, commitmentId } = await committedPo();
+      const [def, close] = await raceUnderBarrier(projectId,
+        () => commercial.defaultCapacity(projectId, commitmentId, pmc(projectId)),
+        () => commercial.closeRequisition(projectId, requisitionId, pmc(projectId)),
+      );
+      expect(def.status).toBe('fulfilled');
+      expect(close.status).toBe('rejected');
+      expect((close as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
+      expect(await reqStatus(projectId, requisitionId)).toBe('approved'); // NOT closed over an uncovered line
+    }
+    // ordering B — closeRequisition wins the lock: the line is still covered, so it closes cleanly;
+    // the default is then a legitimate post-closure event that reopens the (now historical) line.
+    {
+      const { projectId, requisitionId, commitmentId } = await committedPo();
+      const [close, def] = await raceUnderBarrier(projectId,
+        () => commercial.closeRequisition(projectId, requisitionId, pmc(projectId)),
+        () => commercial.defaultCapacity(projectId, commitmentId, pmc(projectId)),
+      );
+      expect(close.status).toBe('fulfilled');
+      expect(def.status).toBe('fulfilled');
+      expect(await reqStatus(projectId, requisitionId)).toBe('closed');
     }
   });
 });

@@ -421,8 +421,23 @@ export class LabourProcurementService {
       scope, actor, commandType: 'labour.requisition.close', idempotencyKey, requestHash: hashRequest({ requisitionId }),
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
-        const open = await tx.labourRequisitionLine.count({ where: { projectId, requisitionId, status: 'open' } });
-        if (open > 0) throw new ConflictException(`Labour requisition still has ${open} open line(s) — order or cancel them first`);
+        // R2 — DERIVE allocation truth rather than trust a possibly-stale status column: every
+        // non-cancelled line must be FULLY covered by LIVE PO allocation (an amended/closed-short PO
+        // whose commitment defaulted covers nothing, even if the line still reads 'ordered'). Another
+        // live PO that still covers the line keeps it satisfied. Reconcile the status as we go.
+        const lines = await tx.labourRequisitionLine.findMany({
+          where: { projectId, requisitionId, status: { not: 'cancelled' } },
+          select: { id: true, civilDate: true, personShiftQty: true },
+        });
+        for (const l of lines) {
+          const allocated = await this.liveAllocation(tx, projectId, l.id);
+          if (allocated < l.personShiftQty) {
+            throw new ConflictException(
+              `Labour requisition line ${toIsoCivilDate(l.civilDate)} is not fully ordered (${allocated}/${l.personShiftQty} person-shifts live) — order or cancel it before closing`,
+            );
+          }
+          await this.refreshOrderedFlag(tx, projectId, l.id);
+        }
         const { count } = await tx.labourRequisition.updateMany({
           where: { id: requisitionId, projectId, status: 'approved' },
           data: { status: 'closed', closedAt: new Date() },
@@ -616,13 +631,25 @@ export class LabourProcurementService {
 
   // ── §F bound 2: labour requisition → labour PO (per slice) + frozen rate snapshot ────────────
 
-  /** Σ live PO-line allocations against one requisition line (closed_short → committedQty only). */
+  /**
+   * Σ LIVE PO-line allocation against one requisition line. A PO line covers its slice when it is a
+   * live order that has NOT been reneged:
+   *   - a DEFAULTED commitment (the source reneged) permanently removes the line's coverage — the PO
+   *     line can never be re-committed (commit refuses any existing commitment; revise needs a live
+   *     one), so its slice must be re-sourced and it contributes 0, even on a still-live version;
+   *   - a closed_short version keeps only its committed portion (committedQty);
+   *   - any other live version (issued/partially_committed/completed) holds the full ordered qty —
+   *     an uncommitted issued line is a real open order that legitimately keeps the slice ordered.
+   */
   private async liveAllocation(tx: Prisma.TransactionClient, projectId: string, requisitionLineId: string): Promise<number> {
     const rows = await tx.labourPurchaseOrderLine.findMany({
       where: { projectId, requisitionLineId, poVersion: { status: { in: [...LIVE_LABOUR_PO_STATUSES, 'closed_short'] } } },
-      select: { personShiftQty: true, committedQty: true, poVersion: { select: { status: true } } },
+      select: { personShiftQty: true, committedQty: true, poVersion: { select: { status: true } }, commitments: { select: { status: true } } },
     });
-    return rows.reduce((sum, r) => sum + (r.poVersion.status === 'closed_short' ? r.committedQty : r.personShiftQty), 0);
+    return rows.reduce((sum, r) => {
+      if (r.commitments.some((c) => c.status === 'defaulted')) return sum;
+      return sum + (r.poVersion.status === 'closed_short' ? r.committedQty : r.personShiftQty);
+    }, 0);
   }
 
   /** FOR UPDATE the requisition line; sum live PO allocations; refuse overflow (§F bound 2, per slice). */
@@ -1006,9 +1033,14 @@ export class LabourProcurementService {
         if (count === 0) throw new ConflictException('Only a live (committed/revised) capacity commitment can be defaulted — reload and retry');
         // F1 — a defaulted commitment RELEASES its line's committed progress; the version status is
         // recomputed so the freed slice can be re-procured (a terminal PO version is left untouched).
-        const defaulted = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, select: { poLineId: true, poLine: { select: { poVersionId: true } } } });
+        const defaulted = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, select: { poLineId: true, poLine: { select: { poVersionId: true, requisitionLineId: true } } } });
         await tx.labourPurchaseOrderLine.updateMany({ where: { projectId, id: defaulted.poLineId }, data: { committedQty: 0 } });
         await this.recomputeVersionStatus(tx, projectId, defaulted.poLine.poVersionId);
+        // R2 — the freed slice's requisition line must reflect its now-ZERO live allocation: a
+        // defaulted PO line covers nothing (it can never be re-committed), so the line reopens to
+        // 'open' whether the version returned to issued/partially_committed or was closed short —
+        // UNLESS another live PO still covers the slice. refreshOrderedFlag re-derives it from truth.
+        await this.refreshOrderedFlag(tx, projectId, defaulted.poLine.requisitionLineId);
         await recordAudit(tx, { projectId, actor, action: 'labour.commitment.default', entity: 'CapacityCommitment', entityId: commitmentId });
         const full = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, include: { promises: true } });
         const ev = await emitEvent(tx, {
