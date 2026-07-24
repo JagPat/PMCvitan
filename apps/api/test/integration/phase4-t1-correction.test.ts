@@ -31,7 +31,7 @@ describe('Phase 4 Task 1 correction — DB seals + list availability + workforce
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ApprovedSubstitution", "CrewMembership", "Crew", "WorkerDevice", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability"';
+    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ApprovedSubstitution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability"';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
 
@@ -172,29 +172,33 @@ describe('Phase 4 Task 1 correction — DB seals + list availability + workforce
     ).rejects.toThrow(/foreign key|violates/i);
   });
 
-  it('F3 WORKER SKILLS: a Worker.skillCodes element that is nonexistent OR cross-project is rejected by the DB trigger', async () => {
+  it('F3 WORKER SKILLS: a WorkerSkill element that is nonexistent OR cross-project is rejected by the composite FK (correction 3)', async () => {
+    // Correction 3 NORMALIZED skills into WorkerSkill(projectId, workerId, skillCode) with a
+    // same-project composite FK to LabourSkill — so the invariant is now FK-enforced (and
+    // concurrency-safe), not trigger-enforced. A worker is onboarded, then hostile WorkerSkill rows
+    // are rejected by PostgreSQL.
     const projectId = await freshProject();
     await enableLabour(projectId);
-    // nonexistent skill in the array
+    const w = await labour.onboardWorker(projectId, { name: 'R', tradeCode: 'mason', skillCodes: [], activeFrom: '2026-06-01' }, pmc(projectId));
+    // a nonexistent skill → composite FK rejects
     await expect(
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "Worker" ("id","projectId","name","tradeCode","skillCodes","activeFrom","createdById") VALUES ($1,$2,'R','mason', ARRAY['ghost-skill'], '2026-06-01'::date, $3)`,
-        `wk-ghost-${seq++}`, projectId, f.memberUser.id,
-      ),
-    ).rejects.toThrow(/not a skill in this project/i);
-    // cross-project skill (defined only in `other`)
+      t.prisma.$executeRawUnsafe(`INSERT INTO "WorkerSkill" ("projectId","workerId","skillCode") VALUES ($1,$2,'ghost-skill')`, projectId, w.id),
+    ).rejects.toThrow(/foreign key|violates/i);
+    // a cross-project skill (defined only in `other`) → same-project composite FK rejects
     const other = await freshProject();
     await enableLabour(other);
     await labour.upsertSkill(other, { code: 'welding', name: 'Welding' }, pmc(other));
     await expect(
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "Worker" ("id","projectId","name","tradeCode","skillCodes","activeFrom","createdById") VALUES ($1,$2,'R','mason', ARRAY['welding'], '2026-06-01'::date, $3)`,
-        `wk-cross-${seq++}`, projectId, f.memberUser.id,
-      ),
+      t.prisma.$executeRawUnsafe(`INSERT INTO "WorkerSkill" ("projectId","workerId","skillCode") VALUES ($1,$2,'welding')`, projectId, w.id),
+    ).rejects.toThrow(/foreign key|violates/i);
+    // the service still refuses a bad skill in-line with a friendly message (the FK is the backstop)
+    await expect(
+      labour.onboardWorker(projectId, { name: 'R2', tradeCode: 'mason', skillCodes: ['ghost-skill'], activeFrom: '2026-06-01' }, pmc(projectId)),
     ).rejects.toThrow(/not a skill in this project/i);
-    // a VALID same-project skill array is accepted
-    const w = await labour.onboardWorker(projectId, { name: 'R', tradeCode: 'mason', skillCodes: ['bar-bending'], activeFrom: '2026-06-01' }, pmc(projectId));
-    expect(w.id).toBeTruthy();
+    // a VALID same-project skill is accepted, and its WorkerSkill row is created
+    const ok = await labour.onboardWorker(projectId, { name: 'R3', tradeCode: 'mason', skillCodes: ['bar-bending'], activeFrom: '2026-06-01' }, pmc(projectId));
+    const rows = await t.prisma.workerSkill.findMany({ where: { projectId, workerId: ok.id } });
+    expect(rows.map((r) => r.skillCode)).toEqual(['bar-bending']);
   });
 
   // ── F4 — the register reads when materials OR labour is enabled ──────────────────────────────

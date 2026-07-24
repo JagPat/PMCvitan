@@ -218,6 +218,26 @@ Re-run `prisma migrate deploy` after the repair; the migration then applies clea
 two durable triggers. `scripts/upgrade-proof.sh` executes this exact abort → operator repair →
 redeploy cycle end-to-end against real PostgreSQL.
 
+## §P4LC3. Phase 4 labour worker-skill NORMALIZATION migration + repair (one-time, diagnostic-first)
+
+`20270125000000_phase4_t1_correction3` normalizes `Worker.skillCodes` into a `WorkerSkill` table with
+real composite FKs (to `Worker` and to `LabourSkill`), replacing the two racing triggers with FK
+concurrency semantics, then DROPS the `skillCodes` column and those triggers. It is DIAGNOSTIC-FIRST:
+before creating the table it ABORTS (no partial apply) if any existing `Worker.skillCodes` element
+lacks its same-project `LabourSkill` — the orphan state the un-serialized race could leave — because
+the `WorkerSkill` backfill would otherwise fail the new FK, and the migration never fabricates a
+catalog row. On a coherent (or labour-pilot-free) database the count is zero and it applies cleanly,
+backfilling one `WorkerSkill` row per array element.
+
+Abort message: **`% Worker.skillCodes element(s) reference a LabourSkill absent from their project
+catalog`**. **Repair:** restore the missing catalog row (`INSERT INTO "LabourSkill" …` with the
+original `(projectId, code)`) so the backfill satisfies the new FK, or remove the dangling code from
+the worker's `skillCodes` array (`UPDATE "Worker" SET "skillCodes" = array_remove("skillCodes",
+'<code>') WHERE …`). Then re-run `prisma migrate deploy`; the migration applies, `WorkerSkill` is
+created and backfilled, the `Worker_skills_contained`/`LabourSkill_referenced_guard` triggers are
+dropped, and `skillCodes` is removed. `scripts/upgrade-proof.sh` executes this exact abort → operator
+repair → redeploy cycle against real PostgreSQL.
+
 ## 1. Drain all OLD application instances
 
 Stop routing to and shut down every instance running the PREVIOUS build. The single-sender

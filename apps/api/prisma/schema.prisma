@@ -2054,7 +2054,10 @@ model LabourSkill {
   createdBy   User     @relation("labourSkillsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById String
 
-  labourSpecs LabourRequirementSpec[]
+  labourSpecs  LabourRequirementSpec[]
+  // correction 3 — worker skills are NORMALIZED into WorkerSkill rows FK-bound to this catalog, so
+  // PostgreSQL's real FK concurrency semantics (not two racing triggers) keep the reference valid.
+  workerSkills WorkerSkill[]
 
   @@id([projectId, code])
 }
@@ -2069,9 +2072,10 @@ model Worker {
   // the worker's primary trade — a same-project catalog entry (composite FK)
   trade       LabourTrade @relation(fields: [projectId, tradeCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
   tradeCode   String
-  // additional skills — a text array validated in-service against the LabourSkill catalog (an
-  // array cannot carry a referential FK; membership is service-enforced + covered by tests)
-  skillCodes  String[]
+  // additional skills — correction 3 NORMALIZES these into WorkerSkill rows with a same-project
+  // composite FK to LabourSkill, so a nonexistent/cross-project/subsequently-deleted skill is
+  // unrepresentable AND concurrency-safe (no worker-insert vs skill-delete race). The DTO's
+  // skillCodes[] is DERIVED from these rows.
   activeFrom  DateTime  @db.Date
   activeTo    DateTime? @db.Date
   revokedAt   DateTime?
@@ -2084,10 +2088,27 @@ model Worker {
   devices         WorkerDevice[]
   crewMemberships CrewMembership[]
   ledBy           Crew[]           @relation("crewIncharge")
+  skills          WorkerSkill[]
 
   // composite identity for same-project (projectId, workerId) FKs (WorkerDevice, Crew, membership)
   @@unique([projectId, id])
   @@index([projectId, tradeCode])
+}
+
+// Correction 3 — the NORMALIZED worker-skill relation (replaces the denormalized Worker.skillCodes
+// array + its two racing triggers). One row per (worker, skill), each FK-bound to BOTH the worker and
+// the same-project LabourSkill catalog entry. The LabourSkill FK is onDelete/onUpdate NoAction, so a
+// referenced skill cannot be deleted or re-keyed — enforced with real FK locking, which serializes a
+// concurrent worker-insert vs skill-delete instead of letting both commit.
+model WorkerSkill {
+  projectId String
+  workerId  String
+  skillCode String
+  worker    Worker      @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: Cascade, onUpdate: NoAction)
+  skill     LabourSkill @relation(fields: [projectId, skillCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([projectId, workerId, skillCode])
+  @@index([projectId, skillCode])
 }
 
 // A named set of workers under an in-charge (mistri) — ORGANIZATIONAL only, NOT an atomic
