@@ -2399,6 +2399,7 @@ model LabourPurchaseOrderVersion {
   poId              String
   version           Int
   requisitionId     String
+  comparisonId      String    // Task-2 correction F4: the approved comparison this version executes (frozen; DB-bound to the PO root)
   status            String    @default("draft") // draft|issued|partially_committed|completed|amended|cancelled|closed_short
   supersedesVersion Int?
   issuedById        String?
@@ -2439,6 +2440,11 @@ model LabourPurchaseOrderLine {
   shiftPremium          Decimal  @db.Decimal(18, 2)
   committedAmountBase   Decimal  @db.Decimal(18, 2)
   committedQty          Int      @default(0) // person-shifts committed (progress; the ONE mutable column)
+  // Task-2 correction F4 — provenance: the comparison-selected quote line this line's rate/premium
+  // came from (frozen; a composite-FK chain proves rate/premium == the selected quote line's).
+  comparisonId          String
+  selectedQuoteId       String
+  selectedQuoteLineId   String
 
   commitments CapacityCommitment[]
 

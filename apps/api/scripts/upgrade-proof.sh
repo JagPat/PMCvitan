@@ -1022,8 +1022,10 @@ INSERT INTO "SupplierLabourQuote"("id","projectId","rfqId","requisitionId","vend
 INSERT INTO "SupplierLabourQuoteLine"("id","projectId","quoteId","requisitionLineId","requisitionId","ratePerPersonShift","shiftPremium","landedPerPersonShift","matchesSpecification") VALUES('UPL-T2QL','p1','UPL-T2Q','UPL-T2RL','UPL-T2REQ',1000,100,1100,true);
 INSERT INTO "LabourQuoteComparison"("id","projectId","rfqId","requisitionId","status","selectedQuoteId","selectedVendorId","reason","createdById","approvedById","approvedAt") VALUES('UPL-T2CMP','p1','UPL-T2RFQ','UPL-T2REQ','approved','UPL-T2Q','UPL-T2V','ok','USER-1','USER-1',NOW());
 INSERT INTO "LabourPurchaseOrder"("id","projectId","vendorId","requisitionId","comparisonId","comparisonStatus","createdById") VALUES('UPL-T2PO','p1','UPL-T2V','UPL-T2REQ','UPL-T2CMP','approved','USER-1');
-INSERT INTO "LabourPurchaseOrderVersion"("id","projectId","poId","version","requisitionId","status","issuedById","issuedAt","createdById") VALUES('UPL-T2POV','p1','UPL-T2PO',1,'UPL-T2REQ','issued','USER-1',NOW(),'USER-1');
-INSERT INTO "LabourPurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","ratePerPersonShift","shiftPremium","committedAmountBase") VALUES('UPL-T2POL','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,1000,100,3300);
+INSERT INTO "LabourPurchaseOrderVersion"("id","projectId","poId","version","requisitionId","comparisonId","status","issuedById","issuedAt","createdById") VALUES('UPL-T2POV','p1','UPL-T2PO',1,'UPL-T2REQ','UPL-T2CMP','issued','USER-1',NOW(),'USER-1');
+INSERT INTO "LabourPurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","ratePerPersonShift","shiftPremium","committedAmountBase","comparisonId","selectedQuoteId","selectedQuoteLineId") VALUES('UPL-T2POL','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,1000,100,3300,'UPL-T2CMP','UPL-T2Q','UPL-T2QL');
+-- a VALID second PO line (correct quote-line provenance) left UNCOMMITTED — the clean subject for the F3 identity probe
+INSERT INTO "LabourPurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","ratePerPersonShift","shiftPremium","committedAmountBase","comparisonId","selectedQuoteId","selectedQuoteLineId") VALUES('UPL-T2POL2','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,1000,100,3300,'UPL-T2CMP','UPL-T2Q','UPL-T2QL');
 INSERT INTO "CapacityCommitment"("id","projectId","poLineId","labourSpecFingerprint","civilDate","shift","personShiftQty","createdById") VALUES('UPL-T2CC','p1','UPL-T2POL',$FPD,'2026-08-12','day',3,'USER-1');
 INSERT INTO "CapacityPromise"("id","projectId","commitmentId","seq","promisedDate","recordedById") VALUES('UPL-T2CP','p1','UPL-T2CC',1,'2026-08-11','USER-1');
 COMMIT;
@@ -1046,6 +1048,29 @@ assert_rejects "labour T2: a PO line with a wrong committedAmountBase (amount CH
 # a labour PO whose comparison provenance is not 'approved' is unrepresentable (status-pinned FK + CHECK)
 assert_rejects "labour T2: a PO forging its provenance to a NON-approved comparison (status-pinned)" \
   "INSERT INTO \"LabourPurchaseOrder\"(\"id\",\"projectId\",\"vendorId\",\"requisitionId\",\"comparisonId\",\"comparisonStatus\",\"createdById\") VALUES('UPL-T2POF','p1','UPL-T2V','UPL-T2REQ','UPL-T2CMP','draft','USER-1')"
+
+# ── Task-2 CORRECTION seals (F2..F5) over the migrated legacy DB ───────────────────────────────
+assert "the Task-2 correction constraints + the requisition-line freeze trigger are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('LabourPurchaseOrderLine_committed_le_person_check','CapacityCommitment_poLine_identity_fkey','LabourRequisitionLine_spec_identity_fkey','LabourRequisitionLine_slice_fkey','LabourPurchaseOrderLine_quote_provenance_fkey','LabourPurchaseOrderLine_comparison_selection_fkey','LabourPurchaseOrderLine_reqline_slice_fkey'))::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname='LabourRequisitionLine_frozen' AND NOT tgisinternal)::text;" \
+  "7|1"
+# F5 — committedQty may never exceed the ordered personShiftQty (UPL-T2POL orders 3)
+assert_rejects "labour T2C F5: committedQty > personShiftQty (bound CHECK)" \
+  "UPDATE \"LabourPurchaseOrderLine\" SET \"committedQty\"=99 WHERE \"id\"='UPL-T2POL'"
+# F2 — a requisition line's frozen identity cannot be raw-mutated (freeze trigger)
+assert_rejects "labour T2C F2: mutating a requisition line's frozen shift (freeze trigger)" \
+  "UPDATE \"LabourRequisitionLine\" SET \"shift\"='night' WHERE \"id\"='UPL-T2RL'"
+# F2 — a requisition line whose fingerprint is not the pinned spec's is unrepresentable (identity FK)
+assert_rejects "labour T2C F2: a requisition line with a forged fingerprint (spec identity FK)" \
+  "INSERT INTO \"LabourRequisitionLine\"(\"id\",\"projectId\",\"requisitionId\",\"requirementId\",\"revision\",\"civilDate\",\"shift\",\"labourSpecFingerprint\",\"personShiftQty\",\"status\") VALUES('UPL-T2RLF','p1','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day','forged-fingerprint',3,'open')"
+# F3 — a commitment whose slice identity differs from its (uncommitted) PO line is unrepresentable (identity FK)
+assert_rejects "labour T2C F3: a commitment with a mismatched slice identity (PO-line identity FK)" \
+  "INSERT INTO \"CapacityCommitment\"(\"id\",\"projectId\",\"poLineId\",\"labourSpecFingerprint\",\"civilDate\",\"shift\",\"personShiftQty\",\"createdById\") VALUES('UPL-T2CCF','p1','UPL-T2POL2',$FPD,'2026-09-09','night',3,'USER-1')"
+# F4 — a PO line whose rate/premium did not come from the comparison-selected quote line is unrepresentable (provenance FK)
+assert_rejects "labour T2C F4: a PO line with a rate not from the selected quote line (provenance FK)" \
+  "INSERT INTO \"LabourPurchaseOrderLine\"(\"id\",\"projectId\",\"poVersionId\",\"requisitionLineId\",\"requisitionId\",\"requirementId\",\"revision\",\"civilDate\",\"shift\",\"labourSpecFingerprint\",\"personShiftQty\",\"ratePerPersonShift\",\"shiftPremium\",\"committedAmountBase\",\"comparisonId\",\"selectedQuoteId\",\"selectedQuoteLineId\") VALUES('UPL-T2POLF','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,2000,100,6300,'UPL-T2CMP','UPL-T2Q','UPL-T2QL')"
+# F2/slice — a PO line whose COPIED slice identity differs from its requisition line is unrepresentable (reqline-slice FK)
+assert_rejects "labour T2C F2: a PO line whose civil date differs from its requisition line (reqline-slice FK)" \
+  "INSERT INTO \"LabourPurchaseOrderLine\"(\"id\",\"projectId\",\"poVersionId\",\"requisitionLineId\",\"requisitionId\",\"requirementId\",\"revision\",\"civilDate\",\"shift\",\"labourSpecFingerprint\",\"personShiftQty\",\"ratePerPersonShift\",\"shiftPremium\",\"committedAmountBase\",\"comparisonId\",\"selectedQuoteId\",\"selectedQuoteLineId\") VALUES('UPL-T2POLS','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-09-09','day',$FPD,3,1000,100,3300,'UPL-T2CMP','UPL-T2Q','UPL-T2QL')"
 
 echo ""
 if [ "$FAIL" = "0" ]; then
