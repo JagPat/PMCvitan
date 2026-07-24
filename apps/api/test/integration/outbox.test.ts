@@ -59,7 +59,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
   });
   afterAll(async () => {
     unregisterConsumer(PROJECTION);
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await f?.cleanup();
     await t?.close();
   });
@@ -67,7 +67,7 @@ describe('Phase 2 Task 6 — transactional outbox (live PG)', () => {
     control.failMode = 'none';
     // truncate the event store too, so the fresh per-test projects can then be deleted (their
     // DomainEvents' RESTRICT tenant FK would otherwise block it), keeping orgA deletable in afterAll
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await t.prisma.auditLog.deleteMany({ where: { action: 'test.projection' } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-obx-' } } });
   });
@@ -338,7 +338,7 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
   });
   afterAll(async () => {
     await t?.prisma.$executeRawUnsafe('DELETE FROM "OutboxCutoverState"');
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await f?.cleanup();
     await t?.close();
   });
@@ -347,7 +347,7 @@ describe('PR C Task 3 — external-effect cutover seal (live PG)', () => {
     // The seal is a singleton whose presence arms the null-intent trigger — always clear it so a
     // later test's raw legacy insert is not spuriously rejected.
     await t.prisma.$executeRawUnsafe('DELETE FROM "OutboxCutoverState"');
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await t.prisma.outboxOperatorAction.deleteMany({ where: { action: 'seal-external' } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-seal-' } } });
   });

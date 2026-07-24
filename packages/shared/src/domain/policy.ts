@@ -56,6 +56,14 @@ export const ROLE_POLICY = {
   // override, plan §H) lands with its routes in Tasks 2–5.
   'labour.manage': ['pmc'],
   'labour.read': ['pmc', 'engineer'],
+  // Phase 4 Task 2 — the labour COMMERCIAL chain (plan §F/§H). Mirrors the procurement authority
+  // split: requesting/submitting a labour requisition is pmc/engineer site work; approving it and
+  // the labour RFQ/quote/comparison/PO/commitment machine is pmc authority; the commercial reads
+  // mirror `labour.read`. `VendorLabourProfile` is an ORG-ADMIN surface (org membership, like vendor
+  // CRUD) and is therefore NOT represented here.
+  'labour.requisition.request': ['pmc', 'engineer'],
+  'labour.requisition.approve': ['pmc'],
+  'labour.commit.manage': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

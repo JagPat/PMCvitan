@@ -38,7 +38,7 @@ describe('Phase 2 Task 10 (Module 4) — activity/phase commands are idempotent 
   });
   afterEach(async () => {
     const pids = { startsWith: 'it-actidem-' };
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "ActivitiesProjection"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "ActivitiesProjection" CASCADE');
     await t.prisma.commandExecution.deleteMany({ where: { projectId: pids } });
     await t.prisma.gateOverride.deleteMany({ where: { projectId: pids } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: pids } } });

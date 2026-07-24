@@ -23,7 +23,7 @@ import type { AuthUser } from '../../src/common/auth';
  */
 
 const TINY_PDF = Buffer.from('%PDF-1.4 iso').toString('base64');
-const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DrawingsProjection"';
+const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DrawingsProjection" CASCADE';
 
 describe('Phase 2 Task 10 — drawings module read isolation + recipient isolation + lifecycle (live PG)', () => {
   let t: TestApp;

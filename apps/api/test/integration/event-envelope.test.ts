@@ -23,7 +23,7 @@ describe('Phase 2 Task 4 — domain-event envelope (live PG)', () => {
     human.actorId = f.memberUser.id;
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await f?.cleanup();
     await t?.close();
   });

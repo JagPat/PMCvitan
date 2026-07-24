@@ -369,9 +369,16 @@ export class RequirementsService {
         const head = await this.lockRootHead(tx, projectId, requirementId);
         if (head.revision !== input.expectedRevision) throw new ConflictException(`Requirement is at revision ${head.revision}, not ${input.expectedRevision}`);
         if (head.status === 'cancelled') throw new BadRequestException('Requirement is already cancelled');
-        // §F disposition (Task 2): open downstream requisition lines block the cancel — the
-        // readiness lock we hold serializes this check against concurrent line creation
-        await this.procurementParticipant.assertRequirementDisposable(tx, projectId, requirementId);
+        // §F disposition (Phase 3 Task 2 / Phase 4 Task 2): open downstream requisition lines
+        // block the cancel — the readiness lock we hold serializes this check against concurrent
+        // line creation. The check is type-routed: a material requirement's disposition reads
+        // procurement's `RequisitionLine`; a labour requirement's reads labour's own
+        // `LabourRequisitionLine` (each through the owning module's participant — Labour stays a LEAF).
+        if (head.type === 'labour') {
+          await this.labourParticipant.assertRequirementDisposable(tx, projectId, requirementId);
+        } else {
+          await this.procurementParticipant.assertRequirementDisposable(tx, projectId, requirementId);
+        }
         // a cancel APPENDS a revision copying the head's neutral columns + the type detail verbatim
         const created = await tx.activityRequirement.create({
           data: {

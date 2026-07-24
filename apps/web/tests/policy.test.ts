@@ -32,6 +32,12 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // workforce register read mirrors requirement.read (pmc + engineer).
   'labour.manage': ['pmc'],
   'labour.read': ['pmc', 'engineer'],
+  // Phase 4 Task 2 — the labour COMMERCIAL chain (plan §F/§H): requesting/submitting a labour
+  // requisition is pmc/engineer; the requisition sign-off + RFQ/quote/comparison/PO machine is
+  // pmc; the CapacityCommitment lifecycle is pmc.
+  'labour.requisition.request': ['pmc', 'engineer'],
+  'labour.requisition.approve': ['pmc'],
+  'labour.commit.manage': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],

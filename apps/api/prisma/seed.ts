@@ -54,7 +54,11 @@ async function main(): Promise<void> {
   // Phase 3 Task 6 — ApprovedSubstitution FKs onto ActivityRequirementRoot (projectId,id), so it
   // truncates in the same statement for exactly that reason.
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "Vendor", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
+    // Phase 4 Task 2 labour commercial chain (deepest children of ProjectVendor/Vendor/
+    // LabourRequirementSpec/LabourRequisition) — truncated in the SAME statement so their FKs
+    // never block the ProjectVendor/Vendor wipe below (PostgreSQL truncates a multi-table set
+    // atomically, so explicit listing is preferred here over CASCADE).
+    'TRUNCATE TABLE "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "Vendor", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
   );
   await prisma.projectCapability.deleteMany();
   await prisma.gateOverride.deleteMany();

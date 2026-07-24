@@ -41,12 +41,12 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     authorId = f.memberUser.id;
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection" CASCADE');
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection" CASCADE');
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { startsWith: 'it-dpj-' } } } });
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: { startsWith: 'it-dpj-' } } } });
     await t.prisma.decision.deleteMany({ where: { projectId: { startsWith: 'it-dpj-' } } });

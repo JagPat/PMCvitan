@@ -2211,3 +2211,275 @@ model LabourDemandSlice {
 
   @@index([projectId, requirementId, revision])
 }
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// Phase 4 Task 2 — the LABOUR COMMERCIAL chain (plan §F). The labour supplier IS the existing
+// procurement-owned Vendor bound per project by ProjectVendor (F7 — NO LabourSupplier). These
+// documents are SEPARATE from material (their lines carry per-(civilDate, shift) person-shift demand
+// slices + a rate per person-shift), all labour-owned + project-contained, mirroring the material
+// procurement CAS / frozen-snapshot / append-only / provenance discipline. References to EXISTING
+// models (Project / User / Vendor / ProjectVendor / LabourRequirementSpec) are plain columns whose
+// FKs are declared in raw SQL in the migration — so those owners stay untouched and Labour models
+// no foreign relation; only intra-chain parent↔child links are Prisma relations (for nested reads).
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+// A vendor's LABOUR capability profile (org-admin authority, like vendor CRUD). Org-scoped; the
+// raw-SQL FK binds (orgId, vendorId) → Vendor(orgId, id). The trades/skills are the supplier's
+// declared capabilities (free codes, not a project catalog reference).
+model VendorLabourProfile {
+  id          String   @id @default(cuid())
+  orgId       String
+  vendorId    String
+  trades      String[]
+  skills      String[]
+  createdAt   DateTime @default(now())
+  createdById String
+
+  @@unique([orgId, vendorId])
+  @@unique([orgId, id])
+}
+
+// The labour requisition — CAS draft→submitted→approved|rejected; approved→closed. Mirrors Requisition.
+model LabourRequisition {
+  id             String    @id @default(cuid())
+  projectId      String
+  title          String
+  notes          String?
+  status         String    @default("draft")
+  createdAt      DateTime  @default(now())
+  createdById    String
+  submittedById  String?
+  submittedAt    DateTime?
+  approvedById   String?
+  approvedAt     DateTime?
+  rejectedReason String?
+  closedAt       DateTime?
+
+  lines LabourRequisitionLine[]
+  rfqs  LabourRfq[]
+
+  @@unique([projectId, id])
+}
+
+// One per-(requirementId, revision, civilDate) demand slice a labour requisition allocates. The
+// spec's shift + fingerprint are frozen onto the line. Unit: person-shift. §F bound-1 allocation unit.
+model LabourRequisitionLine {
+  id                    String   @id @default(cuid())
+  projectId             String
+  requisition           LabourRequisition @relation(fields: [projectId, requisitionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionId         String
+  // the labour requirement revision pin (composite raw-SQL FK to LabourRequirementSpec)
+  requirementId         String
+  revision              Int
+  civilDate             DateTime @db.Date
+  shift                 String
+  labourSpecFingerprint String
+  personShiftQty        Int
+  status                String   @default("open") // open | ordered | cancelled
+  cancelledAt           DateTime?
+  cancelledById         String?
+
+  quoteLines SupplierLabourQuoteLine[]
+  poLines    LabourPurchaseOrderLine[]
+
+  @@unique([projectId, id])
+  @@unique([projectId, id, requirementId, revision])
+  @@unique([projectId, requisitionId, id])
+  @@index([projectId, requirementId, revision])
+}
+
+// The labour RFQ — issued→closed. Mirrors Rfq.
+model LabourRfq {
+  id            String    @id @default(cuid())
+  projectId     String
+  requisition   LabourRequisition @relation(fields: [projectId, requisitionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionId String
+  status        String    @default("issued") // issued | closed
+  issuedAt      DateTime  @default(now())
+  issuedById    String
+  closedAt      DateTime?
+
+  quotes     SupplierLabourQuote[]
+  comparison LabourQuoteComparison?
+
+  @@unique([projectId, id])
+  @@unique([projectId, id, requisitionId])
+}
+
+// A supplier's labour quote — recorded→superseded|expired. Mirrors VendorQuote. Bound to the vendor
+// through ProjectVendor (raw-SQL composite FK) — same-project + same-org enforced.
+model SupplierLabourQuote {
+  id            String   @id @default(cuid())
+  projectId     String
+  rfq           LabourRfq @relation(fields: [projectId, rfqId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  rfqId         String
+  requisitionId String   // denormalized + FK-sealed (containment)
+  vendorId      String   // bound through ProjectVendor(projectId, vendorId), raw-SQL FK
+  status        String   @default("recorded") // recorded | superseded | expired
+  validUntil    DateTime @db.Date
+  leadTimeDays  Int?
+  notes         String?
+  recordedAt    DateTime @default(now())
+  recordedById  String
+
+  lines SupplierLabourQuoteLine[]
+
+  @@unique([projectId, id])
+  @@unique([projectId, rfqId, vendorId, id])
+  @@unique([projectId, id, requisitionId])
+  @@index([projectId, rfqId, vendorId])
+}
+
+// A supplier labour quote LINE — the rate for ONE requisition line (one demand slice). Mirrors
+// VendorQuoteLine. Rate/premium in INR paise-safe decimals; the person-shift qty comes from the line.
+model SupplierLabourQuoteLine {
+  id                String   @id @default(cuid())
+  projectId         String
+  quote             SupplierLabourQuote @relation(fields: [projectId, quoteId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  quoteId           String
+  requisitionLine   LabourRequisitionLine @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionLineId String
+  requisitionId     String  // containment, sealed both ways (raw-SQL FK)
+  ratePerPersonShift Decimal @db.Decimal(18, 2)
+  shiftPremium       Decimal @db.Decimal(18, 2)
+  landedPerPersonShift Decimal @db.Decimal(18, 2)
+  matchesSpecification Boolean
+
+  @@unique([quoteId, requisitionLineId])
+  @@unique([projectId, id])
+}
+
+// The labour quote comparison — draft→approved (sealed). Mirrors QuoteComparison. The selection is
+// sealed to a same-rfq quote of the real vendor via a raw-SQL composite FK.
+model LabourQuoteComparison {
+  id               String    @id @default(cuid())
+  projectId        String
+  rfq              LabourRfq @relation(fields: [projectId, rfqId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  rfqId            String
+  requisitionId    String
+  status           String    @default("draft") // draft | approved
+  selectedQuoteId  String?
+  selectedVendorId String?
+  reason           String?
+  justification    String?
+  createdAt        DateTime  @default(now())
+  createdById      String
+  approvedById     String?
+  approvedAt       DateTime?
+
+  @@unique([projectId, rfqId])
+  @@unique([projectId, id])
+  @@unique([projectId, id, selectedVendorId, requisitionId, status], map: "LabourQuoteComparison_provenance_status_key")
+}
+
+// The labour purchase order (immutable root). Mirrors PurchaseOrder. Provenance: the APPROVED
+// comparison (status-pinned raw-SQL FK). Bound to the vendor through ProjectVendor.
+model LabourPurchaseOrder {
+  id               String   @id @default(cuid())
+  projectId        String
+  vendorId         String
+  requisitionId    String
+  comparisonId     String
+  comparisonStatus String   @default("approved") // CHECK-pinned + part of the provenance FK
+  createdAt        DateTime @default(now())
+  createdById      String
+
+  versions LabourPurchaseOrderVersion[]
+
+  @@unique([projectId, id])
+  @@unique([projectId, id, requisitionId])
+}
+
+// A labour PO version — the frozen-identity CAS lifecycle. Mirrors PurchaseOrderVersion. An amendment
+// issues a NEW version retaining the prior verbatim (supersedesVersion lineage).
+model LabourPurchaseOrderVersion {
+  id                String    @id @default(cuid())
+  projectId         String
+  po                LabourPurchaseOrder @relation(fields: [projectId, poId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  poId              String
+  version           Int
+  requisitionId     String
+  status            String    @default("draft") // draft|issued|partially_committed|completed|amended|cancelled|closed_short
+  supersedesVersion Int?
+  issuedById        String?
+  issuedAt          DateTime?
+  amendedAt         DateTime?
+  amendReason       String?
+  cancelledAt       DateTime?
+  cancelReason      String?
+  closedShortAt     DateTime?
+  closeShortReason  String?
+  createdAt         DateTime  @default(now())
+  createdById       String
+
+  lines LabourPurchaseOrderLine[]
+
+  @@unique([poId, version])
+  @@unique([projectId, id])
+  @@unique([projectId, id, requisitionId])
+}
+
+// A labour PO LINE — the FROZEN rate snapshot for ONE demand slice. Mirrors PurchaseOrderLine. The
+// ONLY mutable column is committedQty (the person-shifts committed against this line, a progress fact).
+model LabourPurchaseOrderLine {
+  id                    String   @id @default(cuid())
+  projectId             String
+  poVersion             LabourPurchaseOrderVersion @relation(fields: [projectId, poVersionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  poVersionId           String
+  requisitionLine       LabourRequisitionLine @relation(fields: [projectId, requisitionLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requisitionLineId     String
+  requisitionId         String
+  requirementId         String
+  revision              Int
+  civilDate             DateTime @db.Date
+  shift                 String
+  labourSpecFingerprint String
+  personShiftQty        Int
+  ratePerPersonShift    Decimal  @db.Decimal(18, 2)
+  shiftPremium          Decimal  @db.Decimal(18, 2)
+  committedAmountBase   Decimal  @db.Decimal(18, 2)
+  committedQty          Int      @default(0) // person-shifts committed (progress; the ONE mutable column)
+
+  commitments CapacityCommitment[]
+
+  @@unique([projectId, id])
+  @@index([projectId, requisitionLineId])
+}
+
+// Inbound forecast capacity a source commits per (civilDate, shift) slice of a labourSpecFingerprint
+// (§C.1). Unit: person-shift. One commitment per PO line (partial unique). committed→revised→defaulted.
+model CapacityCommitment {
+  id                    String   @id @default(cuid())
+  projectId             String
+  poLine                LabourPurchaseOrderLine @relation(fields: [projectId, poLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  poLineId              String
+  labourSpecFingerprint String
+  civilDate             DateTime @db.Date
+  shift                 String
+  personShiftQty        Int
+  status                String   @default("committed") // committed | revised | defaulted
+  createdAt             DateTime @default(now())
+  createdById           String
+  defaultedAt           DateTime?
+
+  promises CapacityPromise[]
+
+  @@unique([projectId, id])
+}
+
+// A dated arrival/rate promise in the APPEND-ONLY register (§F). seq monotone; only the initial
+// promise (seq 1) may omit the reason. Mirrors DeliveryPromise.
+model CapacityPromise {
+  id           String   @id @default(cuid())
+  projectId    String
+  commitment   CapacityCommitment @relation(fields: [projectId, commitmentId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  commitmentId String
+  seq          Int
+  promisedDate DateTime @db.Date
+  reason       String?
+  recordedAt   DateTime @default(now())
+  recordedById String
+
+  @@unique([commitmentId, seq])
+  @@unique([projectId, id])
+}

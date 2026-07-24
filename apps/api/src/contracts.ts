@@ -988,3 +988,95 @@ export const transferStockSchema = z.object({
   note: z.string().trim().min(1).max(1000).optional(),
 }).strict();
 export type TransferStockInput = z.infer<typeof transferStockSchema>;
+
+// ── Phase 4 Task 2 — the LABOUR COMMERCIAL chain (plan §F). Mirrors the material procurement
+// schemas but per person-shift, never a bare headcount: every requisition/PO line names one
+// explicit `(requirementId, revision, civilDate)` demand slice with a positive integer
+// `personShiftQty`; the slice's shift + fingerprint are DERIVED by the service from the
+// Labour-owned `LabourRequirementSpec` (never caller-authored). Rates are per person-shift, INR
+// paise-safe decimals. `VendorLabourProfile` is an ORG-ADMIN surface (org membership, like vendor
+// CRUD); every other command is project-scoped, capability-gated (`labour`), pmc/engineer authority.
+const personShiftQty = z.number().int().min(1).max(100000);
+export const setVendorLabourProfileSchema = z.object({
+  vendorId: z.string().min(1),
+  trades: z.array(z.string().trim().min(1).max(120)).max(200).default([]),
+  skills: z.array(z.string().trim().min(1).max(120)).max(200).default([]),
+}).strict();
+export type SetVendorLabourProfileInput = z.infer<typeof setVendorLabourProfileSchema>;
+
+export const createLabourRequisitionSchema = z.object({
+  title: z.string().trim().min(1).max(300),
+  notes: z.string().trim().max(2000).optional(),
+  lines: z.array(z.object({
+    requirementId: z.string().min(1),
+    revision: z.number().int().min(1),
+    civilDate: z.string().trim().min(1), // ISO civil date — must name a demand slice of the revision
+    personShiftQty, // integer person-shifts, > 0
+  }).strict()).min(1).max(100),
+}).strict();
+export type CreateLabourRequisitionInput = z.infer<typeof createLabourRequisitionSchema>;
+export const rejectLabourRequisitionSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+export type RejectLabourRequisitionInput = z.infer<typeof rejectLabourRequisitionSchema>;
+
+export const createLabourRfqSchema = z.object({ requisitionId: z.string().min(1) }).strict();
+export type CreateLabourRfqInput = z.infer<typeof createLabourRfqSchema>;
+
+export const recordLabourQuoteSchema = z.object({
+  vendorId: z.string().min(1),
+  validUntil: z.string().trim().min(1), // ISO civil date
+  leadTimeDays: z.number().int().min(0).max(3650).optional(),
+  notes: z.string().trim().max(1000).optional(),
+  lines: z.array(z.object({
+    requisitionLineId: z.string().min(1),
+    ratePerPersonShift: money, // INR per person-shift
+    shiftPremium: money, // INR shift premium per person-shift (0 when none)
+    landedPerPersonShift: money, // the landed rate the comparison ranks by
+    matchesSpecification: z.boolean(),
+  }).strict()).min(1).max(100),
+}).strict();
+export type RecordLabourQuoteInput = z.infer<typeof recordLabourQuoteSchema>;
+
+export const approveLabourComparisonSchema = z.object({
+  selectedQuoteId: z.string().min(1),
+  reason: z.string().trim().min(1).max(1000),
+  justification: z.string().trim().min(1).max(2000).optional(),
+}).strict();
+export type ApproveLabourComparisonInput = z.infer<typeof approveLabourComparisonSchema>;
+
+// A labour PO line orders a portion (≤ the requisition line's remaining, §F bound 2) of ONE
+// requisition line's person-shifts; the slice identity + rate are frozen by the service from the
+// requisition line + the comparison-approved quote, never authored by the caller.
+const labourPoLineShape = z.object({
+  requisitionLineId: z.string().min(1),
+  personShiftQty, // person-shifts ordered on this line (≤ remaining per slice)
+}).strict();
+export const createLabourPoSchema = z.object({
+  comparisonId: z.string().min(1),
+  lines: z.array(labourPoLineShape).min(1).max(100),
+}).strict();
+export type CreateLabourPoInput = z.infer<typeof createLabourPoSchema>;
+// Issuance carries no overage in Task 2 — the §F bound-3 approvedOverage is a Task-3 concern.
+export const issueLabourPoSchema = z.object({}).strict();
+export type IssueLabourPoInput = z.infer<typeof issueLabourPoSchema>;
+export const amendLabourPoSchema = z.object({
+  reason: z.string().trim().min(1).max(1000),
+  lines: z.array(labourPoLineShape).min(1).max(100),
+}).strict();
+export type AmendLabourPoInput = z.infer<typeof amendLabourPoSchema>;
+export const cancelLabourPoSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+export type CancelLabourPoInput = z.infer<typeof cancelLabourPoSchema>;
+export const closeShortLabourPoSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+export type CloseShortLabourPoInput = z.infer<typeof closeShortLabourPoSchema>;
+
+// A capacity commitment covers ONE issued PO line (its slice is copied from the line); the
+// first dated promise carries no reason, each revision does (§F append-only register).
+export const commitCapacitySchema = z.object({
+  poLineId: z.string().min(1),
+  promisedDate: z.string().trim().min(1), // ISO civil date
+}).strict();
+export type CommitCapacityInput = z.infer<typeof commitCapacitySchema>;
+export const reviseCapacitySchema = z.object({
+  promisedDate: z.string().trim().min(1),
+  reason: z.string().trim().min(1).max(1000),
+}).strict();
+export type ReviseCapacityInput = z.infer<typeof reviseCapacitySchema>;

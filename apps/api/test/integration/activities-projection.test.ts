@@ -50,7 +50,7 @@ describe('Phase 2 Task 10 (Module 4) — activities projection == live slices, l
   let orgs: OrgsService;
   let projSeq = 0;
 
-  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "ActivitiesProjection", "InspectionsProjection"';
+  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "ActivitiesProjection", "InspectionsProjection" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const eng = (projectId: string, engId: string): AuthUser => ({ sub: engId, role: 'engineer', projectId }) as AuthUser;

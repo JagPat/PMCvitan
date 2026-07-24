@@ -35,13 +35,13 @@ describe('PR B Task 4 — outbox operations (live PG)', () => {
   });
   afterAll(async () => {
     unregisterConsumer(ORD);
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "OutboxOperatorAction"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "OutboxOperatorAction" CASCADE');
     await t?.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: ORD } });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "OutboxOperatorAction"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "OutboxOperatorAction" CASCADE');
     await t.prisma.auditLog.deleteMany({ where: { action: 'test.ops' } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-ops-' } } });
   });

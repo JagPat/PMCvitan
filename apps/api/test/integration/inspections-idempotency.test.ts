@@ -34,7 +34,7 @@ describe('Phase 2 Task 10 (Module 3) — inspection commands are idempotent (liv
   });
   afterEach(async () => {
     const pids = { startsWith: 'it-inidem-' };
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "InspectionsProjection"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "InspectionsProjection" CASCADE');
     await t.prisma.commandExecution.deleteMany({ where: { projectId: pids } });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: pids } } });
     await t.prisma.inspection.deleteMany({ where: { projectId: pids } });

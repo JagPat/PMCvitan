@@ -21,13 +21,13 @@ describe('PR B Task 1 — durable outbox constraints (live PG)', () => {
     human.actorId = f.memberUser.id;
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await t?.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: { startsWith: 'probe.' } } });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await t.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: { startsWith: 'probe.' } } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-rel-' } } });
   });

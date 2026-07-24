@@ -41,6 +41,8 @@ import { LabourController } from './labour/labour.controller';
 import { LabourService } from './labour/labour.service';
 import { LabourRequirementParticipant } from './labour/labour.participant';
 import { LabourRequirementQuery } from './labour/labour.query';
+import { LabourProcurementController } from './labour/labour-procurement.controller';
+import { LabourProcurementService } from './labour/labour-procurement.service';
 import { RequirementsService } from './activities/requirements.service';
 import { CapabilitiesService } from './platform/capabilities.service';
 import { InspectionsService } from './inspections/inspections.service';
@@ -103,6 +105,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     ProcurementController,
     InventoryController,
     LabourController,
+    LabourProcurementController,
     InspectionsController,
     DailyLogController,
     MediaController,
@@ -124,6 +127,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     InventoryService,
     InventoryParticipant,
     LabourService,
+    LabourProcurementService,
     LabourRequirementParticipant,
     LabourRequirementQuery,
     CapabilitiesService,

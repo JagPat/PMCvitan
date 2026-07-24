@@ -135,7 +135,7 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
     try {
       await dropFaultProbe();
       if (f) {
-        await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+        await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
         const projects = await t.prisma.project.findMany({ where: { orgId: f.orgA.id }, select: { id: true } });
         const projectIds = projects.map((project) => project.id);
         const inspections = await t.prisma.inspection.findMany({ where: { projectId: { in: projectIds } }, select: { id: true } });

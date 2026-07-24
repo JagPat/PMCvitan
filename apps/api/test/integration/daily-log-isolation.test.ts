@@ -22,7 +22,7 @@ import type { Actor } from '../../src/common/actor';
  */
 
 const human: Actor = { actorId: '', actorName: 'Ravi (Engineer)', actorRole: 'engineer', actorKind: 'human' };
-const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection"';
+const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection" CASCADE';
 
 describe('Phase 2 Task 10 (correction, finding 5) — module read isolation + lifecycle (live PG)', () => {
   let t: TestApp;

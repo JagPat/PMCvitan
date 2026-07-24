@@ -31,6 +31,43 @@ import { RequirementsQueryService } from '../activities/requirements.query';
 export class ProcurementParticipant {
   constructor(private readonly requirementsQuery: RequirementsQueryService) {}
 
+  /**
+   * Phase 4 Task 2 (the `labour → procurement` workflow-participant edge). The labour commercial
+   * chain reuses the procurement-owned `Vendor`/`ProjectVendor` party (plan §F, F7 — no
+   * `LabourSupplier`). Recording a labour quote / issuing a labour PO names a vendor that MUST be
+   * bound to this project. Labour validates that binding THROUGH this participant (procurement-owned
+   * code reading procurement's own `ProjectVendor`) rather than reading `ProjectVendor` directly —
+   * so Labour stays a LEAF (no `labour → procurement` graph dependency; the composite FK on the
+   * labour tables is the database backstop). Called INSIDE the labour command transaction.
+   */
+  async assertVendorBound(tx: Prisma.TransactionClient, projectId: string, vendorId: string): Promise<void> {
+    const binding = await tx.projectVendor.findUnique({
+      where: { projectId_vendorId: { projectId, vendorId } },
+      select: { vendorId: true },
+    });
+    if (!binding) {
+      throw new BadRequestException('vendorId is not bound to this project — bind the vendor first (§H/§F)');
+    }
+  }
+
+  /**
+   * Phase 4 Task 2 — resolve a procurement-owned `Vendor` of an ORG (its identity + display name),
+   * through this participant so Labour never reads `Vendor` directly (read-encapsulation; Labour stays
+   * a LEAF). Used by the labour `VendorLabourProfile` surface. `db` may be the request tx OR the
+   * PrismaService (a full client is assignable to TransactionClient) — the org profile reads run
+   * outside a command tx.
+   */
+  async resolveOrgVendor(db: Prisma.TransactionClient, orgId: string, vendorId: string): Promise<{ id: string; name: string } | null> {
+    return db.vendor.findFirst({ where: { id: vendorId, orgId }, select: { id: true, name: true } });
+  }
+
+  /** The display names of an org's vendors, keyed by vendor id (through the participant, own-module read). */
+  async orgVendorNames(db: Prisma.TransactionClient, orgId: string, vendorIds: readonly string[]): Promise<Map<string, string>> {
+    if (vendorIds.length === 0) return new Map();
+    const rows = await db.vendor.findMany({ where: { orgId, id: { in: [...vendorIds] } }, select: { id: true, name: true } });
+    return new Map(rows.map((v) => [v.id, v.name]));
+  }
+
   async assertRequirementDisposable(tx: Prisma.TransactionClient, projectId: string, requirementId: string): Promise<void> {
     // Task 3: an 'ordered' line is bound even harder downstream (live PO lines) — it
     // demands disposition exactly like an open one; only 'cancelled' lines are settled.

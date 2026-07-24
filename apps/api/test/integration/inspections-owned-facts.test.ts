@@ -45,7 +45,7 @@ describe('Phase 2 Task 10 (Module 3) correction — foreign mutations keep inspe
   let orgs: OrgsService;
   let seq = 0;
 
-  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "InspectionsProjection", "InspectionEvidence"';
+  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "InspectionsProjection", "InspectionEvidence" CASCADE';
 
   beforeAll(async () => {
     t = await createTestApp();
