@@ -693,6 +693,35 @@ export class LabourProcurementService {
     }
   }
 
+  /**
+   * R3 — keep the requisition's TERMINAL STATE coherent after a default. `closeRequisition` only closes
+   * a requisition whose every non-cancelled line is fully covered by live allocation, but a default can
+   * land AFTER closure and remove that coverage. When it does, a CLOSED requisition would contain an
+   * OPEN (uncovered) line — incoherent — so we atomically reopen it (closed → approved, closedAt
+   * cleared) under the same readiness lock, via a CAS so a concurrent transition never double-applies.
+   * A requisition still fully covered (another live PO holds the slice) is left closed.
+   */
+  private async reopenRequisitionIfUncovered(
+    tx: Prisma.TransactionClient, projectId: string, requisitionId: string, actor: Actor,
+  ): Promise<void> {
+    const req = await tx.labourRequisition.findFirst({ where: { projectId, id: requisitionId }, select: { status: true } });
+    if (!req || req.status !== 'closed') return; // only a CLOSED parent can become incoherent
+    const lines = await tx.labourRequisitionLine.findMany({
+      where: { projectId, requisitionId, status: { not: 'cancelled' } },
+      select: { id: true, personShiftQty: true },
+    });
+    let uncovered = false;
+    for (const l of lines) {
+      if ((await this.liveAllocation(tx, projectId, l.id)) < l.personShiftQty) { uncovered = true; break; }
+    }
+    if (!uncovered) return; // every line is still fully covered — the closure stays coherent
+    const { count } = await tx.labourRequisition.updateMany({
+      where: { id: requisitionId, projectId, status: 'closed' }, data: { status: 'approved', closedAt: null },
+    });
+    if (count === 0) return; // a concurrent transition already reopened it — never double-stamp
+    await recordAudit(tx, { projectId, actor, action: 'labour.requisition.reopen', entity: 'LabourRequisition', entityId: requisitionId });
+  }
+
   private async currentVersion(tx: Prisma.TransactionClient, projectId: string, poId: string): Promise<VersionRow> {
     const version = await tx.labourPurchaseOrderVersion.findFirst({
       where: { projectId, poId }, orderBy: { version: 'desc' }, include: { lines: true },
@@ -1033,7 +1062,7 @@ export class LabourProcurementService {
         if (count === 0) throw new ConflictException('Only a live (committed/revised) capacity commitment can be defaulted — reload and retry');
         // F1 — a defaulted commitment RELEASES its line's committed progress; the version status is
         // recomputed so the freed slice can be re-procured (a terminal PO version is left untouched).
-        const defaulted = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, select: { poLineId: true, poLine: { select: { poVersionId: true, requisitionLineId: true } } } });
+        const defaulted = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, select: { poLineId: true, poLine: { select: { poVersionId: true, requisitionLineId: true, requisitionId: true } } } });
         await tx.labourPurchaseOrderLine.updateMany({ where: { projectId, id: defaulted.poLineId }, data: { committedQty: 0 } });
         await this.recomputeVersionStatus(tx, projectId, defaulted.poLine.poVersionId);
         // R2 — the freed slice's requisition line must reflect its now-ZERO live allocation: a
@@ -1041,6 +1070,11 @@ export class LabourProcurementService {
         // 'open' whether the version returned to issued/partially_committed or was closed short —
         // UNLESS another live PO still covers the slice. refreshOrderedFlag re-derives it from truth.
         await this.refreshOrderedFlag(tx, projectId, defaulted.poLine.requisitionLineId);
+        // R3 — the default may land AFTER the requisition was closed. If it removes required coverage,
+        // the terminal state would be a CLOSED parent containing an OPEN (uncovered) child — incoherent.
+        // Atomically reopen the requisition (closed → approved, clear closedAt) so its state stays
+        // coherent; the freed line stays 'open' to be re-sourced. Same readiness lock + a CAS transition.
+        await this.reopenRequisitionIfUncovered(tx, projectId, defaulted.poLine.requisitionId, actor);
         await recordAudit(tx, { projectId, actor, action: 'labour.commitment.default', entity: 'CapacityCommitment', entityId: commitmentId });
         const full = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, include: { promises: true } });
         const ev = await emitEvent(tx, {
