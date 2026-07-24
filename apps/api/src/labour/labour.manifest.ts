@@ -23,7 +23,7 @@ export const labourManifest: ModuleManifest = {
   id: 'labour',
   title: 'Labour & Workforce',
   kind: 'domain',
-  ownsModels: ['labourTrade', 'labourSkill', 'worker', 'crew', 'crewMembership', 'labourRequirementSpec', 'labourDemandSlice'],
+  ownsModels: ['labourTrade', 'labourSkill', 'worker', 'workerSkill', 'crew', 'crewMembership', 'labourRequirementSpec', 'labourDemandSlice'],
   readEncapsulated: ['labourTrade', 'labourSkill', 'worker', 'crew', 'crewMembership', 'labourRequirementSpec', 'labourDemandSlice'],
   // A LEAF (round-3): no synchronous read edge to any module. The Activities requirement command
   // writes the labour detail INTO this module through LabourRequirementParticipant (a workflow

@@ -15,7 +15,9 @@ import type {
 
 // F1 (read encapsulation): the workforce register does NOT hydrate `WorkerDevice` (an ORGS-owned
 // model Labour must not read). No `include` here — devices land in Task 3 via the owner's contract.
-type WorkerRow = Prisma.WorkerGetPayload<Record<string, never>>;
+// correction 3 — skills are NORMALIZED into WorkerSkill rows; the DTO's skillCodes[] is DERIVED from
+// them (sorted for a deterministic order). No Worker.skillCodes column exists.
+type WorkerRow = Prisma.WorkerGetPayload<{ include: { skills: true } }>;
 type CrewRow = Prisma.CrewGetPayload<{ include: { members: true } }>;
 
 function serializeWorker(w: WorkerRow): WorkerDto {
@@ -23,7 +25,7 @@ function serializeWorker(w: WorkerRow): WorkerDto {
     id: w.id,
     name: w.name,
     tradeCode: w.tradeCode,
-    skillCodes: w.skillCodes,
+    skillCodes: w.skills.map((s) => s.skillCode).sort(),
     activeFrom: toIsoCivilDate(w.activeFrom) ?? '',
     activeTo: w.activeTo ? (toIsoCivilDate(w.activeTo) ?? null) : null,
     revokedAt: w.revokedAt ? w.revokedAt.toISOString() : null,
@@ -144,8 +146,14 @@ export class LabourService {
           if (!skill) throw new BadRequestException(`skillCode "${code}" is not a skill in this project's catalog`);
         }
         const created = await tx.worker.create({
-          data: { projectId, name: input.name, tradeCode: input.tradeCode, skillCodes, activeFrom, activeTo, createdById: actor.actorId },
+          data: { projectId, name: input.name, tradeCode: input.tradeCode, activeFrom, activeTo, createdById: actor.actorId },
         });
+        // correction 3 — skills are WorkerSkill rows; the composite FK to LabourSkill is the
+        // concurrency-safe guard (the in-service check above only supplies a friendlier message —
+        // a skill deleted concurrently is caught by the FK, not left as an orphan).
+        if (skillCodes.length) {
+          await tx.workerSkill.createMany({ data: skillCodes.map((skillCode) => ({ projectId, workerId: created.id, skillCode })) });
+        }
         await recordAudit(tx, { projectId, actor, action: 'labour.worker.onboard', entity: 'Worker', entityId: created.id });
         return { resultRef: created.id, events: [] };
       },
@@ -290,7 +298,7 @@ export class LabourService {
     await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
     this.assertRead(user);
     const [workers, crews] = await Promise.all([
-      this.prisma.worker.findMany({ where: { projectId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
+      this.prisma.worker.findMany({ where: { projectId }, include: { skills: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
       this.prisma.crew.findMany({ where: { projectId }, include: { members: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
     ]);
     return { workers: workers.map(serializeWorker), crews: crews.map(serializeCrew) };

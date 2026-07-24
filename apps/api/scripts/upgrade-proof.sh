@@ -735,9 +735,9 @@ assert_rejects "F4: a resolved observation cannot revert to matched=true" \
 # legacy DB, and every §B/§H seal (type↔detail, immutable-type, append-only, same-project
 # composite FKs, applicable uniqueness) holds against hostile inserts.
 # =====================================================================================
-assert "the seven labour tables exist and the migration wrote NO rows over the legacy DB" \
-  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('LabourTrade','LabourSkill','Worker','Crew','CrewMembership','LabourRequirementSpec','LabourDemandSlice'))::text || '|' || (SELECT COUNT(*) FROM \"Worker\")::text || '|' || (SELECT COUNT(*) FROM \"LabourRequirementSpec\")::text || '|' || (SELECT COUNT(*) FROM \"CrewMembership\")::text;" \
-  "7|0|0|0"
+assert "the eight labour tables exist (incl. the normalized WorkerSkill) and the migration wrote NO rows over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('LabourTrade','LabourSkill','Worker','WorkerSkill','Crew','CrewMembership','LabourRequirementSpec','LabourDemandSlice'))::text || '|' || (SELECT COUNT(*) FROM \"Worker\")::text || '|' || (SELECT COUNT(*) FROM \"WorkerSkill\")::text || '|' || (SELECT COUNT(*) FROM \"LabourRequirementSpec\")::text || '|' || (SELECT COUNT(*) FROM \"CrewMembership\")::text;" \
+  "8|0|0|0|0"
 assert "the WorkerDevice->Worker binding column exists (nullable — anonymous onboarding still works)" \
   "SELECT is_nullable FROM information_schema.columns WHERE table_name='WorkerDevice' AND column_name='workerId';" \
   "YES"
@@ -751,9 +751,10 @@ $PSQL >/dev/null <<'SQL' || { echo "FAILED  labour fixture chain did not apply";
 BEGIN;
 INSERT INTO "LabourTrade"("projectId","code","name","createdById") VALUES ('p1','mason','Mason','USER-1'),('p2','mason','Mason','USER-1');
 INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('p1','bar-bending','Bar Bending','USER-1');
-INSERT INTO "Worker"("id","projectId","name","tradeCode","skillCodes","activeFrom","createdById")
-  VALUES ('UPL-W1','p1','Ravi','mason','{bar-bending}','2026-06-01','USER-1'),
-         ('UPL-W2','p2','Sita','mason','{}','2026-06-01','USER-1');
+INSERT INTO "Worker"("id","projectId","name","tradeCode","activeFrom","createdById")
+  VALUES ('UPL-W1','p1','Ravi','mason','2026-06-01','USER-1'),
+         ('UPL-W2','p2','Sita','mason','2026-06-01','USER-1');
+INSERT INTO "WorkerSkill"("projectId","workerId","skillCode") VALUES ('p1','UPL-W1','bar-bending');
 INSERT INTO "Crew"("id","projectId","name","activeFrom","createdById") VALUES ('UPL-C1','p1','Gang A','2026-06-01','USER-1');
 INSERT INTO "CrewMembership"("id","projectId","crewId","workerId","addedById") VALUES ('UPL-CM1','p1','UPL-C1','UPL-W1','USER-1');
 INSERT INTO "WorkerDevice"("id","projectId","workerId","token") VALUES ('UPL-WD1','p1','UPL-W1','uptok-ok');
@@ -774,7 +775,7 @@ assert_rejects "labour §H: a second active membership for the same (crew,worker
   "INSERT INTO \"CrewMembership\"(\"id\",\"projectId\",\"crewId\",\"workerId\",\"addedById\") VALUES('UPL-H3','p1','UPL-C1','UPL-W1','USER-1')"
 # §H — a worker allocated only within its active window (activeTo not before activeFrom)
 assert_rejects "labour §H: a worker with activeTo before activeFrom (CHECK)" \
-  "INSERT INTO \"Worker\"(\"id\",\"projectId\",\"name\",\"tradeCode\",\"skillCodes\",\"activeFrom\",\"activeTo\",\"createdById\") VALUES('UPL-H4','p1','Bad','mason','{}','2026-06-10','2026-06-01','USER-1')"
+  "INSERT INTO \"Worker\"(\"id\",\"projectId\",\"name\",\"tradeCode\",\"activeFrom\",\"activeTo\",\"createdById\") VALUES('UPL-H4','p1','Bad','mason','2026-06-10','2026-06-01','USER-1')"
 # §B — a type='labour' requirement with NO labour detail is refused at commit (type<->detail)
 assert_rejects "labour §B: a type='labour' requirement with no LabourRequirementSpec (type<->detail)" \
   "BEGIN; INSERT INTO \"ActivityRequirementRoot\"(\"id\",\"projectId\",\"createdById\") VALUES('UPL-LR','p1','USER-1'); INSERT INTO \"ActivityRequirement\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"activityId\",\"type\",\"requiredQty\",\"baseUom\",\"requiredBy\",\"createdById\") VALUES('UPL-LAR','p1','UPL-LR',1,'ACT-1','labour',1,'person-shift','2026-08-10','USER-1'); COMMIT;"
@@ -782,13 +783,22 @@ assert_rejects "labour §B: a type='labour' requirement with no LabourRequiremen
 assert_rejects "labour §B: a demand slice on a material requirement (slice-typed guard)" \
   "INSERT INTO \"LabourDemandSlice\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"civilDate\",\"personShiftQty\") VALUES('UPL-H5','p1','REQ-1',1,'2026-08-10',1)"
 
-# ── Phase 4 Task 1 CORRECTION — the F2 demand seal + F3 skill references, EXECUTED as hostile inserts ──
-assert "the Task-1 correction triggers (worker-skill containment + labour demand seal) are installed" \
-  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('Worker_skills_contained','LabourRequirementSpec_demand_sealed') AND NOT tgisinternal;" \
+# ── Phase 4 Task 1 CORRECTION 3 — worker skills NORMALIZED into WorkerSkill (concurrency-safe FK) ──
+assert "correction 3 dropped the racing worker-skill triggers; the labour demand seal remains" \
+  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('Worker_skills_contained','LabourSkill_referenced_guard') AND NOT tgisinternal)::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname='LabourRequirementSpec_demand_sealed' AND NOT tgisinternal)::text;" \
+  "0|1"
+assert "the Worker.skillCodes column is GONE (normalized into WorkerSkill)" \
+  "SELECT COUNT(*)::text FROM information_schema.columns WHERE table_name='Worker' AND column_name='skillCodes';" \
+  "0"
+assert "the WorkerSkill composite FKs (to Worker + LabourSkill) exist" \
+  "SELECT COUNT(*)::text FROM pg_constraint WHERE conname IN ('WorkerSkill_projectId_workerId_fkey','WorkerSkill_projectId_skillCode_fkey');" \
   "2"
-# F3 — a Worker.skillCodes[] element absent from the same-project catalog is rejected (trigger)
-assert_rejects "labour F3: a Worker.skillCodes element not in the project catalog (trigger)" \
-  "INSERT INTO \"Worker\"(\"id\",\"projectId\",\"name\",\"tradeCode\",\"skillCodes\",\"activeFrom\",\"createdById\") VALUES('UPL-F3W','p1','Bad','mason','{ghost-skill}','2026-06-01','USER-1')"
+# C3 — a WorkerSkill element referencing a skill absent from the same-project catalog is rejected (FK)
+assert_rejects "labour C3: a WorkerSkill element not in the project catalog (composite FK)" \
+  "INSERT INTO \"WorkerSkill\"(\"projectId\",\"workerId\",\"skillCode\") VALUES('p1','UPL-W1','ghost-skill')"
+# C3 — a WorkerSkill binding a cross-project worker is rejected (same-project composite FK)
+assert_rejects "labour C3: a WorkerSkill binding a cross-project worker (composite FK)" \
+  "INSERT INTO \"WorkerSkill\"(\"projectId\",\"workerId\",\"skillCode\") VALUES('p1','UPL-W2','bar-bending')"
 # F3 — a LabourRequirementSpec skillCode absent from the same-project catalog is rejected (composite FK)
 assert_rejects "labour F3: a LabourRequirementSpec skillCode not in the catalog (composite FK)" \
   "BEGIN; INSERT INTO \"ActivityRequirementRoot\"(\"id\",\"projectId\",\"createdById\") VALUES('UPL-F3R','p1','USER-1'); INSERT INTO \"ActivityRequirement\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"activityId\",\"type\",\"requiredQty\",\"baseUom\",\"requiredBy\",\"createdById\") VALUES('UPL-F3AR','p1','UPL-F3R',1,'ACT-1','labour',3,'person-shift','2026-08-12','USER-1'); INSERT INTO \"LabourRequirementSpec\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"tradeCode\",\"skillCode\",\"shift\",\"labourSpecFingerprint\") VALUES('UPL-F3S','p1','UPL-F3R',1,'mason','ghost-skill','day','x'); COMMIT;"
@@ -809,32 +819,31 @@ INSERT INTO "LabourDemandSlice"("id","projectId","requirementId","revision","civ
 COMMIT;
 SQL
 
-# ── Phase 4 Task 1 CORRECTION 2 — the seals are DURABLE under LATER mutations (re-review findings 1+2) ──
-assert "the correction-2 durable triggers (slice-insert demand seal + LabourSkill reverse guard) are installed" \
-  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('LabourDemandSlice_demand_sealed','LabourSkill_referenced_guard') AND NOT tgisinternal;" \
-  "2"
-# Finding 1 — a slice appended to the coherent UPL-F2OK revision (rev 1, requiredQty 3) in a LATER
-# statement is REJECTED at commit (the sealed aggregate would drift: sum 4 != 3, max date drifts).
+# ── Phase 4 Task 1 CORRECTION 2 — the demand seal is DURABLE under a LATER slice append (re-review 1) ──
+assert "the correction-2 durable slice-insert demand seal is installed" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname='LabourDemandSlice_demand_sealed' AND NOT tgisinternal;" \
+  "1"
+# a slice appended to the coherent UPL-F2OK revision (rev 1, requiredQty 3) in a LATER statement is
+# REJECTED at commit (the sealed aggregate would drift: sum 4 != 3, max date drifts).
 assert_rejects "labour C2 finding-1: a slice appended to a sealed revision after the fact (durable demand seal)" \
   "INSERT INTO \"LabourDemandSlice\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"civilDate\",\"personShiftQty\") VALUES('UPL-C2D','p1','UPL-F2OK',1,'2026-08-13',1)"
 assert "the sealed revision's aggregate is UNCHANGED after the rejected append (still one slice)" \
   "SELECT COUNT(*)::text FROM \"LabourDemandSlice\" WHERE \"projectId\"='p1' AND \"requirementId\"='UPL-F2OK' AND \"revision\"=1;" \
   "1"
-# Finding 2 — a LabourSkill referenced ONLY by a Worker.skillCodes element (no spec references it) can
-# no longer be deleted or re-keyed out from under the worker (the reverse guard).
-$PSQL >/dev/null <<'SQL' || { echo "FAILED  labour C2 finding-2 fixture did not apply"; FAIL=1; }
+# ── Phase 4 Task 1 CORRECTION 3 — a LabourSkill referenced by a WorkerSkill row cannot be deleted or
+#    re-keyed (the concurrency-safe composite FK replaces the racing reverse-guard trigger). ──────────
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  labour C3 fixture did not apply"; FAIL=1; }
 INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('p1','plumbing','Plumbing','USER-1');
-INSERT INTO "Worker"("id","projectId","name","tradeCode","skillCodes","activeFrom","createdById")
-  VALUES ('UPL-C2W','p1','Meena','mason','{plumbing}','2026-06-01','USER-1');
+INSERT INTO "WorkerSkill"("projectId","workerId","skillCode") VALUES ('p1','UPL-W1','plumbing');
 SQL
-assert_rejects "labour C2 finding-2: deleting a worker-referenced LabourSkill (reverse guard)" \
+assert_rejects "labour C3: deleting a WorkerSkill-referenced LabourSkill (composite FK)" \
   "DELETE FROM \"LabourSkill\" WHERE \"projectId\"='p1' AND \"code\"='plumbing'"
-assert_rejects "labour C2 finding-2: re-keying a worker-referenced LabourSkill (reverse guard)" \
+assert_rejects "labour C3: re-keying a WorkerSkill-referenced LabourSkill (composite FK)" \
   "UPDATE \"LabourSkill\" SET \"code\"='plumbing-2' WHERE \"projectId\"='p1' AND \"code\"='plumbing'"
-# the guard is PRECISE — a NON-referenced skill still deletes cleanly.
-$PSQL >/dev/null <<'SQL' && printf 'ok      %s\n' "labour C2 finding-2: a non-referenced skill still deletes (precise guard)" || { printf 'FAILED  %s\n' "labour C2: a non-referenced skill could not be deleted"; FAIL=1; }
-INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('p1','tiling','Tiling','USER-1');
-DELETE FROM "LabourSkill" WHERE "projectId"='p1' AND "code"='tiling';
+# the FK is PRECISE — a NON-referenced skill still deletes cleanly.
+$PSQL >/dev/null <<'SQL' && printf 'ok      %s\n' "labour C3: a non-referenced skill still deletes (precise FK)" || { printf 'FAILED  %s\n' "labour C3: a non-referenced skill could not be deleted"; FAIL=1; }
+INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('p1','carpentry','Carpentry','USER-1');
+DELETE FROM "LabourSkill" WHERE "projectId"='p1' AND "code"='carpentry';
 SQL
 
 # ── Phase 4 Task 1 CORRECTION 2 — the diagnostic-first migration ABORTS on a pre-existing inconsistency,
@@ -849,9 +858,13 @@ NEWMIG="$MIG_DIR/20270120000000_phase4_t1_correction2"
 PSQL2="psql -X -v ON_ERROR_STOP=1 -d $DB2"
 $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" >/dev/null 2>&1
 $PSQL_ADMIN -c "CREATE DATABASE $DB2;" >/dev/null 2>&1
-# apply the full ledger EXCEPT the correction-2 migration (a fresh deploy minus the newest migration).
+# apply the ledger through 20270115 (the pre-correction-2 schema, which still carries Worker.skillCodes
+# + the forward containment trigger). Correction 2 (20270120) is applied SEPARATELY below; correction 3
+# (20270125, which normalizes away skillCodes) is skipped so this scenario exercises the array schema.
 for d in $(ls -d "$MIG_DIR"/*/ | sort); do
-  [ "$(basename "$d")" = "20270120000000_phase4_t1_correction2" ] && continue
+  case "$(basename "$d")" in
+    20270120000000_phase4_t1_correction2|20270125000000_phase4_t1_correction3) continue ;;
+  esac
   psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB2" -f "$d/migration.sql" >/dev/null 2>&1 \
     || { echo "FAILED  correction-2 repair proof: base migration $(basename "$d") did not apply"; FAIL=1; break; }
 done
@@ -918,6 +931,68 @@ else
   echo "FAILED  correction-2 repair proof: the migration did not redeploy after the repair"; cat /tmp/c2-redeploy.log; FAIL=1
 fi
 $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB2;" >/dev/null 2>&1
+
+# ── Phase 4 Task 1 CORRECTION 3 — the normalization migration is DIAGNOSTIC-FIRST: it ABORTS on a
+#    pre-existing orphaned Worker.skillCodes element (the state the un-serialized race could leave), the
+#    operator repairs it, and the migration then redeploys cleanly (WorkerSkill created + backfilled,
+#    the racing triggers dropped, skillCodes gone). Proven on a THIRD scratch DB. ─────────────────────
+echo ""
+echo "=== correction-3 abort -> operator repair -> redeploy (fresh scratch DB) ==="
+DB3="${DB}_c3repair"
+NEWMIG3="$MIG_DIR/20270125000000_phase4_t1_correction3"
+PSQL3="psql -X -v ON_ERROR_STOP=1 -d $DB3"
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB3;" >/dev/null 2>&1
+$PSQL_ADMIN -c "CREATE DATABASE $DB3;" >/dev/null 2>&1
+# apply the ledger EXCEPT correction 3 (the schema still carries Worker.skillCodes + its two triggers).
+for d in $(ls -d "$MIG_DIR"/*/ | sort); do
+  [ "$(basename "$d")" = "20270125000000_phase4_t1_correction3" ] && continue
+  psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$d/migration.sql" >/dev/null 2>&1 \
+    || { echo "FAILED  correction-3 repair proof: base migration $(basename "$d") did not apply"; FAIL=1; break; }
+done
+# a coherent worker referencing the 'tiling' skill.
+$PSQL3 -q >/dev/null 2>&1 <<'SQL' || { echo "FAILED  correction-3 repair proof: coherent fixture did not apply"; FAIL=1; }
+INSERT INTO "Org"("id","name","slug") VALUES ('org-c3','C3 Org','c3-org');
+INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+  VALUES ('pc3','org-c3','C3 Site','C3','','Finishing','C3-01','01 Jan 2026','31 Dec 2026',50,30,60);
+INSERT INTO "User"("id","projectId","role","name","email","passwordHash") VALUES ('UC3','pc3','pmc','C3 PMC','c3@vitan.in','h');
+INSERT INTO "LabourTrade"("projectId","code","name","createdById") VALUES ('pc3','mason','Mason','UC3');
+INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('pc3','tiling','Tiling','UC3');
+INSERT INTO "Worker"("id","projectId","name","tradeCode","skillCodes","activeFrom","createdById") VALUES ('WC3','pc3','Tara','mason','{tiling}','2026-06-01','UC3');
+SQL
+# simulate the RACE outcome the two triggers could not prevent: the triggers are briefly disabled
+# (exactly what an un-serialized concurrent commit achieved) and the referenced skill deleted, leaving
+# Worker.skillCodes pointing at a missing catalog entry — an orphan.
+$PSQL3 -q >/dev/null 2>&1 <<'SQL' || { echo "FAILED  correction-3 repair proof: could not simulate the race orphan"; FAIL=1; }
+ALTER TABLE "Worker" DISABLE TRIGGER "Worker_skills_contained";
+ALTER TABLE "LabourSkill" DISABLE TRIGGER "LabourSkill_referenced_guard";
+DELETE FROM "LabourSkill" WHERE "projectId"='pc3' AND "code"='tiling';
+ALTER TABLE "Worker" ENABLE TRIGGER "Worker_skills_contained";
+ALTER TABLE "LabourSkill" ENABLE TRIGGER "LabourSkill_referenced_guard";
+SQL
+# 1) the migration ABORTS on the orphaned worker skill (diagnostic-first).
+if psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$NEWMIG3/migration.sql" >/tmp/c3-abort.log 2>&1; then
+  echo "FAILED  correction-3 repair proof: the migration APPLIED over an orphaned worker skill"; FAIL=1
+elif grep -q 'absent from their project catalog' /tmp/c3-abort.log; then
+  printf 'ok      %s\n' "correction-3 repair: migration ABORTS on the orphaned Worker.skillCodes element (names the finding)"
+else
+  echo "FAILED  correction-3 repair proof: aborted but not for the worker-skill finding"; cat /tmp/c3-abort.log; FAIL=1
+fi
+# operator repair — restore the missing skill so the backfill will satisfy the new FK.
+$PSQL3 -q >/dev/null 2>&1 -c "INSERT INTO \"LabourSkill\"(\"projectId\",\"code\",\"name\",\"createdById\") VALUES ('pc3','tiling','Tiling','UC3');" \
+  || { echo "FAILED  correction-3 repair proof: skill restore failed"; FAIL=1; }
+# 2) with the data repaired, the migration REDEPLOYS: WorkerSkill created + backfilled, racing triggers
+#    gone, skillCodes column dropped.
+if psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB3" -f "$NEWMIG3/migration.sql" >/tmp/c3-redeploy.log 2>&1; then
+  state=$($PSQL3 -tAc "SELECT (SELECT COUNT(*) FROM \"WorkerSkill\" WHERE \"projectId\"='pc3' AND \"workerId\"='WC3' AND \"skillCode\"='tiling') || '|' || (SELECT COUNT(*) FROM information_schema.columns WHERE table_name='Worker' AND column_name='skillCodes') || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('Worker_skills_contained','LabourSkill_referenced_guard') AND NOT tgisinternal);")
+  if [ "$state" = "1|0|0" ]; then
+    printf 'ok      %s\n' "correction-3 repair: after the repair the migration REDEPLOYS — WorkerSkill backfilled, skillCodes dropped, racing triggers gone"
+  else
+    echo "FAILED  correction-3 repair proof: redeployed but the end state is wrong ($state, want 1|0|0)"; FAIL=1
+  fi
+else
+  echo "FAILED  correction-3 repair proof: the migration did not redeploy after the repair"; cat /tmp/c3-redeploy.log; FAIL=1
+fi
+$PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB3;" >/dev/null 2>&1
 
 echo ""
 if [ "$FAIL" = "0" ]; then

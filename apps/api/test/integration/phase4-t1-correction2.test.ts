@@ -31,7 +31,7 @@ describe('Phase 4 Task 1 correction 2 — DURABLE labour-demand + worker-skill s
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ApprovedSubstitution", "CrewMembership", "Crew", "WorkerDevice", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability"';
+    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ApprovedSubstitution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability"';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
 
@@ -117,7 +117,9 @@ describe('Phase 4 Task 1 correction 2 — DURABLE labour-demand + worker-skill s
   });
 
   // ── Finding 2 — worker-skill referential integrity is BIDIRECTIONAL: deleting/re-keying a
-  //    referenced LabourSkill is refused, so a Worker.skillCodes element can never be orphaned. ─────
+  //    referenced LabourSkill is refused, so a worker skill reference can never be orphaned. Correction
+  //    3 re-homes this on the WorkerSkill composite FK (concurrency-safe), so a delete/re-key is now
+  //    rejected by PostgreSQL's real FK, not the (removed) reverse-guard trigger. ────────────────────
   it('DURABLE SKILL REF: deleting or re-keying a LabourSkill a worker references FAILS; both rows are unchanged', async () => {
     const projectId = await freshProject();
     await enableLabour(projectId);
@@ -128,22 +130,21 @@ describe('Phase 4 Task 1 correction 2 — DURABLE labour-demand + worker-skill s
       pmc(projectId),
     );
 
-    // DELETE the referenced skill — before the fix this succeeded (orphaning the worker); after the
-    // fix the reverse guard refuses it.
+    // DELETE the referenced skill — refused by the WorkerSkill->LabourSkill FK (ON DELETE NO ACTION).
     await expect(
       t.prisma.$executeRawUnsafe(`DELETE FROM "LabourSkill" WHERE "projectId"=$1 AND "code"='tiling'`, projectId),
-    ).rejects.toThrow(/referenced by a Worker/i);
+    ).rejects.toThrow(/foreign key|violates/i);
 
-    // RE-KEY the referenced skill (code change) — equally refused: it would dangle the reference.
+    // RE-KEY the referenced skill (code change) — refused by the same FK (ON UPDATE NO ACTION).
     await expect(
       t.prisma.$executeRawUnsafe(`UPDATE "LabourSkill" SET "code"='tiling-2' WHERE "projectId"=$1 AND "code"='tiling'`, projectId),
-    ).rejects.toThrow(/referenced by a Worker/i);
+    ).rejects.toThrow(/foreign key|violates/i);
 
-    // both rows are unchanged: the skill still exists, the worker still references it.
+    // both rows are unchanged: the skill still exists, the worker's WorkerSkill row still references it.
     const skill = await t.prisma.labourSkill.findUnique({ where: { projectId_code: { projectId, code: 'tiling' } } });
     expect(skill).not.toBeNull();
-    const worker = await t.prisma.worker.findUniqueOrThrow({ where: { id: w.id } });
-    expect(worker.skillCodes).toContain('tiling');
+    const ws = await t.prisma.workerSkill.findMany({ where: { projectId, workerId: w.id } });
+    expect(ws.map((r) => r.skillCode)).toContain('tiling');
 
     // a NON-referenced skill can still be deleted (the guard is precise, not a blanket lock).
     await labour.upsertSkill(projectId, { code: 'painting', name: 'Painting' }, pmc(projectId));

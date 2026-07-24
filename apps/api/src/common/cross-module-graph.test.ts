@@ -87,7 +87,7 @@ const MODEL_OWNER: Record<string, string> = {
   // Phase 4 Task 1 — the labour pillar (§§B/H): the catalog, the trusted Worker/Crew identity,
   // and the labour requirement detail (the spec + demand slices are written THROUGH the
   // Labour-owned participant by the Activities requirement command — the cycle-exempt edge).
-  labourTrade: 'labour', labourSkill: 'labour', worker: 'labour', crew: 'labour', crewMembership: 'labour',
+  labourTrade: 'labour', labourSkill: 'labour', worker: 'labour', workerSkill: 'labour', crew: 'labour', crewMembership: 'labour',
   labourRequirementSpec: 'labour', labourDemandSlice: 'labour',
   projectNode: 'nodes',
   media: 'media',
