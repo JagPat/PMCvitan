@@ -357,16 +357,23 @@ describe('Phase 4 Task 2 correction — labour commercial integrity (live PG)', 
     }
   });
 
-  // ── R2 — concurrency: default vs closeRequisition (BOTH lock orderings, deterministic) ────────
-  it('R2 race (barrier): default vs closeRequisition — a default that lands first blocks the close', async () => {
+  // ── R3 — concurrency: default vs closeRequisition (BOTH lock orderings) — coherent terminal state ─
+  const reqClosedAt = (projectId: string, id: string): Promise<Date | null> =>
+    t.prisma.labourRequisition.findFirstOrThrow({ where: { projectId, id }, select: { closedAt: true } }).then((r) => r.closedAt);
+  const lineStatusOf = (projectId: string, id: string): Promise<string> =>
+    t.prisma.labourRequisitionLine.findFirstOrThrow({ where: { projectId, id }, select: { status: true } }).then((r) => r.status);
+  const reopenAudits = (projectId: string): Promise<number> =>
+    t.prisma.auditLog.count({ where: { projectId, action: 'labour.requisition.reopen' } });
+
+  it('R3 race (barrier): default vs closeRequisition — both orderings leave a coherent parent + child', async () => {
     const committedPo = async () => {
-      const { projectId, requisitionId, poLine } = await issuedPo(10, 10);
+      const { projectId, requisitionId, lineId, poLine } = await issuedPo(10, 10);
       const commitment = await commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: '2026-08-05' }, pmc(projectId));
-      return { projectId, requisitionId, commitmentId: commitment.id };
+      return { projectId, requisitionId, lineId, commitmentId: commitment.id };
     };
     // ordering A — default wins the lock: the line reopens, so closeRequisition REFUSES (uncovered).
     {
-      const { projectId, requisitionId, commitmentId } = await committedPo();
+      const { projectId, requisitionId, lineId, commitmentId } = await committedPo();
       const [def, close] = await raceUnderBarrier(projectId,
         () => commercial.defaultCapacity(projectId, commitmentId, pmc(projectId)),
         () => commercial.closeRequisition(projectId, requisitionId, pmc(projectId)),
@@ -374,19 +381,42 @@ describe('Phase 4 Task 2 correction — labour commercial integrity (live PG)', 
       expect(def.status).toBe('fulfilled');
       expect(close.status).toBe('rejected');
       expect((close as PromiseRejectedResult).reason).toMatchObject({ status: 409 });
-      expect(await reqStatus(projectId, requisitionId)).toBe('approved'); // NOT closed over an uncovered line
+      expect(await reqStatus(projectId, requisitionId)).toBe('approved'); // never closed over an uncovered line
+      expect(await reqClosedAt(projectId, requisitionId)).toBeNull();
+      expect(await lineStatusOf(projectId, lineId)).toBe('open');
     }
-    // ordering B — closeRequisition wins the lock: the line is still covered, so it closes cleanly;
-    // the default is then a legitimate post-closure event that reopens the (now historical) line.
+    // ordering B — closeRequisition wins the lock: it closes cleanly; the later default REMOVES the
+    // coverage, so it REOPENS the requisition (closed → approved, closedAt cleared) — never a closed
+    // parent containing an open child.
     {
-      const { projectId, requisitionId, commitmentId } = await committedPo();
+      const { projectId, requisitionId, lineId, commitmentId } = await committedPo();
       const [close, def] = await raceUnderBarrier(projectId,
         () => commercial.closeRequisition(projectId, requisitionId, pmc(projectId)),
         () => commercial.defaultCapacity(projectId, commitmentId, pmc(projectId)),
       );
       expect(close.status).toBe('fulfilled');
       expect(def.status).toBe('fulfilled');
-      expect(await reqStatus(projectId, requisitionId)).toBe('closed');
+      expect(await reqStatus(projectId, requisitionId)).toBe('approved'); // reopened by the coverage-removing default
+      expect(await reqClosedAt(projectId, requisitionId)).toBeNull();
+      expect(await lineStatusOf(projectId, lineId)).toBe('open');
     }
+  });
+
+  it('R3: a same-key replay of the coverage-removing default does not re-transition the requisition', async () => {
+    const { projectId, requisitionId, lineId, poLine } = await issuedPo(10, 10);
+    const commitment = await commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: '2026-08-05' }, pmc(projectId));
+    expect((await commercial.closeRequisition(projectId, requisitionId, pmc(projectId))).status).toBe('closed');
+
+    const key = `it-p4c-default-replay-${seq++}`;
+    // the coverage-removing default reopens the requisition (closed → approved) with ONE audit event
+    await commercial.defaultCapacity(projectId, commitment.id, pmc(projectId), key);
+    expect(await reqStatus(projectId, requisitionId)).toBe('approved');
+    expect(await lineStatusOf(projectId, lineId)).toBe('open');
+    expect(await reopenAudits(projectId)).toBe(1);
+
+    // replaying the SAME key returns the cached success — no second transition, no second audit event
+    await commercial.defaultCapacity(projectId, commitment.id, pmc(projectId), key);
+    expect(await reqStatus(projectId, requisitionId)).toBe('approved');
+    expect(await reopenAudits(projectId)).toBe(1);
   });
 });

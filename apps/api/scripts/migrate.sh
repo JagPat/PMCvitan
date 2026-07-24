@@ -37,6 +37,31 @@ else
   exit 1
 fi
 
+# ── T2C preflight (Phase 4 Task 2 labour commercial-integrity diagnostics) — ENFORCED ────────────
+# Run the COMPILED preflight (never tsx) AFTER the T45 preflight and BEFORE `prisma migrate deploy`.
+# It is schema-aware:
+#   - a fresh/empty or pre-Task-2 database reports "not applicable" and passes (exit 0), so the
+#     migrations that CREATE the labour commercial schema still run;
+#   - an eligible database (labour commercial schema present, incl. an already-corrected one) runs the
+#     F5/F3/F2.spec/F2.slice/F2.poline/F4 diagnostics; any unrepaired violation — including the
+#     F2.poline / F4 shapes that migration 20270205 would only surface OPAQUELY inside
+#     ALTER TABLE … ADD CONSTRAINT — prints the named report and exits non-zero, so Prisma NEVER starts
+#     and migration 20270205 is never recorded as failed. Repair per docs/RUNBOOK.md §P4T2C (t2c:repair),
+#     then redeploy.
+# The compiled artifact is produced by the image build; a missing artifact means a broken build — fail closed.
+T2C_PREFLIGHT="dist/labour/t2c/t2c.cli.js"
+if [ -f "$T2C_PREFLIGHT" ]; then
+  echo "[migrate] T2C preflight (compiled artifact): node $T2C_PREFLIGHT preflight"
+  if ! node "$T2C_PREFLIGHT" preflight; then
+    echo "[migrate] T2C preflight FAILED — unrepaired labour commercial-integrity violations block this deploy."
+    echo "[migrate] Repair per docs/RUNBOOK.md §P4T2C (t2c:repair), then redeploy. Prisma was NOT started."
+    exit 1
+  fi
+else
+  echo "[migrate] ERROR: compiled T2C preflight ($T2C_PREFLIGHT) is missing — the build is incomplete; refusing to deploy."
+  exit 1
+fi
+
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"
