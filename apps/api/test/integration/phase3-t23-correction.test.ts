@@ -38,7 +38,7 @@ describe('Phase 3 T2-3 correction — the seven findings (live PG)', () => {
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "ApprovedSubstitution", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability"';
+    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability"';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const orgAdmin = (): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc' }) as AuthUser;
@@ -66,6 +66,7 @@ describe('Phase 3 T2-3 correction — the seven findings (live PG)', () => {
       ['activity', { projectId: { startsWith: 'it-red-' } }],
       ['auditLog', { projectId: { startsWith: 'it-red-' } }],
       ['membership', { projectId: { startsWith: 'it-red-' } }],
+      ['labourTrade', { projectId: { startsWith: 'it-red-' } }], // Phase 4 — labour catalog FKs the project
       ['project', { id: { startsWith: 'it-red-' } }],
     ] as const) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -124,13 +125,17 @@ describe('Phase 3 T2-3 correction — the seven findings (live PG)', () => {
     const projectId = await freshProject();
     const activityId = await freshActivity(projectId);
     const requirementId = `RED-LAB-${seq++}`;
-    await t.prisma.activityRequirementRoot.create({ data: { projectId, id: requirementId, createdById: f.memberUser.id } });
-    await t.prisma.activityRequirement.create({
-      data: {
-        projectId, requirementId, revision: 1, activityId, type: 'labour',
-        requiredQty: '10', baseUom: 'day', requiredBy: new Date('2026-08-15'), createdById: f.memberUser.id,
-      },
-    });
+    // Phase 4 — a VALID labour requirement now carries its own labour detail (spec + slices).
+    // The material-procurement pipeline still rejects it (it is not a material requirement).
+    await t.prisma.labourTrade.create({ data: { projectId, code: 'mason', name: 'Mason', createdById: f.memberUser.id } });
+    await t.prisma.$transaction([
+      t.prisma.activityRequirementRoot.create({ data: { projectId, id: requirementId, createdById: f.memberUser.id } }),
+      t.prisma.activityRequirement.create({
+        data: { projectId, requirementId, revision: 1, activityId, type: 'labour', requiredQty: '10', baseUom: 'person-shift', requiredBy: new Date('2026-08-15'), createdById: f.memberUser.id },
+      }),
+      t.prisma.labourRequirementSpec.create({ data: { projectId, requirementId, revision: 1, tradeCode: 'mason', shift: 'day', labourSpecFingerprint: 'lsf-red' } }),
+      t.prisma.labourDemandSlice.create({ data: { projectId, requirementId, revision: 1, civilDate: new Date('2026-08-15'), personShiftQty: 10 } }),
+    ]);
     await expect(
       procurement.createRequisition(projectId, { title: 'labour', lines: [{ requirementId, revision: 1, qty: '5' }] }, pmc(projectId)),
     ).rejects.toMatchObject({ status: 400 });

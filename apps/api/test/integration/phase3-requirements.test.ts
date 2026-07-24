@@ -50,7 +50,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
   // The Task-2/3 procurement tables reference ActivityRequirement (RequisitionLine → revision
   // row → PurchaseOrderLine), so PG requires them in the same TRUNCATE even when empty here.
   const TRUNCATE =
-    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ApprovedSubstitution", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability"';
+    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "StockTransaction", "MaterialIssue", "StockLot", "CommandExecution", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability"';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const client = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'client', projectId }) as AuthUser;
@@ -79,6 +79,13 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
       ['activity', { projectId: { startsWith: 'it-p3-' } }],
       ['auditLog', { projectId: { startsWith: 'it-p3-' } }],
       ['membership', { projectId: { startsWith: 'it-p3-' } }],
+      // Phase 4 — the labour catalog/identity tables FK the project (RESTRICT); clear them before
+      // project.deleteMany. The labour requirement DETAIL is cleared by the TRUNCATE above.
+      ['crewMembership', { projectId: { startsWith: 'it-p3-' } }],
+      ['crew', { projectId: { startsWith: 'it-p3-' } }],
+      ['worker', { projectId: { startsWith: 'it-p3-' } }],
+      ['labourTrade', { projectId: { startsWith: 'it-p3-' } }],
+      ['labourSkill', { projectId: { startsWith: 'it-p3-' } }],
       ['project', { id: { startsWith: 'it-p3-' } }],
     ] as const) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -373,20 +380,33 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     expect(ok.responsibleId).toBe(f.memberUser.id);
   });
 
-  it('CORRECTION 3c: the common contract is TYPE-NEUTRAL — a non-material revision needs no fake material fields', async () => {
+  it('CORRECTION 3c: the common contract is TYPE-NEUTRAL — a labour revision carries a LABOUR detail, no material fields', async () => {
     const projectId = await freshProject();
     await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
     const activityId = await freshActivity(projectId);
-
-    // a labour-type revision is structurally valid with NO MaterialRequirementSpec row
-    await t.prisma.activityRequirementRoot.create({ data: { id: 'it-p3-labour', projectId, createdById: f.memberUser.id } });
-    await t.prisma.activityRequirement.create({
-      data: { projectId, requirementId: 'it-p3-labour', revision: 1, activityId, type: 'labour', requiredQty: 4, baseUom: 'nos', requiredBy: new Date('2026-08-20'), createdById: f.memberUser.id },
-    });
+    // Phase 4 — a labour requirement has its OWN detail (LabourRequirementSpec + demand slices),
+    // NOT a MaterialRequirementSpec. The type↔detail pairing admits it at commit; no fake
+    // material fields are needed. The trade is a same-project labour catalog entry (FK backstop).
+    await t.prisma.labourTrade.create({ data: { projectId, code: 'mason', name: 'Mason', createdById: f.memberUser.id } });
+    await t.prisma.$transaction([
+      t.prisma.activityRequirementRoot.create({ data: { id: 'it-p3-labour', projectId, createdById: f.memberUser.id } }),
+      t.prisma.activityRequirement.create({
+        data: { projectId, requirementId: 'it-p3-labour', revision: 1, activityId, type: 'labour', requiredQty: 4, baseUom: 'person-shift', requiredBy: new Date('2026-08-20'), createdById: f.memberUser.id },
+      }),
+      t.prisma.labourRequirementSpec.create({
+        data: { projectId, requirementId: 'it-p3-labour', revision: 1, tradeCode: 'mason', skillCode: null, shift: 'day', labourSpecFingerprint: 'lsf-test' },
+      }),
+      t.prisma.labourDemandSlice.create({
+        data: { projectId, requirementId: 'it-p3-labour', revision: 1, civilDate: new Date('2026-08-20'), personShiftQty: 4 },
+      }),
+    ]);
     const list = await requirements.list(projectId, pmc(projectId));
     const labour = list.requirements.find((r) => r.requirementId === 'it-p3-labour')!;
     expect(labour.type).toBe('labour');
-    expect(labour.spec).toBeNull();
+    expect(labour.spec).toBeNull(); // no material detail
+    expect(labour.labourSpec).not.toBeNull();
+    expect(labour.labourSpec!.tradeCode).toBe('mason');
+    expect(labour.labourSpec!.demandSlices).toHaveLength(1);
   });
 
   it('CORRECTION 4: the full register is a pmc/engineer read — other roles are refused', async () => {

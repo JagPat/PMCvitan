@@ -64,7 +64,9 @@ describe('Task 10 — the activities module implements its shared command/query 
     // the atomic activity↔inspection edges stay WORKFLOW contracts (participant), not cross-module
     // reads; the Module-4 correction adds `drawings` — `remove` routes the drawing unlink
     // (Drawing.activityId, previously ON DELETE SET NULL only) through the drawings participant.
-    expect(activitiesManifest.workflowParticipants).toEqual(['inspections', 'drawings', 'procurement']);
+    // Phase 4 Task 1 adds `labour` — a type='labour' requirement writes its Labour-owned
+    // `LabourRequirementSpec` + demand slices through the cycle-exempt activities→labour participant.
+    expect(activitiesManifest.workflowParticipants).toEqual(['inspections', 'drawings', 'procurement', 'labour']);
     // the readiness BAKE reads decisions + drawings + inspections via their query contracts (dependsOn);
     // the reverse inspections→activities edge is the cycle-exempt participant, keeping this graph acyclic.
     expect(activitiesManifest.dependsOn).toEqual(['decisions', 'drawings', 'inspections', 'inventory']);

@@ -54,7 +54,7 @@ async function main(): Promise<void> {
   // Phase 3 Task 6 — ApprovedSubstitution FKs onto ActivityRequirementRoot (projectId,id), so it
   // truncates in the same statement for exactly that reason.
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "Vendor", "ApprovedSubstitution", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
+    'TRUNCATE TABLE "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "Vendor", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
   );
   await prisma.projectCapability.deleteMany();
   await prisma.gateOverride.deleteMany();
@@ -80,6 +80,15 @@ async function main(): Promise<void> {
   await prisma.membership.deleteMany();
   await prisma.orgMembership.deleteMany();
   await prisma.workerDevice.deleteMany();
+  // Phase 4 Task 1 — the labour identity tables (child → parent; each FKs the project with
+  // ON DELETE RESTRICT, so they must clear before project.deleteMany below). The append-only
+  // labour requirement DETAIL (LabourRequirementSpec/LabourDemandSlice) is truncated above with
+  // ActivityRequirement (deleteMany is blocked by the append-only trigger).
+  await prisma.crewMembership.deleteMany();
+  await prisma.crew.deleteMany();
+  await prisma.worker.deleteMany();
+  await prisma.labourTrade.deleteMany();
+  await prisma.labourSkill.deleteMany();
   await prisma.pushSubscription.deleteMany();
   await prisma.user.deleteMany();
   await prisma.phase.deleteMany();

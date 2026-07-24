@@ -12,6 +12,11 @@ import { PrismaService } from '../prisma.service';
  * action (`capability:enable` CLI) recorded with identity — never a deploy-wide default.
  */
 export const MATERIALS_CAPABILITY = 'materials';
+// Phase 4 Task 1 — the labour pilot capability (plan §D). Same mechanism as materials: a
+// per-project `ProjectCapability` row (enabled by the SAME `capability:enable` CLI), gating the
+// labour surface. A `type='labour'` requirement asserts THIS capability; a non-pilot project is
+// byte-for-byte unchanged (no labour route, no labour rows, the Team gate stays the stored stub).
+export const LABOUR_CAPABILITY = 'labour';
 
 @Injectable()
 export class CapabilitiesService {

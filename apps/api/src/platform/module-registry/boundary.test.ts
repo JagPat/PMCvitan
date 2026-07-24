@@ -151,7 +151,7 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     const declared = MODULE_MANIFESTS.flatMap((m) => m.routes);
     expect([...derived.keys()].sort()).toEqual([...declared].sort());
     expect(declared.length).toBe(new Set(declared).size); // globally unique
-    expect(declared.length).toBe(108); // the documented command inventory §4 (+2: Task 6 substitution approve/revoke)
+    expect(declared.length).toBe(115); // the documented command inventory §4 (+7: Phase-4 Task-1 labour onboarding)
     // no route contributed by two controllers or two manifests, no missing/unexpected route
     expect(analysis.routeFindings).toEqual([]);
   });

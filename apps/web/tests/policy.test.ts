@@ -27,6 +27,11 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'stock.record': ['pmc', 'engineer'],
   'stock.adjust': ['pmc'],
   'stock.read': ['pmc', 'engineer'],
+  // Phase 4 Task 1 — the labour pilot surface (plan §H matrix): trusted-workforce identity
+  // (worker/crew onboarding, revocation, device binding, catalog) is pmc authority; the
+  // workforce register read mirrors requirement.read (pmc + engineer).
+  'labour.manage': ['pmc'],
+  'labour.read': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],

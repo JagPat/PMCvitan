@@ -112,7 +112,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     await t.prisma.crewRow.deleteMany({ where: { dailyLog: { projectId: pid } } });
     await t.prisma.dailyLog.deleteMany({ where: { projectId: pid } });
     await t.prisma.gateOverride.deleteMany({ where: { projectId: pid } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "MaterialRequirementSpec", "DecisionApprovalRevision"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision"');
     await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: pid } } });
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: pid } } });
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: pid } } });
