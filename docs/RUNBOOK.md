@@ -238,6 +238,38 @@ created and backfilled, the `Worker_skills_contained`/`LabourSkill_referenced_gu
 dropped, and `skillCodes` is removed. `scripts/upgrade-proof.sh` executes this exact abort → operator
 repair → redeploy cycle against real PostgreSQL.
 
+## §P4T2C. Phase 4 labour commercial-INTEGRITY correction migration + repair (one-time, diagnostic-first)
+
+`20270205000000_phase4_t2_correction` seals the labour COMMERCIAL chain against the independent-review
+findings (F2 requisition-line frozen identity + DB-bound spec/slice; F3 commitment↔PO-line identity FK;
+F4 PO-line rate/premium provenance-bound to the comparison-selected quote line via new
+`comparisonId`/`selectedQuoteId`/`selectedQuoteLineId` columns; F5 `0 ≤ committedQty ≤ personShiftQty`).
+It is DIAGNOSTIC-FIRST and ADDITIVE — migration `20270201000000` is left byte-for-byte unchanged; the
+labour pilot is ROW-FREE in production, so every backfill is a no-op there. Before adding a bound/FK it
+ABORTS (no partial apply) if any pre-existing row violates it, naming the finding + a bounded id sample:
+
+- **`F5 ABORT: % LabourPurchaseOrderLine row(s) have committedQty > personShiftQty …`** — **Repair:** the
+  ledger truth is the live commitment; set the over-committed line back to its real committed quantity
+  (`UPDATE "LabourPurchaseOrderLine" SET "committedQty" = LEAST("committedQty","personShiftQty") WHERE …`
+  after confirming the intended value against `CapacityCommitment`).
+- **`F3 ABORT: % CapacityCommitment row(s) carry a slice identity that differs from their PO line …`** —
+  **Repair:** a commitment's slice identity is a COPY of its PO line; correct the drifted commitment
+  columns to match `LabourPurchaseOrderLine` (`labourSpecFingerprint`/`civilDate`/`shift`/`personShiftQty`),
+  or, if the commitment is bogus, mark it `defaulted` (the F3 FK only binds LIVE identity on insert).
+- **`F2 ABORT: % LabourRequisitionLine row(s) carry a fingerprint/shift that is not the pinned spec's …`**
+  / **`… name a civil date with no demand slice …`** — **Repair:** restore the line's frozen identity to
+  its pinned `LabourRequirementSpec` (fingerprint + shift) and a real `LabourDemandSlice` civil date, or
+  cancel the line; the correction NEVER invents a spec/slice.
+- **`F4 ABORT: % LabourPurchaseOrder{Version|Line} row(s) … not traceable to the comparison-selected quote
+  line …`** — **Repair:** re-point the PO/line at its true approved comparison and the selected quote line
+  whose rate/premium match the frozen PO-line terms; if the terms came from nowhere the line is a forgery
+  and must be removed by the owning-team's audited path (the migration never fabricates provenance).
+
+After repairing, mark the failed record rolled back if Prisma recorded it as failed
+(`prisma migrate resolve --rolled-back 20270205000000_phase4_t2_correction`) and re-run `prisma migrate
+deploy`; the migration applies and the F2..F5 seals install. `scripts/phase4-t2-correction-abort-proof.sh`
+executes this exact abort → operator repair → redeploy cycle against real PostgreSQL.
+
 ## 1. Drain all OLD application instances
 
 Stop routing to and shut down every instance running the PREVIOUS build. The single-sender

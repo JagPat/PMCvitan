@@ -674,10 +674,15 @@ export class LabourProcurementService {
     return version;
   }
 
-  /** Freeze the version-N line set from the comparison's SELECTED quote (rate per person-shift). */
+  /**
+   * Freeze the version-N line set from the comparison's SELECTED quote (rate per person-shift). Each
+   * line records its selected-quote-line PROVENANCE (F4): `comparisonId`/`selectedQuoteId`/
+   * `selectedQuoteLineId` — a composite-FK chain proves the frozen rate/premium ARE the comparison-
+   * selected quote line's, so a PO line whose terms came from nowhere is unrepresentable.
+   */
   private async freezeLines(
     tx: Prisma.TransactionClient, projectId: string, poVersionId: string,
-    requisitionId: string, selectedQuoteId: string, lines: CreateLabourPoInput['lines'],
+    requisitionId: string, comparisonId: string, selectedQuoteId: string, lines: CreateLabourPoInput['lines'],
   ): Promise<void> {
     const seen = new Set<string>();
     for (const input of lines) {
@@ -696,9 +701,28 @@ export class LabourProcurementService {
           requirementId: line.requirementId, revision: line.revision, civilDate: line.civilDate, shift: line.shift,
           labourSpecFingerprint: line.labourSpecFingerprint, personShiftQty: input.personShiftQty,
           ratePerPersonShift: quoteLine.ratePerPersonShift, shiftPremium: quoteLine.shiftPremium, committedAmountBase,
+          comparisonId, selectedQuoteId, selectedQuoteLineId: quoteLine.id,
         },
       });
       await this.refreshOrderedFlag(tx, projectId, line.id);
+    }
+  }
+
+  /**
+   * Recompute a PO version's status from its lines' LIVE committed quantity (F1 — the single
+   * transactional lifecycle). Only issued|partially_committed|completed versions are recomputed
+   * (terminal states — amended/cancelled/closed_short — are never re-opened here):
+   *   Σcommitted = 0 → issued · 0 < Σcommitted < Σordered → partially_committed · = → completed.
+   */
+  private async recomputeVersionStatus(tx: Prisma.TransactionClient, projectId: string, poVersionId: string): Promise<void> {
+    const version = await tx.labourPurchaseOrderVersion.findFirstOrThrow({ where: { projectId, id: poVersionId }, select: { status: true } });
+    if (!['issued', 'partially_committed', 'completed'].includes(version.status)) return;
+    const lines = await tx.labourPurchaseOrderLine.findMany({ where: { projectId, poVersionId }, select: { personShiftQty: true, committedQty: true } });
+    const ordered = lines.reduce((s, l) => s + l.personShiftQty, 0);
+    const committed = lines.reduce((s, l) => s + l.committedQty, 0);
+    const want = committed === 0 ? 'issued' : committed >= ordered ? 'completed' : 'partially_committed';
+    if (want !== version.status) {
+      await tx.labourPurchaseOrderVersion.updateMany({ where: { projectId, id: poVersionId, status: version.status }, data: { status: want } });
     }
   }
 
@@ -723,9 +747,9 @@ export class LabourProcurementService {
           },
         });
         const version = await tx.labourPurchaseOrderVersion.create({
-          data: { projectId, poId: po.id, requisitionId: po.requisitionId, version: 1, createdById: actor.actorId },
+          data: { projectId, poId: po.id, requisitionId: po.requisitionId, comparisonId: comparison.id, version: 1, createdById: actor.actorId },
         });
-        await this.freezeLines(tx, projectId, version.id, comparison.requisitionId, comparison.selectedQuoteId, input.lines);
+        await this.freezeLines(tx, projectId, version.id, comparison.requisitionId, comparison.id, comparison.selectedQuoteId, input.lines);
         await recordAudit(tx, { projectId, actor, action: 'labour.po.create', entity: 'LabourPurchaseOrder', entityId: po.id });
         return { resultRef: po.id, events: [] };
       },
@@ -772,6 +796,11 @@ export class LabourProcurementService {
         const po = await tx.labourPurchaseOrder.findFirst({ where: { projectId, id: poId }, select: { requisitionId: true, comparisonId: true } });
         if (!po) throw new NotFoundException('Labour purchase order not found in this project');
         const current = await this.currentVersion(tx, projectId, poId);
+        // F1 — a live capacity commitment is NEVER orphaned by an amend: default or close it short first.
+        const liveCommitments = await tx.capacityCommitment.count({
+          where: { projectId, poLineId: { in: current.lines.map((l) => l.id) }, status: { in: ['committed', 'revised'] } },
+        });
+        if (liveCommitments > 0) throw new ConflictException('This labour purchase order has live capacity commitments — default or close it short before amending (a live commitment is never orphaned)');
         const { count } = await tx.labourPurchaseOrderVersion.updateMany({
           where: { id: current.id, projectId, status: 'issued' },
           data: { status: 'amended', amendReason: input.reason, amendedAt: new Date(), issuedById: current.issuedById ?? actor.actorId, issuedAt: current.issuedAt ?? new Date() },
@@ -781,11 +810,11 @@ export class LabourProcurementService {
         const comparison = await tx.labourQuoteComparison.findFirstOrThrow({ where: { projectId, id: po.comparisonId }, select: { selectedQuoteId: true } });
         const next = await tx.labourPurchaseOrderVersion.create({
           data: {
-            projectId, poId, requisitionId: po.requisitionId, version: current.version + 1, status: 'issued',
+            projectId, poId, requisitionId: po.requisitionId, comparisonId: po.comparisonId, version: current.version + 1, status: 'issued',
             supersedesVersion: current.version, issuedById: actor.actorId, issuedAt: new Date(), createdById: actor.actorId,
           },
         });
-        await this.freezeLines(tx, projectId, next.id, po.requisitionId, comparison.selectedQuoteId!, input.lines);
+        await this.freezeLines(tx, projectId, next.id, po.requisitionId, po.comparisonId, comparison.selectedQuoteId!, input.lines);
         const issued = await this.currentVersion(tx, projectId, poId);
         await recordAudit(tx, { projectId, actor, action: 'labour.po.amend', entity: 'LabourPurchaseOrderVersion', entityId: next.id });
         const ev = await emitEvent(tx, {
@@ -892,7 +921,7 @@ export class LabourProcurementService {
         const line = await tx.labourPurchaseOrderLine.findFirst({
           where: { projectId, id: input.poLineId },
           select: {
-            id: true, labourSpecFingerprint: true, civilDate: true, shift: true, personShiftQty: true,
+            id: true, poVersionId: true, labourSpecFingerprint: true, civilDate: true, shift: true, personShiftQty: true,
             poVersion: { select: { status: true } },
           },
         });
@@ -912,6 +941,10 @@ export class LabourProcurementService {
         await tx.capacityPromise.create({
           data: { projectId, commitmentId: commitment.id, seq: 1, promisedDate: promised, recordedById: actor.actorId },
         });
+        // F1 — the SINGLE transactional lifecycle: the line's committed progress + the version status
+        // move together, so the committed slice stays allocated (§F bound 2) across the PO lifecycle.
+        await tx.labourPurchaseOrderLine.updateMany({ where: { projectId, id: line.id }, data: { committedQty: line.personShiftQty } });
+        await this.recomputeVersionStatus(tx, projectId, line.poVersionId);
         await recordAudit(tx, { projectId, actor, action: 'labour.commitment.commit', entity: 'CapacityCommitment', entityId: commitment.id });
         const full = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitment.id }, include: { promises: true } });
         const ev = await emitEvent(tx, {
@@ -971,6 +1004,11 @@ export class LabourProcurementService {
           data: { status: 'defaulted', defaultedAt: new Date() },
         });
         if (count === 0) throw new ConflictException('Only a live (committed/revised) capacity commitment can be defaulted — reload and retry');
+        // F1 — a defaulted commitment RELEASES its line's committed progress; the version status is
+        // recomputed so the freed slice can be re-procured (a terminal PO version is left untouched).
+        const defaulted = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, select: { poLineId: true, poLine: { select: { poVersionId: true } } } });
+        await tx.labourPurchaseOrderLine.updateMany({ where: { projectId, id: defaulted.poLineId }, data: { committedQty: 0 } });
+        await this.recomputeVersionStatus(tx, projectId, defaulted.poLine.poVersionId);
         await recordAudit(tx, { projectId, actor, action: 'labour.commitment.default', entity: 'CapacityCommitment', entityId: commitmentId });
         const full = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, include: { promises: true } });
         const ev = await emitEvent(tx, {
