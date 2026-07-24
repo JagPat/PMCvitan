@@ -31,7 +31,7 @@ describe('Phase 2 Task 10 — daily-log projection == live slice, live == rebuil
   let query: DailyLogQueryService;
   let projSeq = 0;
 
-  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection"';
+  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection" CASCADE';
 
   beforeAll(async () => {
     t = await createTestApp();

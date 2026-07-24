@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
 /**
@@ -77,6 +77,31 @@ export class LabourRequirementParticipant {
           personShiftQty: slice.personShiftQty,
         },
       });
+    }
+  }
+
+  /**
+   * Phase 4 Task 2 (§F disposition) — the labour-owned equivalent of
+   * `ProcurementParticipant.assertRequirementDisposable`. Cancelling a LABOUR requirement that
+   * still has OPEN/ORDERED downstream labour requisition lines demands an explicit disposition
+   * (cancel those lines first). The Activities cancel command invokes this labour-owned method
+   * INSIDE its transaction (the cycle-exempt `activities → labour` participant edge), so the check
+   * reads Labour's OWN `LabourRequisitionLine` table; the `lockProjectReadiness` both commands hold
+   * serializes it against concurrent line creation. Labour stays a LEAF (it reads no Activities row).
+   */
+  async assertRequirementDisposable(tx: Prisma.TransactionClient, projectId: string, requirementId: string): Promise<void> {
+    const open = await tx.labourRequisitionLine.count({
+      where: {
+        projectId,
+        requirementId,
+        status: { in: ['open', 'ordered'] },
+        requisition: { status: { notIn: ['rejected', 'closed'] } },
+      },
+    });
+    if (open > 0) {
+      throw new ConflictException(
+        `Requirement has ${open} open labour requisition line(s) — cancel them before cancelling the requirement (explicit disposition, plan §F)`,
+      );
     }
   }
 

@@ -96,8 +96,21 @@ export const EXTERNAL_EFFECTS = {
   // Task 4 — the §G inventory ledger event (ONE per appended §C stock transaction).
   // Snapshot-invalidate only; the readiness/store projections consume it in Tasks 5–6.
   'stock.transacted': { eventType: 'stock.transacted', invalidate: true, push: null },
-  // Task 5 — the §G issue event (§E: the canonical record of what LEFT the store). Signal-only.
   'issue.recorded': { eventType: 'issue.recorded', invalidate: true, push: null },
+  // ── labour commercial chain (Phase 4 Task 2, §F) ───────────────────────────────────────────
+  // The labour requisition/comparison lifecycle + the labour-PO version machine + the
+  // CapacityCommitment (inbound forecast capacity) family. Snapshot-invalidate only; the §A
+  // forecast-at-risk consumption lands with the readiness surfaces in Task 4.
+  'labour.requisition.submitted': { eventType: 'labour.requisition.submitted', invalidate: true, push: null },
+  'labour.requisition.approved': { eventType: 'labour.requisition.approved', invalidate: true, push: null },
+  'labour.comparison.approved': { eventType: 'labour.comparison.approved', invalidate: true, push: null },
+  'labour.po.issued': { eventType: 'labour.po.issued', invalidate: true, push: null },
+  'labour.po.amended': { eventType: 'labour.po.amended', invalidate: true, push: null },
+  'labour.po.cancelled': { eventType: 'labour.po.cancelled', invalidate: true, push: null },
+  'labour.po.closed_short': { eventType: 'labour.po.closed_short', invalidate: true, push: null },
+  'capacity.committed': { eventType: 'capacity.committed', invalidate: true, push: null },
+  'capacity.revised': { eventType: 'capacity.revised', invalidate: true, push: null },
+  'capacity.defaulted': { eventType: 'capacity.defaulted', invalidate: true, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────

@@ -88,14 +88,14 @@ describe('Phase 2 Task 9 — projection generations + activation barrier (live P
   afterAll(async () => {
     unregisterConsumer(PROJ);
     unregisterConsumer(SEEDED);
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration" CASCADE');
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
     rebuilder.barrierHook = null;
     seedThrough = -1n;
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration" CASCADE');
     await t.prisma.auditLog.deleteMany({ where: { action: { in: [PROJ, SEEDED] } } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-pg-' } } });
   });

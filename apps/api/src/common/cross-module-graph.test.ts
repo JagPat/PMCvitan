@@ -89,6 +89,13 @@ const MODEL_OWNER: Record<string, string> = {
   // Labour-owned participant by the Activities requirement command — the cycle-exempt edge).
   labourTrade: 'labour', labourSkill: 'labour', worker: 'labour', workerSkill: 'labour', crew: 'labour', crewMembership: 'labour',
   labourRequirementSpec: 'labour', labourDemandSlice: 'labour',
+  // Phase 4 Task 2 — the labour COMMERCIAL chain (§F): the labour supplier profile + the separate
+  // labour commercial documents, all labour-owned (the reused procurement Vendor/ProjectVendor party
+  // stays procurement-owned — the binding is validated through ProcurementParticipant).
+  vendorLabourProfile: 'labour', labourRequisition: 'labour', labourRequisitionLine: 'labour', labourRfq: 'labour',
+  supplierLabourQuote: 'labour', supplierLabourQuoteLine: 'labour', labourQuoteComparison: 'labour',
+  labourPurchaseOrder: 'labour', labourPurchaseOrderVersion: 'labour', labourPurchaseOrderLine: 'labour',
+  capacityCommitment: 'labour', capacityPromise: 'labour',
   projectNode: 'nodes',
   media: 'media',
   org: 'orgs', orgMembership: 'orgs', membership: 'orgs', project: 'orgs', projectCompany: 'orgs',
@@ -165,6 +172,12 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // in Tasks 3–5), so it dispatches nothing. The labour requirement detail write lives in the
   // (un-scanned) labour.participant.ts, invoked by the Activities requirement command.
   'labour/labour.service.ts': { domain: 'labour', foreign: {}, dispatch: 0 },
+  // Phase 4 Task 2 — the labour COMMERCIAL chain (§F). Writes ONLY labour-owned commercial tables;
+  // the reused procurement Vendor/ProjectVendor party is read/validated THROUGH ProcurementParticipant
+  // (never a direct foreign write/read — Labour stays a LEAF). requisition submit/approve +
+  // comparison approve + po issue/amend/cancel/closeShort + capacity commit/revise/default dispatch
+  // their committed events post-commit (10 total).
+  'labour/labour-procurement.service.ts': { domain: 'labour', foreign: {}, dispatch: 10 },
 };
 
 // Services that WRITE but are NOT pillar signal emitters. Documented so a new
@@ -200,10 +213,24 @@ const NO_WRITE_SERVICES: Record<string, string> = {
 
 const WRITE = /\.(\w+)\.(create|createMany|update|updateMany|delete|deleteMany|upsert)\b/g;
 
+/** Blank comments + the CONTENTS of single/double-quoted string literals so a dotted command-name
+ *  literal (e.g. `'labour.comparison.create'`) is not mis-read by the crude WRITE regex as a Prisma
+ *  write. A real write is CODE (`tx.model.create(...)`), never a string or comment, so this cannot
+ *  hide one — the full boundary analyzer (boundary.test) already ignores string literals the same
+ *  way. Comments are stripped FIRST (so an apostrophe in a comment can't open a runaway span), and
+ *  the string spans forbid raw newlines so a stray quote never swallows real code. */
+function stripStringLiterals(src: string): string {
+  return src
+    .replace(/\/\/[^\n]*/g, '') // line comments
+    .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''") // single-quoted
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""'); // double-quoted
+}
+
 /** model → number of write call-sites in the source. */
 function writesByModel(src: string): Record<string, number> {
   const counts: Record<string, number> = {};
-  for (const m of src.matchAll(WRITE)) {
+  for (const m of stripStringLiterals(src).matchAll(WRITE)) {
     const model = m[1];
     if (model === 'prisma' || model === 'tx' || model === 'this') continue;
     counts[model] = (counts[model] ?? 0) + 1;
@@ -331,6 +358,31 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('labour/crews/:crewId/members')",
     "Delete('labour/crews/:crewId/members/:workerId')",
   ],
+  // Phase 4 Task 2 — the labour COMMERCIAL chain surface (§F). An empty-prefix controller (org +
+  // project routes coexist), so the signatures carry the full path. GET reads (requisitions/rfqs/
+  // pos/commitments/vendor-profiles) are declared by the manifest `queries`, not here.
+  'labour/labour-procurement.controller.ts': [
+    "Post('orgs/:orgId/labour/vendor-profiles')",
+    "Post('projects/:projectId/labour/requisitions')",
+    "Post('projects/:projectId/labour/requisitions/:requisitionId/submit')",
+    "Post('projects/:projectId/labour/requisitions/:requisitionId/approve')",
+    "Post('projects/:projectId/labour/requisitions/:requisitionId/reject')",
+    "Post('projects/:projectId/labour/requisitions/:requisitionId/lines/:lineId/cancel')",
+    "Post('projects/:projectId/labour/requisitions/:requisitionId/close')",
+    "Post('projects/:projectId/labour/rfqs')",
+    "Post('projects/:projectId/labour/rfqs/:rfqId/close')",
+    "Post('projects/:projectId/labour/rfqs/:rfqId/quotes')",
+    "Post('projects/:projectId/labour/rfqs/:rfqId/comparison')",
+    "Post('projects/:projectId/labour/rfqs/:rfqId/comparison/approve')",
+    "Post('projects/:projectId/labour/pos')",
+    "Post('projects/:projectId/labour/pos/:poId/issue')",
+    "Post('projects/:projectId/labour/pos/:poId/amend')",
+    "Post('projects/:projectId/labour/pos/:poId/cancel')",
+    "Post('projects/:projectId/labour/pos/:poId/close-short')",
+    "Post('projects/:projectId/labour/commitments')",
+    "Post('projects/:projectId/labour/commitments/:commitmentId/revise')",
+    "Post('projects/:projectId/labour/commitments/:commitmentId/default')",
+  ],
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')"],
 };
 
@@ -396,9 +448,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('60 external-effect dispatch sites total across the pillar services (58 + Task-6 F4 po.closeShort + delivery.fulfill)', () => {
+    it('70 external-effect dispatch sites total across the pillar services (60 + Phase-4 Task-2 labour commercial chain 10)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(60);
+      expect(total).toBe(70);
     });
   });
 
@@ -409,12 +461,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('116 mutating routes total (the documented command inventory §4; +8 Phase-4 labour incl. crew.revoke)', () => {
+    it('136 mutating routes total (§4 command inventory; +20 Phase-4 Task-2 labour commercial chain)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(116);
+      expect(total).toBe(136);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(116);
+      expect(live).toBe(136);
     });
   });
 
@@ -428,8 +480,8 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
   describe('read + sender coupling (SnapshotService + ExternalEffectDispatcher injected in every emitter)', () => {
     const emitters = Object.entries(SERVICES).filter(([, s]) => s.dispatch > 0).map(([f]) => f);
-    it('all twelve dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning eight also read through SnapshotService', () => {
-      expect(emitters.length).toBe(13);
+    it('all fourteen dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning ones also read through SnapshotService', () => {
+      expect(emitters.length).toBe(14);
       const moduleReadServices = [
         // Phase 3 — requirements (Task 1), procurement (Tasks 2-3) and inventory (Task 4)
         // return MODULE-OWNED dtos (the Task-10 module-read pattern), never the snapshot, so
@@ -438,6 +490,8 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         'inventory/inventory.service.ts',
         // Phase 3 Task 6 — substitutions returns a module-owned SubstitutionDto, never the snapshot
         'activities/substitutions.service.ts',
+        // Phase 4 Task 2 — the labour commercial chain returns module-owned labour DTOs, not the snapshot
+        'labour/labour-procurement.service.ts',
       ];
       for (const file of emitters) {
         if (!moduleReadServices.includes(file)) {

@@ -87,6 +87,20 @@ export const DOMAIN_EVENT_TYPES = [
   'delivery.revised',
   'delivery.defaulted',
   'delivery.fulfilled',
+  // Phase 4 Task 2 — the LABOUR commercial chain (plan §F/§179). Labour-owned, signal-only
+  // (invalidate:true, push:null). The requisition/comparison lifecycle + the labour-PO version
+  // machine + the CapacityCommitment (inbound forecast capacity) family. Derived facts (coverage/
+  // verdicts) get NO event; the allocation/attendance/work events land with their facts in Tasks 3–5.
+  'labour.requisition.submitted',
+  'labour.requisition.approved',
+  'labour.comparison.approved',
+  'labour.po.issued',
+  'labour.po.amended',
+  'labour.po.cancelled',
+  'labour.po.closed_short',
+  'capacity.committed',
+  'capacity.revised',
+  'capacity.defaulted',
   // Phase 3 Task 4 — the inventory stock ledger (plan §G catalog: ONE event per appended §C
   // ledger row — receipts, acceptance, rejection, vendor-return, adjustment, reversal; buckets
   // are derived, so there is no bucket-changed event)

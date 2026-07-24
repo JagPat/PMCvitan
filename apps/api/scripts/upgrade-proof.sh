@@ -994,6 +994,59 @@ else
 fi
 $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB3;" >/dev/null 2>&1
 
+# ── Phase 4 Task 2 — the LABOUR COMMERCIAL chain seals (§F). The 12 additive tables upgrade ROW-FREE
+#    over the legacy DB, and the DB seals (CAS/frozen-snapshot/append-only/provenance) reject forgeries
+#    on the MIGRATED database. The §F BOUNDS are SERVICE-enforced (proven in the integration + barrier
+#    race), NOT triggers; here we prove the physical-integrity seals only. Anchored on the coherent
+#    labour requirement UPL-F2OK (rev 1, slice 2026-08-12, qty 3, canonical fingerprint) from Task 1. ─
+assert "the 12 Phase-4 Task-2 labour commercial tables exist and are ROW-FREE over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('VendorLabourProfile','LabourRequisition','LabourRequisitionLine','LabourRfq','SupplierLabourQuote','SupplierLabourQuoteLine','LabourQuoteComparison','LabourPurchaseOrder','LabourPurchaseOrderVersion','LabourPurchaseOrderLine','CapacityCommitment','CapacityPromise'))::text || '|' || (SELECT COUNT(*) FROM \"LabourRequisition\")::text || '|' || (SELECT COUNT(*) FROM \"LabourPurchaseOrder\")::text || '|' || (SELECT COUNT(*) FROM \"CapacityCommitment\")::text;" \
+  "12|0|0|0"
+assert "the labour PO status-pinned provenance FK + frozen/append-only triggers are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname='LabourPurchaseOrder_comparison_provenance_fkey')::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('LabourPurchaseOrderLine_frozen','LabourPurchaseOrder_append_only','CapacityPromise_append_only','SupplierLabourQuoteLine_append_only') AND NOT tgisinternal)::text;" \
+  "1|4"
+# a labour requisition with an out-of-machine status is rejected (CAS status CHECK)
+assert_rejects "labour T2: a requisition with an out-of-machine status (status CHECK)" \
+  "INSERT INTO \"LabourRequisition\"(\"id\",\"projectId\",\"title\",\"status\",\"createdById\") VALUES('UPL-T2BADREQ','p1','bad','bogus','USER-1')"
+
+# build a COHERENT labour commercial chain (requisition→quote→APPROVED comparison→PO→commitment→promise)
+FPD="encode(digest('lsf.v1'||chr(31)||'trade:mason'||chr(31)||'skill:bar-bending'||chr(31)||'shift:day','sha256'),'hex')"
+$PSQL >/dev/null <<SQL && printf 'ok      %s\n' "labour T2: a coherent labour commercial chain is accepted (seal is precise)" || { printf 'FAILED  %s\n' "labour T2 coherent chain rejected"; FAIL=1; }
+BEGIN;
+INSERT INTO "Vendor"("id","orgId","name","createdById") VALUES('UPL-T2V','org-legacy','Labour Supplier','USER-1');
+INSERT INTO "ProjectVendor"("id","projectId","orgId","vendorId","boundById") VALUES('UPL-T2PV','p1','org-legacy','UPL-T2V','USER-1');
+INSERT INTO "LabourRequisition"("id","projectId","title","status","createdById","approvedById","approvedAt") VALUES('UPL-T2REQ','p1','crew','approved','USER-1','USER-1',NOW());
+INSERT INTO "LabourRequisitionLine"("id","projectId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","status") VALUES('UPL-T2RL','p1','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,'ordered');
+INSERT INTO "LabourRfq"("id","projectId","requisitionId","issuedById") VALUES('UPL-T2RFQ','p1','UPL-T2REQ','USER-1');
+INSERT INTO "SupplierLabourQuote"("id","projectId","rfqId","requisitionId","vendorId","status","validUntil","recordedById") VALUES('UPL-T2Q','p1','UPL-T2RFQ','UPL-T2REQ','UPL-T2V','recorded','2026-12-31','USER-1');
+INSERT INTO "SupplierLabourQuoteLine"("id","projectId","quoteId","requisitionLineId","requisitionId","ratePerPersonShift","shiftPremium","landedPerPersonShift","matchesSpecification") VALUES('UPL-T2QL','p1','UPL-T2Q','UPL-T2RL','UPL-T2REQ',1000,100,1100,true);
+INSERT INTO "LabourQuoteComparison"("id","projectId","rfqId","requisitionId","status","selectedQuoteId","selectedVendorId","reason","createdById","approvedById","approvedAt") VALUES('UPL-T2CMP','p1','UPL-T2RFQ','UPL-T2REQ','approved','UPL-T2Q','UPL-T2V','ok','USER-1','USER-1',NOW());
+INSERT INTO "LabourPurchaseOrder"("id","projectId","vendorId","requisitionId","comparisonId","comparisonStatus","createdById") VALUES('UPL-T2PO','p1','UPL-T2V','UPL-T2REQ','UPL-T2CMP','approved','USER-1');
+INSERT INTO "LabourPurchaseOrderVersion"("id","projectId","poId","version","requisitionId","status","issuedById","issuedAt","createdById") VALUES('UPL-T2POV','p1','UPL-T2PO',1,'UPL-T2REQ','issued','USER-1',NOW(),'USER-1');
+INSERT INTO "LabourPurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","ratePerPersonShift","shiftPremium","committedAmountBase") VALUES('UPL-T2POL','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,1000,100,3300);
+INSERT INTO "CapacityCommitment"("id","projectId","poLineId","labourSpecFingerprint","civilDate","shift","personShiftQty","createdById") VALUES('UPL-T2CC','p1','UPL-T2POL',$FPD,'2026-08-12','day',3,'USER-1');
+INSERT INTO "CapacityPromise"("id","projectId","commitmentId","seq","promisedDate","recordedById") VALUES('UPL-T2CP','p1','UPL-T2CC',1,'2026-08-11','USER-1');
+COMMIT;
+SQL
+# the frozen PO-line commercial snapshot cannot be mutated (only committedQty may change)
+assert_rejects "labour T2: mutating a frozen PO-line rate (frozen-snapshot trigger)" \
+  "UPDATE \"LabourPurchaseOrderLine\" SET \"ratePerPersonShift\"=1 WHERE \"id\"='UPL-T2POL'"
+# the labour PO root is append-only
+assert_rejects "labour T2: mutating the append-only labour PO root" \
+  "UPDATE \"LabourPurchaseOrder\" SET \"vendorId\"='x' WHERE \"id\"='UPL-T2PO'"
+# a capacity promise is append-only
+assert_rejects "labour T2: mutating an append-only capacity promise" \
+  "UPDATE \"CapacityPromise\" SET \"promisedDate\"='2026-01-01' WHERE \"id\"='UPL-T2CP'"
+# a second commitment on one PO line is unrepresentable (one-per-line partial unique)
+assert_rejects "labour T2: a second capacity commitment on one PO line (one-per-line unique)" \
+  "INSERT INTO \"CapacityCommitment\"(\"id\",\"projectId\",\"poLineId\",\"labourSpecFingerprint\",\"civilDate\",\"shift\",\"personShiftQty\",\"createdById\") VALUES('UPL-T2CC2','p1','UPL-T2POL',$FPD,'2026-08-12','day',3,'USER-1')"
+# a PO line whose committedAmountBase != round((rate+premium)*qty,2) is rejected (frozen-amount CHECK)
+assert_rejects "labour T2: a PO line with a wrong committedAmountBase (amount CHECK)" \
+  "INSERT INTO \"LabourPurchaseOrderLine\"(\"id\",\"projectId\",\"poVersionId\",\"requisitionLineId\",\"requisitionId\",\"requirementId\",\"revision\",\"civilDate\",\"shift\",\"labourSpecFingerprint\",\"personShiftQty\",\"ratePerPersonShift\",\"shiftPremium\",\"committedAmountBase\") VALUES('UPL-T2POLBAD','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,1000,100,9999)"
+# a labour PO whose comparison provenance is not 'approved' is unrepresentable (status-pinned FK + CHECK)
+assert_rejects "labour T2: a PO forging its provenance to a NON-approved comparison (status-pinned)" \
+  "INSERT INTO \"LabourPurchaseOrder\"(\"id\",\"projectId\",\"vendorId\",\"requisitionId\",\"comparisonId\",\"comparisonStatus\",\"createdById\") VALUES('UPL-T2POF','p1','UPL-T2V','UPL-T2REQ','UPL-T2CMP','draft','USER-1')"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

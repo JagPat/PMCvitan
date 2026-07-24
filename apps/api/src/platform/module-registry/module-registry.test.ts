@@ -35,7 +35,13 @@ describe('Phase 2 Task 7 — module registry', () => {
     const labour = MODULE_MANIFESTS.find((m) => m.id === 'labour');
     expect(labour, 'the labour manifest exists').toBeDefined();
     expect(moduleModelOwnership().get('workerSkill')).toBe('labour');
-    const expected = ['crew', 'crewMembership', 'labourDemandSlice', 'labourRequirementSpec', 'labourSkill', 'labourTrade', 'worker', 'workerSkill'];
+    const expected = [
+      'capacityCommitment', 'capacityPromise', 'crew', 'crewMembership', 'labourDemandSlice',
+      'labourPurchaseOrder', 'labourPurchaseOrderLine', 'labourPurchaseOrderVersion',
+      'labourQuoteComparison', 'labourRequirementSpec', 'labourRequisition', 'labourRequisitionLine',
+      'labourRfq', 'labourSkill', 'labourTrade', 'supplierLabourQuote', 'supplierLabourQuoteLine',
+      'vendorLabourProfile', 'worker', 'workerSkill',
+    ];
     expect([...(labour!.readEncapsulated ?? [])].sort()).toEqual(expected);
     expect(labour!.readEncapsulated).toContain('workerSkill');
   });
@@ -107,6 +113,11 @@ describe('Phase 2 Task 7 — module registry', () => {
       nodes: ['inspections', 'activities', 'drawings', 'daily-log'],
       orgs: ['nodes', 'activities', 'inspections'], // project-init instantiates each owning module
       inspections: ['activities'], // the closing-inspection decide writes the activity sign-off
+      // Phase 4 Task 2 — the labour commercial chain validates the reused procurement Vendor/
+      // ProjectVendor binding through ProcurementParticipant.assertVendorBound (+ resolveOrgVendor):
+      // a CYCLE-EXEMPT labour → procurement workflow edge, not a dependsOn read, so labour stays a
+      // LEAF (dependsOn: []) and the graph is still acyclic.
+      labour: ['procurement'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);

@@ -65,7 +65,7 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
     // this — events are immutable there. ProjectEventStream cascades with the project delete.
     // OutboxDelivery (Task 6) FK-references DomainEvent, so truncate them together; ProcessedEvent
     // and ProjectionCursor carry no FK but are cleared for a clean per-suite slate.
-    await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     // reverse foreign-key order, one transaction — a failed test never strands rows
     await prisma.$transaction([
       // command-idempotency receipts (Phase 2 Task 5) reference the project/org tenant; clear

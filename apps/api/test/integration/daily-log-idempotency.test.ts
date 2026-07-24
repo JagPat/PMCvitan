@@ -35,14 +35,14 @@ describe('Phase 2 Task 10 (correction) — daily-log commands are idempotent (li
   afterAll(async () => {
     await t?.prisma.membership.deleteMany({ where: { userId: member2Id } });
     await t?.prisma.user.deleteMany({ where: { id: member2Id } });
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection" CASCADE');
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
     const p = f.projectA.id;
     await t.prisma.commandExecution.deleteMany({ where: { projectId: p } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DailyLogProjection" CASCADE');
     await t.prisma.auditLog.deleteMany({ where: { projectId: p } });
     await t.prisma.notification.deleteMany({ where: { projectId: p } });
     await t.prisma.siteMaterial.deleteMany({ where: { projectId: p } });

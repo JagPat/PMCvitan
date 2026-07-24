@@ -46,7 +46,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
   });
   afterAll(async () => {
     unregisterConsumer(FILTERED);
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await t?.prisma.outboxConsumerCatalog.deleteMany({ where: { consumer: FILTERED } });
     await f?.cleanup();
     await t?.close();
@@ -57,7 +57,7 @@ describe('PR B Task 3 — expansion scanner + ordered no-ops (live PG)', () => {
   // reactivate it, poisoning later runs.
   const AD_HOC = ['test.late.unordered', 'test.bounded.unordered', 'test.inactive.unordered', 'test.pause.ordered', 'test.latefiltered.ordered', 'test.absentcode.unordered'];
   afterEach(async () => {
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await t.prisma.auditLog.deleteMany({ where: { action: { in: ['test.filtered', 'test.pause'] } } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-scn-' } } });
     for (const c of AD_HOC) unregisterConsumer(c);

@@ -44,7 +44,7 @@ describe('Task 10 (Module 3) correction round 2 — tenant-contained evidence FK
   let query: InspectionsQueryService;
   let seq = 0;
 
-  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "InspectionsProjection", "InspectionEvidence"';
+  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "InspectionsProjection", "InspectionEvidence" CASCADE';
 
   beforeAll(async () => {
     t = await createTestApp();

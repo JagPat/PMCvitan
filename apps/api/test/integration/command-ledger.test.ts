@@ -39,7 +39,7 @@ describe('Phase 2 Task 5 — command-idempotency ledger (live PG)', () => {
   afterAll(async () => {
     await t?.prisma.commandExecution.deleteMany({ where: { projectId: projectA2 } });
     await t?.prisma.project.delete({ where: { id: projectA2 } }).catch(() => {});
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await f?.cleanup();
     await t?.close();
   });
@@ -238,7 +238,7 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
     user = { sub: f.memberUser.id, role: 'pmc', projectId: f.projectA.id };
   });
   afterAll(async () => {
-    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t?.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await f?.cleanup();
     await t?.close();
   });
@@ -258,10 +258,10 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
   };
   const cleanupDecision = async (id: string) => {
     await t.prisma.commandExecution.deleteMany({ where: { projectId: f.projectA.id } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
     await t.prisma.auditLog.deleteMany({ where: { entityId: id } });
     await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
     await t.prisma.changeRequest.deleteMany({ where: { decisionId: id } });
     await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
     await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });

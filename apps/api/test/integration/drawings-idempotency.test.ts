@@ -40,7 +40,7 @@ describe('Phase 2 Task 10 — drawing commands are idempotent (live PG)', () => 
     const pids = { startsWith: 'it-dwidem-' };
     // DomainEvent is append-only (DELETE is trigger-blocked); TRUNCATE the event/outbox/projection
     // tables wholesale (test-only), then delete the disposable project rows.
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DrawingsProjection"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DrawingsProjection" CASCADE');
     await t.prisma.commandExecution.deleteMany({ where: { projectId: pids } });
     await t.prisma.drawingRecipient.deleteMany({ where: { projectId: pids } });
     await t.prisma.drawingRevision.deleteMany({ where: { projectId: pids } });

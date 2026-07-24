@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type { ProjectVendorDto, VendorDto } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
-import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
+import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY } from '../platform/capabilities.service';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
 import { recordAudit } from '../platform/audit';
 import { resolveActor } from '../common/actor';
@@ -63,9 +63,18 @@ export class VendorsService {
     return { vendors: rows.map(serializeVendor) };
   }
 
-  /** Bind an org vendor into THIS project (§H) — pmc authority, capability-gated. */
+  /** materials OR labour enables the shared Vendor/ProjectVendor party (Phase 4 Task 2, F7 — the
+   *  labour supplier IS this reused party); if materials is off, fall through to labour, whose
+   *  assertEnabled raises the canonical 404 when NEITHER capability is on. */
+  private async assertVendorCapability(projectId: string): Promise<void> {
+    if (!(await this.capabilities.isEnabled(projectId, MATERIALS_CAPABILITY))) {
+      await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
+    }
+  }
+
+  /** Bind an org vendor into THIS project (§H) — pmc authority, capability-gated (materials OR labour). */
   async bind(projectId: string, input: BindVendorInput, user: AuthUser, idempotencyKey?: string): Promise<ProjectVendorDto> {
-    await this.capabilities.assertEnabled(projectId, MATERIALS_CAPABILITY);
+    await this.assertVendorCapability(projectId);
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { orgId: true } });
@@ -96,7 +105,7 @@ export class VendorsService {
   }
 
   async listForProject(projectId: string, _user: AuthUser): Promise<{ vendors: ProjectVendorDto[] }> {
-    await this.capabilities.assertEnabled(projectId, MATERIALS_CAPABILITY);
+    await this.assertVendorCapability(projectId);
     const rows = await this.prisma.projectVendor.findMany({ where: { projectId }, include: { vendor: true }, orderBy: { boundAt: 'asc' } });
     return { vendors: rows.map((b) => this.serializeBinding(b)) };
   }

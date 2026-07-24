@@ -47,7 +47,7 @@ describe('Phase 2 Task 10 — drawings projection == live register, live == rebu
   let query: DrawingsQueryService;
   let projSeq = 0;
 
-  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DrawingsProjection"';
+  const TRUNCATE = 'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DrawingsProjection" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
 
