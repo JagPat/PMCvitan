@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { RequestMethod } from '@nestjs/common';
 import { PATH_METADATA, METHOD_METADATA } from '@nestjs/common/constants';
 import type { ModuleManifest } from '@vitan/shared';
+import { readEncapsulation } from '@vitan/shared';
 import { MODULE_MANIFESTS, MANIFEST_BY_ID, validateModuleRegistry } from './registry';
 import { RAW_SQL_WRITE_WAIVERS, CROSS_MODULE_WRITE_WAIVERS } from './boundary-waivers';
 import {
@@ -73,6 +74,9 @@ interface PrismaLike {
   $executeRaw(strings?: TemplateStringsArray, ...values: unknown[]): Promise<number>;
   $executeRawUnsafe(query: string, ...values: unknown[]): Promise<number>;
   activity: Delegate; decision: Delegate; drawing: Delegate; media: Delegate; inspection: Delegate; user: Delegate; projectNode: Delegate;
+  // Phase 4 Task 1 correction 4 — the labour-owned, read-encapsulated WorkerSkill (correction 3's
+  // normalized worker-skill relation). A foreign module reading it must be flagged cross-module-read.
+  workerSkill: Delegate;
 }
 type TxLike = PrismaLike;
 `;
@@ -96,8 +100,15 @@ const FIXTURE_RELATIONS = new Map<string, Map<string, string>>([
 // (Task 8), exactly as the live manifest declares. A foreign read of it is a `cross-module-read`.
 const FIXTURE_READ_ENCAPSULATION = new Map<string, string>([['decision', 'decisions']]);
 
-/** Compile in-memory fixture files and run the persistence analyzer over them. */
-function analyzeFixture(files: Record<string, string>, waivers: FixtureWaivers = {}): BoundaryFinding[] {
+/** Compile in-memory fixture files and run the persistence analyzer over them. `readEncapsulatedBy`
+ *  defaults to the synthetic `decision`-only map; a fixture may inject the REAL manifest-derived
+ *  read-encapsulation (`readEncapsulation(MODULE_MANIFESTS)`) to couple its assertion to the live
+ *  manifests — so removing a model from a manifest's `readEncapsulated` makes that fixture fail. */
+function analyzeFixture(
+  files: Record<string, string>,
+  waivers: FixtureWaivers = {},
+  readEncapsulatedBy: ReadonlyMap<string, string> = FIXTURE_READ_ENCAPSULATION,
+): BoundaryFinding[] {
   const dir = mkdtempSync(join(tmpdir(), 'boundary-fx-'));
   try {
     const abs: string[] = [];
@@ -121,7 +132,7 @@ function analyzeFixture(files: Record<string, string>, waivers: FixtureWaivers =
       kindOf: KIND,
       delegates: DELEGATES,
       relationsOf: FIXTURE_RELATIONS,
-      readEncapsulatedBy: FIXTURE_READ_ENCAPSULATION,
+      readEncapsulatedBy,
       rawWaivers: waivers.rawWaivers ?? [],
       crossWaivers: waivers.crossWaivers ?? [],
     }).findings;
@@ -291,6 +302,31 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
         'decisions/own-read.ts': `export async function ownRead(prisma: PrismaLike) { await prisma.decision.count({ where: {} }); }`,
       });
       expect(f).toEqual([]);
+    });
+
+    // Phase 4 Task 1 correction 4 — an ADVERSARIAL fixture proving the boundary analyzer flags a
+    // foreign read of the labour-owned, read-encapsulated WorkerSkill (correction 3's normalized
+    // worker-skill relation). This fixture is COUPLED to the LIVE manifests: it analyzes against the
+    // REAL `readEncapsulation(MODULE_MANIFESTS)` (not the synthetic `decision`-only map), so if a
+    // future edit removes `workerSkill` from the labour manifest's `readEncapsulated`, the model drops
+    // out of that map, the analyzer no longer flags the read, and THIS test fails (length 0 ≠ 1).
+    it('a foreign module reading the labour-owned WorkerSkill → cross-module-read owned by Labour (coupled to the live manifest)', () => {
+      const realEnc = readEncapsulation(MODULE_MANIFESTS);
+      // sanity: the coupling target really is present in the live manifest read-encapsulation
+      expect(realEnc.get('workerSkill'), 'workerSkill must be read-encapsulated by labour in the live manifest').toBe('labour');
+      const f = analyzeFixture(
+        {
+          'activities/evil-workerskill-read.ts': `export async function evilWorkerSkillRead(prisma: PrismaLike) { await prisma.workerSkill.findMany({ where: {} }); }`,
+        },
+        {},
+        realEnc,
+      );
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('workerSkill');
+      // the owning module (labour) is attributed in the finding message — matching the shape of every
+      // other cross-module-read/-write finding, which carry the owner in the message, not a field.
+      expect(f[0].message).toContain("owned by 'labour'");
     });
 
     // Phase 4 Task 1 correction 2 (re-review finding 3) — permanently pin the NESTED foreign read
