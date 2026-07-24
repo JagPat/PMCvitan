@@ -105,6 +105,14 @@ model Project {
   stockTransactions   StockTransaction[]
   materialIssues      MaterialIssue[]
   mismatchResolutions MismatchResolution[]
+  // Phase 4 Task 1 — the labour module's project-contained rows (plan §§B/H)
+  labourTrades          LabourTrade[]
+  labourSkills          LabourSkill[]
+  workers               Worker[]
+  crews                 Crew[]
+  crewMemberships       CrewMembership[]
+  labourRequirementSpecs LabourRequirementSpec[]
+  labourDemandSlices     LabourDemandSlice[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -826,6 +834,15 @@ model User {
   mismatchesResolved        MismatchResolution[] @relation("mismatchesResolved")
   substitutionsApproved     ApprovedSubstitution[] @relation("substitutionsApproved")
   substitutionsRevoked      ApprovedSubstitution[] @relation("substitutionsRevoked")
+  // Phase 4 Task 1 — trusted-workforce identity attribution (plan §H)
+  labourTradesCreated       LabourTrade[]  @relation("labourTradesCreated")
+  labourSkillsCreated       LabourSkill[]  @relation("labourSkillsCreated")
+  workersOnboarded          Worker[]       @relation("workersOnboarded")
+  workersRevoked            Worker[]       @relation("workersRevoked")
+  crewsFormed               Crew[]         @relation("crewsFormed")
+  crewsRevoked              Crew[]         @relation("crewsRevoked")
+  crewMembersAdded          CrewMembership[] @relation("crewMembersAdded")
+  crewMembersRemoved        CrewMembership[] @relation("crewMembersRemoved")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -873,6 +890,13 @@ model WorkerDevice {
   id        String   @id @default(cuid())
   project   Project  @relation(fields: [projectId], references: [id])
   projectId String
+  // Phase 4 Task 1 (§H) — the trusted-identity binding: a device attributes attendance to a
+  // first-class same-project Worker. NULLABLE so anonymous QR/tap onboarding (no Worker yet)
+  // still works byte-for-byte; a bound device carries the composite (projectId, workerId) FK,
+  // so a device can NEVER reference a Worker in another project. Free-text name/trade below are
+  // display-only and are NEVER readiness evidence (the FK identity is).
+  worker    Worker?  @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId  String?
   name      String?
   trade     String?
   token     String   @unique
@@ -988,6 +1012,8 @@ model ActivityRequirement {
   createdById   String
 
   materialSpec     MaterialRequirementSpec?
+  labourSpec       LabourRequirementSpec? // Phase 4 Task 1 — the labour detail (type='labour')
+  labourSlices     LabourDemandSlice[] // Phase 4 Task 1 — explicit (civilDate, shift, qty) slices
   requisitionLines RequisitionLine[]
   stockLots        StockLot[]
 
@@ -1605,6 +1631,7 @@ model Decision {
   events            DecisionEvent[]
   approvalRevisions DecisionApprovalRevision[]
   materialSpecs     MaterialRequirementSpec[]
+  labourSpecs       LabourRequirementSpec[] // Phase 4 Task 1 — labour demand provenance
   changeRequests ChangeRequest[]
   activities     Activity[]
   materials      SiteMaterial[]
@@ -1662,6 +1689,7 @@ model DecisionApprovalRevision {
   onBehalfOf   String? // 'client' when a PMC recorded the client's consent — never disguised
 
   materialSpecs MaterialRequirementSpec[]
+  labourSpecs   LabourRequirementSpec[] // Phase 4 Task 1 — labour demand provenance (same register)
 
   @@unique([decisionId, version])
   // the provenance FK target: version AND option bind together to one immutable approval fact
@@ -1988,4 +2016,172 @@ model AuditLog {
   entityId  String
   at        DateTime @default(now())
   payload   Json?
+}
+
+// ── Phase 4 Task 1 — Labour readiness foundation (plan §§B/D/H) ──────────────────────────────
+// The labour LEAF module (plan §G, round-3: dependsOn = []). All rows are project-contained; a
+// cross-project reference is unrepresentable in PostgreSQL (same-project composite FKs). Every
+// Prisma-inexpressible seal — the labour-aware type↔detail correspondence, the labour-spec/slice
+// append-only triggers, the demand CHECKs, and the one-active-crew-membership partial unique —
+// is added in raw SQL by 20270110000000_phase4_t1_labour.
+
+// Project-contained labour TRADE catalog. A worker's trade and a labour requirement's trade
+// reference an entry here by composite (projectId, code) FK, so a code always resolves to a
+// real same-project catalog row.
+model LabourTrade {
+  project     Project  @relation(fields: [projectId], references: [id])
+  projectId   String
+  code        String
+  name        String
+  createdAt   DateTime @default(now())
+  createdBy   User     @relation("labourTradesCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+
+  workers     Worker[]
+  labourSpecs LabourRequirementSpec[]
+
+  @@id([projectId, code])
+}
+
+// Project-contained labour SKILL catalog. A worker's skillCodes and a labour requirement's
+// optional skillCode are validated in-service against this catalog.
+model LabourSkill {
+  project     Project  @relation(fields: [projectId], references: [id])
+  projectId   String
+  code        String
+  name        String
+  createdAt   DateTime @default(now())
+  createdBy   User     @relation("labourSkillsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+
+  @@id([projectId, code])
+}
+
+// A trusted, project-contained WORKER identity (§H) — the atomic capacity source (round-1).
+// activeFrom/activeTo bound the engagement; a revoke stamps revokedAt+revokedById.
+model Worker {
+  id          String    @id @default(cuid())
+  project     Project   @relation(fields: [projectId], references: [id])
+  projectId   String
+  name        String
+  // the worker's primary trade — a same-project catalog entry (composite FK)
+  trade       LabourTrade @relation(fields: [projectId, tradeCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
+  tradeCode   String
+  // additional skills — a text array validated in-service against the LabourSkill catalog (an
+  // array cannot carry a referential FK; membership is service-enforced + covered by tests)
+  skillCodes  String[]
+  activeFrom  DateTime  @db.Date
+  activeTo    DateTime? @db.Date
+  revokedAt   DateTime?
+  revokedBy   User?     @relation("workersRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revokedById String?
+  createdAt   DateTime  @default(now())
+  createdBy   User      @relation("workersOnboarded", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+
+  devices         WorkerDevice[]
+  crewMemberships CrewMembership[]
+  ledBy           Crew[]           @relation("crewIncharge")
+
+  // composite identity for same-project (projectId, workerId) FKs (WorkerDevice, Crew, membership)
+  @@unique([projectId, id])
+  @@index([projectId, tradeCode])
+}
+
+// A named set of workers under an in-charge (mistri) — ORGANIZATIONAL only, NOT an atomic
+// capacity source (round-2 finding 1; the atomic source is the Worker).
+model Crew {
+  id               String    @id @default(cuid())
+  project          Project   @relation(fields: [projectId], references: [id])
+  projectId        String
+  name             String
+  // the in-charge (mistri) — a same-project worker (composite FK); optional
+  incharge         Worker?   @relation("crewIncharge", fields: [projectId, inchargeWorkerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  inchargeWorkerId String?
+  activeFrom       DateTime  @db.Date
+  activeTo         DateTime? @db.Date
+  revokedAt        DateTime?
+  revokedBy        User?     @relation("crewsRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revokedById      String?
+  createdAt        DateTime  @default(now())
+  createdBy        User      @relation("crewsFormed", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById      String
+
+  members CrewMembership[]
+
+  @@unique([projectId, id])
+}
+
+// One worker's membership in a crew — project-contained (both composite FKs carry projectId, so
+// a membership can NEVER cross-link a worker and crew from different projects). A member is
+// removed by stamping removedAt (organizational history preserved). A partial-unique index (raw
+// SQL) enforces at most one ACTIVE membership per (crew, worker).
+model CrewMembership {
+  id          String    @id @default(cuid())
+  project     Project   @relation(fields: [projectId], references: [id])
+  projectId   String
+  crew        Crew      @relation(fields: [projectId, crewId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  crewId      String
+  worker      Worker    @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId    String
+  addedAt     DateTime  @default(now())
+  addedBy     User      @relation("crewMembersAdded", fields: [addedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  addedById   String
+  removedAt   DateTime?
+  removedBy   User?     @relation("crewMembersRemoved", fields: [removedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  removedById String?
+
+  @@index([projectId, crewId])
+  @@index([projectId, workerId])
+}
+
+// The LABOUR-ONLY specification detail of one requirement revision (§B) — the sibling of
+// MaterialRequirementSpec. Labour-module-owned; written through LabourParticipant.writeRequirementSpec
+// inside the Activities requirement command (the cycle-exempt participant channel, §G). The
+// fingerprint hashes ONLY (tradeCode, skillCode, shift); decision provenance is stored, not
+// hashed. Append-only via the shared BEFORE UPDATE OR DELETE trigger; a labour-aware DB
+// type↔detail trigger enforces exactly-one detail per revision (material XOR labour). The demand
+// is carried as explicit per-civilDate LabourDemandSlice rows (all sharing this spec's shift).
+model LabourRequirementSpec {
+  id            String              @id @default(cuid())
+  project       Project             @relation(fields: [projectId], references: [id])
+  projectId     String
+  requirement   ActivityRequirement @relation(fields: [projectId, requirementId, revision], references: [projectId, requirementId, revision], onDelete: NoAction, onUpdate: NoAction)
+  requirementId String
+  revision      Int
+
+  trade                 LabourTrade @relation(fields: [projectId, tradeCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
+  tradeCode             String
+  skillCode             String? // optional; a bare-trade demand
+  shift                 String // 'day' | 'night' — part of the fingerprinted identity
+  labourSpecFingerprint String
+
+  // AUTHORITATIVE decision provenance — all null (manual) or all server-resolved (CHECK), FK-bound
+  // onto the immutable DecisionApprovalRevision register (same rule as MaterialRequirementSpec).
+  decision         Decision?                 @relation(fields: [projectId, decisionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  decisionId       String?
+  approvalRevision DecisionApprovalRevision? @relation(fields: [projectId, decisionId, decisionVersion, optionKey], references: [projectId, decisionId, version, optionKey], onDelete: NoAction, onUpdate: NoAction)
+  decisionVersion  Int?
+  optionKey        String?
+
+  @@unique([projectId, requirementId, revision])
+  @@index([projectId, labourSpecFingerprint])
+}
+
+// One explicit (civilDate, shift, personShiftQty) demand slice of a labour requirement revision
+// (§B, round-2 finding 2). shift is the parent spec's shift (joined for the DTO); personShiftQty
+// is a positive integer count of person-shifts (a CHECK). A partial-unique (raw SQL) enforces one
+// slice per (requirement, revision, civilDate). Append-only via the shared trigger; a raw-SQL
+// trigger requires the revision to be labour-typed.
+model LabourDemandSlice {
+  id             String              @id @default(cuid())
+  project        Project             @relation(fields: [projectId], references: [id])
+  projectId      String
+  requirement    ActivityRequirement @relation(fields: [projectId, requirementId, revision], references: [projectId, requirementId, revision], onDelete: NoAction, onUpdate: NoAction)
+  requirementId  String
+  revision       Int
+  civilDate      DateTime @db.Date
+  personShiftQty Int
+
+  @@index([projectId, requirementId, revision])
 }

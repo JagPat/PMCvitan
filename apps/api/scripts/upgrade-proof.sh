@@ -730,6 +730,58 @@ assert_rejects "F4: a resolution on a matched=true observation" \
 assert_rejects "F4: a resolved observation cannot revert to matched=true" \
   "UPDATE \"SiteMaterial\" SET \"matched\"=true WHERE id='UP45-SM-F'"
 
+# =====================================================================================
+# Phase 4 Task 1 — the labour foundation is a PURELY ADDITIVE, row-free capability add over the
+# legacy DB, and every §B/§H seal (type↔detail, immutable-type, append-only, same-project
+# composite FKs, applicable uniqueness) holds against hostile inserts.
+# =====================================================================================
+assert "the seven labour tables exist and the migration wrote NO rows over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('LabourTrade','LabourSkill','Worker','Crew','CrewMembership','LabourRequirementSpec','LabourDemandSlice'))::text || '|' || (SELECT COUNT(*) FROM \"Worker\")::text || '|' || (SELECT COUNT(*) FROM \"LabourRequirementSpec\")::text || '|' || (SELECT COUNT(*) FROM \"CrewMembership\")::text;" \
+  "7|0|0|0"
+assert "the WorkerDevice->Worker binding column exists (nullable — anonymous onboarding still works)" \
+  "SELECT is_nullable FROM information_schema.columns WHERE table_name='WorkerDevice' AND column_name='workerId';" \
+  "YES"
+assert "the labour type<->detail, slice-typed, append-only and immutable-type triggers are installed" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('LabourRequirementSpec_spec_pairing','LabourDemandSlice_typed','LabourRequirementSpec_append_only','LabourDemandSlice_append_only','ActivityRequirement_type_immutable') AND NOT tgisinternal;" \
+  "5"
+
+# plant a coherent labour fixture: a trade in each project, a worker in p1 and p2, a crew in p1
+# with one active member. The correction ACCEPTS well-formed, project-contained rows.
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  labour fixture chain did not apply"; FAIL=1; }
+BEGIN;
+INSERT INTO "LabourTrade"("projectId","code","name","createdById") VALUES ('p1','mason','Mason','USER-1'),('p2','mason','Mason','USER-1');
+INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('p1','bar-bending','Bar Bending','USER-1');
+INSERT INTO "Worker"("id","projectId","name","tradeCode","skillCodes","activeFrom","createdById")
+  VALUES ('UPL-W1','p1','Ravi','mason','{bar-bending}','2026-06-01','USER-1'),
+         ('UPL-W2','p2','Sita','mason','{}','2026-06-01','USER-1');
+INSERT INTO "Crew"("id","projectId","name","activeFrom","createdById") VALUES ('UPL-C1','p1','Gang A','2026-06-01','USER-1');
+INSERT INTO "CrewMembership"("id","projectId","crewId","workerId","addedById") VALUES ('UPL-CM1','p1','UPL-C1','UPL-W1','USER-1');
+INSERT INTO "WorkerDevice"("id","projectId","workerId","token") VALUES ('UPL-WD1','p1','UPL-W1','uptok-ok');
+COMMIT;
+SQL
+assert "the labour foundation accepts a coherent trade/worker/crew/membership/device over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM \"Worker\") || '|' || (SELECT COUNT(*) FROM \"CrewMembership\") || '|' || (SELECT COUNT(*) FROM \"WorkerDevice\" WHERE \"workerId\" IS NOT NULL);" \
+  "2|1|1"
+
+# §H — a crew cannot enroll a worker that lives in another project (same-project composite FK)
+assert_rejects "labour §H: a crew cannot enroll a worker from another project (composite FK)" \
+  "INSERT INTO \"CrewMembership\"(\"id\",\"projectId\",\"crewId\",\"workerId\",\"addedById\") VALUES('UPL-H1','p1','UPL-C1','UPL-W2','USER-1')"
+# §H — a device cannot bind a worker that lives in another project (same-project composite FK)
+assert_rejects "labour §H: a device cannot bind a worker from another project (composite FK)" \
+  "INSERT INTO \"WorkerDevice\"(\"id\",\"projectId\",\"workerId\",\"token\") VALUES('UPL-H2','p1','UPL-W2','uptok-forge')"
+# §H — one ACTIVE membership per (crew, worker) (partial unique)
+assert_rejects "labour §H: a second active membership for the same (crew,worker) (partial unique)" \
+  "INSERT INTO \"CrewMembership\"(\"id\",\"projectId\",\"crewId\",\"workerId\",\"addedById\") VALUES('UPL-H3','p1','UPL-C1','UPL-W1','USER-1')"
+# §H — a worker allocated only within its active window (activeTo not before activeFrom)
+assert_rejects "labour §H: a worker with activeTo before activeFrom (CHECK)" \
+  "INSERT INTO \"Worker\"(\"id\",\"projectId\",\"name\",\"tradeCode\",\"skillCodes\",\"activeFrom\",\"activeTo\",\"createdById\") VALUES('UPL-H4','p1','Bad','mason','{}','2026-06-10','2026-06-01','USER-1')"
+# §B — a type='labour' requirement with NO labour detail is refused at commit (type<->detail)
+assert_rejects "labour §B: a type='labour' requirement with no LabourRequirementSpec (type<->detail)" \
+  "BEGIN; INSERT INTO \"ActivityRequirementRoot\"(\"id\",\"projectId\",\"createdById\") VALUES('UPL-LR','p1','USER-1'); INSERT INTO \"ActivityRequirement\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"activityId\",\"type\",\"requiredQty\",\"baseUom\",\"requiredBy\",\"createdById\") VALUES('UPL-LAR','p1','UPL-LR',1,'ACT-1','labour',1,'person-shift','2026-08-10','USER-1'); COMMIT;"
+# §B — a LabourDemandSlice cannot attach to a MATERIAL requirement (the slice-typed guard)
+assert_rejects "labour §B: a demand slice on a material requirement (slice-typed guard)" \
+  "INSERT INTO \"LabourDemandSlice\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"civilDate\",\"personShiftQty\") VALUES('UPL-H5','p1','REQ-1',1,'2026-08-10',1)"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

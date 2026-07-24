@@ -261,7 +261,7 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor"');
     await t.prisma.auditLog.deleteMany({ where: { entityId: id } });
     await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "MaterialRequirementSpec", "DecisionApprovalRevision"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision"');
     await t.prisma.changeRequest.deleteMany({ where: { decisionId: id } });
     await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
     await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });

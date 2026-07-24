@@ -11,6 +11,8 @@ export * from './domain/readiness';
 // Authorization policy (single source of truth for role → action)
 export * from './domain/policy';
 export * from './domain/material-spec';
+// Phase 4 Task 1 — the deterministic labour-specification identity (trade/skill/shift)
+export * from './domain/labour-spec';
 // Platform: the shared DomainEvent envelope + catalog (Phase 2 Task 4)
 export * from './platform/events';
 // Platform: the module registry contract — manifests + validator + enablement (Phase 2 Task 7)
@@ -26,5 +28,7 @@ export * from './contracts/procurement';
 export * from './contracts/inventory';
 export * from './contracts/drawings';
 export * from './contracts/inspections';
+// Module contracts: the labour command/query contract (Phase 4 Task 1 — the labour leaf module)
+export * from './contracts/labour';
 // i18n dictionaries
 export * from './i18n/dictionary';

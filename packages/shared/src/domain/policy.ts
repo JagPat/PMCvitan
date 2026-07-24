@@ -48,6 +48,14 @@ export const ROLE_POLICY = {
   'stock.record': ['pmc', 'engineer'],
   'stock.adjust': ['pmc'],
   'stock.read': ['pmc', 'engineer'],
+  // Phase 4 Task 1 — the labour pilot surface (plan §H matrix). Trusted-workforce identity
+  // (worker/crew onboarding, revocation, device binding, trade/skill catalog) is pmc authority;
+  // the workforce register read mirrors requirement.read (pmc + engineer). The labour DEMAND is
+  // authored through the Activities-owned `requirement.manage` command routed by type, so it needs
+  // no separate labour policy. The fuller labour permission set (allocation/attendance/commit/
+  // override, plan §H) lands with its routes in Tasks 2–5.
+  'labour.manage': ['pmc'],
+  'labour.read': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

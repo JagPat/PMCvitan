@@ -13,6 +13,7 @@ import { SubstitutionsController } from '../activities/substitutions.controller'
 import { VendorsController } from '../procurement/vendors.controller';
 import { ProcurementController } from '../procurement/procurement.controller';
 import { InventoryController } from '../inventory/inventory.controller';
+import { LabourController } from '../labour/labour.controller';
 import { AuthController } from '../auth/auth.controller';
 import { DailyLogController } from '../daily-log/daily-log.controller';
 import { DecisionsController } from '../decisions/decisions.controller';
@@ -47,6 +48,7 @@ const CONTROLLERS = [
   VendorsController,
   ProcurementController,
   InventoryController,
+  LabourController,
   AuthController,
   DailyLogController,
   DecisionsController,

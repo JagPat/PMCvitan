@@ -644,11 +644,29 @@ export const correctInvitationEmailSchema = z.object({
 });
 export type CorrectInvitationEmailInput = z.infer<typeof correctInvitationEmailSchema>;
 
-// ── Phase 3 Task 1 — the ActivityRequirement demand contract (plan §§B/F) ──────────────
-// Quantities travel as DECIMAL STRINGS (never floats); the service canonicalizes via the
-// shared parseQuantity and refuses anything that does not round-trip numeric(18,6).
-const requirementSpecShape = {
+// ── Phase 3 Task 1 / Phase 4 Task 1 — the TYPE-ROUTED ActivityRequirement demand contract ──
+// (plan §B). The requirement is type-neutral: a `type='material'` revision carries the material
+// identity (quantities as DECIMAL STRINGS, canonicalized by the shared parseQuantity so they
+// round-trip numeric(18,6)); a `type='labour'` revision carries the trade/skill/shift technical
+// identity + explicit per-`(civilDate, personShiftQty)` demand slices (integer person-shifts).
+// `type` DEFAULTS to 'material' when absent, so every existing material caller (which never sent
+// `type`) is byte-for-byte unchanged.
+
+// fields common to every requirement type (caller-provided). provenance is SERVER-resolved from
+// the referenced decision's approval record (correction finding 1): the caller may name a
+// decision, never author its version or option.
+const requirementCommonShape = {
   activityId: z.string().trim().min(1),
+  decisionId: z.string().trim().min(1).nullish(),
+  responsibleId: z.string().trim().min(1).nullish(),
+  criticality: z.enum(['normal', 'critical']).default('normal'),
+  tolerance: z.string().trim().min(1).nullish(),
+};
+
+// the MATERIAL detail (the Phase-3 shape verbatim, now tagged `type:'material'`).
+const materialRequirementShape = {
+  ...requirementCommonShape,
+  type: z.literal('material'),
   materialCategory: z.string().trim().min(1),
   make: z.string().trim().min(1),
   grade: z.string().trim().min(1),
@@ -656,20 +674,89 @@ const requirementSpecShape = {
   baseUom: z.string().trim().min(1),
   qty: z.string().trim().min(1),
   requiredBy: isoCivilDateSchema,
-  // provenance is SERVER-resolved from the referenced decision's approval record (correction
-  // finding 1): the caller may name a decision, never author its version or option
-  decisionId: z.string().trim().min(1).nullish(),
-  responsibleId: z.string().trim().min(1).nullish(),
-  criticality: z.enum(['normal', 'critical']).default('normal'),
-  tolerance: z.string().trim().min(1).nullish(),
 };
-export const createRequirementSchema = z.object(requirementSpecShape).strict();
+
+// one explicit `(civilDate, personShiftQty)` labour demand slice (§B). The shift is the spec's
+// shift (one per requirement), so a slice needs only its civil date + person-shift count.
+export const labourDemandSliceSchema = z
+  .object({ civilDate: isoCivilDateSchema, personShiftQty: z.number().int().positive() })
+  .strict();
+export type LabourDemandSliceInput = z.infer<typeof labourDemandSliceSchema>;
+
+// the LABOUR detail — trade/skill/shift technical identity + explicit demand slices (§B). The
+// service DERIVES the neutral row's baseUom='person-shift', qty=Σ personShiftQty and
+// requiredBy=max(civilDate) from the slices (they are not caller-authored for labour).
+const labourRequirementShape = {
+  ...requirementCommonShape,
+  type: z.literal('labour'),
+  tradeCode: z.string().trim().min(1),
+  skillCode: z.string().trim().min(1).nullish(),
+  shift: z.enum(['day', 'night']),
+  demandSlices: z.array(labourDemandSliceSchema).min(1),
+};
+
+/** Default `type` to 'material' when a caller omits it (backward compatibility). */
+function withDefaultMaterialType(v: unknown): unknown {
+  return v && typeof v === 'object' && !Array.isArray(v) && !('type' in (v as Record<string, unknown>))
+    ? { type: 'material', ...(v as Record<string, unknown>) }
+    : v;
+}
+
+export const createRequirementSchema = z.preprocess(
+  withDefaultMaterialType,
+  z.discriminatedUnion('type', [z.object(materialRequirementShape).strict(), z.object(labourRequirementShape).strict()]),
+);
 export type CreateRequirementInput = z.infer<typeof createRequirementSchema>;
 // a revision restates the full specification (append-only; CAS on the expected revision)
-export const reviseRequirementSchema = z.object({ ...requirementSpecShape, expectedRevision: z.number().int().min(1) }).strict();
+export const reviseRequirementSchema = z.preprocess(
+  withDefaultMaterialType,
+  z.discriminatedUnion('type', [
+    z.object({ ...materialRequirementShape, expectedRevision: z.number().int().min(1) }).strict(),
+    z.object({ ...labourRequirementShape, expectedRevision: z.number().int().min(1) }).strict(),
+  ]),
+);
 export type ReviseRequirementInput = z.infer<typeof reviseRequirementSchema>;
 export const cancelRequirementSchema = z.object({ expectedRevision: z.number().int().min(1), reason: z.string().trim().min(1) }).strict();
 export type CancelRequirementInput = z.infer<typeof cancelRequirementSchema>;
+
+// ── Phase 4 Task 1 — labour trusted-identity onboarding commands (plan §H) ──────────────
+// The labour requirement DEMAND is authored through the Activities-owned requirement command
+// (type-routed above); THESE are the labour module's own roster commands (pmc authority).
+export const upsertLabourTradeSchema = z.object({ code: z.string().trim().min(1), name: z.string().trim().min(1) }).strict();
+export type UpsertLabourTradeInput = z.infer<typeof upsertLabourTradeSchema>;
+
+export const upsertLabourSkillSchema = z.object({ code: z.string().trim().min(1), name: z.string().trim().min(1) }).strict();
+export type UpsertLabourSkillInput = z.infer<typeof upsertLabourSkillSchema>;
+
+export const onboardWorkerSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    tradeCode: z.string().trim().min(1),
+    skillCodes: z.array(z.string().trim().min(1)).default([]),
+    activeFrom: isoCivilDateSchema,
+    activeTo: isoCivilDateSchema.nullish(),
+  })
+  .strict();
+export type OnboardWorkerInput = z.infer<typeof onboardWorkerSchema>;
+
+export const revokeWorkerSchema = z.object({ reason: z.string().trim().min(1).nullish() }).strict();
+export type RevokeWorkerInput = z.infer<typeof revokeWorkerSchema>;
+
+export const formCrewSchema = z
+  .object({
+    name: z.string().trim().min(1),
+    inchargeWorkerId: z.string().trim().min(1).nullish(),
+    activeFrom: isoCivilDateSchema,
+    activeTo: isoCivilDateSchema.nullish(),
+  })
+  .strict();
+export type FormCrewInput = z.infer<typeof formCrewSchema>;
+
+export const addCrewMemberSchema = z.object({ workerId: z.string().trim().min(1) }).strict();
+export type AddCrewMemberInput = z.infer<typeof addCrewMemberSchema>;
+
+export const removeCrewMemberSchema = z.object({}).strict();
+export type RemoveCrewMemberInput = z.infer<typeof removeCrewMemberSchema>;
 
 // ── Phase 3 Task 6 — approved material substitutions (plan §B). Approve DESCRIBES the
 // alternative material (the server computes its `toFingerprint` via the ONE shared fingerprint

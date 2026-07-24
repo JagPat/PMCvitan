@@ -116,6 +116,8 @@ export const DEFAULT_DIR_TO_MODULE: Readonly<Record<string, string>> = {
   procurement: 'procurement',
   // Phase 3 Task 4 — the inventory pillar (stock lots + the append-only §C ledger)
   inventory: 'inventory',
+  // Phase 4 Task 1 — the labour pillar (workforce identity + the labour requirement detail)
+  labour: 'labour',
   auth: 'auth',
   platform: 'platform',
   push: 'platform',

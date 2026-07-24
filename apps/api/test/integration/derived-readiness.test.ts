@@ -54,7 +54,7 @@ describe('derived readiness + gate overrides (integration)', () => {
     await t.prisma.drawingRevision.deleteMany({ where: { drawing: { projectId } } });
     await t.prisma.drawing.deleteMany({ where: { projectId } });
     await t.prisma.activity.deleteMany({ where: { projectId } });
-    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "MaterialRequirementSpec", "DecisionApprovalRevision"');
+    await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision"');
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } });
     await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } });
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } });

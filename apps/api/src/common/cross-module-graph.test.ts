@@ -84,6 +84,11 @@ const MODEL_OWNER: Record<string, string> = {
   // Phase 3 Task 4 — the inventory pillar (§C physical truth: lots + the append-only ledger);
   // Task 5 adds the §E-canonical MaterialIssue (what LEFT the store, for which activity)
   stockLot: 'inventory', stockTransaction: 'inventory', materialIssue: 'inventory',
+  // Phase 4 Task 1 — the labour pillar (§§B/H): the catalog, the trusted Worker/Crew identity,
+  // and the labour requirement detail (the spec + demand slices are written THROUGH the
+  // Labour-owned participant by the Activities requirement command — the cycle-exempt edge).
+  labourTrade: 'labour', labourSkill: 'labour', worker: 'labour', crew: 'labour', crewMembership: 'labour',
+  labourRequirementSpec: 'labour', labourDemandSlice: 'labour',
   projectNode: 'nodes',
   media: 'media',
   org: 'orgs', orgMembership: 'orgs', membership: 'orgs', project: 'orgs', projectCompany: 'orgs',
@@ -155,6 +160,11 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 3 },
   // edge 8 (project-init structure) → node/activity/inspection init participants
   'orgs/orgs.service.ts': { domain: 'orgs', foreign: {}, dispatch: 0 },
+  // Phase 4 Task 1 — the labour LEAF: trusted-workforce onboarding writes ONLY labour-owned
+  // tables and emits NO domain event (a roster surface — capacity facts + their events arrive
+  // in Tasks 3–5), so it dispatches nothing. The labour requirement detail write lives in the
+  // (un-scanned) labour.participant.ts, invoked by the Activities requirement command.
+  'labour/labour.service.ts': { domain: 'labour', foreign: {}, dispatch: 0 },
 };
 
 // Services that WRITE but are NOT pillar signal emitters. Documented so a new
@@ -309,6 +319,17 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('stock/wastage')",
     "Post('stock/transfer')",
   ],
+  // Phase 4 Task 1 — the labour trusted-workforce onboarding surface (§H). GET reads
+  // (labour/workforce, labour/catalog) are declared by the manifest `queries`, not here.
+  'labour/labour.controller.ts': [
+    "Post('labour/trades')",
+    "Post('labour/skills')",
+    "Post('labour/workers')",
+    "Post('labour/workers/:workerId/revoke')",
+    "Post('labour/crews')",
+    "Post('labour/crews/:crewId/members')",
+    "Delete('labour/crews/:crewId/members/:workerId')",
+  ],
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')"],
 };
 
@@ -387,12 +408,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('106 mutating routes total (the documented command inventory §4)', () => {
+    it('115 mutating routes total (the documented command inventory §4; +7 Phase-4 labour)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(108);
+      expect(total).toBe(115);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(108);
+      expect(live).toBe(115);
     });
   });
 

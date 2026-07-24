@@ -14,7 +14,7 @@ describe('Phase 2 Task 7 — module registry', () => {
 
   it('enablement is every compiled module — the single source of truth (finding 7)', () => {
     expect(enabledModuleIds()).toEqual(
-      ['activities', 'auth', 'daily-log', 'decisions', 'drawings', 'inspections', 'inventory', 'media', 'nodes', 'orgs', 'platform', 'procurement'],
+      ['activities', 'auth', 'daily-log', 'decisions', 'drawings', 'inspections', 'inventory', 'labour', 'media', 'nodes', 'orgs', 'platform', 'procurement'],
     );
   });
 
@@ -73,8 +73,11 @@ describe('Phase 2 Task 7 — module registry', () => {
       // completion creates the closing inspection (edge 1) + relabel; the Module-4 correction adds
       // the drawings participant: activity deletion unlinks governed drawings (drawing.activity_unlinked)
       // Phase 3 Task 2 adds the procurement participant: requirements.cancel refuses while open
-      // requisition lines reference the requirement (the §F explicit-disposition guard)
-      activities: ['inspections', 'drawings', 'procurement'],
+      // requisition lines reference the requirement (the §F explicit-disposition guard).
+      // Phase 4 Task 1 adds the labour participant: a type='labour' requirement writes its
+      // Labour-owned detail (spec + slices) through LabourRequirementParticipant — the
+      // cycle-exempt activities → labour edge that keeps labour a leaf (dependsOn: []).
+      activities: ['inspections', 'drawings', 'procurement', 'labour'],
       'daily-log': ['activities'], // material-mismatch blocks the activity's readiness (edge 4)
       // Phase 3 Task 4 adds the inventory participant to media: the delete tx refuses while the
       // photo is immutable stock-ledger quality evidence (assertMediaDisposable)

@@ -38,7 +38,10 @@ export const activitiesManifest: ModuleManifest = {
   // ON DELETE SET NULL only) through the drawings participant on the same transaction.
   // Phase 3 Task 2 — `requirements.cancel` invokes the procurement participant (the §F
   // explicit-disposition guard: open requisition lines block the cancel) on the same transaction.
-  workflowParticipants: ['inspections', 'drawings', 'procurement'],
+  // Phase 4 Task 1 — `requirements.create/revise/cancel` writes the labour requirement detail
+  // through the Labour-owned participant when `type='labour'` (the cycle-exempt activities →
+  // labour edge; Labour stays a leaf).
+  workflowParticipants: ['inspections', 'drawings', 'procurement', 'labour'],
   producesEvents: [
     'activity.created',
     'activity.updated',

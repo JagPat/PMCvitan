@@ -37,6 +37,9 @@ import { ProcurementParticipant } from './procurement/procurement.participant';
 import { InventoryController } from './inventory/inventory.controller';
 import { InventoryService } from './inventory/inventory.service';
 import { InventoryParticipant } from './inventory/inventory.participant';
+import { LabourController } from './labour/labour.controller';
+import { LabourService } from './labour/labour.service';
+import { LabourRequirementParticipant } from './labour/labour.participant';
 import { RequirementsService } from './activities/requirements.service';
 import { CapabilitiesService } from './platform/capabilities.service';
 import { InspectionsService } from './inspections/inspections.service';
@@ -98,6 +101,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     VendorsController,
     ProcurementController,
     InventoryController,
+    LabourController,
     InspectionsController,
     DailyLogController,
     MediaController,
@@ -118,6 +122,8 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     ProcurementParticipant,
     InventoryService,
     InventoryParticipant,
+    LabourService,
+    LabourRequirementParticipant,
     CapabilitiesService,
     JwtGuard,
     ProjectAccessService,
