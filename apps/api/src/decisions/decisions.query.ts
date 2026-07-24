@@ -67,6 +67,17 @@ export class DecisionsQueryService {
   }
 
   /**
+   * Phase 4 Task 1 (correction F1) — the status of ONE linked decision, read on the GIVEN client so
+   * the activity `start` command can consult it INSIDE its readiness-locked transaction (a concurrent
+   * approval serializes) WITHOUT a cross-module `activity.decision` Prisma include. Returns null when
+   * the decision is not in this project (a cross-project link is not this project's decision).
+   */
+  async statusOf(projectId: string, decisionId: string, db: Prisma.TransactionClient = this.prisma): Promise<DecisionStatus | null> {
+    const row = await db.decision.findFirst({ where: { id: decisionId, projectId }, select: { status: true } });
+    return row ? (row.status as DecisionStatus) : null;
+  }
+
+  /**
    * Phase 2 Task 9 — the decisions slice served from the REBUILDABLE PROJECTION (`decisions.inbox`)
    * instead of the live join. Reads the project's ACTIVE generation's `DecisionProjection` rows (the
    * pre-serialized `DecisionDto`s the projection consumer refreshed from canonical) and applies the

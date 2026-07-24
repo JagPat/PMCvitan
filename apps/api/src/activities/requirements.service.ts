@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
+import { LabourRequirementQuery, labourDetailKey } from '../labour/labour.query';
 import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY } from '../platform/capabilities.service';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -57,11 +58,12 @@ import { randomUUID } from 'node:crypto';
 
 const LABOUR_BASE_UOM = 'person-shift';
 
-const REQUIREMENT_INCLUDE = { materialSpec: true, labourSpec: true, labourSlices: true } as const;
+// F1 (read encapsulation): the requirement row includes only its OWN material spec. The Labour-owned
+// detail (LabourRequirementSpec + LabourDemandSlice) is NEVER hydrated through a Prisma relation
+// include here — it is fetched through the Labour read contract (`LabourRequirementQuery`).
+const REQUIREMENT_INCLUDE = { materialSpec: true } as const;
 
 type SpecRow = Prisma.MaterialRequirementSpecGetPayload<Record<string, never>>;
-type LabourSpecRow = Prisma.LabourRequirementSpecGetPayload<Record<string, never>>;
-type SliceRow = Prisma.LabourDemandSliceGetPayload<Record<string, never>>;
 type Row = Prisma.ActivityRequirementGetPayload<{ include: typeof REQUIREMENT_INCLUDE }>;
 
 // A requirement command input (create or revise) — a discriminated union over `type`.
@@ -86,25 +88,7 @@ function serializeSpec(s: SpecRow | null, revisionBaseUom: string): RequirementS
   };
 }
 
-/** Phase 4 Task 1 — the labour detail as served: technical identity + provenance + the explicit
- *  demand slices (each carrying the spec's shift, so the slice triple is complete). */
-function serializeLabourSpec(s: LabourSpecRow | null, slices: readonly SliceRow[]): LabourSpecRef | null {
-  if (!s) return null;
-  return {
-    tradeCode: s.tradeCode,
-    skillCode: s.skillCode,
-    shift: s.shift,
-    labourSpecFingerprint: s.labourSpecFingerprint,
-    decisionId: s.decisionId,
-    decisionVersion: s.decisionVersion,
-    optionKey: s.optionKey,
-    demandSlices: [...slices]
-      .sort((a, b) => a.civilDate.getTime() - b.civilDate.getTime())
-      .map((slice) => ({ civilDate: toIsoCivilDate(slice.civilDate) ?? '', shift: s.shift, personShiftQty: slice.personShiftQty })),
-  };
-}
-
-function serializeRequirement(r: Row): RequirementDto {
+function serializeRequirement(r: Row, labourSpec: LabourSpecRef | null): RequirementDto {
   return {
     id: r.id,
     requirementId: r.requirementId,
@@ -112,7 +96,7 @@ function serializeRequirement(r: Row): RequirementDto {
     activityId: r.activityId,
     type: r.type,
     spec: serializeSpec(r.materialSpec, r.baseUom),
-    labourSpec: serializeLabourSpec(r.labourSpec, r.labourSlices),
+    labourSpec,
     qty: r.requiredQty.toString(),
     baseUom: r.baseUom,
     requiredBy: toIsoCivilDate(r.requiredBy) ?? '',
@@ -128,14 +112,14 @@ function serializeRequirement(r: Row): RequirementDto {
 /** The complete documented event payload (review finding 4; round-2 finding 5 — a discriminated
  *  `type` + the type detail): identity, revision, activity, the FULL spec reference (material OR
  *  labour), quantity, unit and the civil needed-by date. */
-function eventPayload(r: Row, reason?: string): RequirementEventPayload {
+function eventPayload(r: Row, labourSpec: LabourSpecRef | null, reason?: string): RequirementEventPayload {
   return {
     requirementId: r.requirementId,
     revision: r.revision,
     activityId: r.activityId,
     type: r.type,
     specRef: serializeSpec(r.materialSpec, r.baseUom),
-    labourSpecRef: serializeLabourSpec(r.labourSpec, r.labourSlices),
+    labourSpecRef: labourSpec,
     qty: r.requiredQty.toString(),
     baseUom: r.baseUom,
     requiredBy: toIsoCivilDate(r.requiredBy) ?? '',
@@ -156,6 +140,10 @@ export class RequirementsService {
     // Phase 4 Task 1 — the labour detail is written through the Labour-owned participant (the
     // cycle-exempt activities → labour edge); Labour never reads Activities persistence.
     private readonly labourParticipant: LabourRequirementParticipant,
+    // F1 — the Labour READ contract: the labour detail is hydrated through this query (never a
+    // Prisma relation include on the requirement), keeping LabourRequirementSpec/LabourDemandSlice
+    // read-encapsulated. Callable in the command tx (serialize what was just written) or standalone.
+    private readonly labourQuery: LabourRequirementQuery,
     // the single external-effect sender (PR C Task 2) — snapshot invalidations ride it post-commit
     private readonly dispatcher: ExternalEffectDispatcher,
   ) {}
@@ -279,6 +267,15 @@ export class RequirementsService {
     });
   }
 
+  /** Hydrate ONE requirement revision's Labour-owned detail through the read contract (F1). Pass
+   *  `tx` to read inside the command transaction (serialize what was just written); omit it for a
+   *  post-commit read. Returns null for a material requirement (no labour detail). */
+  private async labourRefFor(projectId: string, r: Row, tx?: Prisma.TransactionClient): Promise<LabourSpecRef | null> {
+    if (r.type !== 'labour') return null;
+    const map = await this.labourQuery.detailsFor(projectId, [{ requirementId: r.requirementId, revision: r.revision }], tx);
+    return map.get(labourDetailKey(r.requirementId, r.revision)) ?? null;
+  }
+
   async create(projectId: string, input: CreateRequirementInput, user: AuthUser, idempotencyKey?: string): Promise<RequirementDto> {
     await this.capabilities.assertEnabled(projectId, this.capabilityForType(input.type));
     const actor = await resolveActor(this.prisma, user);
@@ -302,9 +299,10 @@ export class RequirementsService {
         await this.writeDetail(tx, projectId, requirementId, 1, input);
         await recordAudit(tx, { projectId, actor, action: 'requirement.create', entity: 'ActivityRequirement', entityId: requirementId });
         const full = await tx.activityRequirement.findUniqueOrThrow({ where: { id: created.id }, include: REQUIREMENT_INCLUDE });
+        const labourRef = await this.labourRefFor(projectId, full, tx);
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'requirement.created', entityType: 'ActivityRequirement', entityId: requirementId,
-          payload: eventPayload(full) as unknown as Prisma.InputJsonValue,
+          payload: eventPayload(full, labourRef) as unknown as Prisma.InputJsonValue,
           effectKey: 'requirement.created', dispatch: {},
         });
         return { resultRef: created.id, events: [ev] };
@@ -312,7 +310,7 @@ export class RequirementsService {
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     const row = await this.prisma.activityRequirement.findFirstOrThrow({ where: { projectId, id: outcome.resultRef }, include: REQUIREMENT_INCLUDE });
-    return serializeRequirement(row);
+    return serializeRequirement(row, await this.labourRefFor(projectId, row));
   }
 
   async revise(projectId: string, requirementId: string, input: ReviseRequirementInput, user: AuthUser, idempotencyKey?: string): Promise<RequirementDto> {
@@ -342,9 +340,10 @@ export class RequirementsService {
         await this.writeDetail(tx, projectId, requirementId, head.revision + 1, input);
         await recordAudit(tx, { projectId, actor, action: 'requirement.revise', entity: 'ActivityRequirement', entityId: requirementId });
         const full = await tx.activityRequirement.findUniqueOrThrow({ where: { id: created.id }, include: REQUIREMENT_INCLUDE });
+        const labourRef = await this.labourRefFor(projectId, full, tx);
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'requirement.revised', entityType: 'ActivityRequirement', entityId: requirementId,
-          payload: eventPayload(full) as unknown as Prisma.InputJsonValue,
+          payload: eventPayload(full, labourRef) as unknown as Prisma.InputJsonValue,
           effectKey: 'requirement.revised', dispatch: {},
         });
         return { resultRef: created.id, events: [ev] };
@@ -352,7 +351,7 @@ export class RequirementsService {
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     const row = await this.prisma.activityRequirement.findFirstOrThrow({ where: { projectId, id: outcome.resultRef }, include: REQUIREMENT_INCLUDE });
-    return serializeRequirement(row);
+    return serializeRequirement(row, await this.labourRefFor(projectId, row));
   }
 
   async cancel(projectId: string, requirementId: string, input: CancelRequirementInput, user: AuthUser, idempotencyKey?: string): Promise<RequirementDto> {
@@ -398,9 +397,10 @@ export class RequirementsService {
         await this.labourParticipant.copyRequirementSpecForCancel(tx, projectId, requirementId, head.revision, head.revision + 1);
         await recordAudit(tx, { projectId, actor, action: 'requirement.cancel', entity: 'ActivityRequirement', entityId: requirementId });
         const full = await tx.activityRequirement.findUniqueOrThrow({ where: { id: created.id }, include: REQUIREMENT_INCLUDE });
+        const labourRef = await this.labourRefFor(projectId, full, tx);
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'requirement.cancelled', entityType: 'ActivityRequirement', entityId: requirementId,
-          payload: eventPayload(full, input.reason) as unknown as Prisma.InputJsonValue,
+          payload: eventPayload(full, labourRef, input.reason) as unknown as Prisma.InputJsonValue,
           effectKey: 'requirement.cancelled', dispatch: {},
         });
         return { resultRef: created.id, events: [ev] };
@@ -408,7 +408,7 @@ export class RequirementsService {
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
     const row = await this.prisma.activityRequirement.findFirstOrThrow({ where: { projectId, id: outcome.resultRef }, include: REQUIREMENT_INCLUDE });
-    return serializeRequirement(row);
+    return serializeRequirement(row, await this.labourRefFor(projectId, row));
   }
 
   /**
@@ -417,12 +417,17 @@ export class RequirementsService {
    * enforced at the route (`@RolesFor('requirement.read')`) AND here, so a service-level caller
    * cannot bypass it. Client-facing readiness summaries are a separate later-task surface.
    *
-   * The register spans BOTH capabilities (material + labour requirements). The read requires the
-   * `materials` capability (the register surface shipped with materials); a labour-only pilot's
-   * requirements still serialize with their labour detail once either capability is on.
+   * The register spans BOTH capabilities (material + labour requirements). It is available when
+   * EITHER `materials` OR `labour` is enabled (F4 — a labour-only pilot must be able to read its
+   * own requirements); it 404s only when NEITHER is enabled. Each row's labour detail is hydrated
+   * through the Labour read contract (F1), never a Prisma relation include.
    */
   async list(projectId: string, user: AuthUser): Promise<{ requirements: RequirementListItem[] }> {
-    await this.capabilities.assertEnabled(projectId, MATERIALS_CAPABILITY);
+    // materials OR labour enables the register; if materials is off, fall through to labour, whose
+    // assertEnabled raises the canonical 404 when NEITHER capability is on.
+    if (!(await this.capabilities.isEnabled(projectId, MATERIALS_CAPABILITY))) {
+      await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
+    }
     if (!(ROLE_POLICY['requirement.read'] as readonly string[]).includes(user.role)) {
       throw new ForbiddenException('The requirement register is a pmc/engineer surface');
     }
@@ -437,6 +442,16 @@ export class RequirementsService {
       if (!cur || r.revision > cur.head.revision) byId.set(r.requirementId, { head: r, revisions: (cur?.revisions ?? 0) + 1 });
       else cur.revisions += 1;
     }
-    return { requirements: [...byId.values()].map(({ head, revisions }) => ({ ...serializeRequirement(head), revisions })) };
+    const heads = [...byId.values()];
+    const labourRefs = await this.labourQuery.detailsFor(
+      projectId,
+      heads.filter((h) => h.head.type === 'labour').map((h) => ({ requirementId: h.head.requirementId, revision: h.head.revision })),
+    );
+    return {
+      requirements: heads.map(({ head, revisions }) => ({
+        ...serializeRequirement(head, labourRefs.get(labourDetailKey(head.requirementId, head.revision)) ?? null),
+        revisions,
+      })),
+    };
   }
 }

@@ -2054,6 +2054,8 @@ model LabourSkill {
   createdBy   User     @relation("labourSkillsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById String
 
+  labourSpecs LabourRequirementSpec[]
+
   @@id([projectId, code])
 }
 
@@ -2152,7 +2154,10 @@ model LabourRequirementSpec {
 
   trade                 LabourTrade @relation(fields: [projectId, tradeCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
   tradeCode             String
-  skillCode             String? // optional; a bare-trade demand
+  // optional; a bare-trade demand. Task-1 correction F3 — a same-project composite FK makes a
+  // nonexistent OR cross-project skill unrepresentable in PostgreSQL (was service-validated only).
+  skill                 LabourSkill? @relation(fields: [projectId, skillCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
+  skillCode             String?
   shift                 String // 'day' | 'night' — part of the fingerprinted identity
   labourSpecFingerprint String
 

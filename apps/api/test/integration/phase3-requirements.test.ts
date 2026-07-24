@@ -10,6 +10,7 @@ import { SnapshotService } from '../../src/snapshot/snapshot.service';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { DECISIONS_PROJECTION } from '../../src/decisions/decisions.projection';
 import { createRequirementSchema } from '../../src/contracts';
+import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
 
@@ -388,13 +389,16 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     // NOT a MaterialRequirementSpec. The type↔detail pairing admits it at commit; no fake
     // material fields are needed. The trade is a same-project labour catalog entry (FK backstop).
     await t.prisma.labourTrade.create({ data: { projectId, code: 'mason', name: 'Mason', createdById: f.memberUser.id } });
+    // the DB demand seal (Task-1 correction F2) validates the CANONICAL fingerprint, so the fixture
+    // computes the real one over (mason, no-skill, day) rather than a placeholder.
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
     await t.prisma.$transaction([
       t.prisma.activityRequirementRoot.create({ data: { id: 'it-p3-labour', projectId, createdById: f.memberUser.id } }),
       t.prisma.activityRequirement.create({
         data: { projectId, requirementId: 'it-p3-labour', revision: 1, activityId, type: 'labour', requiredQty: 4, baseUom: 'person-shift', requiredBy: new Date('2026-08-20'), createdById: f.memberUser.id },
       }),
       t.prisma.labourRequirementSpec.create({
-        data: { projectId, requirementId: 'it-p3-labour', revision: 1, tradeCode: 'mason', skillCode: null, shift: 'day', labourSpecFingerprint: 'lsf-test' },
+        data: { projectId, requirementId: 'it-p3-labour', revision: 1, tradeCode: 'mason', skillCode: null, shift: 'day', labourSpecFingerprint: fp },
       }),
       t.prisma.labourDemandSlice.create({
         data: { projectId, requirementId: 'it-p3-labour', revision: 1, civilDate: new Date('2026-08-20'), personShiftQty: 4 },

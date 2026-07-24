@@ -5,9 +5,9 @@ import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
 import {
   upsertLabourTradeSchema, upsertLabourSkillSchema, onboardWorkerSchema, revokeWorkerSchema,
-  formCrewSchema, addCrewMemberSchema,
+  formCrewSchema, revokeCrewSchema, addCrewMemberSchema,
   type UpsertLabourTradeInput, type UpsertLabourSkillInput, type OnboardWorkerInput, type RevokeWorkerInput,
-  type FormCrewInput, type AddCrewMemberInput,
+  type FormCrewInput, type RevokeCrewInput, type AddCrewMemberInput,
 } from '../contracts';
 
 /**
@@ -77,6 +77,18 @@ export class LabourController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.labour.formCrew(projectId, body, user, idempotencyKey);
+  }
+
+  @Post('labour/crews/:crewId/revoke')
+  @RolesFor('labour.manage')
+  revokeCrew(
+    @Param('projectId') projectId: string,
+    @Param('crewId') crewId: string,
+    @Body(new ZodPipe(revokeCrewSchema)) body: RevokeCrewInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.labour.revokeCrew(projectId, crewId, body, user, idempotencyKey);
   }
 
   @Post('labour/crews/:crewId/members')

@@ -55,7 +55,11 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
   const prisma = {
     user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (NAMES[where.id] ? { name: NAMES[where.id] } : null)) },
     activity: {
-      findUnique: vi.fn(async () => activity),
+      // F1 (correction): `start` reads the activity WITHOUT a `decision` include and resolves the
+      // linked decision's status through the decisions query contract — so the mock activity carries
+      // a `decisionId` (present iff a decision is linked) and the decision status is served by
+      // `decision.findFirst` below.
+      findUnique: vi.fn(async () => ({ ...activity, decisionId: activity.decision ? 'DL-test' : null })),
       // correction round 2 (F2) — complete() re-reads the Activity through the tx after the CAS; the
       // shared mock activity object reflects any CAS-applied data, so the re-read serves current state.
       findUniqueOrThrow: vi.fn(async () => activity),
@@ -86,6 +90,9 @@ function make(activity: ActRow, opts: MakeOpts = {}) {
     project: {
       findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test', timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') })),
     },
+    // F1 (correction) — the decisions query contract's `statusOf` reads here (own-module read); the
+    // linked decision's status comes from the shared mock activity, so start derives the Decision gate.
+    decision: { findFirst: vi.fn(async () => (activity.decision ? { status: activity.decision.status } : null)) },
     // the platform event kernel (Phase 2 Task 4) writes through the tx — stub its stream + event steps
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },

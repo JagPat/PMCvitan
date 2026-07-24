@@ -24,6 +24,7 @@ export const LABOUR_COMMANDS = [
   'labour.worker.onboard',
   'labour.worker.revoke',
   'labour.crew.form',
+  'labour.crew.revoke',
   'labour.crew.addMember',
   'labour.crew.removeMember',
 ] as const;
@@ -88,17 +89,10 @@ export interface WorkerDto {
   readonly revokedById: string | null;
   readonly createdAt: string;
   readonly createdById: string;
-  /** Bound field-attendance devices (the token/trade are display-only; identity is the FK). */
-  readonly devices: readonly WorkerDeviceDto[];
-}
-
-/** A field-attendance device bound to a `Worker` by FK (§H — free-text name/trade are
- *  display-only and NEVER readiness evidence). */
-export interface WorkerDeviceDto {
-  readonly id: string;
-  readonly name: string | null;
-  readonly trade: string | null;
-  readonly boundAt: string;
+  // NOTE (Task-1 correction F1): the workforce register does NOT hydrate `WorkerDevice` rows here.
+  // `WorkerDevice` is an ORGS-owned model; Labour must not read it directly (read-encapsulation).
+  // Device binding + its display land in Task 3 through the owning module's read contract, so no
+  // `devices` field is served in Task 1 (no bind command exists yet — the field would be empty).
 }
 
 /** A named set of workers under an in-charge (`mistri`) — ORGANIZATIONAL only, NOT an atomic

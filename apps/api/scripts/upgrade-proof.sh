@@ -782,6 +782,33 @@ assert_rejects "labour §B: a type='labour' requirement with no LabourRequiremen
 assert_rejects "labour §B: a demand slice on a material requirement (slice-typed guard)" \
   "INSERT INTO \"LabourDemandSlice\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"civilDate\",\"personShiftQty\") VALUES('UPL-H5','p1','REQ-1',1,'2026-08-10',1)"
 
+# ── Phase 4 Task 1 CORRECTION — the F2 demand seal + F3 skill references, EXECUTED as hostile inserts ──
+assert "the Task-1 correction triggers (worker-skill containment + labour demand seal) are installed" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('Worker_skills_contained','LabourRequirementSpec_demand_sealed') AND NOT tgisinternal;" \
+  "2"
+# F3 — a Worker.skillCodes[] element absent from the same-project catalog is rejected (trigger)
+assert_rejects "labour F3: a Worker.skillCodes element not in the project catalog (trigger)" \
+  "INSERT INTO \"Worker\"(\"id\",\"projectId\",\"name\",\"tradeCode\",\"skillCodes\",\"activeFrom\",\"createdById\") VALUES('UPL-F3W','p1','Bad','mason','{ghost-skill}','2026-06-01','USER-1')"
+# F3 — a LabourRequirementSpec skillCode absent from the same-project catalog is rejected (composite FK)
+assert_rejects "labour F3: a LabourRequirementSpec skillCode not in the catalog (composite FK)" \
+  "BEGIN; INSERT INTO \"ActivityRequirementRoot\"(\"id\",\"projectId\",\"createdById\") VALUES('UPL-F3R','p1','USER-1'); INSERT INTO \"ActivityRequirement\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"activityId\",\"type\",\"requiredQty\",\"baseUom\",\"requiredBy\",\"createdById\") VALUES('UPL-F3AR','p1','UPL-F3R',1,'ACT-1','labour',3,'person-shift','2026-08-12','USER-1'); INSERT INTO \"LabourRequirementSpec\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"tradeCode\",\"skillCode\",\"shift\",\"labourSpecFingerprint\") VALUES('UPL-F3S','p1','UPL-F3R',1,'mason','ghost-skill','day','x'); COMMIT;"
+# F2 — a labour revision with a FORGED fingerprint is rejected at deferred commit (demand seal)
+assert_rejects "labour F2: a labour revision with a forged labourSpecFingerprint (demand seal)" \
+  "BEGIN; INSERT INTO \"ActivityRequirementRoot\"(\"id\",\"projectId\",\"createdById\") VALUES('UPL-F2R','p1','USER-1'); INSERT INTO \"ActivityRequirement\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"activityId\",\"type\",\"requiredQty\",\"baseUom\",\"requiredBy\",\"createdById\") VALUES('UPL-F2AR','p1','UPL-F2R',1,'ACT-1','labour',3,'person-shift','2026-08-12','USER-1'); INSERT INTO \"LabourRequirementSpec\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"tradeCode\",\"skillCode\",\"shift\",\"labourSpecFingerprint\") VALUES('UPL-F2S','p1','UPL-F2R',1,'mason','bar-bending','day','deadbeef'); INSERT INTO \"LabourDemandSlice\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"civilDate\",\"personShiftQty\") VALUES('UPL-F2D','p1','UPL-F2R',1,'2026-08-12',3); COMMIT;"
+# F2 — a labour revision with ZERO slices is rejected at commit (canonical fingerprint computed inline
+# via pgcrypto so ONLY the missing slice violates the seal)
+assert_rejects "labour F2: a labour revision with no demand slice (demand seal)" \
+  "BEGIN; INSERT INTO \"ActivityRequirementRoot\"(\"id\",\"projectId\",\"createdById\") VALUES('UPL-F2R2','p1','USER-1'); INSERT INTO \"ActivityRequirement\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"activityId\",\"type\",\"requiredQty\",\"baseUom\",\"requiredBy\",\"createdById\") VALUES('UPL-F2AR2','p1','UPL-F2R2',1,'ACT-1','labour',3,'person-shift','2026-08-12','USER-1'); INSERT INTO \"LabourRequirementSpec\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"tradeCode\",\"skillCode\",\"shift\",\"labourSpecFingerprint\") VALUES('UPL-F2S2','p1','UPL-F2R2',1,'mason','bar-bending','day', encode(digest('lsf.v1'||chr(31)||'trade:mason'||chr(31)||'skill:bar-bending'||chr(31)||'shift:day','sha256'),'hex')); COMMIT;"
+# F2 — a COHERENT labour revision (canonical fingerprint + matching demand) is ACCEPTED — seal is precise
+$PSQL >/dev/null <<'SQL' && printf 'ok      %s\n' "labour F2: a coherent labour revision (canonical fingerprint + matching demand) is accepted" || { printf 'FAILED  %s\n' "labour F2 coherent revision rejected"; FAIL=1; }
+BEGIN;
+INSERT INTO "ActivityRequirementRoot"("id","projectId","createdById") VALUES('UPL-F2OK','p1','USER-1');
+INSERT INTO "ActivityRequirement"("id","projectId","requirementId","revision","activityId","type","requiredQty","baseUom","requiredBy","createdById") VALUES('UPL-F2OKAR','p1','UPL-F2OK',1,'ACT-1','labour',3,'person-shift','2026-08-12','USER-1');
+INSERT INTO "LabourRequirementSpec"("id","projectId","requirementId","revision","tradeCode","skillCode","shift","labourSpecFingerprint") VALUES('UPL-F2OKS','p1','UPL-F2OK',1,'mason','bar-bending','day', encode(digest('lsf.v1'||chr(31)||'trade:mason'||chr(31)||'skill:bar-bending'||chr(31)||'shift:day','sha256'),'hex'));
+INSERT INTO "LabourDemandSlice"("id","projectId","requirementId","revision","civilDate","personShiftQty") VALUES('UPL-F2OKD','p1','UPL-F2OK',1,'2026-08-12',3);
+COMMIT;
+SQL
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

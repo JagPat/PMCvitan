@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ROLE_POLICY, type LabourWorkforceDto, type LabourCatalogDto, type WorkerDto, type CrewDto } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
@@ -10,10 +10,12 @@ import { fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import type { AuthUser } from '../common/auth';
 import type {
   UpsertLabourTradeInput, UpsertLabourSkillInput, OnboardWorkerInput, RevokeWorkerInput,
-  FormCrewInput, AddCrewMemberInput, RemoveCrewMemberInput,
+  FormCrewInput, RevokeCrewInput, AddCrewMemberInput, RemoveCrewMemberInput,
 } from '../contracts';
 
-type WorkerRow = Prisma.WorkerGetPayload<{ include: { devices: true } }>;
+// F1 (read encapsulation): the workforce register does NOT hydrate `WorkerDevice` (an ORGS-owned
+// model Labour must not read). No `include` here — devices land in Task 3 via the owner's contract.
+type WorkerRow = Prisma.WorkerGetPayload<Record<string, never>>;
 type CrewRow = Prisma.CrewGetPayload<{ include: { members: true } }>;
 
 function serializeWorker(w: WorkerRow): WorkerDto {
@@ -28,9 +30,6 @@ function serializeWorker(w: WorkerRow): WorkerDto {
     revokedById: w.revokedById,
     createdAt: w.createdAt.toISOString(),
     createdById: w.createdById,
-    devices: [...w.devices]
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-      .map((d) => ({ id: d.id, name: d.name, trade: d.trade, boundAt: d.createdAt.toISOString() })),
   };
 }
 
@@ -161,12 +160,46 @@ export class LabourService {
     const outcome = await executeCommand(this.prisma, {
       scope: this.scope(projectId), actor, commandType: 'labour.worker.revoke', idempotencyKey, requestHash: hashRequest({ workerId, ...input }),
       run: async (tx) => {
-        const worker = await tx.worker.findFirst({ where: { id: workerId, projectId }, select: { id: true, revokedAt: true } });
-        if (!worker) throw new NotFoundException('Worker not found');
-        if (worker.revokedAt) throw new BadRequestException('Worker is already revoked');
-        await tx.worker.update({ where: { id: workerId }, data: { revokedAt: new Date(), revokedById: actor.actorId } });
+        // F5 — CAS transition (`active → revoked`): the conditional UPDATE `WHERE revokedAt IS NULL`
+        // is the atomic guard, so two DIFFERENT-key concurrent revokes have exactly one winner (it
+        // stamps the row) and a deterministic loser (0 rows updated → a truthful 409). A same-key
+        // replay is absorbed by the command ledger before `run` is ever re-entered.
+        const updated = await tx.worker.updateMany({
+          where: { id: workerId, projectId, revokedAt: null },
+          data: { revokedAt: new Date(), revokedById: actor.actorId },
+        });
+        if (updated.count === 0) {
+          const worker = await tx.worker.findFirst({ where: { id: workerId, projectId }, select: { id: true } });
+          if (!worker) throw new NotFoundException('Worker not found');
+          throw new ConflictException('Worker is already revoked');
+        }
         await recordAudit(tx, { projectId, actor, action: 'labour.worker.revoke', entity: 'Worker', entityId: workerId });
         return { resultRef: workerId, events: [] };
+      },
+    });
+    return { id: outcome.resultRef };
+  }
+
+  /** F5 — attributable, idempotent crew revocation (symmetric with worker revocation): a CAS
+   *  `active → revoked` transition, one winner under concurrency, a truthful 409 for the loser. */
+  async revokeCrew(projectId: string, crewId: string, input: RevokeCrewInput, user: AuthUser, idempotencyKey?: string): Promise<{ id: string }> {
+    await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
+    this.assertManage(user);
+    const actor = await resolveActor(this.prisma, user);
+    const outcome = await executeCommand(this.prisma, {
+      scope: this.scope(projectId), actor, commandType: 'labour.crew.revoke', idempotencyKey, requestHash: hashRequest({ crewId, ...input }),
+      run: async (tx) => {
+        const updated = await tx.crew.updateMany({
+          where: { id: crewId, projectId, revokedAt: null },
+          data: { revokedAt: new Date(), revokedById: actor.actorId },
+        });
+        if (updated.count === 0) {
+          const crew = await tx.crew.findFirst({ where: { id: crewId, projectId }, select: { id: true } });
+          if (!crew) throw new NotFoundException('Crew not found');
+          throw new ConflictException('Crew is already revoked');
+        }
+        await recordAudit(tx, { projectId, actor, action: 'labour.crew.revoke', entity: 'Crew', entityId: crewId });
+        return { resultRef: crewId, events: [] };
       },
     });
     return { id: outcome.resultRef };
@@ -230,11 +263,19 @@ export class LabourService {
     const outcome = await executeCommand(this.prisma, {
       scope: this.scope(projectId), actor, commandType: 'labour.crew.removeMember', idempotencyKey, requestHash: hashRequest({ crewId, workerId, ...input }),
       run: async (tx) => {
-        const membership = await tx.crewMembership.findFirst({ where: { projectId, crewId, workerId, removedAt: null }, select: { id: true } });
-        if (!membership) throw new NotFoundException('No active membership for this worker in this crew');
-        await tx.crewMembership.update({ where: { id: membership.id }, data: { removedAt: new Date(), removedById: actor.actorId } });
-        await recordAudit(tx, { projectId, actor, action: 'labour.crew.removeMember', entity: 'CrewMembership', entityId: membership.id });
-        return { resultRef: membership.id, events: [] };
+        // F5 — CAS membership removal: the conditional UPDATE `WHERE removedAt IS NULL` (on the
+        // one active membership the partial unique permits) is the atomic guard. Two concurrent
+        // removals: one stamps it (count 1), the other re-evaluates the predicate after the first
+        // commits and gets 0 — a truthful 409, never a double-stamp.
+        const active = await tx.crewMembership.findFirst({ where: { projectId, crewId, workerId, removedAt: null }, select: { id: true } });
+        if (!active) throw new NotFoundException('No active membership for this worker in this crew');
+        const updated = await tx.crewMembership.updateMany({
+          where: { id: active.id, removedAt: null },
+          data: { removedAt: new Date(), removedById: actor.actorId },
+        });
+        if (updated.count === 0) throw new ConflictException('Membership was concurrently removed');
+        await recordAudit(tx, { projectId, actor, action: 'labour.crew.removeMember', entity: 'CrewMembership', entityId: active.id });
+        return { resultRef: active.id, events: [] };
       },
     });
     return { id: outcome.resultRef };
@@ -249,7 +290,7 @@ export class LabourService {
     await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
     this.assertRead(user);
     const [workers, crews] = await Promise.all([
-      this.prisma.worker.findMany({ where: { projectId }, include: { devices: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
+      this.prisma.worker.findMany({ where: { projectId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
       this.prisma.crew.findMany({ where: { projectId }, include: { members: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
     ]);
     return { workers: workers.map(serializeWorker), crews: crews.map(serializeCrew) };

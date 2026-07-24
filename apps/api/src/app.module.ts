@@ -40,6 +40,7 @@ import { InventoryParticipant } from './inventory/inventory.participant';
 import { LabourController } from './labour/labour.controller';
 import { LabourService } from './labour/labour.service';
 import { LabourRequirementParticipant } from './labour/labour.participant';
+import { LabourRequirementQuery } from './labour/labour.query';
 import { RequirementsService } from './activities/requirements.service';
 import { CapabilitiesService } from './platform/capabilities.service';
 import { InspectionsService } from './inspections/inspections.service';
@@ -124,6 +125,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     InventoryParticipant,
     LabourService,
     LabourRequirementParticipant,
+    LabourRequirementQuery,
     CapabilitiesService,
     JwtGuard,
     ProjectAccessService,

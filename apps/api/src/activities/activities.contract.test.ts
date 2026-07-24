@@ -69,7 +69,9 @@ describe('Task 10 — the activities module implements its shared command/query 
     expect(activitiesManifest.workflowParticipants).toEqual(['inspections', 'drawings', 'procurement', 'labour']);
     // the readiness BAKE reads decisions + drawings + inspections via their query contracts (dependsOn);
     // the reverse inspections→activities edge is the cycle-exempt participant, keeping this graph acyclic.
-    expect(activitiesManifest.dependsOn).toEqual(['decisions', 'drawings', 'inspections', 'inventory']);
+    // Phase 4 Task 1 (correction F1) — `labour` joins dependsOn: the requirement command/read hydrates
+    // the Labour-owned requirement detail through `LabourRequirementQuery` (Labour is a LEAF, so acyclic).
+    expect(activitiesManifest.dependsOn).toEqual(['decisions', 'drawings', 'inspections', 'inventory', 'labour']);
   });
 
   it('the query service implements every declared query + the structure/rollup boundary read surface', () => {
