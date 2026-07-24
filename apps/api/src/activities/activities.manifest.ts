@@ -33,7 +33,10 @@ export const activitiesManifest: ModuleManifest = {
   // material-readiness projection call inventory's `coverageFor` (canonical coverage). inventory
   // reaches BACK only through the cycle-exempt ActivityParticipant workflow channel, so this
   // dependsOn graph stays acyclic.
-  dependsOn: ['decisions', 'drawings', 'inspections', 'inventory'],
+  // Phase 4 Task 1 (correction F1) — the `activities → labour` READ edge: the requirement
+  // command/read hydrates the Labour-owned requirement detail through `LabourRequirementQuery`
+  // (never a Prisma relation include). Labour is a LEAF (`dependsOn: []`), so this stays acyclic.
+  dependsOn: ['decisions', 'drawings', 'inspections', 'inventory', 'labour'],
   // Module 4 correction — `remove` also routes the drawing unlink (Drawing.activityId, previously
   // ON DELETE SET NULL only) through the drawings participant on the same transaction.
   // Phase 3 Task 2 — `requirements.cancel` invokes the procurement participant (the §F

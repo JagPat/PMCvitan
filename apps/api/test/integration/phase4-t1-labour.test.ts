@@ -348,7 +348,9 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
     const row = await t.prisma.worker.findUniqueOrThrow({ where: { id: w.id } });
     expect(row.revokedAt).not.toBeNull();
     expect(row.revokedById).toBe(f.memberUser.id);
-    await expect(labour.revokeWorker(projectId, w.id, {}, pmc(projectId))).rejects.toMatchObject({ status: 400 });
+    // Task-1 correction F5 — revocation is a CAS `active → revoked` transition, so a second revoke is
+    // a truthful CONFLICT (409, the deterministic loser), not a plain 400.
+    await expect(labour.revokeWorker(projectId, w.id, {}, pmc(projectId))).rejects.toMatchObject({ status: 409 });
 
     // one demand slice per (requirement revision, civilDate): the service dedupes, and the DB
     // partial unique is the backstop

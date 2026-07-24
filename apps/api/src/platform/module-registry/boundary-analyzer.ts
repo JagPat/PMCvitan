@@ -499,6 +499,48 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
     }
   };
 
+  // ── Nested-READ attribution (F1) — a relation field named in a read's `include`/`select` reads
+  //    the RELATED model's table WITHOUT a delegate call of its own. A read-encapsulated foreign
+  //    model reached this way was previously invisible; this closes that blind spot so a foreign
+  //    `include: { labourSpec: true }` is a `cross-module-read` finding just like a delegate read. ──
+  const recordModelRead = (model: string, node: ts.Node, rel: string, mod: string): void => {
+    const owner = readEncapsulatedBy.get(model);
+    if (owner && owner !== mod) reads.push({ file: rel, module: mod, model, owner, ownerKind: kindOf.get(owner), symbol: enclosingSymbol(node) });
+  };
+  /** Walk a read payload (`include`/`select`) in the context of `model`: any relation field reads the
+   *  RELATED model — record it if read-encapsulated by another module — and recurse into its own
+   *  nested `include`/`select` for deeper relation reads. */
+  const scanNestedReads = (payload: ts.ObjectLiteralExpression, model: string, node: ts.Node, rel: string, mod: string, depth: number): void => {
+    if (depth > 8) return;
+    const rels = relationsOf.get(model);
+    if (!rels) return;
+    for (const p of payload.properties) {
+      const key = ts.isShorthandPropertyAssignment(p) ? p.name.text : ts.isPropertyAssignment(p) ? propKeyName(p.name) : undefined;
+      const target = key ? rels.get(key) : undefined;
+      if (!target) continue;
+      recordModelRead(target, node, rel, mod);
+      if (ts.isPropertyAssignment(p)) {
+        for (const relObj of objectLiteralsOf(p.initializer)) {
+          for (const subKey of ['include', 'select']) {
+            const sub = propValueOf(relObj, subKey);
+            if (sub) for (const sObj of objectLiteralsOf(sub)) scanNestedReads(sObj, target, node, rel, mod, depth + 1);
+          }
+        }
+      }
+    }
+  };
+  /** Entry: scan a read call's top-level `include`/`select` payload(s) for nested relation reads. */
+  const scanCallNestedReads = (node: ts.CallExpression, model: string, rel: string, mod: string): void => {
+    const arg0 = node.arguments[0];
+    if (!arg0) return;
+    for (const optsObj of objectLiteralsOf(arg0)) {
+      for (const readKey of ['include', 'select']) {
+        const payload = propValueOf(optsObj, readKey);
+        if (payload) for (const pObj of objectLiteralsOf(payload)) scanNestedReads(pObj, model, node, rel, mod, 0);
+      }
+    }
+  };
+
   const moduleOf = (rel: string): string => {
     const top = rel.includes('/') ? rel.slice(0, rel.indexOf('/')) : '';
     return dirToModule[top] ?? 'platform';
@@ -524,11 +566,16 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
         }
         // Task 8 — a READ of a read-encapsulated model. Only tracked for encapsulated models (the
         // owning module reads its own; any other module reading it directly is a boundary crossing).
+        // F1 (Phase 4 Task 1 correction) — ALSO scan this read's `include`/`select` for foreign
+        // relation reads, so a nested include of a read-encapsulated model is caught too.
         if (READ_METHODS.has(method) && readEncapsulatedBy.size > 0) {
           const res = resolveDelegate(node.expression.expression);
-          if (res?.kind === 'model' && readEncapsulatedBy.has(res.model)) {
-            const owner = readEncapsulatedBy.get(res.model)!;
-            if (owner !== mod) reads.push({ file: rel, module: mod, model: res.model, owner, ownerKind: kindOf.get(owner), symbol: enclosingSymbol(node) });
+          if (res?.kind === 'model') {
+            if (readEncapsulatedBy.has(res.model)) {
+              const owner = readEncapsulatedBy.get(res.model)!;
+              if (owner !== mod) reads.push({ file: rel, module: mod, model: res.model, owner, ownerKind: kindOf.get(owner), symbol: enclosingSymbol(node) });
+            }
+            scanCallNestedReads(node, res.model, rel, mod);
           }
         }
         if (RAW_METHOD_NAMES.includes(method)) {

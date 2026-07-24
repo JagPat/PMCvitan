@@ -335,11 +335,15 @@ export class ActivitiesService {
       scope, actor, commandType: 'activities.start', idempotencyKey, requestHash,
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
-        const a = await tx.activity.findUnique({ where: { id: activityId }, include: { decision: true } });
+        // F1 (read encapsulation): read the activity WITHOUT a foreign `decision` include; the linked
+        // decision's status comes from the decisions query contract, in THIS transaction under the
+        // readiness lock (a concurrent approval serializes), never a direct `activity.decision` read.
+        const a = await tx.activity.findUnique({ where: { id: activityId } });
         if (!a || a.projectId !== projectId) throw new NotFoundException(`Activity ${activityId} not found`);
         if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
+        const decisionStatus = a.decisionId ? await this.decisions.statusOf(projectId, a.decisionId, tx) : null;
 
-        const readiness = await this.loadReadiness(projectId, a, tx);
+        const readiness = await this.loadReadiness(projectId, { ...a, decision: decisionStatus ? { status: decisionStatus } : null }, tx);
         // Phase 3 Task 6 (§A): on a PILOT project, the material gate is CANONICAL coverage — never
         // the stored flag or a projection. Evaluated on THIS transaction under the readiness lock,
         // so a concurrent reservation/issue/adjustment/requirement-revision/substitution-revocation

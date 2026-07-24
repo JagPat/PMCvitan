@@ -10,6 +10,7 @@ import { lockProjectReadiness } from '../../src/common/readiness-lock';
 import { SystemClock } from '../../src/common/clock';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
+import { computeLabourSpecFingerprint } from '@vitan/shared';
 
 /**
  * Phase 3 Tasks 2-3 CORRECTION — the seven review findings, reproduce-first (live PG).
@@ -128,12 +129,14 @@ describe('Phase 3 T2-3 correction — the seven findings (live PG)', () => {
     // Phase 4 — a VALID labour requirement now carries its own labour detail (spec + slices).
     // The material-procurement pipeline still rejects it (it is not a material requirement).
     await t.prisma.labourTrade.create({ data: { projectId, code: 'mason', name: 'Mason', createdById: f.memberUser.id } });
+    // the DB demand seal (Task-1 correction F2) validates the CANONICAL fingerprint over (mason, no-skill, day).
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
     await t.prisma.$transaction([
       t.prisma.activityRequirementRoot.create({ data: { projectId, id: requirementId, createdById: f.memberUser.id } }),
       t.prisma.activityRequirement.create({
         data: { projectId, requirementId, revision: 1, activityId, type: 'labour', requiredQty: '10', baseUom: 'person-shift', requiredBy: new Date('2026-08-15'), createdById: f.memberUser.id },
       }),
-      t.prisma.labourRequirementSpec.create({ data: { projectId, requirementId, revision: 1, tradeCode: 'mason', shift: 'day', labourSpecFingerprint: 'lsf-red' } }),
+      t.prisma.labourRequirementSpec.create({ data: { projectId, requirementId, revision: 1, tradeCode: 'mason', shift: 'day', labourSpecFingerprint: fp } }),
       t.prisma.labourDemandSlice.create({ data: { projectId, requirementId, revision: 1, civilDate: new Date('2026-08-15'), personShiftQty: 10 } }),
     ]);
     await expect(

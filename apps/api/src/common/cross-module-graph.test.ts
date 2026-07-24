@@ -327,6 +327,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('labour/workers')",
     "Post('labour/workers/:workerId/revoke')",
     "Post('labour/crews')",
+    "Post('labour/crews/:crewId/revoke')",
     "Post('labour/crews/:crewId/members')",
     "Delete('labour/crews/:crewId/members/:workerId')",
   ],
@@ -408,12 +409,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('115 mutating routes total (the documented command inventory §4; +7 Phase-4 labour)', () => {
+    it('116 mutating routes total (the documented command inventory §4; +8 Phase-4 labour incl. crew.revoke)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(115);
+      expect(total).toBe(116);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(115);
+      expect(live).toBe(116);
     });
   });
 

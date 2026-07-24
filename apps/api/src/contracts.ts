@@ -752,6 +752,11 @@ export const formCrewSchema = z
   .strict();
 export type FormCrewInput = z.infer<typeof formCrewSchema>;
 
+// Task-1 correction F5 — an attributable, idempotent crew revocation (a CAS lifecycle transition,
+// symmetric with worker revocation): a reason is optional, the actor + timestamp are server-stamped.
+export const revokeCrewSchema = z.object({ reason: z.string().trim().min(1).nullish() }).strict();
+export type RevokeCrewInput = z.infer<typeof revokeCrewSchema>;
+
 export const addCrewMemberSchema = z.object({ workerId: z.string().trim().min(1) }).strict();
 export type AddCrewMemberInput = z.infer<typeof addCrewMemberSchema>;
 

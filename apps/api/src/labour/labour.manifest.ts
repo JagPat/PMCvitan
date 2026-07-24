@@ -40,6 +40,7 @@ export const labourManifest: ModuleManifest = {
     'POST /projects/:projectId/labour/workers',
     'POST /projects/:projectId/labour/workers/:workerId/revoke',
     'POST /projects/:projectId/labour/crews',
+    'POST /projects/:projectId/labour/crews/:crewId/revoke',
     'POST /projects/:projectId/labour/crews/:crewId/members',
     'DELETE /projects/:projectId/labour/crews/:crewId/members/:workerId',
   ],
