@@ -103,6 +103,44 @@ export class LabourRequirementParticipant {
         `Requirement has ${open} open labour requisition line(s) — cancel them before cancelling the requirement (explicit disposition, plan §F)`,
       );
     }
+    // Task-3 correction F4 — the §C side of the same disposition rule
+    await this.assertAllocationsDisposed(tx, projectId, requirementId);
+  }
+
+  /**
+   * Task-3 correction F2 — a photo cited as PRESENCE evidence can never be deleted. The muster is
+   * an append-only observation the Team gate reads as execution truth, so deleting its selfie/QR
+   * capture would leave an unfalsifiable claim behind. Invoked by the MEDIA module's delete
+   * transaction (the same `assertMediaDisposable` pattern inventory uses for ledger evidence), so
+   * Labour never reaches into the media delete path itself.
+   *
+   * A REVOKED muster still cites its evidence: the observation survives as history precisely so the
+   * correction is auditable, and history without its evidence is not history.
+   */
+  async assertMediaDisposable(tx: Prisma.TransactionClient, projectId: string, mediaId: string): Promise<void> {
+    const cited = await tx.labourAttendance.count({ where: { projectId, evidenceMediaId: mediaId } });
+    if (cited > 0) {
+      throw new ConflictException(
+        `This photo is presence evidence on ${cited} attendance observation(s) — a muster is an append-only fact, so its evidence cannot be deleted (plan §C.3/§H)`,
+      );
+    }
+  }
+
+  /**
+   * Task-3 correction F4 — cancelling a labour requirement must not STRAND live capacity. An
+   * active `WorkerAllocation` is a real worker held on a real date for this demand; cancelling the
+   * demand under it would leave the worker booked against something that no longer exists. The
+   * disposition is explicit: release the allocations first (an attributable `allocation.released`
+   * with a reason), then cancel. Called from the SAME `assertRequirementDisposable` the Activities
+   * cancel command already invokes, under the readiness lock both commands hold.
+   */
+  private async assertAllocationsDisposed(tx: Prisma.TransactionClient, projectId: string, requirementId: string): Promise<void> {
+    const live = await tx.workerAllocation.count({ where: { projectId, requirementId, status: 'active' } });
+    if (live > 0) {
+      throw new ConflictException(
+        `Requirement has ${live} ACTIVE worker allocation(s) — release them before cancelling, so no worker is left booked against dead demand (plan §C.2)`,
+      );
+    }
   }
 
   /**

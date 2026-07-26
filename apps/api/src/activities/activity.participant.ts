@@ -145,6 +145,30 @@ export class ActivityParticipant {
   }
 
   /**
+   * Task-3 correction (F1 + F4) — the ACTIVITIES-owned head of a requirement: which revision is
+   * current, which activity it belongs to, and whether it is still live.
+   *
+   * Labour previously derived the head from the highest `LabourRequirementSpec` revision and
+   * validated `activityId` separately, so an allocation could pair a requirement with an activity
+   * that does not own it (F1), and a CANCELLED head still looked allocatable because the cancel
+   * revision copies the labour spec forward (F4). The requirement root, its revision sequence and
+   * its status are Activities' truth, so Labour asks for them HERE — through the cycle-exempt
+   * participant channel, never a direct read of `ActivityRequirement`.
+   */
+  async labourRequirementHead(
+    db: Prisma.TransactionClient,
+    params: { projectId: string; requirementId: string },
+  ): Promise<{ revision: number; activityId: string; status: string; type: string } | null> {
+    const { projectId, requirementId } = params;
+    const head = await db.activityRequirement.findFirst({
+      where: { projectId, requirementId },
+      orderBy: { revision: 'desc' },
+      select: { revision: true, activityId: true, status: true, type: true },
+    });
+    return head ? { ...head, type: String(head.type) } : null;
+  }
+
+  /**
    * Phase 3 Task 5 (§E) — the INVERSE of {@link blockForMaterialMismatch}: called by the
    * daily-log mismatch-resolution command (same locked transaction) ONLY after it proved no
    * unresolved mismatch observation remains for the decision. Every activity this decision

@@ -356,18 +356,22 @@ describe('Phase 4 Task 3 — §C time-capacity facts (live PG)', () => {
     const projectId = await freshProject();
     await enableLabour(projectId);
     const workerId = await onboardWorker(projectId);
+    // Task-3 correction F2 — a muster carries TRUSTED evidence, so bind the worker's own device
+    // first. (A bare presence claim is refused; that rule has its own probe in the correction suite.)
+    const device = await t.prisma.workerDevice.create({ data: { projectId, token: `tok-${Date.now()}-${seq++}` } });
+    await devices.bind(projectId, device.id, { workerId }, pmc(projectId));
 
-    const first = await capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'day' }, pmc(projectId));
+    const first = await capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'day', deviceId: device.id }, pmc(projectId));
     expect(first).toMatchObject({ workerId, civilDate: '2026-08-10', shift: 'day', revokedAt: null });
     // a second live muster for the same slice is unrepresentable
-    await expect(capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'day' }, pmc(projectId))).rejects.toMatchObject({ status: 409 });
+    await expect(capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'day', deviceId: device.id }, pmc(projectId))).rejects.toMatchObject({ status: 409 });
     // the NIGHT shift of the same day is a DIFFERENT slice and is allowed
-    await capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'night' }, pmc(projectId));
+    await capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'night', deviceId: device.id }, pmc(projectId));
 
     const revoked = await capacity.revokeAttendance(projectId, first.id, { reason: 'mis-mustered' }, pmc(projectId));
     expect(revoked).toMatchObject({ revokeReason: 'mis-mustered', revokedById: f.memberUser.id });
     // the corrected re-record is now allowed; the revoked observation SURVIVES as history
-    await capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'day' }, pmc(projectId));
+    await capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'day', deviceId: device.id }, pmc(projectId));
     expect(await t.prisma.labourAttendance.count({ where: { projectId, workerId, shift: 'day' } })).toBe(2);
     // a revoked row is terminal + append-only under a direct write
     await expect(capacity.revokeAttendance(projectId, first.id, { reason: 'again' }, pmc(projectId))).rejects.toMatchObject({ status: 409 });
@@ -639,7 +643,7 @@ describe('Phase 4 Task 3 — §C time-capacity facts (live PG)', () => {
     for (const call of [
       () => capacity.allocate(offPilot, { activityId: act, requirementId: 'x', civilDate: '2026-08-10', workerId: 'w' }, pmc(offPilot)),
       () => capacity.release(offPilot, 'a', { reason: 'r' }, pmc(offPilot)),
-      () => capacity.recordAttendance(offPilot, { workerId: 'w', civilDate: '2026-08-10', shift: 'day' }, pmc(offPilot)),
+      () => capacity.recordAttendance(offPilot, { workerId: 'w', civilDate: '2026-08-10', shift: 'day', deviceId: 'd' }, pmc(offPilot)),
       () => capacity.revokeAttendance(offPilot, 'a', { reason: 'r' }, pmc(offPilot)),
       () => capacity.recordWork(offPilot, { allocationId: 'a', workedMinutes: 60 }, pmc(offPilot)),
       () => capacity.approveSkillSubstitution(offPilot, { requirementId: 'r', tradeCode: 'mason', shift: 'day', reason: 'x' }, pmc(offPilot)),
@@ -681,7 +685,9 @@ describe('Phase 4 Task 3 — §C time-capacity facts (live PG)', () => {
     const workerId = await onboardWorker(projectId);
     const a1 = await capacity.allocate(projectId, { activityId: act, requirementId: req.requirementId, civilDate: '2026-08-10', workerId }, pmc(projectId));
     await capacity.allocate(projectId, { activityId: act, requirementId: req.requirementId, civilDate: '2026-08-12', workerId }, pmc(projectId));
-    await capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'day' }, pmc(projectId));
+    const device = await t.prisma.workerDevice.create({ data: { projectId, token: `tok-${Date.now()}-${seq++}` } });
+    await devices.bind(projectId, device.id, { workerId }, pmc(projectId));
+    await capacity.recordAttendance(projectId, { workerId, civilDate: '2026-08-10', shift: 'day', deviceId: device.id }, pmc(projectId));
     await capacity.recordWork(projectId, { allocationId: a1.allocations[0]!.id, workedMinutes: 480 }, pmc(projectId));
 
     const all = await capacity.capacity(projectId, pmc(projectId));

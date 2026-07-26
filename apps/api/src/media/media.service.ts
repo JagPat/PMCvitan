@@ -10,6 +10,7 @@ import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { InventoryParticipant } from '../inventory/inventory.participant';
+import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
@@ -48,6 +49,7 @@ export class MediaService {
     private readonly inspectionParticipant: InspectionParticipant,
     // Phase 3 Task 4 — a delete is refused while the photo is immutable stock-ledger evidence.
     private readonly inventoryParticipant: InventoryParticipant,
+    private readonly labourParticipant: LabourRequirementParticipant,
   ) {}
 
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
@@ -190,6 +192,10 @@ export class MediaService {
       // evidence can never be unlinked: the inventory participant REFUSES the delete (409)
       // before anything is touched (the ledger's composite FK is the database backstop).
       await this.inventoryParticipant.assertMediaDisposable(tx, projectId, id);
+      // Phase 4 Task 3 correction (F2) — the same rule for LABOUR presence evidence: a muster is an
+      // append-only observation the Team gate reads, so its selfie/QR capture cannot be deleted
+      // while cited (the attendance composite FK is the database backstop).
+      await this.labourParticipant.assertMediaDisposable(tx, projectId, id);
       // Task 10 (Module 3) correction — unlink any inspection-owned evidence FIRST (participant appends
       // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
       // observes the removal. `null` when this media was not item-level evidence.

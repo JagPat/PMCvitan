@@ -630,6 +630,8 @@ model PushSubscription {
 // are loose links to what the photo documents.
 model Media {
   id         String   @id @default(cuid())
+  // Phase 4 Task 3 correction (F2) — the musters citing this photo as presence evidence
+  labourAttendance LabourAttendance[] @relation("labourAttendanceEvidence")
   project    Project  @relation(fields: [projectId], references: [id])
   projectId  String
   kind       String // progress | inspection | decision | attendance | material
@@ -2603,10 +2605,18 @@ model LabourAttendance {
   workerId  String
   civilDate DateTime @db.Date
   shift     String
-  // the trusted device binding that evidenced the muster (nullable — a pmc/engineer may record
-  // presence directly; the device path is the worker's own self check-in). Same-project composite FK.
+  // Task-3 correction F2 — canonical presence carries TRUSTED evidence, because the Team gate reads
+  // it as execution truth. EXACTLY ONE of the two below (a CHECK enforces it), so a bare presence
+  // claim is unrepresentable: either the worker's OWN bound device evidenced the muster (the device
+  // path; a device bound to another worker is rejected by the Task-3 trigger) …
   device    WorkerDevice? @relation(fields: [projectId, deviceId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   deviceId  String?
+  // … or a pmc recorded an EXPLICIT, attributable exception saying why there is no device behind it.
+  manualReason String?
+  // the optional selfie/QR capture. Correction F2 adds the same-project composite FK (there was
+  // none, so a nonexistent or cross-project id was accepted); while cited it cannot be deleted —
+  // the labour participant refuses the media delete, since a muster is an append-only fact.
+  evidenceMedia   Media? @relation("labourAttendanceEvidence", fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   evidenceMediaId String?
   recordedAt   DateTime @default(now())
   recordedBy   User     @relation("attendanceRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)

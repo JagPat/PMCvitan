@@ -104,7 +104,9 @@ describe('Phase 2 Task 7 — module registry', () => {
       'daily-log': ['activities'], // material-mismatch blocks the activity's readiness (edge 4)
       // Phase 3 Task 4 adds the inventory participant to media: the delete tx refuses while the
       // photo is immutable stock-ledger quality evidence (assertMediaDisposable)
-      media: ['inspections', 'inventory'], // evidence add/remove (edges via the media create/remove tx)
+      // Phase 4 Task 3 correction (F2) — deleting a photo also consults LABOUR: a muster's presence
+      // evidence cannot be deleted while cited (cycle-exempt, and labour is a LEAF).
+      media: ['inspections', 'inventory', 'labour'], // evidence add/remove (edges via the media create/remove tx)
       // Phase 3 Task 4 — the §G inventory→procurement edge: the receipt tx invokes the
       // procurement-owned PO-line lock + received-progress fact (§F bound 3); procurement does
       // not depend back on inventory, so the graph stays acyclic. Task 5 adds the activities

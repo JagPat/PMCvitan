@@ -371,7 +371,11 @@ export interface LabourAttendanceDto {
   readonly workerId: string;
   readonly civilDate: string;
   readonly shift: string;
+  /** the worker's OWN bound device — the canonical trusted muster path (§H) */
   readonly deviceId: string | null;
+  /** set INSTEAD of `deviceId` — an explicit, pmc-attributable exception for presence with no
+   *  device behind it, so an unsupported claim is never silently treated as readiness evidence */
+  readonly manualReason: string | null;
   readonly evidenceMediaId: string | null;
   readonly recordedAt: string;
   readonly recordedById: string;

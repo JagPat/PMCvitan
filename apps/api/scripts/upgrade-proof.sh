@@ -1139,6 +1139,35 @@ assert_rejects "labour T3 §B: a substitution whose target equals its source (di
 assert_rejects "labour T3 §H: allocating a worker outside its active window" \
   "INSERT INTO \"Worker\"(\"id\",\"projectId\",\"name\",\"tradeCode\",\"activeFrom\",\"activeTo\",\"createdById\") VALUES('UPL-T3WOLD','p1','Retired','mason','2026-01-01','2026-02-01','USER-1'); INSERT INTO \"WorkerAllocation\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"activityId\",\"requirementId\",\"originRevision\",\"labourSpecFingerprint\",\"allocatedById\",\"sourceCommandId\") SELECT 'UPL-T3AOLD','p1','UPL-T3WOLD','2026-08-12','day','ACT-1','UPL-F2OK',1,$FPD,'USER-1','UPL-CMD1'"
 
+# ── Phase 4 Task 3 CORRECTION — the four review findings, sealed. The correction migration is
+#    purely additive over the same row-free labour tables; these assertions prove each new seal is
+#    installed AND that the coherent §C chain built above still passes it (the seals are precise).
+assert "the Task-3 correction seals are installed (demand-identity FK, evidence CHECKs, media FK, head-live trigger)" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('WorkerAllocation_demand_identity_fkey','LabourAttendance_trusted_evidence','LabourAttendance_one_evidence_path','LabourAttendance_evidence_media_fkey'))::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'WorkerAllocation_head_live' AND NOT tgisinternal)::text;" \
+  "4|1"
+# F1 — an allocation may not name an activity that does not own its requirement revision
+assert_rejects "labour T3C F1: an allocation naming an activity that does not own its requirement" \
+  "INSERT INTO \"Activity\"(\"id\",\"projectId\",\"name\",\"zone\",\"plannedStart\",\"plannedEnd\") VALUES('UPL-T3CACT','p1','Other','Z',0,10); INSERT INTO \"WorkerAllocation\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"activityId\",\"requirementId\",\"originRevision\",\"labourSpecFingerprint\",\"allocatedById\",\"sourceCommandId\") VALUES('UPL-T3CF1','p1','UPL-T3W2','2026-08-12','day','UPL-T3CACT','UPL-F2OK',1,$FPD,'USER-1','UPL-CMD1')"
+# F2 — presence with neither a bound device nor an explicit manual exception
+assert_rejects "labour T3C F2: attendance with NO trusted evidence (device-or-manual CHECK)" \
+  "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3CF2','p1','UPL-T3W','2026-08-15','day','USER-1','UPL-CMD1')"
+assert_rejects "labour T3C F2: attendance claiming BOTH a device and a manual exception" \
+  "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"deviceId\",\"manualReason\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3CF2B','p1','UPL-T3W','2026-08-16','day','UPL-T3DEV','both','USER-1','UPL-CMD1')"
+assert_rejects "labour T3C F2: attendance citing a media id absent from its project (evidence FK)" \
+  "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"deviceId\",\"evidenceMediaId\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3CF2C','p1','UPL-T3W','2026-08-17','day','UPL-T3DEV','no-such-media','USER-1','UPL-CMD1')"
+# a MANUAL muster (the explicit attributable exception) IS accepted — the seal is precise
+$PSQL >/dev/null <<SQL && printf 'ok      %s\n' "labour T3C F2: an explicit MANUAL muster is accepted (the exception is modelled, not banned)" || { printf 'FAILED  %s\n' "labour T3C manual muster rejected"; FAIL=1; }
+INSERT INTO "LabourAttendance"("id","projectId","workerId","civilDate","shift","manualReason","recordedById","sourceCommandId")
+  VALUES('UPL-T3CMAN','p1','UPL-T3W','2026-08-18','day','device battery dead; foreman vouched at the gate','USER-1','UPL-CMD1');
+SQL
+# F4 — a cancelled requirement head accepts no new allocation
+$PSQL >/dev/null <<SQL 2>&1
+INSERT INTO "ActivityRequirement"("id","projectId","requirementId","revision","activityId","type","requiredQty","baseUom","requiredBy","status","createdById")
+  SELECT 'UPL-T3CCANCEL','p1','UPL-F2OK',2,"activityId",'labour',3,'person-shift','2026-08-12','cancelled','USER-1' FROM "ActivityRequirement" WHERE "projectId"='p1' AND "requirementId"='UPL-F2OK' AND "revision"=1;
+SQL
+assert_rejects "labour T3C F4: an allocation against a CANCELLED requirement head" \
+  "INSERT INTO \"WorkerAllocation\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"activityId\",\"requirementId\",\"originRevision\",\"labourSpecFingerprint\",\"allocatedById\",\"sourceCommandId\") SELECT 'UPL-T3CF4','p1','UPL-T3W2','2026-08-12','day',\"activityId\",'UPL-F2OK',1,$FPD,'USER-1','UPL-CMD1' FROM \"ActivityRequirement\" WHERE \"projectId\"='p1' AND \"requirementId\"='UPL-F2OK' AND \"revision\"=1"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

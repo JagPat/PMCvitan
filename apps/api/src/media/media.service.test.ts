@@ -6,6 +6,7 @@ import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import type { InspectionsQueryService } from '../inspections/inspections.query';
 import type { InspectionParticipant } from '../inspections/inspection.participant';
 import type { InventoryParticipant } from '../inventory/inventory.participant';
+import type { LabourRequirementParticipant } from '../labour/labour.participant';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './storage.service';
 import type { SignedUrlService } from './signed-url.service';
@@ -72,6 +73,9 @@ function make(
   } as unknown as InspectionParticipant;
   // Phase 3 Task 4 — no media under test is stock-ledger evidence, so the guard passes.
   const inventoryParticipant = { assertMediaDisposable: vi.fn(async () => {}) } as unknown as InventoryParticipant;
+  // Phase 4 Task 3 correction (F2) — the delete tx also asks LABOUR whether the photo is cited as
+  // presence evidence; the live refusal has its own probe in `phase4-t3-correction.test.ts`.
+  const labourParticipant = { assertMediaDisposable: vi.fn(async () => {}) } as unknown as LabourRequirementParticipant;
   const svc = new MediaService(
     prisma as unknown as PrismaService,
     storage as unknown as StorageService,
@@ -84,6 +88,7 @@ function make(
     inspections,
     inspectionParticipant,
     inventoryParticipant,
+    labourParticipant,
   );
   return { svc, prisma, storage, signed, dispatcher, snapshot, created };
 }
