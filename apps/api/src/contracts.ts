@@ -1109,17 +1109,34 @@ export type AllocateLabourInput = z.infer<typeof allocateLabourSchema>;
 export const releaseLabourAllocationSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
 export type ReleaseLabourAllocationInput = z.infer<typeof releaseLabourAllocationSchema>;
 
-/** Record one worker PRESENT on one slice. Unit: headcount. A device may evidence the muster only
- *  when it is BOUND to that same worker (§H — free-text device name/trade is never evidence). */
+/**
+ * Record one worker PRESENT on one slice. Unit: headcount.
+ *
+ * Task-3 correction F2 — canonical presence must carry TRUSTED evidence, because the Team gate
+ * reads it as execution truth. Exactly one of two paths:
+ *   • `deviceId` — the worker's OWN bound device (§H; free-text device name/trade is never
+ *     evidence, and a device bound to a different worker is rejected by the DB seal), or
+ *   • `manualReason` — an EXPLICIT, attributable exception recorded by the pmc, so an unsupported
+ *     presence claim is visible as such instead of silently counting as readiness.
+ * `evidenceMediaId` (a selfie/QR capture) is optional on either path but, when given, must name a
+ * same-project `Media` row, which then cannot be deleted while the muster cites it.
+ */
 export const recordAttendanceSchema = z
   .object({
     workerId: z.string().min(1),
     civilDate: isoCivilDateSchema,
     shift: z.enum(['day', 'night']),
     deviceId: z.string().min(1).nullish(),
+    manualReason: z.string().trim().min(1).max(1000).nullish(),
     evidenceMediaId: z.string().min(1).nullish(),
   })
-  .strict();
+  .strict()
+  .refine((v) => Boolean(v.deviceId) || Boolean(v.manualReason), {
+    message: 'Attendance needs trusted evidence: either the worker\'s bound deviceId, or an explicit manualReason recorded as an attributable exception',
+  })
+  .refine((v) => !(v.deviceId && v.manualReason), {
+    message: 'A muster is either device-evidenced or a manual exception — never both',
+  });
 export type RecordAttendanceInput = z.infer<typeof recordAttendanceSchema>;
 
 export const revokeAttendanceSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();

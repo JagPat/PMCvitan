@@ -88,6 +88,7 @@ function serializeAttendance(a: AttendanceRow): LabourAttendanceDto {
     civilDate: toIsoCivilDate(a.civilDate) ?? '',
     shift: a.shift,
     deviceId: a.deviceId,
+    manualReason: a.manualReason,
     evidenceMediaId: a.evidenceMediaId,
     recordedAt: a.recordedAt.toISOString(),
     recordedById: a.recordedById,
@@ -161,19 +162,30 @@ export class LabourCapacityService {
   }
 
   /**
-   * The requirement's CURRENT head labour identity — read from LABOUR-OWNED tables only (the
-   * highest `LabourRequirementSpec` revision; Labour never reads `ActivityRequirement`). An
-   * allocation pins THIS revision's fingerprint + shift, so §A coverage can carry a compatible
-   * later revision forward or strand an incompatible one.
+   * The requirement's CURRENT head — the ACTIVITIES-owned revision/activity/status joined with the
+   * LABOUR-owned technical identity for that exact revision.
+   *
+   * Task-3 correction F1 + F4: the head used to be derived from the highest
+   * `LabourRequirementSpec` revision alone, which is not Activities' truth. That let an allocation
+   * pair a requirement with an activity that does not own it, and let a CANCELLED head keep
+   * looking allocatable (a cancel APPENDS a revision that copies the labour spec forward, so the
+   * labour-side max revision still resolves). The head now comes from
+   * `ActivityParticipant.labourRequirementHead` — the cycle-exempt participant channel, so Labour
+   * still reads no Activities table directly — and the labour detail is looked up for THAT
+   * revision, not the newest labour row.
    */
-  private async headSpec(tx: CommandTx, projectId: string, requirementId: string) {
-    const spec = await tx.labourRequirementSpec.findFirst({
-      where: { projectId, requirementId },
-      orderBy: { revision: 'desc' },
+  private async requirementHead(tx: CommandTx, projectId: string, requirementId: string) {
+    const head = await this.activityParticipant.labourRequirementHead(tx, { projectId, requirementId });
+    if (!head) throw new NotFoundException('No requirement with that id in this project');
+    if (head.status === 'cancelled') {
+      throw new ConflictException('This requirement is CANCELLED — its demand is dead and cannot be allocated against');
+    }
+    const spec = await tx.labourRequirementSpec.findUnique({
+      where: { projectId_requirementId_revision: { projectId, requirementId, revision: head.revision } },
       select: { revision: true, tradeCode: true, skillCode: true, shift: true, labourSpecFingerprint: true },
     });
-    if (!spec) throw new NotFoundException('No labour requirement with that id in this project');
-    return spec;
+    if (!spec) throw new BadRequestException('That requirement is not a LABOUR requirement');
+    return { ...spec, activityId: head.activityId };
   }
 
   /**
@@ -213,7 +225,14 @@ export class LabourCapacityService {
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
-        const spec = await this.headSpec(tx, projectId, input.requirementId);
+        // F1 + F4 — ONE coherent Activities-owned demand identity: the head revision, the activity
+        // that OWNS it, and its live status. A cancelled head throws from here.
+        const spec = await this.requirementHead(tx, projectId, input.requirementId);
+        if (spec.activityId !== input.activityId) {
+          throw new BadRequestException(
+            `Requirement ${input.requirementId} belongs to activity ${spec.activityId}, not ${input.activityId} — an allocation must name the activity whose demand it serves`,
+          );
+        }
 
         // the demanded slice must exist on the HEAD revision — allocating onto a date the current
         // demand does not ask for is a category error, not a shortfall
@@ -365,6 +384,21 @@ export class LabourCapacityService {
   async recordAttendance(projectId: string, input: RecordAttendanceInput, user: AuthUser, idempotencyKey?: string): Promise<LabourAttendanceDto> {
     const { actor, scope } = await this.begin(projectId, user);
     this.assertPolicy(user, 'attendance.record', 'Recording attendance is a pmc/engineer/contractor surface');
+    // F2 — canonical presence must carry TRUSTED evidence. The zod contract guards the HTTP edge;
+    // this is the SERVICE backstop, so a direct caller cannot record a bare presence claim either.
+    if (!input.deviceId && !input.manualReason) {
+      throw new BadRequestException(
+        "Attendance needs trusted evidence: either the worker's bound deviceId, or an explicit manualReason recorded as an attributable exception (plan §H)",
+      );
+    }
+    if (input.deviceId && input.manualReason) {
+      throw new BadRequestException('A muster is either device-evidenced or a manual exception — never both');
+    }
+    // A MANUAL muster vouches for presence with no device behind it, so it carries the same
+    // authority as any other override: pmc only. The device path stays open to the site roles.
+    if (input.manualReason) {
+      this.assertPolicy(user, 'labour.override', 'A manual muster (presence with no bound device) is a pmc exception');
+    }
     const civilDate = fromIsoCivilDate(input.civilDate);
     if (!civilDate) throw new BadRequestException('civilDate must be an ISO civil date');
     const outcome = await executeCommand(this.prisma, {
@@ -383,7 +417,8 @@ export class LabourCapacityService {
           row = await tx.labourAttendance.create({
             data: {
               projectId, workerId: input.workerId, civilDate, shift: input.shift,
-              deviceId: input.deviceId ?? null, evidenceMediaId: input.evidenceMediaId ?? null,
+              deviceId: input.deviceId ?? null, manualReason: input.manualReason ?? null,
+              evidenceMediaId: input.evidenceMediaId ?? null,
               recordedById: actor.actorId, sourceCommandId: ctx.commandId!,
             },
           });
@@ -518,7 +553,7 @@ export class LabourCapacityService {
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
-        const spec = await this.headSpec(tx, projectId, input.requirementId);
+        const spec = await this.requirementHead(tx, projectId, input.requirementId);
         if (spec.labourSpecFingerprint === toFingerprint) {
           throw new BadRequestException('The substitute identity equals the requirement head — that is not a substitution');
         }
