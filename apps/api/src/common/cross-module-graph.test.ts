@@ -171,6 +171,9 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 3 },
   // edge 8 (project-init structure) → node/activity/inspection init participants
   'orgs/orgs.service.ts': { domain: 'orgs', foreign: {}, dispatch: 0 },
+  // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice→Worker binding. A roster surface like Task-1
+  // onboarding: attributable + idempotent, but no domain event, so it dispatches nothing.
+  'orgs/worker-devices.service.ts': { domain: 'orgs', foreign: {}, dispatch: 0 },
   // Phase 4 Task 1 — the labour LEAF: trusted-workforce onboarding writes ONLY labour-owned
   // tables and emits NO domain event (a roster surface — capacity facts + their events arrive
   // in Tasks 3–5), so it dispatches nothing. The labour requirement detail write lives in the
@@ -308,6 +311,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('resolve-mismatch')", "Post('submit')"],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
+  // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice binding route
+  'orgs/worker-devices.controller.ts': ["Post('worker-devices/:deviceId/bind')"],
   'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Delete('media/:id')"],
   'inspections/inspections.controller.ts': ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')"],
   'activities/phases.controller.ts': ['Post()', "Delete(':phaseId')"],
@@ -480,12 +485,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('143 mutating routes total (§4 command inventory; +7 Phase-4 Task-3 §C time-capacity facts)', () => {
+    it('144 mutating routes total (§4 command inventory; +7 Phase-4 Task-3 §C time-capacity facts, +1 device binding)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(143);
+      expect(total).toBe(144);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(143);
+      expect(live).toBe(144);
     });
   });
 

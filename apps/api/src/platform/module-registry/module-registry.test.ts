@@ -76,7 +76,10 @@ describe('Phase 2 Task 7 — module registry', () => {
       // (read-encapsulation), so it declares `drawings` too; `drawings` depends only on `decisions`,
       // so activities→drawings→decisions stays ACYCLIC (drawings never depends back on activities).
       activities: ['decisions', 'drawings', 'inspections', 'inventory', 'labour'], 'daily-log': ['decisions'], nodes: ['decisions'],
-      orgs: ['decisions', 'inspections'], drawings: ['decisions'],
+      // Phase 4 Task 3 — the orgs-owned WorkerDevice bind command reads the trusted-worker
+      // lifecycle through Labour's query contract (`Worker` is Labour-owned + read-encapsulated).
+      // Labour is a LEAF, so orgs → labour closes no cycle.
+      orgs: ['decisions', 'inspections', 'labour'], drawings: ['decisions'],
       media: ['decisions', 'daily-log', 'inspections'],
       // Phase 3 Task 2 — procurement reads requirement revisions through the activities query
       // (the §F bound-1 allocation lock) and approved specifications through decisions; neither

@@ -1154,3 +1154,9 @@ export type ApproveSkillSubstitutionInput = z.infer<typeof approveSkillSubstitut
 
 export const revokeSkillSubstitutionSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
 export type RevokeSkillSubstitutionInput = z.infer<typeof revokeSkillSubstitutionSchema>;
+
+// Phase 4 Task 3 — bind an orgs-owned `WorkerDevice` to a trusted `Worker` (§H, F5). The
+// structural FK landed in Task 1; this is the command the owning module exposes so a muster may
+// cite the device as evidence. A device starts UNBOUND (anonymous QR/tap onboarding unchanged).
+export const bindWorkerDeviceSchema = z.object({ workerId: z.string().min(1) }).strict();
+export type BindWorkerDeviceInput = z.infer<typeof bindWorkerDeviceSchema>;
