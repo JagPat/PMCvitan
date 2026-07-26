@@ -38,6 +38,15 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'labour.requisition.request': ['pmc', 'engineer'],
   'labour.requisition.approve': ['pmc'],
   'labour.commit.manage': ['pmc'],
+  // Phase 4 Task 3 — the §C time-capacity FACT surface (plan §H matrix): allocation is site work
+  // the engineer plans with the pmc; recording presence and effort is the muster (engineer +
+  // contractor); revoking presence is a pmc correction; widening §B satisfaction with a skill
+  // substitution is pmc authority (the same authority that approves a material substitution).
+  'allocation.manage': ['pmc', 'engineer'],
+  'attendance.record': ['pmc', 'engineer', 'contractor'],
+  'attendance.revoke': ['pmc'],
+  'labour.work.record': ['pmc', 'engineer', 'contractor'],
+  'labour.override': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],
