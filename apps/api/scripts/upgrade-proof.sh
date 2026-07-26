@@ -1168,6 +1168,22 @@ SQL
 assert_rejects "labour T3C F4: an allocation against a CANCELLED requirement head" \
   "INSERT INTO \"WorkerAllocation\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"activityId\",\"requirementId\",\"originRevision\",\"labourSpecFingerprint\",\"allocatedById\",\"sourceCommandId\") SELECT 'UPL-T3CF4','p1','UPL-T3W2','2026-08-12','day',\"activityId\",'UPL-F2OK',1,$FPD,'USER-1','UPL-CMD1' FROM \"ActivityRequirement\" WHERE \"projectId\"='p1' AND \"requirementId\"='UPL-F2OK' AND \"revision\"=1"
 
+# ── Task-3 correction ROUND 2 (20270220000000) ────────────────────────────────────────────────
+# Finding 1 — the manual muster's justification is frozen with the rest of the observation, and a
+# blank reason is not a reason. `UPL-T3CMAN` above is the accepted manual muster these act on.
+assert_rejects "labour T3C2 finding 1: rewriting a recorded manualReason after the fact" \
+  "UPDATE \"LabourAttendance\" SET \"manualReason\"='a different story' WHERE \"id\"='UPL-T3CMAN'"
+assert_rejects "labour T3C2 finding 1: a whitespace-only manualReason (spaces)" \
+  "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"manualReason\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3C2B1','p1','UPL-T3W','2026-08-19','day','   ','USER-1','UPL-CMD1')"
+assert_rejects "labour T3C2 finding 1: a whitespace-only manualReason (tab/newline — btrim's default set does NOT cover these)" \
+  "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"manualReason\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3C2B2','p1','UPL-T3W','2026-08-20','day',E'\t\n ','USER-1','UPL-CMD1')"
+# … while the ONE permitted mutation still works: a single revocation stamp, reason preserved.
+$PSQL >/dev/null <<SQL && printf 'ok      %s\n' "labour T3C2 finding 1: the one-time revocation stamp is still permitted (precision, not just strictness)" || { printf 'FAILED  %s\n' "labour T3C2 revocation stamp rejected"; FAIL=1; }
+UPDATE "LabourAttendance" SET "revokedAt"=NOW(),"revokedById"='USER-1',"revokeReason"='recorded against the wrong worker' WHERE "id"='UPL-T3CMAN';
+SQL
+assert_rejects "labour T3C2 finding 1: a revoked muster is terminal (no second stamp)" \
+  "UPDATE \"LabourAttendance\" SET \"revokeReason\"='changed my mind' WHERE \"id\"='UPL-T3CMAN'"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

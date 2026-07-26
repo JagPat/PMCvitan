@@ -342,6 +342,53 @@ PostgreSQL, INDEPENDENTLY for F5, F3, F2 and F4 (each finding alone aborts the m
 `t2c:repair`, and redeploys), and proves a fabricating plan is refused and rolled back. (The round-1
 `scripts/phase4-t2-correction-abort-proof.sh` covers the F5 raw-repair path.)
 
+## §P4T3C2. Phase 4 Task-3 correction 2 — blank manual-muster reason (one-time, diagnostic-first)
+
+`20270220000000_phase4_t3_correction2` tightens two seals on facts the Team gate reads. Only ONE of
+them can abort a deploy, and only over pre-existing data:
+
+> `phase4 t3 correction2 finding 1: N LabourAttendance row(s) carry a blank manualReason (sample: …)`
+
+**What it means.** A muster was recorded as a manual exception — the pmc-attributable alternative to
+device evidence — but its stated reason is empty or whitespace. That is an unevidenced presence claim
+with nothing behind it, and the migration refuses to install a constraint that would silently bless it.
+
+**Why there is no automatic repair.** Only the person who recorded the muster knows why there was no
+device. Inventing a reason would be worse than the blank: it would look like evidence. So:
+
+1. **List them** (the abort message samples up to 20; this is the full set):
+   ```sql
+   SELECT "id", "projectId", "workerId", "civilDate", "shift", "recordedById", "recordedAt"
+     FROM "LabourAttendance"
+    WHERE "manualReason" IS NOT NULL AND btrim("manualReason", E' \t\r\n') = ''
+    ORDER BY "projectId", "civilDate";
+   ```
+2. **Revoke each one through the application**, not with SQL — `POST …/labour/attendance/:id/revoke`
+   with a real reason. Attendance is append-only: a revocation is the sanctioned correction and it
+   keeps the original row as history. (A revoked row still trips the diagnostic, because its blank
+   `manualReason` is still recorded; see step 3.)
+3. **Re-record the presence** for each revoked muster with its true justification (or with the
+   worker's bound device, if one exists). Then remove the blank rows — these are pre-correction rows
+   that never carried meaning, and this is the ONE sanctioned deletion, performed under maintenance
+   with the append-only trigger disabled by name, exactly as §T45 does:
+   ```sql
+   BEGIN;
+   ALTER TABLE "LabourAttendance" DISABLE TRIGGER "LabourAttendance_append_only";
+   DELETE FROM "LabourAttendance"
+    WHERE "manualReason" IS NOT NULL AND btrim("manualReason", E' \t\r\n') = '';
+   ALTER TABLE "LabourAttendance" ENABLE TRIGGER "LabourAttendance_append_only";
+   -- verify the trigger is enabled again BEFORE committing
+   SELECT tgenabled FROM pg_trigger WHERE tgname = 'LabourAttendance_append_only';  -- must be 'O'
+   COMMIT;
+   ```
+4. **Redeploy.** The diagnostic now finds nothing and the migration applies.
+
+**Note on the trim set.** PostgreSQL's one-argument `btrim(text)` strips spaces only, so the explicit
+`E' \t\r\n'` set is used everywhere above — a tab-only reason is exactly as blank as a space-only one.
+
+The migration's other change (the allocation trigger taking the `ActivityRequirementRoot` lock before
+reading the head) needs no operator action: it alters a function, touches no rows, and cannot abort.
+
 ## 1. Drain all OLD application instances
 
 Stop routing to and shut down every instance running the PREVIOUS build. The single-sender
