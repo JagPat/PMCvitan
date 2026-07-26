@@ -139,6 +139,17 @@ const SECTION_A_COMMANDS: Array<{ label: string; file: string; method: string }>
   // (the at-risk determination reads it), so both join the §A readiness-lock protocol.
   { label: 'delivery.fulfill', file: 'procurement/purchase-orders.service.ts', method: 'fulfillDelivery' },
   { label: 'po.close-short', file: 'procurement/purchase-orders.service.ts', method: 'closeShort' },
+  // Phase 4 Task 3 — every §C time-capacity fact moves the (Task-4) Team gate's inputs, so each
+  // takes the SAME project readiness lock as the material commands: the allocation lifecycle, the
+  // presence observation + its correction, the effort observation, and the §B skill-substitution
+  // widening (the labour twin of substitution.approve/revoke above).
+  { label: 'labour.allocation.allocate', file: 'labour/labour-capacity.service.ts', method: 'allocate' },
+  { label: 'labour.allocation.release', file: 'labour/labour-capacity.service.ts', method: 'release' },
+  { label: 'labour.attendance.record', file: 'labour/labour-capacity.service.ts', method: 'recordAttendance' },
+  { label: 'labour.attendance.revoke', file: 'labour/labour-capacity.service.ts', method: 'revokeAttendance' },
+  { label: 'labour.work.record', file: 'labour/labour-capacity.service.ts', method: 'recordWork' },
+  { label: 'labour.skillSubstitution.approve', file: 'labour/labour-capacity.service.ts', method: 'approveSkillSubstitution' },
+  { label: 'labour.skillSubstitution.revoke', file: 'labour/labour-capacity.service.ts', method: 'revokeSkillSubstitution' },
 ];
 
 /** The body of `async <method>(` up to the next same-indent `async ` (or end of file). */
@@ -162,10 +173,11 @@ describe('readiness-lock §A COMMAND-LEVEL coverage (Phase 3 Task 6)', () => {
     });
   }
 
-  it('enumerates every command in the §A lock-coverage table (22 commands)', () => {
-    // A mechanical guard on completeness: the table has 22 rows across activities/procurement/
-    // inventory/daily-log (Task 6 correction added delivery.fulfill + po.close-short — both remove
-    // inbound coverage). Adding a §A command without listing it here is a visible, reviewed change.
-    expect(SECTION_A_COMMANDS).toHaveLength(22);
+  it('enumerates every command in the §A lock-coverage table (29 commands)', () => {
+    // A mechanical guard on completeness: the table has 29 rows across activities/procurement/
+    // inventory/daily-log/labour (Task 6 correction added delivery.fulfill + po.close-short — both
+    // remove inbound coverage; Phase 4 Task 3 added the seven §C time-capacity fact commands).
+    // Adding a §A command without listing it here is a visible, reviewed change.
+    expect(SECTION_A_COMMANDS).toHaveLength(29);
   });
 });

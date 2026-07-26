@@ -36,11 +36,12 @@ describe('Phase 2 Task 7 — module registry', () => {
     expect(labour, 'the labour manifest exists').toBeDefined();
     expect(moduleModelOwnership().get('workerSkill')).toBe('labour');
     const expected = [
-      'capacityCommitment', 'capacityPromise', 'crew', 'crewMembership', 'labourDemandSlice',
+      'approvedSkillSubstitution', 'capacityCommitment', 'capacityPromise', 'crew', 'crewMembership',
+      'labourAttendance', 'labourDemandSlice',
       'labourPurchaseOrder', 'labourPurchaseOrderLine', 'labourPurchaseOrderVersion',
       'labourQuoteComparison', 'labourRequirementSpec', 'labourRequisition', 'labourRequisitionLine',
-      'labourRfq', 'labourSkill', 'labourTrade', 'supplierLabourQuote', 'supplierLabourQuoteLine',
-      'vendorLabourProfile', 'worker', 'workerSkill',
+      'labourRfq', 'labourSkill', 'labourTrade', 'labourWorkFact', 'supplierLabourQuote',
+      'supplierLabourQuoteLine', 'vendorLabourProfile', 'worker', 'workerAllocation', 'workerSkill',
     ];
     expect([...(labour!.readEncapsulated ?? [])].sort()).toEqual(expected);
     expect(labour!.readEncapsulated).toContain('workerSkill');
@@ -117,7 +118,10 @@ describe('Phase 2 Task 7 — module registry', () => {
       // ProjectVendor binding through ProcurementParticipant.assertVendorBound (+ resolveOrgVendor):
       // a CYCLE-EXEMPT labour → procurement workflow edge, not a dependsOn read, so labour stays a
       // LEAF (dependsOn: []) and the graph is still acyclic.
-      labour: ['procurement'],
+      // Phase 4 Task 3 adds `activities`: an allocation names the activity it serves, validated
+      // through ActivityParticipant.labourTarget — also cycle-exempt (§G's READ edge runs
+      // activities → labour, so a labour → activities READ would close a cycle).
+      labour: ['procurement', 'activities'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);

@@ -28,6 +28,7 @@ CREATE TABLE "WorkerAllocation" (
   "originRevision"        INTEGER NOT NULL,
   "labourSpecFingerprint" TEXT NOT NULL,
   "crewId"                TEXT,
+  "capacityCommitmentId"  TEXT,
   "status"                TEXT NOT NULL DEFAULT 'active',
   "allocatedAt"           TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "allocatedById"         TEXT NOT NULL,
@@ -113,6 +114,7 @@ CREATE UNIQUE INDEX "WorkerAllocation_projectId_id_key"          ON "WorkerAlloc
 CREATE INDEX "WorkerAllocation_worker_slice_idx"                 ON "WorkerAllocation"("projectId", "workerId", "civilDate", "shift");
 CREATE INDEX "WorkerAllocation_activity_slice_idx"               ON "WorkerAllocation"("projectId", "activityId", "civilDate", "shift");
 CREATE INDEX "WorkerAllocation_requirement_idx"                  ON "WorkerAllocation"("projectId", "requirementId", "originRevision");
+CREATE INDEX "WorkerAllocation_commitment_idx"                   ON "WorkerAllocation"("projectId", "capacityCommitmentId") WHERE "capacityCommitmentId" IS NOT NULL;
 CREATE UNIQUE INDEX "LabourAttendance_projectId_id_key"          ON "LabourAttendance"("projectId", "id");
 CREATE INDEX "LabourAttendance_worker_slice_idx"                 ON "LabourAttendance"("projectId", "workerId", "civilDate", "shift");
 CREATE INDEX "LabourAttendance_slice_idx"                        ON "LabourAttendance"("projectId", "civilDate", "shift");
@@ -155,6 +157,13 @@ CREATE UNIQUE INDEX "LabourRequirementSpec_allocation_identity_key"
 -- additive — it constrains nothing that was not already unique.
 CREATE UNIQUE INDEX "WorkerDevice_projectId_id_key" ON "WorkerDevice"("projectId", "id");
 
+-- §F bound 3 — an allocation MAY draw down committed supplier capacity. The reference is not a
+-- bare id: the five-column FK below binds the allocation's (fingerprint, civilDate, shift) to the
+-- commitment's OWN slice, so capacity committed for one `(civilDate, shift)` can NEVER be drawn
+-- for another (round-2 finding 2). This adds the matching candidate key.
+CREATE UNIQUE INDEX "CapacityCommitment_slice_identity_key"
+  ON "CapacityCommitment"("projectId", "id", "labourSpecFingerprint", "civilDate", "shift");
+
 ALTER TABLE "WorkerAllocation"
   ADD CONSTRAINT "WorkerAllocation_project_fkey"   FOREIGN KEY ("projectId") REFERENCES "Project"("id") ON DELETE NO ACTION ON UPDATE NO ACTION,
   ADD CONSTRAINT "WorkerAllocation_worker_fkey"    FOREIGN KEY ("projectId", "workerId") REFERENCES "Worker"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION,
@@ -162,6 +171,9 @@ ALTER TABLE "WorkerAllocation"
   ADD CONSTRAINT "WorkerAllocation_spec_fkey"      FOREIGN KEY ("projectId", "requirementId", "originRevision", "labourSpecFingerprint")
     REFERENCES "LabourRequirementSpec"("projectId", "requirementId", "revision", "labourSpecFingerprint") ON DELETE NO ACTION ON UPDATE NO ACTION,
   ADD CONSTRAINT "WorkerAllocation_crew_fkey"      FOREIGN KEY ("projectId", "crewId") REFERENCES "Crew"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION,
+  -- §F bound 3 — the drawn-down supplier capacity, bound to the commitment's OWN slice identity
+  ADD CONSTRAINT "WorkerAllocation_commitment_fkey" FOREIGN KEY ("projectId", "capacityCommitmentId", "labourSpecFingerprint", "civilDate", "shift")
+    REFERENCES "CapacityCommitment"("projectId", "id", "labourSpecFingerprint", "civilDate", "shift") ON DELETE NO ACTION ON UPDATE NO ACTION,
   ADD CONSTRAINT "WorkerAllocation_command_fkey"   FOREIGN KEY ("projectId", "sourceCommandId") REFERENCES "CommandExecution"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION,
   ADD CONSTRAINT "WorkerAllocation_allocatedBy_fkey" FOREIGN KEY ("allocatedById") REFERENCES "User"("id") ON DELETE NO ACTION ON UPDATE NO ACTION,
   ADD CONSTRAINT "WorkerAllocation_releasedBy_fkey"  FOREIGN KEY ("releasedById")  REFERENCES "User"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
@@ -204,6 +216,7 @@ BEGIN
      OR NEW."originRevision" <> OLD."originRevision"
      OR NEW."labourSpecFingerprint" <> OLD."labourSpecFingerprint"
      OR NEW."crewId" IS DISTINCT FROM OLD."crewId"
+     OR NEW."capacityCommitmentId" IS DISTINCT FROM OLD."capacityCommitmentId"
      OR NEW."allocatedAt" <> OLD."allocatedAt" OR NEW."allocatedById" <> OLD."allocatedById"
      OR NEW."sourceCommandId" <> OLD."sourceCommandId" THEN
     RAISE EXCEPTION 'WorkerAllocation identity is FROZEN — only status/release attribution may change (%)', OLD."id";
@@ -309,6 +322,67 @@ END;
 $$ LANGUAGE plpgsql;
 CREATE TRIGGER "WorkerAllocation_worker_active" BEFORE INSERT ON "WorkerAllocation"
   FOR EACH ROW EXECUTE FUNCTION phase4_t3_allocation_worker_active();
+
+-- ── attendance evidence is TRUSTED identity, never free text (§H/F5) ──────────────────────────
+-- A device may evidence a muster ONLY for the worker it is BOUND to. An unbound device (anonymous
+-- QR/tap onboarding — still supported byte-for-byte) can never stand as readiness evidence, and a
+-- device bound to worker A can never evidence worker B. The same-project composite FK already
+-- makes a cross-project device unrepresentable; this makes a MIS-ATTRIBUTED one unrepresentable.
+CREATE OR REPLACE FUNCTION phase4_t3_attendance_device_bound() RETURNS trigger AS $$
+DECLARE d RECORD;
+BEGIN
+  IF NEW."deviceId" IS NULL THEN RETURN NEW; END IF;
+  SELECT "workerId" INTO d FROM "WorkerDevice" WHERE "projectId" = NEW."projectId" AND "id" = NEW."deviceId";
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'LabourAttendance % references a WorkerDevice absent from its project', NEW."id";
+  END IF;
+  IF d."workerId" IS NULL THEN
+    RAISE EXCEPTION 'device % is not bound to a Worker and cannot evidence attendance', NEW."deviceId";
+  END IF;
+  IF d."workerId" <> NEW."workerId" THEN
+    RAISE EXCEPTION 'device % is bound to worker %, not % — attendance evidence must be the worker''s own device', NEW."deviceId", d."workerId", NEW."workerId";
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER "LabourAttendance_device_bound" BEFORE INSERT ON "LabourAttendance"
+  FOR EACH ROW EXECUTE FUNCTION phase4_t3_attendance_device_bound();
+
+-- ── §F bound 3: allocated ≤ committed, per SLICE ──────────────────────────────────────────────
+-- The service re-derives this under the commitment row's FOR UPDATE (so two concurrent allocating
+-- transactions serialize and exactly one may take the last person-shift). This trigger is the
+-- DATABASE backstop that makes an over-draw unrepresentable even under a direct write — the
+-- Phase-3 §F-bound discipline verbatim. The five-column FK above already pins each drawing
+-- allocation to the commitment's own `(fingerprint, civilDate, shift)`, so counting live rows by
+-- `capacityCommitmentId` is exactly "person-shifts drawn from THIS slice".
+--
+-- NOTE ON OVERAGE: the labour chain's headroom is structurally ZERO. Task 2's `committedQty ≤
+-- personShiftQty` CHECK plus the commitment↔PO-line slice FK make `committed == ordered` exactly,
+-- and there is no `approvedOverage` column on a labour PO. So §F bound 3 — "committed/allocated ≤
+-- ordered + approvedOverage per slice" — reduces here to `allocated ≤ committed (= ordered)`.
+CREATE OR REPLACE FUNCTION phase4_t3_allocation_within_commitment() RETURNS trigger AS $$
+DECLARE c RECORD; drawn BIGINT;
+BEGIN
+  IF NEW."capacityCommitmentId" IS NULL THEN RETURN NEW; END IF;
+  SELECT "personShiftQty", "status" INTO c
+  FROM "CapacityCommitment" WHERE "projectId" = NEW."projectId" AND "id" = NEW."capacityCommitmentId";
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'WorkerAllocation % references a CapacityCommitment absent from its project', NEW."id";
+  END IF;
+  IF c."status" <> 'committed' THEN
+    RAISE EXCEPTION 'CapacityCommitment % is % — only committed capacity can be drawn down', NEW."capacityCommitmentId", c."status";
+  END IF;
+  SELECT count(*) INTO drawn FROM "WorkerAllocation"
+   WHERE "projectId" = NEW."projectId" AND "capacityCommitmentId" = NEW."capacityCommitmentId"
+     AND "status" = 'active' AND "id" <> NEW."id";
+  IF drawn + 1 > c."personShiftQty" THEN
+    RAISE EXCEPTION '§F bound 3: commitment % has % committed person-shift(s) for its slice; % are already allocated', NEW."capacityCommitmentId", c."personShiftQty", drawn;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER "WorkerAllocation_within_commitment" BEFORE INSERT ON "WorkerAllocation"
+  FOR EACH ROW EXECUTE FUNCTION phase4_t3_allocation_within_commitment();
 
 -- ── diagnostic-first close-out ────────────────────────────────────────────────────────────────
 -- These tables are NEW, so a legacy database upgrades ROW-FREE by construction. Assert it rather

@@ -2494,8 +2494,13 @@ model CapacityCommitment {
   defaultedAt           DateTime?
 
   promises CapacityPromise[]
+  // Phase 4 Task 3 — the named-worker allocations that draw this forecast capacity down (§F bound 3)
+  allocations WorkerAllocation[]
 
   @@unique([projectId, id])
+  // the candidate key the allocation's slice-identity FK references (§F bound 3): capacity
+  // committed for one (fingerprint, civilDate, shift) can never be drawn for another
+  @@unique([projectId, id, labourSpecFingerprint, civilDate, shift])
 }
 
 // A dated arrival/rate promise in the APPEND-ONLY register (§F). seq monotone; only the initial
@@ -2558,6 +2563,14 @@ model WorkerAllocation {
   // if the allocation came from a crew expansion, which crew (provenance only — capacity is
   // conserved per WORKER, never per crew)
   crewId    String?
+  // §F bound 3 — the supplier capacity this allocation draws down, or NULL for own workforce
+  // (an in-house worker needs no commitment). When set, a five-column composite FK binds the
+  // allocation's (fingerprint, civilDate, shift) to the commitment's OWN slice, so capacity
+  // committed for one slice can never be drawn for another; the bound
+  // `active allocations ≤ commitment.personShiftQty` is re-derived under the commitment
+  // `FOR UPDATE` in the allocating transaction.
+  capacityCommitment   CapacityCommitment? @relation(fields: [projectId, capacityCommitmentId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  capacityCommitmentId String?
   status    String   @default("active") // active | released
   allocatedAt   DateTime @default(now())
   allocatedBy   User     @relation("allocationsMade", fields: [allocatedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
