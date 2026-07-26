@@ -72,4 +72,22 @@ export class LabourRequirementQuery {
     }
     return out;
   }
+
+  /**
+   * Phase 4 Task 3 — the trusted-worker existence/lifecycle read the ORGS-owned
+   * `WorkerDevice` bind command needs (`Worker` is Labour-owned and read-encapsulated, so the
+   * owner of the device row must not reach into it directly). Returns `null` when no such worker
+   * exists in the project. This is the `orgs → labour` read edge; Labour is a LEAF, so it closes
+   * no cycle. The same-project composite FK on `WorkerDevice` remains the database backstop —
+   * this read only supplies a truthful message and the revocation check an FK cannot express.
+   */
+  async workerLifecycle(
+    projectId: string,
+    workerId: string,
+    tx?: Prisma.TransactionClient,
+  ): Promise<{ id: string; revoked: boolean } | null> {
+    const db = tx ?? this.prisma;
+    const w = await db.worker.findFirst({ where: { id: workerId, projectId }, select: { id: true, revokedAt: true } });
+    return w ? { id: w.id, revoked: w.revokedAt !== null } : null;
+  }
 }

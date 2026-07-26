@@ -129,6 +129,22 @@ export class ActivityParticipant {
   }
 
   /**
+   * Phase 4 Task 3 — the activity a `WorkerAllocation` (and therefore its effort facts) is
+   * assigned to. Same reasoning as {@link materialTarget}: §G's read edge runs
+   * `activities → labour` (the Task-4 coverage read), so a `labour → activities` READ edge would
+   * close a cycle. Labour stays a LEAF and reaches the activity only through this cycle-exempt
+   * workflow-participant channel; the same-project composite FK on `WorkerAllocation` is the
+   * database backstop that makes a cross-project assignment unrepresentable regardless.
+   */
+  async labourTarget(
+    db: Prisma.TransactionClient,
+    params: { projectId: string; activityId: string },
+  ): Promise<{ id: string; name: string } | null> {
+    const { projectId, activityId } = params;
+    return db.activity.findFirst({ where: { id: activityId, projectId }, select: { id: true, name: true } });
+  }
+
+  /**
    * Phase 3 Task 5 (§E) — the INVERSE of {@link blockForMaterialMismatch}: called by the
    * daily-log mismatch-resolution command (same locked transaction) ONLY after it proved no
    * unresolved mismatch observation remains for the decision. Every activity this decision

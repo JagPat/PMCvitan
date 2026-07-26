@@ -32,6 +32,8 @@ export const labourManifest: ModuleManifest = {
     'supplierLabourQuote', 'supplierLabourQuoteLine', 'labourQuoteComparison',
     'labourPurchaseOrder', 'labourPurchaseOrderVersion', 'labourPurchaseOrderLine',
     'capacityCommitment', 'capacityPromise',
+    // Phase 4 Task 3 — the §C time-capacity facts (distinct units, no bucket ledger).
+    'workerAllocation', 'labourAttendance', 'labourWorkFact', 'approvedSkillSubstitution',
   ],
   readEncapsulated: [
     'labourTrade', 'labourSkill', 'worker', 'workerSkill', 'crew', 'crewMembership',
@@ -40,6 +42,7 @@ export const labourManifest: ModuleManifest = {
     'supplierLabourQuote', 'supplierLabourQuoteLine', 'labourQuoteComparison',
     'labourPurchaseOrder', 'labourPurchaseOrderVersion', 'labourPurchaseOrderLine',
     'capacityCommitment', 'capacityPromise',
+    'workerAllocation', 'labourAttendance', 'labourWorkFact', 'approvedSkillSubstitution',
   ],
   // A LEAF (round-3): NO synchronous read edge to any module. The Activities requirement command
   // writes the labour detail INTO this module through LabourRequirementParticipant (a workflow edge
@@ -47,12 +50,20 @@ export const labourManifest: ModuleManifest = {
   // procurement-owned Vendor/ProjectVendor binding through `ProcurementParticipant.assertVendorBound`
   // — a CYCLE-EXEMPT workflow-participant edge (`labour → procurement`), never a `dependsOn` read.
   dependsOn: [],
-  workflowParticipants: ['procurement'],
+  // Phase 4 Task 3 adds `activities`: an allocation names the activity it serves, validated through
+  // `ActivityParticipant.labourTarget` — the CYCLE-EXEMPT `labour → activities` workflow-participant
+  // edge (§G's READ edge runs activities → labour for the Task-4 coverage read, so a labour →
+  // activities READ would close a cycle). `dependsOn` therefore stays empty and the graph is acyclic.
+  workflowParticipants: ['procurement', 'activities'],
   // Phase 4 Task 2 — the labour commercial event family (signal-only, invalidate:true, push:null).
   producesEvents: [
     'labour.requisition.submitted', 'labour.requisition.approved', 'labour.comparison.approved',
     'labour.po.issued', 'labour.po.amended', 'labour.po.cancelled', 'labour.po.closed_short',
     'capacity.committed', 'capacity.revised', 'capacity.defaulted',
+    // Phase 4 Task 3 — one signal-only event per §C fact row. Derived coverage/verdicts still get
+    // NO event (a derived verdict is never a domain fact); the Team gate lands with Task 4.
+    'allocation.made', 'allocation.released', 'attendance.recorded', 'attendance.revoked',
+    'labour_work.recorded', 'skill_substitution.approved', 'skill_substitution.revoked',
   ],
   consumesEvents: [],
   commands: [...LABOUR_COMMANDS],
@@ -87,6 +98,14 @@ export const labourManifest: ModuleManifest = {
     'POST /projects/:projectId/labour/commitments',
     'POST /projects/:projectId/labour/commitments/:commitmentId/revise',
     'POST /projects/:projectId/labour/commitments/:commitmentId/default',
+    // Phase 4 Task 3 — the §C time-capacity fact routes.
+    'POST /projects/:projectId/labour/allocations',
+    'POST /projects/:projectId/labour/allocations/:allocationId/release',
+    'POST /projects/:projectId/labour/attendance',
+    'POST /projects/:projectId/labour/attendance/:attendanceId/revoke',
+    'POST /projects/:projectId/labour/work',
+    'POST /projects/:projectId/labour/skill-substitutions',
+    'POST /projects/:projectId/labour/skill-substitutions/:substitutionId/revoke',
   ],
   permissions: ['pmc', 'engineer'],
 };

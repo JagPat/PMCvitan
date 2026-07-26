@@ -165,7 +165,7 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     const declared = MODULE_MANIFESTS.flatMap((m) => m.routes);
     expect([...derived.keys()].sort()).toEqual([...declared].sort());
     expect(declared.length).toBe(new Set(declared).size); // globally unique
-    expect(declared.length).toBe(136); // the documented command inventory §4 (+20: Phase-4 Task-2 labour commercial chain)
+    expect(declared.length).toBe(144); // the documented command inventory §4 (+8: Phase-4 Task-3 §C time-capacity facts + the device binding)
     // no route contributed by two controllers or two manifests, no missing/unexpected route
     expect(analysis.routeFindings).toEqual([]);
   });

@@ -1072,6 +1072,73 @@ assert_rejects "labour T2C F4: a PO line with a rate not from the selected quote
 assert_rejects "labour T2C F2: a PO line whose civil date differs from its requisition line (reqline-slice FK)" \
   "INSERT INTO \"LabourPurchaseOrderLine\"(\"id\",\"projectId\",\"poVersionId\",\"requisitionLineId\",\"requisitionId\",\"requirementId\",\"revision\",\"civilDate\",\"shift\",\"labourSpecFingerprint\",\"personShiftQty\",\"ratePerPersonShift\",\"shiftPremium\",\"committedAmountBase\",\"comparisonId\",\"selectedQuoteId\",\"selectedQuoteLineId\") VALUES('UPL-T2POLS','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-09-09','day',$FPD,3,1000,100,3300,'UPL-T2CMP','UPL-T2Q','UPL-T2QL')"
 
+# ── Phase 4 Task 3 — the §C TIME-CAPACITY fact seals. The 4 additive tables upgrade ROW-FREE over
+#    the legacy DB, and the DB seals (the worker-level conservation exclusion, the frozen-identity
+#    and append-only triggers, the trusted device binding, the work↔allocation identity copy, and
+#    §F bound 3) reject forgeries on the MIGRATED database. Anchored on the coherent Task-2 chain
+#    above (UPL-T2POL / UPL-T2CC, slice 2026-08-12 day, 3 person-shifts).
+assert "the 4 Phase-4 Task-3 time-capacity tables exist and are ROW-FREE over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('WorkerAllocation','LabourAttendance','LabourWorkFact','ApprovedSkillSubstitution'))::text || '|' || (SELECT COUNT(*) FROM \"WorkerAllocation\")::text || '|' || (SELECT COUNT(*) FROM \"LabourAttendance\")::text || '|' || (SELECT COUNT(*) FROM \"LabourWorkFact\")::text || '|' || (SELECT COUNT(*) FROM \"ApprovedSkillSubstitution\")::text;" \
+  "4|0|0|0|0"
+assert "the §C conservation exclusions + the 6 time-capacity triggers are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_indexes WHERE indexname IN ('WorkerAllocation_live_slice_key','LabourAttendance_live_slice_key','ApprovedSkillSubstitution_active_key'))::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('WorkerAllocation_frozen','LabourAttendance_append_only','LabourWorkFact_append_only','ApprovedSkillSubstitution_append_only','LabourWorkFact_matches_allocation','WorkerAllocation_worker_active','LabourAttendance_device_bound','WorkerAllocation_within_commitment') AND NOT tgisinternal)::text;" \
+  "3|8"
+
+# a coherent §C fact chain over the Task-2 commitment: worker -> bound device -> allocation ->
+# attendance -> effort. Proves the seals are PRECISE (they accept legitimate physical truth).
+$PSQL >/dev/null <<SQL && printf 'ok      %s\n' "labour T3: a coherent §C time-capacity chain is accepted (seals are precise)" || { printf 'FAILED  %s\n' "labour T3 coherent chain rejected"; FAIL=1; }
+BEGIN;
+INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+  SELECT 'UPL-CMD1','project',"orgId",'p1','USER-1','labour.allocation.allocate','upl-t3-key','upl-t3-hash','succeeded' FROM "Project" WHERE "id"='p1';
+INSERT INTO "Worker"("id","projectId","name","tradeCode","activeFrom","createdById") VALUES('UPL-T3W','p1','Mason A','mason','2026-01-01','USER-1');
+INSERT INTO "WorkerSkill"("projectId","workerId","skillCode") VALUES('p1','UPL-T3W','bar-bending');
+INSERT INTO "WorkerDevice"("id","projectId","token","workerId") VALUES('UPL-T3DEV','p1','upl-t3-token','UPL-T3W');
+INSERT INTO "WorkerAllocation"("id","projectId","workerId","civilDate","shift","activityId","requirementId","originRevision","labourSpecFingerprint","capacityCommitmentId","allocatedById","sourceCommandId")
+  VALUES('UPL-T3ALLOC','p1','UPL-T3W','2026-08-12','day','ACT-1','UPL-F2OK',1,$FPD,'UPL-T2CC','USER-1','UPL-CMD1');
+INSERT INTO "LabourAttendance"("id","projectId","workerId","civilDate","shift","deviceId","recordedById","sourceCommandId")
+  VALUES('UPL-T3ATT','p1','UPL-T3W','2026-08-12','day','UPL-T3DEV','USER-1','UPL-CMD1');
+INSERT INTO "LabourWorkFact"("id","projectId","workerId","allocationId","activityId","civilDate","shift","workedMinutes","recordedById","sourceCommandId")
+  VALUES('UPL-T3WORK','p1','UPL-T3W','UPL-T3ALLOC','ACT-1','2026-08-12','day',480,'USER-1','UPL-CMD1');
+COMMIT;
+SQL
+
+# §C.2 — the worker-level conservation exclusion: a second LIVE allocation of one worker for one
+# (civilDate, shift) is unrepresentable, whoever writes it
+assert_rejects "labour T3 §C.2: a second live allocation of one worker for one (date, shift)" \
+  "INSERT INTO \"WorkerAllocation\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"activityId\",\"requirementId\",\"originRevision\",\"labourSpecFingerprint\",\"allocatedById\",\"sourceCommandId\") VALUES('UPL-T3DUP','p1','UPL-T3W','2026-08-12','day','ACT-1','UPL-F2OK',1,$FPD,'USER-1','UPL-CMD1')"
+# the allocation identity is FROZEN — only status + release attribution may change
+assert_rejects "labour T3 §C.2: re-pointing a frozen allocation's slice (frozen-identity trigger)" \
+  "UPDATE \"WorkerAllocation\" SET \"civilDate\"='2026-08-13' WHERE \"id\"='UPL-T3ALLOC'"
+assert_rejects "labour T3 §C.2: deleting an allocation (release it instead)" \
+  "DELETE FROM \"WorkerAllocation\" WHERE \"id\"='UPL-T3ALLOC'"
+# §F bound 3 — the commitment covers 3 person-shifts; a 4th draw is refused
+assert_rejects "labour T3 §F bound 3: drawing more person-shifts than the commitment covers" \
+  "INSERT INTO \"Worker\"(\"id\",\"projectId\",\"name\",\"tradeCode\",\"activeFrom\",\"createdById\") VALUES('UPL-T3W2','p1','Mason B','mason','2026-01-01','USER-1'); INSERT INTO \"Worker\"(\"id\",\"projectId\",\"name\",\"tradeCode\",\"activeFrom\",\"createdById\") VALUES('UPL-T3W3','p1','Mason C','mason','2026-01-01','USER-1'); INSERT INTO \"Worker\"(\"id\",\"projectId\",\"name\",\"tradeCode\",\"activeFrom\",\"createdById\") VALUES('UPL-T3W4','p1','Mason D','mason','2026-01-01','USER-1'); INSERT INTO \"WorkerAllocation\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"activityId\",\"requirementId\",\"originRevision\",\"labourSpecFingerprint\",\"capacityCommitmentId\",\"allocatedById\",\"sourceCommandId\") SELECT 'UPL-T3A'||w, 'p1', w, '2026-08-12','day','ACT-1','UPL-F2OK',1,$FPD,'UPL-T2CC','USER-1','UPL-CMD1' FROM (VALUES('UPL-T3W2'),('UPL-T3W3'),('UPL-T3W4')) AS t(w)"
+# capacity committed for one slice can never be drawn for another (five-column slice-identity FK)
+assert_rejects "labour T3 §F bound 3: drawing a commitment for a slice it does not cover" \
+  "INSERT INTO \"WorkerAllocation\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"activityId\",\"requirementId\",\"originRevision\",\"labourSpecFingerprint\",\"capacityCommitmentId\",\"allocatedById\",\"sourceCommandId\") VALUES('UPL-T3MIS','p1','UPL-T3W','2026-08-13','day','ACT-1','UPL-F2OK',1,$FPD,'UPL-T2CC','USER-1','UPL-CMD1')"
+# §C.3 — one live muster per worker/date/shift; presence history is append-only
+assert_rejects "labour T3 §C.3: a second live muster for one worker/date/shift" \
+  "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3ATT2','p1','UPL-T3W','2026-08-12','day','USER-1','UPL-CMD1')"
+assert_rejects "labour T3 §C.3: editing a presence observation (append-only trigger)" \
+  "UPDATE \"LabourAttendance\" SET \"civilDate\"='2026-08-13' WHERE \"id\"='UPL-T3ATT'"
+# §H — a device may evidence a muster ONLY for the worker it is bound to
+assert_rejects "labour T3 §H: an UNBOUND device standing as attendance evidence" \
+  "INSERT INTO \"WorkerDevice\"(\"id\",\"projectId\",\"token\") VALUES('UPL-T3DEV2','p1','upl-t3-token-2'); INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"deviceId\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3ATT3','p1','UPL-T3W','2026-08-14','day','UPL-T3DEV2','USER-1','UPL-CMD1')"
+# §C.4 — effort is immutable and can never name a slice its allocation does not
+assert_rejects "labour T3 §C.4: editing an effort observation (a correction is a NEW row)" \
+  "UPDATE \"LabourWorkFact\" SET \"workedMinutes\"=1 WHERE \"id\"='UPL-T3WORK'"
+assert_rejects "labour T3 §C.4: an effort fact naming a slice its allocation does not" \
+  "INSERT INTO \"LabourWorkFact\"(\"id\",\"projectId\",\"workerId\",\"allocationId\",\"activityId\",\"civilDate\",\"shift\",\"workedMinutes\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3WF2','p1','UPL-T3W','UPL-T3ALLOC','ACT-1','2026-08-13','day',60,'USER-1','UPL-CMD1')"
+assert_rejects "labour T3 §C.4: an effort record longer than one shift (per-row CHECK)" \
+  "INSERT INTO \"LabourWorkFact\"(\"id\",\"projectId\",\"workerId\",\"allocationId\",\"activityId\",\"civilDate\",\"shift\",\"workedMinutes\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3WF3','p1','UPL-T3W','UPL-T3ALLOC','ACT-1','2026-08-12','day',721,'USER-1','UPL-CMD1')"
+# §B — a substitution never admits its own identity, and only one is ACTIVE per (requirement, from, to)
+assert_rejects "labour T3 §B: a substitution whose target equals its source (distinct CHECK)" \
+  "INSERT INTO \"ApprovedSkillSubstitution\"(\"id\",\"projectId\",\"requirementId\",\"fromFingerprint\",\"toFingerprint\",\"reason\",\"approvedById\",\"sourceCommandId\") SELECT 'UPL-T3SUBBAD','p1','UPL-F2OK',$FPD,$FPD,'x','USER-1','UPL-CMD1'"
+# a worker outside its active window can never be allocated
+assert_rejects "labour T3 §H: allocating a worker outside its active window" \
+  "INSERT INTO \"Worker\"(\"id\",\"projectId\",\"name\",\"tradeCode\",\"activeFrom\",\"activeTo\",\"createdById\") VALUES('UPL-T3WOLD','p1','Retired','mason','2026-01-01','2026-02-01','USER-1'); INSERT INTO \"WorkerAllocation\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"activityId\",\"requirementId\",\"originRevision\",\"labourSpecFingerprint\",\"allocatedById\",\"sourceCommandId\") SELECT 'UPL-T3AOLD','p1','UPL-T3WOLD','2026-08-12','day','ACT-1','UPL-F2OK',1,$FPD,'USER-1','UPL-CMD1'"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

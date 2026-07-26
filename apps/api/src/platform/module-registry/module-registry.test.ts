@@ -36,11 +36,12 @@ describe('Phase 2 Task 7 — module registry', () => {
     expect(labour, 'the labour manifest exists').toBeDefined();
     expect(moduleModelOwnership().get('workerSkill')).toBe('labour');
     const expected = [
-      'capacityCommitment', 'capacityPromise', 'crew', 'crewMembership', 'labourDemandSlice',
+      'approvedSkillSubstitution', 'capacityCommitment', 'capacityPromise', 'crew', 'crewMembership',
+      'labourAttendance', 'labourDemandSlice',
       'labourPurchaseOrder', 'labourPurchaseOrderLine', 'labourPurchaseOrderVersion',
       'labourQuoteComparison', 'labourRequirementSpec', 'labourRequisition', 'labourRequisitionLine',
-      'labourRfq', 'labourSkill', 'labourTrade', 'supplierLabourQuote', 'supplierLabourQuoteLine',
-      'vendorLabourProfile', 'worker', 'workerSkill',
+      'labourRfq', 'labourSkill', 'labourTrade', 'labourWorkFact', 'supplierLabourQuote',
+      'supplierLabourQuoteLine', 'vendorLabourProfile', 'worker', 'workerAllocation', 'workerSkill',
     ];
     expect([...(labour!.readEncapsulated ?? [])].sort()).toEqual(expected);
     expect(labour!.readEncapsulated).toContain('workerSkill');
@@ -75,7 +76,10 @@ describe('Phase 2 Task 7 — module registry', () => {
       // (read-encapsulation), so it declares `drawings` too; `drawings` depends only on `decisions`,
       // so activities→drawings→decisions stays ACYCLIC (drawings never depends back on activities).
       activities: ['decisions', 'drawings', 'inspections', 'inventory', 'labour'], 'daily-log': ['decisions'], nodes: ['decisions'],
-      orgs: ['decisions', 'inspections'], drawings: ['decisions'],
+      // Phase 4 Task 3 — the orgs-owned WorkerDevice bind command reads the trusted-worker
+      // lifecycle through Labour's query contract (`Worker` is Labour-owned + read-encapsulated).
+      // Labour is a LEAF, so orgs → labour closes no cycle.
+      orgs: ['decisions', 'inspections', 'labour'], drawings: ['decisions'],
       media: ['decisions', 'daily-log', 'inspections'],
       // Phase 3 Task 2 — procurement reads requirement revisions through the activities query
       // (the §F bound-1 allocation lock) and approved specifications through decisions; neither
@@ -117,7 +121,10 @@ describe('Phase 2 Task 7 — module registry', () => {
       // ProjectVendor binding through ProcurementParticipant.assertVendorBound (+ resolveOrgVendor):
       // a CYCLE-EXEMPT labour → procurement workflow edge, not a dependsOn read, so labour stays a
       // LEAF (dependsOn: []) and the graph is still acyclic.
-      labour: ['procurement'],
+      // Phase 4 Task 3 adds `activities`: an allocation names the activity it serves, validated
+      // through ActivityParticipant.labourTarget — also cycle-exempt (§G's READ edge runs
+      // activities → labour, so a labour → activities READ would close a cycle).
+      labour: ['procurement', 'activities'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);

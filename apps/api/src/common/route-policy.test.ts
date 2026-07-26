@@ -15,6 +15,8 @@ import { ProcurementController } from '../procurement/procurement.controller';
 import { InventoryController } from '../inventory/inventory.controller';
 import { LabourController } from '../labour/labour.controller';
 import { LabourProcurementController } from '../labour/labour-procurement.controller';
+import { LabourCapacityController } from '../labour/labour-capacity.controller';
+import { WorkerDevicesController } from '../orgs/worker-devices.controller';
 import { AuthController } from '../auth/auth.controller';
 import { DailyLogController } from '../daily-log/daily-log.controller';
 import { DecisionsController } from '../decisions/decisions.controller';
@@ -51,6 +53,8 @@ const CONTROLLERS = [
   InventoryController,
   LabourController,
   LabourProcurementController,
+  LabourCapacityController,
+  WorkerDevicesController,
   AuthController,
   DailyLogController,
   DecisionsController,

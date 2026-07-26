@@ -49,6 +49,17 @@ export const LABOUR_COMMANDS = [
   'labour.commitment.commit',
   'labour.commitment.revise',
   'labour.commitment.default',
+  // Phase 4 Task 3 — the §C TIME-CAPACITY fact families. The frozen-identity CAS allocation
+  // lifecycle (a crew allocation EXPANDS into one row per active member — there is no crew-level
+  // allocation row), the presence observation + its correction, the effort observation, and the
+  // pmc-authored skill substitution that widens §B satisfaction.
+  'labour.allocation.allocate',
+  'labour.allocation.release',
+  'labour.attendance.record',
+  'labour.attendance.revoke',
+  'labour.work.record',
+  'labour.skillSubstitution.approve',
+  'labour.skillSubstitution.revoke',
 ] as const;
 // Note: the WorkerDevice->Worker binding is a Task-1 STRUCTURAL foundation (the composite
 // (projectId, workerId) FK + containment; proven by the cross-project forgery probe). The
@@ -66,6 +77,9 @@ export const LABOUR_QUERIES = [
   'labour.rfqs',
   'labour.pos',
   'labour.commitments',
+  // Phase 4 Task 3 — the §C fact register (allocations + attendance + effort + substitutions) for
+  // a civil-date window. A READ of labour-owned facts only; the derived Team gate lands in Task 4.
+  'labour.capacity',
 ] as const;
 export type LabourQuery = (typeof LABOUR_QUERIES)[number];
 
@@ -312,4 +326,94 @@ export interface LabourPurchaseOrdersDto {
 }
 export interface LabourCommitmentsDto {
   readonly commitments: readonly CapacityCommitmentDto[];
+}
+
+// ── Phase 4 Task 3 — the §C TIME-CAPACITY facts ──────────────────────────────────────────────
+//
+// Labour is EXPIRING, time-bounded capacity, so these are NOT stock buckets: three immutable
+// observation families with DISTINCT units (commitment = person-shifts, attendance = headcount,
+// effort = worked-minutes) plus ONE frozen-identity CAS assignment. No current-quantity column
+// exists anywhere; every aggregate is derived by reading the facts.
+
+/**
+ * One `Worker` assigned to exactly ONE `(civilDate, shift)` slice of exactly ONE
+ * `(activityId, requirementId, originRevision, labourSpecFingerprint)`. Unit: 1 person-shift.
+ * Identity is FROZEN by a trigger — only `status` (`active → released`) and the release
+ * attribution ever change. The atomic capacity source is the `Worker`: a crew allocation expands
+ * into one of these per active member, so every double-booking shape collides on the ONE
+ * `(projectId, workerId, civilDate, shift) WHERE status='active'` exclusion.
+ */
+export interface WorkerAllocationDto {
+  readonly id: string;
+  readonly workerId: string;
+  readonly civilDate: string; // ISO civil date
+  readonly shift: string; // 'day' | 'night'
+  readonly activityId: string;
+  readonly requirementId: string;
+  readonly originRevision: number;
+  readonly labourSpecFingerprint: string;
+  /** The crew this allocation was expanded from — provenance only; a crew is never the source. */
+  readonly crewId: string | null;
+  /** The supplier capacity this allocation draws down (§F bound 3), or null for own workforce. */
+  readonly capacityCommitmentId: string | null;
+  readonly status: string; // active | released
+  readonly allocatedAt: string;
+  readonly allocatedById: string;
+  readonly releasedAt: string | null;
+  readonly releasedById: string | null;
+  readonly releaseReason: string | null;
+}
+
+/** Presence of one worker on one `(civilDate, shift)` slice. Unit: headcount (1). An append-only
+ *  observation — it neither consumes nor moves an allocation; coverage joins the two at read time. */
+export interface LabourAttendanceDto {
+  readonly id: string;
+  readonly workerId: string;
+  readonly civilDate: string;
+  readonly shift: string;
+  readonly deviceId: string | null;
+  readonly evidenceMediaId: string | null;
+  readonly recordedAt: string;
+  readonly recordedById: string;
+  readonly revokedAt: string | null;
+  readonly revokedById: string | null;
+  readonly revokeReason: string | null;
+}
+
+/** Effort performed under one allocation. Unit: worked-minutes — a DISTINCT fact, never a transfer
+ *  of the presence headcount. Fully immutable: a correction is a new row, never an edit. */
+export interface LabourWorkFactDto {
+  readonly id: string;
+  readonly workerId: string;
+  readonly allocationId: string;
+  readonly activityId: string;
+  readonly civilDate: string;
+  readonly shift: string;
+  readonly workedMinutes: number;
+  readonly note: string | null;
+  readonly recordedAt: string;
+  readonly recordedById: string;
+}
+
+/** A pmc-authored widening of §B satisfaction: work of `toFingerprint` may satisfy demand
+ *  specified as `fromFingerprint` on this requirement, until revoked. */
+export interface ApprovedSkillSubstitutionDto {
+  readonly id: string;
+  readonly requirementId: string;
+  readonly fromFingerprint: string;
+  readonly toFingerprint: string;
+  readonly reason: string;
+  readonly approvedById: string;
+  readonly at: string;
+  readonly revokedAt: string | null;
+  readonly revokedById: string | null;
+  readonly revokeReason: string | null;
+}
+
+/** The `labour.capacity` query result — the §C fact register for a civil-date window. */
+export interface LabourCapacityDto {
+  readonly allocations: readonly WorkerAllocationDto[];
+  readonly attendance: readonly LabourAttendanceDto[];
+  readonly workFacts: readonly LabourWorkFactDto[];
+  readonly skillSubstitutions: readonly ApprovedSkillSubstitutionDto[];
 }

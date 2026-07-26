@@ -96,6 +96,10 @@ const MODEL_OWNER: Record<string, string> = {
   supplierLabourQuote: 'labour', supplierLabourQuoteLine: 'labour', labourQuoteComparison: 'labour',
   labourPurchaseOrder: 'labour', labourPurchaseOrderVersion: 'labour', labourPurchaseOrderLine: 'labour',
   capacityCommitment: 'labour', capacityPromise: 'labour',
+  // Phase 4 Task 3 — the §C TIME-CAPACITY facts, all labour-owned. Three immutable observation
+  // families with DISTINCT units + the frozen-identity CAS assignment; no bucket ledger exists.
+  workerAllocation: 'labour', labourAttendance: 'labour', labourWorkFact: 'labour',
+  approvedSkillSubstitution: 'labour',
   projectNode: 'nodes',
   media: 'media',
   org: 'orgs', orgMembership: 'orgs', membership: 'orgs', project: 'orgs', projectCompany: 'orgs',
@@ -167,6 +171,9 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   'media/media.service.ts': { domain: 'media', foreign: {}, dispatch: 3 },
   // edge 8 (project-init structure) → node/activity/inspection init participants
   'orgs/orgs.service.ts': { domain: 'orgs', foreign: {}, dispatch: 0 },
+  // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice→Worker binding. A roster surface like Task-1
+  // onboarding: attributable + idempotent, but no domain event, so it dispatches nothing.
+  'orgs/worker-devices.service.ts': { domain: 'orgs', foreign: {}, dispatch: 0 },
   // Phase 4 Task 1 — the labour LEAF: trusted-workforce onboarding writes ONLY labour-owned
   // tables and emits NO domain event (a roster surface — capacity facts + their events arrive
   // in Tasks 3–5), so it dispatches nothing. The labour requirement detail write lives in the
@@ -178,6 +185,12 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // comparison approve + po issue/amend/cancel/closeShort + capacity commit/revise/default dispatch
   // their committed events post-commit (10 total).
   'labour/labour-procurement.service.ts': { domain: 'labour', foreign: {}, dispatch: 10 },
+  // Phase 4 Task 3 — the §C time-capacity facts: allocate (a crew EXPANDS into per-member rows,
+  // each emitting its own allocation.made), release, attendance record/revoke, work record, and
+  // the skill-substitution approve/revoke. Seven commands, each handing its committed events to
+  // the SINGLE external-effect sender once post-commit. The activity target is validated through
+  // the ACTIVITIES PARTICIPANT (the cycle-exempt channel), so no foreign model is written here.
+  'labour/labour-capacity.service.ts': { domain: 'labour', foreign: {}, dispatch: 7 },
 };
 
 // Services that WRITE but are NOT pillar signal emitters. Documented so a new
@@ -298,6 +311,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('resolve-mismatch')", "Post('submit')"],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
+  // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice binding route
+  'orgs/worker-devices.controller.ts': ["Post('worker-devices/:deviceId/bind')"],
   'media/media.controller.ts': ["Post('projects/:projectId/media')", "Patch('projects/:projectId/media/:mediaId/node')", "Delete('media/:id')"],
   'inspections/inspections.controller.ts': ['Post()', "Post(':inspectionId/submit')", "Post(':inspectionId/decide')"],
   'activities/phases.controller.ts': ['Post()', "Delete(':phaseId')"],
@@ -384,6 +399,14 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('projects/:projectId/labour/commitments/:commitmentId/revise')",
     "Post('projects/:projectId/labour/commitments/:commitmentId/default')",
   ],
+  // Phase 4 Task 3 — the §C time-capacity fact routes (allocation lifecycle, presence,
+  // effort, and the pmc-authored skill substitution).
+  'labour/labour-capacity.controller.ts': [
+    "Post('labour/allocations')", "Post('labour/allocations/:allocationId/release')",
+    "Post('labour/attendance')", "Post('labour/attendance/:attendanceId/revoke')",
+    "Post('labour/work')",
+    "Post('labour/skill-substitutions')", "Post('labour/skill-substitutions/:substitutionId/revoke')",
+  ],
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')"],
 };
 
@@ -449,9 +472,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('70 external-effect dispatch sites total across the pillar services (60 + Phase-4 Task-2 labour commercial chain 10)', () => {
+    it('77 external-effect dispatch sites total across the pillar services (70 + Phase-4 Task-3 §C time-capacity facts 7)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(70);
+      expect(total).toBe(77);
     });
   });
 
@@ -462,12 +485,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('136 mutating routes total (§4 command inventory; +20 Phase-4 Task-2 labour commercial chain)', () => {
+    it('144 mutating routes total (§4 command inventory; +7 Phase-4 Task-3 §C time-capacity facts, +1 device binding)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(136);
+      expect(total).toBe(144);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(136);
+      expect(live).toBe(144);
     });
   });
 
@@ -481,8 +504,8 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
 
   describe('read + sender coupling (SnapshotService + ExternalEffectDispatcher injected in every emitter)', () => {
     const emitters = Object.entries(SERVICES).filter(([, s]) => s.dispatch > 0).map(([f]) => f);
-    it('all fourteen dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning ones also read through SnapshotService', () => {
-      expect(emitters.length).toBe(14);
+    it('all fifteen dispatching services depend on the single ExternalEffectDispatcher; the snapshot-returning ones also read through SnapshotService', () => {
+      expect(emitters.length).toBe(15);
       const moduleReadServices = [
         // Phase 3 — requirements (Task 1), procurement (Tasks 2-3) and inventory (Task 4)
         // return MODULE-OWNED dtos (the Task-10 module-read pattern), never the snapshot, so
@@ -493,6 +516,8 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         'activities/substitutions.service.ts',
         // Phase 4 Task 2 — the labour commercial chain returns module-owned labour DTOs, not the snapshot
         'labour/labour-procurement.service.ts',
+        // Phase 4 Task 3 — the §C time-capacity facts return module-owned labour DTOs, not the snapshot
+        'labour/labour-capacity.service.ts',
       ];
       for (const file of emitters) {
         if (!moduleReadServices.includes(file)) {

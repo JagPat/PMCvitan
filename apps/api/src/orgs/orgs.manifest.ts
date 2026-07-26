@@ -14,7 +14,10 @@ export const orgsManifest: ModuleManifest = {
   ownsModels: ['org', 'orgMembership', 'membership', 'project', 'projectCompany', 'projectTemplate', 'templateModule', 'user', 'workerDevice'],
   // Task 8 reads decisions; Task 10 reads the existing inspection ids at init via the inspections query
   // (InspectionsQueryService.allIds) — both through their query contracts.
-  dependsOn: ['decisions', 'inspections'],
+  // Phase 4 Task 3 — the WorkerDevice bind command reads the trusted-worker lifecycle through
+  // Labour's query contract (`Worker` is Labour-owned + read-encapsulated). Labour is a LEAF, so
+  // this edge closes no cycle.
+  dependsOn: ['decisions', 'inspections', 'labour'],
   workflowParticipants: ['nodes', 'activities', 'inspections'],
   producesEvents: [
     'project.created',
@@ -47,6 +50,10 @@ export const orgsManifest: ModuleManifest = {
     'companies.add',
     'companies.update',
     'companies.remove',
+    // Phase 4 Task 3 (§H) — binding an orgs-owned WorkerDevice to a trusted Worker. The model is
+    // orgs-owned, so the command lives here; the workflow it serves (trusted attendance evidence)
+    // is Labour's, and it carries `labour.manage` authority + the labour capability gate.
+    'orgs.workerDevice.bind',
   ],
   queries: [],
   routes: [
@@ -72,6 +79,8 @@ export const orgsManifest: ModuleManifest = {
     'POST /projects/:projectId/companies',
     'PATCH /projects/:projectId/companies/:companyId',
     'DELETE /projects/:projectId/companies/:companyId',
+    // worker-devices.controller (Phase 4 Task 3)
+    'POST /projects/:projectId/worker-devices/:deviceId/bind',
   ],
   permissions: ['owner', 'admin', 'member', 'pmc', 'client', 'engineer', 'contractor'],
 };

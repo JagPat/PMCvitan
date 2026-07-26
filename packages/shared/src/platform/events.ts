@@ -101,6 +101,17 @@ export const DOMAIN_EVENT_TYPES = [
   'capacity.committed',
   'capacity.revised',
   'capacity.defaulted',
+  // Phase 4 Task 3 — the §C time-capacity FACT families. Labour-owned, signal-only. The
+  // frozen-identity CAS allocation lifecycle, the presence observation, the effort observation, and
+  // the pmc-authored skill substitution that widens §B satisfaction. Derived facts (coverage /
+  // verdicts) still get NO event; the Team gate + projection land with Task 4.
+  'allocation.made',
+  'allocation.released',
+  'attendance.recorded',
+  'attendance.revoked',
+  'labour_work.recorded',
+  'skill_substitution.approved',
+  'skill_substitution.revoked',
   // Phase 3 Task 4 — the inventory stock ledger (plan §G catalog: ONE event per appended §C
   // ledger row — receipts, acceptance, rejection, vendor-return, adjustment, reversal; buckets
   // are derived, so there is no bucket-changed event)

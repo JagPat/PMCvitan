@@ -111,6 +111,16 @@ export const EXTERNAL_EFFECTS = {
   'capacity.committed': { eventType: 'capacity.committed', invalidate: true, push: null },
   'capacity.revised': { eventType: 'capacity.revised', invalidate: true, push: null },
   'capacity.defaulted': { eventType: 'capacity.defaulted', invalidate: true, push: null },
+  // ── labour §C time-capacity facts (Phase 4 Task 3) ─────────────────────────────────────────
+  // The allocation lifecycle, the presence + effort observations, and the skill substitution.
+  // Signal-only: they move the (Task-4) Team gate, so clients must re-read; no push.
+  'allocation.made': { eventType: 'allocation.made', invalidate: true, push: null },
+  'allocation.released': { eventType: 'allocation.released', invalidate: true, push: null },
+  'attendance.recorded': { eventType: 'attendance.recorded', invalidate: true, push: null },
+  'attendance.revoked': { eventType: 'attendance.revoked', invalidate: true, push: null },
+  'labour_work.recorded': { eventType: 'labour_work.recorded', invalidate: true, push: null },
+  'skill_substitution.approved': { eventType: 'skill_substitution.approved', invalidate: true, push: null },
+  'skill_substitution.revoked': { eventType: 'skill_substitution.revoked', invalidate: true, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────

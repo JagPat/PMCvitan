@@ -113,6 +113,11 @@ model Project {
   crewMemberships       CrewMembership[]
   labourRequirementSpecs LabourRequirementSpec[]
   labourDemandSlices     LabourDemandSlice[]
+  // Phase 4 Task 3 — the §C time-capacity facts (project-contained)
+  workerAllocations         WorkerAllocation[]
+  labourAttendance          LabourAttendance[]
+  labourWorkFacts           LabourWorkFact[]
+  approvedSkillSubstitutions ApprovedSkillSubstitution[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -843,6 +848,14 @@ model User {
   crewsRevoked              Crew[]         @relation("crewsRevoked")
   crewMembersAdded          CrewMembership[] @relation("crewMembersAdded")
   crewMembersRemoved        CrewMembership[] @relation("crewMembersRemoved")
+  // Phase 4 Task 3 — attribution on the §C time-capacity facts
+  allocationsMade            WorkerAllocation[] @relation("allocationsMade")
+  allocationsReleased        WorkerAllocation[] @relation("allocationsReleased")
+  attendanceRecorded         LabourAttendance[] @relation("attendanceRecorded")
+  attendanceRevoked          LabourAttendance[] @relation("attendanceRevoked")
+  labourWorkRecorded         LabourWorkFact[]   @relation("labourWorkRecorded")
+  skillSubstitutionsApproved ApprovedSkillSubstitution[] @relation("skillSubstitutionsApproved")
+  skillSubstitutionsRevoked  ApprovedSkillSubstitution[] @relation("skillSubstitutionsRevoked")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -902,6 +915,12 @@ model WorkerDevice {
   token     String   @unique
   createdAt DateTime @default(now())
   lastSeen  DateTime @default(now())
+
+  // Phase 4 Task 3 — the musters this device evidenced (a same-project composite FK from the
+  // attendance fact, so a device can never evidence presence in another project).
+  attendance LabourAttendance[]
+
+  @@unique([projectId, id])
 }
 
 // A node in a project's location tree: zone → room → element (the object). Decisions
@@ -979,6 +998,8 @@ model ActivityRequirementRoot {
   substitutions ApprovedSubstitution[]
 
   @@unique([projectId, id])
+  // Phase 4 Task 3 — pmc-authored labour skill substitutions widening this requirement's §B satisfaction
+  approvedSkillSubstitutions ApprovedSkillSubstitution[]
 }
 
 // The §11 demand contract (plan §§B/F) — TYPE-NEUTRAL revision rows (correction finding 3).
@@ -2089,6 +2110,10 @@ model Worker {
   crewMemberships CrewMembership[]
   ledBy           Crew[]           @relation("crewIncharge")
   skills          WorkerSkill[]
+  // Phase 4 Task 3 — the §C time-capacity facts conserved at this worker (the atomic source)
+  allocations     WorkerAllocation[]
+  attendance      LabourAttendance[]
+  workFacts       LabourWorkFact[]
 
   // composite identity for same-project (projectId, workerId) FKs (WorkerDevice, Crew, membership)
   @@unique([projectId, id])
@@ -2469,8 +2494,13 @@ model CapacityCommitment {
   defaultedAt           DateTime?
 
   promises CapacityPromise[]
+  // Phase 4 Task 3 — the named-worker allocations that draw this forecast capacity down (§F bound 3)
+  allocations WorkerAllocation[]
 
   @@unique([projectId, id])
+  // the candidate key the allocation's slice-identity FK references (§F bound 3): capacity
+  // committed for one (fingerprint, civilDate, shift) can never be drawn for another
+  @@unique([projectId, id, labourSpecFingerprint, civilDate, shift])
 }
 
 // A dated arrival/rate promise in the APPEND-ONLY register (§F). seq monotone; only the initial
@@ -2488,4 +2518,167 @@ model CapacityPromise {
 
   @@unique([commitmentId, seq])
   @@unique([projectId, id])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// Phase 4 Task 3 — the §C TIME-CAPACITY fact families. Labour is EXPIRING capacity, so this is
+// NOT a stock ledger: there is no current-quantity column and no bucket. It is three IMMUTABLE
+// append-only observation families (attendance, work, substitution) + ONE frozen-identity CAS
+// assignment (WorkerAllocation) — each with a DISTINCT unit — read together to derive coverage.
+//
+//   WorkerAllocation  1 person-shift  assignment  frozen identity, status active→released (CAS)
+//   LabourAttendance  headcount (1)   observation append-only; one per worker/date/shift
+//   LabourWorkFact    worked-minutes  observation append-only; Σ per slice ≤ shiftMinutes
+//
+// The ATOMIC capacity source is the Worker (round-2 finding 1): a Crew is organizational only, and
+// allocating one EXPANDS transactionally into one WorkerAllocation per active member, so a worker
+// double-booked directly, via two crews, or directly-and-via-crew all collide on the SAME
+// per-worker partial-unique. Every Prisma-inexpressible seal (the partial uniques, the frozen
+// identity + append-only triggers, the cumulative worked-minutes bound) lives in the raw-SQL
+// migration, never in convention.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+// One Worker assigned for ONE (civilDate, shift) slice to ONE activity requirement revision.
+// Unit: 1 person-shift. Identity is FROZEN by trigger (worker/date/shift/activity/requirement/
+// originRevision/fingerprint); only `status` and the release attribution may change — the
+// PurchaseOrderVersion frozen-identity CAS pattern, NOT append-only. Global conservation is the
+// partial-unique on (projectId, workerId, civilDate, shift) WHERE status='active' (raw SQL).
+model WorkerAllocation {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id])
+  projectId String
+  // the atomic capacity source — a same-project worker (composite FK)
+  worker    Worker  @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId  String
+  // the slice this person-shift is consumed by
+  civilDate DateTime @db.Date
+  shift     String   // 'day' | 'night'
+  // the demand it satisfies — the activity target is validated through ActivityParticipant
+  // (cycle-exempt); requirementId/originRevision/labourSpecFingerprint pin §B provenance so
+  // coverage can carry a compatible revision forward (or strand an incompatible one).
+  activityId            String
+  requirementId         String
+  originRevision        Int
+  labourSpecFingerprint String
+  // if the allocation came from a crew expansion, which crew (provenance only — capacity is
+  // conserved per WORKER, never per crew)
+  crewId    String?
+  // §F bound 3 — the supplier capacity this allocation draws down, or NULL for own workforce
+  // (an in-house worker needs no commitment). When set, a five-column composite FK binds the
+  // allocation's (fingerprint, civilDate, shift) to the commitment's OWN slice, so capacity
+  // committed for one slice can never be drawn for another; the bound
+  // `active allocations ≤ commitment.personShiftQty` is re-derived under the commitment
+  // `FOR UPDATE` in the allocating transaction.
+  capacityCommitment   CapacityCommitment? @relation(fields: [projectId, capacityCommitmentId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  capacityCommitmentId String?
+  status    String   @default("active") // active | released
+  allocatedAt   DateTime @default(now())
+  allocatedBy   User     @relation("allocationsMade", fields: [allocatedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  allocatedById String
+  releasedAt    DateTime?
+  releasedBy    User?     @relation("allocationsReleased", fields: [releasedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  releasedById  String?
+  releaseReason String?
+  // §C rule ii — every fact records the command that produced it (project-contained composite FK)
+  sourceCommandId String
+
+  work LabourWorkFact[]
+
+  @@unique([projectId, id])
+  @@index([projectId, workerId, civilDate, shift])
+  @@index([projectId, activityId, civilDate, shift])
+  @@index([projectId, requirementId, originRevision])
+}
+
+// A PRESENCE observation — worker W was present on a (projectId, civilDate, shift) slice. A
+// DISTINCT fact, never a transfer: attendance does not consume an allocation; coverage joins the
+// two at read time. Unit: headcount (1 per worker). Append-only by trigger; a partial-unique on
+// (projectId, workerId, civilDate, shift) WHERE revokedAt IS NULL gives one LIVE attendance per
+// worker/date/shift (a revoked row survives as history and permits a corrected re-record).
+model LabourAttendance {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id])
+  projectId String
+  worker    Worker  @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId  String
+  civilDate DateTime @db.Date
+  shift     String
+  // the trusted device binding that evidenced the muster (nullable — a pmc/engineer may record
+  // presence directly; the device path is the worker's own self check-in). Same-project composite FK.
+  device    WorkerDevice? @relation(fields: [projectId, deviceId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  deviceId  String?
+  evidenceMediaId String?
+  recordedAt   DateTime @default(now())
+  recordedBy   User     @relation("attendanceRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById String
+  // revocation is a CORRECTION, not a delete (the row survives; coverage re-derives without it)
+  revokedAt    DateTime?
+  revokedBy    User?     @relation("attendanceRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revokedById  String?
+  revokeReason String?
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@index([projectId, workerId, civilDate, shift])
+  @@index([projectId, civilDate, shift])
+}
+
+// An EFFORT observation — worked-minutes against one allocation. A DISTINCT fact with a DISTINCT
+// unit (worked-minutes), never a transfer of the presence headcount. Append-only by trigger;
+// `workedMinutes` is bounded per row by a CHECK AND cumulatively by the command (round-3 guardrail
+// 2: Σ workedMinutes for the (worker, civilDate, shift) slice is re-derived under the worker
+// FOR UPDATE and must not exceed shiftMinutes — a per-row CHECK alone cannot stop rows summing past
+// the shift). The measured construction OUTPUT is a separate Activities-owned fact (§I), not this.
+model LabourWorkFact {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id])
+  projectId String
+  worker    Worker  @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId  String
+  // the allocation this effort was performed under (same-project composite FK); its slice identity
+  // is copied here and DB-bound to the allocation, so effort can never name a different slice.
+  allocation   WorkerAllocation @relation(fields: [projectId, allocationId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  allocationId String
+  activityId   String
+  civilDate    DateTime @db.Date
+  shift        String
+  workedMinutes Int
+  note          String?
+  recordedAt   DateTime @default(now())
+  recordedBy   User     @relation("labourWorkRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById String
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@index([projectId, workerId, civilDate, shift])
+  @@index([projectId, activityId, civilDate, shift])
+}
+
+// The LABOUR analogue of ApprovedSubstitution (§B satisfaction rule): a pmc-authored, audited,
+// revocable widening that admits capacity of `toFingerprint` as satisfying a requirement whose
+// CURRENT HEAD fingerprint is `fromFingerprint` (the Phase-3 T6-F2 rule verbatim — binding to the
+// head means a revision to an incompatible spec silently stops the substitution applying). A
+// partial-unique on (projectId, requirementId, fromFingerprint, toFingerprint) WHERE revokedAt IS
+// NULL forbids a second ACTIVE row while keeping revoked rows as history (raw SQL).
+model ApprovedSkillSubstitution {
+  id              String  @id @default(cuid())
+  project         Project @relation(fields: [projectId], references: [id])
+  projectId       String
+  root            ActivityRequirementRoot @relation(fields: [projectId, requirementId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  requirementId   String
+  fromFingerprint String
+  toFingerprint   String
+  reason          String
+  approvedBy      User     @relation("skillSubstitutionsApproved", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approvedById    String
+  at              DateTime @default(now())
+  revokedAt       DateTime?
+  revokedBy       User?     @relation("skillSubstitutionsRevoked", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revokedById     String?
+  revokeReason    String?
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@index([projectId, requirementId])
+  @@index([projectId, toFingerprint])
 }

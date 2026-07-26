@@ -1080,3 +1080,83 @@ export const reviseCapacitySchema = z.object({
   reason: z.string().trim().min(1).max(1000),
 }).strict();
 export type ReviseCapacityInput = z.infer<typeof reviseCapacitySchema>;
+
+// ── Phase 4 Task 3 — the §C TIME-CAPACITY fact commands (plan §C/§H) ─────────────────────────
+// Labour is EXPIRING capacity, so these are observations + one frozen-identity assignment, never
+// bucket transfers. Server-derived everywhere it matters: the allocation's shift and
+// `labourSpecFingerprint` come from the requirement's CURRENT head spec (never caller-authored),
+// the work fact's worker/activity/slice come from its allocation, and a substitution's
+// `fromFingerprint` is the requirement's current head (the Phase-3 T6-F2 rule verbatim).
+
+/** Allocate exactly ONE `Worker`, or expand a `Crew` into one allocation per ACTIVE member, onto
+ *  one `(civilDate, shift)` slice of one requirement. Exactly one of workerId/crewId. */
+export const allocateLabourSchema = z
+  .object({
+    activityId: z.string().min(1),
+    requirementId: z.string().min(1),
+    civilDate: isoCivilDateSchema,
+    workerId: z.string().min(1).nullish(),
+    crewId: z.string().min(1).nullish(),
+    // §F bound 3 — draw this person-shift from committed supplier capacity (omit for own workforce)
+    capacityCommitmentId: z.string().min(1).nullish(),
+  })
+  .strict()
+  .refine((v) => (v.workerId ? 1 : 0) + (v.crewId ? 1 : 0) === 1, {
+    message: 'Provide exactly one of workerId or crewId — a crew EXPANDS into one allocation per active member',
+  });
+export type AllocateLabourInput = z.infer<typeof allocateLabourSchema>;
+
+export const releaseLabourAllocationSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+export type ReleaseLabourAllocationInput = z.infer<typeof releaseLabourAllocationSchema>;
+
+/** Record one worker PRESENT on one slice. Unit: headcount. A device may evidence the muster only
+ *  when it is BOUND to that same worker (§H — free-text device name/trade is never evidence). */
+export const recordAttendanceSchema = z
+  .object({
+    workerId: z.string().min(1),
+    civilDate: isoCivilDateSchema,
+    shift: z.enum(['day', 'night']),
+    deviceId: z.string().min(1).nullish(),
+    evidenceMediaId: z.string().min(1).nullish(),
+  })
+  .strict();
+export type RecordAttendanceInput = z.infer<typeof recordAttendanceSchema>;
+
+export const revokeAttendanceSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+export type RevokeAttendanceInput = z.infer<typeof revokeAttendanceSchema>;
+
+/** Record effort performed UNDER an allocation. Unit: worked-minutes — never a transfer of the
+ *  presence headcount. Worker/activity/slice are copied from the allocation (a DB trigger proves
+ *  the copy); the cumulative `Σ workedMinutes ≤ shiftMinutes` bound is re-derived under the
+ *  worker `FOR UPDATE` (a per-row CHECK cannot stop rows summing past the shift). */
+export const recordLabourWorkSchema = z
+  .object({
+    allocationId: z.string().min(1),
+    workedMinutes: z.number().int().positive().max(720),
+    note: z.string().trim().min(1).max(1000).nullish(),
+  })
+  .strict();
+export type RecordLabourWorkInput = z.infer<typeof recordLabourWorkSchema>;
+
+/** Widen §B satisfaction for ONE requirement: work of the given trade/skill/shift may satisfy the
+ *  requirement's CURRENT head identity. The server computes both fingerprints — `from` from the
+ *  head spec, `to` from this technical triple — so neither is ever caller-authored. */
+export const approveSkillSubstitutionSchema = z
+  .object({
+    requirementId: z.string().min(1),
+    tradeCode: z.string().trim().min(1),
+    skillCode: z.string().trim().min(1).nullish(),
+    shift: z.enum(['day', 'night']),
+    reason: z.string().trim().min(1).max(1000),
+  })
+  .strict();
+export type ApproveSkillSubstitutionInput = z.infer<typeof approveSkillSubstitutionSchema>;
+
+export const revokeSkillSubstitutionSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
+export type RevokeSkillSubstitutionInput = z.infer<typeof revokeSkillSubstitutionSchema>;
+
+// Phase 4 Task 3 — bind an orgs-owned `WorkerDevice` to a trusted `Worker` (§H, F5). The
+// structural FK landed in Task 1; this is the command the owning module exposes so a muster may
+// cite the device as evidence. A device starts UNBOUND (anonymous QR/tap onboarding unchanged).
+export const bindWorkerDeviceSchema = z.object({ workerId: z.string().min(1) }).strict();
+export type BindWorkerDeviceInput = z.infer<typeof bindWorkerDeviceSchema>;
