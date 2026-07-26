@@ -115,10 +115,35 @@ device before mustering — that is the intended behavioural change, not a test 
   evidence, both paths at once, foreign media; F4 cancelled head) **and the explicit manual muster
   ACCEPTED**, so the seals are precise rather than merely strict. Every prior
   Phase-1..Phase-4-T3 rejection still passes.
-- `test:e2e:api:allmodules` **31/31**; `:outbox` **25/25** (one earlier `:outbox` run failed; two
-  subsequent runs were clean at 25/25 — reported as observed)
+- `test:e2e:api:allmodules` **31/31** (three consecutive runs); `test:e2e:api:outbox` **25/25**
+  (four consecutive runs) — see the flake note below
 - Tripwires green: `media.workflowParticipants` gains `labour`, and the media unit test carries the
   new participant stub
+
+### CI `api-e2e` flake at `fc21a78` — investigated, not a regression
+
+The PR-triggered CI run (30213404193) failed `api-e2e` in the **outbox** step with three
+`pillar-chain.spec.ts` failures: `:231` (the re-inspection task never rendered after
+`send-reinspection`), `:261` and `:319` cascading from it. That is the Phase-1 inspection chain; it
+contains no labour, allocation, attendance or work-fact surface and performs no media delete, so no
+line of this correction is on its path. The evidence that it is a pre-existing timing flake rather
+than a regression:
+
+1. **The same commit passed.** Run 30213386866 (push-triggered) and run 30213404193
+   (pull_request-triggered) are both `fc21a78`, tree `f1a3c5cc`, started 30 seconds apart. The push
+   run's `api-e2e` job (89823288936) passed **both** the legacy and the outbox acceptance steps; the
+   PR run's (89823334579) failed the outbox step. Identical code, opposite outcomes.
+2. **The same flake predates Phase 4 Task 3.** `main` run 29995907028 at `5b7b8c4` (2026-07-23) failed
+   the same `api-e2e` job with the same PostgreSQL signature — the `DrawingRevision_drawingId_rev_key`
+   duplicate that a pillar-chain retry leaves behind. That commit subsequently received the
+   independent **GREEN SIGNAL** for Phase 3 Task 6.
+3. **It does not reproduce locally.** On this branch against a fresh migrated database:
+   `test:e2e:api:outbox` (the exact failing CI command) **4/4 green**, `test:e2e:api:allmodules`
+   **3/3 green**. On the merged base `cb589dd`: `test:e2e:api:allmodules` **3/3 green**.
+
+No code change was made in response, because none is warranted by the evidence. Hardening
+`pillar-chain.spec.ts` against this timing sensitivity is Phase-1 test work outside this correction's
+scope and is recorded here rather than folded in silently.
 
 ## Boundary and scope
 
