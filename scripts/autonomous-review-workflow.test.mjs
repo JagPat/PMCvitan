@@ -60,6 +60,8 @@ test('workflow runs from trusted default-branch code after CI or dispatch', asyn
   assert.match(workflow, /issues:\s*write/);
   assert.match(workflow, /ref:\s*\$\{\{ github\.event\.repository\.default_branch \}\}/);
   assert.match(workflow, /persist-credentials:\s*false/);
+  assert.match(workflow, /actions\/checkout@[0-9a-f]{40}/);
+  assert.match(workflow, /actions\/setup-node@[0-9a-f]{40}/);
   assert.doesNotMatch(workflow, /pull_request_target:/);
 });
 
@@ -83,3 +85,13 @@ test('workflow invokes the exact-head gate and CI executes its tests', async () 
   assert.match(ci, /pnpm test:automation/);
 });
 
+test('rechecks the live head before terminal PR mutations', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(gate, /async function refreshCurrentHead\(/);
+  assert.match(gate, /enableAutoMerge\(pullRequest\)/);
+  assert.match(gate, /if \(!pullRequest\) return;/);
+});

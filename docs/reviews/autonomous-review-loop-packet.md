@@ -42,9 +42,9 @@ packet does not embed a self-referential final SHA.
   old workflow merged on review existence alone, then GREEN after replacement.
 - Baseline before implementation: `pnpm check` passed (web 432/432, API 659/659,
   both builds clean).
-- Focused automation battery after Tasks 1-2: 13/13 passed.
+- Focused automation battery after the final head-race guard: 14/14 passed.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 13/13, web
+- Final `pnpm check` after protocol alignment passed: automation 14/14, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure

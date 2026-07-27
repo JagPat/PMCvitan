@@ -223,6 +223,29 @@ function statusBody({ state, head, detail, attempt, next }) {
   ].join('\n');
 }
 
+async function refreshCurrentHead(client, number, expectedHead) {
+  const pullRequest = await client.pullRequest(number);
+  if (pullRequest.state !== 'open' || pullRequest.head.sha !== expectedHead) {
+    console.log('Pull request closed or a newer head superseded this workflow.');
+    return null;
+  }
+  return pullRequest;
+}
+
+async function setDraftForCurrentHead(
+  client,
+  number,
+  expectedHead,
+  draft,
+) {
+  const pullRequest = await refreshCurrentHead(client, number, expectedHead);
+  if (!pullRequest) return null;
+  const updated = await client.setDraft(pullRequest, draft);
+  return updated.state === 'open' && updated.head.sha === expectedHead
+    ? updated
+    : null;
+}
+
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
   while (true) {
@@ -242,11 +265,27 @@ async function reviewAttempt(
   attempt,
   reviewNotBefore,
 ) {
-  let live = await client.pullRequest(pullRequest.number);
-  if (live.head.sha !== expectedHead) return { state: 'superseded' };
+  let live = await refreshCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+  );
+  if (!live) return { state: 'superseded' };
 
-  live = await client.setDraft(live, true);
-  live = await client.setDraft(live, false);
+  live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return { state: 'superseded' };
+  live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    false,
+  );
+  if (!live) return { state: 'superseded' };
   const deadline = new Date(Date.now() + REVIEW_TIMEOUT_MS).toISOString();
 
   await client.updateStickyComment(
@@ -261,8 +300,12 @@ async function reviewAttempt(
   );
 
   while (true) {
-    live = await client.pullRequest(pullRequest.number);
-    if (live.head.sha !== expectedHead) return { state: 'superseded' };
+    live = await refreshCurrentHead(
+      client,
+      pullRequest.number,
+      expectedHead,
+    );
+    if (!live) return { state: 'superseded' };
 
     const [reviews, comments, reactions] = await Promise.all([
       client.reviews(pullRequest.number),
@@ -337,7 +380,13 @@ export async function run() {
   );
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
-    pullRequest = await client.setDraft(pullRequest, true);
+    pullRequest = await setDraftForCurrentHead(
+      client,
+      pullRequest.number,
+      expectedHead,
+      true,
+    );
+    if (!pullRequest) return;
     await client.setStatus(
       expectedHead,
       'failure',
@@ -360,7 +409,13 @@ export async function run() {
   const checks = await waitForRequiredChecks(client, pullRequest, expectedHead);
   if (checks.state === 'superseded') return;
   if (checks.state !== 'success') {
-    pullRequest = await client.setDraft(pullRequest, true);
+    pullRequest = await setDraftForCurrentHead(
+      client,
+      pullRequest.number,
+      expectedHead,
+      true,
+    );
+    if (!pullRequest) return;
     const detail = checks.failed?.length
       ? `Failed checks: ${checks.failed.join(', ')}`
       : `Checks did not settle: ${[...(checks.missing ?? []), ...(checks.pending ?? [])].join(', ')}`;
@@ -390,10 +445,13 @@ export async function run() {
     if (result.state === 'superseded') return;
 
     if (result.state === 'changes_required') {
-      pullRequest = await client.setDraft(
-        await client.pullRequest(pullRequest.number),
+      pullRequest = await setDraftForCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
         true,
       );
+      if (!pullRequest) return;
       await client.setStatus(
         expectedHead,
         'failure',
@@ -414,7 +472,12 @@ export async function run() {
     }
 
     if (result.state === 'clear') {
-      pullRequest = await client.pullRequest(pullRequest.number);
+      pullRequest = await refreshCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+      );
+      if (!pullRequest) return;
       await client.setStatus(
         expectedHead,
         'success',
@@ -431,15 +494,24 @@ export async function run() {
           next: 'GitHub auto-merge is queued behind branch protection.',
         }),
       );
+      pullRequest = await refreshCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+      );
+      if (!pullRequest) return;
       await client.enableAutoMerge(pullRequest);
       return;
     }
 
     if (attempt < MAX_REVIEW_ATTEMPTS) {
-      pullRequest = await client.setDraft(
-        await client.pullRequest(pullRequest.number),
+      pullRequest = await setDraftForCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
         true,
       );
+      if (!pullRequest) return;
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
@@ -454,10 +526,13 @@ export async function run() {
     }
   }
 
-  pullRequest = await client.setDraft(
-    await client.pullRequest(pullRequest.number),
+  pullRequest = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
     true,
   );
+  if (!pullRequest) return;
   await client.setStatus(
     expectedHead,
     'failure',
