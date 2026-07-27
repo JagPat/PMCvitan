@@ -48,10 +48,12 @@ $$ LANGUAGE plpgsql;
 -- permanently unattributed correction this migration's own marker CHECK then builds on.
 --
 -- Presence and (for triggers) exact binding are asserted HERE; the FULL semantic verification —
--- canonical-expression identity for every CHECK, column/predicate identity for every unique key,
--- column-mapping identity for every FK — lives in `t3c seals`, which gates every `migrate.sh`
--- path including the P3005 baseline. This block is the in-file restatement for a direct
--- `prisma migrate deploy`, kept auditable on sight.
+-- canonical-expression identity for every CHECK, column/predicate identity plus VALID/READY for
+-- every unique key, column-mapping identity for every FK, and canonical function-BODY identity for
+-- every trigger (`CREATE OR REPLACE FUNCTION` preserves a function's identity, so name + tgtype
+-- alone accept a trigger still enforcing a pre-correction body) — lives in `t3c seals`, which
+-- gates every `migrate.sh` path including the P3005 baseline. This block is the in-file
+-- restatement for a direct `prisma migrate deploy`, kept auditable on sight.
 DO $$
 DECLARE n INT; want RECORD;
 BEGIN
@@ -114,12 +116,17 @@ BEGIN
       ('ActivityRequirement_demand_identity_key',       'ActivityRequirement')
     ) AS v(idxname, rel)
   LOOP
+    -- VALID and READY too: a failed CREATE UNIQUE INDEX CONCURRENTLY leaves an indisvalid=false
+    -- shell with the right name that enforces NOTHING for existing rows — and may already coexist
+    -- with the duplicates the conservation key exists to forbid. Presence alone is not the key.
     SELECT count(*) INTO n FROM pg_index i
      WHERE i.indexrelid = to_regclass('"' || want.idxname || '"')
        AND i.indrelid = to_regclass('"' || want.rel || '"')
-       AND i.indisunique;
+       AND i.indisunique
+       AND i.indisvalid
+       AND i.indisready;
     IF n <> 1 THEN
-      RAISE EXCEPTION 'P4T3C3 ABORT: prerequisite unique key % on % from 20270210/20270215 is not installed — this database has the §C tables without the §C conservation keys; do NOT baseline it. See docs/RUNBOOK.md §P4T3C3.',
+      RAISE EXCEPTION 'P4T3C3 ABORT: prerequisite unique key % on % from 20270210/20270215 is not installed and VALID — this database has the §C tables without the §C conservation keys (or an invalid index shell wearing one''s name); do NOT baseline it. See docs/RUNBOOK.md §P4T3C3.',
         want.idxname, want.rel;
     END IF;
   END LOOP;

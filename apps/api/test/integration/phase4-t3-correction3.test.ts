@@ -1485,8 +1485,12 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     // On a fully-migrated database every physical object is present.
     const seals = await repairs.correctionSeals();
     expect(seals.installed).toBe(true);
+    // Round 3h re-pin (identity seals) + round 3i re-pin: the correction-3 layer now also names the
+    // head-live FUNCTION BODY it CREATE OR REPLACEs (its trigger is a prerequisite seal, but the
+    // 20270225 body is this correction's own object).
     expect(seals.present.sort()).toEqual([
       'LabourAttendance_marker_is_revoked', 'LabourAttendance_reserved_marker', 'WorkerAllocation_00_project_lock',
+      'phase4_t3c_allocation_head_live@20270225000000_phase4_t3_correction3',
     ]);
 
     // Drop one — the shape a `prisma db push` database is permanently in — and the check names it.
@@ -2328,6 +2332,125 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     // the fixture planted 20270220's non-blank rule NOT VALID; the repair retired the blank row,
     // so validating is legal — and VALIDATED is what the seals answer (correctly) demands.
     await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
+    expect((await repairs.correctionSeals()).installed).toBe(true);
+  });
+
+  // ── ROUND 3i — the three Codex findings on `8585d44` ────────────────────────────────────────────
+
+  /** The dollar-quoted body a specific migration wrote for one function — read from the FILE, so a
+   *  probe installs a REAL earlier-layer body (or a decoy derived from one), never a hand-written
+   *  approximation that might accidentally differ from what a genuine older database carries. */
+  const migrationFnBody = (layerDir: string, fn: string): string => {
+    const sql = readFileSync(join(__dirname, '..', '..', 'prisma', 'migrations', layerDir, 'migration.sql'), 'utf8');
+    const m = new RegExp(`CREATE OR REPLACE FUNCTION ${fn}\\(\\) RETURNS (?:event_)?trigger AS (\\$\\w*\\$)`).exec(sql);
+    if (!m) throw new Error(`${layerDir} does not define ${fn}`);
+    const start = m.index + m[0].length;
+    const end = sql.indexOf(m[1]!, start);
+    if (end < 0) throw new Error(`${layerDir}: unterminated body for ${fn}`);
+    return sql.slice(start, end);
+  };
+  const installFnBody = async (fn: string, body: string): Promise<void> => {
+    await t.prisma.$executeRawUnsafe(
+      `CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger AS $r3iprobe$${body}$r3iprobe$ LANGUAGE plpgsql`,
+    );
+  };
+
+  it('R3i-A: a trigger bound to a PRE-correction function body is that correction PENDING; a decoy body is a refusal', async () => {
+    // RED at 8585d44: `CREATE OR REPLACE FUNCTION` preserves a function's identity, so the seals
+    // accepted name + enabled + fn name + exact tgtype while the BODY was the pre-correction-2 one
+    // that does not freeze `manualReason` — and on the P3005 path `migrate.sh` then resolved
+    // correction 2 as applied over a database where a live justification stayed rewritable.
+    const L210 = '20270210000000_phase4_t3_time_capacity';
+    const L215 = '20270215000000_phase4_t3_correction';
+    const L220 = '20270220000000_phase4_t3_correction2';
+    const L225 = '20270225000000_phase4_t3_correction3';
+    const appendOnly = 'phase4_t3_attendance_append_only';
+    const headLive = 'phase4_t3c_allocation_head_live';
+    try {
+      // (1) the REAL 20270210 body: a legitimate pre-correction-2 database. The prerequisite seal
+      // accepts it (it IS a deployed layer), and correction 2 reports ITSELF pending — re-running
+      // that migration CREATE OR REPLACEs the body, so leaving it pending is also the repair.
+      await installFnBody(appendOnly, migrationFnBody(L210, appendOnly));
+      let seals = await repairs.correctionSeals();
+      expect(seals.prerequisitesMissing).toEqual([]);
+      expect(seals.correction2Installed).toBe(false);
+      expect(seals.correction2Missing).toContain(`${appendOnly}@${L220}`);
+      expect(seals.pendingMigrations).toContain(L220);
+      expect(seals.installed).toBe(false);
+      // (2) a DECOY body matching NO deployed layer: not a layer state, a refusal — the
+      // prerequisite seal reports the trigger missing and the runner refuses to baseline.
+      await installFnBody(appendOnly, `${migrationFnBody(L220, appendOnly)}\n-- decoy\n`);
+      seals = await repairs.correctionSeals();
+      expect(seals.prerequisitesMissing).toContain('LabourAttendance_append_only');
+      expect(seals.installed).toBe(false);
+    } finally {
+      await installFnBody(appendOnly, migrationFnBody(L220, appendOnly));
+    }
+    // (3) head_live at its 20270215 body: BOTH re-runnable corrections replaced that function, so
+    // both report pending — and really executing the correction (here: 20270225's replay) heals it.
+    try {
+      await installFnBody(headLive, migrationFnBody(L215, headLive));
+      const seals = await repairs.correctionSeals();
+      expect(seals.correction2Missing).toContain(`${headLive}@${L220}`);
+      expect(seals.missing).toContain(`${headLive}@${L225}`);
+      expect(seals.pendingMigrations).toEqual(expect.arrayContaining([L220, L225]));
+      expect(seals.installed).toBe(false);
+    } finally {
+      expect(runMigration().code).toBe(0);
+    }
+    expect((await repairs.correctionSeals()).installed).toBe(true);
+  });
+
+  it('R3i-B: a live repair records the SAME revocation timestamp it writes — the durable evidence can no longer contradict the row', async () => {
+    // RED at 8585d44: for a still-live blank muster the evidence recorded `detail.revokedAt: null`
+    // while the update in the same transaction wrote `now()` — an append-only record permanently
+    // contradicting the attendance row it describes, under a contract that says the detail is the
+    // triple actually written. One timestamp is now captured before the evidence and used verbatim
+    // in BOTH writes (the quarantine op's live branch shares the same captured value).
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2027-01-07');
+    await repairs.repair({
+      operator: 'ops@vitan.in',
+      reason: 'retire a live blank muster',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+    const row = await t.prisma.$queryRawUnsafe<Array<{ r: string }>>(
+      `SELECT ${t3cRenderTs('a."revokedAt"')} AS r FROM "LabourAttendance" a WHERE a."id" = $1`,
+      seed,
+    );
+    const detail = await t.prisma.$queryRawUnsafe<Array<{ d: string | null }>>(
+      `SELECT "detail"->>'revokedAt' AS d FROM "T3CRepairAction" WHERE "rowId" = $1`,
+      seed,
+    );
+    expect(detail[0]!.d).toBe(row[0]!.r);
+  });
+
+  it('R3i-C: an INVALID or not-READY unique index is not a seal — a failed CONCURRENTLY shell enforces nothing', async () => {
+    // RED at 8585d44: `indisunique` alone accepted an `indisvalid = false` index — the exact state
+    // a failed `CREATE UNIQUE INDEX CONCURRENTLY` leaves behind, which enforces nothing for
+    // existing rows and may already coexist with the duplicates the conservation key forbids. The
+    // P3005 path then baselined the migrations over it, and the migration's own prerequisite block
+    // deployed over it too.
+    const idx = 'WorkerAllocation_live_slice_key';
+    try {
+      await t.prisma.$executeRawUnsafe(`UPDATE pg_index SET indisvalid = false WHERE indexrelid = '"${idx}"'::regclass`);
+      const seals = await repairs.correctionSeals();
+      expect(seals.prerequisitesMissing).toContain(idx);
+      expect(seals.installed).toBe(false);
+      const mig = runMigration();
+      expect(mig.code).not.toBe(0);
+      expect(mig.output).toContain(idx);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`UPDATE pg_index SET indisvalid = true WHERE indexrelid = '"${idx}"'::regclass`);
+    }
+    try {
+      await t.prisma.$executeRawUnsafe(`UPDATE pg_index SET indisready = false WHERE indexrelid = '"${idx}"'::regclass`);
+      expect((await repairs.correctionSeals()).prerequisitesMissing).toContain(idx);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`UPDATE pg_index SET indisready = true WHERE indexrelid = '"${idx}"'::regclass`);
+    }
     expect((await repairs.correctionSeals()).installed).toBe(true);
   });
 });

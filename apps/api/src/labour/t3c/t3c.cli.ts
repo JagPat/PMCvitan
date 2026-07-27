@@ -135,7 +135,7 @@ async function main(): Promise<void> {
         // layer, and `migrate.sh` reads `pendingMigrations` to leave exactly the absent ones
         // unresolved so `migrate deploy` really executes them.
         process.stderr.write(
-          `\nT3C correction seals MISSING: ${[...(!seals.correction2Installed ? ['LabourAttendance_manual_reason_non_blank'] : []), ...seals.missing].join(', ')} — leave pending and really execute: ${seals.pendingMigrations.join(', ')}.\n`,
+          `\nT3C correction seals MISSING: ${[...seals.correction2Missing, ...seals.missing].join(', ')} — leave pending and really execute: ${seals.pendingMigrations.join(', ')}.\n`,
         );
         process.exitCode = 3;
       }

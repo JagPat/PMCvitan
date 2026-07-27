@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { t3cFnBodyAt } from './t3c-canonical-fn-bodies.generated';
 
 /**
  * Phase 4 Task 3 correction (round 3) — the §C ATTENDANCE-integrity diagnostic set.
@@ -458,8 +459,36 @@ export interface T3CTriggerSeal {
    * not that trigger.
    */
   tgtype: number;
+  /**
+   * The canonical `pg_proc.prosrc` BODIES the bound function may carry — one per deployed layer
+   * that (re)defined it, machine-extracted from the migration files
+   * ({@link file://./t3c-canonical-fn-bodies.generated.ts}).
+   *
+   * The function's NAME is not its behaviour: `CREATE OR REPLACE FUNCTION` preserves a function's
+   * identity, so an exact-name/exact-tgtype `LabourAttendance_append_only` still bound to the
+   * PRE-`20270220` body — the one that does not freeze `manualReason` — satisfied every catalog
+   * test while a live attendance justification stayed rewritable, and on the P3005 path the seals
+   * answer then resolved correction 2 as applied over it. `prosrc` stores the dollar-quoted body
+   * VERBATIM, so byte equality with the migration text is exact — the same identity-not-equivalence
+   * trade as the CHECK seals. A prerequisite seal lists EVERY deployed layer's body (a
+   * pre-correction body is the legitimate leave-that-correction-pending state, and the re-runnable
+   * correction's `CREATE OR REPLACE` heals it on deploy); which single body a CORRECTION layer
+   * requires is stated separately ({@link T3C_CORRECTION2_FN_REQUIREMENTS} /
+   * {@link T3C_CORRECTION3_FN_REQUIREMENTS}). A body matching NO deployed layer is a decoy: the
+   * seal reports it missing and the runner refuses to baseline — a human looks.
+   */
+  fnBodies: readonly string[];
   what: string;
 }
+
+/** The migration layers that define sealed trigger functions (see the generated bodies module). */
+export const T3C_FN_LAYERS = {
+  phase3: '20261230000000_phase3_t5_stock_flows',
+  base: '20270210000000_phase4_t3_time_capacity',
+  correction1: '20270215000000_phase4_t3_correction',
+  correction2: '20270220000000_phase4_t3_correction2',
+  correction3: '20270225000000_phase4_t3_correction3',
+} as const;
 
 const { ROW, BEFORE, INSERT, DELETE, UPDATE, TRUNCATE } = T3C_TGTYPE;
 
@@ -477,6 +506,7 @@ export const T3C_CORRECTION3_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'LabourAttendance',
     fn: 'phase4_t3c3_attendance_reserved_marker',
     tgtype: TG_ROW_BEFORE_INSERT,
+    fnBodies: [t3cFnBodyAt('phase4_t3c3_attendance_reserved_marker', T3C_FN_LAYERS.correction3)],
     what: 'the reserved invalid-legacy marker is unwritable by an ordinary INSERT',
   },
   {
@@ -484,9 +514,57 @@ export const T3C_CORRECTION3_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'WorkerAllocation',
     fn: 'phase4_t3c3_allocation_project_lock',
     tgtype: TG_ROW_BEFORE_INSERT,
+    fnBodies: [t3cFnBodyAt('phase4_t3c3_allocation_project_lock', T3C_FN_LAYERS.correction3)],
     what: 'a raw allocation batch takes the project readiness lock before any row lock',
   },
 ];
+
+/**
+ * The function BODIES a correction layer requires beyond the trigger presence itself — exactly the
+ * functions a re-runnable correction migration `CREATE OR REPLACE`s without touching the trigger.
+ * When the live body is not one of these, that correction is NOT installed (it joins the pending
+ * set and `migrate deploy` executes it, whose `CREATE OR REPLACE` writes the canonical body); a
+ * body matching NO deployed layer at all is caught by the prerequisite seal instead and refused.
+ */
+export interface T3CFnLayerRequirement {
+  fn: string;
+  /** The layer whose installation this requirement decides. */
+  layer: string;
+  /** Accepted bodies: this layer's, plus any LATER layer's that replaces it again. */
+  bodies: readonly string[];
+  what: string;
+}
+
+export const T3C_CORRECTION2_FN_REQUIREMENTS: readonly T3CFnLayerRequirement[] = [
+  {
+    fn: 'phase4_t3_attendance_append_only',
+    layer: T3C_FN_LAYERS.correction2,
+    bodies: [t3cFnBodyAt('phase4_t3_attendance_append_only', T3C_FN_LAYERS.correction2)],
+    what: '20270220 replaced the append-only body to FREEZE manualReason on the revocation update',
+  },
+  {
+    fn: 'phase4_t3c_allocation_head_live',
+    layer: T3C_FN_LAYERS.correction2,
+    bodies: [
+      t3cFnBodyAt('phase4_t3c_allocation_head_live', T3C_FN_LAYERS.correction2),
+      t3cFnBodyAt('phase4_t3c_allocation_head_live', T3C_FN_LAYERS.correction3),
+    ],
+    what: '20270220 replaced the head-live body (consistent root→commitment lock order); 20270225 replaces it again',
+  },
+];
+
+export const T3C_CORRECTION3_FN_REQUIREMENTS: readonly T3CFnLayerRequirement[] = [
+  {
+    fn: 'phase4_t3c_allocation_head_live',
+    layer: T3C_FN_LAYERS.correction3,
+    bodies: [t3cFnBodyAt('phase4_t3c_allocation_head_live', T3C_FN_LAYERS.correction3)],
+    what: '20270225 replaces the head-live FUNCTION (project-lock composition) without recreating the trigger',
+  },
+];
+
+/** One-row `{ src }` — the live body of a named function (NULL row when absent). */
+export const T3C_FN_PROSRC_SQL = `SELECT p.prosrc AS src FROM pg_proc p
+   WHERE p.proname = $1 AND pg_function_is_visible(p.oid)`;
 
 /**
  * The §C triggers `20270210000000` and `20270215000000` install — the PREREQUISITES this correction
@@ -512,6 +590,10 @@ export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'LabourAttendance',
     fn: 'phase4_t3_attendance_append_only',
     tgtype: TG_ROW_BEFORE_UPDATE_DELETE,
+    fnBodies: [
+      t3cFnBodyAt('phase4_t3_attendance_append_only', T3C_FN_LAYERS.base),
+      t3cFnBodyAt('phase4_t3_attendance_append_only', T3C_FN_LAYERS.correction2),
+    ],
     what: 'a recorded muster is never edited or deleted',
   },
   {
@@ -519,6 +601,7 @@ export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'WorkerAllocation',
     fn: 'phase4_t3_allocation_frozen',
     tgtype: TG_ROW_BEFORE_UPDATE_DELETE,
+    fnBodies: [t3cFnBodyAt('phase4_t3_allocation_frozen', T3C_FN_LAYERS.base)],
     what: 'an allocation is a frozen identity',
   },
   {
@@ -526,6 +609,7 @@ export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'LabourWorkFact',
     fn: 'phase3_immutable_row',
     tgtype: TG_ROW_BEFORE_UPDATE_DELETE,
+    fnBodies: [t3cFnBodyAt('phase3_immutable_row', T3C_FN_LAYERS.phase3)],
     what: 'a recorded work fact is immutable',
   },
   {
@@ -533,6 +617,7 @@ export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'ApprovedSkillSubstitution',
     fn: 'phase4_t3_skill_substitution_append_only',
     tgtype: TG_ROW_BEFORE_UPDATE_DELETE,
+    fnBodies: [t3cFnBodyAt('phase4_t3_skill_substitution_append_only', T3C_FN_LAYERS.base)],
     what: 'a skill substitution is revoked by stamp, never rewritten',
   },
   {
@@ -540,6 +625,7 @@ export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'LabourWorkFact',
     fn: 'phase4_t3_work_matches_allocation',
     tgtype: TG_ROW_BEFORE_INSERT,
+    fnBodies: [t3cFnBodyAt('phase4_t3_work_matches_allocation', T3C_FN_LAYERS.base)],
     what: 'effort is recorded only against a real allocation',
   },
   {
@@ -547,6 +633,7 @@ export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'WorkerAllocation',
     fn: 'phase4_t3_allocation_worker_active',
     tgtype: TG_ROW_BEFORE_INSERT,
+    fnBodies: [t3cFnBodyAt('phase4_t3_allocation_worker_active', T3C_FN_LAYERS.base)],
     what: 'only an active worker can be allocated',
   },
   {
@@ -554,6 +641,7 @@ export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'LabourAttendance',
     fn: 'phase4_t3_attendance_device_bound',
     tgtype: TG_ROW_BEFORE_INSERT,
+    fnBodies: [t3cFnBodyAt('phase4_t3_attendance_device_bound', T3C_FN_LAYERS.base)],
     what: 'a cited device is bound to that same worker',
   },
   {
@@ -561,6 +649,7 @@ export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'WorkerAllocation',
     fn: 'phase4_t3_allocation_within_commitment',
     tgtype: TG_ROW_BEFORE_INSERT,
+    fnBodies: [t3cFnBodyAt('phase4_t3_allocation_within_commitment', T3C_FN_LAYERS.correction1)],
     what: '§F bound 3 — allocated never exceeds committed, under the commitment row lock',
   },
   {
@@ -568,6 +657,11 @@ export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'WorkerAllocation',
     fn: 'phase4_t3c_allocation_head_live',
     tgtype: TG_ROW_BEFORE_INSERT,
+    fnBodies: [
+      t3cFnBodyAt('phase4_t3c_allocation_head_live', T3C_FN_LAYERS.correction1),
+      t3cFnBodyAt('phase4_t3c_allocation_head_live', T3C_FN_LAYERS.correction2),
+      t3cFnBodyAt('phase4_t3c_allocation_head_live', T3C_FN_LAYERS.correction3),
+    ],
     what: 'dead demand cannot be allocated against, under the requirement-root lock',
   },
 ];
@@ -589,6 +683,7 @@ export const T3C_EVIDENCE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'T3CRepairAction',
     fn: 'phase4_t3c_repair_action_append_only',
     tgtype: TG_ROW_BEFORE_UPDATE_DELETE,
+    fnBodies: [t3cFnBodyAt('phase4_t3c_repair_action_append_only', T3C_FN_LAYERS.correction3)],
     what: 'repair evidence is never updated or deleted',
   },
   {
@@ -596,6 +691,7 @@ export const T3C_EVIDENCE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'T3CRepairAction',
     fn: 'phase4_t3c_repair_action_no_truncate',
     tgtype: TG_STMT_BEFORE_TRUNCATE,
+    fnBodies: [t3cFnBodyAt('phase4_t3c_repair_action_no_truncate', T3C_FN_LAYERS.correction3)],
     what: 'repair evidence is never truncated',
   },
   {
@@ -603,14 +699,17 @@ export const T3C_EVIDENCE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
     table: 'T3CRepairAction',
     fn: 'phase4_t3c_repair_action_path',
     tgtype: TG_ROW_BEFORE_INSERT,
+    fnBodies: [t3cFnBodyAt('phase4_t3c_repair_action_path', T3C_FN_LAYERS.correction3)],
     what: 'repair evidence can only be written by the controlled repair path',
   },
 ];
 
 /**
  * Is one trigger seal really installed? Parameters: `$1` name, `$2` quoted relation, `$3` function,
- * `$4` the EXACT tgtype. Returns a single `{ n }` — `1` when sealed. Equality, not a bitmask: see
- * {@link T3CTriggerSeal.tgtype}.
+ * `$4` the EXACT tgtype, `$5` one canonical function BODY. Returns a single `{ n }` — `1` when
+ * sealed. tgtype is equality, not a bitmask ({@link T3CTriggerSeal.tgtype}); the body is byte
+ * equality with `pg_proc.prosrc` ({@link T3CTriggerSeal.fnBodies} — the caller runs this once per
+ * accepted layer body, sealed when ANY matches).
  */
 export const T3C_TRIGGER_SEAL_SQL = `SELECT count(*)::int AS n FROM pg_trigger t
    WHERE t.tgname = $1
@@ -618,7 +717,8 @@ export const T3C_TRIGGER_SEAL_SQL = `SELECT count(*)::int AS n FROM pg_trigger t
      AND t.tgrelid = to_regclass($2)
      AND t.tgenabled = 'O'
      AND t.tgfoid::regproc::text = $3
-     AND t.tgtype = $4::int`;
+     AND t.tgtype = $4::int
+     AND (SELECT p.prosrc FROM pg_proc p WHERE p.oid = t.tgfoid) = $5`;
 
 /**
  * The transaction-local GUC the repair sets to its own repair id. The
@@ -1010,8 +1110,12 @@ export function t3cProbeUniqueSql(seal: T3CUniqueIndexSeal): string {
 
 /**
  * One row `{ ok }` for a unique-index seal: the real index must exist ON the real table, be UNIQUE,
- * cover exactly the pinned columns in order, and carry a predicate whose deparse equals the probe
- * index's (both NULL for a non-partial key).
+ * be VALID AND READY (a failed `CREATE UNIQUE INDEX CONCURRENTLY` leaves an `indisvalid = false`
+ * shell with the right name, columns and predicate that enforces NOTHING for existing rows — and
+ * may already coexist with the duplicates the key exists to forbid; accepting it would baseline
+ * the migrations over an unenforced conservation invariant), cover exactly the pinned columns in
+ * order, and carry a predicate whose deparse equals the probe index's (both NULL for a non-partial
+ * key).
  */
 export function t3cUniqueIdentitySql(seal: T3CUniqueIndexSeal): string {
   const colsArray = `ARRAY[${seal.columns.map((c) => `'${c}'`).join(', ')}]::name[]`;
@@ -1020,6 +1124,8 @@ export function t3cUniqueIdentitySql(seal: T3CUniqueIndexSeal): string {
        WHERE i.indexrelid = to_regclass('"${seal.name}"')
          AND i.indrelid = to_regclass('"${seal.table}"')
          AND i.indisunique
+         AND i.indisvalid
+         AND i.indisready
          AND (SELECT array_agg(a.attname ORDER BY k.ord)
                 FROM unnest(i.indkey::int[]) WITH ORDINALITY k(attnum, ord)
                 JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum) = ${colsArray}

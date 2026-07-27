@@ -18,8 +18,12 @@ import {
   T3C_ATTRIBUTION_CHECK_SEAL,
   T3C_BLANK_TRIM_SET,
   T3C_CORRECTION2_CHECK_SEAL,
+  T3C_CORRECTION2_FN_REQUIREMENTS,
+  T3C_CORRECTION3_FN_REQUIREMENTS,
   T3C_CORRECTION3_TRIGGER_SEALS,
   T3C_EVIDENCE_TRIGGER_SEALS,
+  T3C_FN_LAYERS,
+  T3C_FN_PROSRC_SQL,
   T3C_INVALID_LEGACY_PREFIX,
   T3C_MARKER_CHECK_SEAL,
   T3C_MARKER_COLUMN,
@@ -33,9 +37,11 @@ import {
   type RawQueryClient,
   type T3CCheckSeal,
   type T3CDiagnosticsReport,
+  type T3CFnLayerRequirement,
   type T3CTriggerSeal,
   type T3CTxClient,
 } from './t3c-diagnostics';
+import { t3cFnBodyAt } from './t3c-canonical-fn-bodies.generated';
 
 /**
  * Phase 4 Task 3 correction (round 3) — the CONTROLLED operator repair engine for §C attendance.
@@ -151,17 +157,14 @@ function evidenceSealGuard(seal: T3CTriggerSeal, create: string): string {
  * transaction re-runs it on every invocation, and re-asserted by `20270225000000` so a database
  * whose repair predates these seals gains them at deploy time.
  */
+// The evidence function BODIES are composed from the SAME canonical texts migration `20270225000000`
+// writes (machine-extracted into `t3c-canonical-fn-bodies.generated.ts`), so `pg_proc.prosrc` is
+// byte-identical whichever writer installed a function last. Round 3i made the body part of every
+// seal's identity; two writers with whitespace-divergent bodies would otherwise flip the seals
+// answer depending on whether a repair or a deploy ran most recently.
 const EVIDENCE_SEAL_SQL = [
-  `CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_append_only() RETURNS trigger AS $fn$
-     BEGIN
-       RAISE EXCEPTION 'T3CRepairAction is append-only — repair evidence is never updated or deleted (attempted % on row %)', TG_OP, COALESCE(OLD."id"::text, '<none>');
-     END;
-   $fn$ LANGUAGE plpgsql`,
-  `CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_no_truncate() RETURNS trigger AS $fn$
-     BEGIN
-       RAISE EXCEPTION 'T3CRepairAction is append-only — repair evidence is never truncated';
-     END;
-   $fn$ LANGUAGE plpgsql`,
+  `CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_append_only() RETURNS trigger AS $fn$${t3cFnBodyAt('phase4_t3c_repair_action_append_only', T3C_FN_LAYERS.correction3)}$fn$ LANGUAGE plpgsql`,
+  `CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_no_truncate() RETURNS trigger AS $fn$${t3cFnBodyAt('phase4_t3c_repair_action_no_truncate', T3C_FN_LAYERS.correction3)}$fn$ LANGUAGE plpgsql`,
   // The evidence may only be written BY A REPAIR. Until this existed, `T3CRepairAction` accepted
   // ordinary inserts, so a direct writer could compose a complete, correctly-shaped action naming a
   // repair id of their choosing and then a pre-revoked marker citing it — and both the preflight and
@@ -183,22 +186,7 @@ const EVIDENCE_SEAL_SQL = [
   // and widening its definition in place would leave old and new databases silently enforcing
   // different rules under one name. A BEFORE INSERT trigger is forward-only by nature, so it adds
   // the rule for every future row without ever making an existing row un-migratable.
-  `CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_path() RETURNS trigger AS $fn$
-     DECLARE want TEXT;
-   BEGIN
-     IF NEW."repairId" IS NULL OR btrim(NEW."repairId", ${T3C_BLANK_TRIM_SET}) = '' THEN
-       RAISE EXCEPTION 'T3CRepairAction.repairId must name a repair — a blank id points at nothing';
-     END IF;
-     want := current_setting('${T3C_REPAIR_GUC}', true);
-     IF want IS NULL OR want = '' THEN
-       RAISE EXCEPTION 'T3CRepairAction is written only by the audited repair path (t3c:repair) — this insert is not inside a repair transaction. See docs/RUNBOOK.md §P4T3C3.';
-     END IF;
-     IF want <> NEW."repairId" THEN
-       RAISE EXCEPTION 'T3CRepairAction row claims repair % but this repair transaction is % — evidence is never written on behalf of another repair', NEW."repairId", want;
-     END IF;
-     RETURN NEW;
-   END;
-   $fn$ LANGUAGE plpgsql`,
+  `CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_path() RETURNS trigger AS $fn$${t3cFnBodyAt('phase4_t3c_repair_action_path', T3C_FN_LAYERS.correction3)}$fn$ LANGUAGE plpgsql`,
   evidenceSealGuard(
     EXPECTED_TRIGGER_SEAL.T3CRepairAction_append_only!,
     `CREATE TRIGGER "T3CRepairAction_append_only" BEFORE UPDATE OR DELETE ON "T3CRepairAction"
@@ -232,16 +220,7 @@ const EVIDENCE_SEAL_SQL = [
   `DO $do$
      DECLARE ev pg_event_trigger%ROWTYPE;
    BEGIN
-     CREATE OR REPLACE FUNCTION phase4_t3c_evidence_drop_guard() RETURNS event_trigger AS $fn$
-     DECLARE obj record;
-     BEGIN
-       FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
-         IF obj.object_type IN ('table', 'table column') AND 'T3CRepairAction' = ANY(obj.address_names) THEN
-           RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never dropped — the attendance markers point at the before-images it holds (attempted to drop %). See docs/RUNBOOK.md §P4T3C3.', obj.object_type;
-         END IF;
-       END LOOP;
-     END;
-     $fn$ LANGUAGE plpgsql;
+     CREATE OR REPLACE FUNCTION phase4_t3c_evidence_drop_guard() RETURNS event_trigger AS $fn$${t3cFnBodyAt('phase4_t3c_evidence_drop_guard', T3C_FN_LAYERS.correction3)}$fn$ LANGUAGE plpgsql;
 
      SELECT * INTO ev FROM pg_event_trigger WHERE evtname = 'phase4_t3c_evidence_drop_guard';
      IF NOT FOUND THEN
@@ -340,16 +319,7 @@ const EVIDENCE_SEAL_SQL = [
   `DO $do$
      DECLARE ev pg_event_trigger%ROWTYPE;
    BEGIN
-     CREATE OR REPLACE FUNCTION phase4_t3c_evidence_alter_guard() RETURNS event_trigger AS $fn$
-     DECLARE cmd record;
-     BEGIN
-       FOR cmd IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
-         IF cmd.command_tag = 'ALTER TABLE' AND cmd.objid = to_regclass('"T3CRepairAction"') THEN
-           RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never altered — dropping, renaming or retyping its columns would erase or orphan the before-images the attendance markers point at. See docs/RUNBOOK.md §P4T3C3.';
-         END IF;
-       END LOOP;
-     END;
-     $fn$ LANGUAGE plpgsql;
+     CREATE OR REPLACE FUNCTION phase4_t3c_evidence_alter_guard() RETURNS event_trigger AS $fn$${t3cFnBodyAt('phase4_t3c_evidence_alter_guard', T3C_FN_LAYERS.correction3)}$fn$ LANGUAGE plpgsql;
 
      SELECT * INTO ev FROM pg_event_trigger WHERE evtname = 'phase4_t3c_evidence_alter_guard';
      IF NOT FOUND THEN
@@ -561,8 +531,16 @@ export class T3CRepairService {
      * after which a raw update could set `revokedAt` alone, a permanently unattributed correction.
      */
     prerequisitesMissing: string[];
-    /** Is `20270220000000`'s CHECK installed? When not, that migration joins the pending set. */
+    /**
+     * Are `20270220000000`'s physical objects installed — its CHECK **and** the function BODIES it
+     * `CREATE OR REPLACE`s ({@link T3C_CORRECTION2_FN_REQUIREMENTS})? A trigger bound to the
+     * pre-correction-2 append-only body passes every name/tgtype test while `manualReason` stays
+     * rewritable, so the body is part of this layer's answer. When not installed, that migration
+     * joins the pending set — re-running it heals the body (`CREATE OR REPLACE` is its own repair).
+     */
     correction2Installed: boolean;
+    /** Exactly which correction-2 objects are absent (for the operator-facing message). */
+    correction2Missing: string[];
     /**
      * Migration directories `migrate.sh` must NOT resolve as applied on the P3005 baseline path —
      * each is a re-runnable, diagnostic-first correction whose physical seals are absent, so it is
@@ -605,7 +583,20 @@ export class T3CRepairService {
       }
 
       // ── correction 2 — its own PENDING layer, never a refusal (the migration is re-runnable) ──
-      const correction2Installed = await this.checkSealed(tx, T3C_CORRECTION2_CHECK_SEAL);
+      // The layer is its CHECK plus the function BODIES it CREATE OR REPLACEs. A restored database
+      // can hold the constraint while the append-only function still carries the 20270210 body that
+      // does not freeze `manualReason` — or vice versa; either half absent means the migration must
+      // really run, and running it heals both.
+      const correction2Missing: string[] = [];
+      if (!(await this.checkSealed(tx, T3C_CORRECTION2_CHECK_SEAL))) {
+        correction2Missing.push(T3C_CORRECTION2_CHECK_SEAL.name);
+      }
+      for (const req of T3C_CORRECTION2_FN_REQUIREMENTS) {
+        if (!(await this.fnBodyIsOneOf(tx, req.fn, req.bodies))) {
+          correction2Missing.push(`${req.fn}@${req.layer}`);
+        }
+      }
+      const correction2Installed = correction2Missing.length === 0;
 
       // A seal is only installed if it is present, ENABLED, wired to the function that actually
       // enforces it, AND declared for EXACTLY the events the deployed DDL declares. A name alone
@@ -625,6 +616,16 @@ export class T3CRepairService {
         else missing.push(seal.name);
       }
 
+      // Correction 3 also CREATE OR REPLACEs the head-live FUNCTION without recreating its trigger
+      // (the trigger itself is a prerequisite seal, which accepts every deployed layer's body). A
+      // database whose head-live body predates 20270225 has NOT installed this correction, however
+      // present its own two triggers are — leaving it pending makes the deploy write the body.
+      for (const req of T3C_CORRECTION3_FN_REQUIREMENTS) {
+        const label = `${req.fn}@${req.layer}`;
+        if (await this.fnBodyIsOneOf(tx, req.fn, req.bodies)) present.push(label);
+        else missing.push(label);
+      }
+
       if (await this.checkSealed(tx, T3C_MARKER_CHECK_SEAL)) present.push(T3C_MARKER_CHECK_SEAL.name);
       else missing.push(T3C_MARKER_CHECK_SEAL.name);
 
@@ -642,19 +643,24 @@ export class T3CRepairService {
 
         // The DROP and ALTER guards are EVENT triggers — `pg_trigger` never sees them — verified
         // with the same whole-seal discipline: enabled, bound to their function, declared for their
-        // event. A database whose guard was removed is not "sealed", however intact the rest looks.
+        // event, AND carrying the canonical function BODY (`CREATE OR REPLACE` preserves identity
+        // for event-trigger functions exactly as for table-trigger ones — a same-named guard whose
+        // body excludes the evidence table reads sealed while guarding nothing). A database whose
+        // guard was removed or hollowed is not "sealed", however intact the rest looks.
         for (const guard of [
           { name: 'phase4_t3c_evidence_drop_guard', event: 'sql_drop' },
           { name: 'phase4_t3c_evidence_alter_guard', event: 'ddl_command_end' },
         ]) {
           const rows = await tx.$queryRawUnsafe<Array<{ n: number }>>(
-            `SELECT count(*)::int AS n FROM pg_event_trigger
-              WHERE evtname = $1
-                AND evtenabled = 'O'
-                AND evtfoid::regproc::text = $1
-                AND evtevent = $2`,
+            `SELECT count(*)::int AS n FROM pg_event_trigger e
+              WHERE e.evtname = $1
+                AND e.evtenabled = 'O'
+                AND e.evtfoid::regproc::text = $1
+                AND e.evtevent = $2
+                AND (SELECT p.prosrc FROM pg_proc p WHERE p.oid = e.evtfoid) = $3`,
             guard.name,
             guard.event,
+            t3cFnBodyAt(guard.name, T3C_FN_LAYERS.correction3),
           );
           if (Number(rows[0]?.n ?? 0) > 0) present.push(guard.name);
           else missing.push(guard.name);
@@ -671,6 +677,7 @@ export class T3CRepairService {
         missing,
         prerequisitesMissing,
         correction2Installed,
+        correction2Missing,
         pendingMigrations,
       };
     });
@@ -718,18 +725,32 @@ export class T3CRepairService {
     };
   }
 
-  /** Is one trigger present, ENABLED, bound to the function that enforces the rule, AND declared for
-   *  EXACTLY the events its DDL declares? See {@link T3CTriggerSeal.tgtype} for why this is equality
-   *  and not a bitmask. */
+  /** Is one trigger present, ENABLED, bound to the function that enforces the rule, declared for
+   *  EXACTLY the events its DDL declares, AND carrying a canonical function BODY? tgtype is
+   *  equality, not a bitmask ({@link T3CTriggerSeal.tgtype}); the body is byte equality with a
+   *  deployed layer's `prosrc` ({@link T3CTriggerSeal.fnBodies}) — `CREATE OR REPLACE FUNCTION`
+   *  preserves the function's identity, so name + tgtype alone accepted a trigger still enforcing
+   *  a pre-correction body. One query per accepted layer body; sealed when any matches. */
   private async triggerSealed(client: RawQueryClient, seal: T3CTriggerSeal): Promise<boolean> {
-    const rows = await client.$queryRawUnsafe<Array<{ n: number }>>(
-      T3C_TRIGGER_SEAL_SQL,
-      seal.name,
-      `"${seal.table}"`,
-      seal.fn,
-      seal.tgtype,
-    );
-    return Number(rows[0]?.n ?? 0) > 0;
+    for (const body of seal.fnBodies) {
+      const rows = await client.$queryRawUnsafe<Array<{ n: number }>>(
+        T3C_TRIGGER_SEAL_SQL,
+        seal.name,
+        `"${seal.table}"`,
+        seal.fn,
+        seal.tgtype,
+        body,
+      );
+      if (Number(rows[0]?.n ?? 0) > 0) return true;
+    }
+    return false;
+  }
+
+  /** Does the named function exist with one of the pinned canonical bodies? */
+  private async fnBodyIsOneOf(client: RawQueryClient, fn: string, bodies: readonly string[]): Promise<boolean> {
+    const rows = await client.$queryRawUnsafe<Array<{ src: string }>>(T3C_FN_PROSRC_SQL, fn);
+    const src = rows[0]?.src;
+    return typeof src === 'string' && bodies.includes(src);
   }
 
   /** Does the repair-evidence table exist here? Its absence means no repair has ever run. */
@@ -918,6 +939,18 @@ export class T3CRepairService {
     if (revocationWillBeWritten) {
       await this.assertRevokerEntitled(tx, String(before['projectId']), action.revokedById, action.op);
     }
+    // ONE timestamp for a still-live row's revocation, captured BEFORE the evidence is written and
+    // used verbatim in BOTH the evidence detail and the row update. Recording `null` in the detail
+    // while the update wrote `now()` left the append-only evidence permanently contradicting the
+    // attendance row it describes — and the detail's contract is "the triple actually written".
+    // Rendered canonically (`t3cRenderTs` over `now()::timestamp(3)` — ms precision first, exactly
+    // what the naive column stores) so the detail string equals what a later `captureBefore` of the
+    // same row renders; the update parses the SAME string back, so correspondence is by
+    // construction, not by two calls to now() happening to agree.
+    const stamped = await tx.$queryRawUnsafe<Array<{ render: string }>>(
+      `SELECT ${t3cRenderTs('now()::timestamp(3)')} AS render`,
+    );
+    const revocationStamp = stamped[0]!.render;
 
     switch (action.op) {
       case 'f1-mark-invalid-legacy': {
@@ -975,9 +1008,10 @@ export class T3CRepairService {
           revocationPreserved: preRevoked,
           // What was actually WRITTEN to the row. On the preserved path that is the original
           // revocation, read back from the before-image — never the plan's copy of it, so the
-          // evidence cannot claim an attribution the database does not hold.
+          // evidence cannot claim an attribution the database does not hold. On the live path the
+          // timestamp is the ONE captured above, which the update below writes verbatim.
           revokedById: preRevoked ? before['revokedById'] : action.revokedById,
-          revokedAt: preRevoked ? before['revokedAt'] : null,
+          revokedAt: preRevoked ? before['revokedAt'] : revocationStamp,
           revokeReason: preRevoked ? before['revokeReason'] : action.revokeReason,
           // The operator's own account of the RETIREMENT, which on the preserved path is a separate
           // act from the revocation and must not be mistaken for it.
@@ -992,7 +1026,7 @@ export class T3CRepairService {
           await tx.$executeRawUnsafe(
             `UPDATE "LabourAttendance"
                 SET "manualReason" = $1,
-                    "revokedAt"    = COALESCE("revokedAt", now()),
+                    "revokedAt"    = COALESCE("revokedAt", $5::timestamp),
                     "revokedById"  = COALESCE("revokedById", $2),
                     "revokeReason" = COALESCE("revokeReason", $3)
               WHERE "id" = $4`,
@@ -1000,6 +1034,7 @@ export class T3CRepairService {
             action.revokedById,
             action.revokeReason,
             action.id,
+            revocationStamp,
           );
         } catch (error) {
           if (isForeignKeyViolation(error, 'LabourAttendance_revokedBy_fkey')) {
@@ -1071,30 +1106,38 @@ export class T3CRepairService {
           markerPrefix: T3C_INVALID_LEGACY_PREFIX,
           forgedManualReason: raw,
           // What the row will actually carry after this repair, so the evidence records reality
-          // rather than the plan's intent.
+          // rather than the plan's intent. On the live path the timestamp is the ONE captured in
+          // `revocationStamp`, which the update below writes verbatim.
           revocationPreserved: preRevoked,
           revokedById: preRevoked ? before['revokedById'] : action.revokedById,
-          revokedAt: preRevoked ? before['revokedAt'] : null,
+          revokedAt: preRevoked ? before['revokedAt'] : revocationStamp,
           revokeReason: preRevoked ? before['revokeReason'] : action.revokeReason,
           // What the OPERATOR said when quarantining — recorded here without overwriting what the
           // original revoker said on the row.
           quarantineNote: action.revokeReason,
         });
         try {
-          await tx.$executeRawUnsafe(
-            preRevoked
-              ? `UPDATE "LabourAttendance" SET "manualReason" = $1 WHERE "id" = $4`
-              : `UPDATE "LabourAttendance"
-                    SET "manualReason" = $1,
-                        "revokedAt"    = now(),
-                        "revokedById"  = $2,
-                        "revokeReason" = $3
-                  WHERE "id" = $4`,
-            marker,
-            action.revokedById,
-            action.revokeReason,
-            action.id,
-          );
+          if (preRevoked) {
+            await tx.$executeRawUnsafe(
+              `UPDATE "LabourAttendance" SET "manualReason" = $1 WHERE "id" = $2`,
+              marker,
+              action.id,
+            );
+          } else {
+            await tx.$executeRawUnsafe(
+              `UPDATE "LabourAttendance"
+                  SET "manualReason" = $1,
+                      "revokedAt"    = $5::timestamp,
+                      "revokedById"  = $2,
+                      "revokeReason" = $3
+                WHERE "id" = $4`,
+              marker,
+              action.revokedById,
+              action.revokeReason,
+              action.id,
+              revocationStamp,
+            );
+          }
         } catch (error) {
           if (isForeignKeyViolation(error, 'LabourAttendance_revokedBy_fkey')) {
             throw new RepairAbortedError(
@@ -1199,8 +1242,11 @@ export class T3CRepairService {
   /** Assert every §C immutability trigger is enabled (`tgenabled='O'`); throw (roll back) otherwise
    *  — a repair that leaves any seal off is not a valid repair. */
   private async assertTriggersEnabled(tx: T3CTxClient): Promise<string[]> {
-    const rows = await tx.$queryRawUnsafe<Array<{ tgname: string; tgenabled: string; fn: string; tgtype: number }>>(
-      `SELECT t.tgname, t.tgenabled, t.tgfoid::regproc::text AS fn, t.tgtype::int AS tgtype
+    const rows = await tx.$queryRawUnsafe<
+      Array<{ tgname: string; tgenabled: string; fn: string; tgtype: number; prosrc: string | null }>
+    >(
+      `SELECT t.tgname, t.tgenabled, t.tgfoid::regproc::text AS fn, t.tgtype::int AS tgtype,
+              (SELECT p.prosrc FROM pg_proc p WHERE p.oid = t.tgfoid) AS prosrc
          FROM pg_trigger t WHERE t.tgname = ANY($1::text[]) AND NOT t.tgisinternal`,
       IMMUTABILITY_TRIGGERS as unknown as string[],
     );
@@ -1220,6 +1266,15 @@ export class T3CRepairService {
       const bits = Number(row.tgtype);
       if (bits !== seal.tgtype) {
         bad.push(`${name}=tgtype ${bits}, expected exactly ${seal.tgtype} (${seal.what})`);
+        continue;
+      }
+      // …and the function's BODY is a deployed canonical version. `CREATE OR REPLACE` preserves a
+      // function's identity, so a hollowed body under the right name/tgtype would otherwise let the
+      // repair commit while "put the trigger back" restored something that enforces nothing. The
+      // prerequisite seals accept EVERY deployed layer's body — at repair time the corrections may
+      // legitimately not have run yet, and their `CREATE OR REPLACE` heals the body at deploy.
+      if (row.prosrc == null || !seal.fnBodies.includes(row.prosrc)) {
+        bad.push(`${name}=${seal.fn} body is not any deployed canonical version (${seal.what})`);
       }
     }
     if (bad.length > 0) {

@@ -423,6 +423,54 @@ re-arms the controller or requests a fresh Codex review of the new head (e.g. an
 comment). Surfacing that is part of this round's deliverable; pretending another automated round
 will arrive is not.
 
+## Round 3i — the current-head Codex review of `8585d44` (3 findings)
+
+A Codex review DID run on `8585d44` — the round-3h section anticipated the exhausted controller cap
+would prevent one; in fact the Codex GitHub app reviews pushes to a ready PR on its own, so the cap
+governs only the trusted workflow's promotion loop. Stated for the record rather than silently
+revised. Three findings (2 P1, 1 P2), each reproduced RED at `8585d44` before the fix (probes
+`R3i-A/B/C` in `phase4-t3-correction3.test.ts` — all three fail against the base runtime, pass
+after).
+
+| # | finding (P) | fix |
+|---|---|---|
+| 1 | trigger seals verified the bound function's NAME, not its BODY — `CREATE OR REPLACE FUNCTION` preserves a function's identity, so an exact-name/exact-tgtype `LabourAttendance_append_only` still bound to the PRE-`20270220` body (which does not freeze `manualReason`) read "sealed", `t3c:seals` answered success, and the P3005 path resolved correction 2 as applied while a live justification stayed rewritable (P1) | every trigger seal carries the canonical `prosrc` BODIES of its function, machine-extracted from the migration files into `t3c-canonical-fn-bodies.generated.ts` (`scripts/generate-t3c-fn-bodies.mjs`; prosrc stores the dollar-quoted text VERBATIM, so byte equality is exact) and verified LAYERED: a prerequisite seal accepts EVERY deployed layer's body (a pre-correction body is the legitimate leave-that-correction-pending state), `correction2Installed` additionally requires the `20270220` bodies (`phase4_t3_attendance_append_only`; `phase4_t3c_allocation_head_live` at ≥ its layer), correction 3 requires the `20270225` head-live body as its own named object, the evidence + event-trigger-guard functions are body-verified too, `assertTriggersEnabled` refuses a non-canonical body before a repair commits, and a body matching NO deployed layer is a prerequisite REFUSAL (exit 5 — a human looks). Re-running the pending correction heals the body: its `CREATE OR REPLACE` is its own repair, which is why pending — not abort — is the right answer for the layer states. `EVIDENCE_SEAL_SQL` now composes its function bodies from the SAME generated texts the migration writes, so `prosrc` is byte-identical whichever writer ran last (`R3i-A`: real 20270210 body → correction 2 pending; decoy body → prerequisite refusal; 20270215 head-live body → BOTH corrections pending, healed by the replay) |
+| 2 | for a STILL-LIVE row both repair ops recorded `detail.revokedAt: null` while the same transaction's UPDATE wrote `now()` — the append-only evidence permanently contradicted the attendance row under a contract that says the detail is the triple actually written (P2) | ONE canonically-rendered timestamp (`t3cRenderTs` over `now()::timestamp(3)` — ms-truncated first, exactly what the naive column stores) is captured BEFORE the evidence is written and used VERBATIM in both the evidence detail and the row update (the update parses the same string back, so correspondence is by construction); both the retirement op and the quarantine op's live branch share the captured value (`R3i-B`: evidence `detail->>'revokedAt'` === the row's rendered `revokedAt`) |
+| 3 | unique-index seals tested `indisunique` but not `indisvalid`/`indisready` — a failed `CREATE UNIQUE INDEX CONCURRENTLY` leaves a shell with the right name, columns and predicate that enforces NOTHING for existing rows and may already coexist with the duplicates the conservation key forbids; the P3005 path baselined over it and the migration's own prerequisite block deployed over it (P1) | `t3cUniqueIdentitySql` AND the migration `20270225`'s in-file prerequisite index loop require `indisvalid AND indisready` (`R3i-C`: catalog-forced invalid and not-ready states each report the index in `prerequisitesMissing` and abort the migration replay by name) |
+
+**Deliberate re-pin:** `R4`'s exact `present` set gains
+`phase4_t3c_allocation_head_live@20270225000000_phase4_t3_correction3` — the correction-3 layer now
+names the function body it `CREATE OR REPLACE`s as its own object (its trigger remains a
+prerequisite seal). The seals JSON also gains `correction2Missing` (exact absent correction-2
+objects) alongside the existing boolean, and the CLI's exit-3 listing prints it.
+
+**Honest notes.** (1) Body verification is the same identity-not-equivalence trade as the CHECK
+seals — a reformatted but logically identical function is refused, deliberately; the canonical
+bodies come from the migrations, extraction is mechanical (no hand transcription), and fidelity is
+proven by the suite (`installed: true` on a fully migrated database fails if any pinned body
+differs from what `prisma migrate deploy` produces). (2) The migration's in-file PREREQUISITES
+block still asserts presence/binding by name — full body semantics live in `t3c seals`, which gates
+every `migrate.sh` path; duplicating ~16 function bodies into the migration would make it
+unauditable, and the comment states the split. (3) The quarantine op's live branch is fixed by the
+same captured `revocationStamp` variable the probed retirement op uses — one mechanism, one probe;
+a live forged-marker fixture would require disabling correction-3's own seals to plant, and the
+probe pins the mechanism both branches share. (4) The round-3h claim that no automated review
+would run on the new head was WRONG in a useful direction — the Codex app reviews ready-PR pushes
+independently of the promotion controller; this section corrects the record.
+
+**Gates (round 3i):** reproduce-first — `R3i-A`, `R3i-B`, `R3i-C` all RED at the `8585d44` runtime,
+GREEN after; the focused `phase4-t3-correction3.test.ts` **54/54** (incl. the deliberate `R4`
+re-pin). The pinned canonical bodies are validated two ways: mechanically at generation (md5 of
+every pinned final-layer body equals the live `prosrc` on a fully migrated database) and
+continuously by the suite (`installed: true` fails on any divergence). `pnpm check` EXIT 0 (web
+432/432, API **671/671**, `check:automation` included). Full integration suite on a pristine
+migrated DB: **69 files / 644 tests**, EXIT 0.
+`phase4-t3-correction3-production-runner-proof.sh` PASSED — **73 assertions**, EXIT 0, with the
+layered body seals live (the restored-dump Case 7b reports both corrections pending through the
+body-aware answer and heals on deploy; the db-push Case 7 refusal unchanged). `upgrade-proof.sh`
+PASSED, EXIT 0. `test:e2e:api` (allmodules) and `test:e2e:api:outbox`: **25 passed / 6
+sender-mode-skipped, EXIT 0 each, clean on the FIRST run** (no documented-flake retries needed).
+
 The PR is held per the directive: pushed normally, threads left for Codex, no self-promotion of
 draft state, no self-merge. On merge, `docs/STATUS.md` moves Task 3 to `merged`; only then may the
 runner start Task 4. **Task 4 remains blocked.**

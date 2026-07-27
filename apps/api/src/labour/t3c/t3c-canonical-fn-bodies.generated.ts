@@ -1,0 +1,90 @@
+// GENERATED FILE — do not edit by hand. Regenerate with:
+//   node scripts/generate-t3c-fn-bodies.mjs
+//
+// The canonical `pg_proc.prosrc` body of every sealed trigger / event-trigger function, per
+// DEFINING MIGRATION in layer order (oldest first). `CREATE OR REPLACE FUNCTION` preserves a
+// function's identity, so a seal that stops at the bound function's NAME accepts a trigger still
+// enforcing a PRE-correction body; the seal therefore compares `prosrc` against these pinned
+// texts. Multiple versions exist exactly where a later re-runnable correction replaced a body —
+// which version a given LAYER requires is decided by the seal specification in
+// `t3c-diagnostics.ts`, not here.
+//
+// prosrc stores the dollar-quoted body VERBATIM (no normalization), so byte equality with the
+// migration text is exact. Fidelity is proven by the focused suite: `correctionSeals()` must
+// answer installed on a fully migrated database.
+
+export interface T3CFnBodyVersion {
+  /** The migration directory that wrote this body. */
+  readonly layer: string;
+  /** The exact text between the dollar-quote tags — byte-for-byte `pg_proc.prosrc`. */
+  readonly body: string;
+}
+
+export const T3C_CANONICAL_FN_BODIES: Readonly<Record<string, readonly T3CFnBodyVersion[]>> = {
+  phase3_immutable_row: [
+    { layer: '20261230000000_phase3_t5_stock_flows', body: "\nBEGIN\n  RAISE EXCEPTION '% is append-only: % is forbidden', TG_TABLE_NAME, TG_OP;\nEND;\n" },
+  ],
+  phase4_t3_allocation_frozen: [
+    { layer: '20270210000000_phase4_t3_time_capacity', body: "\nBEGIN\n  IF TG_OP = 'DELETE' THEN\n    RAISE EXCEPTION 'WorkerAllocation rows are never deleted (release the allocation instead, %)', OLD.\"id\";\n  END IF;\n  IF NEW.\"id\" <> OLD.\"id\" OR NEW.\"projectId\" <> OLD.\"projectId\" OR NEW.\"workerId\" <> OLD.\"workerId\"\n     OR NEW.\"civilDate\" <> OLD.\"civilDate\" OR NEW.\"shift\" <> OLD.\"shift\"\n     OR NEW.\"activityId\" <> OLD.\"activityId\" OR NEW.\"requirementId\" <> OLD.\"requirementId\"\n     OR NEW.\"originRevision\" <> OLD.\"originRevision\"\n     OR NEW.\"labourSpecFingerprint\" <> OLD.\"labourSpecFingerprint\"\n     OR NEW.\"crewId\" IS DISTINCT FROM OLD.\"crewId\"\n     OR NEW.\"capacityCommitmentId\" IS DISTINCT FROM OLD.\"capacityCommitmentId\"\n     OR NEW.\"allocatedAt\" <> OLD.\"allocatedAt\" OR NEW.\"allocatedById\" <> OLD.\"allocatedById\"\n     OR NEW.\"sourceCommandId\" <> OLD.\"sourceCommandId\" THEN\n    RAISE EXCEPTION 'WorkerAllocation identity is FROZEN — only status/release attribution may change (%)', OLD.\"id\";\n  END IF;\n  -- the lifecycle is one-way: active -> released, and a released row is terminal\n  IF OLD.\"status\" = 'released' AND NEW.\"status\" <> 'released' THEN\n    RAISE EXCEPTION 'a released WorkerAllocation can never be re-activated (%)', OLD.\"id\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+  ],
+  phase4_t3_allocation_within_commitment: [
+    { layer: '20270210000000_phase4_t3_time_capacity', body: "\nDECLARE c RECORD; drawn BIGINT;\nBEGIN\n  IF NEW.\"capacityCommitmentId\" IS NULL THEN RETURN NEW; END IF;\n  SELECT \"personShiftQty\", \"status\" INTO c\n  FROM \"CapacityCommitment\" WHERE \"projectId\" = NEW.\"projectId\" AND \"id\" = NEW.\"capacityCommitmentId\";\n  IF NOT FOUND THEN\n    RAISE EXCEPTION 'WorkerAllocation % references a CapacityCommitment absent from its project', NEW.\"id\";\n  END IF;\n  IF c.\"status\" <> 'committed' THEN\n    RAISE EXCEPTION 'CapacityCommitment % is % — only committed capacity can be drawn down', NEW.\"capacityCommitmentId\", c.\"status\";\n  END IF;\n  SELECT count(*) INTO drawn FROM \"WorkerAllocation\"\n   WHERE \"projectId\" = NEW.\"projectId\" AND \"capacityCommitmentId\" = NEW.\"capacityCommitmentId\"\n     AND \"status\" = 'active' AND \"id\" <> NEW.\"id\";\n  IF drawn + 1 > c.\"personShiftQty\" THEN\n    RAISE EXCEPTION '§F bound 3: commitment % has % committed person-shift(s) for its slice; % are already allocated', NEW.\"capacityCommitmentId\", c.\"personShiftQty\", drawn;\n  END IF;\n  RETURN NEW;\nEND;\n" },
+    { layer: '20270215000000_phase4_t3_correction', body: "\nDECLARE c RECORD; drawn BIGINT;\nBEGIN\n  IF NEW.\"capacityCommitmentId\" IS NULL THEN RETURN NEW; END IF;\n  -- SERIALIZE first, then read: the row lock is what makes the count below trustworthy.\n  SELECT \"personShiftQty\", \"status\" INTO c\n  FROM \"CapacityCommitment\"\n   WHERE \"projectId\" = NEW.\"projectId\" AND \"id\" = NEW.\"capacityCommitmentId\"\n   FOR UPDATE;\n  IF NOT FOUND THEN\n    RAISE EXCEPTION 'WorkerAllocation % references a CapacityCommitment absent from its project', NEW.\"id\";\n  END IF;\n  IF c.\"status\" <> 'committed' THEN\n    RAISE EXCEPTION 'CapacityCommitment % is % — only committed capacity can be drawn down', NEW.\"capacityCommitmentId\", c.\"status\";\n  END IF;\n  SELECT count(*) INTO drawn FROM \"WorkerAllocation\"\n   WHERE \"projectId\" = NEW.\"projectId\" AND \"capacityCommitmentId\" = NEW.\"capacityCommitmentId\"\n     AND \"status\" = 'active' AND \"id\" <> NEW.\"id\";\n  IF drawn + 1 > c.\"personShiftQty\" THEN\n    RAISE EXCEPTION '§F bound 3: commitment % has % committed person-shift(s) for its slice; % are already allocated', NEW.\"capacityCommitmentId\", c.\"personShiftQty\", drawn;\n  END IF;\n  RETURN NEW;\nEND;\n" },
+  ],
+  phase4_t3_allocation_worker_active: [
+    { layer: '20270210000000_phase4_t3_time_capacity', body: "\nDECLARE w RECORD;\nBEGIN\n  SELECT \"activeFrom\", \"activeTo\", \"revokedAt\" INTO w\n  FROM \"Worker\" WHERE \"projectId\" = NEW.\"projectId\" AND \"id\" = NEW.\"workerId\";\n  IF NOT FOUND THEN\n    RAISE EXCEPTION 'WorkerAllocation % references a Worker absent from its project', NEW.\"id\";\n  END IF;\n  IF w.\"revokedAt\" IS NOT NULL THEN\n    RAISE EXCEPTION 'worker % is revoked and cannot be allocated', NEW.\"workerId\";\n  END IF;\n  IF NEW.\"civilDate\" < w.\"activeFrom\" OR (w.\"activeTo\" IS NOT NULL AND NEW.\"civilDate\" > w.\"activeTo\") THEN\n    RAISE EXCEPTION 'worker % is not active on % (active % .. %)', NEW.\"workerId\", NEW.\"civilDate\", w.\"activeFrom\", w.\"activeTo\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+  ],
+  phase4_t3_attendance_append_only: [
+    { layer: '20270210000000_phase4_t3_time_capacity', body: "\nBEGIN\n  IF TG_OP = 'DELETE' THEN\n    RAISE EXCEPTION 'LabourAttendance rows are never deleted (revoke the attendance instead, %)', OLD.\"id\";\n  END IF;\n  IF NEW.\"id\" <> OLD.\"id\" OR NEW.\"projectId\" <> OLD.\"projectId\" OR NEW.\"workerId\" <> OLD.\"workerId\"\n     OR NEW.\"civilDate\" <> OLD.\"civilDate\" OR NEW.\"shift\" <> OLD.\"shift\"\n     OR NEW.\"deviceId\" IS DISTINCT FROM OLD.\"deviceId\"\n     OR NEW.\"evidenceMediaId\" IS DISTINCT FROM OLD.\"evidenceMediaId\"\n     OR NEW.\"recordedAt\" <> OLD.\"recordedAt\" OR NEW.\"recordedById\" <> OLD.\"recordedById\"\n     OR NEW.\"sourceCommandId\" <> OLD.\"sourceCommandId\" THEN\n    RAISE EXCEPTION 'LabourAttendance is an APPEND-ONLY observation — only the revocation stamp may change (%)', OLD.\"id\";\n  END IF;\n  IF OLD.\"revokedAt\" IS NOT NULL THEN\n    RAISE EXCEPTION 'a revoked LabourAttendance is terminal (%)', OLD.\"id\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+    { layer: '20270220000000_phase4_t3_correction2', body: "\nBEGIN\n  IF TG_OP = 'DELETE' THEN\n    RAISE EXCEPTION 'LabourAttendance rows are never deleted (revoke the attendance instead, %)', OLD.\"id\";\n  END IF;\n  IF NEW.\"id\" <> OLD.\"id\" OR NEW.\"projectId\" <> OLD.\"projectId\" OR NEW.\"workerId\" <> OLD.\"workerId\"\n     OR NEW.\"civilDate\" <> OLD.\"civilDate\" OR NEW.\"shift\" <> OLD.\"shift\"\n     OR NEW.\"deviceId\" IS DISTINCT FROM OLD.\"deviceId\"\n     OR NEW.\"manualReason\" IS DISTINCT FROM OLD.\"manualReason\"\n     OR NEW.\"evidenceMediaId\" IS DISTINCT FROM OLD.\"evidenceMediaId\"\n     OR NEW.\"recordedAt\" <> OLD.\"recordedAt\" OR NEW.\"recordedById\" <> OLD.\"recordedById\"\n     OR NEW.\"sourceCommandId\" <> OLD.\"sourceCommandId\" THEN\n    RAISE EXCEPTION 'LabourAttendance is an APPEND-ONLY observation — only the revocation stamp may change (%)', OLD.\"id\";\n  END IF;\n  IF OLD.\"revokedAt\" IS NOT NULL THEN\n    RAISE EXCEPTION 'a revoked LabourAttendance is terminal (%)', OLD.\"id\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+  ],
+  phase4_t3_attendance_device_bound: [
+    { layer: '20270210000000_phase4_t3_time_capacity', body: "\nDECLARE d RECORD;\nBEGIN\n  IF NEW.\"deviceId\" IS NULL THEN RETURN NEW; END IF;\n  SELECT \"workerId\" INTO d FROM \"WorkerDevice\" WHERE \"projectId\" = NEW.\"projectId\" AND \"id\" = NEW.\"deviceId\";\n  IF NOT FOUND THEN\n    RAISE EXCEPTION 'LabourAttendance % references a WorkerDevice absent from its project', NEW.\"id\";\n  END IF;\n  IF d.\"workerId\" IS NULL THEN\n    RAISE EXCEPTION 'device % is not bound to a Worker and cannot evidence attendance', NEW.\"deviceId\";\n  END IF;\n  IF d.\"workerId\" <> NEW.\"workerId\" THEN\n    RAISE EXCEPTION 'device % is bound to worker %, not % — attendance evidence must be the worker''s own device', NEW.\"deviceId\", d.\"workerId\", NEW.\"workerId\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+  ],
+  phase4_t3_skill_substitution_append_only: [
+    { layer: '20270210000000_phase4_t3_time_capacity', body: "\nBEGIN\n  IF TG_OP = 'DELETE' THEN\n    RAISE EXCEPTION 'ApprovedSkillSubstitution rows are never deleted (revoke instead, %)', OLD.\"id\";\n  END IF;\n  IF NEW.\"id\" <> OLD.\"id\" OR NEW.\"projectId\" <> OLD.\"projectId\" OR NEW.\"requirementId\" <> OLD.\"requirementId\"\n     OR NEW.\"fromFingerprint\" <> OLD.\"fromFingerprint\" OR NEW.\"toFingerprint\" <> OLD.\"toFingerprint\"\n     OR NEW.\"reason\" <> OLD.\"reason\" OR NEW.\"approvedById\" <> OLD.\"approvedById\" OR NEW.\"at\" <> OLD.\"at\"\n     OR NEW.\"sourceCommandId\" <> OLD.\"sourceCommandId\" THEN\n    RAISE EXCEPTION 'ApprovedSkillSubstitution is append-only — only the revocation stamp may change (%)', OLD.\"id\";\n  END IF;\n  IF OLD.\"revokedAt\" IS NOT NULL THEN\n    RAISE EXCEPTION 'a revoked ApprovedSkillSubstitution is terminal (%)', OLD.\"id\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+  ],
+  phase4_t3_work_matches_allocation: [
+    { layer: '20270210000000_phase4_t3_time_capacity', body: "\nDECLARE a RECORD;\nBEGIN\n  SELECT \"workerId\", \"activityId\", \"civilDate\", \"shift\" INTO a\n  FROM \"WorkerAllocation\" WHERE \"projectId\" = NEW.\"projectId\" AND \"id\" = NEW.\"allocationId\";\n  IF NOT FOUND THEN\n    RAISE EXCEPTION 'LabourWorkFact % references a WorkerAllocation absent from its project', NEW.\"id\";\n  END IF;\n  IF a.\"workerId\" <> NEW.\"workerId\" OR a.\"activityId\" <> NEW.\"activityId\"\n     OR a.\"civilDate\" <> NEW.\"civilDate\" OR a.\"shift\" <> NEW.\"shift\" THEN\n    RAISE EXCEPTION 'LabourWorkFact % must carry its allocation''s worker/activity/slice identity', NEW.\"id\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+  ],
+  phase4_t3c_allocation_head_live: [
+    { layer: '20270215000000_phase4_t3_correction', body: "\nDECLARE head_status TEXT;\nBEGIN\n  SELECT r.\"status\" INTO head_status\n    FROM \"ActivityRequirement\" r\n   WHERE r.\"projectId\" = NEW.\"projectId\" AND r.\"requirementId\" = NEW.\"requirementId\"\n   ORDER BY r.\"revision\" DESC LIMIT 1;\n  IF head_status = 'cancelled' THEN\n    RAISE EXCEPTION 'requirement % is cancelled — its demand is dead and cannot be allocated against', NEW.\"requirementId\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+    { layer: '20270220000000_phase4_t3_correction2', body: "\nDECLARE head_status TEXT; root_id TEXT;\nBEGIN\n  SELECT r.\"id\" INTO root_id\n    FROM \"ActivityRequirementRoot\" r\n   WHERE r.\"projectId\" = NEW.\"projectId\" AND r.\"id\" = NEW.\"requirementId\"\n   FOR UPDATE;\n  IF NOT FOUND THEN\n    RAISE EXCEPTION 'WorkerAllocation % references a requirement absent from its project', NEW.\"id\";\n  END IF;\n  SELECT r.\"status\" INTO head_status\n    FROM \"ActivityRequirement\" r\n   WHERE r.\"projectId\" = NEW.\"projectId\" AND r.\"requirementId\" = NEW.\"requirementId\"\n   ORDER BY r.\"revision\" DESC LIMIT 1;\n  IF head_status = 'cancelled' THEN\n    RAISE EXCEPTION 'requirement % is cancelled — its demand is dead and cannot be allocated against', NEW.\"requirementId\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+    { layer: '20270225000000_phase4_t3_correction3', body: "\nDECLARE head_status TEXT; root_id TEXT;\nBEGIN\n  PERFORM pg_advisory_xact_lock(hashtextextended('readiness:' || NEW.\"projectId\", 0));\n  SELECT r.\"id\" INTO root_id\n    FROM \"ActivityRequirementRoot\" r\n   WHERE r.\"projectId\" = NEW.\"projectId\" AND r.\"id\" = NEW.\"requirementId\"\n   FOR UPDATE;\n  IF NOT FOUND THEN\n    RAISE EXCEPTION 'WorkerAllocation % references a requirement absent from its project', NEW.\"id\";\n  END IF;\n  SELECT r.\"status\" INTO head_status\n    FROM \"ActivityRequirement\" r\n   WHERE r.\"projectId\" = NEW.\"projectId\" AND r.\"requirementId\" = NEW.\"requirementId\"\n   ORDER BY r.\"revision\" DESC LIMIT 1;\n  IF head_status = 'cancelled' THEN\n    RAISE EXCEPTION 'requirement % is cancelled — its demand is dead and cannot be allocated against', NEW.\"requirementId\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+  ],
+  phase4_t3c_evidence_alter_guard: [
+    { layer: '20270225000000_phase4_t3_correction3', body: "\n  DECLARE cmd record;\n  BEGIN\n    FOR cmd IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP\n      IF cmd.command_tag = 'ALTER TABLE' AND cmd.objid = to_regclass('\"T3CRepairAction\"') THEN\n        RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never altered — dropping, renaming or retyping its columns would erase or orphan the before-images the attendance markers point at. See docs/RUNBOOK.md §P4T3C3.';\n      END IF;\n    END LOOP;\n  END;\n  " },
+  ],
+  phase4_t3c_evidence_drop_guard: [
+    { layer: '20270225000000_phase4_t3_correction3', body: "\n  DECLARE obj record;\n  BEGIN\n    FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP\n      IF obj.object_type IN ('table', 'table column') AND 'T3CRepairAction' = ANY(obj.address_names) THEN\n        RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never dropped — the attendance markers point at the before-images it holds (attempted to drop %). See docs/RUNBOOK.md §P4T3C3.', obj.object_type;\n      END IF;\n    END LOOP;\n  END;\n  " },
+  ],
+  phase4_t3c_repair_action_append_only: [
+    { layer: '20270225000000_phase4_t3_correction3', body: "\n  BEGIN\n    RAISE EXCEPTION 'T3CRepairAction is append-only — repair evidence is never updated or deleted (attempted % on row %)', TG_OP, COALESCE(OLD.\"id\"::text, '<none>');\n  END;\n  " },
+  ],
+  phase4_t3c_repair_action_no_truncate: [
+    { layer: '20270225000000_phase4_t3_correction3', body: "\n  BEGIN\n    RAISE EXCEPTION 'T3CRepairAction is append-only — repair evidence is never truncated';\n  END;\n  " },
+  ],
+  phase4_t3c_repair_action_path: [
+    { layer: '20270225000000_phase4_t3_correction3', body: "\n  DECLARE want TEXT;\n  BEGIN\n    IF NEW.\"repairId\" IS NULL OR btrim(NEW.\"repairId\", E' \\t\\n\\x0B\\f\\r') = '' THEN\n      RAISE EXCEPTION 'T3CRepairAction.repairId must name a repair — a blank id points at nothing';\n    END IF;\n    want := current_setting('phase4.t3c_repair_id', true);\n    IF want IS NULL OR want = '' THEN\n      RAISE EXCEPTION 'T3CRepairAction is written only by the audited repair path (t3c:repair) — this insert is not inside a repair transaction. See docs/RUNBOOK.md §P4T3C3.';\n    END IF;\n    IF want <> NEW.\"repairId\" THEN\n      RAISE EXCEPTION 'T3CRepairAction row claims repair % but this repair transaction is % — evidence is never written on behalf of another repair', NEW.\"repairId\", want;\n    END IF;\n    RETURN NEW;\n  END;\n  " },
+  ],
+  phase4_t3c3_allocation_project_lock: [
+    { layer: '20270225000000_phase4_t3_correction3', body: "\nBEGIN\n  PERFORM pg_advisory_xact_lock(hashtextextended('readiness:' || NEW.\"projectId\", 0));\n  RETURN NEW;\nEND;\n" },
+  ],
+  phase4_t3c3_attendance_reserved_marker: [
+    { layer: '20270225000000_phase4_t3_correction3', body: "\nBEGIN\n  IF NEW.\"manualReason\" IS NOT NULL AND NEW.\"manualReason\" LIKE '[invalid-legacy:blank-manual-reason]%' THEN\n    RAISE EXCEPTION 'the invalid-legacy marker is RESERVED for the audited operator repair (t3c:repair) and can never be a recorded manual reason (%)', NEW.\"id\";\n  END IF;\n  RETURN NEW;\nEND;\n" },
+  ],
+};
+
+/** Every pinned body of one function (any layer). */
+export function t3cFnBodies(fn: string): readonly string[] {
+  const versions = T3C_CANONICAL_FN_BODIES[fn];
+  if (!versions?.length) throw new Error(`no canonical body pinned for function ${fn}`);
+  return versions.map((v) => v.body);
+}
+
+/** The body one specific migration wrote for one function. */
+export function t3cFnBodyAt(fn: string, layer: string): string {
+  const hit = T3C_CANONICAL_FN_BODIES[fn]?.find((v) => v.layer === layer);
+  if (!hit) throw new Error(`no canonical body pinned for ${fn} at ${layer}`);
+  return hit.body;
+}
