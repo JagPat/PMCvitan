@@ -65,16 +65,15 @@ so directly rather than framing it as a suggestion.
 - Shared logic moves *down* into a leaf or *out* into a shared module — never
   sideways between peers.
 
-### Process gates
+### Autonomy and evidence
 
-- Respect any HOLD or "explicit GO" note in the PR description. Never approve past,
-  or instruct work beyond, a stated gate (e.g. a blocked task) — even if the code
-  looks ready.
+- This project runs as an autonomous loop. Do not block on human sign-off, and do
+  not tell the author to wait for approval — no one is standing by to give it.
 - Expect reproduce-first evidence: a failing (RED) probe at the base commit before
   the fix was written. Flag fixes shipped without a reproduction.
-- Scope discipline is reviewable. A PR that mixes an approved change with unrelated
-  refactoring should be asked to split, and the scope creep flagged separately from
-  the code review.
+- Scope discipline is reviewable. A PR that mixes an unrelated refactor into a
+  focused change should be asked to split, and the scope creep flagged separately
+  from the code review.
 
 ## Review output expectations
 
@@ -98,8 +97,8 @@ so directly rather than framing it as a suggestion.
 ## Review → fix handoff
 
 - Codex reviews the PR and posts a verdict plus a concrete next instruction. Codex
-  does not fix its own findings.
-- Fixes are made by Claude Code. A human tags `@claude` on the PR with the finding
-  to address. This keeps the reviewer independent of the author.
-- Fixing a CHANGES-NEEDED verdict is routine. Advancing to a new task or phase is
-  not — that needs an explicit GO, per the process gates above.
+  does not fix its own findings; that keeps the reviewer independent of the author.
+- Fixes are made by Claude Code, triggered automatically from the review. No human
+  tags anyone, and no human approval is involved at any point in this loop.
+- Applying a CHANGES-NEEDED verdict is routine, and so is continuing to the next
+  task once a PR merges. Neither waits for a person.
