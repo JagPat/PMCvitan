@@ -633,11 +633,15 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
         `CREATE TRIGGER "LabourAttendance_reserved_marker" BEFORE INSERT ON "LabourAttendance"
            FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_attendance_reserved_marker()`,
       );
+      // Re-added VALIDATED, not NOT VALID: the forged row is marked AND revoked, so it satisfies
+      // this CHECK and validation succeeds. Leaving it unvalidated would be a lie about the
+      // database's state — and `correctionSeals` now checks `convalidated` precisely because an
+      // unvalidated CHECK does not constrain the rows already present.
       await t.prisma.$executeRawUnsafe(
         `ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_marker_is_revoked"
            CHECK ("manualReason" IS NULL
                OR "manualReason" NOT LIKE '${T3C_INVALID_LEGACY_PREFIX}%'
-               OR "revokedAt" IS NOT NULL) NOT VALID`,
+               OR "revokedAt" IS NOT NULL)`,
       );
     }
     return id;
