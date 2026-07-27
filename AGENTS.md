@@ -91,6 +91,24 @@ so directly rather than framing it as a suggestion.
   concerns.
 - Cite the rule above that a finding violates, so the standard stays visible.
 
+### Machine-readable verdict (required)
+
+End every review with a final line that is exactly one of:
+
+```
+VERDICT: CLEAN
+VERDICT: CHANGES_REQUIRED
+```
+
+Nothing after it. `CLEAN` means nothing in this diff blocks merge. `CHANGES_REQUIRED`
+means at least one finding must be fixed before merge — use it for any blocking
+finding, however small.
+
+This line is load-bearing, not decoration. The `codex-review-gate` status check
+reads it to decide whether the head may merge, and no human is watching. Without
+it the gate falls back to inferring the verdict from whether inline findings were
+left, and says so in its output — a weaker signal that should not be relied on.
+
 ## Repository conventions
 
 - Match the surrounding code's existing patterns over any general-purpose

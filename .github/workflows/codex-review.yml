@@ -1,0 +1,78 @@
+name: Request Codex review
+
+# WHY THIS EXISTS
+#
+# Codex's own bot states its trigger set:
+#
+#   Reviews are triggered when you
+#   - Open a pull request for review
+#   - Mark a draft as ready
+#   - Comment "@codex review".
+#
+# The autonomous loop in docs/AUTONOMOUS_LOOP.md opens EVERY pull request as a DRAFT and marks it
+# ready only after Codex has reviewed the current head. Those two rules deadlock: the first two
+# triggers never fire for a draft, and nobody types the third. The loop stalls silently — the PR
+# looks healthy, CI is green, and no review ever arrives.
+#
+# `synchronize` is also absent from that trigger set, so even a ready PR is NOT re-reviewed after a
+# corrective push. That breaks the fix-forward half of the loop just as badly.
+#
+# This workflow closes both gaps by using the ONE trigger that works regardless of draft state: it
+# comments "@codex review" naming the exact head SHA, once per head.
+#
+# LIMITATION, STATED HONESTLY: this comment is authored by `github-actions[bot]` using GITHUB_TOKEN.
+# GitHub Apps do receive webhooks for bot-authored comments, but some bots deliberately ignore other
+# bots. If Codex ignores this, the request is a harmless no-op — and the Claude review sweep
+# (docs/AUTONOMOUS_LOOP.md, "Review trigger chain") posts the same request as the repository owner,
+# which is guaranteed to be honoured. The two paths are independent on purpose; neither is the single
+# point of failure.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+concurrency:
+  # One request in flight per PR. A rapid second push supersedes the first — the newer head is the
+  # only one worth reviewing.
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask Codex to review the current head (once per head SHA)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          echo "PR #$PR head: $HEAD_SHA"
+
+          # Already reviewed this exact head? Nothing to ask for.
+          if gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
+               --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | .commit_id' \
+             | grep -Fxq "$HEAD_SHA"; then
+            echo "Codex has already reviewed $HEAD_SHA. No request needed."
+            exit 0
+          fi
+
+          # Already asked for this exact head? Do not spam the thread on every re-run.
+          MARKER="<!-- codex-review-request: $HEAD_SHA -->"
+          if gh api "repos/$REPO/issues/$PR/comments" --paginate --jq '.[].body' \
+             | grep -Fq "$MARKER"; then
+            echo "A review request for $HEAD_SHA already exists. Nothing to do."
+            exit 0
+          fi
+
+          gh pr comment "$PR" --repo "$REPO" --body "$(printf '%s\n\n%s\n\n%s\n' \
+            '@codex review' \
+            "$MARKER" \
+            "Automated request for head \`$HEAD_SHA\`. This pull request is intentionally a draft until the review on this exact head carries no blocking finding — see \`docs/AUTONOMOUS_LOOP.md\`.")"
+          echo "Requested a Codex review for $HEAD_SHA."

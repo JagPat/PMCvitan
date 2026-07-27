@@ -26,13 +26,49 @@ This repository is designed to progress without the owner's laptop or technical 
 
 1. The runner selects only the work item in `docs/STATUS.md`.
 2. Claude starts from latest `origin/main`, records the base SHA, and opens a draft PR.
-3. Codex reviews the current head. Every corrective push invalidates the prior head review and triggers another review.
+3. A review of the current head is REQUESTED automatically (see "Review trigger chain" below), and Codex reviews it. Every corrective push invalidates the prior head review and requests another.
 4. Claude reproduces every blocking finding at the reviewed base, fixes it forward, and keeps the PR draft.
-5. Once Codex reports no blocking finding on the current head, Claude marks the PR ready.
-6. GitHub requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`; auto-merge then queues a squash merge.
+5. Once the `codex-review-gate` check is green on the current head, Claude marks the PR ready.
+6. GitHub requires `web`, `api`, `e2e`, `api-e2e`, `upgrade-proof`, and `codex-review-gate`; auto-merge then queues a squash merge.
 7. Coolify deploys `main`. The runner updates `docs/STATUS.md` and begins the next work item.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
+
+## Review Trigger Chain
+
+Codex reviews on exactly three signals, which its own bot states on every review:
+
+- a pull request is **opened for review** (not a draft),
+- a **draft is marked ready**,
+- someone comments **`@codex review`**.
+
+A new push (`synchronize`) is *not* on that list. Neither is opening a draft. The loop above depends
+on both, so nothing about it is automatic by default — and the failure is silent: the PR looks
+healthy, CI is green, and the review simply never arrives. Step 3 therefore has two independent
+request paths, and neither is a single point of failure:
+
+| Path | Mechanism | Actor | Covers |
+| --- | --- | --- | --- |
+| A | `.github/workflows/codex-review.yml` | `github-actions[bot]` | Every open/reopen/push/ready, within seconds, once per head SHA |
+| B | The Claude review sweep | the repository owner | Any head that path A left unreviewed — the backstop if Codex ignores bot-authored comments |
+
+Both paths are idempotent per head SHA: they skip if Codex has already reviewed that head, and skip
+if a request for that head is already in the thread.
+
+## Merge Gate
+
+`codex-review-gate` (`.github/workflows/codex-review-gate.yml`) is the enforcement point, and it is a
+required status check on `main` with bypass disabled. It is green only when Codex has reviewed the
+**exact current head** and that review carries no blocking finding. Its verdict comes from, in order:
+
+1. an explicit `VERDICT: CLEAN` / `VERDICT: CHANGES_REQUIRED` line (the contract in `AGENTS.md`);
+2. failing that, whether the head's Codex review left inline findings — inferred, and labelled as
+   inferred in the check output;
+3. no review for this head at all → the gate fails as pending. Absence is never approval.
+
+The draft flag remains the convention, but it is no longer what enforces the rule: a draft can be
+marked ready by anyone, while a required check cannot be bypassed. If the two ever disagree, the
+check is authoritative.
 
 ## Non-Negotiable Safety Rules
 
@@ -60,3 +96,19 @@ Phase 4 Task 3 requires correction round 3 after the post-merge review of PR #22
 ## External Dependencies
 
 The Codex Cloud GitHub review integration and GitHub Actions operate without the owner's computer. Starting and correcting work requires a separately configured cloud runner for Claude Code. Repository state is prepared for that runner; its provider credentials and schedules must remain in the provider's managed configuration, not this repository.
+
+## Owner-Configured Settings (not in this repository)
+
+Two settings live in GitHub's UI and cannot be committed. Until they are set, the gate is advisory:
+it reports the right verdict, but nothing stops a merge past it.
+
+**Settings → Branches → branch protection for `main`:**
+
+- Require status checks to pass before merging, with these six required:
+  `web`, `api`, `e2e`, `api-e2e`, `upgrade-proof`, `codex-review-gate`.
+- Require branches to be up to date before merging.
+- **Do not allow bypassing the above settings** — without this an admin (or an agent acting as one)
+  can merge straight past the review gate, which is exactly what the gate exists to prevent.
+
+**Settings → General → Pull Requests:** allow auto-merge, so `auto-merge.yml` can queue the squash
+merge behind those checks.

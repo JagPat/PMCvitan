@@ -1,0 +1,115 @@
+name: Codex review gate
+
+# WHAT THIS ENFORCES
+#
+# A single status check, `codex-review-gate`, that is green ONLY when Codex has reviewed the EXACT
+# current head and that review carries no blocking finding. Made a required check on `main` (with
+# "do not allow bypassing" enabled), it is what actually stops an unreviewed head from merging —
+# the draft flag is a convention that a human or an agent can flip, while a required check is not.
+#
+# It replaces "a Codex review exists for this SHA", which the previous auto-merge job used and which
+# is satisfied by a review full of blocking findings.
+#
+# HOW THE VERDICT IS DERIVED, in priority order:
+#
+#   1. An explicit final line `VERDICT: CLEAN` or `VERDICT: CHANGES_REQUIRED` in a Codex review or
+#      comment for this head. This is the contract AGENTS.md asks Codex to emit; it is unambiguous
+#      and always wins.
+#   2. FALLBACK, from Codex's own documented behaviour ("If Codex has suggestions, it will comment;
+#      otherwise it will react with 👍"): a Codex review for this head with ZERO inline review
+#      comments is CLEAN; one or more inline comments is CHANGES_REQUIRED. This is a heuristic and
+#      is labelled as such in the check output — it exists so the gate is useful before every review
+#      carries a verdict line, not as a substitute for one.
+#   3. No Codex review for this head at all → the gate FAILS as `pending review`. Absence is never
+#      treated as approval.
+#
+# The check run is created against the head SHA through the API rather than relying on the job's own
+# check, so a review or comment arriving LATER (events that do not re-run `pull_request` workflows)
+# can still update the gate for that head.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  checks: write
+  pull-requests: read
+  contents: read
+
+jobs:
+  evaluate:
+    # `issue_comment` fires for plain issues too; only pull requests have a head to gate.
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate the Codex verdict for the current head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_FROM_PULL: ${{ github.event.pull_request.number }}
+          PR_FROM_ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          PR="${PR_FROM_PULL:-$PR_FROM_ISSUE}"
+          [ -n "$PR" ] || { echo "no pull request in this event"; exit 1; }
+
+          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          SHORT=${HEAD_SHA:0:10}
+          echo "PR #$PR head: $HEAD_SHA"
+
+          BOT=chatgpt-codex-connector
+
+          # Every Codex review whose commit_id is exactly this head.
+          gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
+            --jq "[.[] | select(.user.login==\"$BOT[bot]\") | select(.commit_id==\"$HEAD_SHA\")] | sort_by(.submitted_at)" \
+            > reviews.json
+          # Codex sometimes posts as an issue comment; match those by the head SHA it names.
+          gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq "[.[] | select(.user.login==\"$BOT[bot]\") | select(.body | contains(\"$SHORT\"))] | sort_by(.created_at)" \
+            > comments.json
+
+          # -r is load-bearing: without it jq emits a JSON-quoted string whose newlines are the two
+          # characters \ and n, and the anchored VERDICT match below could never succeed.
+          BODIES=$(jq -rs 'add | map(.body) | join("\n\n")' reviews.json comments.json)
+          REVIEW_COUNT=$(jq 'length' reviews.json)
+
+          # Inline review comments Codex left on this head (the fallback signal).
+          INLINE=$(gh api "repos/$REPO/pulls/$PR/comments" --paginate \
+            --jq "[.[] | select(.user.login==\"$BOT[bot]\") | select(.commit_id==\"$HEAD_SHA\" or .original_commit_id==\"$HEAD_SHA\")] | length")
+
+          CONCLUSION=failure
+          TITLE=""
+          SUMMARY=""
+
+          if printf '%s' "$BODIES" | grep -Eq '^[[:space:]]*VERDICT:[[:space:]]*CLEAN[[:space:]]*$'; then
+            CONCLUSION=success
+            TITLE="Codex: VERDICT CLEAN for $SHORT"
+            SUMMARY="Codex reviewed \`$HEAD_SHA\` and declared \`VERDICT: CLEAN\`. Merging is permitted."
+          elif printf '%s' "$BODIES" | grep -Eq '^[[:space:]]*VERDICT:[[:space:]]*CHANGES_REQUIRED[[:space:]]*$'; then
+            TITLE="Codex: VERDICT CHANGES_REQUIRED for $SHORT"
+            SUMMARY="Codex reviewed \`$HEAD_SHA\` and declared \`VERDICT: CHANGES_REQUIRED\`. Fix forward, keep the pull request a draft, and push — the new head is re-reviewed automatically."
+          elif [ "$REVIEW_COUNT" -eq 0 ]; then
+            TITLE="Awaiting a Codex review of $SHORT"
+            SUMMARY="No Codex review exists for \`$HEAD_SHA\`. \`Request Codex review\` asks for one on every push; the Claude review sweep asks again if that goes unanswered. Absence of a review is never treated as approval."
+          elif [ "$INLINE" -eq 0 ]; then
+            CONCLUSION=success
+            TITLE="Codex reviewed $SHORT with no findings (inferred)"
+            SUMMARY="Codex reviewed \`$HEAD_SHA\` and left no inline findings, which Codex documents as its clean signal. NOTE: this verdict is INFERRED — the review carried no explicit \`VERDICT:\` line. See \`AGENTS.md\` → Review output expectations."
+          else
+            TITLE="Codex left $INLINE finding(s) on $SHORT (inferred)"
+            SUMMARY="Codex reviewed \`$HEAD_SHA\` and left $INLINE inline finding(s). NOTE: this verdict is INFERRED — the review carried no explicit \`VERDICT:\` line. Address the findings, keep the pull request a draft, and push."
+          fi
+
+          echo "$TITLE"
+          echo "$SUMMARY"
+
+          jq -n --arg sha "$HEAD_SHA" --arg c "$CONCLUSION" --arg t "$TITLE" --arg s "$SUMMARY" \
+            '{name:"codex-review-gate", head_sha:$sha, status:"completed", conclusion:$c,
+              output:{title:$t, summary:$s}}' \
+            | gh api "repos/$REPO/check-runs" --method POST --input - > /dev/null
+
+          echo "Published check run codex-review-gate=$CONCLUSION for $HEAD_SHA"

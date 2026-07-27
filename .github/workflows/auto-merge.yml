@@ -1,31 +1,68 @@
 name: Auto-merge to main
+
+# Auto-merge is queued only once `codex-review-gate` is SUCCESS for the exact current head. That
+# check encodes the verdict (see .github/workflows/codex-review-gate.yml); this job no longer
+# re-implements the rule, so there is one place where "reviewed and clean" is defined.
+#
+# Previously this job accepted "a Codex review exists for this SHA", which a review full of blocking
+# findings satisfies just as well as a clean one.
+#
+# `--auto` still waits for every required check, so this only ever brings the merge forward — it can
+# never merge past a red gate.
+
 on:
   pull_request:
     types: [opened, reopened, ready_for_review]
   pull_request_review:
     types: [submitted]
+  check_run:
+    types: [completed]
+
 permissions:
   contents: write
   pull-requests: write
+  checks: read
+
 jobs:
   merge:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false
     steps:
-      - name: Enable auto-merge only once Codex has reviewed the current head
+      - name: Queue auto-merge once the Codex gate is green on the current head
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          PR_FROM_PULL: ${{ github.event.pull_request.number }}
+          CHECK_NAME: ${{ github.event.check_run.name }}
+          CHECK_PRS: ${{ toJSON(github.event.check_run.pull_requests) }}
         run: |
           set -euo pipefail
-          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
-          echo "Head commit: $HEAD_SHA"
-          REVIEWS=$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
-            --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | .commit_id' || true)
-          if ! printf '%s\n' "$REVIEWS" | grep -Fxq "$HEAD_SHA"; then
-            echo "No Codex review for $HEAD_SHA. Leaving the pull request unmerged."
+
+          if [ -n "${PR_FROM_PULL:-}" ]; then
+            PR="$PR_FROM_PULL"
+          else
+            # A check_run event carries the PRs it belongs to; only react to our own gate.
+            [ "$CHECK_NAME" = "codex-review-gate" ] || { echo "check_run '$CHECK_NAME' is not the gate. Nothing to do."; exit 0; }
+            PR=$(printf '%s' "$CHECK_PRS" | jq -r '.[0].number // empty')
+            [ -n "$PR" ] || { echo "gate check_run is not attached to a pull request. Nothing to do."; exit 0; }
+          fi
+
+          STATE=$(gh pr view "$PR" --repo "$REPO" --json isDraft,state --jq '"\(.isDraft) \(.state)"')
+          set -- $STATE
+          IS_DRAFT="$1"; PR_STATE="$2"
+          if [ "$PR_STATE" != "OPEN" ]; then echo "PR #$PR is $PR_STATE. Nothing to do."; exit 0; fi
+          if [ "$IS_DRAFT" = "true" ]; then
+            echo "PR #$PR is a draft — review is still in progress by design. Leaving it unmerged."
             exit 0
           fi
-          echo "Codex has reviewed $HEAD_SHA. Queueing the merge."
+
+          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          GATE=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" --paginate \
+            --jq '[.check_runs[] | select(.name=="codex-review-gate")] | sort_by(.completed_at) | last | .conclusion // "missing"')
+
+          if [ "$GATE" != "success" ]; then
+            echo "codex-review-gate is '$GATE' for $HEAD_SHA. Leaving the pull request unmerged."
+            exit 0
+          fi
+
+          echo "codex-review-gate is green for $HEAD_SHA. Queueing the merge."
           gh pr merge "$PR" --auto --squash --delete-branch --repo "$REPO"
