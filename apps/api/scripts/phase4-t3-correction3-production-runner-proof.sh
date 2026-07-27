@@ -108,6 +108,10 @@ INSERT INTO "Project" ("id","orgId","name","short","descriptor","stage","siteCod
   VALUES ('p1','org-p4t3','P4T3 Site','P4','','Structure','P4-01','01 Jan 2026','31 Dec 2026',0,0,0);
 INSERT INTO "User" ("id","projectId","role","name","email","passwordHash") VALUES ('USER-1','p1','pmc','P4T3 PMC','p4t3@vitan.in','h');
 INSERT INTO "User" ("id","projectId","role","name","email","passwordHash") VALUES ('USER-2','p1','pmc','P4T3 Owner','p4t3o@vitan.in','h');
+-- A revocation must be attributed to someone with STANDING on the project (an active membership,
+-- or owner/admin of its org) — a user row alone is not accountability. USER-2 is the plan's revoker.
+INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ('MEM-1','p1','USER-1','pmc','active');
+INSERT INTO "Membership" ("id","projectId","userId","role","status") VALUES ('MEM-2','p1','USER-2','pmc','active');
 INSERT INTO "LabourTrade"("projectId","code","name","createdById") VALUES ('p1','mason','Mason','USER-1');
 INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('p1','bar-bending','Bar Bending','USER-1');
 INSERT INTO "Worker"("id","projectId","name","tradeCode","activeFrom","createdById")
@@ -196,7 +200,7 @@ cat > "$PLANDIR/badusr.json" <<JSON
 JSON
 DATABASE_URL="$URL_BASE/$DB?schema=public" node "$T3C_ARTIFACT" repair --plan "$PLANDIR/badusr.json" --operator ops@vitan.in --reason "bogus" >/tmp/t3cpr-refuse2.log 2>&1
 [ $? -ne 0 ] && ok "a plan naming an unknown accountable user is REFUSED (never fabricated)" || bad "an unknown revokedById was accepted"
-grep -q 'names no User' /tmp/t3cpr-refuse2.log && ok "the refusal names the reason explicitly" || bad "the refusal message is not explicit"
+grep -q 'has no standing on project' /tmp/t3cpr-refuse2.log && ok "the refusal names the reason explicitly" || bad "the refusal message is not explicit"
 [ "$(q "$DB" "SELECT \"manualReason\" FROM \"LabourAttendance\" WHERE \"id\"='ATT-BLANK'")" = "   " ] \
   && ok "the refused repairs left the row byte-for-byte unchanged" || bad "a refused repair modified the row"
 [ "$(q "$DB" "SELECT to_regclass('\"T3CRepairAction\"') IS NOT NULL")" = "f" ] \
@@ -274,33 +278,77 @@ echo "$RUN_OUT" | grep -q 'F1.marker' && ok "the runner output NAMES F1.marker" 
 echo "$RUN_OUT" | grep -q 'ATT-FORGED' && ok "the runner output identifies the forged row" || bad "the runner did not identify the forged row"
 corr2_absent "$DB" && ok "migration 20270220 was NEVER started/recorded" || bad "20270220 was recorded despite the forged marker"
 
-# ── Case 7 — PRE-BASELINE (P3005) database: the seals are verified, never assumed ─────────────────
+# ── Case 7 — PRE-BASELINE (P3005) `db push` database: REFUSED, never silently reconciled ──────────
 # A schema created by `prisma db push` has no `_prisma_migrations`, so `migrate deploy` answers
-# P3005 and the runner baselines. But `db push` reproduces only what schema.prisma MODELS: every
-# object 20270225 creates is raw SQL — two functions, two triggers, a CHECK — so this database looks
-# eligible and row-clean while carrying NONE of them. Blanket-resolving would record the correction
-# as installed forever without ever running it. The runner must instead leave 20270225 PENDING and
-# let the retried deploy execute it.
-note "Case 7 — pre-baseline (P3005) database created by db push"
+# P3005 and the runner would baseline. But `db push` reproduces only what schema.prisma MODELS: it
+# creates NONE of the raw-SQL guards — not just correction 3's, but the PREREQUISITES from
+# 20270210/20270215 (`WorkerAllocation_head_live` among them, the guard that refuses an allocation
+# against a CANCELLED requirement under the root lock). Those migrations CREATE TABLE, so they cannot
+# be left pending to re-run the way correction 3 can, and resolving them as applied records guards
+# that do not exist — correction 3 CREATE OR REPLACEs head_live's FUNCTION but never creates the
+# TRIGGER, so nothing downstream would ever notice. An earlier round left only 20270225 pending here
+# and exited 0, which was exactly that hole (the round-3g review's finding K). The runner now REFUSES
+# to baseline this shape: which schema it actually is becomes a human judgement.
+note "Case 7 — pre-baseline (P3005) database created by db push is REFUSED"
 DB=pmcvitan_t3cpr_dbpush
 kill_conns "$DB"; $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB;" >/dev/null; $PSQL_ADMIN -c "CREATE DATABASE $DB;" >/dev/null
 DATABASE_URL="$URL_BASE/$DB?schema=public" pnpm exec prisma db push --skip-generate --accept-data-loss >/tmp/t3cpr-dbpush.log 2>&1 \
   || { echo "db push failed"; tail -20 /tmp/t3cpr-dbpush.log; bad "could not build the pre-baseline fixture"; }
 
-# The premise, stated as an assertion rather than assumed: the tables are there, the seals are not.
+# The premise, stated as an assertion rather than assumed: the tables are there, the guards are not.
 [ "$(q "$DB" "SELECT to_regclass('\"LabourAttendance\"') IS NOT NULL")" = "t" ] \
   && ok "db push created the §C tables (so the preflight considers this database eligible)" \
   || bad "db push did not create LabourAttendance"
-[ "$(q "$DB" "SELECT count(*) FROM pg_trigger WHERE tgname='WorkerAllocation_00_project_lock'")" = "0" ] \
-  && ok "db push did NOT create the raw-SQL correction seals (the exact hazard)" \
-  || bad "db push unexpectedly created the correction-3 triggers"
+[ "$(q "$DB" "SELECT count(*) FROM pg_trigger WHERE tgname IN ('WorkerAllocation_00_project_lock','WorkerAllocation_head_live')")" = "0" ] \
+  && ok "db push created NEITHER the correction-3 seals NOR the prerequisite guards (the exact hazard)" \
+  || bad "db push unexpectedly created raw-SQL triggers"
 [ "$(q "$DB" "SELECT count(*) FROM \"_prisma_migrations\"" 2>/dev/null)" = "" ] \
   && ok "no _prisma_migrations ledger — migrate deploy will answer P3005" \
   || bad "the db-push fixture already has a migration ledger"
 
 run_migrate_sh "$DB"
-[ "$RUN_RC" = "0" ] && ok "migrate.sh completed on the pre-baseline database" || { bad "migrate.sh failed on the pre-baseline database"; echo "$RUN_OUT" | tail -20; }
+[ "$RUN_RC" != "0" ] && ok "migrate.sh REFUSED to baseline the db-push database" || { bad "migrate.sh baselined a db-push database whose prerequisite guards do not exist"; echo "$RUN_OUT" | tail -20; }
 echo "$RUN_OUT" | grep -q "P3005" && ok "the P3005 baseline branch was taken" || bad "the P3005 branch was not taken"
+echo "$RUN_OUT" | grep -q "prerequisite-seals-missing" && ok "the refusal NAMES the prerequisite-seals state" || bad "the refusal did not name prerequisite-seals-missing"
+echo "$RUN_OUT" | grep -q "Refusing to baseline" && ok "the runner refused rather than resolving migrations that never ran" || bad "no explicit refusal in the output"
+[ "$(q "$DB" "SELECT count(*) FROM \"_prisma_migrations\"" 2>/dev/null)" = "" ] \
+  && ok "NOTHING was resolved as applied — the ledger is still absent" \
+  || bad "the runner recorded migrations as applied before refusing"
+
+# ── Case 7b — prerequisites PRESENT, correction 3 absent: pending, executed, verified ─────────────
+# The legitimate shape the leave-pending path exists for: a database that really ran the deployed
+# migrations (the prerequisite guards are installed) but was dumped/restored WITHOUT correction 3's
+# objects and without its ledger. Installing the prerequisite raw SQL by hand turns the db-push
+# fixture into exactly that. `t3c seals` answers 3 (correction seals missing, prerequisites fine),
+# the runner leaves ONLY 20270225 pending, the retried deploy executes it, and the post-deploy check
+# proves the objects exist and enforce.
+note "Case 7b — prerequisites present, correction 3 absent: left pending and really executed"
+# The Task-3 migrations reference ONE function a `db push` database lacks: phase3_immutable_row(),
+# defined by the deployed 20261230000000_phase3_t5_stock_flows migration (`db push` reproduces no
+# functions). Install that definition VERBATIM from the deployed file — nothing hand-written — so
+# the replay of 20270210/20270215 really installs every prerequisite guard.
+sed -n '/^CREATE OR REPLACE FUNCTION phase3_immutable_row/,/^\$\$ LANGUAGE plpgsql;/p' \
+  prisma/migrations/20261230000000_phase3_t5_stock_flows/migration.sql \
+  | psql -X -q -d "$DB" >/tmp/t3cpr-prereq0.log 2>&1 || true
+psql -X -q -d "$DB" -f prisma/migrations/20270210000000_phase4_t3_time_capacity/migration.sql >/tmp/t3cpr-prereq1.log 2>&1 || true
+psql -X -q -d "$DB" -f prisma/migrations/20270215000000_phase4_t3_correction/migration.sql >/tmp/t3cpr-prereq2.log 2>&1 || true
+# The fixture must hold EVERY prerequisite guard the runner's seals check requires. (Asserting a
+# single trigger once let an incomplete replay — the missing function above — masquerade as the
+# legitimate shape, and every later assertion failed against a fixture that was never built.)
+PREREQ_TRIGGERS="LabourAttendance_append_only WorkerAllocation_frozen LabourWorkFact_append_only ApprovedSkillSubstitution_append_only LabourWorkFact_matches_allocation WorkerAllocation_worker_active LabourAttendance_device_bound WorkerAllocation_within_commitment WorkerAllocation_head_live"
+MISSING_PREREQ=""
+for trg in $PREREQ_TRIGGERS; do
+  [ "$(q "$DB" "SELECT count(*) FROM pg_trigger WHERE tgname='$trg' AND tgenabled='O'")" = "1" ] || MISSING_PREREQ="$MISSING_PREREQ $trg"
+done
+[ -z "$MISSING_PREREQ" ] \
+  && ok "ALL nine prerequisite guards installed by replaying the deployed migrations' raw SQL" \
+  || { echo "prereq install failed — missing:$MISSING_PREREQ"; tail -5 /tmp/t3cpr-prereq0.log /tmp/t3cpr-prereq1.log /tmp/t3cpr-prereq2.log; bad "could not build the prerequisites-present fixture"; }
+[ "$(q "$DB" "SELECT count(*) FROM pg_trigger WHERE tgname='WorkerAllocation_00_project_lock'")" = "0" ] \
+  && ok "correction 3's own seals are still absent (only they may be left pending)" \
+  || bad "correction-3 seals unexpectedly present"
+
+run_migrate_sh "$DB"
+[ "$RUN_RC" = "0" ] && ok "migrate.sh completed on the prerequisites-present database" || { bad "migrate.sh failed on the prerequisites-present database"; echo "$RUN_OUT" | tail -20; }
 echo "$RUN_OUT" | grep -q "seals MISSING" && ok "the runner NOTICED the correction-3 seals were missing" || bad "the runner did not check the correction-3 seals"
 echo "$RUN_OUT" | grep -q "skipping resolve --applied for $CORR3" \
   && ok "20270225 was left PENDING instead of being resolved as applied" \

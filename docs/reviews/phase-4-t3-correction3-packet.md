@@ -280,6 +280,71 @@ a table-wide `pg_locks` scan.
 
 ## Review stop
 
+## Round 3g — the current-head Codex review of `170bcd6` (13 findings)
+
+Eleven findings on the merge head `170bcd6`, most sharing one shape: an object was accepted on the
+strength of its NAME (at best plus its bound function) while what it actually DECIDES — which events
+it fires on, which rows its expression rejects — went unasked. Each was reproduced RED at `170bcd6`
+before the fix; probes `R7-A…R7-M` in `phase4-t3-correction3.test.ts` (12 RED at the base runtime,
+`R7-G2` deliberately green there as the unchanged-behaviour complement) plus two RED analyzer
+fixtures in `boundary.test.ts`.
+
+| # | finding (P) | fix |
+|---|---|---|
+| A | `correctionSeals()` never checked `tgtype` — an enabled, correctly-bound trigger declared `BEFORE UPDATE` passed, and on P3005 the baseline recorded correction 3 applied over an unprotected table (P1) | one shared seal specification (`T3C_TGTYPE`, `T3C_CORRECTION3_TRIGGER_SEALS`, `T3C_TRIGGER_SEAL_SQL` in `t3c-diagnostics.ts`): name + enabled + function + required/forbidden event bits, used by the verifier AND mirrored in the migration's guards and POST-CONDITIONS (`R7-A`, `R7-A2`) |
+| B | the migration's evidence-trigger guards checked function+enabled but not EVENTS — an UPDATE-only `T3CRepairAction_append_only` passed while DELETE erased before-images; no evidence postcondition existed (P1) | the same event-bit test in every migration guard (append-only ROW+BEFORE+UPDATE+DELETE, no-truncate BEFORE+TRUNCATE and NOT row-level, repair-path ROW+BEFORE+INSERT) + a NEW conditional evidence POST-CONDITIONS block (`R7-F`) |
+| C | `t3c seals` returned exit 0 with `ok: true` when the §C schema was ABSENT; `migrate.sh` read that as "seals present", baselined every migration, re-checked, got the same false success and exited 0 — Prisma's ledger claiming a schema the app does not have (P1) | "not applicable" is exit 4 / `prerequisite-schema-absent`, never a success; `migrate.sh` fails closed on it, refusing to baseline (`R7-C` runs the real CLI against a scratch pre-Task-3 database) |
+| D | the marker CHECK was accepted by SUBSTRING — `CHECK ("manualReason" LIKE '<prefix>%' OR "revokedAt" IS NULL)` contains both tokens, is validated, and permits every live marked row (P1) | the constraint's own `pg_get_expr` expression is EVALUATED over a four-row truth table (`T3C_MARKER_CHECK_PROBES`; `COALESCE(expr,true)` models CHECK semantics; an erroring decoy is fail-closed "not sealed") in both `correctionSeals()` and the migration guard (`R7-D` plants the reviewer's decoy and `CHECK (TRUE)`) |
+| E | `T3CRepairAction` accepted arbitrary inserts — a direct writer could compose a correctly-shaped action naming a chosen repair id plus a pre-revoked marker citing it, and both preflight and migration accepted the pair; shape was all they could ask (P1) | `T3CRepairAction_repair_path_only` (BEFORE INSERT): `NEW."repairId"` must be non-blank AND equal the transaction-local GUC `phase4.t3c_repair_id`, which only `repair()` sets — every ordinary path is refused at insert time. Stated honestly in code and migration: an actor with direct DB access can impersonate the protocol; what the seal buys is that shaping a row is no longer enough, and legacy rows remain quarantinable (`R7-E`) |
+| F | the baseline expected-object list stopped after the two primary triggers + marker CHECK — a restored database with a disabled/UPDATE-only evidence trigger answered "sealed" and correction 3 was resolved as applied with before-images freely erasable (P1) | `correctionSeals()` conditionally verifies the evidence seals (all three triggers by full seal + the attribution CHECK by truth table) whenever `T3CRepairAction` exists (`R7-F`) |
+| G | quarantining a pre-revoked marker kept `revokedAt` (COALESCE) while overwriting `revokedById`/`revokeReason` — committing "B revoked this at T1 for reason Q", a triple that never happened, over the attribution consumers read (P1) | a pre-revoked row keeps ALL THREE fields verbatim (the plan must name the revoker actually on the row — same rule as the retirement op); the operator's words go to the append-only evidence `detail.quarantineNote`; a live row takes the complete self-consistent triple (`R7-G`, `R7-G2`) |
+| H | the attribution constraint was accepted by NAME — a same-named `CHECK (TRUE)` or operator-only CHECK passed the migration guard and the seal report, and whitespace attribution admitted through that hole is permanent on an append-only table (P2) | the same truth-table evaluation (`T3C_ATTRIBUTION_CHECK_PROBES`, full ASCII trim set) in `correctionSeals()` (validated NOT required — the NOT VALID legacy form is the intended state) and in the migration + `EVIDENCE_SEAL_SQL` guards (`R7-H`) |
+| I | the repair verified only name+enabled for the `20270210`/`20270215` triggers (function+events only for its own evidence seals) — an enabled same-named no-op `LabourAttendance_append_only` was disabled, restored, and the repair COMMITTED, leaving the repaired row editable while its marker claimed preservation (P1) | `T3C_PREREQUISITE_TRIGGER_SEALS` pins all nine prerequisite triggers' functions + events from the deployed migrations' own definitions; `assertTriggersEnabled` verifies the FULL seal for every trigger before commit (`R7-I`: no-op decoy and UPDATE-only variant both abort with the row untouched; the real seals commit) |
+| J | the boundary analyzer's raw-SQL walker followed initializers and `for…of` sources but not IMPORT aliases — moving a detected `SELECT … FROM "Decision"` into a shared constant produced zero findings (P2) | alias symbols are resolved through `checker.getAliasedSymbol` before walking declarations; two new fixtures (named import + renamed import, both RED at `170bcd6`) pin it (`boundary.test.ts`, 41/41) |
+| K | on the documented P3005 db-push path the runner resolved `20270210`/`20270215` as applied though their raw-SQL triggers do not exist — correction 3 `CREATE OR REPLACE`s `phase4_t3c_allocation_head_live`'s FUNCTION but never creates the TRIGGER, and the final seals check did not require it, so the runner exited 0 with allocations able to cite a cancelled requirement unchecked (P1) | the prerequisite seals join the baseline answer as their own state: `prerequisitesMissing` in `correctionSeals()`, exit 5 / `prerequisite-seals-missing` from the CLI, and `migrate.sh` REFUSES to baseline (those migrations `CREATE TABLE` and cannot be left pending; recording them applied is a lie a runner may not tell) (`R7-K`) |
+| L | the repair accepted any `revokedById` that existed ANYWHERE — the global FK was the only test, so project A's revocation could be permanently attributed to project B's user (P1) | `assertRevokerEntitled`: an ACTIVE membership on the row's project, or owner/admin of its org (exactly `ProjectAccessService.authorize`'s rule, via the non-read-encapsulated `Membership`/`Project`/`OrgMembership` — the same in-tx validation `activities.service.ts` uses for `responsibleId`). Asserted ONLY where the revocation is being WRITTEN: the preserved path merely names the row's existing revoker, so a revoker who has since left the project does not strand the row (`R7-L`; `1c`/`R6`/`R5-D` re-pinned) |
+| M | the before-image predicate required `recordedAt` by PRESENCE only and never required `revokedAt`/`revokedById`/`revokeReason` — evidence with a fabricated timestamp and no revocation history authenticated a pre-revoked marker (P1) | `t3cRenderTs` renders `timestamptz` canonically (explicit UTC `to_char`) on BOTH sides so the comparison is pure text — total, session-independent, cannot raise on attacker-supplied strings; `captureBefore` switches to `to_jsonb` + canonical overrides; the predicate requires the full 13-key image, `recordedAt` by VALUE, and a recorded revocation to still be EXACTLY the one on the row (recording none = the row was live; the repair's own revocation is attributed in `detail`) — mirrored verbatim in the migration (`R7-M`, `R5-C` re-homed onto `completeBeforeImage`) |
+
+**Deliberate behaviour changes to earlier probes**, each re-pinned rather than silently adapted:
+`1c`/`R6` now expect the standing refusal (which fires before the FK and subsumes "names no User");
+`R1`/`R4-D`/`R6-A` quarantine plans name the revoker actually on the row (finding G's coherence
+rule); `R1` asserts the whole preserved triple; `R5-C`'s honest evidence is built by the new
+server-side `completeBeforeImage` (canonical timestamps + the revocation triple — client
+`toISOString()` cannot render PostgreSQL's microseconds); `R7-M`'s two quarantines ride ONE repair
+because the engine commits only when its in-transaction re-diagnose reads clean.
+
+Two further current-head findings arrived during the round and are part of it:
+
+| # | finding (P) | fix |
+|---|---|---|
+| N | `DROP TABLE "T3CRepairAction"` fired NO trigger — not the append-only pair, not the TRUNCATE seal — so one DDL statement erased every before-image while the markers claimed preservation (P1) | the `phase4_t3c_evidence_drop_guard` EVENT trigger (on `sql_drop`) refuses any drop of the evidence table, incl. CASCADE; created by the repair AND re-asserted by the migration (both abort if they cannot — superuser is required and the deploy role is one), verified in `correctionSeals()` and the migration POST-CONDITIONS; removing it is a separate, loud DDL act after which `t3c seals` reports NOT sealed (`R7-N`; the suite's own teardown now performs exactly that deliberate removal) |
+| O | the preflight exposed only 20 sample ids per finding while the repair is all-or-nothing — on a database with more rows the supported recovery repaired the visible 20, rolled back over the undisclosed rest, and showed the same 20 forever (P1) | `runT3CPlanRows` (unbounded, ids + exit only) + `T3CRepairService.planSkeleton` + the `t3c plan` CLI subcommand export ONE complete plan skeleton naming every finding row (with the untouchable genuine-live rows in `manual`); the report's samples stay bounded on purpose (`R7-O`: 25 blanks → sample 20, plan 25, one committed repair clears all) |
+
+Honest notes: the repair-path seal (E) is enforcement against every ordinary write path, not against
+an actor who owns the database — that actor can read the source and set the GUC, and one who can
+disable triggers needs less; rows written before the seal existed stay indistinguishable, which is
+what the quarantine exit is for. The R6 boundary position is REVISED, not reopened: `User` is still
+never read; standing is validated against `Membership`/`Project`/`OrgMembership`, which are
+orgs-owned but not read-encapsulated — the boundary rule the analyzer actually enforces and the
+pattern every module already uses for in-tx membership validation.
+
+**Gates (round 3g):** reproduce-first — 12 of the 13 `R7-*` probes and both boundary fixtures RED
+at `170bcd6` runtime (`R7-G2` is deliberately green: it pins the unchanged-behaviour complement of
+G), all GREEN after; the focused `phase4-t3-correction3.test.ts` **48/48**; `boundary.test.ts`
+41/41. `pnpm check` EXIT 0 (web 432/432, API **669/669**, `check:automation` included). Full
+integration suite on a pristine migrated DB: **69 files / 638 tests**, EXIT 0. `upgrade-proof.sh`
+PASSED (re-run after N/O). `t3c seals` on the migrated DB → `sealed`, exit 0.
+`phase4-t3-correction3-production-runner-proof.sh` PASSED — **65 assertions**, including the
+rewritten Case 7 (db-push refusal: `prerequisite-seals-missing`, nothing resolved) and the NEW Case
+7b (prerequisites present → `20270225` left pending, really executed, verified enforcing, repeat
+run a no-op). Two proof-script fixture re-pins were needed for the round's deliberate behaviour
+changes — the Case 7b fixture installs `phase3_immutable_row` VERBATIM from the deployed
+`20261230000000` migration before replaying (a db-push database has no functions) and asserts ALL
+nine prerequisite guards rather than one, and the Case 4/5 fixture grants the plan's revoker an
+active membership and expects the standing refusal (finding L) — script-side pins only, zero
+runtime change. `test:e2e:api` (allmodules) and `test:e2e:api:outbox`: **25 passed / 6
+sender-mode-skipped, EXIT 0 each, clean on the FIRST run** (no documented-flake retries needed).
+
 The PR is held as a **draft**. Per the directive it stays draft through every correction round and is
 marked ready only after Codex reviews the current head with no blocking finding. On merge,
 `docs/STATUS.md` moves Task 3 to `merged`; only then may the runner start Task 4. **Task 4 remains

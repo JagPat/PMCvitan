@@ -474,7 +474,20 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
         !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) &&
         !(ts.isPropertyAssignment(n.parent) && n.parent.name === n)
       ) {
-        for (const decl of checker.getSymbolAtLocation(n)?.declarations ?? []) {
+        // An IMPORTED name resolves to an alias symbol whose only declaration is the
+        // `ImportSpecifier` — which has no initializer and no `for…of` source, so walking it
+        // gathered nothing and a foreign read moved into a shared SQL constant slipped straight
+        // through the boundary. Resolve the alias to the symbol it stands for first, so the module
+        // that USES the query is held to the same rule as the module that spells it inline.
+        let symbol = checker.getSymbolAtLocation(n);
+        if (symbol && symbol.flags & ts.SymbolFlags.Alias) {
+          try {
+            symbol = checker.getAliasedSymbol(symbol);
+          } catch {
+            // an unresolvable alias (a missing module) tells us nothing; leave the original symbol
+          }
+        }
+        for (const decl of symbol?.declarations ?? []) {
           const init =
             (ts.isVariableDeclaration(decl) || ts.isPropertyDeclaration(decl) ? decl.initializer : undefined) ??
             (ts.isPropertyAssignment(decl) ? decl.initializer : undefined) ??

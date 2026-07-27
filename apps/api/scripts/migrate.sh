@@ -107,12 +107,47 @@ if echo "$out" | grep -q "P3005"; then
   T3C_CORRECTION="20270225000000_phase4_t3_correction3"
   SKIP_T3C_CORRECTION=0
   if [ -f "$T3C_PREFLIGHT" ]; then
-    if node "$T3C_PREFLIGHT" seals; then
-      echo "[migrate] T3C correction-3 seals present — resolving $T3C_CORRECTION as applied with the rest"
-    else
-      echo "[migrate] T3C correction-3 seals MISSING on this pre-baseline database — leaving $T3C_CORRECTION pending so it really applies"
-      SKIP_T3C_CORRECTION=1
-    fi
+    node "$T3C_PREFLIGHT" seals
+    seals_code=$?
+    case $seals_code in
+      0)
+        echo "[migrate] T3C correction-3 seals present — resolving $T3C_CORRECTION as applied with the rest"
+        ;;
+      3)
+        echo "[migrate] T3C correction-3 seals MISSING on this pre-baseline database — leaving $T3C_CORRECTION pending so it really applies"
+        SKIP_T3C_CORRECTION=1
+        ;;
+      5)
+        # The §C TABLES are here but the §C GUARDS from 20270210000000 / 20270215000000 are not —
+        # the `prisma db push` signature. Those migrations CREATE TABLE, so they cannot be left
+        # pending to re-run the way correction 3 can, and resolving them as applied would record
+        # triggers that do not exist: `WorkerAllocation_head_live` among them, the guard that refuses
+        # an allocation against a CANCELLED requirement under the root lock. Correction 3 replaces
+        # that trigger's FUNCTION but never creates the TRIGGER, so nothing downstream would notice.
+        # Reconciling a db-push database is a judgement about which objects are really missing, so
+        # this fails closed. See docs/RUNBOOK.md §P4T3C3.
+        echo "[migrate] ERROR: pre-baseline database has the §C tables but NOT the §C guards (t3c seals: prerequisite-seals-missing)."
+        echo "[migrate] Migrations 20270210000000 / 20270215000000 create those triggers in raw SQL, which \`prisma db push\` does not reproduce."
+        echo "[migrate] Baselining them as applied would record guards that do not exist. Refusing to baseline. See docs/RUNBOOK.md §P4T3C3."
+        exit 1
+        ;;
+      4)
+        # The §C attendance schema is not here at all. A pre-baseline database is one whose SCHEMA
+        # already exists without a migration ledger; if that schema predates Task 3, resolving every
+        # migration as applied would record dozens of migrations that never ran and leave Prisma's
+        # ledger describing tables the application does not have. There is no safe automatic answer
+        # — the correct baseline point is a judgement about which schema this actually is — so this
+        # fails closed rather than guessing. See docs/RUNBOOK.md §P4T3C3.
+        echo "[migrate] ERROR: pre-baseline database has NO §C attendance schema (t3c seals: prerequisite-schema-absent)."
+        echo "[migrate] This database predates Phase 4 Task 3, so baselining every migration as applied would record"
+        echo "[migrate] migrations that never ran. Refusing to baseline. See docs/RUNBOOK.md §P4T3C3."
+        exit 1
+        ;;
+      *)
+        echo "[migrate] ERROR: t3c seals exited $seals_code (unexpected) — refusing to baseline."
+        exit 1
+        ;;
+    esac
   else
     echo "[migrate] ERROR: compiled T3C preflight ($T3C_PREFLIGHT) is missing — cannot verify correction-3 seals; refusing to baseline."
     exit 1
@@ -130,9 +165,11 @@ if echo "$out" | grep -q "P3005"; then
   npx prisma migrate deploy || exit 1
 
   # Fail closed if the seals STILL are not there: Prisma now considers every migration applied, so a
-  # missing object at this point would go unnoticed forever.
+  # missing object at this point would go unnoticed forever. Exit 4 ("no §C schema") is a failure
+  # HERE too and not a pass — after a successful deploy those tables must exist, so their absence
+  # means the deploy did not do what the ledger now claims it did.
   if ! node "$T3C_PREFLIGHT" seals; then
-    echo "[migrate] ERROR: T3C correction-3 seals are still missing after baseline + deploy — refusing to start."
+    echo "[migrate] ERROR: T3C correction-3 seals are not installed and enforcing after baseline + deploy — refusing to start."
     exit 1
   fi
   exit 0

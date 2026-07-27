@@ -60,6 +60,25 @@ export const T3C_BLANK_TRIM_SET = String.raw`E' \t\n\x0B\f\r'`;
  */
 export const T3C_MARKER_REPAIR_ID_REGEX = String.raw`repair=([0-9a-fA-F-]{36})`;
 
+/**
+ * The ONE canonical rendering of a `timestamptz` for before-image comparison — explicit UTC, fixed
+ * format, so the comparison is pure TEXT on both sides.
+ *
+ * This exists because the obvious alternatives both fail. Comparing PostgreSQL's own JSON rendering
+ * compares two session-dependent strings for the same instant. Casting the stored text back to
+ * `timestamptz` RAISES on anything malformed — and the stored text is attacker-supplied, so a cast
+ * turns a forged before-image into an opaque aborted deploy instead of a diagnosed finding, breaking
+ * the quarantine that uses this same predicate. Rendering both sides identically is total: it cannot
+ * raise, and it cannot be defeated by a timezone.
+ *
+ * NULL renders as NULL (never the string "null"), so `IS NOT DISTINCT FROM` compares an absent
+ * revocation correctly. Duplicated verbatim in `20270225000000`'s SQL — a migration must be
+ * auditable on sight without importing TypeScript.
+ */
+export function t3cRenderTs(expr: string): string {
+  return `to_char(${expr} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+}
+
 /** Build the reserved marker for one repair. The text states only what is KNOWN about the record. */
 export function t3cInvalidLegacyMarker(repairId: string, operator: string): string {
   return (
@@ -196,8 +215,21 @@ function markerPredicate(haveEvidence: boolean): string {
  * rejects the truncated before-image this rule exists to catch.
  */
 export function t3cGenuineEvidenceSql(alias: string): string {
-  /** Immutable per `phase4_t3_attendance_append_only`; `manualReason` is excluded (the repair rewrites it). */
-  const present = ['id', 'projectId', 'workerId', 'civilDate', 'shift', 'deviceId', 'evidenceMediaId', 'recordedAt', 'recordedById', 'sourceCommandId']
+  /**
+   * EVERY field the before-image claims to preserve must be THERE. `manualReason` is the only
+   * exclusion from value-equality (rewriting it is what the repair does), and its shape is checked
+   * per op below.
+   *
+   * The revocation triple is required as loudly as the immutable columns. Round 6 required only the
+   * immutable set, so an action carrying those, a fabricated `recordedAt` and NO revocation history
+   * authenticated a pre-revoked marker — and the marker's whole claim is that the original row,
+   * including whatever revocation it already carried, survives in the evidence. Evidence that
+   * preserves everything except the part under dispute preserves nothing.
+   */
+  const present = [
+    'id', 'projectId', 'workerId', 'civilDate', 'shift', 'deviceId', 'evidenceMediaId',
+    'recordedAt', 'recordedById', 'sourceCommandId', 'revokedAt', 'revokedById', 'revokeReason',
+  ]
     .map((k) => `jsonb_exists(r."beforeImage", '${k}')`)
     .join(' AND ');
   return `EXISTS (
@@ -217,6 +249,19 @@ export function t3cGenuineEvidenceSql(alias: string): string {
                AND r."beforeImage"->>'evidenceMediaId' IS NOT DISTINCT FROM ${alias}."evidenceMediaId"
                AND r."beforeImage"->>'recordedById'    = ${alias}."recordedById"
                AND r."beforeImage"->>'sourceCommandId' = ${alias}."sourceCommandId"
+               -- recordedAt by VALUE, not by presence. Both sides are rendered by the SAME
+               -- canonical UTC to_char, so the comparison is pure text: it cannot raise on a
+               -- forged string and cannot be defeated by a session timezone.
+               AND r."beforeImage"->>'recordedAt'      = ${t3cRenderTs(`${alias}."recordedAt"`)}
+               -- THE REVOCATION HISTORY IS PRESERVED, NEVER REWRITTEN. If the before-image records a
+               -- revocation, the row must still carry exactly that one — this is the invariant both
+               -- ops promise for an already-revoked row. If it records none, the row was live when
+               -- the repair found it and the repair's own revocation is what is on it now, which the
+               -- evidence detail attributes; there is nothing here to compare it against.
+               AND (r."beforeImage"->>'revokedAt' IS NULL
+                    OR (r."beforeImage"->>'revokedAt'    = ${t3cRenderTs(`${alias}."revokedAt"`)}
+                    AND r."beforeImage"->>'revokedById'  IS NOT DISTINCT FROM ${alias}."revokedById"
+                    AND r."beforeImage"->>'revokeReason' IS NOT DISTINCT FROM ${alias}."revokeReason"))
                AND (
                  (r."op" = 'f1-mark-invalid-legacy'
                    AND r."beforeImage"->>'manualReason' IS NOT NULL
@@ -263,6 +308,51 @@ function diagsFor(haveEvidence: boolean): Diag[] {
 
 /** All finding codes this correction diagnoses, for callers that want to enumerate them. */
 export const T3C_FINDING_CODES: string[] = diagsFor(true).map((d) => d.code);
+
+/**
+ * EVERY finding row, unbounded, classified by the same predicates the findings use — the input to
+ * `t3c plan`.
+ *
+ * The report's samples are bounded to {@link SAMPLE_LIMIT} deliberately (a diagnostic that prints a
+ * million rows is not a report), but the REPAIR is all-or-nothing: it commits only when its
+ * in-transaction re-diagnose reads clean. Bounded visibility plus an all-or-nothing repair was a
+ * trap on any database with more than {@link SAMPLE_LIMIT} rows in one finding — the operator could
+ * only name the visible twenty, the batch rolled back over the undisclosed rest, and the next
+ * preflight showed the same twenty forever. The supported recovery could never unblock the deploy.
+ *
+ * So the FULL row set is exported here — ids and the derived exit only, never whole rows, so even a
+ * large export stays proportionate — and the CLI turns it into a complete plan skeleton.
+ */
+export async function runT3CPlanRows(client: RawQueryClient): Promise<{
+  /** Every `F1.blank` row id — each becomes an `f1-mark-invalid-legacy` action. */
+  blanks: string[];
+  /** Every `F1.marker` row with `exit: quarantine` — each becomes an `f1-quarantine-forged-marker` action. */
+  quarantine: string[];
+  /** Every `F1.marker` row with `exit: revoke-through-the-application` — NOT repairable by the
+   *  engine; the operator revokes these through the API (see docs/RUNBOOK.md §P4T3C3). */
+  manual: string[];
+}> {
+  const evidence = await client.$queryRawUnsafe<Array<{ present: boolean }>>(
+    `SELECT to_regclass('"T3CRepairAction"') IS NOT NULL AS present`,
+  );
+  const haveEvidence = evidence[0]?.present === true;
+  const blanks = await client.$queryRawUnsafe<Array<{ id: string }>>(
+    `SELECT "id" FROM "LabourAttendance" WHERE ${BLANK_PREDICATE} ORDER BY "projectId", "civilDate", "id"`,
+  );
+  const markers = await client.$queryRawUnsafe<Array<{ id: string; exit: string }>>(
+    `SELECT a."id",
+            CASE WHEN ${haveEvidence ? t3cGenuineEvidenceSql('a') : 'FALSE'}
+                 THEN 'revoke-through-the-application'
+                 ELSE 'quarantine' END AS "exit"
+       FROM "LabourAttendance" a WHERE ${markerPredicate(haveEvidence)}
+      ORDER BY a."projectId", a."civilDate", a."id"`,
+  );
+  return {
+    blanks: blanks.map((r) => r.id),
+    quarantine: markers.filter((r) => r.exit === 'quarantine').map((r) => r.id),
+    manual: markers.filter((r) => r.exit === 'revoke-through-the-application').map((r) => r.id),
+  };
+}
 
 /**
  * Every table the diagnostics READ. The preflight checks these exist before running any diagnostic,
@@ -323,3 +413,322 @@ export function summarizeT3C(report: T3CDiagnosticsReport): string {
 
 /** The transaction client type the repair engine uses for the in-transaction re-diagnose. */
 export type T3CTxClient = Prisma.TransactionClient;
+
+// ══ SEAL SPECIFICATION ════════════════════════════════════════════════════════════════════════
+// What it MEANS for one of this correction's physical objects to be installed. `migrate.sh` decides
+// whether to execute `20270225000000` or resolve it as applied from this answer, so a predicate that
+// is satisfied by an object which does not actually enforce anything is not a weak test — it is a
+// permanent, silent hole: Prisma records the correction installed and it is never run again.
+
+/**
+ * `pg_trigger.tgtype` bits (`src/include/catalog/pg_trigger.h`). A trigger's NAME, its ENABLED flag
+ * and its bound FUNCTION together still say nothing about WHEN it fires: an enabled
+ * `LabourAttendance_reserved_marker` declared `BEFORE UPDATE` and bound to the correct function
+ * satisfies all three while every INSERT sails past it. The events are part of the seal.
+ */
+export const T3C_TGTYPE = {
+  ROW: 1,
+  BEFORE: 2,
+  INSERT: 4,
+  DELETE: 8,
+  UPDATE: 16,
+  TRUNCATE: 32,
+} as const;
+
+export interface T3CTriggerSeal {
+  name: string;
+  table: string;
+  /** The function that actually enforces the rule — a same-named trigger on anything else is a decoy. */
+  fn: string;
+  /** Every bit that MUST be set. Extra events are harmless; a missing one is the hole. */
+  requireBits: number;
+  /** Every bit that must NOT be set (a TRUNCATE trigger is STATEMENT-level, never `FOR EACH ROW`). */
+  forbidBits: number;
+  what: string;
+}
+
+const { ROW, BEFORE, INSERT, DELETE, UPDATE, TRUNCATE } = T3C_TGTYPE;
+
+/** The two triggers `20270225000000` itself installs, on tables that always exist by then. */
+export const T3C_CORRECTION3_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
+  {
+    name: 'LabourAttendance_reserved_marker',
+    table: 'LabourAttendance',
+    fn: 'phase4_t3c3_attendance_reserved_marker',
+    requireBits: ROW | BEFORE | INSERT,
+    forbidBits: 0,
+    what: 'the reserved invalid-legacy marker is unwritable by an ordinary INSERT',
+  },
+  {
+    name: 'WorkerAllocation_00_project_lock',
+    table: 'WorkerAllocation',
+    fn: 'phase4_t3c3_allocation_project_lock',
+    requireBits: ROW | BEFORE | INSERT,
+    forbidBits: 0,
+    what: 'a raw allocation batch takes the project readiness lock before any row lock',
+  },
+];
+
+/**
+ * The §C triggers `20270210000000` and `20270215000000` install — the PREREQUISITES this correction
+ * builds on. Every one is raw SQL, so `prisma db push` (which reproduces only what `schema.prisma`
+ * models) creates none of them while creating all the tables.
+ *
+ * That combination is exactly the P3005 shape, and it is why these belong in the baseline answer.
+ * Resolving those migrations as applied over a `db push` database records them installed forever
+ * while `WorkerAllocation_head_live` — the guard that refuses an allocation against a CANCELLED
+ * requirement, under the root lock — simply does not exist. Correction 3 `CREATE OR REPLACE`s that
+ * trigger's FUNCTION (to add the project lock) but never creates the TRIGGER, so nothing downstream
+ * would ever notice. Unlike correction 3, these migrations are NOT re-runnable over a populated
+ * schema (they `CREATE TABLE`), so the answer when they are missing is to refuse to baseline, not to
+ * leave them pending.
+ *
+ * They are also what {@link T3CRepairService.repair} verifies before committing: the repair disables
+ * `LabourAttendance_append_only` and puts it back, and "put it back" has to mean the trigger that
+ * actually freezes the row, not merely something wearing its name.
+ */
+export const T3C_PREREQUISITE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
+  {
+    name: 'LabourAttendance_append_only',
+    table: 'LabourAttendance',
+    fn: 'phase4_t3_attendance_append_only',
+    requireBits: ROW | BEFORE | UPDATE | DELETE,
+    forbidBits: 0,
+    what: 'a recorded muster is never edited or deleted',
+  },
+  {
+    name: 'WorkerAllocation_frozen',
+    table: 'WorkerAllocation',
+    fn: 'phase4_t3_allocation_frozen',
+    requireBits: ROW | BEFORE | UPDATE | DELETE,
+    forbidBits: 0,
+    what: 'an allocation is a frozen identity',
+  },
+  {
+    name: 'LabourWorkFact_append_only',
+    table: 'LabourWorkFact',
+    fn: 'phase3_immutable_row',
+    requireBits: ROW | BEFORE | UPDATE | DELETE,
+    forbidBits: 0,
+    what: 'a recorded work fact is immutable',
+  },
+  {
+    name: 'ApprovedSkillSubstitution_append_only',
+    table: 'ApprovedSkillSubstitution',
+    fn: 'phase4_t3_skill_substitution_append_only',
+    requireBits: ROW | BEFORE | UPDATE | DELETE,
+    forbidBits: 0,
+    what: 'a skill substitution is revoked by stamp, never rewritten',
+  },
+  {
+    name: 'LabourWorkFact_matches_allocation',
+    table: 'LabourWorkFact',
+    fn: 'phase4_t3_work_matches_allocation',
+    requireBits: ROW | BEFORE | INSERT,
+    forbidBits: 0,
+    what: 'effort is recorded only against a real allocation',
+  },
+  {
+    name: 'WorkerAllocation_worker_active',
+    table: 'WorkerAllocation',
+    fn: 'phase4_t3_allocation_worker_active',
+    requireBits: ROW | BEFORE | INSERT,
+    forbidBits: 0,
+    what: 'only an active worker can be allocated',
+  },
+  {
+    name: 'LabourAttendance_device_bound',
+    table: 'LabourAttendance',
+    fn: 'phase4_t3_attendance_device_bound',
+    requireBits: ROW | BEFORE | INSERT,
+    forbidBits: 0,
+    what: 'a cited device is bound to that same worker',
+  },
+  {
+    name: 'WorkerAllocation_within_commitment',
+    table: 'WorkerAllocation',
+    fn: 'phase4_t3_allocation_within_commitment',
+    requireBits: ROW | BEFORE | INSERT,
+    forbidBits: 0,
+    what: '§F bound 3 — allocated never exceeds committed, under the commitment row lock',
+  },
+  {
+    name: 'WorkerAllocation_head_live',
+    table: 'WorkerAllocation',
+    fn: 'phase4_t3c_allocation_head_live',
+    requireBits: ROW | BEFORE | INSERT,
+    forbidBits: 0,
+    what: 'dead demand cannot be allocated against, under the requirement-root lock',
+  },
+];
+
+/**
+ * The evidence table's seals. `T3CRepairAction` is created by the REPAIR, never by a migration, so
+ * these are CONDITIONAL: on a database where no repair has ever run there is nothing to seal, and on
+ * one where a repair ran before these seals existed they are installed at deploy time.
+ *
+ * They belong in the baseline answer all the same. A pre-baseline (P3005) database that carries
+ * `T3CRepairAction` with a disabled — or UPDATE-only, or decoy-bound — append-only trigger would
+ * otherwise be resolved as "correction 3 applied" while the before-images every marked attendance
+ * row points at stay freely updateable, deletable or truncatable. The trusted record would be the
+ * one thing in this correction nobody had checked.
+ */
+export const T3C_EVIDENCE_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
+  {
+    name: 'T3CRepairAction_append_only',
+    table: 'T3CRepairAction',
+    fn: 'phase4_t3c_repair_action_append_only',
+    requireBits: ROW | BEFORE | UPDATE | DELETE,
+    forbidBits: 0,
+    what: 'repair evidence is never updated or deleted',
+  },
+  {
+    name: 'T3CRepairAction_no_truncate',
+    table: 'T3CRepairAction',
+    fn: 'phase4_t3c_repair_action_no_truncate',
+    requireBits: BEFORE | TRUNCATE,
+    forbidBits: ROW,
+    what: 'repair evidence is never truncated',
+  },
+  {
+    name: 'T3CRepairAction_repair_path_only',
+    table: 'T3CRepairAction',
+    fn: 'phase4_t3c_repair_action_path',
+    requireBits: ROW | BEFORE | INSERT,
+    forbidBits: 0,
+    what: 'repair evidence can only be written by the controlled repair path',
+  },
+];
+
+/**
+ * Is one trigger seal really installed? Parameters: `$1` name, `$2` quoted relation, `$3` function,
+ * `$4` required bits, `$5` forbidden bits. Returns a single `{ n }` — `1` when sealed.
+ */
+export const T3C_TRIGGER_SEAL_SQL = `SELECT count(*)::int AS n FROM pg_trigger t
+   WHERE t.tgname = $1
+     AND NOT t.tgisinternal
+     AND t.tgrelid = to_regclass($2)
+     AND t.tgenabled = 'O'
+     AND t.tgfoid::regproc::text = $3
+     AND (t.tgtype & $4::int) = $4::int
+     AND (t.tgtype & $5::int) = 0`;
+
+/**
+ * The transaction-local GUC the repair sets to its own repair id. The
+ * `T3CRepairAction_repair_path_only` trigger requires `NEW."repairId"` to equal it, so evidence
+ * cannot be written by an ordinary INSERT — a maintenance script, an ORM, a psql session, a restore
+ * tool or a forger shaping a row to look like a repair.
+ *
+ * STATED HONESTLY, because the alternative is a security claim this cannot back: an actor with
+ * direct write access to this database can read this source, call `set_config` and insert whatever
+ * they like — and an actor who can disable triggers needs even less. Nothing enforced INSIDE a
+ * database is unforgeable to someone who owns it. What this buys is that shaping a row correctly is
+ * no longer enough: writing evidence now requires deliberately impersonating the repair protocol,
+ * every ordinary path is refused, and the diagnostic stops accepting mere correspondence from any
+ * writer who never went through it.
+ *
+ * RESIDUAL, equally plainly: rows written BEFORE this seal existed cannot be distinguished from
+ * genuine ones by the database, because nothing recorded how they arrived. That is exactly what the
+ * `f1-quarantine-forged-marker` exit is for, and why the `F1.marker` sample carries its `exit`
+ * column — an operator who determines a legacy marker is not backed by a real repair quarantines it.
+ */
+export const T3C_REPAIR_GUC = 'phase4.t3c_repair_id';
+
+/**
+ * The marker CHECK's TRUTH TABLE — what `LabourAttendance_marker_is_revoked` must actually DECIDE.
+ *
+ * Accepting the constraint because its definition text mentions the prefix and `revokedAt` tests
+ * spelling, not meaning: `CHECK ("manualReason" LIKE '[invalid-legacy:blank-manual-reason]%' OR
+ * "revokedAt" IS NULL)` contains both tokens, is a validated check constraint, and permits every
+ * live marked row — the precise state the seal exists to forbid. So the constraint's own expression
+ * is EVALUATED over these four rows instead, which is a claim about behaviour rather than syntax.
+ */
+export const T3C_MARKER_CHECK_PROBES: ReadonlyArray<{
+  manualReason: string | null;
+  revoked: boolean;
+  /** `false` ⇒ the CHECK must REJECT this row. */
+  mustPass: boolean;
+  what: string;
+}> = [
+  {
+    manualReason: `${T3C_INVALID_LEGACY_PREFIX} repair=00000000-0000-0000-0000-000000000000`,
+    revoked: false,
+    mustPass: false,
+    what: 'a LIVE row wearing the reserved marker is the forgery this CHECK exists to forbid',
+  },
+  {
+    manualReason: `${T3C_INVALID_LEGACY_PREFIX} repair=00000000-0000-0000-0000-000000000000`,
+    revoked: true,
+    mustPass: true,
+    what: 'a revoked marked row is exactly what the sanctioned repair leaves behind',
+  },
+  {
+    manualReason: null,
+    revoked: false,
+    mustPass: true,
+    what: 'a device-evidenced muster carries no manual reason and is untouched',
+  },
+  {
+    manualReason: 'dead battery on the site tablet — muster taken on paper',
+    revoked: false,
+    mustPass: true,
+    what: 'a genuine pmc-authored manual exception is untouched',
+  },
+];
+
+/**
+ * The attribution CHECK's TRUTH TABLE — what `T3CRepairAction_attribution_non_blank` must DECIDE.
+ *
+ * Same reasoning as {@link T3C_MARKER_CHECK_PROBES}, and the same hole if skipped: a same-named
+ * `CHECK (TRUE)`, or one covering only `operator`, is a validated check constraint that the
+ * create-if-absent guards would accept, and whitespace-only attribution would then be storable
+ * FOREVER — permanently, because the table is append-only. Evaluating the expression is the only
+ * test that distinguishes those from the real rule.
+ *
+ * The whitespace probes use the repository's complete ASCII trim set (space, tab, newline, vertical
+ * tab, form feed, carriage return), so a constraint trimming only `' '` is caught too.
+ */
+export const T3C_ATTRIBUTION_CHECK_PROBES: ReadonlyArray<{
+  operator: string;
+  reason: string;
+  mustPass: boolean;
+  what: string;
+}> = [
+  { operator: 'ops@vitan.in', reason: 'retiring a legacy blank muster', mustPass: true, what: 'real attribution is accepted' },
+  { operator: ' \t\n\v\f\r', reason: 'retiring a legacy blank muster', mustPass: false, what: 'a whitespace-only operator names nobody' },
+  { operator: 'ops@vitan.in', reason: ' \t\n\v\f\r', mustPass: false, what: 'a whitespace-only reason states nothing' },
+  { operator: '', reason: '', mustPass: false, what: 'empty attribution is the degenerate case of both' },
+];
+
+function sqlText(value: string | null): string {
+  return value === null ? 'NULL::text' : `'${value.replace(/'/g, "''")}'::text`;
+}
+
+/**
+ * Evaluate a candidate CHECK expression over {@link T3C_MARKER_CHECK_PROBES}. Returns `{ ok }`.
+ *
+ * `COALESCE(expr, true)` models PostgreSQL's own CHECK semantics exactly: an expression evaluating
+ * to NULL passes. The expression is rendered by `pg_get_expr(conbin, conrelid)` and so refers to
+ * bare column names, which the VALUES alias supplies; a decoy referencing any OTHER column makes
+ * this query ERROR, which every caller treats as "not sealed" — fail-closed, not fail-open.
+ */
+export function t3cMarkerCheckTruthTableSql(expr: string): string {
+  const rows = T3C_MARKER_CHECK_PROBES.map(
+    (p) =>
+      `(${sqlText(p.manualReason)}, ${p.revoked ? 'now()::timestamptz' : 'NULL::timestamptz'}, ${p.mustPass}::boolean)`,
+  ).join(', ');
+  return `SELECT bool_and(COALESCE((${expr}), true) = t."expected") AS ok
+            FROM (VALUES ${rows}) AS t("manualReason", "revokedAt", "expected")`;
+}
+
+/**
+ * Evaluate a candidate attribution CHECK expression over {@link T3C_ATTRIBUTION_CHECK_PROBES}.
+ * Same semantics, same fail-closed contract as {@link t3cMarkerCheckTruthTableSql}.
+ */
+export function t3cAttributionCheckTruthTableSql(expr: string): string {
+  const rows = T3C_ATTRIBUTION_CHECK_PROBES.map(
+    (p) => `(${sqlText(p.operator)}, ${sqlText(p.reason)}, ${p.mustPass}::boolean)`,
+  ).join(', ');
+  return `SELECT bool_and(COALESCE((${expr}), true) = t."expected") AS ok
+            FROM (VALUES ${rows}) AS t("operator", "reason", "expected")`;
+}

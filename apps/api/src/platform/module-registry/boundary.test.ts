@@ -388,6 +388,34 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
       expect(f[0].model).toBe('decision');
     });
 
+    // Round-7 re-review — an IMPORTED name resolves to an ALIAS symbol whose only declaration is the
+    // `ImportSpecifier`: no initializer, no `for…of` source, so the walker gathered nothing and
+    // moving an otherwise-detected query into a shared constant bypassed the boundary entirely.
+    // RED at 170bcd6 (zero findings). Both fixtures below name the SAME query from another file.
+    it('SQL IMPORTED from another module file is followed → cross-module-read (named import)', () => {
+      const f = analyzeFixture({
+        'shared/queries.ts': 'export const DECISION_SQL = `SELECT "id" FROM "Decision" WHERE "id" = $1`;',
+        'activities/evil-imported-sql.ts':
+          "import { DECISION_SQL } from '../shared/queries';\n" +
+          'export async function evilImportedSql(prisma: PrismaLike, id: string) { await prisma.$queryRawUnsafe(DECISION_SQL, id); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('SQL reached through an ALIASED import is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'shared/queries2.ts': 'export const DECISION_SQL = `SELECT "id" FROM "Decision"`;',
+        'activities/evil-renamed-import.ts':
+          "import { DECISION_SQL as Q } from '../shared/queries2';\n" +
+          'export async function evilRenamedImport(prisma: PrismaLike) { await prisma.$queryRawUnsafe(Q); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
     it('SQL held in a const ARRAY of statements is followed → cross-module-read', () => {
       const f = analyzeFixture({
         'activities/evil-array-sql.ts':

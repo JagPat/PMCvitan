@@ -504,6 +504,22 @@ would make a forgery permanently indistinguishable from an audited repair.
 **What to do.** Run `pnpm --filter api t3c:preflight`. Every `F1.marker` sample carries an **`exit`**
 column saying which of the two recoveries applies. Read it — do not re-derive it in hand-written SQL.
 
+The report's samples are bounded (20 per finding) so it stays readable — but the repair is
+all-or-nothing (it commits only when its in-transaction re-diagnose reads clean), so the PLAN must
+name **every** row. Do not build it from the samples. Run
+
+```
+pnpm --filter api t3c:plan > t3c-plan.json
+```
+
+which exports a complete skeleton: one action per finding row across the WHOLE database (blanks as
+`f1-mark-invalid-legacy`, forged markers as `f1-quarantine-forged-marker`), plus a `manual` list of
+rows the engine must not touch (genuine audited repairs left live — revoke those through the
+application). Fill in the top-level `operator`/`reason` and each action's
+`revokedById`/`revokeReason`, then submit the file whole with `t3c:repair` — the engine still refuses
+blanks, out-of-project revokers and mismatched pre-revoked attributions per action, exactly as for a
+hand-written plan.
+
 An earlier version of this section printed a query that classified evidence by metadata alone, while
 the diagnostic also validates the before-image and the attribution. They disagreed exactly where it
 mattered: a row citing an action whose `beforeImage` is `{}` was labelled "evidenced", the operator
@@ -536,11 +552,18 @@ rewritten to a quarantine marker embedding THIS repair id, so the row finally po
 genuinely exists. That is the one thing the original marker falsely claimed. The forgery is not
 erased; it is filed, and its text stays readable in `beforeImage`.
 
-`revokedById` must resolve to a real `User` (`LabourAttendance_revokedBy_fkey` — an unknown id is
-refused, never invented). `revokeReason` is your own words about **what you found**, not about why the
-worker was present, which the forged row gives you no basis to state. An already-present `revokedAt`
-is kept (`COALESCE`), so a genuine earlier timestamp is never overwritten; a live forged row is
-revoked as part of the same statement.
+`revokedById` must have **standing on the row's project** — an active membership, or owner/admin of
+its org (the same rule live authorization applies). An id that merely names some user in some other
+tenant is refused, never written: a repair's attribution is append-only, so a misattribution would be
+permanent. `revokeReason` is your own words about **what you found**, not about why the worker was
+present, which the forged row gives you no basis to state.
+
+If the row is **already revoked** — the typical case, since a forged marker is usually written with
+the revocation triple filled in — the plan's `revokedById` must name the revoker **actually on the
+row** (read it first), and the WHOLE existing triple (`revokedAt`, `revokedById`, `revokeReason`) is
+preserved verbatim: that revocation is history, and the quarantine never rewrites who did what and
+when. Your own words are recorded in the evidence's `detail.quarantineNote` instead. A still-live
+forged row takes your complete triple and is revoked in the same statement.
 
 ```json
 {
@@ -634,26 +657,53 @@ npx prisma migrate deploy
 
 ```
 pnpm --filter api t3c:preflight   # exit 0, both findings zero
-pnpm --filter api t3c:seals       # exit 0, all three physical objects present
+pnpm --filter api t3c:seals       # exit 0, every applicable seal installed AND enforcing
 ```
+
+`t3c:seals` answers with an exit code per state, and only 0 is a pass:
+
+| exit | status | meaning |
+|---|---|---|
+| 0 | `sealed` | every applicable seal present, ENABLED, bound to its enforcing function, firing on the right events — the CHECKs verified by evaluating their expression over a truth table, not by name |
+| 3 | `correction-seals-missing` | the §C schema and its prerequisite guards are present but `20270225000000`'s objects are not — the migration must really run (the baseline path leaves it pending) |
+| 4 | `prerequisite-schema-absent` | no §C attendance schema at all — a pre-Task-3 database; **never** baseline it (resolving every migration as applied would record tables that do not exist) |
+| 5 | `prerequisite-seals-missing` | §C TABLES without §C GUARDS — the `prisma db push` signature; **never** baseline it (migrations `20270210`/`20270215` `CREATE TABLE` and cannot re-run; resolving them as applied records triggers that do not exist, `WorkerAllocation_head_live` among them). Reconcile the schema by hand — install the missing raw-SQL objects from those migrations verbatim — then re-run `t3c:seals` |
+
+When `T3CRepairAction` exists (a repair has run here), its seals join the answer: the append-only and
+no-truncate triggers, the repair-path INSERT seal, and the attribution CHECK — all verified the same
+way. A restored dump whose evidence triggers were disabled or re-declared for the wrong events is NOT
+sealed, and the baseline path will make the migration really run rather than record it applied.
 
 After this migration applies, the state is unreachable: a BEFORE INSERT trigger reserves the marker
 prefix (no ordinary write can claim it) and a CHECK requires any marked row to be revoked. The
 `T3CRepairAction` evidence table is append-only from the same moment — a repair's before-image can
-never be rewritten or deleted, which is what makes "Original row preserved in T3CRepairAction" a
+never be rewritten, deleted or truncated — and writable ONLY from inside a repair transaction (the
+repair-path INSERT seal), which is what makes "Original row preserved in T3CRepairAction" a
 guarantee rather than a sentence.
+
+The one erasure no table trigger can see is `DROP TABLE`, so an **event trigger**
+(`phase4_t3c_evidence_drop_guard`, on `sql_drop`) refuses any drop of the evidence table — including
+via CASCADE. Creating an event trigger requires **superuser**; the deploy role in this stack is one.
+If a future stack's role is not, the migration (and the repair) ABORT rather than proceeding without
+the guard — run that one deploy as a role that can, then return to the normal role. Stated honestly:
+a role that can drop tables at will can usually drop the event trigger first; what the guard closes
+is the one-statement erasure and every ordinary tooling path, removing it is a separate, loud,
+auditable DDL act, and `t3c:seals` then reports the database as NOT sealed. To legitimately
+decommission a database, `DROP DATABASE` (event triggers do not fire for it) or drop the guard first
+— deliberately.
 
 The migration's other change (the `WorkerAllocation` project-readiness lock trigger) needs no operator
 action: it creates a trigger, touches no rows, and cannot abort over data.
 
 **Pre-baseline (`prisma db push`) databases.** Everything this migration creates is raw SQL, which
 `db push` does not reproduce, so such a database can look eligible and row-clean while carrying none
-of the seals. `scripts/migrate.sh` therefore runs `t3c seals` on the P3005 baseline path and, when the
-seals are absent, leaves `20270225000000` **pending** rather than resolving it as applied — the
-retried `migrate deploy` executes it for real — then re-checks and fails closed if the objects are
-still missing. If you ever baseline by hand, do the same: never
-`migrate resolve --applied 20270225000000_phase4_t3_correction3` without first confirming
-`pnpm --filter api t3c:seals` exits 0.
+of the seals. `scripts/migrate.sh` therefore runs `t3c seals` on the P3005 baseline path and acts on
+the exit code above: on 3 it leaves `20270225000000` **pending** so the retried `migrate deploy`
+executes it for real, then re-checks and fails closed; on 4 and 5 it **refuses to baseline at all**,
+because in those states resolving migrations as applied records schema or guards that do not exist —
+which schema this actually is becomes a human judgement, not something a runner may guess. If you
+ever baseline by hand, hold yourself to the same rule: never `migrate resolve --applied` anything
+until `pnpm --filter api t3c:seals` exits 0.
 
 ## 1. Drain all OLD application instances
 

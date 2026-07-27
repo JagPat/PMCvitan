@@ -14,10 +14,20 @@ import { RepairAbortedError, T3CRepairService, type RepairPlan } from './t3c-rep
  *
  *   pnpm --filter api t3c:seals
  *       READ-ONLY. Reports whether `20270225000000`'s PHYSICAL objects (the reserved-marker trigger,
- *       the allocation project-lock trigger, the marker-is-revoked CHECK) exist in this database.
- *       Exit 0 when installed or when the §C attendance schema is absent entirely; 3 when the schema
- *       is present but a seal is missing. `scripts/migrate.sh` uses this on the P3005 baseline path
- *       so a `db push` database is never marked as having a correction it does not carry.
+ *       the allocation project-lock trigger, the marker-is-revoked CHECK — plus the `T3CRepairAction`
+ *       seals whenever that table exists) are installed AND ENFORCING in this database.
+ *       Exit 0 when every applicable seal is installed; 3 when the schema is present but a
+ *       correction-3 seal is missing; 4 when the §C attendance schema is absent entirely; 5 when
+ *       the §C tables exist but the PREREQUISITE guards from 20270210/20270215 do not (the
+ *       `prisma db push` signature). None of 3/4/5 is a success. `scripts/migrate.sh` acts on each:
+ *       3 leaves correction 3 pending so it really applies; 4 and 5 refuse to baseline at all.
+ *
+ *   pnpm --filter api t3c:plan
+ *       READ-ONLY. Exports a COMPLETE repair-plan skeleton naming EVERY finding row (not the
+ *       report's bounded samples) — blanks as retirements, forged markers as quarantines, plus a
+ *       `manual` list of genuine audited repairs left live that must be revoked through the
+ *       application instead. Fill in operator/reason and each action's revokedById/revokeReason,
+ *       then submit the file whole with t3c:repair.
  *
  *   pnpm --filter api t3c:repair --plan <plan.json> --operator <identity> --reason <text>
  *       Applies an EXPLICIT operator-authored plan under one bounded maintenance transaction:
@@ -72,22 +82,67 @@ async function main(): Promise<void> {
       // Are `20270225000000`'s raw-SQL objects physically present? Used by `scripts/migrate.sh` on
       // the P3005 baseline path, where marking the migration applied without executing it would
       // leave a database permanently without the seals while Prisma believed they were installed.
-      // Reports "not applicable" (exit 0) on a database with no §C attendance schema at all.
+      //
+      // "Not applicable" is its OWN exit code (4), never a success. `preflight` may legitimately
+      // answer "nothing to diagnose" with exit 0 on a fresh database — there really are no rows.
+      // This question is different: the caller is deciding whether to record migrations as applied,
+      // and a §C schema that is absent is not the same answer as seals that are present. Collapsing
+      // them let a P3005 database built from a PRE-Task-3 schema pass both the baseline check and
+      // the post-deploy re-check, so the runner resolved every migration as applied, exited 0, and
+      // left Prisma's ledger claiming a schema the application does not have.
       const eligibility = await svc.schemaEligible();
       if (!eligibility.applicable) {
         process.stdout.write(
-          JSON.stringify({ ok: true, applicable: false, reason: eligibility.reason, missing: eligibility.missing }, null, 2) + '\n',
+          JSON.stringify(
+            { ok: false, applicable: false, status: 'prerequisite-schema-absent', reason: eligibility.reason, missing: eligibility.missing },
+            null,
+            2,
+          ) + '\n',
         );
+        process.stderr.write(
+          `\nT3C seals NOT APPLICABLE: ${eligibility.reason}. The §C attendance schema this correction seals does not exist here, so no statement can be made about its seals. See docs/RUNBOOK.md §P4T3C3.\n`,
+        );
+        process.exitCode = 4;
         return;
       }
       const seals = await svc.correctionSeals();
-      process.stdout.write(JSON.stringify({ ok: seals.installed, applicable: true, ...seals }, null, 2) + '\n');
-      if (!seals.installed) {
+      // A database holding the §C TABLES without the §C GUARDS from `20270210000000` /
+      // `20270215000000` is the `prisma db push` signature, and it gets its OWN answer (exit 5).
+      // Those migrations `CREATE TABLE`, so unlike correction 3 they cannot be left pending to
+      // re-run — and resolving them as applied records guards that do not exist, permanently.
+      const status = seals.prerequisitesMissing.length > 0
+        ? 'prerequisite-seals-missing'
+        : seals.installed
+          ? 'sealed'
+          : 'correction-seals-missing';
+      process.stdout.write(JSON.stringify({ ok: seals.installed, applicable: true, status, ...seals }, null, 2) + '\n');
+      if (seals.prerequisitesMissing.length > 0) {
+        process.stderr.write(
+          `\nT3C PREREQUISITE seals MISSING: ${seals.prerequisitesMissing.join(', ')} — this database has the §C tables without the §C guards (the signature of \`prisma db push\`). See docs/RUNBOOK.md §P4T3C3.\n`,
+        );
+        process.exitCode = 5;
+      } else if (!seals.installed) {
         process.stderr.write(
           `\nT3C correction-3 seals MISSING: ${seals.missing.join(', ')} — migration 20270225000000 has not physically applied here.\n`,
         );
         process.exitCode = 3;
       }
+    } else if (cmd === 'plan') {
+      // A COMPLETE plan skeleton — every finding row, not the report's bounded samples. The report
+      // stays bounded on purpose; the repair is all-or-nothing, so the PLAN must name every row or a
+      // database with more findings than the sample limit can never be unblocked. Redirect to a
+      // file, fill in operator/reason and each action's revokedById/revokeReason, then submit with
+      // `t3c repair --plan <file>` (repair reads `actions` and ignores `manual`). `manual` lists the
+      // rows the engine must NOT touch — genuine audited repairs left live — with their application
+      // exit; see docs/RUNBOOK.md §P4T3C3.
+      const eligibility = await svc.schemaEligible();
+      if (!eligibility.applicable) {
+        process.stdout.write(
+          JSON.stringify({ ok: true, applicable: false, note: eligibility.reason, operator: '', reason: '', actions: [], manual: [] }, null, 2) + '\n',
+        );
+        return;
+      }
+      process.stdout.write(JSON.stringify(await svc.planSkeleton(), null, 2) + '\n');
     } else if (cmd === 'migration-state') {
       process.stdout.write(JSON.stringify(await svc.migrationState(), null, 2) + '\n');
     } else if (cmd === 'repair') {
@@ -117,7 +172,7 @@ async function main(): Promise<void> {
       );
     } else {
       process.stderr.write(
-        'usage: t3c <preflight | seals | migration-state | repair --plan <plan.json> --operator <identity> --reason <text>>\n',
+        'usage: t3c <preflight | seals | plan | migration-state | repair --plan <plan.json> --operator <identity> --reason <text>>\n',
       );
       process.exitCode = 2;
     }
