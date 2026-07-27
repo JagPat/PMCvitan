@@ -501,31 +501,28 @@ Revocation alone is deliberately not accepted. Until this migration installs the
 direct writer can insert a marked row with the revocation triple already populated; blessing that
 would make a forgery permanently indistinguishable from an audited repair.
 
-**What to do.** Run `pnpm --filter api t3c:preflight` to list them (`F1.marker`). The two halves of
-the diagnostic have DIFFERENT exits, so classify each row first:
+**What to do.** Run `pnpm --filter api t3c:preflight`. Every `F1.marker` sample carries an **`exit`**
+column saying which of the two recoveries applies. Read it — do not re-derive it in hand-written SQL.
 
-```sql
-SELECT a."id",
-       a."revokedAt" IS NOT NULL                                            AS revoked,
-       substring(a."manualReason" from 'repair=([0-9a-fA-F-]{36})')         AS claimed_repair,
-       EXISTS (SELECT 1 FROM "T3CRepairAction" r
-                WHERE r."table" = 'LabourAttendance' AND r."rowId" = a."id"
-                  AND r."repairId" = substring(a."manualReason" from 'repair=([0-9a-fA-F-]{36})')) AS evidenced
-  FROM "LabourAttendance" a
- WHERE a."manualReason" LIKE '[invalid-legacy:blank-manual-reason]%';
-```
+An earlier version of this section printed a query that classified evidence by metadata alone, while
+the diagnostic also validates the before-image and the attribution. They disagreed exactly where it
+mattered: a row citing an action whose `beforeImage` is `{}` was labelled "evidenced", the operator
+was told to revoke it and explicitly not to quarantine it, and after revoking, `F1.marker` was still
+there and the same query gave the same unusable instruction. There is one classifier now, and it is
+the one the finding itself uses.
 
-- **`evidenced = true`, `revoked = false`** — a real audited repair that was left live (only possible
-  if a repair was interrupted outside its transaction; the repair writes the marker and the
+- **`exit: revoke-through-the-application`** — a real audited repair that was left live (only
+  possible if a repair was interrupted outside its transaction; the repair writes the marker and the
   revocation in one statement). Revoke it through the application
   (`POST …/labour/attendance/:id/revoke`) with a reason naming the repair. The row stays, the marker
-  stays, and it stops counting as presence. Do NOT quarantine it — `t3c:repair` refuses a row whose
-  evidence exists, precisely so a truthful marker is never overwritten with a false accusation.
-- **`evidenced = false`** — the marker is a forgery: someone wrote it themselves, before
-  `20270225000000` installed the trigger that reserves the prefix. The row claims operator provenance
-  that has never existed. This is the state that has no application exit — a forged marker is
-  typically written with the revocation triple already filled in, and a revoked muster is terminal, so
-  there is nothing left to revoke. Use the quarantine op below.
+  stays, and it stops counting as presence. `t3c:repair` refuses to quarantine such a row, precisely
+  so a truthful marker is never overwritten with a false accusation.
+- **`exit: quarantine`** — the marker is not backed by genuine evidence: no matching action at all,
+  or one whose before-image is absent, incomplete, or about a different row, or whose attribution
+  names nobody. The row claims operator provenance that has never existed. This is the state with no
+  application exit — a forged marker is typically written with the revocation triple already filled
+  in, and a revoked muster is terminal, so there is nothing left to revoke. Use the quarantine op
+  below.
 
 **Do not** hand-write a `T3CRepairAction` row to make the diagnostic pass. An invented before-image is
 worse than a named forgery, and the evidence table is append-only, so the invention would itself be
@@ -585,24 +582,41 @@ SELECT a."id", a."manualReason" AS quarantine_marker,
   JOIN "T3CRepairAction" r ON r."rowId" = a."id" AND r."op" = 'f1-quarantine-forged-marker';
 ```
 
-### A second, rarer abort: blank repair attribution
+### A warning you may see: legacy blank repair attribution
 
-> `phase4 t3 correction3: N T3CRepairAction row(s) carry a blank operator or reason — repair attribution that names nobody cannot be sealed as evidence`
+> `WARNING: phase4 t3 correction3: N legacy T3CRepairAction row(s) carry a blank operator or reason; the non-blank rule is installed NOT VALID …`
 
-Only reachable on a database where something wrote directly into `T3CRepairAction`: `t3c:repair`
-refuses a plan with a blank `--operator` or `--reason` before it does anything. The evidence table is
-append-only, so the emptiness cannot be edited away, and it should not be — an audit row that names
-nobody is not evidence, and back-filling a name for it would be inventing one.
+This is a **warning, not an abort**, and no action is required to deploy. It is only reachable on a
+database where something wrote directly into `T3CRepairAction` — `t3c:repair` refuses a plan with a
+blank `--operator` or `--reason` before it does anything.
 
-Identify the rows, then treat the marker each one backs as unevidenced: it is diagnosed as
-`F1.marker` already (the finding-1 predicate requires non-blank attribution), so the quarantine flow
-above is its exit. The blank rows themselves stay, as the record that they were written.
+The rule is installed `NOT VALID` in that case, deliberately. The evidence table is append-only, so
+the emptiness cannot be edited away, and it should not be: an audit row that names nobody is still
+the record that it was written, and back-filling a name would be inventing one. `NOT VALID` gives the
+honest outcome — every FUTURE insert is rejected, the legacy rows are preserved verbatim, and nothing
+is blocked. An earlier draft aborted here instead, which was a trap: the row could not be repaired,
+the quarantine appends good evidence without removing the bad action, and an orphan malformed action
+blocked every deploy without even producing an `F1.marker` to explain itself.
+
+Any marker relying on such an action is diagnosed as `F1.marker` with `exit: quarantine`, because the
+finding-1 predicate requires non-blank attribution. That is where the recovery happens.
 
 ```sql
 SELECT "id", "repairId", "rowId", "at", "operator", "reason"
   FROM "T3CRepairAction"
  WHERE btrim("operator", E' \t\n\x0B\f\r') = '' OR btrim("reason", E' \t\n\x0B\f\r') = '';
 ```
+
+### If a seal already exists but does not enforce
+
+> `phase4 t3 correction3: … exists but does not enforce … (enabled=D, function=…)`
+
+The migration accepts an existing trigger or CHECK only if it is ENABLED, bound to the right
+function, and (for the CHECK) validated. A same-named object that is disabled or points somewhere
+else is a decoy: accepting it would have Prisma record the migration applied over a table with no
+protection at all. This aborts rather than silently replacing it, because replacing it would destroy
+the evidence that someone put it there. Investigate who created it, then drop it deliberately and
+redeploy.
 
 ### Resolve the migration record, then redeploy
 

@@ -50,10 +50,21 @@ $$ LANGUAGE plpgsql;
 -- lock is taken FIRST, so the diagnostic reads a table no one else can be mid-write on, and it is
 -- held until the seals are committed with it. There is no interval in which the check has passed
 -- and the guard is not yet in place.
+--
+-- BOTH tables are locked, not just `LabourAttendance`. The finding-1 diagnostic READS
+-- `T3CRepairAction`, so locking only the attendance table left the evidence free to change under it:
+-- a concurrent DELETE committing after this statement's snapshot but before the evidence seal was
+-- installed would leave the migration sealing a now-empty table and succeeding with a marked
+-- attendance row whose before-image is gone. Evidence that can disappear between being checked and
+-- being sealed was never checked.
 DO $$
-DECLARE bad BIGINT; sample TEXT; have_evidence BOOLEAN;
+DECLARE bad BIGINT; sample TEXT; have_evidence BOOLEAN; tg pg_trigger%ROWTYPE; con pg_constraint%ROWTYPE;
 BEGIN
   LOCK TABLE "LabourAttendance" IN ACCESS EXCLUSIVE MODE;
+  have_evidence := to_regclass('"T3CRepairAction"') IS NOT NULL;
+  IF have_evidence THEN
+    LOCK TABLE "T3CRepairAction" IN ACCESS EXCLUSIVE MODE;
+  END IF;
 
   -- Finding 1 — every pre-existing row carrying the RESERVED invalid-legacy marker must be a REAL
   -- audited repair: revoked, AND backed by a matching `T3CRepairAction` before-image.
@@ -76,8 +87,15 @@ BEGIN
   -- `T3CRepairAction` row must name the same repair id. Without the id, "some repair once touched
   -- this row" would be all that could be established, and a forger holding one legitimate evidence
   -- row could mint any number of markers pointing at it.
-  have_evidence := to_regclass('"T3CRepairAction"') IS NOT NULL;
-
+  --
+  -- And the before-image must be COMPLETE and CORRESPOND, not merely carry the right id. A
+  -- two-field `{"id": …, "manualReason": " "}` records none of the observation it claims to
+  -- preserve, so every immutable LabourAttendance column must be present AND equal to the marked
+  -- row. Correspondence is meaningful because `phase4_t3_attendance_append_only` freezes exactly
+  -- those columns: they cannot have drifted, so a mismatch means the evidence is about something
+  -- else. `manualReason` is excluded from the equality — rewriting it is what the repair does — but
+  -- its shape is checked per op, which is what tells a retirement's before-image from a
+  -- quarantine's.
   IF have_evidence THEN
     SELECT COUNT(*), COALESCE(STRING_AGG(id, ', ' ORDER BY id), '')
       INTO bad, sample
@@ -88,12 +106,31 @@ BEGIN
                                     WHERE r."rowId" = a."id"
                                       AND r."table" = 'LabourAttendance'
                                       AND r."repairId" = substring(a."manualReason" from 'repair=([0-9a-fA-F-]{36})')
-                                      -- the evidence must be about THIS row, and be the right SHAPE:
-                                      -- metadata alone would accept an appended action carrying '{}'
-                                      AND r."beforeImage"->>'id' = a."id"
-                                      -- and the attribution must name someone and state something
+                                      -- the attribution must name someone and state something
                                       AND btrim(r."operator", E' \t\n\x0B\f\r') <> ''
                                       AND btrim(r."reason",   E' \t\n\x0B\f\r') <> ''
+                                      -- the before-image must be COMPLETE …
+                                      AND jsonb_exists(r."beforeImage", 'id')
+                                      AND jsonb_exists(r."beforeImage", 'projectId')
+                                      AND jsonb_exists(r."beforeImage", 'workerId')
+                                      AND jsonb_exists(r."beforeImage", 'civilDate')
+                                      AND jsonb_exists(r."beforeImage", 'shift')
+                                      AND jsonb_exists(r."beforeImage", 'deviceId')
+                                      AND jsonb_exists(r."beforeImage", 'evidenceMediaId')
+                                      AND jsonb_exists(r."beforeImage", 'recordedAt')
+                                      AND jsonb_exists(r."beforeImage", 'recordedById')
+                                      AND jsonb_exists(r."beforeImage", 'sourceCommandId')
+                                      -- … and CORRESPOND to the row it claims to be about
+                                      AND r."beforeImage"->>'id'              = a."id"
+                                      AND r."beforeImage"->>'projectId'       = a."projectId"
+                                      AND r."beforeImage"->>'workerId'        = a."workerId"
+                                      AND (r."beforeImage"->>'civilDate')::date = a."civilDate"
+                                      AND r."beforeImage"->>'shift'           = a."shift"
+                                      AND r."beforeImage"->>'deviceId'        IS NOT DISTINCT FROM a."deviceId"
+                                      AND r."beforeImage"->>'evidenceMediaId' IS NOT DISTINCT FROM a."evidenceMediaId"
+                                      AND (r."beforeImage"->>'recordedAt')::timestamptz = a."recordedAt"
+                                      AND r."beforeImage"->>'recordedById'    = a."recordedById"
+                                      AND r."beforeImage"->>'sourceCommandId' = a."sourceCommandId"
                                       AND (
                                         -- the before-image is the BLANK pre-repair row. It may
                                         -- already have been revoked: a legacy muster whose blank
@@ -121,17 +158,26 @@ BEGIN
       'phase4 t3 correction3 finding 1: % LabourAttendance row(s) carry the reserved invalid-legacy marker without being a real audited repair — not revoked, or with no matching T3CRepairAction before-image for the embedded repair id (sample: %). See docs/RUNBOOK.md §P4T3C3.', bad, sample;
   END IF;
 
-  -- ── the table is clean AND still locked; install the seals before anyone can write again ──────
+  -- ── the tables are clean AND still locked; install the seals before anyone can write again ────
   --
-  -- Both are CREATED ONLY IF ABSENT — never dropped and recreated. On a RETRY after a partial apply
-  -- (the post-condition at the end of this file can fail after this block committed) a DROP…CREATE
-  -- pair would reopen the very window this block exists to close. Retrying must be safe, not merely
-  -- possible.
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger
-                  WHERE tgname = 'LabourAttendance_reserved_marker'
-                    AND tgrelid = '"LabourAttendance"'::regclass AND NOT tgisinternal) THEN
+  -- Objects are created ONLY IF ABSENT — never dropped and recreated. On a RETRY after a partial
+  -- apply a DROP…CREATE pair would reopen the very window this block exists to close.
+  --
+  -- But "absent" is decided by VALIDITY, not by name. A same-named trigger that is DISABLED
+  -- (`tgenabled <> 'O'`) or bound to some other function is a decoy: a name-only guard skips
+  -- creation, Prisma records the migration applied, and the reserved marker is unprotected forever.
+  -- An invalid same-named object is therefore an ABORT, not something to silently replace —
+  -- replacing it would erase the evidence that someone put it there.
+  SELECT * INTO tg FROM pg_trigger
+   WHERE tgname = 'LabourAttendance_reserved_marker'
+     AND tgrelid = '"LabourAttendance"'::regclass AND NOT tgisinternal;
+  IF NOT FOUND THEN
     CREATE TRIGGER "LabourAttendance_reserved_marker" BEFORE INSERT ON "LabourAttendance"
       FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_attendance_reserved_marker();
+  ELSIF tg.tgenabled <> 'O' OR tg.tgfoid::regproc::text <> 'phase4_t3c3_attendance_reserved_marker' THEN
+    RAISE EXCEPTION
+      'phase4 t3 correction3: a trigger named LabourAttendance_reserved_manual already exists but does not enforce the reserved marker (enabled=%, function=%) — refusing to record this migration as applied over an unprotected table. See docs/RUNBOOK.md §P4T3C3.',
+      tg.tgenabled, tg.tgfoid::regproc::text;
   END IF;
 
   -- (b) A MARKED ROW IS ALWAYS REVOKED. The repair sets the marker and the revocation triple in ONE
@@ -139,27 +185,34 @@ BEGIN
   --     any other path leaving a marked row live (including a future edit that clears the
   --     revocation). Combined with the live partial unique on (project, worker, civilDate, shift),
   --     a genuine replacement muster is necessarily a SEPARATE, separately-attributable row.
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint
-                  WHERE conname = 'LabourAttendance_marker_is_revoked'
-                    AND conrelid = '"LabourAttendance"'::regclass) THEN
+  --     `convalidated` matters as much as existence: a CHECK added NOT VALID does not constrain the
+  --     rows already present, so a table carrying it unvalidated is not sealed.
+  SELECT * INTO con FROM pg_constraint
+   WHERE conname = 'LabourAttendance_marker_is_revoked'
+     AND conrelid = '"LabourAttendance"'::regclass;
+  IF NOT FOUND THEN
     ALTER TABLE "LabourAttendance"
       ADD CONSTRAINT "LabourAttendance_marker_is_revoked"
       CHECK ("manualReason" IS NULL
           OR "manualReason" NOT LIKE '[invalid-legacy:blank-manual-reason]%'
           OR "revokedAt" IS NOT NULL);
+  ELSIF con.contype <> 'c' OR NOT con.convalidated
+        OR pg_get_constraintdef(con.oid) NOT LIKE '%invalid-legacy:blank-manual-reason%'
+        OR pg_get_constraintdef(con.oid) NOT LIKE '%revokedAt%' THEN
+    RAISE EXCEPTION
+      'phase4 t3 correction3: a constraint named LabourAttendance_marker_is_revoked already exists but is not the validated marker-is-revoked CHECK (%) — refusing to record this migration as applied over an unprotected table. See docs/RUNBOOK.md §P4T3C3.',
+      pg_get_constraintdef(con.oid);
   END IF;
-END $$;
 
--- (c) THE EVIDENCE IS APPEND-ONLY. A marked row's whole claim is "the original bytes are preserved
---     in T3CRepairAction"; an evidence table an ordinary write can rewrite or empty makes that claim
---     unenforceable. `T3CRepairService` creates the table AND this seal in the same transaction, but
---     a database repaired before the seal existed would carry unsealed rows, so it is re-asserted
---     here. Guarded on the table's existence: it is created by the repair, not by any migration, so
---     on a database that never needed a repair there is simply nothing to seal.
-DO $$
-DECLARE bad BIGINT;
-BEGIN
-  IF to_regclass('"T3CRepairAction"') IS NULL THEN RETURN; END IF;
+  -- (c) THE EVIDENCE IS APPEND-ONLY, sealed HERE — inside the same locked transaction that just
+  --     validated it. Sealing in a later statement left the evidence free to change in between: a
+  --     concurrent DELETE committing after the diagnostic's snapshot would leave this migration
+  --     sealing an empty table and succeeding with a marked row whose before-image is gone.
+  --     `T3CRepairService` creates the table AND these seals together, but a database repaired
+  --     before the seals existed carries unsealed rows, so they are re-asserted. Guarded on the
+  --     table's existence: it is created by the repair, not by any migration, so on a database that
+  --     never needed one there is simply nothing to seal.
+  IF NOT have_evidence THEN RETURN; END IF;
 
   CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_append_only() RETURNS trigger AS $fn$
   BEGIN
@@ -177,35 +230,55 @@ BEGIN
   END;
   $fn$ LANGUAGE plpgsql;
 
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'T3CRepairAction_append_only'
-                  AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal) THEN
+  SELECT * INTO tg FROM pg_trigger WHERE tgname = 'T3CRepairAction_append_only'
+     AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal;
+  IF NOT FOUND THEN
     CREATE TRIGGER "T3CRepairAction_append_only" BEFORE UPDATE OR DELETE ON "T3CRepairAction"
       FOR EACH ROW EXECUTE FUNCTION phase4_t3c_repair_action_append_only();
+  ELSIF tg.tgenabled <> 'O' OR tg.tgfoid::regproc::text <> 'phase4_t3c_repair_action_append_only' THEN
+    RAISE EXCEPTION
+      'phase4 t3 correction3: T3CRepairAction_append_only exists but does not enforce append-only (enabled=%, function=%). See docs/RUNBOOK.md §P4T3C3.',
+      tg.tgenabled, tg.tgfoid::regproc::text;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'T3CRepairAction_no_truncate'
-                  AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal) THEN
+  SELECT * INTO tg FROM pg_trigger WHERE tgname = 'T3CRepairAction_no_truncate'
+     AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal;
+  IF NOT FOUND THEN
     CREATE TRIGGER "T3CRepairAction_no_truncate" BEFORE TRUNCATE ON "T3CRepairAction"
       FOR EACH STATEMENT EXECUTE FUNCTION phase4_t3c_repair_action_no_truncate();
+  ELSIF tg.tgenabled <> 'O' OR tg.tgfoid::regproc::text <> 'phase4_t3c_repair_action_no_truncate' THEN
+    RAISE EXCEPTION
+      'phase4 t3 correction3: T3CRepairAction_no_truncate exists but does not enforce the truncate seal (enabled=%, function=%). See docs/RUNBOOK.md §P4T3C3.',
+      tg.tgenabled, tg.tgfoid::regproc::text;
   END IF;
 
   -- (d) THE ATTRIBUTION SAYS SOMETHING. `operator` and `reason` are NOT NULL, and NOT NULL is
   --     satisfied by a space. Because the seals above make this table append-only, whitespace-only
   --     attribution becomes PERMANENT — a marked attendance row pointing at evidence that names
-  --     nobody. Diagnostic-first, like everything else here: a pre-existing blank row is named
-  --     rather than surfacing as an opaque check violation, and its exit is the quarantine (the
-  --     diagnostic above already counts such evidence as invalid, so the marker it backs reports as
-  --     finding 1 and can be filed).
+  --     nobody.
+  --
+  --     This must NEVER abort. An earlier draft raised over pre-existing blank rows, which was a
+  --     trap: the evidence is append-only so the row cannot be edited away, the quarantine appends
+  --     good evidence but preserves the bad action, and an ORPHAN malformed action (one no marker
+  --     cites) blocked every deploy without even producing an F1.marker to explain itself. The rule
+  --     is therefore installed NOT VALID when such rows exist — every FUTURE insert is rejected, the
+  --     legacy rows stay exactly as written (they are the record that they were written), and
+  --     nothing is blocked. On a clean table it is VALIDATED, the stronger claim. Either way the
+  --     diagnostic above treats blank-attributed evidence as invalid, so a marker relying on one is
+  --     an F1.marker with the quarantine as its exit.
   IF NOT EXISTS (SELECT 1 FROM pg_constraint
                   WHERE conname = 'T3CRepairAction_attribution_non_blank'
                     AND conrelid = '"T3CRepairAction"'::regclass) THEN
     SELECT COUNT(*) INTO bad FROM "T3CRepairAction"
      WHERE btrim("operator", E' \t\n\x0B\f\r') = '' OR btrim("reason", E' \t\n\x0B\f\r') = '';
     IF bad > 0 THEN
-      RAISE EXCEPTION
-        'phase4 t3 correction3: % T3CRepairAction row(s) carry a blank operator or reason — repair attribution that names nobody cannot be sealed as evidence. See docs/RUNBOOK.md §P4T3C3.', bad;
+      RAISE WARNING
+        'phase4 t3 correction3: % legacy T3CRepairAction row(s) carry a blank operator or reason; the non-blank rule is installed NOT VALID so new evidence is constrained and the existing rows are preserved. See docs/RUNBOOK.md §P4T3C3.', bad;
+      ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
+        CHECK (btrim("operator", E' \t\n\x0B\f\r') <> '' AND btrim("reason", E' \t\n\x0B\f\r') <> '') NOT VALID;
+    ELSE
+      ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
+        CHECK (btrim("operator", E' \t\n\x0B\f\r') <> '' AND btrim("reason", E' \t\n\x0B\f\r') <> '');
     END IF;
-    ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
-      CHECK (btrim("operator", E' \t\n\x0B\f\r') <> '' AND btrim("reason", E' \t\n\x0B\f\r') <> '');
   END IF;
 END $$;
 
@@ -240,12 +313,21 @@ $$ LANGUAGE plpgsql;
 -- trigger name, and `WorkerAllocation_00_…` precedes `WorkerAllocation_head_live`,
 -- `WorkerAllocation_within_commitment` and `WorkerAllocation_worker_active`. The DO block below
 -- VERIFIES that in this database's own collation rather than trusting the assumption.
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_trigger
-                  WHERE tgname = 'WorkerAllocation_00_project_lock'
-                    AND tgrelid = '"WorkerAllocation"'::regclass AND NOT tgisinternal) THEN
+-- Same rule as the attendance seals: a matching NAME is not enough. A disabled or decoy trigger here
+-- would leave raw allocation batches deadlock-prone while Prisma recorded the migration applied.
+DO $$
+DECLARE tg pg_trigger%ROWTYPE;
+BEGIN
+  SELECT * INTO tg FROM pg_trigger
+   WHERE tgname = 'WorkerAllocation_00_project_lock'
+     AND tgrelid = '"WorkerAllocation"'::regclass AND NOT tgisinternal;
+  IF NOT FOUND THEN
     CREATE TRIGGER "WorkerAllocation_00_project_lock" BEFORE INSERT ON "WorkerAllocation"
       FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_allocation_project_lock();
+  ELSIF tg.tgenabled <> 'O' OR tg.tgfoid::regproc::text <> 'phase4_t3c3_allocation_project_lock' THEN
+    RAISE EXCEPTION
+      'phase4 t3 correction3: WorkerAllocation_00_project_lock exists but does not take the project readiness lock (enabled=%, function=%) — refusing to record this migration as applied. See docs/RUNBOOK.md §P4T3C3.',
+      tg.tgenabled, tg.tgfoid::regproc::text;
   END IF;
 END $$;
 
@@ -276,6 +358,38 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ══ POST-CONDITIONS ═══════════════════════════════════════════════════════════════════════════
+-- Every seal this migration is responsible for must be present AND ENFORCING before Prisma is
+-- allowed to record it applied. The create-if-absent guards above already refuse to run past an
+-- invalid same-named object; this is the independent restatement, so a future edit that loses one of
+-- those guards fails the deploy loudly rather than silently shipping an unprotected database. It is
+-- the same predicate `t3c seals` uses, which is what makes that command's answer trustworthy.
+DO $$
+DECLARE n INT;
+BEGIN
+  SELECT count(*) INTO n FROM pg_trigger t
+   WHERE t.tgname = 'LabourAttendance_reserved_marker' AND NOT t.tgisinternal
+     AND t.tgrelid = '"LabourAttendance"'::regclass
+     AND t.tgenabled = 'O' AND t.tgfoid::regproc::text = 'phase4_t3c3_attendance_reserved_marker';
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'P4T3C3 ABORT: the reserved-marker trigger is not installed and enabled on LabourAttendance';
+  END IF;
+
+  SELECT count(*) INTO n FROM pg_trigger t
+   WHERE t.tgname = 'WorkerAllocation_00_project_lock' AND NOT t.tgisinternal
+     AND t.tgrelid = '"WorkerAllocation"'::regclass
+     AND t.tgenabled = 'O' AND t.tgfoid::regproc::text = 'phase4_t3c3_allocation_project_lock';
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'P4T3C3 ABORT: the allocation project-lock trigger is not installed and enabled on WorkerAllocation';
+  END IF;
+
+  SELECT count(*) INTO n FROM pg_constraint c
+   WHERE c.conname = 'LabourAttendance_marker_is_revoked'
+     AND c.conrelid = '"LabourAttendance"'::regclass AND c.contype = 'c' AND c.convalidated;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'P4T3C3 ABORT: the marker-is-revoked CHECK is not installed and validated on LabourAttendance';
+  END IF;
+END $$;
+
 DO $$
 DECLARE first_trigger TEXT;
 BEGIN

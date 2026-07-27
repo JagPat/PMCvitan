@@ -895,7 +895,9 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     const outcome = await repairs.repair({
       operator: 'ops@vitan.in',
       reason: 'retire a pre-correction-2 blank muster that was already revoked',
-      actions: [{ finding: 'F1.blank', op: 'f1-mark-invalid-legacy', id, revokedById: f.ownerUser.id, revokeReason: 'retired; original revocation left intact' }],
+      // The plan must NAME the revoker already on the row: this path preserves that attribution, so
+      // supplying a different id would record something the database does not hold (see R5-D).
+      actions: [{ finding: 'F1.blank', op: 'f1-mark-invalid-legacy', id, revokedById: f.memberUser.id, revokeReason: 'retired; original revocation left intact' }],
     });
     expect((await repairs.preflight()).clean).toBe(true);
 
@@ -912,9 +914,13 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     );
     expect(evidence[0]!.beforeImage['manualReason']).toBe('   ');
     expect(evidence[0]!.beforeImage['revokedAt']).not.toBeNull();
-    // the operator's own words are recorded here rather than overwriting the original revoker's
+    // `revokedById`/`revokeReason` in the evidence describe what the ROW actually holds — the
+    // preserved original — and the operator's own words are recorded separately as the repair note.
+    // Anything else would have the evidence assert an attribution the database never took.
     expect(evidence[0]!.detail['revocationPreserved']).toBe(true);
-    expect(evidence[0]!.detail['revokeReason']).toBe('retired; original revocation left intact');
+    expect(evidence[0]!.detail['revokedById']).toBe(f.memberUser.id);
+    expect(evidence[0]!.detail['revokeReason']).toBe('raised on the wrong worker');
+    expect(evidence[0]!.detail['repairNote']).toBe('retired; original revocation left intact');
   });
 
   it('R4-C: repair evidence cannot carry blank attribution — a seal that names nobody is not evidence', async () => {
@@ -994,6 +1000,205 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
       `SELECT count(*)::int AS n FROM "T3CRepairAction" WHERE "repairId" = $1`, fakeRepairId,
     );
     expect(Number(kept[0]!.n)).toBe(1);
+  });
+
+  // ══ ROUND-5 RE-REVIEW — the evidence must be REAL evidence, and no seal may be trusted by name ══
+
+  /** Insert one raw `T3CRepairAction` row. The table is append-only, not append-refusing: INSERT is
+   *  exactly what a direct writer can still do, which is what these probes exercise. */
+  const rawEvidence = async (
+    repairId: string, rowId: string, beforeImage: string,
+    operator = 'someone', reason = 'something', op = 'f1-mark-invalid-legacy',
+  ): Promise<void> => {
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "T3CRepairAction" ("repairId","operator","reason","finding","op","table","rowId","beforeImage")
+       VALUES ($1,$2,$3,'F1.blank',$4,'LabourAttendance',$5,$6::jsonb)`,
+      repairId, operator, reason, op, rowId, beforeImage,
+    );
+  };
+
+  it('R5-A: the diagnostic LOCKS the evidence table it reads, and seals it in the same statement', async () => {
+    const sql = readFileSync(
+      join(__dirname, '..', '..', 'prisma/migrations/20270225000000_phase4_t3_correction3/migration.sql'),
+      'utf8',
+    );
+    const block = sql.split(/^DO \$\$/m).slice(1).map((b) => b.split(/^END \$\$;/m)[0]!)
+      .find((b) => b.includes('phase4 t3 correction3 finding 1'))!;
+    // RED at 03d0e0f: only LabourAttendance was locked while the diagnostic READ T3CRepairAction,
+    // and the evidence seal lived in a later statement — so a DELETE committing in between left the
+    // migration sealing an emptied table and succeeding over a marker whose before-image was gone.
+    expect(block).toContain('LOCK TABLE "T3CRepairAction" IN ACCESS EXCLUSIVE MODE');
+    expect(block.indexOf('LOCK TABLE "T3CRepairAction"')).toBeLessThan(block.indexOf('phase4 t3 correction3 finding 1'));
+    expect(block).toContain('CREATE TRIGGER "T3CRepairAction_append_only"');
+    expect(block).toContain('CREATE TRIGGER "T3CRepairAction_no_truncate"');
+    expect(block).toContain('ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"');
+    for (const object of ['T3CRepairAction_append_only', 'T3CRepairAction_no_truncate']) {
+      expect(sql.match(new RegExp(`CREATE TRIGGER "${object}"`, 'g')), object).toHaveLength(1);
+    }
+  });
+
+  it('R5-B: a before-image that is not the row it claims to preserve is NOT evidence', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2026-10-01');
+    await repairs.repair({
+      operator: 'ops@vitan.in', reason: 'create the evidence table',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+
+    // RED at 03d0e0f: the shape check demanded only `id` + a blank `manualReason`, so this
+    // TWO-FIELD action passed. A direct writer could mint it, cite its repair id from a pre-revoked
+    // marker, and have the preflight AND the migration bless provenance for an original row that was
+    // never recorded at all.
+    const fake = '33333333-3333-3333-3333-333333333333';
+    const forged = await forgedMarkedMuster(
+      projectId, await onboardWorker(projectId), `${T3C_INVALID_LEGACY_PREFIX} repair=${fake}; minted`, '2026-10-02',
+    );
+    await rawEvidence(fake, forged, JSON.stringify({ id: forged, manualReason: '   ' }));
+
+    const report = await repairs.preflight();
+    const marker = report.findings.find((x) => x.code === 'F1.marker')!;
+    expect(marker.samples.map((s) => s['id'])).toContain(forged);
+    // …and the sample says what to DO about it, from the same predicate (see R5-E)
+    expect(marker.samples.find((s) => s['id'] === forged)!['exit']).toBe('quarantine');
+  });
+
+  it('R5-C: a COMPLETE before-image that contradicts the row is NOT evidence either', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2026-10-03');
+    await repairs.repair({
+      operator: 'ops@vitan.in', reason: 'create the evidence table',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+
+    const otherWorker = await onboardWorker(projectId);
+    const fake = '44444444-4444-4444-4444-444444444444';
+    const forged = await forgedMarkedMuster(
+      projectId, otherWorker, `${T3C_INVALID_LEGACY_PREFIX} repair=${fake}; complete but wrong`, '2026-10-04',
+    );
+    const row = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id: forged } });
+    // Every key present, and all but ONE correct: the recorded worker is someone else. Correspondence
+    // is checkable precisely because `LabourAttendance_append_only` freezes these columns.
+    await rawEvidence(fake, forged, JSON.stringify({
+      id: forged, projectId, workerId: 'some-other-worker', civilDate: '2026-10-04', shift: 'day',
+      deviceId: null, evidenceMediaId: null, manualReason: '   ',
+      recordedAt: row.recordedAt.toISOString(), recordedById: row.recordedById, sourceCommandId: row.sourceCommandId,
+    }));
+    expect((await repairs.preflight()).findings.find((x) => x.code === 'F1.marker')!.samples.map((s) => s['id'])).toContain(forged);
+
+    // and a COMPLETE, CORRESPONDING before-image is accepted — the rule is precise, not merely strict
+    const good = '55555555-5555-5555-5555-555555555555';
+    const honest = await forgedMarkedMuster(
+      projectId, await onboardWorker(projectId), `${T3C_INVALID_LEGACY_PREFIX} repair=${good}; honest`, '2026-10-05',
+    );
+    const hRow = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id: honest } });
+    await rawEvidence(good, honest, JSON.stringify({
+      id: honest, projectId, workerId: hRow.workerId, civilDate: '2026-10-05', shift: 'day',
+      deviceId: null, evidenceMediaId: null, manualReason: '   ',
+      recordedAt: hRow.recordedAt.toISOString(), recordedById: hRow.recordedById, sourceCommandId: hRow.sourceCommandId,
+    }));
+    const after = await repairs.preflight();
+    expect(after.findings.find((x) => x.code === 'F1.marker')!.samples.map((s) => s['id'])).not.toContain(honest);
+  });
+
+  it('R5-D: the preserved-revocation path cannot record an attribution nothing validated', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const id = await legacyBlankMuster(projectId, workerId, '2026-10-06', {
+      at: '2026-06-01T09:00:00Z', byId: f.memberUser.id, reason: 'raised on the wrong worker',
+    });
+
+    // RED at 03d0e0f: `revokedById` is NOT written on this path (the COALESCE keeps the original), so
+    // the FK never sees it — yet it was recorded in append-only evidence under a contract saying it
+    // is validated. A nonexistent user sailed through, covered for by the row's own valid key.
+    await expect(
+      repairs.repair({
+        operator: 'ops@vitan.in', reason: 'retire',
+        actions: [{ op: 'f1-mark-invalid-legacy', id, revokedById: 'no-such-user', revokeReason: 'retired' }],
+      }),
+    ).rejects.toThrow(/already revoked by[\s\S]*must name the same revokedById/i);
+
+    // Naming the actual revoker succeeds, and the evidence records the REAL preserved attribution.
+    await repairs.repair({
+      operator: 'ops@vitan.in', reason: 'retire',
+      actions: [{ op: 'f1-mark-invalid-legacy', id, revokedById: f.memberUser.id, revokeReason: 'retired; original revocation intact' }],
+    });
+    const evidence = await t.prisma.$queryRawUnsafe<Array<{ detail: Record<string, unknown> }>>(
+      `SELECT "detail" FROM "T3CRepairAction" WHERE "rowId" = $1`, id,
+    );
+    expect(evidence[0]!.detail['revocationPreserved']).toBe(true);
+    expect(evidence[0]!.detail['revokedById']).toBe(f.memberUser.id);
+    expect(evidence[0]!.detail['revokeReason']).toBe('raised on the wrong worker');   // the ORIGINAL
+    expect(evidence[0]!.detail['repairNote']).toBe('retired; original revocation intact'); // the operator's
+  });
+
+  it('R5-E: a DISABLED or decoy seal is refused — a matching name is not enforcement', async () => {
+    // The migration's own guards. RED at 03d0e0f: they tested `NOT EXISTS (… tgname = …)` only, so a
+    // disabled trigger or one bound to another function made the migration skip creation and record
+    // itself applied over an unprotected table.
+    const sql = readFileSync(
+      join(__dirname, '..', '..', 'prisma/migrations/20270225000000_phase4_t3_correction3/migration.sql'),
+      'utf8',
+    );
+    for (const fn of [
+      'phase4_t3c3_attendance_reserved_marker',
+      'phase4_t3c3_allocation_project_lock',
+      'phase4_t3c_repair_action_append_only',
+      'phase4_t3c_repair_action_no_truncate',
+    ]) {
+      expect(sql, fn).toMatch(new RegExp(`tgenabled <> 'O' OR tg\\.tgfoid::regproc::text <> '${fn}'`));
+    }
+    expect(sql, 'the CHECK must be validated, not merely present').toContain('NOT con.convalidated');
+    // and the post-conditions restate it independently, so losing a guard fails the deploy
+    for (const seal of ['LabourAttendance_reserved_marker', 'WorkerAllocation_00_project_lock', 'LabourAttendance_marker_is_revoked']) {
+      expect(sql.slice(sql.indexOf('══ POST-CONDITIONS')), seal).toContain(seal);
+    }
+
+    // The live database really is in the enforcing state the post-conditions demand.
+    const seals = await repairs.correctionSeals();
+    expect(seals.installed, `missing: ${seals.missing.join(', ')}`).toBe(true);
+  });
+
+  it('R5-F: legacy blank attribution does NOT block repairs or deploys — it is recorded, not fatal', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2026-10-07');
+    await repairs.repair({
+      operator: 'ops@vitan.in', reason: 'create the evidence table',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+
+    // A legacy malformed action that NO marker cites — the orphan case. It cannot be edited away
+    // (append-only) and the quarantine would not remove it.
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "T3CRepairAction" DROP CONSTRAINT "T3CRepairAction_attribution_non_blank"`);
+    await rawEvidence('66666666-6666-6666-6666-666666666666', 'att-orphan', '{}', '   ', '  ');
+
+    // RED at 03d0e0f: the seal block RAISED here, so every subsequent repair aborted before any
+    // action ran and the deploy was blocked forever with no F1.marker to explain why.
+    const next = await legacyBlankMuster(projectId, await onboardWorker(projectId), '2026-10-08');
+    const outcome = await repairs.repair({
+      operator: 'ops@vitan.in', reason: 'a repair still works with a legacy malformed action present',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: next, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+    expect(outcome.applied).toBe(1);
+
+    // The rule is installed NOT VALID: the legacy row survives, and a NEW blank insert is refused.
+    const con = await t.prisma.$queryRawUnsafe<Array<{ convalidated: boolean }>>(
+      `SELECT convalidated FROM pg_constraint WHERE conname = 'T3CRepairAction_attribution_non_blank'`,
+    );
+    expect(con[0]!.convalidated).toBe(false);
+    await expect(
+      rawEvidence('77777777-7777-7777-7777-777777777777', 'att-x', '{}', '  ', 'real'),
+    ).rejects.toThrow(/T3CRepairAction_attribution_non_blank/);
+    const orphan = await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+      `SELECT count(*)::int AS n FROM "T3CRepairAction" WHERE "rowId" = 'att-orphan'`,
+    );
+    expect(Number(orphan[0]!.n), 'the legacy row is preserved, not erased').toBe(1);
   });
 
   it('R8: the repair EVIDENCE is append-only — its before-image can be neither rewritten nor deleted', async () => {

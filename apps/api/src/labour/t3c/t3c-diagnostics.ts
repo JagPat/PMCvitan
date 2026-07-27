@@ -165,16 +165,43 @@ function markerPredicate(haveEvidence: boolean): string {
  * `beforeImage->>'id'` must be the row itself: evidence about some other row proves nothing about
  * this one. And the attribution must actually say something — an evidence row whose operator or
  * reason is whitespace names nobody, and the append-only seal would make that emptiness permanent.
+ *
+ * The before-image must also be COMPLETE and CORRESPOND. A two-field `{"id": …, "manualReason": " "}`
+ * satisfies every rule above while recording none of the observation it claims to preserve — so a
+ * direct writer could mint an action of that shape, insert a pre-revoked marker citing its repair id,
+ * and have both the preflight and the migration bless fabricated provenance. Every immutable
+ * `LabourAttendance` column is therefore required to be PRESENT (`jsonb_exists`, so an explicit
+ * `null` for a nullable column still counts and an absent key does not) and to EQUAL the marked row.
+ *
+ * Correspondence is meaningful precisely because `LabourAttendance_append_only` freezes these columns:
+ * they cannot have drifted since the before-image was taken, so a mismatch means the evidence is not
+ * about this row's actual history. `manualReason` is deliberately excluded from the equality check —
+ * rewriting it is the one thing the repair does — but its SHAPE is checked per op, which is what
+ * distinguishes a retirement's before-image from a quarantine's.
  */
 export function t3cGenuineEvidenceSql(alias: string): string {
+  /** Immutable per `phase4_t3_attendance_append_only`; `manualReason` is excluded (the repair rewrites it). */
+  const present = ['id', 'projectId', 'workerId', 'civilDate', 'shift', 'deviceId', 'evidenceMediaId', 'recordedAt', 'recordedById', 'sourceCommandId']
+    .map((k) => `jsonb_exists(r."beforeImage", '${k}')`)
+    .join(' AND ');
   return `EXISTS (
             SELECT 1 FROM "T3CRepairAction" r
              WHERE r."table" = 'LabourAttendance'
                AND r."rowId" = ${alias}."id"
                AND r."repairId" = substring(${alias}."manualReason" from '${T3C_MARKER_REPAIR_ID_REGEX}')
-               AND r."beforeImage"->>'id' = ${alias}."id"
                AND btrim(r."operator", ${T3C_BLANK_TRIM_SET}) <> ''
                AND btrim(r."reason", ${T3C_BLANK_TRIM_SET}) <> ''
+               AND ${present}
+               AND r."beforeImage"->>'id'              = ${alias}."id"
+               AND r."beforeImage"->>'projectId'       = ${alias}."projectId"
+               AND r."beforeImage"->>'workerId'        = ${alias}."workerId"
+               AND (r."beforeImage"->>'civilDate')::date = ${alias}."civilDate"
+               AND r."beforeImage"->>'shift'           = ${alias}."shift"
+               AND r."beforeImage"->>'deviceId'        IS NOT DISTINCT FROM ${alias}."deviceId"
+               AND r."beforeImage"->>'evidenceMediaId' IS NOT DISTINCT FROM ${alias}."evidenceMediaId"
+               AND (r."beforeImage"->>'recordedAt')::timestamptz = ${alias}."recordedAt"
+               AND r."beforeImage"->>'recordedById'    = ${alias}."recordedById"
+               AND r."beforeImage"->>'sourceCommandId' = ${alias}."sourceCommandId"
                AND (
                  (r."op" = 'f1-mark-invalid-legacy'
                    AND r."beforeImage"->>'manualReason' IS NOT NULL
@@ -205,7 +232,16 @@ function diagsFor(haveEvidence: boolean): Diag[] {
       description:
         'LabourAttendance rows carrying the reserved invalid-legacy marker that are not a real audited repair — not revoked, or with no matching T3CRepairAction before-image for the repair id the marker embeds',
       count: `SELECT count(*)::bigint AS n FROM "LabourAttendance" a WHERE ${marker}`,
-      sample: `SELECT a."id", a."projectId", a."workerId", a."civilDate", a."shift", a."recordedById", a."revokedAt" FROM "LabourAttendance" a WHERE ${marker} ORDER BY a."projectId", a."civilDate", a."id" LIMIT ${SAMPLE_LIMIT}`,
+      // `exit` is what the operator acts on, and it is derived from the SAME predicate the finding
+      // is, so the runbook never has to restate the rule in hand-written SQL. It used to, and the
+      // two disagreed: a metadata-only query called a row with a malformed before-image "evidenced"
+      // and sent the operator to revoke it, after which the finding was still there and the same
+      // query gave the same unusable instruction. There is exactly one classifier now.
+      sample: `SELECT a."id", a."projectId", a."workerId", a."civilDate", a."shift", a."recordedById", a."revokedAt",
+                      CASE WHEN ${haveEvidence ? t3cGenuineEvidenceSql('a') : 'FALSE'}
+                           THEN 'revoke-through-the-application'
+                           ELSE 'quarantine' END AS "exit"
+                 FROM "LabourAttendance" a WHERE ${marker} ORDER BY a."projectId", a."civilDate", a."id" LIMIT ${SAMPLE_LIMIT}`,
     },
   ];
 }

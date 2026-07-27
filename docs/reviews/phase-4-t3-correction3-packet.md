@@ -193,21 +193,35 @@ path — or the gap that made such a state reachable. All four are closed here.
 | C | P2 | `T3CRepairAction.operator`/`reason` were `NOT NULL` and nothing more, and `NOT NULL` is satisfied by a space. A raw insert could store attribution naming nobody, and the append-only seal makes it permanent | a `T3CRepairAction_attribution_non_blank` CHECK using the repository's complete ASCII-whitespace trim set, added diagnostic-first (a pre-existing blank row is named, not surfaced as an opaque violation) and re-asserted by the migration. The evidence predicate also requires non-blank attribution, so a marker backed by such a row is reported as `F1.marker` and can be quarantined | `R4-C` — three whitespace variants all inserted successfully |
 | D | P1 | the quarantine's refusal was a metadata-only `count(*)` on `(rowId, repairId)` while the diagnostic validated the before-image SHAPE. A malformed evidence row was therefore reported by the preflight and declined by the repair — and with the evidence append-only and the row already revoked, nothing could clear it | one exported predicate, `t3cGenuineEvidenceSql`, used by both. Report and repair now ask the identical question by construction | `R4-D` — `already has repair evidence … not a forgery` while the preflight listed the same row |
 
+## Round 3e — the current-head Codex review of `03d0e0f` (6 findings)
+
+Three are the same class round 3d addressed — **a state that can be diagnosed but not exited** — and
+one of those (F6) is a trap the round-3d fix itself introduced. All six are closed here.
+
+| # | sev | finding | fix | RED evidence at `03d0e0f` |
+|---|---|---|---|---|
+| A | P1 | the diagnostic READS `T3CRepairAction` but locked only `LabourAttendance`, and the evidence seal was a later statement — so a concurrent `DELETE` committing in between left the migration sealing an emptied table and succeeding over a marker whose before-image was gone | both tables are locked `ACCESS EXCLUSIVE`, and the evidence triggers + attribution CHECK are installed inside the SAME statement as the diagnostic that validated them | `R5-A` |
+| B | P1 | the before-image shape check accepted `{"id": …, "manualReason": " "}` — it recorded none of the observation it claimed to preserve, so a direct writer could mint one, cite it from a pre-revoked marker, and have preflight AND the migration bless fabricated provenance | every immutable `LabourAttendance` column must be PRESENT (`jsonb_exists`, so an explicit null still counts) and EQUAL to the marked row. Correspondence is checkable precisely because `phase4_t3_attendance_append_only` freezes those columns; `manualReason` stays excluded from equality (rewriting it is the repair) but its shape is still checked per op | `R5-B` (incomplete), `R5-C` (complete but contradicting — and a complete, corresponding image is still accepted, so the rule is precise, not merely strict) |
+| C | P2 | on the preserved-revocation path `revokedById` is not written (the `COALESCE` keeps the original) so the FK never validated it — yet it was recorded in append-only evidence under a contract saying it is validated; a nonexistent user sailed through, covered for by the row's own valid key | the plan must NAME the revoker already on the row (a statement the operator can make truthfully after reading it), and the evidence records the REAL preserved attribution — `revokedById`/`revokedAt`/`revokeReason` read back from the before-image, with the operator's own words kept separately as `repairNote` | `R5-D` |
+| D | P1 | the migration's create-if-absent guards accepted a matching NAME, so a DISABLED or decoy same-named trigger made it skip creation and record itself applied over an unprotected table; the only postcondition checked trigger name ORDERING | every guard now checks `tgenabled = 'O'` + the bound function (and for the CHECK, `contype`, `convalidated` and the definition), and ABORTS on an invalid same-named object rather than silently replacing it — replacing would erase the evidence that someone put it there. Independent postconditions restate all three seals | `R5-E` |
+| E | P1 | the runbook's classify query labelled evidence from metadata alone while the diagnostic validated shape and attribution: a row citing an action with `beforeImage = {}` read as "evidenced", the operator was told to revoke and explicitly not quarantine, and afterwards the finding was still there with the same unusable instruction | the `F1.marker` sample now carries an **`exit`** column derived from the same predicate as the finding, and §P4T3C3 tells the operator to read it. The hand-written SQL is gone — there is one classifier | `R5-B` also asserts the sample's `exit` |
+| F | P1 | round 3d's own non-blank attribution CHECK aborted every repair when a legacy blank-attribution action existed. The evidence is append-only so the row cannot be edited away, the quarantine appends good evidence without removing the bad action, and an ORPHAN malformed action blocked every deploy without even producing an `F1.marker` | the rule is installed **NOT VALID** when such rows exist (a `WARNING`, not an abort): every FUTURE insert is rejected, the legacy rows are preserved verbatim, nothing is blocked. On a clean table it is VALIDATED — the stronger claim, still pinned by `R4-C`. Any marker relying on such an action is an `F1.marker` with `exit: quarantine` | `R5-F` |
+
 ## Gates
 
-All figures below are from the post-round-3d tree.
+All figures below are from the post-round-3e tree.
 
 | gate | result |
 |---|---|
 | `pnpm check` | **EXIT 0** — web 432/432, API 667/667, build clean |
 | all 67 migrations over an empty database | **applied cleanly** (the merged finding-A block is valid SQL on a fresh schema) |
-| full live-PostgreSQL integration suite | **69 files / 614 tests passed** |
-| `phase4-t3-correction3.test.ts` | **24/24** (12 directive + 6 round-3b + 2 round-3c quarantine + 4 round-3d) |
+| full live-PostgreSQL integration suite (recreated DB) | **69 files / 620 tests passed** |
+| `phase4-t3-correction3.test.ts` | **30/30** (12 directive + 6 round-3b + 2 round-3c + 4 round-3d + 6 round-3e) |
 | `phase4-t3-correction2.test.ts` | **6/6** with the project-scoped advisory barrier |
 | `boundary.test.ts` / `module-registry.test.ts` / `cross-module-graph.test.ts` | GREEN (114 tests; +4 indirect-SQL fixtures) |
 | `scripts/upgrade-proof.sh` | **PASSED** — the 4 round-3 assertions plus every prior Phase-1…Phase-4-T3C2 rejection |
 | `scripts/phase4-t3-correction3-production-runner-proof.sh` | **PASSED** — fresh / pre-Task-3 / clean / dirty-F1.blank (named, `20270220` never started, fabrication refused, repair, clean redeploy, row preserved) / already-corrected / **forged marker refused (Case 8)** / **pre-baseline P3005 seals verified and really executed (Case 7)** |
-| `pnpm test:e2e:api:allmodules` | **31/31** |
+| `pnpm test:e2e:api:allmodules` | **31/31** (materials-pilot 4/4; one run failed and a clean re-run was 31/31 — the documented timing-sensitive flake, no labour surface) |
 | `pnpm test:e2e:api:outbox` | **25/25** (6 skipped by mode) |
 
 ### Concurrency runs (directive item 5)
@@ -226,6 +240,17 @@ a table-wide `pg_locks` scan.
   advisory lock and never reaches the `ActivityRequirementRoot … FOR UPDATE` those barriers watched.
   The new `waitUntilBlockedOnProjectLock()` requires an UNGRANTED `advisory` lock, so it is a real
   barrier and not a loosened one. Every assertion in both probes is unchanged and still passes.
+- **Two probes changed their expected values, deliberately.** `R4-B` now names the row's actual
+  revoker (finding C makes a mismatched id a refusal) and asserts the corrected `detail` shape
+  (`revokeReason` = the preserved original, `repairNote` = the operator's words). Neither assertion
+  was weakened; both describe the new, more truthful contract.
+- **What `R5-A`/`R5-E` prove, and what they do not.** They prove the migration's own text: that both
+  tables are locked before the diagnostic reads them, that the seals are installed in that same
+  statement, that no second statement re-creates them, and that every guard tests enablement and
+  function binding. They do not simulate a concurrent writer or a planted decoy against a live
+  deploy. `R5-E` additionally asserts the running database is in the enforcing state via
+  `correctionSeals()`, and the production-runner proof exercises the real `migrate.sh` over seven
+  database states.
 - **What `R4-A` proves, and what it does not.** It proves the diagnostic, the lock and both seals are
   one statement in the migration file, and that no second statement re-creates either seal. It does
   not simulate a concurrent writer arriving mid-migration; the argument that no such window remains is

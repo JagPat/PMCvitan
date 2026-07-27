@@ -129,11 +129,19 @@ const EVIDENCE_SEAL_SQL = [
   // complete ASCII-whitespace trim set, so a tab-only operator is exactly as blank as a space-only
   // one.
   //
-  // Diagnosed BEFORE it is enforced, for the same reason every migration here is diagnostic-first:
-  // ADD CONSTRAINT validates existing rows, and an opaque check-violation on a table the operator
-  // has never heard of is not a usable error. A pre-existing blank row is named instead, and its
-  // exit is the quarantine — `t3cGenuineEvidenceSql` counts such evidence as invalid, so the marker
-  // it backs is reported as `F1.marker` and can be filed.
+  // NEVER a hard abort over pre-existing rows. An earlier draft raised here when a legacy blank-
+  // attribution action was found, and that was a trap of exactly the kind this engine exists to
+  // remove: the evidence table is append-only, so the malformed row cannot be edited away; the
+  // quarantine appends good evidence but preserves the bad action, so the raise would fire forever;
+  // and an ORPHAN malformed action (one no marker cites) blocked every repair and every deploy
+  // without even producing an `F1.marker` to explain itself.
+  //
+  // So the constraint is added NOT VALID when such rows exist. That is the honest state and it is
+  // the useful one: every FUTURE insert is rejected, the legacy rows stay exactly as they were
+  // written (they are the record that they were written), and nothing is blocked. On a clean table
+  // it is added VALIDATED, which is the stronger claim and the one `R4-C` pins. Either way the
+  // marker predicate treats blank-attributed evidence as invalid, so a marker relying on one is an
+  // `F1.marker` with the quarantine as its exit.
   `DO $do$
      DECLARE blank BIGINT;
    BEGIN
@@ -143,10 +151,13 @@ const EVIDENCE_SEAL_SQL = [
      SELECT count(*) INTO blank FROM "T3CRepairAction"
       WHERE btrim("operator", ${T3C_BLANK_TRIM_SET}) = '' OR btrim("reason", ${T3C_BLANK_TRIM_SET}) = '';
      IF blank > 0 THEN
-       RAISE EXCEPTION 'T3CRepairAction holds % row(s) whose operator or reason is blank — repair attribution that names nobody cannot be sealed as evidence. See docs/RUNBOOK.md §P4T3C3.', blank;
+       RAISE WARNING 'T3CRepairAction holds % legacy row(s) whose operator or reason is blank; the non-blank rule is installed NOT VALID so new evidence is constrained and the existing rows are preserved. See docs/RUNBOOK.md §P4T3C3.', blank;
+       ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
+         CHECK (btrim("operator", ${T3C_BLANK_TRIM_SET}) <> '' AND btrim("reason", ${T3C_BLANK_TRIM_SET}) <> '') NOT VALID;
+     ELSE
+       ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
+         CHECK (btrim("operator", ${T3C_BLANK_TRIM_SET}) <> '' AND btrim("reason", ${T3C_BLANK_TRIM_SET}) <> '');
      END IF;
-     ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
-       CHECK (btrim("operator", ${T3C_BLANK_TRIM_SET}) <> '' AND btrim("reason", ${T3C_BLANK_TRIM_SET}) <> '');
    END $do$`,
 ];
 
@@ -516,6 +527,18 @@ export class T3CRepairService {
         // records what the OPERATOR did, in the evidence, without overwriting what the original
         // revoker said.
         const preRevoked = before['revokedAt'] != null;
+        // On the preserved path `revokedById` is NOT written (the COALESCE below keeps the original),
+        // so the FK never validates it. Recording the plan's value in append-only evidence would
+        // therefore permanently store an id nothing ever checked, under a contract that says it is
+        // validated — a nonexistent user would sail through because the row's own valid key covered
+        // for it. The operator must instead NAME the revoker who is actually on the row, which is a
+        // statement they can make truthfully after reading it, and which the evidence can then
+        // record as true.
+        if (preRevoked && action.revokedById !== before['revokedById']) {
+          throw new RepairAbortedError(
+            `f1-mark-invalid-legacy: LabourAttendance ${action.id} was already revoked by ${JSON.stringify(before['revokedById'])}; that attribution is preserved, so the plan must name the same revokedById rather than one that will be ignored`,
+          );
+        }
         if (!action.revokeReason?.trim()) {
           throw new RepairAbortedError('f1-mark-invalid-legacy: revokeReason is required — say why this record is being retired');
         }
@@ -533,11 +556,18 @@ export class T3CRepairService {
         await this.recordEvidence(tx, repairId, plan, action, table, before, {
           markerPrefix: T3C_INVALID_LEGACY_PREFIX,
           originalManualReason: raw,
-          revokedById: action.revokedById,
-          revokeReason: action.revokeReason,
           // Stated in the evidence so a reader can tell which of the two shapes this repair took,
           // without having to compare timestamps to work out whose revocation is recorded on the row.
           revocationPreserved: preRevoked,
+          // What was actually WRITTEN to the row. On the preserved path that is the original
+          // revocation, read back from the before-image — never the plan's copy of it, so the
+          // evidence cannot claim an attribution the database does not hold.
+          revokedById: preRevoked ? before['revokedById'] : action.revokedById,
+          revokedAt: preRevoked ? before['revokedAt'] : null,
+          revokeReason: preRevoked ? before['revokeReason'] : action.revokeReason,
+          // The operator's own account of the RETIREMENT, which on the preserved path is a separate
+          // act from the revocation and must not be mistaken for it.
+          repairNote: action.revokeReason,
         });
         // ONE statement: the row is marked AND revoked together, so it can never be observed marked
         // but live. The revocation triple satisfies `LabourAttendance_revoke_attribution_check`.
