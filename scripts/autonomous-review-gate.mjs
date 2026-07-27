@@ -553,6 +553,13 @@ export async function ensureTerminalReviewState(
       );
       return true;
     }
+    const live = await refreshCurrentHead(
+      client,
+      pullRequest.number,
+      expectedHead,
+    );
+    if (!live) return true;
+    if (live.draft) return false;
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -564,13 +571,7 @@ export async function ensureTerminalReviewState(
         pullRequest.html_url,
       );
     }
-    const live = await setDraftForCurrentHead(
-      client,
-      pullRequest.number,
-      expectedHead,
-      false,
-    );
-    if (live) await client.enableAutoMerge(live);
+    await client.enableAutoMerge(live);
   } else {
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,

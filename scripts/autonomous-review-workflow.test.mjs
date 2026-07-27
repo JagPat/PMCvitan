@@ -231,7 +231,7 @@ test('a failed CI rerun preserves readiness after a terminal review success', ()
   );
 });
 
-test('recovering a buried clean verdict restores ready state before auto-merge', async () => {
+test('a buried clean verdict cannot promote a draft without a fresh polled review', async () => {
   const expectedHead = 'a'.repeat(40);
   const cleanStatus = {
     id: 301,
@@ -289,9 +289,24 @@ test('recovering a buried clean verdict restores ready state before auto-merge',
       cleanStatus,
       statuses,
     ),
+    false,
+  );
+  assert.deepEqual(draftTransitions, []);
+  assert.equal(autoMergeDraft, null);
+  assert.deepEqual(statusWrites, []);
+
+  pullRequest.draft = false;
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(
+      client,
+      pullRequest,
+      expectedHead,
+      cleanStatus,
+      statuses,
+    ),
     true,
   );
-  assert.deepEqual(draftTransitions, [false]);
+  assert.deepEqual(draftTransitions, []);
   assert.equal(autoMergeDraft, false);
   assert.equal(statusWrites[0].state, 'success');
   assert.match(statusWrites[0].description, /recovered prior clean/u);

@@ -101,6 +101,9 @@ cannot trigger another review of that finding-bearing head.
 The owner rechecks required CI immediately before publishing review success.
 Ordinary CI recovery searches the complete paginated status history, including
 terminal review results hidden below legacy `pending` or `ci:` statuses. Review
+success can be reused without another trigger only while the PR is already ready.
+If legacy CI left the PR draft, the owner enters the normal ready-and-poll path and
+requires a fresh exact-head result before enabling auto-merge. Review
 and review-comment webhooks are intentionally not orchestrator triggers. The Codex
 App's finding comments still wake the subscription-backed Claude Auto-fix session
 directly; GitHub Actions does not need an AI key or a second result writer.
