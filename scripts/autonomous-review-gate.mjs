@@ -23,6 +23,7 @@ const API_ROOT = 'https://api.github.com';
 const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 10 * 60_000);
 const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 15 * 60_000);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
+const TERMINAL_SETTLE_MS = Number(process.env.TERMINAL_SETTLE_MS ?? 5_000);
 
 export function summarizeRequiredChecks(checkRuns) {
   const missing = [];
@@ -766,13 +767,6 @@ export async function run() {
         );
         throw new Error(detail);
       }
-      pullRequest = await refreshCurrentHead(
-        client,
-        pullRequest.number,
-        expectedHead,
-      );
-      if (!pullRequest) return;
-      await client.enableAutoMerge(pullRequest);
       const finalResult = await reclassifyCurrentCodexEvidence(
         client,
         pullRequest.number,
@@ -822,6 +816,62 @@ export async function run() {
         'review: Codex found no blocking issue on this exact head',
         pullRequest.html_url,
       );
+
+      // All events for this PR share one workflow concurrency lane. Keep
+      // auto-merge disabled while late review delivery settles, then verify
+      // exact-head evidence once more before making the head mergeable.
+      await sleep(TERMINAL_SETTLE_MS);
+      const settledResult = await reclassifyCurrentCodexEvidence(
+        client,
+        pullRequest.number,
+        expectedHead,
+        reviewNotBefore,
+      );
+      const settledStatus = await client.latestStatus(
+        expectedHead,
+        STATUS_CONTEXT,
+      );
+      const settledReviewFailure = settledStatus?.state === 'failure'
+        && isTerminalReviewStatus(settledStatus);
+      if (settledResult.state !== 'clear' || settledReviewFailure) {
+        const detail = settledResult.state === 'changes_required'
+          ? settledResult.detail
+          : settledReviewFailure
+            ? settledStatus.description
+            : 'Codex evidence changed during terminal settlement';
+        await client.setStatus(
+          expectedHead,
+          'failure',
+          `review: ${detail}`,
+          pullRequest.html_url,
+        );
+        pullRequest = await setDraftForCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+          true,
+        );
+        if (!pullRequest) return;
+        await client.updateStickyComment(
+          pullRequest.number,
+          statusBody({
+            state: 'changes_required',
+            head: expectedHead,
+            detail,
+            attempt,
+            next: 'Claude Auto-fix handles the settled review evidence and pushes a new head.',
+          }),
+        );
+        throw new Error(detail);
+      }
+
+      pullRequest = await refreshCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+      );
+      if (!pullRequest) return;
+      await client.enableAutoMerge(pullRequest);
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({

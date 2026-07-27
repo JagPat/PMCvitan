@@ -213,7 +213,7 @@ test('workflow separates review-start events from result-only evidence events', 
   assert.doesNotMatch(workflow, /pull_request_target:/);
 });
 
-test('terminal success queues auto-merge before it can end the workflow', async () => {
+test('terminal success settles in the serialized lane before auto-merge', async () => {
   const gate = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
     'utf8',
@@ -224,23 +224,25 @@ test('terminal success queues auto-merge before it can end the workflow', async 
     gate.indexOf('if (attempt < MAX_REVIEW_ATTEMPTS)'),
   );
   assert.ok(clearBranch.indexOf('enableAutoMerge') >= 0);
-  assert.ok(clearBranch.indexOf('enableAutoMerge') < clearBranch.indexOf("'success'"));
-  const finalEvidence = clearBranch.lastIndexOf(
+  const publishedSuccess = clearBranch.indexOf("'success'");
+  const settledEvidence = clearBranch.lastIndexOf(
     'reclassifyCurrentCodexEvidence',
   );
-  const finalStatus = clearBranch.lastIndexOf('client.latestStatus');
-  const publishedSuccess = clearBranch.indexOf("'success'");
-  assert.ok(finalEvidence > clearBranch.indexOf('enableAutoMerge'));
-  assert.ok(finalStatus > finalEvidence);
-  assert.ok(finalStatus < publishedSuccess);
+  const settledStatus = clearBranch.lastIndexOf('client.latestStatus');
+  const enabledAutoMerge = clearBranch.lastIndexOf('enableAutoMerge');
+  assert.ok(publishedSuccess >= 0);
+  assert.ok(settledEvidence > publishedSuccess);
+  assert.ok(settledStatus > settledEvidence);
+  assert.ok(enabledAutoMerge > settledStatus);
 });
 
-test('review evidence cannot cancel the active review-start run', async () => {
+test('review starts and evidence share one non-cancelling concurrency lane', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
   assert.match(
     workflow,
-    /startsWith\(github\.event_name, 'pull_request_review'\) && github\.run_id \|\| 'start'/,
+    /group:\s*autonomous-review-\$\{\{ github\.event\.workflow_run\.pull_requests\[0\]\.number \|\| github\.event\.pull_request\.number \|\| inputs\.pr_number \|\| github\.run_id \}\}/,
   );
+  assert.doesNotMatch(workflow, /startsWith\(github\.event_name, 'pull_request_review'\)/);
   assert.match(workflow, /cancel-in-progress:\s*false/);
 });
 

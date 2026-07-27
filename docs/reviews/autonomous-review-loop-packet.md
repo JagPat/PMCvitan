@@ -92,19 +92,19 @@ review. A Codex finding therefore triggered another review of the unchanged SHA;
 that review triggered another workflow run, producing a live same-head loop on
 PR #230.
 
-The correction separates **review-start** from **review-result** events. Only CI
+The correction separates **review-start** from **review-result** behavior. Only CI
 completion for a head without a terminal Codex status, or an explicit operator
 dispatch, may initiate draft-to-ready. `pull_request_review: submitted` and
 `pull_request_review_comment: created` remain as result-only listeners: they
 accept only the Codex GitHub App and the exact current head, fail branch protection
 before presentation mutations, and draft the PR. They cannot call `reviewAttempt`
 or mark a PR ready. This preserves delayed-finding safety without creating another
-review request. Each result-only run uses its own `github.run_id` concurrency
-suffix, so rejected human events and accepted Codex evidence cannot cancel the
-single per-PR review-start run. Review-start runs are serialized rather than
-cancelled: a pushed head supersedes the active poll on its next bounded check,
-while a same-head CI rerun waits and then consumes the terminal status instead of
-performing another draft-to-ready transition.
+review request. Every start and result event for a PR shares one non-cancelling
+concurrency lane. The active poll reads Codex evidence directly; queued result
+handlers therefore cannot cancel it or race its terminal status write. A pushed
+head supersedes the active poll on its next bounded check, while a same-head CI
+rerun waits and then consumes the terminal status instead of performing another
+draft-to-ready transition.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with
@@ -115,14 +115,14 @@ ordinary CI events; CI failures remain retryable. New statuses use `review:` and
 emitted by the earlier gate, including `Codex submitted a current-head review`.
 Only `workflow_dispatch` can deliberately retry a terminal same-head review.
 
-Auto-merge is queued before review success is published. If a CI rerun observes an
-existing terminal success, it idempotently verifies or enables auto-merge before
-returning. This closes the cancellation window in which a newer per-PR workflow
-could otherwise stop the original run after success but before the queue operation.
-Immediately before success, the gate re-reads both exact-head Codex evidence and
-the latest durable status; a concurrently published review failure is republished
-as failure before the PR is drafted. Terminal failures similarly restore draft
-state before returning.
+Review success is published while auto-merge remains disabled. The serialized
+handler then waits through a bounded settlement window, re-reads exact-head Codex
+evidence and the durable status, and converts the status back to failure plus draft
+if a finding arrived. Auto-merge is enabled only after that settlement remains
+clean. A CI rerun that observes terminal success idempotently enables auto-merge,
+so a process failure between success publication and queueing is recoverable
+without another review request. Terminal failures similarly restore draft state
+before returning.
 
 A failed CI rerun is handled before terminal-review recovery. When the durable
 review verdict is success, the CI handoff preserves both that verdict and the PR's
