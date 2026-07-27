@@ -345,7 +345,84 @@ active membership and expects the standing refusal (finding L) — script-side p
 runtime change. `test:e2e:api` (allmodules) and `test:e2e:api:outbox`: **25 passed / 6
 sender-mode-skipped, EXIT 0 each, clean on the FIRST run** (no documented-flake retries needed).
 
-The PR is held as a **draft**. Per the directive it stays draft through every correction round and is
-marked ready only after Codex reviews the current head with no blocking finding. On merge,
-`docs/STATUS.md` moves Task 3 to `merged`; only then may the runner start Task 4. **Task 4 remains
-blocked.**
+## Round 3h — the current-head Codex review of `cd7b30c` (7 findings)
+
+Seven findings on the head `cd7b30c` (6 P1, 1 P2), the P1s all one theme sharpened a step further
+than round 3g: a seal is accepted only when it **is** the canonical object — approximating it
+(a truth table an attacker can satisfy, an event bitmask a stricter trigger can pass, an inventory
+that stops at the triggers, a rendering that consults the session) is still accepting something
+else. Each was reproduced RED at `cd7b30c` before the fix: seven focused probes (the extended
+`R5-E`/`R7-D`/`R7-H`/`R7-I` plus new `R3h-C`/`R3h-D`/`R3h-F`), two `boundary.test.ts` fixtures, and
+one `module-registry.test.ts` manifest pin — **10 RED at the base runtime**, all GREEN after.
+
+| # | finding (P) | fix |
+|---|---|---|
+| A | the round-3g truth-table CHECK verification can be approximated into: `<canonical> OR "manualReason" LIKE '%permit'` passes all four probe rows while admitting rows the canonical CHECK refuses — the table tests points, not the predicate (P1) | CHECKs are verified by **canonical-expression identity**: the canonical text is applied to a session-local `CREATE TEMP TABLE … (LIKE "X") ON COMMIT DROP` probe and `pg_get_expr(conbin)` of probe and actual are compared as text — total, cannot raise on attacker-supplied SQL, and cannot be approximated into. The truth-table machinery is REMOVED; the same probe-identity test runs in `correctionSeals()` and the migration's marker/attribution guards (`R7-D` third decoy block; `R7-H`) |
+| B | trigger seals tested required/forbidden event bits, not exact `tgtype` — a same-named trigger with EXTRA event bits on an unconditionally-raising function reads "sealed" while BLOCKING legitimate operations (an UPDATE-firing repair-path seal refuses every legal update) (P1) | every trigger seal pins the EXACT `tgtype` (27 append-only, 34 no-truncate, 7 row-before-insert); `T3C_TRIGGER_SEAL_SQL` compares `t.tgtype = $4`, `assertTriggersEnabled` reports `expected exactly N`, and the migration's five own-trigger guards + POST-CONDITIONS use the same equality (`R5-E`, `R7-I`) |
+| C | the prerequisite inventory stopped at the nine triggers — the 12 raw-SQL CHECKs, 6 unique keys (3 partial) and 10 composite FKs from `20270210`/`20270215` went unverified, so a db-push-shaped database missing `LabourAttendance_revoke_attribution_check` (a raw update could set `revokedAt` alone, permanently unattributed) or `WorkerAllocation_live_slice_key` could still baseline; `20270220`'s CHECK was not part of the seals answer at all (P1) | `correctionSeals()` verifies the WHOLE raw-SQL prerequisite inventory — 9 triggers by exact seal, 12 CHECKs by probe identity, 6 uniques by probe-index identity (`indisunique` + ordered columns + `indpred` deparse), 10 FKs by catalog structure (`conkey`/`confkey` attname arrays + `confrelid` + `convalidated`) — and layers `20270220`'s CHECK as its own answer: `correction2Installed` + `pendingMigrations` name exactly the re-runnable corrections to leave pending; `migrate.sh` skips resolve for BOTH when named (leaving only `20270225` pending while `20270220`'s CHECK was missing resolved that migration over a database without its constraint). The migration gains an in-file PREREQUISITES block asserting presence-by-name (`R3h-C`) |
+| D | `t3cRenderTs` appended `AT TIME ZONE 'UTC'` to `recordedAt`/`revokedAt` — but those are `TIMESTAMP(3)` WITHOUT time zone, so the cast produces a `timestamptz` that `to_char` renders in the SESSION TimeZone: evidence captured by an Asia/Kolkata session is diagnosed FORGED by a UTC deploy session, for the same stored value (P1) | the render is naive and total: `to_char(expr, 'YYYY-MM-DD"T"HH24:MI:SS.US')` — no `AT TIME ZONE`, no `Z`, consults no session setting; both capture and comparison sides use it (`R3h-D` proves Kolkata === UTC on the same row; `completeBeforeImage` in the suite re-homed onto it) |
+| E | the repair engine validated revoker standing by reading `Membership`/`Project`/`OrgMembership` directly — orgs-owned tables read from labour code; the round-3g honest note defended it as "not read-encapsulated", but the OWNER should answer the standing question (P1) | a new orgs-owned participant channel: `OrgsParticipant.hasProjectStanding(tx, projectId, userId)` (active membership OR owner/admin of the project's org — exactly `ProjectAccessService.authorize`'s rule); `assertRevokerEntitled` calls it, `labour.workflowParticipants` gains `'orgs'` (cycle-exempt; labour stays a LEAF, the graph stays acyclic), and `module-registry.test.ts` pins the edge |
+| F | the evidence table was erasable by DDL the drop guard never saw: `ALTER TABLE … DROP COLUMN "beforeImage"` reports object_type `table column` (the guard matched `table` only) and erased every before-image in one statement; `RENAME COLUMN` drops nothing at all, so no `sql_drop` trigger can see it (P1) | the drop guard matches `'table','table column'` via `address_names`; a NEW `phase4_t3c_evidence_alter_guard` (on `ddl_command_end`) refuses every other `ALTER TABLE` of the evidence table; the audited sealing paths scope it down (`ALTER EVENT TRIGGER … DISABLE/ENABLE` in the same transaction) around their own canonical `ADD CONSTRAINT` — without that scoping a re-created evidence table could be diagnosed but never sealed; removing either guard is a separate loud DDL act after which `t3c seals` reports NOT sealed (`R3h-F`) |
+| G | the boundary analyzer's raw-SQL walker followed variable initializers and aliases but not FUNCTION BODIES — SQL `return`ed by a local or imported function declaration (`function decisionSql() { return 'SELECT … FROM "Decision"' }`) produced zero findings (P2) | the declarations walk adds `decl.body` for `FunctionDeclaration`/`MethodDeclaration` (arrow/function-expression initializers were already covered); two new fixtures — local function declaration and imported function — both RED at `cd7b30c`, pin it |
+
+**Deliberate behaviour changes, each re-pinned rather than silently adapted:** the seal-refusal
+messages are now `is not the canonical marker rule` / `is not the canonical attribution rule`
+(identity, not truth-table wording) and `expected exactly N` (exact tgtype); `R5-E` pins the
+`tgtype <>` guard by a windowed source match; the suite's `completeBeforeImage` builds evidence via
+`t3cRenderTs` (finding D's render); every evidence-manipulating fixture now FIRST drops the alter
+guard — the loud act — before touching the table, and teardowns drop both event-trigger guards;
+tests that plant `LabourAttendance_manual_reason_non_blank` `NOT VALID` (the `legacyBlankMuster`
+fixture) must `VALIDATE CONSTRAINT` after the repair before asserting `installed`, because the seals
+answer now (correctly) demands what `20270220` really produces — a VALIDATED constraint.
+
+**The production-runner proof's Case 7b is REWRITTEN, not re-pinned.** Its old fixture replayed
+`20270210`/`20270215` over a db-push schema — but those migrations' 12 CHECKs are inline in
+`CREATE TABLE`, which fails over existing tables, so the replayed fixture physically cannot carry
+them, and round 3h's full-inventory seals check (rightly) answers 5 for it. The legitimate shape the
+leave-pending path exists for is a really-migrated database restored without its ledger, and the
+fixture is now exactly that: a CLONE of the migrated pre-correction base minus `_prisma_migrations`
+— nothing hand-installed. The case now asserts the full-inventory premise (inline CHECK, partial
+unique, composite FK present), that BOTH re-runnable corrections are left pending
+(`skipping resolve --applied` for `20270220` AND `20270225`), that `20270220`'s CHECK lands
+VALIDATED and both are recorded applied because they actually ran, and the forged-marker rejection
+now cites rows that all exist so the ONLY refusing object is the reserved-marker trigger.
+
+**Honest notes.** (1) Probe-deparse comparison is IDENTITY, not semantic equivalence: a
+differently-written but logically equivalent constraint is refused, deliberately — the canonical
+objects come from the migrations, and anything else on that name is by definition not them; the
+operator recovery is to drop the decoy and redeploy, documented in `docs/RUNBOOK.md §P4T3C3`.
+(2) The alter-guard scoping means the audited sealing paths themselves disable the guard for one
+statement inside their transaction; that window is exactly as trustworthy as the sealing code, which
+is the code being audited here — nothing else may use it silently, and the seals answer verifies the
+guard is enabled afterwards. (3) The migration's in-file PREREQUISITES block asserts
+presence-by-name only; the full structural semantics (deparse identity, exact tgtype, index/FK
+structure) live in `t3c seals`, which `migrate.sh` enforces on every baseline path — stated in the
+migration comment rather than duplicating ~400 lines of verifier SQL into it. (4) The round-3g R6
+note defended direct `Membership`/`Project`/`OrgMembership` reads as "not read-encapsulated"; that
+position is now retired in favour of the owner answering through `OrgsParticipant` — the analyzer
+did not force this (the tables are still not read-encapsulated), the review did.
+
+**Gates (round 3h):** reproduce-first — 7 focused probes (`R5-E`, `R7-D` third decoy, `R7-H`,
+`R7-I`, `R3h-C`, `R3h-D`, `R3h-F`), 2 `boundary.test.ts` function-body fixtures and 1
+`module-registry.test.ts` participant pin RED at the `cd7b30c` runtime, all GREEN after; the focused
+`phase4-t3-correction3.test.ts` **51/51**. `pnpm check` EXIT 0 (web 432/432, API **671/671**,
+`check:automation` included). Full integration suite on a pristine migrated DB: **69 files / 641
+tests**, EXIT 0. `upgrade-proof.sh` PASSED, EXIT 0. `t3c seals` on the migrated DB → `sealed`,
+exit 0. `phase4-t3-correction3-production-runner-proof.sh` PASSED — **73 assertions** with the
+REWRITTEN Case 7b (restored-dump fixture; both corrections left pending, executed, landing
+VALIDATED; the db-push Case 7 refusal unchanged). `test:e2e:api` (allmodules) and
+`test:e2e:api:outbox`: **25 passed / 6 sender-mode-skipped, EXIT 0 each, clean on the FIRST run**
+(no documented-flake retries needed).
+
+**Review-controller state, stated honestly:** the autonomous controller that requests the exact-head
+Codex review allows a maximum of **2 attempts, and both are now consumed** (attempt 2/2 was spent on
+the `cd7b30c` push). This push will therefore NOT trigger another automated Codex review by itself.
+JagPat has marked PR #230 ready-for-review with auto-merge armed behind the required
+`codex-current-head` exact-head gate, which fails closed — so nothing can merge until a HUMAN
+re-arms the controller or requests a fresh Codex review of the new head (e.g. an `@codex review`
+comment). Surfacing that is part of this round's deliverable; pretending another automated round
+will arrive is not.
+
+The PR is held per the directive: pushed normally, threads left for Codex, no self-promotion of
+draft state, no self-merge. On merge, `docs/STATUS.md` moves Task 3 to `merged`; only then may the
+runner start Task 4. **Task 4 remains blocked.**

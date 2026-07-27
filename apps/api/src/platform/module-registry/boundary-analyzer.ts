@@ -491,6 +491,14 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
           const init =
             (ts.isVariableDeclaration(decl) || ts.isPropertyDeclaration(decl) ? decl.initializer : undefined) ??
             (ts.isPropertyAssignment(decl) ? decl.initializer : undefined) ??
+            // A FUNCTION that returns SQL has no initializer at all — `function sql() { return
+            // 'SELECT … FROM "Decision"' }` followed by `$queryRawUnsafe(sql())` gathered nothing,
+            // so the same foreign read an imported constant now surfaces stayed invisible when
+            // wrapped in a call. The function BODY is gathered instead (arrow/function-expression
+            // initializers were already covered by the initializer walk above); every literal in
+            // the body contributes, which is the same conservative over-approximation the rest of
+            // this collector applies.
+            (ts.isFunctionDeclaration(decl) || ts.isMethodDeclaration(decl) ? decl.body : undefined) ??
             forOfSourceOf(decl);
           if (!init || seen.has(init)) continue;
           seen.add(init);

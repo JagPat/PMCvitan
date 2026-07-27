@@ -1,24 +1,37 @@
 import { randomUUID } from 'node:crypto';
 import type { PrismaService } from '../../prisma.service';
+import { OrgsParticipant } from '../../orgs/orgs.participant';
 import {
   runT3CDiagnostics,
   runT3CPlanRows,
   summarizeT3C,
-  t3cAttributionCheckTruthTableSql,
+  t3cCheckIdentitySql,
+  t3cForeignKeyIdentitySql,
   t3cGenuineEvidenceSql,
   t3cInvalidLegacyMarker,
-  t3cMarkerCheckTruthTableSql,
+  t3cProbeCheckSql,
+  t3cProbeTableSql,
+  t3cProbeUniqueSql,
   t3cQuarantinedMarker,
   t3cRenderTs,
+  t3cUniqueIdentitySql,
+  T3C_ATTRIBUTION_CHECK_SEAL,
   T3C_BLANK_TRIM_SET,
+  T3C_CORRECTION2_CHECK_SEAL,
   T3C_CORRECTION3_TRIGGER_SEALS,
   T3C_EVIDENCE_TRIGGER_SEALS,
   T3C_INVALID_LEGACY_PREFIX,
+  T3C_MARKER_CHECK_SEAL,
   T3C_MARKER_COLUMN,
+  T3C_PREREQUISITE_CHECK_SEALS,
+  T3C_PREREQUISITE_FK_SEALS,
   T3C_PREREQUISITE_TRIGGER_SEALS,
+  T3C_PREREQUISITE_UNIQUE_SEALS,
   T3C_REFERENCED_TABLES,
   T3C_REPAIR_GUC,
   T3C_TRIGGER_SEAL_SQL,
+  type RawQueryClient,
+  type T3CCheckSeal,
   type T3CDiagnosticsReport,
   type T3CTriggerSeal,
   type T3CTxClient,
@@ -115,9 +128,8 @@ function evidenceSealGuard(seal: T3CTriggerSeal, create: string): string {
        ${create};
      ELSIF tg.tgenabled <> 'O'
         OR tg.tgfoid::regproc::text <> '${seal.fn}'
-        OR (tg.tgtype & ${seal.requireBits}) <> ${seal.requireBits}
-        OR (tg.tgtype & ${seal.forbidBits}) <> 0 THEN
-       RAISE EXCEPTION '${seal.name} exists but does not seal the evidence — ${seal.what} (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P4T3C3.',
+        OR tg.tgtype <> ${seal.tgtype} THEN
+       RAISE EXCEPTION '${seal.name} exists but does not seal the evidence — ${seal.what} (enabled=%, function=%, tgtype=% expected ${seal.tgtype}). See docs/RUNBOOK.md §P4T3C3.',
          tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
      END IF;
    END $do$`;
@@ -213,6 +225,10 @@ const EVIDENCE_SEAL_SQL = [
   // DROP EVENT TRIGGER first. What this closes is the ONE-STATEMENT erasure and every ordinary
   // tooling path; removing the guard is a separate, loud, auditable DDL act — and `t3c seals`
   // reports its absence, so a database whose guard was removed is not "sealed".
+  // The guard covers the whole table AND its columns: `ALTER TABLE … DROP COLUMN "beforeImage"`
+  // fires `sql_drop` with object_type 'table column', not 'table', so a type-equality test let the
+  // same role erase every preserved original in one statement while the markers went on claiming
+  // their before-images existed. `address_names` carries the owning table's name for both shapes.
   `DO $do$
      DECLARE ev pg_event_trigger%ROWTYPE;
    BEGIN
@@ -220,8 +236,8 @@ const EVIDENCE_SEAL_SQL = [
      DECLARE obj record;
      BEGIN
        FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
-         IF obj.object_type = 'table' AND obj.object_name = 'T3CRepairAction' THEN
-           RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never dropped — the attendance markers point at the before-images it holds. See docs/RUNBOOK.md §P4T3C3.';
+         IF obj.object_type IN ('table', 'table column') AND 'T3CRepairAction' = ANY(obj.address_names) THEN
+           RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never dropped — the attendance markers point at the before-images it holds (attempted to drop %). See docs/RUNBOOK.md §P4T3C3.', obj.object_type;
          END IF;
        END LOOP;
      END;
@@ -260,42 +276,90 @@ const EVIDENCE_SEAL_SQL = [
   // marker predicate treats blank-attributed evidence as invalid, so a marker relying on one is an
   // `F1.marker` with the quarantine as its exit.
   //
-  // And when one already exists, its SEMANTICS are verified rather than its name. A same-named
-  // `CHECK (TRUE)`, or one covering only `operator`, would otherwise make this guard skip creation
-  // and the engine would go on writing evidence under a rule that permits exactly what it forbids —
-  // permanently, because the table is append-only. The existing expression is evaluated over
-  // {@link T3C_ATTRIBUTION_CHECK_PROBES}; a decoy is an ABORT, never something to replace silently.
+  // And when one already exists, its IDENTITY is verified rather than its name — the stored parse
+  // tree's deparse must equal the canonical expression's, obtained on a session-local TEMP probe
+  // table. Round 3g evaluated the expression over a finite truth table instead, and that accepts
+  // weaker same-named constraints (the canonical rule plus an `OR` arm the four probes never
+  // exercise); no finite row set decides an infinite string domain. A same-named `CHECK (TRUE)`, a
+  // token decoy, or a widened rule would each let the engine write evidence under a constraint that
+  // permits what it forbids — permanently, because the table is append-only. A decoy is an ABORT,
+  // never something to replace silently.
+  //
+  // This block runs BEFORE the ALTER guard below is created, deliberately: the first seal
+  // application on a table without the constraint must still be able to ADD it.
   `DO $do$
-     DECLARE blank BIGINT; expr TEXT; decides BOOLEAN;
+     DECLARE blank BIGINT; expr TEXT; canonical TEXT; guard_present BOOLEAN;
    BEGIN
      SELECT pg_get_expr(conbin, conrelid) INTO expr FROM pg_constraint
-      WHERE conname = 'T3CRepairAction_attribution_non_blank'
+      WHERE conname = '${T3C_ATTRIBUTION_CHECK_SEAL.name}'
         AND conrelid = '"T3CRepairAction"'::regclass AND contype = 'c';
      IF expr IS NOT NULL THEN
-       BEGIN
-         EXECUTE format($tt$${t3cAttributionCheckTruthTableSql('%s')}$tt$, expr) INTO decides;
-       EXCEPTION WHEN OTHERS THEN
-         decides := FALSE;
-       END;
-       IF decides IS NOT TRUE THEN
-         RAISE EXCEPTION 'T3CRepairAction_attribution_non_blank exists but does not reject blank attribution (%) — refusing to write evidence under a rule that permits what it forbids. See docs/RUNBOOK.md §P4T3C3.', expr;
+       ${t3cProbeTableSql('T3CRepairAction')};
+       ${t3cProbeCheckSql(T3C_ATTRIBUTION_CHECK_SEAL)};
+       SELECT pg_get_expr(conbin, conrelid) INTO canonical FROM pg_constraint
+        WHERE conname = 'probe_${T3C_ATTRIBUTION_CHECK_SEAL.name}'
+          AND conrelid = to_regclass('pg_temp."t3c_seal_probe_t3crepairaction"');
+       IF expr IS DISTINCT FROM canonical THEN
+         RAISE EXCEPTION 'T3CRepairAction_attribution_non_blank exists but is not the canonical attribution rule (found %, canonical %) — refusing to write evidence under a rule that permits what it forbids. See docs/RUNBOOK.md §P4T3C3.', expr, canonical;
        END IF;
        RETURN;
      END IF;
      IF EXISTS (SELECT 1 FROM pg_constraint
-                 WHERE conname = 'T3CRepairAction_attribution_non_blank'
+                 WHERE conname = '${T3C_ATTRIBUTION_CHECK_SEAL.name}'
                    AND conrelid = '"T3CRepairAction"'::regclass) THEN
        RAISE EXCEPTION 'T3CRepairAction_attribution_non_blank exists but is not a CHECK constraint — refusing to proceed. See docs/RUNBOOK.md §P4T3C3.';
      END IF;
+     -- The ALTER guard below is DATABASE-scoped while the table it guards can be dropped (that
+     -- deliberate act removes the drop guard but not this one), so on a re-created evidence table
+     -- the guard would refuse the very ADD CONSTRAINT that re-seals it — a state that could be
+     -- diagnosed but never exited. The audited sealing path is the ONE place allowed to add the
+     -- canonical constraint, so it scopes the guard down for exactly that statement and puts it
+     -- back; the re-enable plus the seals verification make any failure here loud, never silent.
+     SELECT EXISTS (SELECT 1 FROM pg_event_trigger WHERE evtname = 'phase4_t3c_evidence_alter_guard')
+       INTO guard_present;
+     IF guard_present THEN ALTER EVENT TRIGGER phase4_t3c_evidence_alter_guard DISABLE; END IF;
      SELECT count(*) INTO blank FROM "T3CRepairAction"
       WHERE btrim("operator", ${T3C_BLANK_TRIM_SET}) = '' OR btrim("reason", ${T3C_BLANK_TRIM_SET}) = '';
      IF blank > 0 THEN
        RAISE WARNING 'T3CRepairAction holds % legacy row(s) whose operator or reason is blank; the non-blank rule is installed NOT VALID so new evidence is constrained and the existing rows are preserved. See docs/RUNBOOK.md §P4T3C3.', blank;
-       ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
-         CHECK (btrim("operator", ${T3C_BLANK_TRIM_SET}) <> '' AND btrim("reason", ${T3C_BLANK_TRIM_SET}) <> '') NOT VALID;
+       ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "${T3C_ATTRIBUTION_CHECK_SEAL.name}"
+         CHECK (${T3C_ATTRIBUTION_CHECK_SEAL.canonicalExpr}) NOT VALID;
      ELSE
-       ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
-         CHECK (btrim("operator", ${T3C_BLANK_TRIM_SET}) <> '' AND btrim("reason", ${T3C_BLANK_TRIM_SET}) <> '');
+       ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "${T3C_ATTRIBUTION_CHECK_SEAL.name}"
+         CHECK (${T3C_ATTRIBUTION_CHECK_SEAL.canonicalExpr});
+     END IF;
+     IF guard_present THEN ALTER EVENT TRIGGER phase4_t3c_evidence_alter_guard ENABLE; END IF;
+   END $do$`,
+  // Destructive ALTERation is guarded as well as outright DROP. The sql_drop guard above sees a
+  // dropped column, but a RENAME drops nothing — `ALTER TABLE "T3CRepairAction" RENAME COLUMN
+  // "beforeImage" TO x` orphans every reader of the before-images without firing sql_drop at all.
+  // A ddl_command_end trigger sees every ALTER TABLE against the evidence table and refuses it.
+  // Removing this guard first is the same separate, loud, auditable DDL act as for the drop guard,
+  // and `t3c seals` reports its absence. Created LAST in this list, so the legitimate
+  // ADD CONSTRAINT above is never blocked by our own seal on first application.
+  `DO $do$
+     DECLARE ev pg_event_trigger%ROWTYPE;
+   BEGIN
+     CREATE OR REPLACE FUNCTION phase4_t3c_evidence_alter_guard() RETURNS event_trigger AS $fn$
+     DECLARE cmd record;
+     BEGIN
+       FOR cmd IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
+         IF cmd.command_tag = 'ALTER TABLE' AND cmd.objid = to_regclass('"T3CRepairAction"') THEN
+           RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never altered — dropping, renaming or retyping its columns would erase or orphan the before-images the attendance markers point at. See docs/RUNBOOK.md §P4T3C3.';
+         END IF;
+       END LOOP;
+     END;
+     $fn$ LANGUAGE plpgsql;
+
+     SELECT * INTO ev FROM pg_event_trigger WHERE evtname = 'phase4_t3c_evidence_alter_guard';
+     IF NOT FOUND THEN
+       CREATE EVENT TRIGGER phase4_t3c_evidence_alter_guard ON ddl_command_end
+         EXECUTE FUNCTION phase4_t3c_evidence_alter_guard();
+     ELSIF ev.evtenabled <> 'O'
+        OR ev.evtfoid::regproc::text <> 'phase4_t3c_evidence_alter_guard'
+        OR ev.evtevent <> 'ddl_command_end' THEN
+       RAISE EXCEPTION 'phase4_t3c_evidence_alter_guard exists but does not guard the evidence table against ALTER (enabled=%, function=%, event=%). See docs/RUNBOOK.md §P4T3C3.',
+         ev.evtenabled, ev.evtfoid::regproc::text, ev.evtevent;
      END IF;
    END $do$`,
 ];
@@ -419,6 +483,11 @@ const TRIGGERS_FOR_OP: Record<RepairAction['op'], string[]> = {
 };
 
 export class T3CRepairService {
+  /** The orgs-owned standing rule, reached through its participant — never by querying orgs tables
+   *  here. Constructed directly (the participant is stateless) because this service runs from the
+   *  operator CLI without Nest DI, exactly like the service itself. */
+  private readonly orgs = new OrgsParticipant();
+
   constructor(private readonly prisma: PrismaService) {}
 
   /** Read-only diagnostics over the top-level client (the `t3c:preflight` body). */
@@ -482,89 +551,129 @@ export class T3CRepairService {
     present: string[];
     missing: string[];
     /**
-     * Raw-SQL objects from `20270210000000`/`20270215000000` that are absent. NON-EMPTY means this
-     * database has the §C TABLES without the §C GUARDS — the `prisma db push` signature — and it is
-     * reported separately because the answer is different: those migrations `CREATE TABLE` and so
-     * cannot simply be left pending to re-run. `migrate.sh` refuses to baseline on this.
+     * Raw-SQL objects from `20270210000000`/`20270215000000` that are absent — the nine triggers,
+     * the twelve CHECK constraints, the six unique/candidate keys and the ten composite FKs that
+     * `prisma db push` does not reproduce. NON-EMPTY means this database has the §C TABLES without
+     * the §C GUARDS — the `db push` signature — and it is reported separately because the answer is
+     * different: those migrations `CREATE TABLE` and so cannot simply be left pending to re-run.
+     * `migrate.sh` refuses to baseline on this. Triggers alone were checked once, and a database
+     * carrying the triggers but not `LabourAttendance_revoke_attribution_check` baselined cleanly —
+     * after which a raw update could set `revokedAt` alone, a permanently unattributed correction.
      */
     prerequisitesMissing: string[];
+    /** Is `20270220000000`'s CHECK installed? When not, that migration joins the pending set. */
+    correction2Installed: boolean;
+    /**
+     * Migration directories `migrate.sh` must NOT resolve as applied on the P3005 baseline path —
+     * each is a re-runnable, diagnostic-first correction whose physical seals are absent, so it is
+     * left pending and `migrate deploy` executes it for real.
+     */
+    pendingMigrations: string[];
   }> {
-    const present: string[] = [];
-    const missing: string[] = [];
-    const prerequisitesMissing: string[] = [];
+    // ONE transaction: the CHECK/unique identity tests deparse canonical expressions on
+    // session-local TEMP probe tables, and a pooled client may hand consecutive queries to
+    // different connections. Everything here is read-only with respect to every REAL relation.
+    return this.prisma.$transaction(async (tx: T3CTxClient) => {
+      const present: string[] = [];
+      const missing: string[] = [];
+      const prerequisitesMissing: string[] = [];
 
-    for (const seal of T3C_PREREQUISITE_TRIGGER_SEALS) {
-      if (!(await this.triggerSealed(seal))) prerequisitesMissing.push(seal.name);
-    }
+      // Probe tables for every real table a CHECK/unique identity test needs, created once.
+      const probeTables = new Set<string>([
+        ...T3C_PREREQUISITE_CHECK_SEALS.map((s) => s.table),
+        ...T3C_PREREQUISITE_UNIQUE_SEALS.map((s) => s.table),
+        T3C_MARKER_CHECK_SEAL.table,
+        T3C_CORRECTION2_CHECK_SEAL.table,
+      ]);
+      for (const table of probeTables) await tx.$executeRawUnsafe(t3cProbeTableSql(table));
 
-    // A seal is only installed if it is present, ENABLED, wired to the function that actually
-    // enforces it, AND declared for the events it is supposed to intercept. A name alone proves
-    // nothing: `ALTER TABLE … DISABLE TRIGGER` leaves the row in `pg_trigger` with `tgenabled='D'`,
-    // a same-named trigger bound to some other function is a decoy, and — the hole a
-    // function-and-enabled test still leaves — an enabled `BEFORE UPDATE` trigger bound to the right
-    // function passes every one of those checks while no INSERT ever reaches it. Any of the three
-    // would let the baseline resolve `20270225000000` as applied over a database with no working
-    // backstop, permanently. See {@link T3C_TGTYPE}.
-    const haveEvidence = await this.evidenceTablePresent();
-    const triggerSeals = [
-      ...T3C_CORRECTION3_TRIGGER_SEALS,
-      ...(haveEvidence ? T3C_EVIDENCE_TRIGGER_SEALS : []),
-    ];
-    for (const seal of triggerSeals) {
-      if (await this.triggerSealed(seal)) present.push(seal.name);
-      else missing.push(seal.name);
-    }
+      // ── prerequisites: EVERY raw-SQL object of 20270210/20270215, not only the triggers ──
+      for (const seal of T3C_PREREQUISITE_TRIGGER_SEALS) {
+        if (!(await this.triggerSealed(tx, seal))) prerequisitesMissing.push(seal.name);
+      }
+      for (const seal of T3C_PREREQUISITE_CHECK_SEALS) {
+        if (!(await this.checkSealed(tx, seal))) prerequisitesMissing.push(seal.name);
+      }
+      for (const seal of T3C_PREREQUISITE_UNIQUE_SEALS) {
+        await tx.$executeRawUnsafe(t3cProbeUniqueSql(seal));
+        const rows = await tx.$queryRawUnsafe<Array<{ ok: boolean }>>(t3cUniqueIdentitySql(seal));
+        if (rows[0]?.ok !== true) prerequisitesMissing.push(seal.name);
+      }
+      for (const seal of T3C_PREREQUISITE_FK_SEALS) {
+        const rows = await tx.$queryRawUnsafe<Array<{ ok: boolean }>>(t3cForeignKeyIdentitySql(seal));
+        if (rows[0]?.ok !== true) prerequisitesMissing.push(seal.name);
+      }
 
-    const markerSealed = await this.checkConstraintDecides(
-      'LabourAttendance_marker_is_revoked',
-      'LabourAttendance',
-      t3cMarkerCheckTruthTableSql,
-      { requireValidated: true },
-    );
-    if (markerSealed) present.push('LabourAttendance_marker_is_revoked');
-    else missing.push('LabourAttendance_marker_is_revoked');
+      // ── correction 2 — its own PENDING layer, never a refusal (the migration is re-runnable) ──
+      const correction2Installed = await this.checkSealed(tx, T3C_CORRECTION2_CHECK_SEAL);
 
-    // The evidence attribution rule. Unlike the seals above it may legitimately be NOT VALID — a
-    // database whose repair predates it can hold blank-attributed legacy rows, and the whole point
-    // of installing it unvalidated is that those rows are preserved rather than becoming a deploy
-    // that can never succeed. So `convalidated` is deliberately NOT required here, and the
-    // difference is stated rather than smoothed over: what it guarantees is that every FUTURE insert
-    // must name someone and say something.
-    //
-    // Its SEMANTICS are required all the same, by evaluation. A same-named `CHECK (TRUE)`, or one
-    // covering only `operator`, is a validated check constraint that a name-only test accepts —
-    // and because this table is append-only, whitespace-only attribution admitted through that hole
-    // is permanent.
-    if (haveEvidence) {
-      const sealed = await this.checkConstraintDecides(
-        'T3CRepairAction_attribution_non_blank',
-        'T3CRepairAction',
-        t3cAttributionCheckTruthTableSql,
-        { requireValidated: false },
-      );
-      if (sealed) present.push('T3CRepairAction_attribution_non_blank');
-      else missing.push('T3CRepairAction_attribution_non_blank');
+      // A seal is only installed if it is present, ENABLED, wired to the function that actually
+      // enforces it, AND declared for EXACTLY the events the deployed DDL declares. A name alone
+      // proves nothing: `ALTER TABLE … DISABLE TRIGGER` leaves `tgenabled='D'`, a same-named
+      // trigger bound to some other function is a decoy, a `BEFORE UPDATE`-only variant lets every
+      // INSERT sail past — and EXTRA events are just as disqualifying as missing ones, because a
+      // `BEFORE INSERT OR UPDATE OR DELETE` binding of the unconditionally-raising append-only
+      // function rejects every legitimate evidence INSERT while a bitmask test calls it sealed.
+      // See {@link T3CTriggerSeal.tgtype}.
+      const haveEvidence = await this.evidenceTablePresent(tx);
+      const triggerSeals = [
+        ...T3C_CORRECTION3_TRIGGER_SEALS,
+        ...(haveEvidence ? T3C_EVIDENCE_TRIGGER_SEALS : []),
+      ];
+      for (const seal of triggerSeals) {
+        if (await this.triggerSealed(tx, seal)) present.push(seal.name);
+        else missing.push(seal.name);
+      }
 
-      // The DROP guard is an EVENT trigger — `pg_trigger` never sees it — verified with the same
-      // whole-seal discipline: enabled, bound to its function, and declared for `sql_drop`. A
-      // database whose guard was removed is not "sealed", however intact everything else looks.
-      const drop = await this.prisma.$queryRawUnsafe<Array<{ n: number }>>(
-        `SELECT count(*)::int AS n FROM pg_event_trigger
-          WHERE evtname = 'phase4_t3c_evidence_drop_guard'
-            AND evtenabled = 'O'
-            AND evtfoid::regproc::text = 'phase4_t3c_evidence_drop_guard'
-            AND evtevent = 'sql_drop'`,
-      );
-      if (Number(drop[0]?.n ?? 0) > 0) present.push('phase4_t3c_evidence_drop_guard');
-      else missing.push('phase4_t3c_evidence_drop_guard');
-    }
+      if (await this.checkSealed(tx, T3C_MARKER_CHECK_SEAL)) present.push(T3C_MARKER_CHECK_SEAL.name);
+      else missing.push(T3C_MARKER_CHECK_SEAL.name);
 
-    return {
-      installed: missing.length === 0 && prerequisitesMissing.length === 0,
-      present,
-      missing,
-      prerequisitesMissing,
-    };
+      // The evidence attribution rule. Unlike the seals above it may legitimately be NOT VALID — a
+      // database whose repair predates it can hold blank-attributed legacy rows, and the whole
+      // point of installing it unvalidated is that those rows are preserved rather than becoming a
+      // deploy that can never succeed. So `convalidated` is deliberately NOT required
+      // ({@link T3C_ATTRIBUTION_CHECK_SEAL}); its IDENTITY is required all the same.
+      if (haveEvidence) {
+        // The evidence probe is created HERE, not in the loop above — `LIKE "T3CRepairAction"`
+        // needs the real table, which exists only once a repair has run.
+        await tx.$executeRawUnsafe(t3cProbeTableSql(T3C_ATTRIBUTION_CHECK_SEAL.table));
+        if (await this.checkSealed(tx, T3C_ATTRIBUTION_CHECK_SEAL)) present.push(T3C_ATTRIBUTION_CHECK_SEAL.name);
+        else missing.push(T3C_ATTRIBUTION_CHECK_SEAL.name);
+
+        // The DROP and ALTER guards are EVENT triggers — `pg_trigger` never sees them — verified
+        // with the same whole-seal discipline: enabled, bound to their function, declared for their
+        // event. A database whose guard was removed is not "sealed", however intact the rest looks.
+        for (const guard of [
+          { name: 'phase4_t3c_evidence_drop_guard', event: 'sql_drop' },
+          { name: 'phase4_t3c_evidence_alter_guard', event: 'ddl_command_end' },
+        ]) {
+          const rows = await tx.$queryRawUnsafe<Array<{ n: number }>>(
+            `SELECT count(*)::int AS n FROM pg_event_trigger
+              WHERE evtname = $1
+                AND evtenabled = 'O'
+                AND evtfoid::regproc::text = $1
+                AND evtevent = $2`,
+            guard.name,
+            guard.event,
+          );
+          if (Number(rows[0]?.n ?? 0) > 0) present.push(guard.name);
+          else missing.push(guard.name);
+        }
+      }
+
+      const pendingMigrations: string[] = [];
+      if (!correction2Installed) pendingMigrations.push('20270220000000_phase4_t3_correction2');
+      if (missing.length > 0) pendingMigrations.push('20270225000000_phase4_t3_correction3');
+
+      return {
+        installed: missing.length === 0 && prerequisitesMissing.length === 0 && correction2Installed,
+        present,
+        missing,
+        prerequisitesMissing,
+        correction2Installed,
+        pendingMigrations,
+      };
+    });
   }
 
   /**
@@ -610,71 +719,65 @@ export class T3CRepairService {
   }
 
   /** Is one trigger present, ENABLED, bound to the function that enforces the rule, AND declared for
-   *  the events it exists to intercept? See {@link T3C_TGTYPE} for why the last clause is not
-   *  optional. */
-  private async triggerSealed(seal: T3CTriggerSeal): Promise<boolean> {
-    const rows = await this.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+   *  EXACTLY the events its DDL declares? See {@link T3CTriggerSeal.tgtype} for why this is equality
+   *  and not a bitmask. */
+  private async triggerSealed(client: RawQueryClient, seal: T3CTriggerSeal): Promise<boolean> {
+    const rows = await client.$queryRawUnsafe<Array<{ n: number }>>(
       T3C_TRIGGER_SEAL_SQL,
       seal.name,
       `"${seal.table}"`,
       seal.fn,
-      seal.requireBits,
-      seal.forbidBits,
+      seal.tgtype,
     );
     return Number(rows[0]?.n ?? 0) > 0;
   }
 
   /** Does the repair-evidence table exist here? Its absence means no repair has ever run. */
-  private async evidenceTablePresent(): Promise<boolean> {
-    const rows = await this.prisma.$queryRawUnsafe<Array<{ present: boolean }>>(
+  private async evidenceTablePresent(client: RawQueryClient = this.prisma): Promise<boolean> {
+    const rows = await client.$queryRawUnsafe<Array<{ present: boolean }>>(
       `SELECT to_regclass('"T3CRepairAction"') IS NOT NULL AS present`,
     );
     return rows[0]?.present === true;
   }
 
   /**
-   * Does a named CHECK constraint actually DECIDE the rule it is named for?
+   * IS a named CHECK constraint the canonical one — same parse tree, verified by deparse identity?
    *
-   * The SEMANTICS matter as much as the name. Testing the definition text for a couple of tokens
-   * tests spelling: `CHECK ("manualReason" LIKE '<prefix>%' OR "revokedAt" IS NULL)` mentions both
-   * halves of the marker rule, is a validated check constraint, and permits every live marked row —
-   * exactly the state that seal exists to forbid. `CHECK (TRUE)` mentions nothing and enforces
-   * nothing. So the constraint's OWN expression is pulled from the catalog and EVALUATED over a
-   * truth table, which is a claim about what it decides rather than how it reads.
+   * The name is not the rule, and neither is a finite behavioural test. Round 3f accepted a
+   * constraint whose text mentioned the right tokens; round 3g evaluated its expression over a
+   * truth table, and that still accepts weaker same-named constraints (the canonical expression
+   * plus an `OR` arm the probes never exercise — `OR "manualReason" LIKE '%permit'` passes all four
+   * marker probes while admitting a live marked row). No finite row set decides an infinite string
+   * domain. So the constraint's stored parse tree, rendered by `pg_get_expr`, must EQUAL the
+   * deparse of the canonical expression the owning migration writes — obtained on a session-local
+   * TEMP probe table in the same database, so both sides render identically. String equality is
+   * total: it cannot raise on a hostile expression and cannot be approximated into.
    *
-   * A decoy referencing some other column makes that evaluation error; that is caught here and
-   * reported as NOT sealed. Fail-closed: an expression this cannot verify is not one to trust.
-   *
-   * `requireValidated` distinguishes the two kinds of rule deliberately. The marker CHECK must be
-   * VALIDATED — it is installed over a table this correction has just proven clean. The evidence
-   * attribution CHECK may legitimately be NOT VALID, because a database whose repair predates it can
-   * hold blank-attributed legacy rows that are append-only and therefore un-editable; demanding
-   * validation there would be a deploy that can never succeed.
+   * MUST run inside the transaction that created the probe tables ({@link t3cProbeTableSql}).
+   * `requireValidated` distinguishes the marker CHECK (installed over a proven-clean table, so
+   * VALIDATED) from the evidence attribution CHECK (legitimately NOT VALID over preserved legacy
+   * rows — see {@link T3C_ATTRIBUTION_CHECK_SEAL}).
    */
-  private async checkConstraintDecides(
-    name: string,
-    table: string,
-    truthTable: (expr: string) => string,
-    opts: { requireValidated: boolean },
-  ): Promise<boolean> {
-    const found = await this.prisma.$queryRawUnsafe<Array<{ expr: string }>>(
-      `SELECT pg_get_expr(c.conbin, c.conrelid) AS expr FROM pg_constraint c
-        WHERE c.conname = $1
-          AND c.conrelid = to_regclass($2)
-          AND c.contype = 'c'
-          AND ($3::boolean IS FALSE OR c.convalidated)`,
-      name,
-      `"${table}"`,
-      opts.requireValidated,
-    );
-    const expr = found[0]?.expr;
-    if (!expr) return false;
+  private async checkSealed(tx: T3CTxClient, seal: T3CCheckSeal): Promise<boolean> {
+    // The probe ALTER runs under a SAVEPOINT: a plain try/catch is not enough inside a PostgreSQL
+    // transaction — after any errored statement the tx is aborted and EVERY later seal check would
+    // answer 25P02, turning one defect into a wall of noise. Rolling back to the savepoint keeps
+    // the transaction usable while this one seal fails closed.
+    await tx.$executeRawUnsafe('SAVEPOINT t3c_seal_probe');
     try {
-      const verdict = await this.prisma.$queryRawUnsafe<Array<{ ok: boolean }>>(truthTable(expr));
-      return verdict[0]?.ok === true;
+      await tx.$executeRawUnsafe(t3cProbeCheckSql(seal));
+      await tx.$executeRawUnsafe('RELEASE SAVEPOINT t3c_seal_probe');
     } catch {
+      // The canonical expression failed to parse against the probe's columns — that is a defect in
+      // THIS file, not the database; fail closed and let the seals report name it missing.
+      await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT t3c_seal_probe');
       return false;
     }
+    const rows = await tx.$queryRawUnsafe<Array<{ canonical: string | null; actual: string | null }>>(
+      t3cCheckIdentitySql(seal),
+    );
+    const row = rows[0];
+    return row?.canonical != null && row.actual != null && row.canonical === row.actual;
   }
 
   /** Inspect the `_prisma_migrations` records for the two attendance migrations (three-state
@@ -1019,12 +1122,13 @@ export class T3CRepairService {
    * with no standing there. An immutable, append-only misattribution is exactly the kind of record
    * this engine exists to prevent.
    *
-   * The rule is `ProjectAccessService.authorize`'s, in the same order and for the same reasons: an
-   * ACTIVE project membership, or org owner/admin on the project's org (the documented super-admin
-   * path — an owner legitimately operates every project in their org without an explicit
-   * membership). `Membership`/`OrgMembership`/`Project` are orgs-OWNED but not read-encapsulated, and
-   * validating a caller-supplied id against them in-tx is the established pattern — the same one
-   * `activities.service.ts` uses for `responsibleId` under the readiness lock.
+   * The QUESTION is answered by its OWNER. `Membership`/`OrgMembership`/`Project` are orgs-owned;
+   * an earlier draft queried them directly from here on the reasoning that they are not
+   * read-encapsulated, and that reasoning was rejected on review — not being read-encapsulated
+   * makes the read representable, not legitimate. So the rule lives in
+   * {@link OrgsParticipant.hasProjectStanding} (the same cycle-exempt participant channel every
+   * other cross-module interaction uses; `labour.workflowParticipants` lists `orgs`), evaluated
+   * against THIS transaction so the answer is consistent with what the repair sees.
    */
   private async assertRevokerEntitled(
     tx: T3CTxClient,
@@ -1032,20 +1136,8 @@ export class T3CRepairService {
     revokedById: string,
     op: string,
   ): Promise<void> {
-    const rows = await tx.$queryRawUnsafe<Array<{ entitled: boolean }>>(
-      `SELECT EXISTS (
-                SELECT 1 FROM "Membership" m
-                 WHERE m."projectId" = $1 AND m."userId" = $2 AND m."status" = 'active'
-              )
-           OR EXISTS (
-                SELECT 1 FROM "Project" p
-                  JOIN "OrgMembership" om ON om."orgId" = p."orgId" AND om."userId" = $2
-                 WHERE p."id" = $1 AND om."role" IN ('owner', 'admin')
-              ) AS entitled`,
-      projectId,
-      revokedById,
-    );
-    if (rows[0]?.entitled !== true) {
+    const entitled = await this.orgs.hasProjectStanding(tx, projectId, revokedById);
+    if (!entitled) {
       throw new RepairAbortedError(
         `${op}: revokedById ${JSON.stringify(revokedById)} has no standing on project ${JSON.stringify(projectId)} — a revocation is attributed to someone accountable FOR THAT PROJECT (an active membership, or owner/admin of its org), not merely to a user that exists`,
       );
@@ -1126,8 +1218,8 @@ export class T3CRepairService {
       const seal = EXPECTED_TRIGGER_SEAL[name]!;
       if (row.fn !== seal.fn) { bad.push(`${name}=bound to ${row.fn}, expected ${seal.fn}`); continue; }
       const bits = Number(row.tgtype);
-      if ((bits & seal.requireBits) !== seal.requireBits || (bits & seal.forbidBits) !== 0) {
-        bad.push(`${name}=tgtype ${bits} does not cover the events it must (${seal.what})`);
+      if (bits !== seal.tgtype) {
+        bad.push(`${name}=tgtype ${bits}, expected exactly ${seal.tgtype} (${seal.what})`);
       }
     }
     if (bad.length > 0) {

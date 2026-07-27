@@ -38,6 +38,116 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- ══ PREREQUISITES — the WHOLE raw-SQL object set of 20270210/20270215, not only its triggers ══
+-- This correction builds on `20270210000000`/`20270215000000`, and those migrations install more
+-- raw SQL than `schema.prisma` models: nine triggers, twelve CHECK constraints, six unique/candidate
+-- keys and ten composite FKs that `prisma db push` does not reproduce. A database carrying the §C
+-- TABLES without any of those objects (a push, a partial replay, a hand-built restore) must not
+-- receive this correction's seals as though the base underneath them were sound — e.g. without
+-- `LabourAttendance_revoke_attribution_check` a raw update can set `revokedAt` alone, creating a
+-- permanently unattributed correction this migration's own marker CHECK then builds on.
+--
+-- Presence and (for triggers) exact binding are asserted HERE; the FULL semantic verification —
+-- canonical-expression identity for every CHECK, column/predicate identity for every unique key,
+-- column-mapping identity for every FK — lives in `t3c seals`, which gates every `migrate.sh`
+-- path including the P3005 baseline. This block is the in-file restatement for a direct
+-- `prisma migrate deploy`, kept auditable on sight.
+DO $$
+DECLARE n INT; want RECORD;
+BEGIN
+  FOR want IN
+    SELECT * FROM (VALUES
+      ('LabourAttendance_append_only',          'LabourAttendance',          'phase4_t3_attendance_append_only',         27),
+      ('WorkerAllocation_frozen',               'WorkerAllocation',          'phase4_t3_allocation_frozen',              27),
+      ('LabourWorkFact_append_only',            'LabourWorkFact',            'phase3_immutable_row',                     27),
+      ('ApprovedSkillSubstitution_append_only', 'ApprovedSkillSubstitution', 'phase4_t3_skill_substitution_append_only', 27),
+      ('LabourWorkFact_matches_allocation',     'LabourWorkFact',            'phase4_t3_work_matches_allocation',         7),
+      ('WorkerAllocation_worker_active',        'WorkerAllocation',          'phase4_t3_allocation_worker_active',        7),
+      ('LabourAttendance_device_bound',         'LabourAttendance',          'phase4_t3_attendance_device_bound',         7),
+      ('WorkerAllocation_within_commitment',    'WorkerAllocation',          'phase4_t3_allocation_within_commitment',    7),
+      ('WorkerAllocation_head_live',            'WorkerAllocation',          'phase4_t3c_allocation_head_live',           7)
+    ) AS v(tgname, rel, fn, exact_tgtype)
+  LOOP
+    SELECT count(*) INTO n FROM pg_trigger t
+     WHERE t.tgname = want.tgname AND NOT t.tgisinternal
+       AND t.tgrelid = to_regclass('"' || want.rel || '"')
+       AND t.tgenabled = 'O' AND t.tgfoid::regproc::text = want.fn
+       AND t.tgtype = want.exact_tgtype;
+    IF n <> 1 THEN
+      RAISE EXCEPTION 'P4T3C3 ABORT: prerequisite trigger % on % (function %, tgtype exactly %) from 20270210/20270215 is not installed and enforcing — this database has the §C tables without the §C guards; do NOT baseline it. See docs/RUNBOOK.md §P4T3C3.',
+        want.tgname, want.rel, want.fn, want.exact_tgtype;
+    END IF;
+  END LOOP;
+
+  FOR want IN
+    SELECT * FROM (VALUES
+      ('WorkerAllocation_status_check',                    'WorkerAllocation'),
+      ('WorkerAllocation_shift_check',                     'WorkerAllocation'),
+      ('WorkerAllocation_revision_check',                  'WorkerAllocation'),
+      ('WorkerAllocation_release_attribution_check',       'WorkerAllocation'),
+      ('LabourAttendance_shift_check',                     'LabourAttendance'),
+      ('LabourAttendance_revoke_attribution_check',        'LabourAttendance'),
+      ('LabourAttendance_trusted_evidence',                'LabourAttendance'),
+      ('LabourAttendance_one_evidence_path',               'LabourAttendance'),
+      ('LabourWorkFact_shift_check',                       'LabourWorkFact'),
+      ('LabourWorkFact_minutes_check',                     'LabourWorkFact'),
+      ('ApprovedSkillSubstitution_distinct_check',         'ApprovedSkillSubstitution'),
+      ('ApprovedSkillSubstitution_revoke_attribution_check','ApprovedSkillSubstitution')
+    ) AS v(conname, rel)
+  LOOP
+    SELECT count(*) INTO n FROM pg_constraint c
+     WHERE c.conname = want.conname AND c.conrelid = to_regclass('"' || want.rel || '"')
+       AND c.contype = 'c' AND c.convalidated;
+    IF n <> 1 THEN
+      RAISE EXCEPTION 'P4T3C3 ABORT: prerequisite CHECK % on % from 20270210/20270215 is not installed and validated — this database has the §C tables without the §C constraints; do NOT baseline it. See docs/RUNBOOK.md §P4T3C3.',
+        want.conname, want.rel;
+    END IF;
+  END LOOP;
+
+  FOR want IN
+    SELECT * FROM (VALUES
+      ('WorkerAllocation_live_slice_key',               'WorkerAllocation'),
+      ('LabourAttendance_live_slice_key',               'LabourAttendance'),
+      ('ApprovedSkillSubstitution_active_key',          'ApprovedSkillSubstitution'),
+      ('LabourRequirementSpec_allocation_identity_key', 'LabourRequirementSpec'),
+      ('CapacityCommitment_slice_identity_key',         'CapacityCommitment'),
+      ('ActivityRequirement_demand_identity_key',       'ActivityRequirement')
+    ) AS v(idxname, rel)
+  LOOP
+    SELECT count(*) INTO n FROM pg_index i
+     WHERE i.indexrelid = to_regclass('"' || want.idxname || '"')
+       AND i.indrelid = to_regclass('"' || want.rel || '"')
+       AND i.indisunique;
+    IF n <> 1 THEN
+      RAISE EXCEPTION 'P4T3C3 ABORT: prerequisite unique key % on % from 20270210/20270215 is not installed — this database has the §C tables without the §C conservation keys; do NOT baseline it. See docs/RUNBOOK.md §P4T3C3.',
+        want.idxname, want.rel;
+    END IF;
+  END LOOP;
+
+  FOR want IN
+    SELECT * FROM (VALUES
+      ('WorkerAllocation_activity_fkey',        'WorkerAllocation'),
+      ('WorkerAllocation_spec_fkey',            'WorkerAllocation'),
+      ('WorkerAllocation_crew_fkey',            'WorkerAllocation'),
+      ('WorkerAllocation_commitment_fkey',      'WorkerAllocation'),
+      ('WorkerAllocation_command_fkey',         'WorkerAllocation'),
+      ('WorkerAllocation_demand_identity_fkey', 'WorkerAllocation'),
+      ('LabourAttendance_command_fkey',         'LabourAttendance'),
+      ('LabourWorkFact_activity_fkey',          'LabourWorkFact'),
+      ('LabourWorkFact_command_fkey',           'LabourWorkFact'),
+      ('ApprovedSkillSubstitution_command_fkey','ApprovedSkillSubstitution')
+    ) AS v(conname, rel)
+  LOOP
+    SELECT count(*) INTO n FROM pg_constraint c
+     WHERE c.conname = want.conname AND c.conrelid = to_regclass('"' || want.rel || '"')
+       AND c.contype = 'f' AND c.convalidated;
+    IF n <> 1 THEN
+      RAISE EXCEPTION 'P4T3C3 ABORT: prerequisite composite FK % on % from 20270210/20270215 is not installed and validated — this database has the §C tables without the §C containment; do NOT baseline it. See docs/RUNBOOK.md §P4T3C3.',
+        want.conname, want.rel;
+    END IF;
+  END LOOP;
+END $$;
+
 -- ══ DIAGNOSE AND SEAL — ONE STATEMENT, ONE TRANSACTION ════════════════════════════════════════
 -- This migration has NO transaction wrapper: Prisma runs the file statement by statement, so every
 -- statement boundary is a commit. Diagnosing in one statement and installing the guard in the next
@@ -58,7 +168,7 @@ $$ LANGUAGE plpgsql;
 -- attendance row whose before-image is gone. Evidence that can disappear between being checked and
 -- being sealed was never checked.
 DO $$
-DECLARE bad BIGINT; sample TEXT; have_evidence BOOLEAN; decides BOOLEAN;
+DECLARE bad BIGINT; sample TEXT; have_evidence BOOLEAN; canonical TEXT; guard_present BOOLEAN;
         tg pg_trigger%ROWTYPE; con pg_constraint%ROWTYPE; ev pg_event_trigger%ROWTYPE;
 BEGIN
   LOCK TABLE "LabourAttendance" IN ACCESS EXCLUSIVE MODE;
@@ -133,8 +243,7 @@ BEGIN
                                       -- string would RAISE instead of evaluating false, aborting the
                                       -- deploy opaquely and breaking the quarantine that uses this
                                       -- same rule. `row_to_json` renders a DATE as YYYY-MM-DD, so
-                                      -- text equality is exact; `recordedAt` is presence-only (its
-                                      -- rendering is session-dependent and no cast can be total).
+                                      -- text equality is exact.
                                       AND r."beforeImage"->>'id'              = a."id"
                                       AND r."beforeImage"->>'projectId'       = a."projectId"
                                       AND r."beforeImage"->>'workerId'        = a."workerId"
@@ -145,18 +254,21 @@ BEGIN
                                       AND r."beforeImage"->>'recordedById'    = a."recordedById"
                                       AND r."beforeImage"->>'sourceCommandId' = a."sourceCommandId"
                                       -- `recordedAt` by VALUE. Both sides rendered by the SAME
-                                      -- canonical UTC to_char, so the comparison is pure text: it
-                                      -- cannot raise on a forged string and cannot be defeated by
-                                      -- a session timezone. Presence alone let evidence carrying a
-                                      -- null or fabricated timestamp authenticate a marker.
-                                      AND r."beforeImage"->>'recordedAt'      = to_char(a."recordedAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+                                      -- to_char of the NAIVE stored value (these columns are
+                                      -- TIMESTAMP WITHOUT TIME ZONE): pure text, total, and
+                                      -- consulting NO session setting. The earlier AT TIME ZONE
+                                      -- 'UTC' form converted to timestamptz, which to_char renders
+                                      -- in the session TimeZone — a capture and a check in
+                                      -- different zones disagreed about the SAME stored value and
+                                      -- genuine evidence was diagnosed as forged.
+                                      AND r."beforeImage"->>'recordedAt'      = to_char(a."recordedAt", 'YYYY-MM-DD"T"HH24:MI:SS.US')
                                       -- THE REVOCATION HISTORY IS PRESERVED, NEVER REWRITTEN. A
                                       -- before-image recording a revocation must match the one on
                                       -- the row; recording none means the row was live when the
                                       -- repair found it, and the repair's own revocation (attributed
                                       -- in the evidence detail) is what is on it now.
                                       AND (r."beforeImage"->>'revokedAt' IS NULL
-                                           OR (r."beforeImage"->>'revokedAt'    = to_char(a."revokedAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+                                           OR (r."beforeImage"->>'revokedAt'    = to_char(a."revokedAt", 'YYYY-MM-DD"T"HH24:MI:SS.US')
                                            AND r."beforeImage"->>'revokedById'  IS NOT DISTINCT FROM a."revokedById"
                                            AND r."beforeImage"->>'revokeReason' IS NOT DISTINCT FROM a."revokeReason"))
                                       AND (
@@ -206,10 +318,12 @@ BEGIN
   -- fires, and an enabled `BEFORE UPDATE` trigger bound to `phase4_t3c3_attendance_reserved_marker`
   -- satisfies name, state and function while every INSERT — the only event this rule exists to
   -- intercept — sails straight past it. Bits: 1 = FOR EACH ROW, 2 = BEFORE, 4 = INSERT
-  -- (`src/include/catalog/pg_trigger.h`). Extra events are harmless; a missing one is the hole.
+  -- (`src/include/catalog/pg_trigger.h`). EQUALITY, not a bitmask: extra events are not harmless
+  -- either — a trigger bound to a raising function for MORE events than its DDL declares blocks
+  -- operations this correction promises to allow. The DDL above produces exactly 7.
   ELSIF tg.tgenabled <> 'O'
      OR tg.tgfoid::regproc::text <> 'phase4_t3c3_attendance_reserved_marker'
-     OR (tg.tgtype & 7) <> 7 THEN
+     OR tg.tgtype <> 7 THEN
     RAISE EXCEPTION
       'phase4 t3 correction3: a trigger named LabourAttendance_reserved_marker already exists but does not enforce the reserved marker on INSERT (enabled=%, function=%, tgtype=%) — refusing to record this migration as applied over an unprotected table. See docs/RUNBOOK.md §P4T3C3.',
       tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
@@ -232,38 +346,33 @@ BEGIN
           OR "manualReason" NOT LIKE '[invalid-legacy:blank-manual-reason]%'
           OR "revokedAt" IS NOT NULL);
   --
-  --     And what it DECIDES is verified, not how it READS. Testing the definition text for the
-  --     prefix and `revokedAt` tests spelling: `CHECK ("manualReason" LIKE '<prefix>%' OR
-  --     "revokedAt" IS NULL)` mentions both tokens, is a validated check constraint, and permits
-  --     EVERY live marked row — precisely the state this seal exists to forbid. So the existing
-  --     constraint's own expression is EVALUATED over the four-row truth table below (the same one
-  --     `T3CRepairService.correctionSeals` uses, so `t3c seals` and this migration agree by
-  --     construction). `COALESCE(expr, true)` models PostgreSQL's CHECK semantics exactly: a NULL
-  --     result passes. A decoy referencing some other column makes the EXECUTE raise, which is
-  --     caught and treated as "does not decide" — fail-closed, never fail-open.
+  --     And an existing one is accepted only when it IS the canonical constraint — same parse
+  --     tree, verified by DEPARSE IDENTITY. A token test accepted a decoy whose text mentioned the
+  --     right names; a four-row truth table (the previous round) still accepted weaker same-named
+  --     constraints, because the canonical rule plus an `OR` arm the probes never exercise — e.g.
+  --     `OR "manualReason" LIKE '%permit'` — passes every probe while admitting a live marked row
+  --     ending in `permit`. No finite row set decides an infinite string domain. So the canonical
+  --     expression is created on a session-local TEMP probe table cloned from this table's columns,
+  --     and the existing constraint's `pg_get_expr` must EQUAL the probe's. String equality is
+  --     total (nothing to raise) and cannot be approximated into. The same rule
+  --     `T3CRepairService.correctionSeals` applies, so `t3c seals` and this migration agree.
   ELSIF con.contype <> 'c' OR NOT con.convalidated THEN
     RAISE EXCEPTION
       'phase4 t3 correction3: a constraint named LabourAttendance_marker_is_revoked already exists but is not a VALIDATED check constraint (%) — refusing to record this migration as applied over an unprotected table. See docs/RUNBOOK.md §P4T3C3.',
       pg_get_constraintdef(con.oid);
   ELSE
-    BEGIN
-      EXECUTE format($tt$
-        SELECT bool_and(COALESCE((%s), true) = t."expected") AS ok
-          FROM (VALUES
-            ('[invalid-legacy:blank-manual-reason] repair=00000000-0000-0000-0000-000000000000'::text, NULL::timestamptz, false::boolean),
-            ('[invalid-legacy:blank-manual-reason] repair=00000000-0000-0000-0000-000000000000'::text, now()::timestamptz, true::boolean),
-            (NULL::text,                                                                                NULL::timestamptz, true::boolean),
-            ('dead battery on the site tablet — muster taken on paper'::text,                           NULL::timestamptz, true::boolean)
-          ) AS t("manualReason", "revokedAt", "expected")$tt$,
-        pg_get_expr(con.conbin, con.conrelid))
-        INTO decides;
-    EXCEPTION WHEN OTHERS THEN
-      decides := FALSE;
-    END;
-    IF decides IS NOT TRUE THEN
+    CREATE TEMP TABLE IF NOT EXISTS "t3c_mig_probe_labourattendance" (LIKE "LabourAttendance") ON COMMIT DROP;
+    ALTER TABLE "t3c_mig_probe_labourattendance" ADD CONSTRAINT "mig_probe_marker_is_revoked"
+      CHECK ("manualReason" IS NULL
+          OR "manualReason" NOT LIKE '[invalid-legacy:blank-manual-reason]%'
+          OR "revokedAt" IS NOT NULL);
+    SELECT pg_get_expr(conbin, conrelid) INTO canonical FROM pg_constraint
+     WHERE conname = 'mig_probe_marker_is_revoked'
+       AND conrelid = to_regclass('pg_temp."t3c_mig_probe_labourattendance"');
+    IF pg_get_expr(con.conbin, con.conrelid) IS DISTINCT FROM canonical THEN
       RAISE EXCEPTION
-        'phase4 t3 correction3: LabourAttendance_marker_is_revoked exists but does not REJECT a live reserved-marker row (%) — refusing to record this migration as applied over an unprotected table. See docs/RUNBOOK.md §P4T3C3.',
-        pg_get_constraintdef(con.oid);
+        'phase4 t3 correction3: LabourAttendance_marker_is_revoked exists but is not the canonical marker rule (found %, canonical %) — refusing to record this migration as applied over an unprotected table. See docs/RUNBOOK.md §P4T3C3.',
+        pg_get_constraintdef(con.oid), canonical;
     END IF;
   END IF;
 
@@ -341,7 +450,11 @@ BEGIN
       FOR EACH ROW EXECUTE FUNCTION phase4_t3c_repair_action_append_only();
   ELSIF tg.tgenabled <> 'O'
      OR tg.tgfoid::regproc::text <> 'phase4_t3c_repair_action_append_only'
-     OR (tg.tgtype & 27) <> 27 THEN   -- ROW(1) + BEFORE(2) + DELETE(8) + UPDATE(16)
+     -- EXACTLY 27 — ROW(1) + BEFORE(2) + DELETE(8) + UPDATE(16). A require-bits test accepted a
+     -- BEFORE INSERT OR UPDATE OR DELETE binding (31) of this unconditionally-raising function:
+     -- every required bit present, and every legitimate evidence INSERT rejected while the seal
+     -- reported valid — diagnosed rows left with no usable repair path.
+     OR tg.tgtype <> 27 THEN
     RAISE EXCEPTION
       'phase4 t3 correction3: T3CRepairAction_append_only exists but does not enforce append-only on both UPDATE and DELETE (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P4T3C3.',
       tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
@@ -353,8 +466,9 @@ BEGIN
       FOR EACH STATEMENT EXECUTE FUNCTION phase4_t3c_repair_action_no_truncate();
   ELSIF tg.tgenabled <> 'O'
      OR tg.tgfoid::regproc::text <> 'phase4_t3c_repair_action_no_truncate'
-     OR (tg.tgtype & 34) <> 34        -- BEFORE(2) + TRUNCATE(32)
-     OR (tg.tgtype & 1) <> 0 THEN     -- … and STATEMENT-level, never FOR EACH ROW
+     OR tg.tgtype <> 34 THEN          -- EXACTLY BEFORE(2) + TRUNCATE(32), statement-level: an extra
+                                      -- INSERT/UPDATE/DELETE statement bit on this raising function
+                                      -- would block every legitimate write while reading as sealed
     RAISE EXCEPTION
       'phase4 t3 correction3: T3CRepairAction_no_truncate exists but does not enforce the statement-level truncate seal (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P4T3C3.',
       tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
@@ -366,7 +480,7 @@ BEGIN
       FOR EACH ROW EXECUTE FUNCTION phase4_t3c_repair_action_path();
   ELSIF tg.tgenabled <> 'O'
      OR tg.tgfoid::regproc::text <> 'phase4_t3c_repair_action_path'
-     OR (tg.tgtype & 7) <> 7 THEN     -- ROW(1) + BEFORE(2) + INSERT(4)
+     OR tg.tgtype <> 7 THEN           -- EXACTLY ROW(1) + BEFORE(2) + INSERT(4)
     RAISE EXCEPTION
       'phase4 t3 correction3: T3CRepairAction_repair_path_only exists but does not restrict evidence writes to the repair path (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P4T3C3.',
       tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
@@ -381,12 +495,16 @@ BEGIN
   -- will can usually drop the event trigger first — what this closes is the one-statement erasure
   -- and every ordinary tooling path, and removing the guard is a separate, loud, auditable DDL act
   -- that `t3c seals` then reports as NOT sealed.
+  -- COLUMNS are guarded as well as the table: `ALTER TABLE … DROP COLUMN "beforeImage"` fires
+  -- sql_drop with object_type 'table column', not 'table', so a type-equality test let the same
+  -- role erase every preserved original in one statement while the markers went on claiming their
+  -- before-images existed. `address_names` carries the owning table's name for both shapes.
   CREATE OR REPLACE FUNCTION phase4_t3c_evidence_drop_guard() RETURNS event_trigger AS $fn$
   DECLARE obj record;
   BEGIN
     FOR obj IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
-      IF obj.object_type = 'table' AND obj.object_name = 'T3CRepairAction' THEN
-        RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never dropped — the attendance markers point at the before-images it holds. See docs/RUNBOOK.md §P4T3C3.';
+      IF obj.object_type IN ('table', 'table column') AND 'T3CRepairAction' = ANY(obj.address_names) THEN
+        RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never dropped — the attendance markers point at the before-images it holds (attempted to drop %). See docs/RUNBOOK.md §P4T3C3.', obj.object_type;
       END IF;
     END LOOP;
   END;
@@ -423,12 +541,14 @@ BEGIN
   --     diagnostic above treats blank-attributed evidence as invalid, so a marker relying on one is
   --     an F1.marker with the quarantine as its exit.
   --
-  --     And when one is already there, what it DECIDES is verified, not its name. A same-named
-  --     `CHECK (TRUE)`, or one covering only `operator`, is a check constraint that a name-only
-  --     guard accepts — and because this table is append-only, whitespace-only attribution admitted
-  --     through that hole is permanent. `convalidated` is deliberately NOT required (the NOT VALID
-  --     form above is the intended state on a database with legacy blank rows), but the semantics
-  --     are, over the same truth table `T3CRepairService.correctionSeals` uses.
+  --     And when one is already there, it is accepted only when it IS the canonical rule — deparse
+  --     identity against the canonical expression created on a session-local TEMP probe table,
+  --     exactly as for the marker CHECK above and for the same reason: a finite truth table (the
+  --     previous round) still accepted a same-named constraint carrying an extra `OR` arm the
+  --     probes never exercised, and because this table is append-only, whitespace attribution
+  --     admitted through that hole is permanent. `convalidated` is deliberately NOT required (the
+  --     NOT VALID form above is the intended state on a database with legacy blank rows), but
+  --     IDENTITY is. Same rule as `T3CRepairService.correctionSeals`.
   SELECT * INTO con FROM pg_constraint
    WHERE conname = 'T3CRepairAction_attribution_non_blank'
      AND conrelid = '"T3CRepairAction"'::regclass;
@@ -437,26 +557,26 @@ BEGIN
       RAISE EXCEPTION
         'phase4 t3 correction3: T3CRepairAction_attribution_non_blank exists but is not a CHECK constraint. See docs/RUNBOOK.md §P4T3C3.';
     END IF;
-    BEGIN
-      EXECUTE format($tt$
-        SELECT bool_and(COALESCE((%s), true) = t."expected") AS ok
-          FROM (VALUES
-            ('ops@vitan.in'::text,   'retiring a legacy blank muster'::text, true::boolean),
-            (E' \t\n\x0B\f\r'::text, 'retiring a legacy blank muster'::text, false::boolean),
-            ('ops@vitan.in'::text,   E' \t\n\x0B\f\r'::text,                 false::boolean),
-            (''::text,               ''::text,                               false::boolean)
-          ) AS t("operator", "reason", "expected")$tt$,
-        pg_get_expr(con.conbin, con.conrelid))
-        INTO decides;
-    EXCEPTION WHEN OTHERS THEN
-      decides := FALSE;
-    END;
-    IF decides IS NOT TRUE THEN
+    CREATE TEMP TABLE IF NOT EXISTS "t3c_mig_probe_t3crepairaction" (LIKE "T3CRepairAction") ON COMMIT DROP;
+    ALTER TABLE "t3c_mig_probe_t3crepairaction" ADD CONSTRAINT "mig_probe_attribution_non_blank"
+      CHECK (btrim("operator", E' \t\n\x0B\f\r') <> '' AND btrim("reason", E' \t\n\x0B\f\r') <> '');
+    SELECT pg_get_expr(conbin, conrelid) INTO canonical FROM pg_constraint
+     WHERE conname = 'mig_probe_attribution_non_blank'
+       AND conrelid = to_regclass('pg_temp."t3c_mig_probe_t3crepairaction"');
+    IF pg_get_expr(con.conbin, con.conrelid) IS DISTINCT FROM canonical THEN
       RAISE EXCEPTION
-        'phase4 t3 correction3: T3CRepairAction_attribution_non_blank exists but does not reject blank attribution (%) — refusing to record this migration as applied under a rule that permits what it forbids. See docs/RUNBOOK.md §P4T3C3.',
-        pg_get_constraintdef(con.oid);
+        'phase4 t3 correction3: T3CRepairAction_attribution_non_blank exists but is not the canonical attribution rule (found %, canonical %) — refusing to record this migration as applied under a rule that permits what it forbids. See docs/RUNBOOK.md §P4T3C3.',
+        pg_get_constraintdef(con.oid), canonical;
     END IF;
   ELSE
+    -- The ALTER guard below is DATABASE-scoped while the table it guards can be dropped (that
+    -- deliberate act removes the drop guard but not this one), so on a re-created evidence table
+    -- it would refuse the very ADD CONSTRAINT that re-seals it — diagnosable but never exitable.
+    -- The audited sealing paths are the ONLY places allowed to add the canonical constraint, so
+    -- this one scopes the guard down for exactly that statement and puts it back.
+    SELECT EXISTS (SELECT 1 FROM pg_event_trigger WHERE evtname = 'phase4_t3c_evidence_alter_guard')
+      INTO guard_present;
+    IF guard_present THEN ALTER EVENT TRIGGER phase4_t3c_evidence_alter_guard DISABLE; END IF;
     SELECT COUNT(*) INTO bad FROM "T3CRepairAction"
      WHERE btrim("operator", E' \t\n\x0B\f\r') = '' OR btrim("reason", E' \t\n\x0B\f\r') = '';
     IF bad > 0 THEN
@@ -468,6 +588,37 @@ BEGIN
       ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
         CHECK (btrim("operator", E' \t\n\x0B\f\r') <> '' AND btrim("reason", E' \t\n\x0B\f\r') <> '');
     END IF;
+    IF guard_present THEN ALTER EVENT TRIGGER phase4_t3c_evidence_alter_guard ENABLE; END IF;
+  END IF;
+
+  -- (e) DESTRUCTIVE ALTERATION is guarded as well as outright DROP. A RENAME drops nothing —
+  --     `ALTER TABLE "T3CRepairAction" RENAME COLUMN "beforeImage" TO x` orphans every reader of
+  --     the before-images without firing sql_drop at all — and a retype corrupts silently. A
+  --     ddl_command_end event trigger sees every ALTER TABLE against the evidence table and
+  --     refuses it. Created LAST in this block, deliberately: the legitimate ADD CONSTRAINT above
+  --     must never be blocked by our own seal on first application. Removing this guard is the
+  --     same separate, loud, auditable DDL act as for the drop guard, and `t3c seals` reports its
+  --     absence.
+  CREATE OR REPLACE FUNCTION phase4_t3c_evidence_alter_guard() RETURNS event_trigger AS $fn$
+  DECLARE cmd record;
+  BEGIN
+    FOR cmd IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
+      IF cmd.command_tag = 'ALTER TABLE' AND cmd.objid = to_regclass('"T3CRepairAction"') THEN
+        RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never altered — dropping, renaming or retyping its columns would erase or orphan the before-images the attendance markers point at. See docs/RUNBOOK.md §P4T3C3.';
+      END IF;
+    END LOOP;
+  END;
+  $fn$ LANGUAGE plpgsql;
+  SELECT * INTO ev FROM pg_event_trigger WHERE evtname = 'phase4_t3c_evidence_alter_guard';
+  IF NOT FOUND THEN
+    CREATE EVENT TRIGGER phase4_t3c_evidence_alter_guard ON ddl_command_end
+      EXECUTE FUNCTION phase4_t3c_evidence_alter_guard();
+  ELSIF ev.evtenabled <> 'O'
+     OR ev.evtfoid::regproc::text <> 'phase4_t3c_evidence_alter_guard'
+     OR ev.evtevent <> 'ddl_command_end' THEN
+    RAISE EXCEPTION
+      'phase4 t3 correction3: phase4_t3c_evidence_alter_guard exists but does not guard the evidence table against ALTER (enabled=%, function=%, event=%). See docs/RUNBOOK.md §P4T3C3.',
+      ev.evtenabled, ev.evtfoid::regproc::text, ev.evtevent;
   END IF;
 END $$;
 
@@ -515,7 +666,7 @@ BEGIN
       FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_allocation_project_lock();
   ELSIF tg.tgenabled <> 'O'
      OR tg.tgfoid::regproc::text <> 'phase4_t3c3_allocation_project_lock'
-     OR (tg.tgtype & 7) <> 7 THEN   -- ROW(1) + BEFORE(2) + INSERT(4)
+     OR tg.tgtype <> 7 THEN         -- EXACTLY ROW(1) + BEFORE(2) + INSERT(4)
     RAISE EXCEPTION
       'phase4 t3 correction3: WorkerAllocation_00_project_lock exists but does not take the project readiness lock BEFORE each inserted row (enabled=%, function=%, tgtype=%) — refusing to record this migration as applied. See docs/RUNBOOK.md §P4T3C3.',
       tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
@@ -561,7 +712,7 @@ BEGIN
    WHERE t.tgname = 'LabourAttendance_reserved_marker' AND NOT t.tgisinternal
      AND t.tgrelid = '"LabourAttendance"'::regclass
      AND t.tgenabled = 'O' AND t.tgfoid::regproc::text = 'phase4_t3c3_attendance_reserved_marker'
-     AND (t.tgtype & 7) = 7;   -- ROW + BEFORE + INSERT
+     AND t.tgtype = 7;   -- EXACTLY ROW + BEFORE + INSERT
   IF n <> 1 THEN
     RAISE EXCEPTION 'P4T3C3 ABORT: the reserved-marker trigger is not installed, enabled and firing BEFORE INSERT on LabourAttendance';
   END IF;
@@ -570,7 +721,7 @@ BEGIN
    WHERE t.tgname = 'WorkerAllocation_00_project_lock' AND NOT t.tgisinternal
      AND t.tgrelid = '"WorkerAllocation"'::regclass
      AND t.tgenabled = 'O' AND t.tgfoid::regproc::text = 'phase4_t3c3_allocation_project_lock'
-     AND (t.tgtype & 7) = 7;   -- ROW + BEFORE + INSERT
+     AND t.tgtype = 7;   -- EXACTLY ROW + BEFORE + INSERT
   IF n <> 1 THEN
     RAISE EXCEPTION 'P4T3C3 ABORT: the allocation project-lock trigger is not installed, enabled and firing BEFORE INSERT on WorkerAllocation';
   END IF;
@@ -593,19 +744,21 @@ DO $$
 DECLARE n INT; want RECORD;
 BEGIN
   IF to_regclass('"T3CRepairAction"') IS NULL THEN RETURN; END IF;
+  -- EXACT tgtype per trigger — a require-bits test accepted extra event bits, and on these
+  -- unconditionally-raising functions an extra bit means legitimate operations are blocked while
+  -- the assertion reads as sealed.
   FOR want IN
     SELECT * FROM (VALUES
-      ('T3CRepairAction_append_only',      'phase4_t3c_repair_action_append_only', 27, 0, 'append-only on UPDATE and DELETE'),
-      ('T3CRepairAction_no_truncate',      'phase4_t3c_repair_action_no_truncate', 34, 1, 'statement-level TRUNCATE seal'),
-      ('T3CRepairAction_repair_path_only', 'phase4_t3c_repair_action_path',         7, 0, 'evidence written only by the repair path')
-    ) AS v(tgname, fn, require_bits, forbid_bits, what)
+      ('T3CRepairAction_append_only',      'phase4_t3c_repair_action_append_only', 27, 'append-only on UPDATE and DELETE'),
+      ('T3CRepairAction_no_truncate',      'phase4_t3c_repair_action_no_truncate', 34, 'statement-level TRUNCATE seal'),
+      ('T3CRepairAction_repair_path_only', 'phase4_t3c_repair_action_path',         7, 'evidence written only by the repair path')
+    ) AS v(tgname, fn, exact_tgtype, what)
   LOOP
     SELECT count(*) INTO n FROM pg_trigger t
      WHERE t.tgname = want.tgname AND NOT t.tgisinternal
        AND t.tgrelid = '"T3CRepairAction"'::regclass
        AND t.tgenabled = 'O' AND t.tgfoid::regproc::text = want.fn
-       AND (t.tgtype & want.require_bits) = want.require_bits
-       AND (t.tgtype & want.forbid_bits) = 0;
+       AND t.tgtype = want.exact_tgtype;
     IF n <> 1 THEN
       RAISE EXCEPTION 'P4T3C3 ABORT: % is not installed, enabled and enforcing on T3CRepairAction (%)', want.tgname, want.what;
     END IF;
@@ -623,6 +776,13 @@ BEGIN
      AND evtfoid::regproc::text = 'phase4_t3c_evidence_drop_guard' AND evtevent = 'sql_drop';
   IF n <> 1 THEN
     RAISE EXCEPTION 'P4T3C3 ABORT: the evidence DROP guard event trigger is not installed and enabled';
+  END IF;
+
+  SELECT count(*) INTO n FROM pg_event_trigger
+   WHERE evtname = 'phase4_t3c_evidence_alter_guard' AND evtenabled = 'O'
+     AND evtfoid::regproc::text = 'phase4_t3c_evidence_alter_guard' AND evtevent = 'ddl_command_end';
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'P4T3C3 ABORT: the evidence ALTER guard event trigger is not installed and enabled';
   END IF;
 END $$;
 

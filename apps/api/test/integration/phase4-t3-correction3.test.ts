@@ -11,7 +11,7 @@ import { LabourService } from '../../src/labour/labour.service';
 import { LabourCapacityService } from '../../src/labour/labour-capacity.service';
 import { CapabilitiesService, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
 import { T3CRepairService, RepairAbortedError } from '../../src/labour/t3c/t3c-repair.service';
-import { T3C_INVALID_LEGACY_PREFIX } from '../../src/labour/t3c/t3c-diagnostics';
+import { t3cRenderTs, T3C_INVALID_LEGACY_PREFIX } from '../../src/labour/t3c/t3c-diagnostics';
 import type { AuthUser } from '../../src/common/auth';
 
 /**
@@ -78,6 +78,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     await raceB?.$disconnect();
     await t?.prisma.$executeRawUnsafe(TRUNCATE);
     await t?.prisma.$executeRawUnsafe('DROP EVENT TRIGGER IF EXISTS phase4_t3c_evidence_drop_guard');
+    await t?.prisma.$executeRawUnsafe('DROP EVENT TRIGGER IF EXISTS phase4_t3c_evidence_alter_guard');
     await t?.prisma.$executeRawUnsafe('DROP TABLE IF EXISTS "T3CRepairAction"');
     await f?.cleanup();
     await t?.close();
@@ -89,6 +90,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     // a test harness resetting a scratch table is exactly the actor the guard cannot and does
     // not claim to stop, only to make explicit.
     await t.prisma.$executeRawUnsafe('DROP EVENT TRIGGER IF EXISTS phase4_t3c_evidence_drop_guard');
+    await t.prisma.$executeRawUnsafe('DROP EVENT TRIGGER IF EXISTS phase4_t3c_evidence_alter_guard');
     await t.prisma.$executeRawUnsafe('DROP TABLE IF EXISTS "T3CRepairAction"');
     // `legacyBlankMuster` leaves the deployed CHECK re-added NOT VALID (exactly the production
     // situation: the constraint cannot be validated while the legacy row is there). Now that the
@@ -1053,9 +1055,12 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
    */
   const completeBeforeImage = async (id: string, manualReason: string): Promise<Record<string, unknown>> => {
     const rows = await t.prisma.$queryRawUnsafe<Array<{ img: Record<string, unknown> }>>(
+      // The SAME canonical rendering the predicate uses (t3cRenderTs): the NAIVE stored value,
+      // no zone arithmetic — round 3h corrected the AT TIME ZONE 'UTC' form, which rendered in the
+      // session TimeZone and made honest evidence session-dependent.
       `SELECT to_jsonb(t) || jsonb_build_object(
-          'recordedAt', to_char(t."recordedAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-          'revokedAt',  to_char(t."revokedAt"  AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+          'recordedAt', ${t3cRenderTs('t."recordedAt"')},
+          'revokedAt',  ${t3cRenderTs('t."revokedAt"')},
           'manualReason', $2::text
         ) AS img FROM "LabourAttendance" t WHERE t."id" = $1`,
       id, manualReason,
@@ -1204,6 +1209,9 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     );
     // Round 7 strengthened this: a guard that checks the ENABLED flag and the bound FUNCTION still
     // accepts a trigger declared for the wrong EVENTS, so each guard must also test `tgtype`.
+    // Round 3h strengthened it AGAIN: EXACT tgtype inequality (`tg.tgtype <>`), not a bitmask — a
+    // require-bits test accepted extra event bits, and on an unconditionally-raising function an
+    // extra bit blocks legitimate operations while the guard reads as sealed.
     for (const fn of [
       'phase4_t3c3_attendance_reserved_marker',
       'phase4_t3c3_allocation_project_lock',
@@ -1213,8 +1221,8 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     ]) {
       const at = sql.indexOf(`tgfoid::regproc::text <> '${fn}'`);
       expect(at, `${fn}: no ELSIF guard on the bound function`).toBeGreaterThan(-1);
-      expect(sql.slice(at - 80, at + 200), `${fn}: the guard must test the trigger's EVENTS too`).toMatch(
-        /tg\.tgenabled <> 'O'[\s\S]*tg\.tgtype &/,
+      expect(sql.slice(at - 80, at + 700), `${fn}: the guard must test the trigger's EXACT events`).toMatch(
+        /tg\.tgenabled <> 'O'[\s\S]*tg\.tgtype <>/,
       );
     }
     expect(sql, 'the CHECK must be validated, not merely present').toContain('NOT con.convalidated');
@@ -1240,6 +1248,10 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
 
     // A legacy malformed action that NO marker cites — the orphan case. It cannot be edited away
     // (append-only) and the quarantine would not remove it.
+    // dropping the evidence constraint is a destructive ALTER — the round-3h guard refuses it, so
+    // simulating the legacy state first requires the separate loud act of removing the guard (the
+    // next repair re-creates both).
+    await t.prisma.$executeRawUnsafe(`DROP EVENT TRIGGER IF EXISTS phase4_t3c_evidence_alter_guard`);
     await t.prisma.$executeRawUnsafe(`ALTER TABLE "T3CRepairAction" DROP CONSTRAINT "T3CRepairAction_attribution_non_blank"`);
     await rawEvidence('66666666-6666-6666-6666-666666666666', 'att-orphan', '{}', '   ', '  ');
 
@@ -1610,7 +1622,33 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
       ],
       async () => {
         expect((await repairs.correctionSeals()).missing).toContain('LabourAttendance_marker_is_revoked');
-        expect(runMigration().output).toContain('does not REJECT a live reserved-marker row');
+        expect(runMigration().output).toContain('is not the canonical marker rule');
+      },
+    );
+    expect((await repairs.correctionSeals()).installed).toBe(true);
+
+    // ROUND 3h: the WIDENED decoy — the canonical expression plus an OR arm no finite truth table
+    // exercises. RED at cd7b30c: it passed all four behaviour probes while admitting a live marked
+    // row ending in "permit"; only canonical-expression IDENTITY refuses it.
+    await withDecoy(
+      [
+        `ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_marker_is_revoked"`,
+        `ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_marker_is_revoked"
+           CHECK ("manualReason" IS NULL
+               OR "manualReason" NOT LIKE '${T3C_INVALID_LEGACY_PREFIX}%'
+               OR "revokedAt" IS NOT NULL
+               OR "manualReason" LIKE '%permit')`,
+      ],
+      [
+        `ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_marker_is_revoked"`,
+        `ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_marker_is_revoked"
+           CHECK ("manualReason" IS NULL
+               OR "manualReason" NOT LIKE '${T3C_INVALID_LEGACY_PREFIX}%'
+               OR "revokedAt" IS NOT NULL)`,
+      ],
+      async () => {
+        expect((await repairs.correctionSeals()).missing).toContain('LabourAttendance_marker_is_revoked');
+        expect(runMigration().output).toContain('is not the canonical marker rule');
       },
     );
     expect((await repairs.correctionSeals()).installed).toBe(true);
@@ -1690,7 +1728,12 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     // `migrate.sh` resolved correction 3 as applied instead of executing the block that seals the
     // evidence, leaving every trusted before-image updateable.
     await withDecoy(
-      [`ALTER TABLE "T3CRepairAction" DISABLE TRIGGER "T3CRepairAction_append_only"`],
+      [
+        // disabling an evidence trigger is a destructive ALTER — the round-3h guard refuses it
+        // unless the operator first performs the separate, loud act of removing the guard
+        `DROP EVENT TRIGGER IF EXISTS phase4_t3c_evidence_alter_guard`,
+        `ALTER TABLE "T3CRepairAction" DISABLE TRIGGER "T3CRepairAction_append_only"`,
+      ],
       [`ALTER TABLE "T3CRepairAction" ENABLE TRIGGER "T3CRepairAction_append_only"`],
       async () => {
         const seals = await repairs.correctionSeals();
@@ -1721,8 +1764,11 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
         expect(run.output).toContain('does not enforce append-only on both UPDATE and DELETE');
       },
     );
-    expect((await repairs.correctionSeals()).installed).toBe(true);
+    // the fixture planted the non-blank rule NOT VALID and removed the ALTER guard; the repair
+    // retired the blank, so validating is legal, and the migration re-creates the guard.
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
     expect(runMigration().code).toBe(0);
+    expect((await repairs.correctionSeals()).installed).toBe(true);
   });
 
   it('R7-H: the evidence attribution CHECK is verified by what it decides too', async () => {
@@ -1745,6 +1791,9 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     ]) {
       await withDecoy(
         [
+          // swapping the evidence constraint is a destructive ALTER — the round-3h guard refuses it
+          // unless the operator first performs the separate, loud act of removing the guard
+          `DROP EVENT TRIGGER IF EXISTS phase4_t3c_evidence_alter_guard`,
           `ALTER TABLE "T3CRepairAction" DROP CONSTRAINT "T3CRepairAction_attribution_non_blank"`,
           `ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank" ${decoy}`,
         ],
@@ -1754,12 +1803,14 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
         ],
         async () => {
           expect((await repairs.correctionSeals()).missing, decoy).toContain('T3CRepairAction_attribution_non_blank');
-          expect(runMigration().output, decoy).toContain('does not reject blank attribution');
+          expect(runMigration().output, decoy).toContain('is not the canonical attribution rule');
         },
       );
     }
-    expect((await repairs.correctionSeals()).installed).toBe(true);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
+    // the migration re-creates the ALTER guard the fixture removed; only then is the DB sealed again
     expect(runMigration().code).toBe(0);
+    expect((await repairs.correctionSeals()).installed).toBe(true);
   });
 
   it('R7-G: quarantining an already-revoked marker preserves the WHOLE revocation triple', async () => {
@@ -1839,6 +1890,9 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     expect((await repairs.preflight()).clean).toBe(true);
     // the deploy is now actually possible: the CHECK the live marker made unvalidatable validates.
     await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_marker_is_revoked"`);
+    // …and so does the fixture-planted NOT VALID non-blank rule — round 3h's seals answer covers
+    // 20270220's CHECK too, and VALIDATED is what that migration really produces.
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
     expect((await repairs.correctionSeals()).installed).toBe(true);
   });
 
@@ -1923,7 +1977,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
         await expect(repairs.repair({
           operator: 'ops@vitan.in', reason: 'retire a legacy blank muster',
           actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
-        })).rejects.toThrow(/does not cover the events it must/);
+        })).rejects.toThrow(/expected exactly/);
       },
     );
 
@@ -2099,6 +2153,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
         expect((await repairs.correctionSeals()).missing).toContain('phase4_t3c_evidence_drop_guard');
       },
     );
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
     expect((await repairs.correctionSeals()).installed).toBe(true);
     // and the migration re-asserts it: with the guard present the file still applies cleanly
     expect(runMigration().code).toBe(0);
@@ -2136,5 +2191,143 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     });
     expect(outcome.applied).toBe(25);
     expect((await repairs.preflight()).clean).toBe(true);
+  });
+
+  // ══ ROUND 3h — the cd7b30c re-review: the prerequisite INVENTORY, the NAIVE render, the ALTER guard ══
+
+  it('R3h-C: the prerequisite answer covers CHECKs, unique keys and composite FKs — not only triggers', async () => {
+    // RED at cd7b30c: only the nine triggers were prerequisites, so a database carrying them while
+    // missing the raw-SQL revoke-attribution CHECK (a raw update could then set revokedAt alone — a
+    // permanently unattributed correction), the worker-conservation partial unique, or the
+    // slice-bound commitment FK still baselined cleanly.
+    const drops: Array<{ name: string; drop: string; restore: string }> = [
+      {
+        name: 'LabourAttendance_revoke_attribution_check',
+        drop: `ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_revoke_attribution_check"`,
+        restore: `ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_revoke_attribution_check" CHECK (
+            ("revokedAt" IS NULL     AND "revokedById" IS NULL     AND "revokeReason" IS NULL)
+         OR ("revokedAt" IS NOT NULL AND "revokedById" IS NOT NULL AND "revokeReason" IS NOT NULL))`,
+      },
+      {
+        name: 'WorkerAllocation_live_slice_key',
+        drop: `DROP INDEX "WorkerAllocation_live_slice_key"`,
+        restore: `CREATE UNIQUE INDEX "WorkerAllocation_live_slice_key"
+            ON "WorkerAllocation"("projectId", "workerId", "civilDate", "shift") WHERE "status" = 'active'`,
+      },
+      {
+        name: 'WorkerAllocation_commitment_fkey',
+        drop: `ALTER TABLE "WorkerAllocation" DROP CONSTRAINT "WorkerAllocation_commitment_fkey"`,
+        restore: `ALTER TABLE "WorkerAllocation" ADD CONSTRAINT "WorkerAllocation_commitment_fkey"
+            FOREIGN KEY ("projectId", "capacityCommitmentId", "labourSpecFingerprint", "civilDate", "shift")
+            REFERENCES "CapacityCommitment"("projectId", "id", "labourSpecFingerprint", "civilDate", "shift")
+            ON DELETE NO ACTION ON UPDATE NO ACTION`,
+      },
+    ];
+    for (const d of drops) {
+      await t.prisma.$executeRawUnsafe(d.drop);
+      try {
+        const seals = await repairs.correctionSeals();
+        expect(seals.prerequisitesMissing, d.name).toContain(d.name);
+        expect(seals.installed, d.name).toBe(false);
+      } finally {
+        await t.prisma.$executeRawUnsafe(d.restore);
+      }
+    }
+    // a WEAKENED same-named prerequisite is caught by IDENTITY, not presence: re-adding the
+    // attribution CHECK with a widened OR arm still reports it missing
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_revoke_attribution_check"`);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_revoke_attribution_check" CHECK (
+        ("revokedAt" IS NULL     AND "revokedById" IS NULL     AND "revokeReason" IS NULL)
+     OR ("revokedAt" IS NOT NULL AND "revokedById" IS NOT NULL AND "revokeReason" IS NOT NULL)
+     OR ("revokeReason" LIKE '%permit'))`);
+    try {
+      expect((await repairs.correctionSeals()).prerequisitesMissing).toContain('LabourAttendance_revoke_attribution_check');
+    } finally {
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_revoke_attribution_check"`);
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_revoke_attribution_check" CHECK (
+          ("revokedAt" IS NULL     AND "revokedById" IS NULL     AND "revokeReason" IS NULL)
+       OR ("revokedAt" IS NOT NULL AND "revokedById" IS NOT NULL AND "revokeReason" IS NOT NULL))`);
+    }
+    // …and 20270220's CHECK is its own PENDING layer, never a refusal: absent, the seals answer
+    // names the migration to leave unresolved so `migrate deploy` really executes it.
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
+    try {
+      const seals = await repairs.correctionSeals();
+      expect(seals.correction2Installed).toBe(false);
+      expect(seals.installed).toBe(false);
+      expect(seals.prerequisitesMissing).toEqual([]);
+      expect(seals.pendingMigrations).toContain('20270220000000_phase4_t3_correction2');
+      expect(seals.pendingMigrations).not.toContain('20270225000000_phase4_t3_correction3');
+    } finally {
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_manual_reason_non_blank"
+          CHECK ("manualReason" IS NULL OR btrim("manualReason", E' \t\n\x0B\f\r') <> '')`);
+    }
+    expect((await repairs.correctionSeals()).installed).toBe(true);
+  });
+
+  it('R3h-D: the canonical timestamp render consults NO session setting — Kolkata and UTC agree', async () => {
+    // RED at cd7b30c: the render appended AT TIME ZONE 'UTC' to a TIMESTAMP WITHOUT TIME ZONE
+    // column, converting it to timestamptz — which to_char then renders in the session TimeZone.
+    // Evidence captured by an Asia/Kolkata session and checked by a UTC deploy session produced two
+    // different strings for the SAME stored value, and genuine evidence was diagnosed as forged.
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2027-01-05');
+    const renderUnder = async (tz: string): Promise<string> => {
+      const rows = await t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL TimeZone = '${tz}'`);
+        return tx.$queryRawUnsafe<Array<{ r: string }>>(
+          `SELECT ${t3cRenderTs('a."recordedAt"')} AS r FROM "LabourAttendance" a WHERE a."id" = $1`,
+          seed,
+        );
+      });
+      return rows[0]!.r;
+    };
+    const kolkata = await renderUnder('Asia/Kolkata');
+    const utc = await renderUnder('UTC');
+    expect(kolkata).toBe(utc);
+  });
+
+  it('R3h-F: the evidence table cannot be COLUMN-dropped or renamed — DDL erasure needs the loud act', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2027-01-06');
+    await repairs.repair({
+      operator: 'ops@vitan.in', reason: 'create the evidence table',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+
+    // RED at cd7b30c: the sql_drop guard matched object_type 'table' only — DROP COLUMN reports
+    // 'table column' and sailed through, erasing every preserved before-image in one statement
+    // while the markers went on claiming their originals existed. A RENAME drops nothing at all,
+    // so only the ddl_command_end guard sees it.
+    await expect(
+      t.prisma.$executeRawUnsafe(`ALTER TABLE "T3CRepairAction" DROP COLUMN "beforeImage"`),
+    ).rejects.toThrow(/never (dropped|altered)/);
+    await expect(
+      t.prisma.$executeRawUnsafe(`ALTER TABLE "T3CRepairAction" RENAME COLUMN "beforeImage" TO "x"`),
+    ).rejects.toThrow(/never altered/);
+    const col = await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_name = 'T3CRepairAction' AND column_name = 'beforeImage'`,
+    );
+    expect(Number(col[0]!.n)).toBe(1);
+
+    // removing the guard is a SEPARATE, loud DDL act — after it the database is reported NOT sealed
+    await t.prisma.$executeRawUnsafe(`DROP EVENT TRIGGER phase4_t3c_evidence_alter_guard`);
+    try {
+      const seals = await repairs.correctionSeals();
+      expect(seals.missing).toContain('phase4_t3c_evidence_alter_guard');
+      expect(seals.installed).toBe(false);
+    } finally {
+      // the migration re-asserts the guard
+      expect(runMigration().code).toBe(0);
+    }
+    // the fixture planted 20270220's non-blank rule NOT VALID; the repair retired the blank row,
+    // so validating is legal — and VALIDATED is what the seals answer (correctly) demands.
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
+    expect((await repairs.correctionSeals()).installed).toBe(true);
   });
 });

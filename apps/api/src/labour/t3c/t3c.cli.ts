@@ -13,14 +13,19 @@ import { RepairAbortedError, T3CRepairService, type RepairPlan } from './t3c-rep
  *       BEFORE deploy so the blank-reason state is reported explicitly and Prisma never starts.
  *
  *   pnpm --filter api t3c:seals
- *       READ-ONLY. Reports whether `20270225000000`'s PHYSICAL objects (the reserved-marker trigger,
- *       the allocation project-lock trigger, the marker-is-revoked CHECK — plus the `T3CRepairAction`
- *       seals whenever that table exists) are installed AND ENFORCING in this database.
- *       Exit 0 when every applicable seal is installed; 3 when the schema is present but a
- *       correction-3 seal is missing; 4 when the §C attendance schema is absent entirely; 5 when
- *       the §C tables exist but the PREREQUISITE guards from 20270210/20270215 do not (the
- *       `prisma db push` signature). None of 3/4/5 is a success. `scripts/migrate.sh` acts on each:
- *       3 leaves correction 3 pending so it really applies; 4 and 5 refuse to baseline at all.
+ *       READ-ONLY with respect to every real relation (it builds session-local TEMP probe tables to
+ *       obtain canonical constraint deparses — gone at transaction end). Reports whether the two
+ *       re-runnable corrections' PHYSICAL objects (`20270220000000`'s non-blank CHECK;
+ *       `20270225000000`'s reserved-marker trigger, allocation project-lock trigger,
+ *       marker-is-revoked CHECK — plus the `T3CRepairAction` seals whenever that table exists) are
+ *       installed AND ENFORCING, and whether the WHOLE `20270210000000`/`20270215000000` raw-SQL
+ *       prerequisite inventory (triggers, CHECKs, unique keys, composite FKs) is present.
+ *       Exit 0 when everything applicable is installed; 3 when the schema is present but a
+ *       correction seal is missing (the JSON's `pendingMigrations` names the migrations to leave
+ *       unresolved); 4 when the §C attendance schema is absent entirely; 5 when the §C tables exist
+ *       but a PREREQUISITE object does not (the `prisma db push` signature). None of 3/4/5 is a
+ *       success. `scripts/migrate.sh` acts on each: 3 leaves the named corrections pending so they
+ *       really apply; 4 and 5 refuse to baseline at all.
  *
  *   pnpm --filter api t3c:plan
  *       READ-ONLY. Exports a COMPLETE repair-plan skeleton naming EVERY finding row (not the
@@ -108,8 +113,12 @@ async function main(): Promise<void> {
       const seals = await svc.correctionSeals();
       // A database holding the §C TABLES without the §C GUARDS from `20270210000000` /
       // `20270215000000` is the `prisma db push` signature, and it gets its OWN answer (exit 5).
-      // Those migrations `CREATE TABLE`, so unlike correction 3 they cannot be left pending to
-      // re-run — and resolving them as applied records guards that do not exist, permanently.
+      // Those migrations `CREATE TABLE`, so unlike the two corrections they cannot be left pending
+      // to re-run — and resolving them as applied records guards that do not exist, permanently.
+      // The prerequisite set is the WHOLE raw-SQL object inventory (triggers, CHECKs, unique keys,
+      // composite FKs), not only the triggers: a replay that installed the triggers but not
+      // `LabourAttendance_revoke_attribution_check` used to baseline cleanly, after which a raw
+      // update could set `revokedAt` alone — a permanently unattributed correction.
       const status = seals.prerequisitesMissing.length > 0
         ? 'prerequisite-seals-missing'
         : seals.installed
@@ -122,8 +131,11 @@ async function main(): Promise<void> {
         );
         process.exitCode = 5;
       } else if (!seals.installed) {
+        // BOTH re-runnable corrections report here — `20270220000000`'s CHECK is its own pending
+        // layer, and `migrate.sh` reads `pendingMigrations` to leave exactly the absent ones
+        // unresolved so `migrate deploy` really executes them.
         process.stderr.write(
-          `\nT3C correction-3 seals MISSING: ${seals.missing.join(', ')} — migration 20270225000000 has not physically applied here.\n`,
+          `\nT3C correction seals MISSING: ${[...(!seals.correction2Installed ? ['LabourAttendance_manual_reason_non_blank'] : []), ...seals.missing].join(', ')} — leave pending and really execute: ${seals.pendingMigrations.join(', ')}.\n`,
         );
         process.exitCode = 3;
       }

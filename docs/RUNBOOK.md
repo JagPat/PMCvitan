@@ -633,13 +633,22 @@ SELECT "id", "repairId", "rowId", "at", "operator", "reason"
 ### If a seal already exists but does not enforce
 
 > `phase4 t3 correction3: … exists but does not enforce … (enabled=D, function=…)`
+> `phase4 t3 correction3: … is not the canonical marker rule (found …, canonical …)`
+> `phase4 t3 correction3: … is not the canonical attribution rule …`
 
-The migration accepts an existing trigger or CHECK only if it is ENABLED, bound to the right
-function, and (for the CHECK) validated. A same-named object that is disabled or points somewhere
-else is a decoy: accepting it would have Prisma record the migration applied over a table with no
-protection at all. This aborts rather than silently replacing it, because replacing it would destroy
-the evidence that someone put it there. Investigate who created it, then drop it deliberately and
-redeploy.
+The migration accepts an existing trigger only if it is ENABLED, bound to the right function, and
+firing on EXACTLY the canonical event set (`tgtype` equality — extra event bits on an
+unconditionally-raising function would block legitimate operations while reading "sealed"). It
+accepts an existing CHECK only if its deparsed expression is IDENTICAL to the canonical one — the
+canonical text is applied to a session-local TEMP probe table and PostgreSQL's own deparse of both
+is compared, so a same-named rewrite (however plausible its text) is refused. Stated honestly: this
+is identity, not semantic equivalence — a differently-written but logically equivalent constraint is
+refused too, deliberately, because the canonical objects come from the migrations and anything else
+on that name is by definition not them. A same-named object that is disabled, points somewhere else,
+or says something else is a decoy: accepting it would have Prisma record the migration applied over
+a table with no (or the wrong) protection. This aborts rather than silently replacing it, because
+replacing it would destroy the evidence that someone put it there. Investigate who created it, then
+drop it deliberately and redeploy.
 
 ### Resolve the migration record, then redeploy
 
@@ -664,13 +673,14 @@ pnpm --filter api t3c:seals       # exit 0, every applicable seal installed AND 
 
 | exit | status | meaning |
 |---|---|---|
-| 0 | `sealed` | every applicable seal present, ENABLED, bound to its enforcing function, firing on the right events — the CHECKs verified by evaluating their expression over a truth table, not by name |
-| 3 | `correction-seals-missing` | the §C schema and its prerequisite guards are present but `20270225000000`'s objects are not — the migration must really run (the baseline path leaves it pending) |
+| 0 | `sealed` | every applicable seal present and ENFORCING — triggers bound to their enforcing function with EXACTLY the canonical event set (`tgtype` equality), CHECKs verified by canonical-expression IDENTITY against a session-local TEMP probe (a same-named rewrite is refused), unique keys and composite FKs verified structurally against the catalog |
+| 3 | `correction-seals-missing` | the §C schema and its full prerequisite inventory are present but a re-runnable correction's objects are not — the JSON's `pendingMigrations` names exactly which of `20270220000000` / `20270225000000` must really run (the baseline path leaves exactly those pending; `20270220000000`'s non-blank CHECK is its own pending layer) |
 | 4 | `prerequisite-schema-absent` | no §C attendance schema at all — a pre-Task-3 database; **never** baseline it (resolving every migration as applied would record tables that do not exist) |
-| 5 | `prerequisite-seals-missing` | §C TABLES without §C GUARDS — the `prisma db push` signature; **never** baseline it (migrations `20270210`/`20270215` `CREATE TABLE` and cannot re-run; resolving them as applied records triggers that do not exist, `WorkerAllocation_head_live` among them). Reconcile the schema by hand — install the missing raw-SQL objects from those migrations verbatim — then re-run `t3c:seals` |
+| 5 | `prerequisite-seals-missing` | §C TABLES without §C GUARDS — the `prisma db push` signature; **never** baseline it (migrations `20270210`/`20270215` `CREATE TABLE` and cannot re-run; resolving them as applied records objects that do not exist, `WorkerAllocation_head_live` among them). The prerequisite inventory is the WHOLE raw-SQL object set those migrations create — the 9 guard triggers, the 12 CHECKs, the 6 unique keys (partial uniques included) and the 10 composite FKs — not only the triggers. Reconcile the schema by hand — install the missing raw-SQL objects from those migrations verbatim — then re-run `t3c:seals` |
 
 When `T3CRepairAction` exists (a repair has run here), its seals join the answer: the append-only and
-no-truncate triggers, the repair-path INSERT seal, and the attribution CHECK — all verified the same
+no-truncate triggers, the repair-path INSERT seal, the attribution CHECK, and BOTH event-trigger
+guards (the `sql_drop` drop guard and the `ddl_command_end` alter guard) — all verified the same
 way. A restored dump whose evidence triggers were disabled or re-declared for the wrong events is NOT
 sealed, and the baseline path will make the migration really run rather than record it applied.
 
@@ -681,16 +691,24 @@ never be rewritten, deleted or truncated — and writable ONLY from inside a rep
 repair-path INSERT seal), which is what makes "Original row preserved in T3CRepairAction" a
 guarantee rather than a sentence.
 
-The one erasure no table trigger can see is `DROP TABLE`, so an **event trigger**
-(`phase4_t3c_evidence_drop_guard`, on `sql_drop`) refuses any drop of the evidence table — including
-via CASCADE. Creating an event trigger requires **superuser**; the deploy role in this stack is one.
-If a future stack's role is not, the migration (and the repair) ABORT rather than proceeding without
-the guard — run that one deploy as a role that can, then return to the normal role. Stated honestly:
-a role that can drop tables at will can usually drop the event trigger first; what the guard closes
-is the one-statement erasure and every ordinary tooling path, removing it is a separate, loud,
-auditable DDL act, and `t3c:seals` then reports the database as NOT sealed. To legitimately
-decommission a database, `DROP DATABASE` (event triggers do not fire for it) or drop the guard first
-— deliberately.
+The erasures no table trigger can see are DDL, so **two event triggers** guard them. The drop guard
+(`phase4_t3c_evidence_drop_guard`, on `sql_drop`) refuses any drop of the evidence table **or of its
+columns** — `DROP TABLE`, `ALTER TABLE … DROP COLUMN`, including via CASCADE (a single `DROP COLUMN
+"beforeImage"` would erase every preserved before-image while the markers went on claiming their
+originals existed). The alter guard (`phase4_t3c_evidence_alter_guard`, on `ddl_command_end`)
+refuses every other `ALTER TABLE` of the evidence table — renaming or retyping a column drops
+nothing, so only a command-end trigger sees it. The audited sealing paths (the migration's evidence
+DO block and the repair's seal installer) briefly `ALTER EVENT TRIGGER … DISABLE` the alter guard
+around their own canonical `ADD CONSTRAINT` and re-enable it in the same transaction — that scoping
+exists so a re-created evidence table can still be sealed; nothing else may do it silently, and
+`t3c:seals` verifies the guard is enabled afterwards. Creating an event trigger requires
+**superuser**; the deploy role in this stack is one. If a future stack's role is not, the migration
+(and the repair) ABORT rather than proceeding without the guards — run that one deploy as a role
+that can, then return to the normal role. Stated honestly: a role that can drop tables at will can
+usually drop the event triggers first; what the guards close is the one-statement erasure and every
+ordinary tooling path, removing either guard is a separate, loud, auditable DDL act, and
+`t3c:seals` then reports the database as NOT sealed. To legitimately decommission a database,
+`DROP DATABASE` (event triggers do not fire for it) or drop the guards first — deliberately.
 
 The migration's other change (the `WorkerAllocation` project-readiness lock trigger) needs no operator
 action: it creates a trigger, touches no rows, and cannot abort over data.
@@ -698,8 +716,9 @@ action: it creates a trigger, touches no rows, and cannot abort over data.
 **Pre-baseline (`prisma db push`) databases.** Everything this migration creates is raw SQL, which
 `db push` does not reproduce, so such a database can look eligible and row-clean while carrying none
 of the seals. `scripts/migrate.sh` therefore runs `t3c seals` on the P3005 baseline path and acts on
-the exit code above: on 3 it leaves `20270225000000` **pending** so the retried `migrate deploy`
-executes it for real, then re-checks and fails closed; on 4 and 5 it **refuses to baseline at all**,
+the exit code above: on 3 it leaves exactly the migrations `pendingMigrations` names — either or
+both of `20270220000000` / `20270225000000` — **pending** so the retried `migrate deploy`
+executes them for real, then re-checks and fails closed; on 4 and 5 it **refuses to baseline at all**,
 because in those states resolving migrations as applied records schema or guards that do not exist —
 which schema this actually is becomes a human judgement, not something a runner may guess. If you
 ever baseline by hand, hold yourself to the same rule: never `migrate resolve --applied` anything

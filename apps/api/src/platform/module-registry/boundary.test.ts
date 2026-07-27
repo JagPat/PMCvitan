@@ -416,6 +416,33 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
       expect(f[0].model).toBe('decision');
     });
 
+    // Round 3h — a FUNCTION that returns SQL has no initializer at all, so the declaration walk
+    // gathered nothing: `function sql() { return 'SELECT … FROM "Decision"' }` followed by
+    // `$queryRawUnsafe(sql())` produced ZERO findings while the identical inline statement (and,
+    // since round 7, the identical imported constant) was caught. RED at cd7b30c for both shapes.
+    it('SQL RETURNED by a local function declaration is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'activities/evil-fn-sql.ts':
+          'function decisionSql(): string { return `SELECT "id" FROM "Decision"`; }\n' +
+          'export async function evilFnSql(prisma: PrismaLike) { await prisma.$queryRawUnsafe(decisionSql()); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('SQL RETURNED by an IMPORTED function is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'shared/queries3.ts': 'export function decisionSql(): string { return `SELECT "id" FROM "Decision"`; }',
+        'activities/evil-imported-fn.ts':
+          "import { decisionSql } from '../shared/queries3';\n" +
+          'export async function evilImportedFn(prisma: PrismaLike) { await prisma.$queryRawUnsafe(decisionSql()); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
     it('SQL held in a const ARRAY of statements is followed → cross-module-read', () => {
       const f = analyzeFixture({
         'activities/evil-array-sql.ts':

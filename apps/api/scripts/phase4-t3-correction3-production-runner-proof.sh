@@ -22,10 +22,14 @@
 #                                          no evidence table left behind, append-only trigger on).
 #   6. already-corrected database        → applicable + clean (state=applied); migrate deploy no-op.
 #   8. forged marker (revoked, no evidence) → preflight NAMES F1.marker; deploy refused, 20270220 untouched.
-#   7. pre-baseline (P3005) `db push` DB → the raw-SQL seals are ABSENT though the tables exist, so
-#                                          the runner leaves 20270225 PENDING instead of resolving it
-#                                          as applied, the retried deploy really executes it, and the
-#                                          seals are then verified present AND live (forgery rejected).
+#   7. pre-baseline (P3005) `db push` DB → the §C tables exist but the PREREQUISITE guards do not
+#                                          (t3c seals: prerequisite-seals-missing), so the runner
+#                                          REFUSES to baseline — nothing is resolved as applied.
+#   7b. pre-baseline dump/restore DB     → a really-migrated schema without its ledger: the FULL
+#                                          prerequisite inventory verified present, BOTH re-runnable
+#                                          corrections' seals absent, so the runner leaves 20270220
+#                                          AND 20270225 pending, the retried deploy really executes
+#                                          them, and the seals are verified present AND live.
 #
 # DESTRUCTIVE for the scratch databases only. Connection via the standard PG* env vars; the dev
 # container uses PGUSER=vitan PGPASSWORD=vitan.
@@ -315,44 +319,58 @@ echo "$RUN_OUT" | grep -q "Refusing to baseline" && ok "the runner refused rathe
   && ok "NOTHING was resolved as applied — the ledger is still absent" \
   || bad "the runner recorded migrations as applied before refusing"
 
-# ── Case 7b — prerequisites PRESENT, correction 3 absent: pending, executed, verified ─────────────
+# ── Case 7b — prerequisites PRESENT, corrections absent: pending, executed, verified ──────────────
 # The legitimate shape the leave-pending path exists for: a database that really ran the deployed
-# migrations (the prerequisite guards are installed) but was dumped/restored WITHOUT correction 3's
-# objects and without its ledger. Installing the prerequisite raw SQL by hand turns the db-push
-# fixture into exactly that. `t3c seals` answers 3 (correction seals missing, prerequisites fine),
-# the runner leaves ONLY 20270225 pending, the retried deploy executes it, and the post-deploy check
-# proves the objects exist and enforce.
-note "Case 7b — prerequisites present, correction 3 absent: left pending and really executed"
-# The Task-3 migrations reference ONE function a `db push` database lacks: phase3_immutable_row(),
-# defined by the deployed 20261230000000_phase3_t5_stock_flows migration (`db push` reproduces no
-# functions). Install that definition VERBATIM from the deployed file — nothing hand-written — so
-# the replay of 20270210/20270215 really installs every prerequisite guard.
-sed -n '/^CREATE OR REPLACE FUNCTION phase3_immutable_row/,/^\$\$ LANGUAGE plpgsql;/p' \
-  prisma/migrations/20261230000000_phase3_t5_stock_flows/migration.sql \
-  | psql -X -q -d "$DB" >/tmp/t3cpr-prereq0.log 2>&1 || true
-psql -X -q -d "$DB" -f prisma/migrations/20270210000000_phase4_t3_time_capacity/migration.sql >/tmp/t3cpr-prereq1.log 2>&1 || true
-psql -X -q -d "$DB" -f prisma/migrations/20270215000000_phase4_t3_correction/migration.sql >/tmp/t3cpr-prereq2.log 2>&1 || true
-# The fixture must hold EVERY prerequisite guard the runner's seals check requires. (Asserting a
-# single trigger once let an incomplete replay — the missing function above — masquerade as the
-# legitimate shape, and every later assertion failed against a fixture that was never built.)
+# migrations (every prerequisite guard is installed) but was dumped/restored WITHOUT the two
+# re-runnable corrections' objects and without its `_prisma_migrations` ledger. A CLONE of the
+# migrated pre-correction base minus that ledger IS that database — nothing is hand-installed, so it
+# carries the FULL raw-SQL prerequisite inventory (triggers, the inline CHECKs, the partial uniques,
+# the composite FKs) exactly as the deployed migrations created it. A db-push-plus-replay fixture
+# cannot stand in here any more: the 20270210 CHECKs are inline in CREATE TABLE, which fails over an
+# existing table, so the replayed fixture would be missing them and round 3h's full-inventory seals
+# check would (rightly) answer 5 for it. `t3c seals` answers 3 naming BOTH corrections in
+# `pendingMigrations` (20270220's CHECK is its own pending layer), the runner leaves exactly those
+# two pending, the retried deploy executes them in order, and the post-deploy check proves the
+# objects exist and enforce.
+note "Case 7b — prerequisites present, corrections absent: left pending and really executed"
+DB=pmcvitan_t3cpr_restored
+clone_db "$BASE" "$DB"
+psql -X -q -d "$DB" -c 'DROP TABLE "_prisma_migrations";' >/dev/null 2>&1
+[ "$(q "$DB" "SELECT count(*) FROM \"_prisma_migrations\"" 2>/dev/null)" = "" ] \
+  && ok "the migration ledger is gone — migrate deploy will answer P3005" \
+  || bad "could not remove the migration ledger from the restored fixture"
+# The premise, asserted: the full prerequisite inventory is here (it came from the real migrations)…
 PREREQ_TRIGGERS="LabourAttendance_append_only WorkerAllocation_frozen LabourWorkFact_append_only ApprovedSkillSubstitution_append_only LabourWorkFact_matches_allocation WorkerAllocation_worker_active LabourAttendance_device_bound WorkerAllocation_within_commitment WorkerAllocation_head_live"
 MISSING_PREREQ=""
 for trg in $PREREQ_TRIGGERS; do
   [ "$(q "$DB" "SELECT count(*) FROM pg_trigger WHERE tgname='$trg' AND tgenabled='O'")" = "1" ] || MISSING_PREREQ="$MISSING_PREREQ $trg"
 done
 [ -z "$MISSING_PREREQ" ] \
-  && ok "ALL nine prerequisite guards installed by replaying the deployed migrations' raw SQL" \
-  || { echo "prereq install failed — missing:$MISSING_PREREQ"; tail -5 /tmp/t3cpr-prereq0.log /tmp/t3cpr-prereq1.log /tmp/t3cpr-prereq2.log; bad "could not build the prerequisites-present fixture"; }
+  && ok "all nine prerequisite guard triggers present on the restored fixture" \
+  || bad "restored fixture is missing prerequisite triggers:$MISSING_PREREQ"
+[ "$(q "$DB" "SELECT count(*) FROM pg_constraint WHERE conname='WorkerAllocation_release_attribution_check'")" = "1" ] \
+  && ok "the inline prerequisite CHECKs are present (a db-push replay could never install these)" \
+  || bad "restored fixture is missing the inline prerequisite CHECKs"
+[ "$(q "$DB" "SELECT count(*) FROM pg_indexes WHERE indexname='WorkerAllocation_live_slice_key'")" = "1" ] \
+  && ok "the partial-unique prerequisite keys are present" || bad "restored fixture is missing the partial uniques"
+[ "$(q "$DB" "SELECT count(*) FROM pg_constraint WHERE conname='WorkerAllocation_commitment_fkey'")" = "1" ] \
+  && ok "the composite-FK prerequisites are present" || bad "restored fixture is missing the composite FKs"
+# …and BOTH corrections' objects are absent (only they may be left pending).
 [ "$(q "$DB" "SELECT count(*) FROM pg_trigger WHERE tgname='WorkerAllocation_00_project_lock'")" = "0" ] \
-  && ok "correction 3's own seals are still absent (only they may be left pending)" \
-  || bad "correction-3 seals unexpectedly present"
+  && ok "correction 3's own seals are absent" || bad "correction-3 seals unexpectedly present"
+[ "$(q "$DB" "SELECT count(*) FROM pg_constraint WHERE conname='LabourAttendance_manual_reason_non_blank'")" = "0" ] \
+  && ok "correction 2's CHECK is absent (its own pending layer under round 3h)" \
+  || bad "correction-2 CHECK unexpectedly present"
 
 run_migrate_sh "$DB"
-[ "$RUN_RC" = "0" ] && ok "migrate.sh completed on the prerequisites-present database" || { bad "migrate.sh failed on the prerequisites-present database"; echo "$RUN_OUT" | tail -20; }
-echo "$RUN_OUT" | grep -q "seals MISSING" && ok "the runner NOTICED the correction-3 seals were missing" || bad "the runner did not check the correction-3 seals"
+[ "$RUN_RC" = "0" ] && ok "migrate.sh completed on the restored database" || { bad "migrate.sh failed on the restored database"; echo "$RUN_OUT" | tail -20; }
+echo "$RUN_OUT" | grep -q "seals MISSING" && ok "the runner NOTICED the correction seals were missing" || bad "the runner did not check the correction seals"
 echo "$RUN_OUT" | grep -q "skipping resolve --applied for $CORR3" \
   && ok "20270225 was left PENDING instead of being resolved as applied" \
   || bad "20270225 was blanket-resolved as applied without executing"
+echo "$RUN_OUT" | grep -q "skipping resolve --applied for $CORR2" \
+  && ok "20270220 was left PENDING too — its CHECK is its own pending layer" \
+  || bad "20270220 was blanket-resolved as applied without executing"
 
 # The decisive assertion: the objects EXIST afterwards, so the deployment really carries the seals.
 for trg in LabourAttendance_reserved_marker WorkerAllocation_00_project_lock; do
@@ -362,10 +380,16 @@ done
 [ "$(q "$DB" "SELECT count(*) FROM pg_constraint WHERE conname='LabourAttendance_marker_is_revoked'")" = "1" ] \
   && ok "seal installed after baseline+deploy: LabourAttendance_marker_is_revoked" \
   || bad "CHECK STILL missing after baseline+deploy"
+[ "$(q "$DB" "SELECT convalidated FROM pg_constraint WHERE conname='LabourAttendance_manual_reason_non_blank'")" = "t" ] \
+  && ok "20270220's CHECK installed VALIDATED after baseline+deploy — because it actually ran" \
+  || bad "20270220's CHECK missing or NOT VALID after baseline+deploy"
+corr2_applied "$DB" && ok "20270220 is recorded applied — because it actually ran" || bad "20270220 is not recorded applied"
 corr3_applied "$DB" && ok "20270225 is recorded applied — because it actually ran" || bad "20270225 is not recorded applied"
 
-# …and the seals are real, not just present: a forged marker insert is rejected.
-psql -X -q -d "$DB" -c "INSERT INTO \"LabourAttendance\" (\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"manualReason\",\"recordedAt\",\"recordedById\",\"sourceCommandId\") VALUES ('x','p','w','2026-01-01','day','$MARKER forged', now(), 'u', 'c');" >/dev/null 2>&1 \
+# …and the seals are real, not just present: a forged marker insert is rejected. Every referenced
+# row (p1/W-1/USER-1/CMD-1) exists in the planted chain, so the ONLY thing refusing this insert is
+# the reserved-marker trigger — not an incidental FK.
+psql -X -q -d "$DB" -c "INSERT INTO \"LabourAttendance\" (\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"manualReason\",\"recordedAt\",\"recordedById\",\"sourceCommandId\") VALUES ('x','p1','W-1','2026-01-01','day','$MARKER forged', now(), 'USER-1', 'CMD-1');" >/dev/null 2>&1 \
   && bad "a forged marker was accepted on the baselined database" \
   || ok "a forged marker is rejected on the baselined database — the seal is live"
 
@@ -375,7 +399,7 @@ run_migrate_sh "$DB"
 
 # ── cleanup ──────────────────────────────────────────────────────────────────────────────────────
 note "cleanup"
-for db in pmcvitan_t3cpr_fresh pmcvitan_t3cpr_pretask3 pmcvitan_t3cpr_base pmcvitan_t3cpr_clean pmcvitan_t3cpr_dirty pmcvitan_t3cpr_corrected pmcvitan_t3cpr_dbpush pmcvitan_t3cpr_forged; do
+for db in pmcvitan_t3cpr_fresh pmcvitan_t3cpr_pretask3 pmcvitan_t3cpr_base pmcvitan_t3cpr_clean pmcvitan_t3cpr_dirty pmcvitan_t3cpr_corrected pmcvitan_t3cpr_dbpush pmcvitan_t3cpr_restored pmcvitan_t3cpr_forged; do
   kill_conns "$db"; $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $db;" >/dev/null 2>&1 || true
 done
 
@@ -384,10 +408,11 @@ if [ "$FAIL" = "0" ]; then
   echo "T3C PRODUCTION-RUNNER PROOF PASSED: scripts/migrate.sh enforces the compiled, schema-aware T3C"
   echo "preflight across fresh, pre-Task-3, clean pre-correction, dirty F1.blank (named + 20270220 never"
   echo "started + fabrication refused + explicit repair then clean redeploy), already-corrected and"
-  echo "pre-baseline P3005 databases — the last proving the correction's raw-SQL seals are VERIFIED and"
-  echo "really executed rather than blanket-resolved as applied. And the repair MARKS AND REVOKES,"
-  echo "preserving the original row, its recorder, its timestamps and a complete before-image. No"
-  echo "attendance row is ever deleted."
+  echo "pre-baseline P3005 databases — a db-push schema is REFUSED (prerequisite guards absent), and a"
+  echo "really-migrated dump/restore has BOTH re-runnable corrections' raw-SQL seals VERIFIED and really"
+  echo "executed rather than blanket-resolved as applied. And the repair MARKS AND REVOKES, preserving"
+  echo "the original row, its recorder, its timestamps and a complete before-image. No attendance row"
+  echo "is ever deleted."
 else
   echo "T3C PRODUCTION-RUNNER PROOF FAILED: see the assertions above."
 fi

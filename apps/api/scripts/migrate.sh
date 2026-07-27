@@ -104,18 +104,31 @@ if echo "$out" | grep -q "P3005"; then
   # PENDING for the retried `migrate deploy` to actually execute — everything it creates is
   # raw-SQL-only, so it applies cleanly over a db-push schema, and its diagnostic-first DO block still
   # aborts on dirty data exactly as on any other database.
+  T3C_CORRECTION2="20270220000000_phase4_t3_correction2"
   T3C_CORRECTION="20270225000000_phase4_t3_correction3"
   SKIP_T3C_CORRECTION=0
+  SKIP_T3C_CORRECTION2=0
   if [ -f "$T3C_PREFLIGHT" ]; then
-    node "$T3C_PREFLIGHT" seals
+    SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
+    echo "$SEALS_OUT"
     case $seals_code in
       0)
-        echo "[migrate] T3C correction-3 seals present — resolving $T3C_CORRECTION as applied with the rest"
+        echo "[migrate] T3C correction seals present — resolving $T3C_CORRECTION2 and $T3C_CORRECTION as applied with the rest"
         ;;
       3)
-        echo "[migrate] T3C correction-3 seals MISSING on this pre-baseline database — leaving $T3C_CORRECTION pending so it really applies"
-        SKIP_T3C_CORRECTION=1
+        # BOTH corrections are re-runnable diagnostic-first migrations, and the seals JSON's
+        # `pendingMigrations` names exactly the ones whose physical objects are absent. Leaving
+        # ONLY 20270225 pending while 20270220's CHECK was missing resolved that migration as
+        # applied over a database without its constraint — a raw write could then store a blank
+        # manualReason forever on a database Prisma swears is corrected.
+        echo "[migrate] T3C correction seals MISSING on this pre-baseline database — leaving the reported migrations pending so they really apply"
+        if echo "$SEALS_OUT" | grep -q "$T3C_CORRECTION"; then SKIP_T3C_CORRECTION=1; fi
+        if echo "$SEALS_OUT" | grep -q "$T3C_CORRECTION2"; then SKIP_T3C_CORRECTION2=1; fi
+        if [ "$SKIP_T3C_CORRECTION" -eq 0 ] && [ "$SKIP_T3C_CORRECTION2" -eq 0 ]; then
+          echo "[migrate] ERROR: t3c seals exited 3 but named no pending migration — refusing to baseline on an unreadable answer."
+          exit 1
+        fi
         ;;
       5)
         # The §C TABLES are here but the §C GUARDS from 20270210000000 / 20270215000000 are not —
@@ -156,6 +169,10 @@ if echo "$out" | grep -q "P3005"; then
   for dir in prisma/migrations/*/; do
     name=$(basename "$dir")
     if [ "$SKIP_T3C_CORRECTION" -eq 1 ] && [ "$name" = "$T3C_CORRECTION" ]; then
+      echo "[migrate] skipping resolve --applied for $name (it will be executed by the deploy below)"
+      continue
+    fi
+    if [ "$SKIP_T3C_CORRECTION2" -eq 1 ] && [ "$name" = "$T3C_CORRECTION2" ]; then
       echo "[migrate] skipping resolve --applied for $name (it will be executed by the deploy below)"
       continue
     fi
