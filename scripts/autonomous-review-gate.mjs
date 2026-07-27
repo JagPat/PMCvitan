@@ -17,6 +17,7 @@ export const REQUIRED_CHECKS = [
 export const MAX_REVIEW_ATTEMPTS = 2;
 
 const STATUS_CONTEXT = 'codex-current-head';
+const RECOVERY_CONTEXT_PREFIX = 'codex-recovery-request/';
 const COMMENT_MARKER = '<!-- autonomous-review-state -->';
 const API_ROOT = 'https://api.github.com';
 const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 10 * 60_000);
@@ -54,6 +55,200 @@ export function summarizeRequiredChecks(checkRuns) {
     pending,
     failed,
   };
+}
+
+export function isTerminalReviewStatus(status) {
+  if (!status || status.state === 'pending') return false;
+  if (status.state === 'success') return true;
+  if (status.state !== 'failure') return false;
+
+  const description = status.description ?? '';
+  return description.startsWith('review:')
+    || description.includes('current-head Codex finding')
+    || description.includes('Codex submitted a current-head review')
+    || description.includes('Codex review timed out')
+    || description.includes('Codex evidence changed');
+}
+
+export function shouldDraftForCiFailure(status) {
+  return !(
+    isTerminalReviewStatus(status)
+    && status.state === 'success'
+  );
+}
+
+function statusesAfterLatestReviewPending(statuses) {
+  const pendingIndex = statuses.findIndex(isReviewPendingStatus);
+  return pendingIndex < 0 ? [] : statuses.slice(0, pendingIndex);
+}
+
+export function hasTerminalReviewFailureAfterPending(statuses) {
+  return statusesAfterLatestReviewPending(statuses).some((status) =>
+    status.context === STATUS_CONTEXT
+    && status.state === 'failure'
+    && isTerminalReviewStatus(status));
+}
+
+export function persistentReviewFailure(statuses) {
+  return statuses.find((status) =>
+    status.context === STATUS_CONTEXT
+    && status.state === 'failure'
+    && isTerminalReviewStatus(status)
+    && !isRetryableTerminalReviewFailure(status)) ?? null;
+}
+
+function hasCiFailureAfterPending(statuses) {
+  return statusesAfterLatestReviewPending(statuses).some((status) =>
+    status.context === STATUS_CONTEXT
+    && status.state === 'failure'
+    && status.description?.startsWith('ci:'));
+}
+
+function isReviewPendingStatus(status) {
+  return status.context === STATUS_CONTEXT
+    && status.state === 'pending'
+    && (
+      status.description?.startsWith('review: pending')
+      || status.description?.startsWith('Waiting for required CI')
+    );
+}
+
+export function recoverableTerminalReviewStatus(statuses) {
+  const persistentFailure = persistentReviewFailure(statuses);
+  if (persistentFailure) return persistentFailure;
+
+  const reviewStatuses = statuses.filter(
+    (status) => status.context === STATUS_CONTEXT,
+  );
+  const terminalIndex = reviewStatuses.findIndex(isTerminalReviewStatus);
+  if (terminalIndex < 0) return null;
+  if (terminalIndex === 0) return reviewStatuses[0];
+
+  const newerStatuses = reviewStatuses.slice(0, terminalIndex);
+  const pendingIndex = newerStatuses.findIndex(isReviewPendingStatus);
+  if (pendingIndex < 0) return reviewStatuses[terminalIndex];
+
+  const newerCycleFailedBeforeReview = newerStatuses
+    .slice(0, pendingIndex)
+    .some((status) =>
+      status.state === 'failure' && !isTerminalReviewStatus(status));
+  return newerCycleFailedBeforeReview ? reviewStatuses[terminalIndex] : null;
+}
+
+function latestTerminalReviewStatus(statuses) {
+  return statuses.find((status) =>
+    status.context === STATUS_CONTEXT && isTerminalReviewStatus(status)) ?? null;
+}
+
+export function pendingRecoveryRequest(statuses) {
+  const latestByContext = new Map();
+  for (const status of statuses) {
+    if (
+      status.context?.startsWith(RECOVERY_CONTEXT_PREFIX)
+      && !latestByContext.has(status.context)
+    ) {
+      latestByContext.set(status.context, status);
+    }
+  }
+
+  let newestRequest = null;
+  for (const status of latestByContext.values()) {
+    const contextToken = status.context.slice(RECOVERY_CONTEXT_PREFIX.length);
+    const descriptionMatch = /^recovery: requested terminal status ([0-9]+)$/u
+      .exec(status.description ?? '');
+    if (!descriptionMatch || descriptionMatch[1] !== contextToken) continue;
+    if (
+      !newestRequest
+      || BigInt(contextToken) > BigInt(newestRequest.terminalStatusId)
+    ) {
+      newestRequest = { status, terminalStatusId: contextToken };
+    }
+  }
+
+  return newestRequest?.status.state === 'pending' ? newestRequest : null;
+}
+
+export function recoveryRequestContext(terminalStatusId) {
+  return `${RECOVERY_CONTEXT_PREFIX}${terminalStatusId}`;
+}
+
+export function recoverySettlementContext(recoveryRequest) {
+  return recoveryRequest?.status?.context ?? null;
+}
+
+export async function persistRecoveryRequest(
+  client,
+  expectedHead,
+  pullRequest,
+  authorizedStatus,
+) {
+  return client.setStatus(
+    expectedHead,
+    'pending',
+    `recovery: requested terminal status ${authorizedStatus.id}`,
+    pullRequest.html_url,
+    recoveryRequestContext(authorizedStatus.id),
+  );
+}
+
+export function recoveryRequestTerminal(statuses, request) {
+  if (!request) return null;
+  const sourceIndex = statuses.findIndex((status) =>
+    status.context === STATUS_CONTEXT
+    && String(status.id) === String(request.terminalStatusId));
+  const sourceStatus = sourceIndex < 0 ? null : statuses[sourceIndex];
+  if (isReviewPendingStatus(sourceStatus)) {
+    const supersedingTerminal = statuses.slice(0, sourceIndex).find((status) =>
+      status.context === STATUS_CONTEXT && isTerminalReviewStatus(status));
+    if (!supersedingTerminal) return sourceStatus;
+    if (persistentReviewFailure(statuses)) return null;
+    return isRetryableTerminalReviewFailure(supersedingTerminal)
+      ? supersedingTerminal
+      : null;
+  }
+  if (persistentReviewFailure(statuses)) return null;
+  const terminalStatus = latestTerminalReviewStatus(statuses);
+  if (!isRetryableTerminalReviewFailure(terminalStatus)) return null;
+  return String(terminalStatus.id) === String(request.terminalStatusId)
+    ? terminalStatus
+    : null;
+}
+
+export function isRetryableTerminalReviewFailure(status) {
+  if (!status || status.state !== 'failure' || !isTerminalReviewStatus(status)) {
+    return false;
+  }
+  const description = status.description ?? '';
+  return description.includes('Codex review timed out')
+    || description.includes('Codex evidence changed during final verification')
+    || description === 'review: Required CI changed during current-head Codex review'
+    || description === 'review: bootstrap exact-head review requested';
+}
+
+export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
+  if (persistentReviewFailure(statuses)) return null;
+  const latestReviewStatus = statuses.find(
+    (status) => status.context === STATUS_CONTEXT,
+  );
+  if (isReviewPendingStatus(latestReviewStatus)) {
+    if (String(latestReviewStatus.id) === String(requestedStatusId)) {
+      return latestReviewStatus;
+    }
+  }
+  let terminalStatus = recoverableTerminalReviewStatus(statuses);
+  if (!terminalStatus) {
+    const existingRequest = pendingRecoveryRequest(statuses);
+    if (
+      existingRequest
+      && String(existingRequest.terminalStatusId) === String(requestedStatusId)
+    ) {
+      terminalStatus = recoveryRequestTerminal(statuses, existingRequest);
+    }
+  }
+  if (!isRetryableTerminalReviewFailure(terminalStatus)) return null;
+  return String(terminalStatus.id) === String(requestedStatusId)
+    ? terminalStatus
+    : null;
 }
 
 function sleep(milliseconds) {
@@ -115,6 +310,19 @@ class GitHubClient {
     return payload.check_runs;
   }
 
+  async statuses(head) {
+    const statuses = [];
+    let page = 1;
+    while (true) {
+      const batch = await this.request(
+        `/repos/${this.repository}/commits/${head}/statuses?per_page=100&page=${page}`,
+      );
+      statuses.push(...batch);
+      if (batch.length < 100) return statuses;
+      page += 1;
+    }
+  }
+
   reviews(number) {
     return this.request(
       `/repos/${this.repository}/pulls/${number}/reviews?per_page=100`,
@@ -133,12 +341,18 @@ class GitHubClient {
     );
   }
 
-  setStatus(head, state, description, targetUrl) {
+  setStatus(
+    head,
+    state,
+    description,
+    targetUrl,
+    context = STATUS_CONTEXT,
+  ) {
     return this.request(`/repos/${this.repository}/statuses/${head}`, {
       method: 'POST',
       body: {
         state,
-        context: STATUS_CONTEXT,
+        context,
         description: description.slice(0, 140),
         target_url: targetUrl,
       },
@@ -274,6 +488,24 @@ function statusBody({ state, head, detail, attempt, next }) {
   ].join('\n');
 }
 
+export async function settleRecoveryRequest(
+  client,
+  expectedHead,
+  pullRequest,
+  recoveryRequest,
+  outcome,
+) {
+  if (!recoveryRequest) return;
+  const context = recoverySettlementContext(recoveryRequest);
+  await client.setStatus(
+    expectedHead,
+    'success',
+    `recovery: consumed by ${outcome}`,
+    pullRequest.html_url,
+    context,
+  );
+}
+
 async function refreshCurrentHead(client, number, expectedHead) {
   const pullRequest = await client.pullRequest(number);
   if (pullRequest.state !== 'open' || pullRequest.head.sha !== expectedHead) {
@@ -295,6 +527,71 @@ async function setDraftForCurrentHead(
   return updated.state === 'open' && updated.head.sha === expectedHead
     ? updated
     : null;
+}
+
+export async function ensureTerminalReviewState(
+  client,
+  pullRequest,
+  expectedHead,
+  status,
+  statuses,
+) {
+  if (!isTerminalReviewStatus(status)) return false;
+  if (status.state === 'success') {
+    if (persistentReviewFailure(statuses)) {
+      await client.setStatus(
+        expectedHead,
+        'failure',
+        'review: current-head Codex finding latched during recovery',
+        pullRequest.html_url,
+      );
+      await setDraftForCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+        true,
+      );
+      return true;
+    }
+    const live = await refreshCurrentHead(
+      client,
+      pullRequest.number,
+      expectedHead,
+    );
+    if (!live) return true;
+    if (live.draft) return false;
+    const latestStatus = statuses.find(
+      (candidate) => candidate.context === STATUS_CONTEXT,
+    );
+    if (String(latestStatus?.id) !== String(status.id)) {
+      await client.setStatus(
+        expectedHead,
+        'success',
+        'review: recovered prior clean Codex result on this exact head',
+        pullRequest.html_url,
+      );
+    }
+    await client.enableAutoMerge(live);
+  } else {
+    const latestStatus = statuses.find(
+      (candidate) => candidate.context === STATUS_CONTEXT,
+    );
+    if (String(latestStatus?.id) !== String(status.id)) {
+      await client.setStatus(
+        expectedHead,
+        'failure',
+        status.description ?? 'review: recovered current-head Codex failure',
+        pullRequest.html_url,
+      );
+    }
+    await setDraftForCurrentHead(
+      client,
+      pullRequest.number,
+      expectedHead,
+      true,
+    );
+  }
+  return true;
 }
 
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
@@ -400,27 +697,69 @@ async function reclassifyCurrentCodexEvidence(
   });
 }
 
-async function eventContext() {
-  const eventName = requiredEnvironment('GITHUB_EVENT_NAME');
-  const event = JSON.parse(
-    await readFile(requiredEnvironment('GITHUB_EVENT_PATH'), 'utf8'),
+export async function guardAgainstCurrentHeadFinding(
+  client,
+  pullRequest,
+  expectedHead,
+  recoveryRequest,
+) {
+  const [reviews, comments] = await Promise.all([
+    client.reviews(pullRequest.number),
+    client.reviewComments(pullRequest.number),
+  ]);
+  const now = new Date();
+  const result = classifyCodexState({
+    expectedHead,
+    readyAt: new Date(0).toISOString(),
+    deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
+    now: now.toISOString(),
+    reviews,
+    comments,
+    reactions: [],
+  });
+  if (result.state !== 'changes_required') return null;
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
   );
+  if (!live) return result.detail;
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `review: ${result.detail}`,
+    pullRequest.html_url,
+  );
+  await settleRecoveryRequest(
+    client,
+    expectedHead,
+    pullRequest,
+    recoveryRequest,
+    'current-head finding observed before recovery',
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'changes_required',
+      head: expectedHead,
+      detail: result.detail,
+      attempt: 0,
+      next: 'Claude Auto-fix handles the review comments and pushes a new head.',
+    }),
+  );
+  return result.detail;
+}
+
+export function contextForEvent(eventName, event, dispatchNumber) {
   if (eventName === 'workflow_dispatch') {
     return {
-      number: Number(process.env.PR_NUMBER ?? event.inputs?.pr_number),
-      expectedHead: null,
+      number: Number(dispatchNumber ?? event.inputs?.pr_number),
+      expectedHead: event.inputs?.head_sha ?? null,
+      terminalStatusId: event.inputs?.terminal_status_id ?? null,
       ciConclusion: null,
-    };
-  }
-  if (
-    (eventName === 'pull_request_review' ||
-      eventName === 'pull_request_review_comment') &&
-    event.pull_request
-  ) {
-    return {
-      number: Number(event.pull_request.number),
-      expectedHead: event.pull_request.head.sha,
-      ciConclusion: null,
+      trigger: 'dispatch',
     };
   }
   if (eventName === 'workflow_run' && event.workflow_run?.event === 'pull_request') {
@@ -428,9 +767,28 @@ async function eventContext() {
       number: Number(event.workflow_run.pull_requests?.[0]?.number),
       expectedHead: event.workflow_run.head_sha,
       ciConclusion: event.workflow_run.conclusion,
+      trigger: 'ci',
     };
   }
   return null;
+}
+
+export function assertCurrentHeadForContext(context, currentHead, mode) {
+  if (!context.expectedHead || context.expectedHead === currentHead) return true;
+  if (context.trigger === 'dispatch' && mode === 'request-recovery') {
+    throw new Error(
+      `Recovery dispatch head ${context.expectedHead} no longer matches current head ${currentHead}`,
+    );
+  }
+  return false;
+}
+
+async function eventContext() {
+  const eventName = requiredEnvironment('GITHUB_EVENT_NAME');
+  const event = JSON.parse(
+    await readFile(requiredEnvironment('GITHUB_EVENT_PATH'), 'utf8'),
+  );
+  return contextForEvent(eventName, event, process.env.PR_NUMBER);
 }
 
 export async function run() {
@@ -452,32 +810,62 @@ export async function run() {
   }
 
   const expectedHead = context.expectedHead ?? pullRequest.head.sha;
-  if (pullRequest.head.sha !== expectedHead) {
+  const mode = process.env.AUTONOMOUS_REVIEW_MODE ?? 'orchestrate';
+  if (!assertCurrentHeadForContext(context, pullRequest.head.sha, mode)) {
     console.log('Workflow event was superseded by a newer pull-request head.');
     return;
   }
 
-  await client.setStatus(
-    expectedHead,
-    'pending',
-    'Waiting for required CI and current-head Codex review',
-    pullRequest.html_url,
-  );
+  const existingStatuses = await client.statuses(expectedHead);
+  const existingStatus = existingStatuses.find(
+    (status) => status.context === STATUS_CONTEXT,
+  ) ?? null;
+
+  if (mode === 'request-recovery') {
+    const authorizedStatus = authorizeRecoveryDispatch(
+      existingStatuses,
+      context.terminalStatusId,
+    );
+    if (!authorizedStatus) {
+      throw new Error(
+        'Recovery dispatch requires the exact latest failed terminal '
+          + `${STATUS_CONTEXT} status ID`,
+      );
+    }
+    await persistRecoveryRequest(
+      client,
+      expectedHead,
+      pullRequest,
+      authorizedStatus,
+    );
+    console.log(
+      `Persisted recovery request for terminal status ${authorizedStatus.id}.`,
+    );
+    return;
+  }
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
-    pullRequest = await setDraftForCurrentHead(
-      client,
-      pullRequest.number,
-      expectedHead,
-      true,
-    );
+    pullRequest = shouldDraftForCiFailure(existingStatus)
+      ? await setDraftForCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+          true,
+        )
+      : await refreshCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+        );
     if (!pullRequest) return;
-    await client.setStatus(
-      expectedHead,
-      'failure',
-      `CI workflow concluded ${context.ciConclusion}`,
-      pullRequest.html_url,
-    );
+    if (!isTerminalReviewStatus(existingStatus)) {
+      await client.setStatus(
+        expectedHead,
+        'failure',
+        `ci: workflow concluded ${context.ciConclusion}`,
+        pullRequest.html_url,
+      );
+    }
     await client.updateStickyComment(
       pullRequest.number,
       statusBody({
@@ -490,6 +878,60 @@ export async function run() {
     );
     throw new Error(`CI workflow concluded ${context.ciConclusion}`);
   }
+
+  const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
+  let recoveryRequest = pendingRecoveryRequest(existingStatuses);
+  const requestedTerminalStatus = recoveryRequestTerminal(
+    existingStatuses,
+    recoveryRequest,
+  );
+  if (recoveryRequest && !requestedTerminalStatus) {
+    await client.setStatus(
+      expectedHead,
+      'failure',
+      'recovery: request superseded by newer review state',
+      pullRequest.html_url,
+      recoveryRequest.status.context,
+    );
+    recoveryRequest = null;
+    if (!terminalStatus) {
+      throw new Error(
+        'Recovery request no longer matches the latest terminal review state',
+      );
+    }
+  }
+
+  const existingFinding = await guardAgainstCurrentHeadFinding(
+    client,
+    pullRequest,
+    expectedHead,
+    recoveryRequest,
+  );
+  if (existingFinding) throw new Error(existingFinding);
+
+  if (!requestedTerminalStatus && terminalStatus) {
+    if (
+      await ensureTerminalReviewState(
+        client,
+        pullRequest,
+        expectedHead,
+        terminalStatus,
+        existingStatuses,
+      )
+    ) {
+      console.log(
+        'Exact head already has a recoverable terminal Codex state; no review will be requested.',
+      );
+      return;
+    }
+  }
+
+  await client.setStatus(
+    expectedHead,
+    'pending',
+    'review: pending required CI and current-head Codex review',
+    pullRequest.html_url,
+  );
 
   const checks = await waitForRequiredChecks(client, pullRequest, expectedHead);
   if (checks.state === 'superseded') return;
@@ -504,7 +946,12 @@ export async function run() {
     const detail = checks.failed?.length
       ? `Failed checks: ${checks.failed.join(', ')}`
       : `Checks did not settle: ${[...(checks.missing ?? []), ...(checks.pending ?? [])].join(', ')}`;
-    await client.setStatus(expectedHead, 'failure', detail, pullRequest.html_url);
+    await client.setStatus(
+      expectedHead,
+      'failure',
+      `ci: ${detail}`,
+      pullRequest.html_url,
+    );
     await client.updateStickyComment(
       pullRequest.number,
       statusBody({
@@ -540,8 +987,15 @@ export async function run() {
       await client.setStatus(
         expectedHead,
         'failure',
-        result.detail,
+        `review: ${result.detail}`,
         pullRequest.html_url,
+      );
+      await settleRecoveryRequest(
+        client,
+        expectedHead,
+        pullRequest,
+        recoveryRequest,
+        'review finding',
       );
       await client.updateStickyComment(
         pullRequest.number,
@@ -587,8 +1041,15 @@ export async function run() {
         await client.setStatus(
           expectedHead,
           'failure',
-          detail,
+          `review: ${detail}`,
           pullRequest.html_url,
+        );
+        await settleRecoveryRequest(
+          client,
+          expectedHead,
+          pullRequest,
+          recoveryRequest,
+          'changed review evidence',
         );
         await client.updateStickyComment(
           pullRequest.number,
@@ -602,12 +1063,70 @@ export async function run() {
         );
         throw new Error(detail);
       }
+      const finalStatuses = await client.statuses(expectedHead);
+      const finalCheckSummary = summarizeRequiredChecks(
+        await client.checkRuns(expectedHead),
+      );
+      if (
+        finalCheckSummary.state !== 'success'
+        || hasCiFailureAfterPending(finalStatuses)
+      ) {
+        pullRequest = await setDraftForCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+          true,
+        );
+        if (!pullRequest) return;
+        const detail = 'Required CI changed during current-head Codex review';
+        await client.setStatus(
+          expectedHead,
+          'failure',
+          `review: ${detail}`,
+          pullRequest.html_url,
+        );
+        await settleRecoveryRequest(
+          client,
+          expectedHead,
+          pullRequest,
+          recoveryRequest,
+          'changed CI',
+        );
+        await client.updateStickyComment(
+          pullRequest.number,
+          statusBody({
+            state: 'blocked',
+            head: expectedHead,
+            detail,
+            attempt,
+            next: 'Re-dispatch after required CI is green on this exact head.',
+          }),
+        );
+        throw new Error(detail);
+      }
+      // One run polls one Codex invocation to its mutually exclusive terminal
+      // result: finding-bearing evidence or the clean reaction. Review webhooks
+      // never enter this orchestrator, so no second writer can race admission.
       await client.setStatus(
         expectedHead,
         'success',
-        'Codex found no blocking issue on this exact head',
+        'review: Codex found no blocking issue on this exact head',
         pullRequest.html_url,
       );
+      await settleRecoveryRequest(
+        client,
+        expectedHead,
+        pullRequest,
+        recoveryRequest,
+        'clean review',
+      );
+      pullRequest = await refreshCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+      );
+      if (!pullRequest) return;
+      await client.enableAutoMerge(pullRequest);
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
@@ -618,13 +1137,6 @@ export async function run() {
           next: 'GitHub auto-merge is queued behind branch protection.',
         }),
       );
-      pullRequest = await refreshCurrentHead(
-        client,
-        pullRequest.number,
-        expectedHead,
-      );
-      if (!pullRequest) return;
-      await client.enableAutoMerge(pullRequest);
       return;
     }
 
@@ -660,8 +1172,15 @@ export async function run() {
   await client.setStatus(
     expectedHead,
     'failure',
-    'Codex review timed out after two attempts',
+    'review: Codex review timed out after two attempts',
     pullRequest.html_url,
+  );
+  await settleRecoveryRequest(
+    client,
+    expectedHead,
+    pullRequest,
+    recoveryRequest,
+    'review timeout',
   );
   await client.updateStickyComment(
     pullRequest.number,
