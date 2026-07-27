@@ -151,6 +151,51 @@ test('ignores Codex findings attached to an older head', () => {
   assert.equal(result.findingCount, 0);
 });
 
+test('a carried-forward comment from an earlier review does not count as a current-head finding', () => {
+  // Observed on PR #230. Codex reviewed 0832c7d and left ten inline comments. Claude fixed all ten
+  // and pushed 6d17949. GitHub advanced `commit_id` to the new head on the four comments whose
+  // anchors still resolved, so the gate read "4 current-head Codex findings" and returned the pull
+  // request to draft — while `/pulls/230/reviews` still showed only the two reviews of 0832c7d and
+  // no review of 6d17949 existed at all. Left uncorrected this never converges: every corrective
+  // push inherits the previous round's still-anchorable comments, so nothing can ever merge.
+  const result = classifyCodexState(
+    input({
+      comments: [
+        {
+          user: { login: CODEX_LOGIN },
+          commit_id: HEAD, // GitHub rolled this forward
+          original_commit_id: OLD_HEAD, // …but Codex posted it against the previous head
+          body: '**P1** already fixed in the new head',
+        },
+      ],
+    }),
+  );
+
+  assert.equal(result.state, 'pending');
+  assert.equal(result.findingCount, 0);
+});
+
+test('a finding posted against the current head still blocks when its comment has both SHAs', () => {
+  const result = classifyCodexState(
+    input({
+      comments: [
+        {
+          user: { login: CODEX_LOGIN },
+          commit_id: HEAD,
+          original_commit_id: HEAD,
+          body: '**P1** genuinely about this head',
+        },
+      ],
+    }),
+  );
+
+  assert.deepEqual(result, {
+    state: 'changes_required',
+    findingCount: 1,
+    detail: '1 current-head Codex finding',
+  });
+});
+
 test('remains pending before the deadline when Codex has not responded', () => {
   const result = classifyCodexState(input());
 
