@@ -78,6 +78,15 @@ export function shouldDraftForCiFailure(status) {
   );
 }
 
+export function hasTerminalReviewFailureSince(statuses, since) {
+  const sinceTime = Date.parse(since);
+  return statuses.some((status) =>
+    status.context === STATUS_CONTEXT
+    && status.state === 'failure'
+    && isTerminalReviewStatus(status)
+    && Date.parse(status.created_at) >= sinceTime);
+}
+
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -137,10 +146,14 @@ class GitHubClient {
     return payload.check_runs;
   }
 
-  async latestStatus(head, context) {
-    const statuses = await this.request(
+  statuses(head) {
+    return this.request(
       `/repos/${this.repository}/commits/${head}/statuses?per_page=100`,
     );
+  }
+
+  async latestStatus(head, context) {
+    const statuses = await this.statuses(head);
     return statuses.find((status) => status.context === context) ?? null;
   }
 
@@ -817,9 +830,9 @@ export async function run() {
         pullRequest.html_url,
       );
 
-      // All events for this PR share one workflow concurrency lane. Keep
-      // auto-merge disabled while late review delivery settles, then verify
-      // exact-head evidence once more before making the head mergeable.
+      // Evidence handlers run independently and publish append-only failure
+      // statuses. Keep auto-merge disabled until both live evidence and the
+      // whole review-cycle status history remain clear after settlement.
       await sleep(TERMINAL_SETTLE_MS);
       const settledResult = await reclassifyCurrentCodexEvidence(
         client,
@@ -827,17 +840,16 @@ export async function run() {
         expectedHead,
         reviewNotBefore,
       );
-      const settledStatus = await client.latestStatus(
-        expectedHead,
-        STATUS_CONTEXT,
+      const settledStatuses = await client.statuses(expectedHead);
+      const latchedReviewFailure = hasTerminalReviewFailureSince(
+        settledStatuses,
+        reviewNotBefore,
       );
-      const settledReviewFailure = settledStatus?.state === 'failure'
-        && isTerminalReviewStatus(settledStatus);
-      if (settledResult.state !== 'clear' || settledReviewFailure) {
+      if (settledResult.state !== 'clear' || latchedReviewFailure) {
         const detail = settledResult.state === 'changes_required'
           ? settledResult.detail
-          : settledReviewFailure
-            ? settledStatus.description
+          : latchedReviewFailure
+            ? 'A current-head Codex finding was published during terminal settlement'
             : 'Codex evidence changed during terminal settlement';
         await client.setStatus(
           expectedHead,

@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import * as reviewGate from './autonomous-review-gate.mjs';
 
 const {
+  hasTerminalReviewFailureSince,
   MAX_REVIEW_ATTEMPTS,
   REQUIRED_CHECKS,
   summarizeRequiredChecks,
@@ -179,6 +180,44 @@ test('a failed CI rerun preserves readiness after a terminal review success', ()
   );
 });
 
+test('a review failure remains latched after a later success write', () => {
+  const reviewStartedAt = '2026-07-27T18:00:00Z';
+  assert.equal(
+    hasTerminalReviewFailureSince(
+      [
+        {
+          context: 'codex-current-head',
+          state: 'success',
+          description: 'review: Codex found no blocking issue',
+          created_at: '2026-07-27T18:00:03Z',
+        },
+        {
+          context: 'codex-current-head',
+          state: 'failure',
+          description: 'review: current-head Codex finding',
+          created_at: '2026-07-27T18:00:02Z',
+        },
+      ],
+      reviewStartedAt,
+    ),
+    true,
+  );
+  assert.equal(
+    hasTerminalReviewFailureSince(
+      [
+        {
+          context: 'codex-current-head',
+          state: 'failure',
+          description: 'review: stale finding',
+          created_at: '2026-07-27T17:59:59Z',
+        },
+      ],
+      reviewStartedAt,
+    ),
+    false,
+  );
+});
+
 test('workflow separates review-start events from result-only evidence events', async () => {
   const [workflow, gate] = await Promise.all([
     readFile(workflowPath, 'utf8'),
@@ -213,7 +252,7 @@ test('workflow separates review-start events from result-only evidence events', 
   assert.doesNotMatch(workflow, /pull_request_target:/);
 });
 
-test('terminal success settles in the serialized lane before auto-merge', async () => {
+test('terminal success checks the failure latch before auto-merge', async () => {
   const gate = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
     'utf8',
@@ -228,21 +267,24 @@ test('terminal success settles in the serialized lane before auto-merge', async 
   const settledEvidence = clearBranch.lastIndexOf(
     'reclassifyCurrentCodexEvidence',
   );
-  const settledStatus = clearBranch.lastIndexOf('client.latestStatus');
+  const settledStatuses = clearBranch.lastIndexOf('client.statuses');
+  const failureLatch = clearBranch.lastIndexOf(
+    'hasTerminalReviewFailureSince',
+  );
   const enabledAutoMerge = clearBranch.lastIndexOf('enableAutoMerge');
   assert.ok(publishedSuccess >= 0);
   assert.ok(settledEvidence > publishedSuccess);
-  assert.ok(settledStatus > settledEvidence);
-  assert.ok(enabledAutoMerge > settledStatus);
+  assert.ok(settledStatuses > settledEvidence);
+  assert.ok(failureLatch > settledStatuses);
+  assert.ok(enabledAutoMerge > failureLatch);
 });
 
-test('review starts and evidence share one non-cancelling concurrency lane', async () => {
+test('review evidence runs independently without cancelling review starts', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
   assert.match(
     workflow,
-    /group:\s*autonomous-review-\$\{\{ github\.event\.workflow_run\.pull_requests\[0\]\.number \|\| github\.event\.pull_request\.number \|\| inputs\.pr_number \|\| github\.run_id \}\}/,
+    /startsWith\(github\.event_name, 'pull_request_review'\) && github\.run_id \|\| 'start'/,
   );
-  assert.doesNotMatch(workflow, /startsWith\(github\.event_name, 'pull_request_review'\)/);
   assert.match(workflow, /cancel-in-progress:\s*false/);
 });
 
