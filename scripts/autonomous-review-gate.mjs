@@ -157,10 +157,17 @@ class GitHubClient {
     return payload.check_runs;
   }
 
-  statuses(head) {
-    return this.request(
-      `/repos/${this.repository}/commits/${head}/statuses?per_page=100`,
-    );
+  async statuses(head) {
+    const statuses = [];
+    let page = 1;
+    while (true) {
+      const batch = await this.request(
+        `/repos/${this.repository}/commits/${head}/statuses?per_page=100&page=${page}`,
+      );
+      statuses.push(...batch);
+      if (batch.length < 100) return statuses;
+      page += 1;
+    }
   }
 
   async latestStatus(head, context) {

@@ -325,9 +325,27 @@ test('review evidence runs independently without cancelling review starts', asyn
   const workflow = await readFile(workflowPath, 'utf8');
   assert.match(
     workflow,
-    /startsWith\(github\.event_name, 'pull_request_review'\) && github\.run_id \|\| 'start'/,
+    /startsWith\(github\.event_name, 'pull_request_review'\) && github\.run_id/,
+  );
+  assert.match(
+    workflow,
+    /github\.event\.workflow_run\.head_sha/,
   );
   assert.match(workflow, /cancel-in-progress:\s*false/);
+});
+
+test('failure-latch status history is fully paginated', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const statusesMethod = gate.slice(
+    gate.indexOf('async statuses(head)'),
+    gate.indexOf('async latestStatus'),
+  );
+  assert.match(statusesMethod, /page \+= 1/);
+  assert.match(statusesMethod, /batch\.length < 100/);
+  assert.match(statusesMethod, /statuses\.push\(\.\.\.batch\)/);
 });
 
 test('terminal failures restore draft and CI failures run before recovery', async () => {

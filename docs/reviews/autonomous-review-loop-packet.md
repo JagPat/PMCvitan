@@ -44,9 +44,10 @@ packet does not embed a self-referential final SHA.
   both builds clean).
 - Reproduce-first same-head contracts failed before each correction: review/comment
   re-entry, CI-rerun terminal-state loss, legacy review-only failure, late evidence,
-  and monotonic failure-latch recovery. The final focused battery passed 30/30.
+  and head-scoped/paginated failure-latch recovery. The final focused battery
+  passed 31/31.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 30/30, web
+- Final `pnpm check` after protocol alignment passed: automation 31/31, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -101,9 +102,10 @@ before presentation mutations, and draft the PR. They cannot call `reviewAttempt
 or mark a PR ready. This preserves delayed-finding safety without creating another
 review request. Result handlers use independent non-cancelling lanes, so a finding
 is never queued behind the review-start poll. Review-start runs remain serialized:
-a pushed head supersedes the active poll on its next bounded check, while a
-same-head CI rerun waits and then consumes the terminal status instead of
-performing another draft-to-ready transition.
+their lane includes the exact head SHA, so a stale-head rerun cannot displace the
+new head's pending start. A pushed head supersedes the old poll on its next
+bounded check, while a same-head CI rerun waits and then consumes the terminal
+status instead of performing another draft-to-ready transition.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with
@@ -116,7 +118,8 @@ Only `workflow_dispatch` can deliberately retry a terminal same-head review.
 
 Review success is published while auto-merge remains disabled. The handler then
 waits through a bounded settlement window and re-reads exact-head evidence plus
-the complete append-only status history for this review cycle. An independently
+every paginated page of append-only status history for this review cycle. An
+independently
 published failure remains latched even if the clear path wrote a newer success;
 that latch converts the head back to failure plus draft. Auto-merge is enabled
 only after live evidence and the monotonic failure latch remain clean. A CI rerun
