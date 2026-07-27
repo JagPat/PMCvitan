@@ -521,10 +521,15 @@ export const T3C_CORRECTION3_TRIGGER_SEALS: readonly T3CTriggerSeal[] = [
 
 /**
  * The function BODIES a correction layer requires beyond the trigger presence itself — exactly the
- * functions a re-runnable correction migration `CREATE OR REPLACE`s without touching the trigger.
- * When the live body is not one of these, that correction is NOT installed (it joins the pending
- * set and `migrate deploy` executes it, whose `CREATE OR REPLACE` writes the canonical body); a
- * body matching NO deployed layer at all is caught by the prerequisite seal instead and refused.
+ * functions a correction migration `CREATE OR REPLACE`s without touching the trigger. When the
+ * live body is not one of these, that correction is NOT installed; a body matching NO deployed
+ * layer at all is caught by the prerequisite seal instead and refused.
+ *
+ * WHICH migration heals an absence is decided separately, in `correctionSeals()`, by what
+ * re-running it actually does: `20270220000000` is deployed with an UNCONDITIONAL
+ * `ADD CONSTRAINT`, so it is left pending only when its CHECK is genuinely absent — a stale
+ * correction-2 BODY under an existing CHECK is healed by `20270225000000`, which re-asserts the
+ * canonical append-only body precisely because the older migration cannot re-run.
  */
 export interface T3CFnLayerRequirement {
   fn: string;

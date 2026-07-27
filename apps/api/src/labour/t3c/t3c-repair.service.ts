@@ -667,9 +667,23 @@ export class T3CRepairService {
         }
       }
 
+      // WHICH migration each absence leaves pending is decided by what re-running it actually does.
+      // `20270220000000` is deployed and its `ALTER TABLE … ADD CONSTRAINT` is UNCONDITIONAL, so it
+      // may be left pending ONLY when its CHECK is genuinely absent — replaying it over an existing
+      // constraint fails the whole deploy. A correction-2 function BODY that is stale while the
+      // CHECK exists is healed by `20270225000000` instead, which re-asserts the canonical
+      // `phase4_t3_attendance_append_only` body precisely because the older migration cannot
+      // re-run. And whenever `20270220000000` IS pending, `20270225000000` is left pending WITH it:
+      // the older replay rewrites `phase4_t3c_allocation_head_live` back to its 20270220 body, and
+      // only the newer migration's re-run restores the 20270225 version the correction-3 layer
+      // requires.
+      const correction2CheckMissing = correction2Missing.includes(T3C_CORRECTION2_CHECK_SEAL.name);
+      const correction2BodyStale = correction2Missing.some((m) => m !== T3C_CORRECTION2_CHECK_SEAL.name);
       const pendingMigrations: string[] = [];
-      if (!correction2Installed) pendingMigrations.push('20270220000000_phase4_t3_correction2');
-      if (missing.length > 0) pendingMigrations.push('20270225000000_phase4_t3_correction3');
+      if (correction2CheckMissing) pendingMigrations.push('20270220000000_phase4_t3_correction2');
+      if (missing.length > 0 || correction2BodyStale || correction2CheckMissing) {
+        pendingMigrations.push('20270225000000_phase4_t3_correction3');
+      }
 
       return {
         installed: missing.length === 0 && prerequisitesMissing.length === 0 && correction2Installed,
@@ -884,6 +898,25 @@ export class T3CRepairService {
         //     the repair overwrote; an evidence table that can be quietly rewritten is not evidence.
         for (const statement of EVIDENCE_SEAL_SQL) await tx.$executeRawUnsafe(statement);
 
+        // 0c. The CANONICAL revocation CHECK must stand before any history is written. The repair
+        //     preserves a pre-existing revocation triple and writes new ones; on a restored or
+        //     partially managed database where `LabourAttendance_revoke_attribution_check` is
+        //     missing, weakened or NOT VALID, "revoked" rows can be malformed and the triples this
+        //     engine writes would commit into a table whose attribution rule is unenforced. Same
+        //     identity discipline as every other seal: the deparse of the live constraint must
+        //     equal the canonical expression's, probed on a session-local TEMP clone. (The
+        //     row-level coherence guard in `applyAction` is the second half — it refuses the
+        //     specific malformed triple even if a decoy CHECK were somehow accepted.)
+        const revocationSeal = T3C_PREREQUISITE_CHECK_SEALS.find(
+          (s) => s.name === 'LabourAttendance_revoke_attribution_check',
+        )!;
+        await tx.$executeRawUnsafe(t3cProbeTableSql(revocationSeal.table));
+        if (!(await this.checkSealed(tx, revocationSeal))) {
+          throw new RepairAbortedError(
+            'LabourAttendance_revoke_attribution_check is not the canonical validated revocation rule — a repair will not write new history into a table whose revocation attribution is unenforced; reconcile the schema first (docs/RUNBOOK.md §P4T3C3)',
+          );
+        }
+
         // 1. Disable ONLY the named triggers the plan's ops require, by name, inside this transaction.
         for (const trigger of disableList) {
           const table = DISABLEABLE_TRIGGERS[trigger];
@@ -929,6 +962,21 @@ export class T3CRepairService {
     const before = await this.captureBefore(tx, table, action.id);
     if (!before) {
       throw new RepairAbortedError(`${action.op}: no ${table} row with id ${JSON.stringify(action.id)} (nothing to repair)`);
+    }
+    // A PRE-EXISTING revocation is preserved only if it is COHERENT. `revokedAt` alone is not a
+    // revocation: on a restored or partially managed database where
+    // `LabourAttendance_revoke_attribution_check` was missing or weakened, a row can carry a
+    // timestamp with no revoker and no reason — and treating that as "already revoked" would
+    // preserve the malformed triple, write a marker over it, and commit a permanently
+    // UNATTRIBUTED correction under an engine whose whole purpose is attribution. The state is a
+    // schema-integrity finding for the operator, not history to preserve.
+    if (
+      before['revokedAt'] != null &&
+      (before['revokedById'] == null || before['revokeReason'] == null)
+    ) {
+      throw new RepairAbortedError(
+        `${action.op}: LabourAttendance ${action.id} carries an INCOHERENT revocation (revokedAt is set but revokedById=${JSON.stringify(before['revokedById'])}, revokeReason=${JSON.stringify(before['revokeReason'])}) — this violates LabourAttendance_revoke_attribution_check, so the database's guards were bypassed or are missing; reconcile the schema and this row's provenance first (docs/RUNBOOK.md §P4T3C3). The engine never preserves a malformed triple as history`,
+      );
     }
     // STANDING is asserted only where the revocation is being WRITTEN (the still-live paths below).
     // On the preserved path the plan's `revokedById` is never written — it must merely NAME the

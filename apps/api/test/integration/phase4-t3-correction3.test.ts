@@ -2261,7 +2261,10 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
       expect(seals.installed).toBe(false);
       expect(seals.prerequisitesMissing).toEqual([]);
       expect(seals.pendingMigrations).toContain('20270220000000_phase4_t3_correction2');
-      expect(seals.pendingMigrations).not.toContain('20270225000000_phase4_t3_correction3');
+      // Round-3j re-pin: whenever 20270220 is pending, 20270225 is pending WITH it — the older
+      // replay rewrites the head-live body back to its 20270220 version, and only the newer
+      // migration's re-run restores the 20270225 body the correction-3 layer requires.
+      expect(seals.pendingMigrations).toContain('20270225000000_phase4_t3_correction3');
     } finally {
       await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_manual_reason_non_blank"
           CHECK ("manualReason" IS NULL OR btrim("manualReason", E' \t\n\x0B\f\r') <> '')`);
@@ -2367,16 +2370,29 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     const appendOnly = 'phase4_t3_attendance_append_only';
     const headLive = 'phase4_t3c_allocation_head_live';
     try {
-      // (1) the REAL 20270210 body: a legitimate pre-correction-2 database. The prerequisite seal
-      // accepts it (it IS a deployed layer), and correction 2 reports ITSELF pending — re-running
-      // that migration CREATE OR REPLACEs the body, so leaving it pending is also the repair.
+      // (1) the REAL 20270210 body under an EXISTING correction-2 CHECK. Round 3j: the pending set
+      // must NOT name 20270220 here — that deployed migration's ADD CONSTRAINT is unconditional,
+      // so replaying it over the existing constraint fails the whole deploy (asserted directly
+      // below). The healing layer is 20270225, which re-asserts the canonical body.
       await installFnBody(appendOnly, migrationFnBody(L210, appendOnly));
       let seals = await repairs.correctionSeals();
       expect(seals.prerequisitesMissing).toEqual([]);
       expect(seals.correction2Installed).toBe(false);
       expect(seals.correction2Missing).toContain(`${appendOnly}@${L220}`);
-      expect(seals.pendingMigrations).toContain(L220);
+      expect(seals.pendingMigrations).toContain(L225);
+      expect(seals.pendingMigrations).not.toContain(L220);
       expect(seals.installed).toBe(false);
+      // The trap the old attribution set: replaying 20270220 over its own existing CHECK FAILS.
+      const replay220 = spawnSync(
+        'psql',
+        [psqlUrl(), '-v', 'ON_ERROR_STOP=1', '-f', join(__dirname, '..', '..', 'prisma', 'migrations', L220, 'migration.sql')],
+        { encoding: 'utf8', env: psqlEnv() },
+      );
+      expect(replay220.status).not.toBe(0);
+      expect(`${replay220.stdout}${replay220.stderr}`).toContain('already exists');
+      // …and the ATTRIBUTED pending migration really heals: 20270225's replay re-asserts the body.
+      expect(runMigration().code).toBe(0);
+      expect((await repairs.correctionSeals()).correction2Installed).toBe(true);
       // (2) a DECOY body matching NO deployed layer: not a layer state, a refusal — the
       // prerequisite seal reports the trigger missing and the runner refuses to baseline.
       await installFnBody(appendOnly, `${migrationFnBody(L220, appendOnly)}\n-- decoy\n`);
@@ -2386,14 +2402,15 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     } finally {
       await installFnBody(appendOnly, migrationFnBody(L220, appendOnly));
     }
-    // (3) head_live at its 20270215 body: BOTH re-runnable corrections replaced that function, so
-    // both report pending — and really executing the correction (here: 20270225's replay) heals it.
+    // (3) head_live at its 20270215 body: both correction layers report the body stale, but with
+    // the CHECK present only 20270225 may be left pending — and its replay heals.
     try {
       await installFnBody(headLive, migrationFnBody(L215, headLive));
       const seals = await repairs.correctionSeals();
       expect(seals.correction2Missing).toContain(`${headLive}@${L220}`);
       expect(seals.missing).toContain(`${headLive}@${L225}`);
-      expect(seals.pendingMigrations).toEqual(expect.arrayContaining([L220, L225]));
+      expect(seals.pendingMigrations).toContain(L225);
+      expect(seals.pendingMigrations).not.toContain(L220);
       expect(seals.installed).toBe(false);
     } finally {
       expect(runMigration().code).toBe(0);
@@ -2451,6 +2468,102 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     } finally {
       await t.prisma.$executeRawUnsafe(`UPDATE pg_index SET indisready = true WHERE indexrelid = '"${idx}"'::regclass`);
     }
+    expect((await repairs.correctionSeals()).installed).toBe(true);
+  });
+
+  // ── ROUND 3j — the three Codex findings on `a113cce` (R3j-A is folded into R3i-A's re-pin) ──────
+
+  it('R3j-B: a repair never writes history over an unenforced revocation rule', async () => {
+    // RED at a113cce: with `LabourAttendance_revoke_attribution_check` dropped (the restored-
+    // database state the finding names), a blank muster carrying `revokedAt` + `revokedById` but NO
+    // `revokeReason` sailed down the preserved-revocation path — the repair COMMITTED, backfilling
+    // the operator's reason onto someone else's revocation timestamp: a triple that never happened,
+    // written into a table whose attribution rule was unenforced. The repair now verifies the
+    // canonical revocation CHECK (same probe-deparse identity as every seal) before writing any
+    // history, and `applyAction` independently refuses an incoherent pre-existing triple.
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2027-01-08');
+    // The non-blank CHECK must come off for the plant too: an UPDATE writes a new row VERSION, and
+    // even a NOT VALID constraint checks new versions — only the blank row's untouched original
+    // escapes it. The hostile database this models never had either rule enforced.
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_revoke_attribution_check"`);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DISABLE TRIGGER "LabourAttendance_append_only"`);
+    try {
+      await t.prisma.$executeRawUnsafe(
+        `UPDATE "LabourAttendance" SET "revokedAt" = now(), "revokedById" = $1 WHERE "id" = $2`,
+        f.ownerUser.id,
+        seed,
+      );
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" ENABLE TRIGGER "LabourAttendance_append_only"`);
+      await expect(
+        repairs.repair({
+          operator: 'ops@vitan.in',
+          reason: 'attempt over an unenforced revocation rule',
+          actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+        }),
+      ).rejects.toThrow(/not the canonical validated revocation rule/);
+      // Nothing committed: no marker, the malformed triple untouched, no reason invented.
+      const row = await t.prisma.$queryRawUnsafe<Array<{ m: string | null; rr: string | null }>>(
+        `SELECT "manualReason" AS m, "revokeReason" AS rr FROM "LabourAttendance" WHERE "id" = $1`,
+        seed,
+      );
+      expect(row[0]!.m ?? '').not.toContain(T3C_INVALID_LEGACY_PREFIX);
+      expect(row[0]!.rr).toBeNull();
+    } finally {
+      // Test-harness teardown of the hostile fixture — the incoherent row must go before the
+      // canonical CHECKs can return (the exact restore DDL other probes use; afterEach VALIDATEs).
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DISABLE TRIGGER "LabourAttendance_append_only"`);
+      await t.prisma.$executeRawUnsafe(`DELETE FROM "LabourAttendance" WHERE "id" = $1`, seed);
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" ENABLE TRIGGER "LabourAttendance_append_only"`);
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_revoke_attribution_check" CHECK (
+          ("revokedAt" IS NULL     AND "revokedById" IS NULL     AND "revokeReason" IS NULL)
+       OR ("revokedAt" IS NOT NULL AND "revokedById" IS NOT NULL AND "revokeReason" IS NOT NULL))`);
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_manual_reason_non_blank"
+          CHECK ("manualReason" IS NULL OR btrim("manualReason", E' \t\n\x0B\f\r') <> '')`);
+    }
+  });
+
+  it('R3j-C: RENAME cannot smuggle the evidence register out from under its markers', async () => {
+    // RED at a113cce: `ALTER TABLE … RENAME TO` commits its new name BEFORE ddl_command_end fires,
+    // so `to_regclass` of the OLD name was already NULL inside the guard and the rename sailed
+    // through — orphaning every marker from the register its diagnostics and runbook query, while a
+    // later repair would create a fresh empty table under the original name. The guard now also
+    // identifies the register by the attribution CHECK riding its OID, which a rename cannot touch
+    // and whose removal is itself ALTER TABLE — refused while the guard stands.
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2027-01-09');
+    await repairs.repair({
+      operator: 'ops@vitan.in',
+      reason: 'create the evidence table',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+    let renamed = false;
+    try {
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "T3CRepairAction" RENAME TO "t3c_smuggled"`);
+      renamed = true;
+    } catch (e) {
+      expect(String(e)).toMatch(/never altered/);
+    }
+    if (renamed) {
+      // RED-run hygiene only: put the register back before failing, so later tests find it. The
+      // guard must come off FIRST (the deliberate loud act) — a rename-BACK re-resolves the
+      // guarded name at ddl_command_end and is refused exactly like any other rename.
+      await t.prisma.$executeRawUnsafe('DROP EVENT TRIGGER IF EXISTS phase4_t3c_evidence_alter_guard');
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "t3c_smuggled" RENAME TO "T3CRepairAction"`);
+    }
+    expect(renamed).toBe(false);
+    // The register is still sealed and queryable under its own name, evidence intact.
+    const evidence = await t.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+      `SELECT count(*)::int AS n FROM "T3CRepairAction" WHERE "rowId" = $1`,
+      seed,
+    );
+    expect(Number(evidence[0]!.n)).toBe(1);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
     expect((await repairs.correctionSeals()).installed).toBe(true);
   });
 });

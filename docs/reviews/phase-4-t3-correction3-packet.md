@@ -471,6 +471,49 @@ body-aware answer and heals on deploy; the db-push Case 7 refusal unchanged). `u
 PASSED, EXIT 0. `test:e2e:api` (allmodules) and `test:e2e:api:outbox`: **25 passed / 6
 sender-mode-skipped, EXIT 0 each, clean on the FIRST run** (no documented-flake retries needed).
 
+## Round 3j — the current-head Codex review of `a113cce` (3 findings)
+
+Three findings (all P1), each reproduced RED at `a113cce` before the fix — the first is a defect in
+round 3i's own healing attribution, named as such.
+
+| # | finding (P) | fix |
+|---|---|---|
+| 1 | round 3i attributed a stale correction-2 function BODY to `20270220000000`'s pending set — but that DEPLOYED migration's `ALTER TABLE … ADD CONSTRAINT` is UNCONDITIONAL, so on a P3005 database where the CHECK already exists the retried `migrate deploy` fails immediately ("already exists") and the baseline path is a trap (P1) | the healing layer is decided by what a re-run actually DOES: `20270225000000` (editable, re-runnable) now re-asserts the canonical `phase4_t3_attendance_append_only` body — spliced byte-for-byte from `20270220000000`'s text, never transcribed — and `correctionSeals()` leaves `20270220000000` pending ONLY when its CHECK is genuinely absent; body-only staleness pends `20270225000000`. Whenever `20270220000000` IS pending, `20270225000000` is pending WITH it (the older replay rewrites the head-live body back a layer; the newer re-run restores it). The re-pinned `R3i-A` asserts the new attribution AND demonstrates the trap directly (a `psql -f` replay of `20270220000000` over its own CHECK exits non-zero with "already exists") AND proves the attributed migration heals (`runMigration()` → `correction2Installed: true`); `R3h-C` re-pinned for the pending-together rule |
+| 2 | the repair treated any non-null `revokedAt` as a COMPLETE pre-existing revocation — on a restored database missing `LabourAttendance_revoke_attribution_check`, an incoherent triple (timestamp set, revoker or reason NULL) rode the preserved path and the repair COMMITTED, backfilling the operator's reason onto someone else's timestamp: a triple that never happened, written into a table whose attribution rule was unenforced (P1) | two independent halves: `repair()` verifies the canonical revocation CHECK by probe-deparse IDENTITY (validated) before writing ANY history — an unenforced or decoy rule is a named abort with the whole transaction rolled back — and `applyAction` refuses an incoherent pre-existing triple row-by-row (defense in depth behind the structural check; unreachable while the validated canonical CHECK stands, stated plainly) (`R3j-B`: the exact hostile fixture — CHECK dropped, `revokedAt`+`revokedById` planted, reason NULL — is refused with nothing committed and no reason invented) |
+| 3 | `ALTER TABLE "T3CRepairAction" RENAME TO x` bypassed the alter guard: the rename commits its new name BEFORE `ddl_command_end` fires, so `to_regclass` of the OLD name is already NULL and the `objid` comparison never matches — every marker orphaned from the register its diagnostics and runbook query, while a later repair would mint a fresh empty table under the original name (P1) | the guard identifies the register TWO ways: by current name (covers every in-place ALTER and any window before the marker exists) OR by the `T3CRepairAction_attribution_non_blank` CHECK riding the command's own `objid` — a constraint survives a rename, and removing the marker is itself `ALTER TABLE`, refused while the guard stands (self-protecting; the remaining bypass is the documented loud `DROP EVENT TRIGGER`). The canonical body is edited in the (undeployed) migration and flows to every writer/verifier through the generated module (`R3j-C`: the rename is refused, evidence intact, seals still installed; the probe's own RED-run hygiene had to drop the guard first to rename BACK — the guard refuses that direction too, which is itself confirmation) |
+
+**Deliberate re-pins:** `R3i-A` (pending attribution + the two healing demonstrations) and `R3h-C`
+(20270220-pending now always brings 20270225 with it). `t3c_smuggled` note for reproducers: running
+`R3j-C` against the `a113cce` runtime leaves the register renamed (the OLD guard also blocked the
+rename-back), so the RED demonstration is followed by a one-line `DROP TABLE "t3c_smuggled"`
+cleanup before re-running the suite on the fixed runtime.
+
+**Honest notes.** (1) Finding 1 is a correction OF round 3i's fix — the "re-running the pending
+migration heals the body" claim was true only when the CHECK was also absent; the round-3i packet
+text stands as the historical record of what `a113cce` did, and this section is the correction.
+(2) The rename guard's marker is the attribution CHECK, not a name — a database where that CHECK
+never existed (evidence table created but never sealed) falls back to the name arm, which covers
+every non-rename ALTER; a rename in that unsealed window remains possible and is exactly the state
+`t3c seals` already reports as NOT sealed. (3) The 20270225 re-assertion of a 20270220 body is the
+one place a later migration writes an earlier layer's text — spliced mechanically from the deployed
+file so the bytes cannot drift, and the generated-module fidelity checks (md5 vs live `prosrc`, the
+suite's `installed: true`) hold it there.
+
+**Gates (round 3j):** reproduce-first — `R3j-B` and `R3j-C` RED at the `a113cce` runtime, GREEN
+after; the deliberately re-pinned `R3i-A` (healing attribution: 20270220-pending now implies
+20270225-pending, and the 20270220 replay trap is demonstrated by `psql -f` failing "already
+exists" over an existing CHECK) and `R3h-C`/`R4` re-pins hold. The focused
+`phase4-t3-correction3.test.ts` **56/56**. `pnpm check` EXIT 0 (web 432/432, API **671/671**,
+`check:automation` included). Full integration suite on a pristine migrated DB: **69 files / 646
+tests**, EXIT 0. `upgrade-proof.sh` PASSED, EXIT 0 (every prior forgery rejection surviving under
+the re-asserted attendance body and the rename-proof alter guard).
+`phase4-t3-correction3-production-runner-proof.sh` PASSED — **73 assertions**, EXIT 0.
+`test:e2e:api:allmodules` **31/31** (one first-run failure in the legacy
+`cross-cutting-surfaces` spec — the poll proving all five module reads own their surfaces passed
+but the intercepted decisions JSON payload read `null`, a response-capture race on a surface this
+round does not touch; clean re-run 31/31) and `test:e2e:api:outbox` **25 passed / 6
+sender-mode-skipped**, EXIT 0, clean on the first run.
+
 The PR is held per the directive: pushed normally, threads left for Codex, no self-promotion of
 draft state, no self-merge. On merge, `docs/STATUS.md` moves Task 3 to `merged`; only then may the
 runner start Task 4. **Task 4 remains blocked.**

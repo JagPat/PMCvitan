@@ -607,15 +607,27 @@ BEGIN
   --     same separate, loud, auditable DDL act as for the drop guard, and `t3c seals` reports its
   --     absence.
   CREATE OR REPLACE FUNCTION phase4_t3c_evidence_alter_guard() RETURNS event_trigger AS $fn$
-  DECLARE cmd record;
-  BEGIN
-    FOR cmd IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
-      IF cmd.command_tag = 'ALTER TABLE' AND cmd.objid = to_regclass('"T3CRepairAction"') THEN
-        RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never altered — dropping, renaming or retyping its columns would erase or orphan the before-images the attendance markers point at. See docs/RUNBOOK.md §P4T3C3.';
-      END IF;
-    END LOOP;
-  END;
-  $fn$ LANGUAGE plpgsql;
+     DECLARE cmd record;
+     BEGIN
+       FOR cmd IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
+         -- The table is identified TWO ways, because `ALTER TABLE … RENAME TO x` commits its new
+         -- name before ddl_command_end fires: `to_regclass` of the OLD name is already NULL there,
+         -- so a name-only test waves the rename through and orphans every marker from the register
+         -- its diagnostics and runbook query. The attribution CHECK rides the table's OID — a
+         -- rename does not touch it — and removing that marker is itself ALTER TABLE, refused
+         -- while this guard stands. So: match by current name (covers every in-place ALTER and any
+         -- window where the CHECK is not yet installed) OR by the marker constraint on the
+         -- command's own objid (covers RENAME).
+         IF cmd.command_tag = 'ALTER TABLE'
+            AND (cmd.objid = to_regclass('"T3CRepairAction"')
+                 OR EXISTS (SELECT 1 FROM pg_constraint mk
+                             WHERE mk.conrelid = cmd.objid
+                               AND mk.conname = 'T3CRepairAction_attribution_non_blank')) THEN
+           RAISE EXCEPTION 'T3CRepairAction is the durable repair-evidence register and is never altered — dropping, renaming or retyping its columns would erase or orphan the before-images the attendance markers point at. See docs/RUNBOOK.md §P4T3C3.';
+         END IF;
+       END LOOP;
+     END;
+     $fn$ LANGUAGE plpgsql;
   SELECT * INTO ev FROM pg_event_trigger WHERE evtname = 'phase4_t3c_evidence_alter_guard';
   IF NOT FOUND THEN
     CREATE EVENT TRIGGER phase4_t3c_evidence_alter_guard ON ddl_command_end
@@ -701,6 +713,35 @@ BEGIN
    ORDER BY r."revision" DESC LIMIT 1;
   IF head_status = 'cancelled' THEN
     RAISE EXCEPTION 'requirement % is cancelled — its demand is dead and cannot be allocated against', NEW."requirementId";
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ══ 20270220000000's append-only BODY, re-asserted HERE because that migration cannot re-run ══
+-- `CREATE OR REPLACE FUNCTION` preserves a function's identity, so a restored database can hold
+-- `20270220000000`'s CHECK while `phase4_t3_attendance_append_only` still carries the 20270210
+-- body that never froze `manualReason`. That migration cannot be left pending to heal the body:
+-- its `ALTER TABLE … ADD CONSTRAINT` is unconditional (and deployed, so it cannot be rewritten),
+-- and re-running it over the existing constraint fails the whole deploy. THIS migration is the
+-- re-runnable layer, so it re-asserts the canonical body — byte-for-byte `20270220000000`'s text
+-- — and `t3c seals` attributes body-only correction-2 staleness to THIS migration's pending set.
+CREATE OR REPLACE FUNCTION phase4_t3_attendance_append_only() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'LabourAttendance rows are never deleted (revoke the attendance instead, %)', OLD."id";
+  END IF;
+  IF NEW."id" <> OLD."id" OR NEW."projectId" <> OLD."projectId" OR NEW."workerId" <> OLD."workerId"
+     OR NEW."civilDate" <> OLD."civilDate" OR NEW."shift" <> OLD."shift"
+     OR NEW."deviceId" IS DISTINCT FROM OLD."deviceId"
+     OR NEW."manualReason" IS DISTINCT FROM OLD."manualReason"
+     OR NEW."evidenceMediaId" IS DISTINCT FROM OLD."evidenceMediaId"
+     OR NEW."recordedAt" <> OLD."recordedAt" OR NEW."recordedById" <> OLD."recordedById"
+     OR NEW."sourceCommandId" <> OLD."sourceCommandId" THEN
+    RAISE EXCEPTION 'LabourAttendance is an APPEND-ONLY observation — only the revocation stamp may change (%)', OLD."id";
+  END IF;
+  IF OLD."revokedAt" IS NOT NULL THEN
+    RAISE EXCEPTION 'a revoked LabourAttendance is terminal (%)', OLD."id";
   END IF;
   RETURN NEW;
 END;
