@@ -4,11 +4,13 @@ import { pathToFileURL } from 'node:url';
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
 const MERGE_MARKER = '<!-- autonomous-post-merge:';
+const STATE_ISSUE_NUMBER = 235;
+const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 // The backlog starts after this workflow was introduced, so historical Claude
 // merges cannot accidentally start competing continuation runners.
 const HANDOFF_ENABLED_AT = Date.parse('2026-07-27T14:53:00Z');
 const MERGEABILITY_TIMEOUT_MS = Number(
-  process.env.MERGEABILITY_TIMEOUT_MS ?? 8 * 60_000,
+  process.env.MERGEABILITY_TIMEOUT_MS ?? 30_000,
 );
 const MERGEABILITY_POLL_MS = Number(
   process.env.MERGEABILITY_POLL_MS ?? 5_000,
@@ -77,25 +79,62 @@ class GitHubClient {
     }
   }
 
-  async mergedPullRequestsSinceEnabled() {
+  async mergedPullRequestsAfter(cursor) {
     const pullRequests = [];
     for (let page = 1; ; page += 1) {
       const batch = await this.request(
         `/repos/${this.repository}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`,
       );
       for (const pullRequest of batch) {
-        if (Date.parse(pullRequest.updated_at) < HANDOFF_ENABLED_AT) {
+        if (Date.parse(pullRequest.updated_at) < cursor.mergedAt) {
           return pullRequests;
         }
         if (
           pullRequest.merged_at &&
-          Date.parse(pullRequest.merged_at) >= HANDOFF_ENABLED_AT
+          (Date.parse(pullRequest.merged_at) > cursor.mergedAt ||
+            (Date.parse(pullRequest.merged_at) === cursor.mergedAt &&
+              pullRequest.number > cursor.number))
         ) {
           pullRequests.push(pullRequest);
         }
       }
       if (batch.length < 100) return pullRequests;
     }
+  }
+
+  async runnerCursor() {
+    const issue = await this.request(
+      `/repos/${this.repository}/issues/${STATE_ISSUE_NUMBER}`,
+    );
+    const match = issue.body?.match(
+      /Last processed merge: `([^`]+)` \(#(\d+)\)/,
+    );
+    if (!match) return { mergedAt: HANDOFF_ENABLED_AT, number: 0 };
+    return { mergedAt: Date.parse(match[1]), number: Number(match[2]) };
+  }
+
+  setRunnerCursor(mergedAt, number) {
+    return this.request(
+      `/repos/${this.repository}/issues/${STATE_ISSUE_NUMBER}`,
+      {
+        method: 'PATCH',
+        body: {
+          body: [
+            '<!-- autonomous-runner-state -->',
+            'This issue stores the durable cursor for the repository automation. GitHub Actions maintains it; do not close or edit it manually.',
+            '',
+            `Last processed merge: \`${mergedAt}\` (#${number})`,
+          ].join('\n'),
+        },
+      },
+    );
+  }
+
+  dispatchRetry(defaultBranch) {
+    return this.request(
+      `/repos/${this.repository}/actions/workflows/autonomous-handoff.yml/dispatches`,
+      { method: 'POST', body: { ref: defaultBranch } },
+    );
   }
 
   async comments(number) {
@@ -144,7 +183,9 @@ async function handOffConflict(
 
   const marker = `${CONFLICT_MARKER}${live.head.sha} -->`;
   const comments = await client.comments(live.number);
-  if (comments.some((comment) => comment.body?.includes(marker))) return;
+  if (comments.some((comment) =>
+    comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
+  )) return;
 
   await client.comment(
     live.number,
@@ -173,7 +214,9 @@ async function handOffMergedPullRequest(
 
   const marker = `${MERGE_MARKER}${pullRequest.merge_commit_sha} -->`;
   const comments = await client.comments(pullRequest.number);
-  if (comments.some((comment) => comment.body?.includes(marker))) return;
+  if (comments.some((comment) =>
+    comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
+  )) return;
 
   await client.comment(
     pullRequest.number,
@@ -201,7 +244,13 @@ export async function run() {
 
   // Drain the durable merge backlog on every surviving event. GitHub may replace
   // a pending concurrency run, so correctness cannot depend on one closed event.
-  for (const mergedPullRequest of await client.mergedPullRequestsSinceEnabled()) {
+  const cursor = await client.runnerCursor();
+  const mergedBacklog = await client.mergedPullRequestsAfter(cursor);
+  mergedBacklog.sort((left, right) =>
+    Date.parse(left.merged_at) - Date.parse(right.merged_at) ||
+    left.number - right.number
+  );
+  for (const mergedPullRequest of mergedBacklog) {
     const liveMergedPullRequest = await client.pullRequest(
       mergedPullRequest.number,
     );
@@ -211,13 +260,25 @@ export async function run() {
       repository,
       defaultBranch,
     );
+    await client.setRunnerCursor(
+      mergedPullRequest.merged_at,
+      mergedPullRequest.number,
+    );
   }
 
   // Every event also drains open conflict state. A pending Actions run may be
   // replaced within the global group, so no event-specific path is essential.
+  let retryNeeded = false;
   for (const pullRequest of await client.openPullRequests()) {
-    await handOffConflict(client, pullRequest, repository, defaultBranch);
+    try {
+      await handOffConflict(client, pullRequest, repository, defaultBranch);
+    } catch (error) {
+      if (!String(error?.message).includes('did not compute mergeability')) throw error;
+      retryNeeded = true;
+      console.warn(error.message);
+    }
   }
+  if (retryNeeded) await client.dispatchRetry(defaultBranch);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
