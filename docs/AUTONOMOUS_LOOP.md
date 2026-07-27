@@ -67,7 +67,7 @@ PR=230
 HEAD_SHA=$(gh pr view "$PR" --repo JagPat/PMCvitan --json headRefOid --jq .headRefOid)
 TERMINAL_STATUS_ID=$(gh api --paginate --slurp \
   "repos/JagPat/PMCvitan/commits/$HEAD_SHA/statuses?per_page=100" \
-  --jq '(add | map(select(.context == "codex-current-head" and .state == "failure") | select((.description // "") as $description | ($description | startswith("review:")) or ($description | contains("current-head Codex finding")) or ($description | contains("Codex submitted a current-head review")) or ($description | contains("Codex review timed out")) or ($description | contains("Codex evidence changed")))) | .[0].id) // empty')
+  --jq '(add | map(select(.context == "codex-current-head" and .state == "failure") | select((.description // "") as $description | ($description | contains("Codex review timed out")) or ($description | contains("Codex evidence changed during final verification")) or $description == "review: Required CI changed during current-head Codex review" or $description == "review: bootstrap exact-head review requested")) | .[0].id) // empty')
 test -n "$TERMINAL_STATUS_ID"
 gh workflow run auto-merge.yml --repo JagPat/PMCvitan \
   -f pr_number="$PR" -f head_sha="$HEAD_SHA" \
@@ -76,7 +76,10 @@ gh workflow run auto-merge.yml --repo JagPat/PMCvitan \
 
 All three inputs are required. The workflow refuses a stale SHA and authorizes a
 retry only when `terminal_status_id` is the exact latest failed terminal review
-status on that head. Pending, successful, or superseded status IDs fail closed.
+status on that head and its outcome is retryable. Timeout, changed-CI, changed
+provider evidence, and the documented bootstrap marker are retryable. A current-
+head Codex finding or review is not: Claude must fix it and push a new SHA. Pending,
+successful, finding-bearing, or superseded status IDs fail closed.
 The dispatch job only writes a durable `codex-recovery-request` marker; it never
 changes draft state, invokes Codex, publishes `codex-current-head`, or queues a
 merge. Both normal CI and recovery then enter the same job-level concurrency group

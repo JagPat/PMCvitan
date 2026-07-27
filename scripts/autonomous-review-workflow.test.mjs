@@ -302,6 +302,16 @@ test('a recovery dispatch requires the exact latest failed terminal status', () 
     ...failed,
     id: 987654320,
   };
+  const persistentFinding = {
+    ...failed,
+    id: 987654323,
+    description: 'review: 1 current-head Codex finding',
+  };
+  const bootstrap = {
+    ...failed,
+    id: 987654324,
+    description: 'review: bootstrap exact-head review requested',
+  };
 
   assert.equal(
     reviewGate.authorizeRecoveryDispatch(
@@ -320,6 +330,14 @@ test('a recovery dispatch requires the exact latest failed terminal status', () 
   assert.equal(
     reviewGate.authorizeRecoveryDispatch([terminal], '987654321'),
     null,
+  );
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch([persistentFinding], '987654323'),
+    null,
+  );
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch([bootstrap], '987654324'),
+    bootstrap,
   );
 });
 

@@ -63,8 +63,9 @@ packet does not embed a self-referential final SHA.
    available on the default branch yet.
 4. Add `codex-current-head` to the existing five required checks, set strict mode,
    and enforce protection for administrators.
-5. Publish the one explicit failed bootstrap `codex-current-head` status on PR
-   #230's current SHA, then dispatch `Autonomous review and merge` with
+5. Publish the one explicit failed bootstrap `codex-current-head` status with the
+   exact description `review: bootstrap exact-head review requested` on PR #230's
+   current SHA, then dispatch `Autonomous review and merge` with
    `pr_number=230`, the exact current `head_sha`, and that status's ID as
    `terminal_status_id`. From that point, GitHub drives the regular CI -> ready ->
    Codex -> Claude Auto-fix -> merge loop.
@@ -117,10 +118,12 @@ supersedes the old poll on its next bounded check. A same-head CI rerun recovers
 terminal review result from the complete paginated status history instead of
 performing another draft-to-ready transition, even when newer legacy `pending` or
 `ci:` statuses obscure that result. A manual recovery dispatch requires both the
-live head SHA and the exact latest failed terminal status ID. Pending, successful,
-and superseded IDs are rejected before any draft or review mutation. The dispatch
-job records only a durable `codex-recovery-request` commit status. It does not
-invoke Codex or write the authoritative review status.
+live head SHA and the exact latest retryable terminal status ID. Timeouts, changed
+CI, changed provider evidence, and the documented bootstrap marker are retryable;
+finding-bearing reviews require a new head. Pending, successful, persistent-
+finding, and superseded IDs are rejected before any draft or review mutation. The
+dispatch job records only a durable `codex-recovery-request` commit status. It does
+not invoke Codex or write the authoritative review status.
 
 Normal CI and recovery feed one job-level concurrency group keyed by PR and exact
 head. That serialized owner is the only job allowed to change draft state, invoke

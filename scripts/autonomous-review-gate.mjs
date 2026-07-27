@@ -152,10 +152,21 @@ export function pendingRecoveryRequest(statuses) {
 export function recoveryRequestTerminal(statuses, request) {
   if (!request) return null;
   const terminalStatus = latestTerminalReviewStatus(statuses);
-  if (!terminalStatus || terminalStatus.state !== 'failure') return null;
+  if (!isRetryableTerminalReviewFailure(terminalStatus)) return null;
   return String(terminalStatus.id) === String(request.terminalStatusId)
     ? terminalStatus
     : null;
+}
+
+export function isRetryableTerminalReviewFailure(status) {
+  if (!status || status.state !== 'failure' || !isTerminalReviewStatus(status)) {
+    return false;
+  }
+  const description = status.description ?? '';
+  return description.includes('Codex review timed out')
+    || description.includes('Codex evidence changed during final verification')
+    || description === 'review: Required CI changed during current-head Codex review'
+    || description === 'review: bootstrap exact-head review requested';
 }
 
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
@@ -169,7 +180,7 @@ export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
       terminalStatus = recoveryRequestTerminal(statuses, existingRequest);
     }
   }
-  if (!terminalStatus || terminalStatus.state !== 'failure') return null;
+  if (!isRetryableTerminalReviewFailure(terminalStatus)) return null;
   return String(terminalStatus.id) === String(requestedStatusId)
     ? terminalStatus
     : null;
