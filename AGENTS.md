@@ -21,8 +21,8 @@ so directly rather than framing it as a suggestion.
   migration must add that column to the trigger's frozen identity/evidence set.
   Flag a new column that an existing trigger's column list does not cover.
 - A CHECK meant to enforce "non-blank" text must reject whitespace-only values.
-  `btrim(x)` strips spaces only; require `btrim(x, E' \t\r\n')` (or equivalent)
-  wherever the intent is non-blank.
+  `btrim(x)` strips spaces only; require the complete ASCII whitespace set
+  `btrim(x, E' \t\n\x0B\f\r')` (or equivalent) wherever the intent is non-blank.
 - New migrations must be forward-only and safe to re-run. Use `IF NOT EXISTS` /
   `IF EXISTS` guards where the statement supports it, so a partial apply can be
   retried.
@@ -69,6 +69,10 @@ so directly rather than framing it as a suggestion.
 
 - This project runs as an autonomous loop. Do not block on human sign-off, and do
   not tell the author to wait for approval — no one is standing by to give it.
+- Review still happens BEFORE merge. Every PR starts as a draft; Codex reviews
+  every pushed head, and Claude marks it ready only after the Codex review on the
+  exact current head contains no blocking finding. A human approval is not a
+  substitute for this independent review.
 - Expect reproduce-first evidence: a failing (RED) probe at the base commit before
   the fix was written. Flag fixes shipped without a reproduction.
 - Scope discipline is reviewable. A PR that mixes an unrelated refactor into a
@@ -100,5 +104,6 @@ so directly rather than framing it as a suggestion.
   does not fix its own findings; that keeps the reviewer independent of the author.
 - Fixes are made by Claude Code, triggered automatically from the review. No human
   tags anyone, and no human approval is involved at any point in this loop.
-- Applying a CHANGES-NEEDED verdict is routine, and so is continuing to the next
-  task once a PR merges. Neither waits for a person.
+- Applying a CHANGES-NEEDED verdict is routine. Claude keeps the PR draft, fixes
+  forward, and waits for Codex to review the new head. The runner continues to the
+  next task only after the clean-reviewed PR merges and `docs/STATUS.md` advances.
