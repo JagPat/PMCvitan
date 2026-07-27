@@ -175,20 +175,39 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
   /** Prisma promises are LAZY — attaching a continuation is what dispatches the statement. */
   const reflect = <T>(p: Promise<T>): Promise<{ status: 'fulfilled'; value: T } | { status: 'rejected'; reason: unknown }> =>
     p.then((value) => ({ status: 'fulfilled' as const, value }), (reason) => ({ status: 'rejected' as const, reason }));
-  /** Poll pg_stat_activity for a backend ACTIVELY WAITING on a lock while running `queryLike`. The
-   *  CONDITION gates progress; the interval is only the observation cadence. Observed on the app's
-   *  client — a different connection from either racing session. */
-  const waitUntilBlocked = async (queryLike: string, expected = 1): Promise<void> => {
+  /** This session's own backend pid, read INSIDE its transaction so the barrier can name it. */
+  const backendPid = async (tx: { $queryRawUnsafe: (q: string) => Promise<unknown> }): Promise<number> => {
+    const rows = (await tx.$queryRawUnsafe(`SELECT pg_backend_pid()::int AS pid`)) as Array<{ pid: number }>;
+    return Number(rows[0]!.pid);
+  };
+
+  /**
+   * Block until ONE of the two named backends is waiting on a lock the OTHER holds.
+   *
+   * Earlier revisions polled `pg_stat_activity` for any backend blocked while running a query whose
+   * TEXT matched a pattern. That is not scoped to the test: this file's suites share a database with
+   * every other integration file, and `%INSERT INTO "WorkerAllocation"%` matches a sibling suite's
+   * insert on a different project just as well as the two sessions under test — so the barrier could
+   * open on someone else's contention, before these sessions had reached the state being probed.
+   *
+   * `pg_blocking_pids` answers the exact question instead: is THIS pid waiting for a lock held by
+   * THAT pid. No text, no other project, no other suite. The check is symmetric because which of two
+   * concurrently-started sessions wins the project lock is not determined — only that one of them
+   * blocks the other, which is the serialization being proven. The CONDITION gates progress; the
+   * interval is only the observation cadence, and the poll runs on the app's own client, a third
+   * connection that is never one of the racing pair.
+   */
+  const waitUntilOneBlocksTheOther = async (pidA: number, pidB: number): Promise<void> => {
     for (let i = 0; i < 300; i++) {
-      const rows = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
-        `SELECT COUNT(*)::int AS c FROM pg_stat_activity
-          WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE $1`,
-        queryLike,
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ blocked: boolean }>>(
+        `SELECT ($1::int = ANY(pg_blocking_pids($2::int)))
+             OR ($2::int = ANY(pg_blocking_pids($1::int))) AS blocked`,
+        pidA, pidB,
       );
-      if (Number(rows[0]!.c) >= expected) return;
+      if (rows[0]?.blocked === true) return;
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error(`barrier timeout: expected ${expected} backend(s) blocked on a lock while running ${queryLike}`);
+    throw new Error(`barrier timeout: neither backend ${pidA} nor ${pidB} ever blocked on a lock held by the other`);
   };
 
   // ══ FINDING 1 — the repair preserves the evidence it corrects ════════════════════════════════
@@ -409,6 +428,16 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     expect(section).not.toMatch(/DELETE\s+FROM\s+"LabourAttendance"/i);
     expect(section).toContain('t3c:preflight');
     expect(section).toContain('t3c:repair');
+
+    // §P4T3C3 is the operator-facing half of the quarantine exit. RED at 6d17949: it told the
+    // operator to "revoke it, record the incident" for a forged marker — a row that is ALREADY
+    // revoked, so the instruction is unperformable and the finding stays forever. The section must
+    // name the op that actually clears it, and must still forbid hand-writing evidence.
+    const c3 = runbook.slice(runbook.indexOf('## §P4T3C3'), runbook.indexOf('## 1. Drain all OLD'));
+    expect(c3.length).toBeGreaterThan(0);
+    expect(c3).toContain('f1-quarantine-forged-marker');
+    expect(c3).toMatch(/Do not.*hand-write a `T3CRepairAction` row/i);
+    expect(c3).not.toMatch(/DELETE\s+FROM\s+"LabourAttendance"/i);
   });
 
   // ══ FINDING 2 — Activities owns the lock AND the head, indivisibly ═══════════════════════════
@@ -420,38 +449,41 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     const { requirementId } = await labourRequirement(projectId, activityId, [{ civilDate: '2026-08-20', personShiftQty: 1 }]);
 
     const release = gate();
+    const held = gate();     // A → test: I own the root row now
+    const readerPid = gate(); // B → test: my backend pid is recorded
+    let pidA = 0;
+    let pidB = 0;
     // Session A holds the requirement ROOT row exactly as `RequirementsService.revise/cancel` do.
     const holder = raceA.$transaction(async (tx) => {
+      pidA = await backendPid(tx);
       await tx.$executeRawUnsafe(
         `SELECT "id" FROM "ActivityRequirementRoot" WHERE "projectId" = $1 AND "id" = $2 FOR UPDATE`,
         projectId, requirementId,
       );
+      // The lock is HELD once that statement returns — signalled directly rather than inferred by
+      // polling `pg_locks` for any `RowExclusiveLock` on the table, which a sibling suite writing a
+      // different project's requirement would satisfy just as well.
+      held.open();
       await release.promise;
       return 'held';
     }, { timeout: 30_000 });
-
-    // wait until A actually owns the row
-    for (let i = 0; i < 300; i++) {
-      const held = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
-        `SELECT COUNT(*)::int AS c FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
-          WHERE c.relname = 'ActivityRequirementRoot' AND l.mode = 'RowExclusiveLock'`,
-      );
-      if (Number(held[0]!.c) >= 1) break;
-      await new Promise((r) => setTimeout(r, 20));
-    }
+    await held.promise;
 
     // Session B asks the PARTICIPANT for the head. RED at f6af800: the participant took no lock, so
     // this returned immediately while A still held the root — Labour's own raw SELECT was the only
     // thing serializing, which is exactly the boundary violation being removed. GREEN: it blocks.
     let resolved = false;
     const reader = raceB.$transaction(async (tx) => {
+      pidB = await backendPid(tx);
+      readerPid.open();
       const head = await participant.labourRequirementHead(tx, { projectId, requirementId });
       resolved = true;
       return head;
     }, { timeout: 30_000 });
     const settled = reflect(reader);
 
-    await waitUntilBlocked('%ActivityRequirementRoot%FOR UPDATE%');
+    await readerPid.promise;
+    await waitUntilOneBlocksTheOther(pidA, pidB);
     expect(resolved, 'the participant must not read the head while another session holds the root').toBe(false);
 
     release.open();
@@ -503,10 +535,17 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
 
     const aReady = gate();
     const bReady = gate();
+    const pidsKnown = gate();
     const go = gate();
+    let pidA = 0;
+    let pidB = 0;
+    let pidCount = 0;
+    const announce = () => { if (++pidCount === 2) pidsKnown.open(); };
 
     // Session A: requirement A then requirement B. Session B: requirement B then requirement A.
     const sessionA = raceA.$transaction(async (tx) => {
+      pidA = await backendPid(tx);
+      announce();
       await insert(tx, `raw-a1-${seq++}`, w1, reqA.requirementId, reqA.revision, actA, cmdA);
       aReady.open();
       await go.promise;
@@ -515,6 +554,8 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     }, { timeout: 30_000 });
 
     const sessionB = raceB.$transaction(async (tx) => {
+      pidB = await backendPid(tx);
+      announce();
       await insert(tx, `raw-b1-${seq++}`, w3, reqB.requirementId, reqB.revision, actB, cmdB);
       bReady.open();
       await go.promise;
@@ -524,16 +565,23 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
 
     const settledA = reflect(sessionA);
     const settledB = reflect(sessionB);
+    await pidsKnown.promise;
 
     // RED at f6af800: BOTH first inserts succeed (each session holds one root), so both gates open,
     // the second inserts cross, and PostgreSQL aborts one with 40P01 `deadlock detected`.
-    // GREEN: the project readiness advisory lock is taken by the FIRST trigger, so session B's very
-    // first insert blocks behind session A's — `bReady` never opens until A commits. The race is
-    // resolved before either session can hold a root the other wants.
-    await Promise.race([
-      Promise.all([aReady.promise, bReady.promise]),
-      waitUntilBlocked('%INSERT INTO "WorkerAllocation"%'),
-    ]);
+    // GREEN: the project readiness advisory lock is taken by the FIRST trigger, so the loser's very
+    // first insert blocks behind the winner's — its ready gate never opens until the winner commits.
+    // The race is resolved before either session can hold a root the other wants.
+    //
+    // The barrier names the two backends rather than matching insert TEXT: this database is shared
+    // with every other integration suite, so `%INSERT INTO "WorkerAllocation"%` would also match a
+    // sibling suite's insert on a different project and could open `go` before these two sessions had
+    // contended at all — turning the GREEN branch into an accident rather than a proof.
+    // The loser of this race keeps polling; its eventual timeout must not surface as an unhandled
+    // rejection when the RED branch (both gates open) settles first.
+    const barrier = waitUntilOneBlocksTheOther(pidA, pidB);
+    barrier.catch(() => undefined);
+    await Promise.race([Promise.all([aReady.promise, bReady.promise]), barrier]);
     go.open();
 
     const [ra, rb] = await Promise.all([settledA, settledB]);
@@ -697,6 +745,100 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     expect(marker.samples[0]!['id']).toBe(forged);
   });
 
+  it('R1: a forged marker HAS an exit — quarantine files it, clears the finding, and invents nothing', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const forgedText = `${T3C_INVALID_LEGACY_PREFIX} repair=${'0'.repeat(8)}-0000-0000-0000-${'0'.repeat(12)}; supervisor said he was here`;
+    const forged = await forgedMarkedMuster(projectId, workerId, forgedText, '2026-09-10');
+    const before = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id: forged } });
+    expect(before.revokedAt, 'the forger already filled in the revocation triple').not.toBeNull();
+
+    // RED at 6d17949: this state had NO exit. `f1-mark-invalid-legacy` accepts only blank LIVE rows,
+    // the row is already revoked so the application revoke is a no-op on a terminal record, and no
+    // attendance row may be deleted — so `F1.marker` could never clear and 20270225 could never
+    // deploy. The repair rejected the plan outright with `unknown repair op`.
+    const outcome = await repairs.repair({
+      operator: 'ops@vitan.in',
+      reason: 'incident 2026-09: marker claimed a repair that never ran',
+      actions: [{
+        finding: 'F1.marker',
+        op: 'f1-quarantine-forged-marker',
+        id: forged,
+        revokedById: f.ownerUser.id,
+        revokeReason: 'no repair evidence exists for the id this marker embeds',
+      }],
+    });
+    expect(outcome.applied).toBe(1);
+    expect((await repairs.preflight()).clean, 'the finding is cleared, so the migration can deploy').toBe(true);
+
+    // The row now points at evidence that GENUINELY exists — the one thing its old marker faked.
+    const after = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id: forged } });
+    expect(after.manualReason).toContain('QUARANTINED FORGERY');
+    expect(after.manualReason).toContain(`repair=${outcome.repairId}`);
+    expect(after.revokedById).toBe(f.ownerUser.id);
+    // An already-present revocation timestamp is KEPT, never restamped: whatever the forger recorded
+    // about when this row was revoked stays exactly as found.
+    expect(after.revokedAt?.toISOString()).toBe(before.revokedAt?.toISOString());
+
+    // …and the forgery itself is preserved verbatim, in two places, so the incident stays readable.
+    const evidence = await t.prisma.$queryRawUnsafe<Array<{ finding: string; op: string; beforeImage: Record<string, unknown>; detail: Record<string, unknown> }>>(
+      `SELECT "finding", "op", "beforeImage", "detail" FROM "T3CRepairAction" WHERE "rowId" = $1`, forged,
+    );
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]!.finding).toBe('F1.marker');
+    expect(evidence[0]!.op).toBe('f1-quarantine-forged-marker');
+    expect(evidence[0]!.beforeImage['manualReason'], 'the before-image is the forgery, not a pretence that it was blank').toBe(forgedText);
+    expect(evidence[0]!.detail['forgedManualReason']).toBe(forgedText);
+    // the presence claim, its recorder and its timestamps are all still queryable
+    expect(evidence[0]!.beforeImage['recordedById']).toBe(f.memberUser.id);
+    expect(evidence[0]!.beforeImage['workerId']).toBe(workerId);
+  });
+
+  it('R1: quarantine REFUSES a genuine repair and an unmarked row — the accusation is never fabricated', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+
+    // A REAL audited repair. Its marker is truthful; quarantining it would replace an accurate
+    // record with a false accusation of forgery, which is the mirror image of the fault being fixed.
+    const genuine = await legacyBlankMuster(projectId, workerId, '2026-09-11');
+    await repairs.repair({
+      operator: 'ops@vitan.in',
+      reason: 'genuine repair',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: genuine, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+    await expect(
+      repairs.repair({
+        operator: 'ops@vitan.in',
+        reason: 'mistaken quarantine',
+        actions: [{ op: 'f1-quarantine-forged-marker', id: genuine, revokedById: f.ownerUser.id, revokeReason: 'assumed forged' }],
+      }),
+    ).rejects.toThrow(/already has repair evidence[\s\S]*not a forgery/i);
+
+    // An ordinary muster carries no marker at all, so it is not this op's business either.
+    const healthy = await capacity.recordAttendance(
+      projectId,
+      { workerId: await onboardWorker(projectId), civilDate: '2026-09-12', shift: 'day', manualReason: 'device battery dead at gate' },
+      pmc(projectId),
+    );
+    await expect(
+      repairs.repair({
+        operator: 'ops@vitan.in',
+        reason: 'mistaken quarantine',
+        actions: [{ op: 'f1-quarantine-forged-marker', id: healthy.id, revokedById: f.ownerUser.id, revokeReason: 'assumed forged' }],
+      }),
+    ).rejects.toThrow(/does not carry the reserved marker/i);
+
+    // Both refusals rolled back completely: the genuine repair's marker and the healthy row survive.
+    const still = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id: genuine } });
+    expect(still.manualReason).not.toContain('QUARANTINED');
+    const untouched = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id: healthy.id } });
+    expect(untouched.manualReason).toBe('device battery dead at gate');
+    expect(untouched.revokedAt).toBeNull();
+    expect((await repairs.preflight()).clean).toBe(true);
+  });
+
   it('R8: the repair EVIDENCE is append-only — its before-image can be neither rewritten nor deleted', async () => {
     const projectId = await freshProject();
     await enableLabour(projectId);
@@ -718,6 +860,13 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     ).rejects.toThrow(/append-only/i);
     await expect(
       t.prisma.$executeRawUnsafe(`DELETE FROM "T3CRepairAction" WHERE "rowId" = $1`, id),
+    ).rejects.toThrow(/append-only/i);
+    // TRUNCATE is the hole a row-level trigger cannot cover: PostgreSQL fires BEFORE UPDATE OR DELETE
+    // per row and never for TRUNCATE, which is a separate statement-level event. Without its own
+    // trigger, one statement erases every before-image the attendance markers point at.
+    expect(outcome.triggersRestored).toContain('T3CRepairAction_no_truncate');
+    await expect(
+      t.prisma.$executeRawUnsafe(`TRUNCATE TABLE "T3CRepairAction"`),
     ).rejects.toThrow(/append-only/i);
 
     const still = await t.prisma.$queryRawUnsafe<Array<{ operator: string; beforeImage: Record<string, unknown> }>>(

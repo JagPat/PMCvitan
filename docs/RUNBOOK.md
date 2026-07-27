@@ -383,7 +383,7 @@ clean and safe to deploy; exit 3 means findings are present. Two findings exist:
 | code | meaning |
 |---|---|
 | `F1.blank` | a muster whose `manualReason` is blank — the state `20270220` refuses to seal over |
-| `F1.marker` | a muster carrying the reserved invalid-legacy marker that is NOT revoked (see §P4T3C3) |
+| `F1.marker` | a muster carrying the reserved invalid-legacy marker that is not a real audited repair — not revoked, or with no matching `T3CRepairAction` before-image for the repair id the marker embeds (see §P4T3C3) |
 
 This preflight is also **enforced in production**: `apps/api/scripts/migrate.sh` runs the COMPILED
 `dist/labour/t3c/t3c.cli.js preflight` before `prisma migrate deploy` and fails closed, so Prisma
@@ -501,16 +501,89 @@ Revocation alone is deliberately not accepted. Until this migration installs the
 direct writer can insert a marked row with the revocation triple already populated; blessing that
 would make a forgery permanently indistinguishable from an audited repair.
 
-**What to do.** Run `pnpm --filter api t3c:preflight` to list them (`F1.marker`), then decide per row:
+**What to do.** Run `pnpm --filter api t3c:preflight` to list them (`F1.marker`). The two halves of
+the diagnostic have DIFFERENT exits, so classify each row first:
 
-- If it is a repaired legacy record whose evidence exists but which was left live, revoke it through
-  the application (`POST …/labour/attendance/:id/revoke`) with a reason naming the repair. The row
-  stays; the marker stays; it simply stops counting as presence.
-- If there is no matching `T3CRepairAction` row — i.e. someone wrote the marker themselves — treat it
-  as a forged attendance record: revoke it, record the incident, and re-record the real presence as a
-  new, separately-attributable muster if it is genuine. **Do not** hand-write an evidence row to make
-  the diagnostic pass: an invented before-image is worse than a named forgery, and `T3CRepairAction`
-  is append-only, so the invention would itself be permanent.
+```sql
+SELECT a."id",
+       a."revokedAt" IS NOT NULL                                            AS revoked,
+       substring(a."manualReason" from 'repair=([0-9a-fA-F-]{36})')         AS claimed_repair,
+       EXISTS (SELECT 1 FROM "T3CRepairAction" r
+                WHERE r."table" = 'LabourAttendance' AND r."rowId" = a."id"
+                  AND r."repairId" = substring(a."manualReason" from 'repair=([0-9a-fA-F-]{36})')) AS evidenced
+  FROM "LabourAttendance" a
+ WHERE a."manualReason" LIKE '[invalid-legacy:blank-manual-reason]%';
+```
+
+- **`evidenced = true`, `revoked = false`** — a real audited repair that was left live (only possible
+  if a repair was interrupted outside its transaction; the repair writes the marker and the
+  revocation in one statement). Revoke it through the application
+  (`POST …/labour/attendance/:id/revoke`) with a reason naming the repair. The row stays, the marker
+  stays, and it stops counting as presence. Do NOT quarantine it — `t3c:repair` refuses a row whose
+  evidence exists, precisely so a truthful marker is never overwritten with a false accusation.
+- **`evidenced = false`** — the marker is a forgery: someone wrote it themselves, before
+  `20270225000000` installed the trigger that reserves the prefix. The row claims operator provenance
+  that has never existed. This is the state that has no application exit — a forged marker is
+  typically written with the revocation triple already filled in, and a revoked muster is terminal, so
+  there is nothing left to revoke. Use the quarantine op below.
+
+**Do not** hand-write a `T3CRepairAction` row to make the diagnostic pass. An invented before-image is
+worse than a named forgery, and the evidence table is append-only, so the invention would itself be
+permanent.
+
+### Quarantine a forged marker
+
+The quarantine preserves everything and invents nothing. The forged row is recorded VERBATIM as its
+own before-image — it is not blank, and is not recorded as though it were — and `manualReason` is
+rewritten to a quarantine marker embedding THIS repair id, so the row finally points at evidence that
+genuinely exists. That is the one thing the original marker falsely claimed. The forgery is not
+erased; it is filed, and its text stays readable in `beforeImage`.
+
+`revokedById` must resolve to a real `User` (`LabourAttendance_revokedBy_fkey` — an unknown id is
+refused, never invented). `revokeReason` is your own words about **what you found**, not about why the
+worker was present, which the forged row gives you no basis to state. An already-present `revokedAt`
+is kept (`COALESCE`), so a genuine earlier timestamp is never overwritten; a live forged row is
+revoked as part of the same statement.
+
+```json
+{
+  "actions": [
+    {
+      "finding": "F1.marker",
+      "op": "f1-quarantine-forged-marker",
+      "id": "<LabourAttendance id from the preflight sample>",
+      "revokedById": "<User id of the person authorizing this>",
+      "revokeReason": "marker claimed an audited repair; no repair evidence for it exists — quarantined pending incident review"
+    }
+  ]
+}
+```
+
+```
+pnpm --filter api t3c:repair --plan ./t3c-plan.json \
+  --operator you@example.com --reason "<release>: quarantine forged invalid-legacy markers"
+```
+
+Same bounded maintenance transaction as §P4T3C2 step 3: durable before-image evidence, ONLY
+`LabourAttendance_append_only` disabled by name, apply, re-enable and VERIFY the full §C immutability
+trigger set, re-run every diagnostic, commit only if clean. Anything off rolls the whole transaction
+back — data, evidence and trigger toggles alike.
+
+Then record the incident outside the database (who had write access, when), and if the presence was
+genuine, re-record it as a NEW separately-attributable muster. Revocation frees the live partial
+unique, so the replacement is a distinct row rather than an edit of the quarantined one.
+
+A quarantined row reads back with its own history intact:
+
+```sql
+SELECT a."id", a."manualReason" AS quarantine_marker,
+       a."revokedAt", a."revokedById", a."revokeReason",
+       r."operator", r."reason", r."at",
+       r."detail"->>'forgedManualReason' AS what_the_forger_wrote,
+       r."beforeImage"
+  FROM "LabourAttendance" a
+  JOIN "T3CRepairAction" r ON r."rowId" = a."id" AND r."op" = 'f1-quarantine-forged-marker';
+```
 
 ### Resolve the migration record, then redeploy
 
