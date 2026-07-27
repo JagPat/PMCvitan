@@ -60,4 +60,9 @@ test('handoff implementation covers both conflicts and behind-base states', asyn
 
   assert.match(implementation, /live\.mergeable !== false/);
   assert.match(implementation, /live\.mergeable_state !== 'behind'/);
+  assert.match(
+    implementation,
+    /let live = await client\.pullRequest\(pullRequest\.number\)/,
+  );
+  assert.match(implementation, /pullRequest\?\.base\?\.ref !== defaultBranch/);
 });

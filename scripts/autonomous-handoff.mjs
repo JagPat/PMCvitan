@@ -78,9 +78,9 @@ class GitHubClient {
 }
 
 async function refreshedMergeability(client, pullRequest) {
-  let live = pullRequest;
-  for (let attempt = 0; attempt < 3 && live.mergeable === null; attempt += 1) {
-    if (attempt > 0) await sleep(2_000);
+  let live = await client.pullRequest(pullRequest.number);
+  for (let attempt = 0; attempt < 2 && live.mergeable === null; attempt += 1) {
+    await sleep(2_000);
     live = await client.pullRequest(pullRequest.number);
   }
   return live;
@@ -106,10 +106,17 @@ async function handOffConflict(client, pullRequest, repository) {
   );
 }
 
-async function handOffMergedPullRequest(client, pullRequest, repository) {
+async function handOffMergedPullRequest(
+  client,
+  pullRequest,
+  repository,
+  defaultBranch,
+) {
   if (
     !pullRequest?.merged ||
     pullRequest?.head?.repo?.full_name !== repository ||
+    pullRequest?.base?.repo?.full_name !== repository ||
+    pullRequest?.base?.ref !== defaultBranch ||
     !pullRequest?.head?.ref?.startsWith('claude/')
   ) return;
 
@@ -134,6 +141,8 @@ export async function run() {
     await readFile(requiredEnvironment('GITHUB_EVENT_PATH'), 'utf8'),
   );
   const repository = requiredEnvironment('GITHUB_REPOSITORY');
+  const defaultBranch = event.repository?.default_branch;
+  if (!defaultBranch) throw new Error('Event repository default branch is required');
   const client = new GitHubClient({
     repository,
     token: requiredEnvironment('GITHUB_TOKEN'),
@@ -142,7 +151,12 @@ export async function run() {
   if (eventName === 'pull_request_target') {
     const pullRequest = await client.pullRequest(event.pull_request.number);
     if (event.action === 'closed') {
-      await handOffMergedPullRequest(client, pullRequest, repository);
+      await handOffMergedPullRequest(
+        client,
+        pullRequest,
+        repository,
+        defaultBranch,
+      );
       return;
     }
     await handOffConflict(client, pullRequest, repository);
