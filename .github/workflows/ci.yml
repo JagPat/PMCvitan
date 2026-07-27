@@ -18,6 +18,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Autonomous review state tests
+        run: pnpm test:automation
       - name: Typecheck
         run: pnpm --filter web typecheck
       - name: Lint
