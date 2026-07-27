@@ -1,87 +1,90 @@
 # AGENTS.md
 
-Repo-level guidance for AI agents (Codex, Claude Code) working in this repository.
+Guidance for AI agents (Codex, Claude Code) working in the PMC Vitan repository.
 
 ## Code Review Rules
 
-These are the standards a reviewer must enforce on every pull request. They
-encode decisions already made in this project — a PR that violates one of them
-is wrong even if the code is otherwise clean, and the review should say so
-explicitly rather than framing it as a suggestion.
+Review the diff for correctness, safety, and whether it does what its description
+claims. Flag only real, high-priority risks. Prefer precise, load-bearing findings
+over style nits.
+
+The rules below encode decisions already made in this project. A PR that violates
+one of them is wrong even if the code is otherwise clean, and the review should say
+so directly rather than framing it as a suggestion.
 
 ### Database migrations
 
-- **Deployed migrations are immutable.** A migration file that has already run
-  against a deployed environment must never be edited, renamed, reordered, or
-  deleted. Corrections ship as a new forward migration. Flag any diff that
-  touches an existing migration file.
-- **New migrations must be forward-only and idempotent-safe.** Use
-  `IF NOT EXISTS` / `IF EXISTS` guards where the statement supports it, so a
-  partial apply can be re-run.
-- **Destructive DDL requires an explicit callout.** `DROP COLUMN`, `DROP TABLE`,
-  type narrowing, and `NOT NULL` additions without a backfill are blocking
-  findings unless the PR description states the migration/backfill plan.
-- Every migration should be reviewed for whether it needs a corresponding
-  rollback path, and the review should say which one applies.
+- Deployed migrations are immutable. Never edit, reorder, or rewrite a migration
+  that has already shipped — new changes go in a new, additive migration. Flag any
+  diff that touches the bytes of an already-deployed migration.
+- If a migration adds a column that an append-only trigger governs, the same
+  migration must add that column to the trigger's frozen identity/evidence set.
+  Flag a new column that an existing trigger's column list does not cover.
+- A CHECK meant to enforce "non-blank" text must reject whitespace-only values.
+  `btrim(x)` strips spaces only; require `btrim(x, E' \t\r\n')` (or equivalent)
+  wherever the intent is non-blank.
+- New migrations must be forward-only and safe to re-run. Use `IF NOT EXISTS` /
+  `IF EXISTS` guards where the statement supports it, so a partial apply can be
+  retried.
+- Destructive DDL requires an explicit callout. `DROP COLUMN`, `DROP TABLE`, type
+  narrowing, and `NOT NULL` additions without a backfill are blocking findings
+  unless the PR description states the migration and backfill plan.
 
-### Append-only tables and integrity constraints
+### Append-only / evidence integrity
 
-- Tables designated append-only are protected by triggers. Any change that
-  would allow `UPDATE` or `DELETE` on an append-only table — dropping the
-  trigger, adding a bypassing function, granting rights that route around it —
-  is a blocking finding.
-- Do not weaken or remove existing `CHECK` constraints. In particular, the
-  whitespace/format `CHECK` constraints on text columns exist to keep dirty
-  values out at the boundary; a PR that relaxes one must justify it explicitly.
-- New user-supplied text columns should carry the same whitespace/format
-  discipline as their existing siblings. Inconsistency here is a finding.
+- A field that justifies a trusted claim (e.g. `manualReason`) must be immutable
+  after write, except for a single explicit permitted transition. Flag any path
+  that leaves such a field freely rewritable after the fact.
+- Destructive external side effects that remove evidence (e.g. `storage.remove`)
+  must run only after the transaction that authorizes the delete commits, and only
+  on the success path. Flag any destructive side effect that precedes its
+  authorizing transaction.
+- Do not weaken or remove an existing CHECK constraint. A PR that relaxes one must
+  justify it explicitly.
+- New user-supplied text columns carry the same non-blank discipline as their
+  existing siblings. Inconsistency here is a finding.
 
-### Ordering and serialization
+### Concurrency / serialization
 
-- **Storage ordering:** persist before you publish. Writes that other parts of
-  the system observe must be durable before any notification, event, webhook,
-  or downstream call that implies the write happened. Flag any code path that
-  emits first and writes after, or that does both without a defined ordering.
-- **Lock before read.** Where a read-modify-write sequence is the serialization
-  point, the lock must be acquired *before* the read, not between the read and
-  the write. A `SELECT` followed by a lock followed by an `UPDATE` is a race,
-  even if the window looks small. Call it out with the concrete interleaving
-  that breaks it.
-- Transactions should have an obvious boundary. Flag work that escapes a
-  transaction it appears to be inside (async calls, external I/O, background
-  dispatch).
+- A guard that depends on a head/root row's status must take the same row lock
+  *before* reading that status. A plain `SELECT` under READ COMMITTED is not
+  authoritative. Flag lock-after-read or lock-free status reads on serialized
+  entities.
+- Concurrency tests must use explicit barriers (not sleep-only synchronization)
+  and must assert the terminal invariant directly.
+- Flag work that escapes the transaction it appears to be inside — async calls,
+  external I/O, or background dispatch that runs outside the boundary.
+- When reporting a race, give the concrete interleaving that breaks it.
 
 ### Module boundaries
 
-- **Leaf modules stay leaves.** A module designated a leaf must not import from
-  higher layers or from its siblings. New imports that create a cycle, or that
-  pull application/orchestration concerns into a leaf, are blocking findings.
+- No module may take a synchronous read of another module's tables. Leaf modules
+  stay leaves. Flag any new cross-module synchronous read.
+- Flag new imports that create a cycle, or that pull application/orchestration
+  concerns into a leaf.
 - Shared logic moves *down* into a leaf or *out* into a shared module — never
   sideways between peers.
-- Flag new cross-layer imports even when they compile fine; the point is the
-  dependency direction, not the build.
 
 ### Process gates
 
-- **Respect HOLD.** If a PR, issue, or comment thread is marked HOLD, do not
-  propose merging, and do not open follow-up PRs that depend on it. Note the
-  hold and stop.
-- **Explicit GO required.** Work that has been scoped but not explicitly
-  approved should not be implemented ahead of the go-ahead. If a PR includes
-  changes beyond what was approved, flag the scope creep separately from the
-  code review.
-- Scope discipline is itself reviewable: a PR that mixes an approved change
-  with unrelated refactoring should be asked to split.
+- Respect any HOLD or "explicit GO" note in the PR description. Never approve past,
+  or instruct work beyond, a stated gate (e.g. a blocked task) — even if the code
+  looks ready.
+- Expect reproduce-first evidence: a failing (RED) probe at the base commit before
+  the fix was written. Flag fixes shipped without a reproduction.
+- Scope discipline is reviewable. A PR that mixes an approved change with unrelated
+  refactoring should be asked to split, and the scope creep flagged separately from
+  the code review.
 
 ## Review output expectations
 
 - Rank findings by severity. Lead with anything that is a correctness,
   data-integrity, or ordering bug.
 - For each finding, give the concrete failure: the inputs or interleaving that
-  produce the wrong result. "This could be a race" without the interleaving is
-  not a finding.
-- Do not pad the review with style nits when there are substantive findings.
-  If there are no substantive findings, say so plainly rather than manufacturing
+  produce the wrong result. "This could be a race" without the interleaving is not
+  a finding.
+- Do not pad the review with style nits when there are substantive findings. If
+  there are no substantive findings, say so plainly rather than manufacturing
   concerns.
 - Cite the rule above that a finding violates, so the standard stays visible.
 
