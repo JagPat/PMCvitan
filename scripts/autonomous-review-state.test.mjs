@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  CODEX_GRAPHQL_LOGIN,
   CODEX_LOGIN,
   codexThreadIdsToResolve,
   classifyCodexState,
@@ -222,6 +223,13 @@ test('resolves only historical unresolved threads opened by Codex', () => {
         },
       },
       {
+        id: 'codex-graphql-open',
+        isResolved: false,
+        comments: {
+          nodes: [{ author: { login: CODEX_GRAPHQL_LOGIN }, originalCommit: { oid: 'old' } }],
+        },
+      },
+      {
         id: 'human-open',
         isResolved: false,
         comments: {
@@ -229,7 +237,7 @@ test('resolves only historical unresolved threads opened by Codex', () => {
         },
       },
     ], HEAD),
-    ['codex-open'],
+    ['codex-open', 'codex-graphql-open'],
   );
 });
 

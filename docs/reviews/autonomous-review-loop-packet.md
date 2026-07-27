@@ -32,6 +32,9 @@ packet does not embed a self-referential final SHA.
 7. Missing evidence, timeout, ineligible PRs, or an unavailable subscription
    service fail closed.
 8. No `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or AI GitHub Action is used.
+9. Codex identity is normalized across REST (`chatgpt-codex-connector[bot]`)
+   and GraphQL (`chatgpt-codex-connector`) so historical Codex threads are
+   resolved after a clean replacement head without touching human threads.
 
 ## Reproduce-First Evidence
 
