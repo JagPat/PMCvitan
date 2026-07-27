@@ -16,7 +16,7 @@ task: 3
 task_state: in_progress
 work_item: correction_round_3
 reviewed_merge: 2a6112b
-open_pr: null
+open_pr: 230
 next_task: 4
 blocking_directive: docs/reviews/phase-4-t3-correction3-directive.md
 updated: 2026-07-27
