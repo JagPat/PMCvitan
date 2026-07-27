@@ -44,6 +44,19 @@ export function isEligiblePullRequest(pullRequest) {
   );
 }
 
+export function codexThreadIdsToResolve(threads = [], expectedHead) {
+  return threads
+    .filter((thread) => {
+      const firstComment = thread?.comments?.nodes?.[0];
+      return (
+        !thread?.isResolved &&
+        firstComment?.author?.login === CODEX_LOGIN &&
+        firstComment?.originalCommit?.oid !== expectedHead
+      );
+    })
+    .map((thread) => thread.id);
+}
+
 export function classifyCodexState({
   expectedHead,
   readyAt,
@@ -112,4 +125,3 @@ export function classifyCodexState({
     detail: 'waiting for a current-head Codex result',
   };
 }
-

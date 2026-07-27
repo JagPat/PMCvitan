@@ -53,6 +53,8 @@ test('workflow runs from trusted default-branch code after CI or dispatch', asyn
   const workflow = await readFile(workflowPath, 'utf8');
 
   assert.match(workflow, /workflow_run:/);
+  assert.match(workflow, /pull_request_review:/);
+  assert.match(workflow, /pull_request_review_comment:/);
   assert.match(workflow, /workflows:\s*\[CI\]/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /statuses:\s*write/);
@@ -94,4 +96,21 @@ test('rechecks the live head before terminal PR mutations', async () => {
   assert.match(gate, /async function refreshCurrentHead\(/);
   assert.match(gate, /enableAutoMerge\(pullRequest\)/);
   assert.match(gate, /if \(!pullRequest\) return;/);
+  assert.match(gate, /resolveCodexThreads/);
+});
+
+test('reclassifies Codex evidence immediately before publishing success', async () => {
+  const implementation = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(implementation, /reclassifyCurrentCodexEvidence/);
+  assert.match(implementation, /verifiedResult\.state !== 'clear'/);
+});
+
+test('CI runs once per pull-request head', async () => {
+  const ci = await readFile(ciPath, 'utf8');
+
+  assert.match(ci, /pull_request:/);
+  assert.doesNotMatch(ci, /push:/);
 });
