@@ -69,6 +69,24 @@ export function t3cInvalidLegacyMarker(repairId: string, operator: string): stri
   );
 }
 
+/**
+ * The marker a QUARANTINED forgery carries: a row that arrived wearing the invalid-legacy marker
+ * without any repair ever having produced it.
+ *
+ * It shares the reserved prefix — so it is equally unwritable by an ordinary INSERT and equally
+ * bound to the revoked-only CHECK — and embeds the quarantine's own repair id, so the row finally
+ * points at evidence that exists. The text says exactly what is true: the previous text CLAIMED to
+ * be an audited repair and was not.
+ */
+export function t3cQuarantinedMarker(repairId: string, operator: string): string {
+  return (
+    `${T3C_INVALID_LEGACY_PREFIX} repair=${repairId}; QUARANTINED FORGERY — this row's manualReason ` +
+    `claimed to be an audited operator repair, but no repair evidence for it existed. Quarantined by ` +
+    `operator ${operator}. The original row, including the text it claimed, is preserved verbatim in ` +
+    `T3CRepairAction.`
+  );
+}
+
 export interface T3CFindingReport {
   /** Stable finding code — `F1.blank`, `F1.marker`. */
   code: string;
@@ -114,12 +132,36 @@ const BLANK_PREDICATE = `"manualReason" IS NOT NULL AND btrim("manualReason", ${
 function markerPredicate(haveEvidence: boolean): string {
   const carries = `a."manualReason" LIKE '${T3C_INVALID_LEGACY_PREFIX}%'`;
   if (!haveEvidence) return carries;
+  // The evidence must be the RIGHT SHAPE, not merely present. Matching on metadata alone
+  // (row id, op, repair id) accepts an appended action carrying `{}` as its before-image, which is
+  // exactly the forgery this rule exists to catch: a writer who can insert into the evidence table
+  // could otherwise mint provenance for any marker they like.
+  //
+  // Two shapes are legitimate, and they are told apart by the op that produced them:
+  //
+  //   f1-mark-invalid-legacy      the before-image is the BLANK pre-repair row — the state the
+  //                               repair exists to retire — so the recorded original must itself be
+  //                               that row, blank and not yet revoked.
+  //   f1-quarantine-forged-marker the before-image is the FORGERY VERBATIM, so the recorded original
+  //                               carries the marker. Nothing is pretended to be blank.
+  //
+  // Either way `beforeImage->>'id'` must be the row itself: evidence about some other row proves
+  // nothing about this one.
   return `${carries} AND (a."revokedAt" IS NULL OR NOT EXISTS (
             SELECT 1 FROM "T3CRepairAction" r
              WHERE r."table" = 'LabourAttendance'
                AND r."rowId" = a."id"
-               AND r."op" = 'f1-mark-invalid-legacy'
-               AND r."repairId" = substring(a."manualReason" from '${T3C_MARKER_REPAIR_ID_REGEX}')))`;
+               AND r."repairId" = substring(a."manualReason" from '${T3C_MARKER_REPAIR_ID_REGEX}')
+               AND r."beforeImage"->>'id' = a."id"
+               AND (
+                 (r."op" = 'f1-mark-invalid-legacy'
+                   AND r."beforeImage"->>'manualReason' IS NOT NULL
+                   AND btrim(r."beforeImage"->>'manualReason', ${T3C_BLANK_TRIM_SET}) = ''
+                   AND r."beforeImage"->>'revokedAt' IS NULL)
+                 OR
+                 (r."op" = 'f1-quarantine-forged-marker'
+                   AND r."beforeImage"->>'manualReason' LIKE '${T3C_INVALID_LEGACY_PREFIX}%')
+               )))`;
 }
 
 /**

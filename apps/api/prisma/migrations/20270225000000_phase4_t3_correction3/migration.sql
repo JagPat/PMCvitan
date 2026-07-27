@@ -48,8 +48,19 @@ BEGIN
                     OR NOT EXISTS (SELECT 1 FROM "T3CRepairAction" r
                                     WHERE r."rowId" = a."id"
                                       AND r."table" = 'LabourAttendance'
-                                      AND r."op" = 'f1-mark-invalid-legacy'
-                                      AND r."repairId" = substring(a."manualReason" from 'repair=([0-9a-fA-F-]{36})')))
+                                      AND r."repairId" = substring(a."manualReason" from 'repair=([0-9a-fA-F-]{36})')
+                                      -- the evidence must be about THIS row, and be the right SHAPE:
+                                      -- metadata alone would accept an appended action carrying '{}'
+                                      AND r."beforeImage"->>'id' = a."id"
+                                      AND (
+                                        (r."op" = 'f1-mark-invalid-legacy'
+                                          AND r."beforeImage"->>'manualReason' IS NOT NULL
+                                          AND btrim(r."beforeImage"->>'manualReason', E' \t\n\x0B\f\r') = ''
+                                          AND r."beforeImage"->>'revokedAt' IS NULL)
+                                        OR
+                                        (r."op" = 'f1-quarantine-forged-marker'
+                                          AND r."beforeImage"->>'manualReason' LIKE '[invalid-legacy:blank-manual-reason]%')
+                                      )))
              LIMIT 20) s;
   ELSE
     -- No evidence table ⇒ no repair has ever run here ⇒ no legitimate marker can exist.
@@ -88,21 +99,38 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
-DROP TRIGGER IF EXISTS "LabourAttendance_reserved_marker" ON "LabourAttendance";
-CREATE TRIGGER "LabourAttendance_reserved_marker" BEFORE INSERT ON "LabourAttendance"
-  FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_attendance_reserved_marker();
+-- CREATED ONLY IF ABSENT — never dropped and recreated. This migration has no transaction wrapper,
+-- so a DROP…CREATE pair opens a window in which the guard does not exist. On a RETRY after a partial
+-- apply (the post-condition below can fail after this statement succeeded) the diagnostic has
+-- already run, so a concurrent writer could slip a pre-revoked marked row through that window and
+-- the CHECK further down would accept it. Retrying must be safe, not merely possible.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                  WHERE tgname = 'LabourAttendance_reserved_marker'
+                    AND tgrelid = '"LabourAttendance"'::regclass AND NOT tgisinternal) THEN
+    CREATE TRIGGER "LabourAttendance_reserved_marker" BEFORE INSERT ON "LabourAttendance"
+      FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_attendance_reserved_marker();
+  END IF;
+END $$;
 
 -- (b) A MARKED ROW IS ALWAYS REVOKED. The repair sets the marker and the revocation triple in ONE
 --     statement, so this CHECK can never be transiently false for it; what the CHECK forbids is any
 --     other path leaving a marked row live (including a future edit that clears the revocation).
 --     Combined with the live partial unique on (project, worker, civilDate, shift), a genuine
 --     replacement muster is necessarily a SEPARATE, separately-attributable row.
-ALTER TABLE "LabourAttendance" DROP CONSTRAINT IF EXISTS "LabourAttendance_marker_is_revoked";
-ALTER TABLE "LabourAttendance"
-  ADD CONSTRAINT "LabourAttendance_marker_is_revoked"
-  CHECK ("manualReason" IS NULL
-      OR "manualReason" NOT LIKE '[invalid-legacy:blank-manual-reason]%'
-      OR "revokedAt" IS NOT NULL);
+-- Added only if absent, for the same retry reason: dropping a validated CHECK to re-add it leaves
+-- the table unconstrained in between.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'LabourAttendance_marker_is_revoked'
+                    AND conrelid = '"LabourAttendance"'::regclass) THEN
+    ALTER TABLE "LabourAttendance"
+      ADD CONSTRAINT "LabourAttendance_marker_is_revoked"
+      CHECK ("manualReason" IS NULL
+          OR "manualReason" NOT LIKE '[invalid-legacy:blank-manual-reason]%'
+          OR "revokedAt" IS NOT NULL);
+  END IF;
+END $$;
 
 -- (c) THE EVIDENCE IS APPEND-ONLY. A marked row's whole claim is "the original bytes are preserved
 --     in T3CRepairAction"; an evidence table an ordinary write can rewrite or empty makes that claim
@@ -120,9 +148,26 @@ BEGIN
   END;
   $fn$ LANGUAGE plpgsql;
 
-  DROP TRIGGER IF EXISTS "T3CRepairAction_append_only" ON "T3CRepairAction";
-  CREATE TRIGGER "T3CRepairAction_append_only" BEFORE UPDATE OR DELETE ON "T3CRepairAction"
-    FOR EACH ROW EXECUTE FUNCTION phase4_t3c_repair_action_append_only();
+  -- TRUNCATE does not fire a row-level BEFORE UPDATE OR DELETE trigger; it is a separate,
+  -- STATEMENT-level event. Without this second trigger the role that owns the evidence table can
+  -- erase every before-image in one statement while the marked attendance rows go on claiming their
+  -- originals are preserved here.
+  CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_no_truncate() RETURNS trigger AS $fn$
+  BEGIN
+    RAISE EXCEPTION 'T3CRepairAction is append-only — repair evidence is never truncated';
+  END;
+  $fn$ LANGUAGE plpgsql;
+
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'T3CRepairAction_append_only'
+                  AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal) THEN
+    CREATE TRIGGER "T3CRepairAction_append_only" BEFORE UPDATE OR DELETE ON "T3CRepairAction"
+      FOR EACH ROW EXECUTE FUNCTION phase4_t3c_repair_action_append_only();
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'T3CRepairAction_no_truncate'
+                  AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal) THEN
+    CREATE TRIGGER "T3CRepairAction_no_truncate" BEFORE TRUNCATE ON "T3CRepairAction"
+      FOR EACH STATEMENT EXECUTE FUNCTION phase4_t3c_repair_action_no_truncate();
+  END IF;
 END $$;
 
 -- ══ FINDING 3 — a raw allocation batch takes the PROJECT lock before any row lock ═════════════
@@ -156,9 +201,14 @@ $$ LANGUAGE plpgsql;
 -- trigger name, and `WorkerAllocation_00_…` precedes `WorkerAllocation_head_live`,
 -- `WorkerAllocation_within_commitment` and `WorkerAllocation_worker_active`. The DO block below
 -- VERIFIES that in this database's own collation rather than trusting the assumption.
-DROP TRIGGER IF EXISTS "WorkerAllocation_00_project_lock" ON "WorkerAllocation";
-CREATE TRIGGER "WorkerAllocation_00_project_lock" BEFORE INSERT ON "WorkerAllocation"
-  FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_allocation_project_lock();
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                  WHERE tgname = 'WorkerAllocation_00_project_lock'
+                    AND tgrelid = '"WorkerAllocation"'::regclass AND NOT tgisinternal) THEN
+    CREATE TRIGGER "WorkerAllocation_00_project_lock" BEFORE INSERT ON "WorkerAllocation"
+      FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_allocation_project_lock();
+  END IF;
+END $$;
 
 -- Belt AND braces: the same acquisition opens `phase4_t3c_allocation_head_live`, the trigger that
 -- takes the first ROW lock. Even if a future trigger were somehow ordered ahead of

@@ -4,8 +4,10 @@ import {
   runT3CDiagnostics,
   summarizeT3C,
   t3cInvalidLegacyMarker,
+  t3cQuarantinedMarker,
   T3C_INVALID_LEGACY_PREFIX,
   T3C_MARKER_COLUMN,
+  T3C_MARKER_REPAIR_ID_REGEX,
   T3C_REFERENCED_TABLES,
   type T3CDiagnosticsReport,
   type T3CTxClient,
@@ -76,6 +78,7 @@ const IMMUTABILITY_TRIGGERS: ReadonlyArray<string> = [
   'LabourWorkFact_append_only',
   'ApprovedSkillSubstitution_append_only',
   'T3CRepairAction_append_only',
+  'T3CRepairAction_no_truncate',
 ];
 
 /**
@@ -84,9 +87,15 @@ const IMMUTABILITY_TRIGGERS: ReadonlyArray<string> = [
  * writes another row. Deliberately NOT in {@link DISABLEABLE_TRIGGERS}, so no repair plan can ever
  * name it: the repair engine is not permitted to unseal its own evidence.
  *
- * Written idempotently (`CREATE OR REPLACE` + `DROP TRIGGER IF EXISTS`) because the repair
+ * TWO triggers are required, because PostgreSQL row-level `BEFORE UPDATE OR DELETE` does not fire
+ * for `TRUNCATE` — truncate triggers are a separate, STATEMENT-level event. Without the second one
+ * the very role that creates this table could erase every before-image in one statement while the
+ * attendance rows go on claiming their originals are preserved here. A seal with a hole that size
+ * is decoration.
+ *
+ * Written idempotently (`CREATE OR REPLACE` + a create-if-absent guard) because the repair
  * transaction re-runs it on every invocation, and re-asserted by `20270225000000` so a database
- * whose repair predates this seal gains it at deploy time.
+ * whose repair predates these seals gains them at deploy time.
  */
 const EVIDENCE_SEAL_SQL = [
   `CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_append_only() RETURNS trigger AS $fn$
@@ -94,9 +103,23 @@ const EVIDENCE_SEAL_SQL = [
        RAISE EXCEPTION 'T3CRepairAction is append-only — repair evidence is never updated or deleted (attempted % on row %)', TG_OP, COALESCE(OLD."id"::text, '<none>');
      END;
    $fn$ LANGUAGE plpgsql`,
-  `DROP TRIGGER IF EXISTS "T3CRepairAction_append_only" ON "T3CRepairAction"`,
-  `CREATE TRIGGER "T3CRepairAction_append_only" BEFORE UPDATE OR DELETE ON "T3CRepairAction"
-     FOR EACH ROW EXECUTE FUNCTION phase4_t3c_repair_action_append_only()`,
+  `CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_no_truncate() RETURNS trigger AS $fn$
+     BEGIN
+       RAISE EXCEPTION 'T3CRepairAction is append-only — repair evidence is never truncated';
+     END;
+   $fn$ LANGUAGE plpgsql`,
+  `DO $do$ BEGIN
+     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'T3CRepairAction_append_only'
+                     AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal) THEN
+       CREATE TRIGGER "T3CRepairAction_append_only" BEFORE UPDATE OR DELETE ON "T3CRepairAction"
+         FOR EACH ROW EXECUTE FUNCTION phase4_t3c_repair_action_append_only();
+     END IF;
+     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'T3CRepairAction_no_truncate'
+                     AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal) THEN
+       CREATE TRIGGER "T3CRepairAction_no_truncate" BEFORE TRUNCATE ON "T3CRepairAction"
+         FOR EACH STATEMENT EXECUTE FUNCTION phase4_t3c_repair_action_no_truncate();
+     END IF;
+   END $do$`,
 ];
 
 export type RepairAction =
@@ -109,13 +132,36 @@ export type RepairAction =
    * `finding` is OPTIONAL and documentary: the recorded classification comes from {@link FINDING_OF_OP}.
    * When present it must match, so a mis-stated plan is refused rather than quietly reinterpreted.
    */
-  {
-    finding?: string;
-    op: 'f1-mark-invalid-legacy';
-    id: string;
-    revokedById: string;
-    revokeReason: string;
-  };
+  | {
+      finding?: string;
+      op: 'f1-mark-invalid-legacy';
+      id: string;
+      revokedById: string;
+      revokeReason: string;
+    }
+  /**
+   * F1.marker — quarantine a muster that CARRIES the reserved marker without being a real audited
+   * repair (the pre-`20270225` forgery: a direct writer typed the marker and filled in the
+   * revocation triple, so it reads as operator provenance while no before-image has ever existed).
+   *
+   * That state had no exit. `docs/RUNBOOK.md §P4T3C3` told the operator to revoke the row, but it
+   * is already revoked and a revoked muster is terminal; the only repair op accepted blank LIVE
+   * rows, not marked ones; and the row cannot be deleted. So `F1.marker` could never be cleared and
+   * correction 3 could never deploy — a dead end of the runbook's own making.
+   *
+   * The exit preserves everything and invents nothing. The forged row is recorded VERBATIM as its
+   * own before-image (it is not blank, and is not pretended to be), the operator states what they
+   * found, and `manualReason` is rewritten to a quarantine marker embedding THIS repair id — so the
+   * row now points at evidence that genuinely exists, which is the whole thing the original marker
+   * falsely claimed. The forgery is not erased; it is filed.
+   */
+  | {
+      finding?: string;
+      op: 'f1-quarantine-forged-marker';
+      id: string;
+      revokedById: string;
+      revokeReason: string;
+    };
 
 export interface RepairPlan {
   operator: string;
@@ -142,6 +188,7 @@ export class RepairAbortedError extends Error {
 
 const TABLE_OF: Record<RepairAction['op'], string> = {
   'f1-mark-invalid-legacy': 'LabourAttendance',
+  'f1-quarantine-forged-marker': 'LabourAttendance',
 };
 
 /**
@@ -154,6 +201,7 @@ const TABLE_OF: Record<RepairAction['op'], string> = {
  */
 const FINDING_OF_OP: Record<RepairAction['op'], string> = {
   'f1-mark-invalid-legacy': 'F1.blank',
+  'f1-quarantine-forged-marker': 'F1.marker',
 };
 
 /** PostgreSQL's foreign-key-violation SQLSTATE. */
@@ -188,6 +236,8 @@ const TRIGGERS_FOR_OP: Record<RepairAction['op'], string[]> = {
   // that same trigger is what permits the revocation stamp. Both changes land in ONE update, so the
   // trigger is disabled for the duration of the maintenance transaction and verified back on.
   'f1-mark-invalid-legacy': ['LabourAttendance_append_only'],
+  // Same trigger, same reason: the quarantine rewrites `manualReason` on an already-revoked row.
+  'f1-quarantine-forged-marker': ['LabourAttendance_append_only'],
 };
 
 export class T3CRepairService {
@@ -242,9 +292,24 @@ export class T3CRepairService {
    * so it reflects the database as it actually is.
    */
   async correctionSeals(): Promise<{ installed: boolean; present: string[]; missing: string[] }> {
+    // A seal is only installed if it is present, ENABLED, and wired to the function that actually
+    // enforces it. A name alone proves nothing: `ALTER TABLE … DISABLE TRIGGER` leaves the row in
+    // `pg_trigger` with `tgenabled='D'`, and a same-named trigger bound to some other function is a
+    // decoy. Either would let the baseline resolve `20270225000000` as applied over a database with
+    // no working backstop, permanently.
     const expected = [
-      { name: 'LabourAttendance_reserved_marker', kind: 'trigger' as const, table: 'LabourAttendance' },
-      { name: 'WorkerAllocation_00_project_lock', kind: 'trigger' as const, table: 'WorkerAllocation' },
+      {
+        name: 'LabourAttendance_reserved_marker',
+        kind: 'trigger' as const,
+        table: 'LabourAttendance',
+        fn: 'phase4_t3c3_attendance_reserved_marker',
+      },
+      {
+        name: 'WorkerAllocation_00_project_lock',
+        kind: 'trigger' as const,
+        table: 'WorkerAllocation',
+        fn: 'phase4_t3c3_allocation_project_lock',
+      },
       { name: 'LabourAttendance_marker_is_revoked', kind: 'constraint' as const, table: 'LabourAttendance' },
     ];
     const present: string[] = [];
@@ -254,13 +319,20 @@ export class T3CRepairService {
         item.kind === 'trigger'
           ? await this.prisma.$queryRawUnsafe<Array<{ n: number }>>(
               `SELECT count(*)::int AS n FROM pg_trigger t
-                WHERE t.tgname = $1 AND NOT t.tgisinternal AND t.tgrelid = to_regclass($2)`,
+                WHERE t.tgname = $1
+                  AND NOT t.tgisinternal
+                  AND t.tgrelid = to_regclass($2)
+                  AND t.tgenabled = 'O'
+                  AND t.tgfoid::regproc::text = $3`,
               item.name,
               `"${item.table}"`,
+              item.fn,
             )
-          : await this.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+          : // `convalidated` matters as much as existence: a CHECK added NOT VALID does not constrain
+            // the rows already in the table, so a database carrying it unvalidated is not sealed.
+            await this.prisma.$queryRawUnsafe<Array<{ n: number }>>(
               `SELECT count(*)::int AS n FROM pg_constraint c
-                WHERE c.conname = $1 AND c.conrelid = to_regclass($2)`,
+                WHERE c.conname = $1 AND c.conrelid = to_regclass($2) AND c.convalidated`,
               item.name,
               `"${item.table}"`,
             );
@@ -450,9 +522,70 @@ export class T3CRepairService {
         }
         return;
       }
+      case 'f1-quarantine-forged-marker': {
+        // Only the diagnosed forgery may be quarantined. A row that IS a real audited repair is
+        // never touched — re-quarantining one would replace a truthful marker with a false accusation.
+        const raw = before['manualReason'];
+        if (typeof raw !== 'string' || !raw.startsWith(T3C_INVALID_LEGACY_PREFIX)) {
+          throw new RepairAbortedError(
+            `f1-quarantine-forged-marker: LabourAttendance ${action.id} does not carry the reserved marker (it is ${JSON.stringify(raw)}) — this op exists only for the forged-marker state`,
+          );
+        }
+        const evidenced = await tx.$queryRawUnsafe<Array<{ n: number }>>(
+          `SELECT count(*)::int AS n FROM "T3CRepairAction"
+            WHERE "table" = 'LabourAttendance' AND "rowId" = $1
+              AND "repairId" = substring($2 from '${T3C_MARKER_REPAIR_ID_REGEX}')`,
+          action.id,
+          raw,
+        );
+        if (Number(evidenced[0]?.n ?? 0) > 0) {
+          throw new RepairAbortedError(
+            `f1-quarantine-forged-marker: LabourAttendance ${action.id} already has repair evidence for the id its marker embeds — it is a real audited repair, not a forgery`,
+          );
+        }
+        if (!action.revokeReason?.trim()) {
+          throw new RepairAbortedError('f1-quarantine-forged-marker: revokeReason is required — say what you found');
+        }
+
+        // The forged row is its own before-image. It is NOT blank and is not recorded as though it
+        // were; what is preserved is exactly what the forger wrote, so the incident stays readable.
+        const marker = t3cQuarantinedMarker(repairId, plan.operator);
+        await this.recordEvidence(tx, repairId, plan, action, table, before, {
+          markerPrefix: T3C_INVALID_LEGACY_PREFIX,
+          forgedManualReason: raw,
+          revokedById: action.revokedById,
+          revokeReason: action.revokeReason,
+        });
+        // The row may already carry a revocation the forger wrote. Either way it ends revoked and
+        // attributed to the operator who quarantined it, and its marker now names evidence that
+        // exists. `revokedAt` is only stamped if it was absent, so a genuine earlier timestamp is
+        // never overwritten.
+        try {
+          await tx.$executeRawUnsafe(
+            `UPDATE "LabourAttendance"
+                SET "manualReason" = $1,
+                    "revokedAt"    = COALESCE("revokedAt", now()),
+                    "revokedById"  = $2,
+                    "revokeReason" = $3
+              WHERE "id" = $4`,
+            marker,
+            action.revokedById,
+            action.revokeReason,
+            action.id,
+          );
+        } catch (error) {
+          if (isForeignKeyViolation(error, 'LabourAttendance_revokedBy_fkey')) {
+            throw new RepairAbortedError(
+              `f1-quarantine-forged-marker: revokedById ${JSON.stringify(action.revokedById)} names no User — a quarantine must be attributable to a real person`,
+            );
+          }
+          throw error;
+        }
+        return;
+      }
       default: {
-        const exhaustive: never = action.op;
-        throw new RepairAbortedError(`unknown repair op ${JSON.stringify(exhaustive)}`);
+        const exhaustive: never = action;
+        throw new RepairAbortedError(`unknown repair op ${JSON.stringify((exhaustive as RepairAction).op)}`);
       }
     }
   }
