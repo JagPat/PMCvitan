@@ -134,6 +134,16 @@ export function prismaModelDelegates(): Set<string> {
   return new Set(Prisma.dmmf.datamodel.models.map((m) => m.name.charAt(0).toLowerCase() + m.name.slice(1)));
 }
 
+/** `delegate (lower-first) -> the PHYSICAL table name` (`@@map` wins), from the DMMF. Raw SQL names
+ *  tables, not delegates, so the raw-read analysis needs this to attribute a `SELECT` to a model. */
+export function prismaModelTables(): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const m of Prisma.dmmf.datamodel.models) {
+    out.set(m.name.charAt(0).toLowerCase() + m.name.slice(1), m.dbName ?? m.name);
+  }
+  return out;
+}
+
 /** `delegate (lower-first) -> { relationField -> related delegate (lower-first) }`, from the DMMF.
  *  A Prisma NESTED write (`data: { <relation>: { create|update|delete|… } }`) mutates the RELATED
  *  model's table, so the analyzer resolves the relation field to the foreign delegate through this. */
@@ -295,6 +305,9 @@ export interface PersistenceOptions {
   /** `read-encapsulated model -> owning module id` (Task 8). A READ of one of these models from a
    *  module other than its owner is a `cross-module-read` finding. Empty ⇒ reads are unrestricted. */
   readonly readEncapsulatedBy?: ReadonlyMap<string, string>;
+  /** `delegate -> physical table name` for RAW-SQL read attribution (defaults to the live DMMF via
+   *  {@link prismaModelTables}). Fixtures inject a synthetic map. */
+  readonly tablesOf?: ReadonlyMap<string, string>;
 }
 
 export interface PersistenceResult {
@@ -343,6 +356,16 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
   const delegates = opts.delegates ?? prismaModelDelegates();
   const relationsOf = opts.relationsOf ?? prismaModelRelations();
   const readEncapsulatedBy = opts.readEncapsulatedBy ?? new Map<string, string>();
+  const tablesOf = opts.tablesOf ?? prismaModelTables();
+  // Round-3 finding 2 — RAW SQL names TABLES, so the delegate-level read analysis above is blind to
+  // `tx.$queryRaw\`SELECT … FROM "ActivityRequirementRoot" … FOR UPDATE\``. Build the reverse index
+  // ONCE: physical table name -> { model, owner } for every read-encapsulated model, so any raw
+  // statement mentioning a foreign owner's table is attributed exactly like a delegate read.
+  const encapsulatedTables: Array<{ table: string; model: string; owner: string }> = [];
+  for (const [model, owner] of readEncapsulatedBy) {
+    const table = tablesOf.get(model);
+    if (table) encapsulatedTables.push({ table, model, owner });
+  }
   const checker = program.getTypeChecker();
   const moduleIds = new Set(kindOf.keys());
 
@@ -541,6 +564,21 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
     }
   };
 
+  /** Round-3 finding 2 — attribute a RAW statement's references to read-encapsulated foreign tables.
+   *  Only the QUOTED identifier form is matched (`"ActivityRequirementRoot"`, including a
+   *  schema-qualified `public."…"`): every raw statement in this codebase quotes its identifiers, and
+   *  PostgreSQL folds an unquoted mixed-case identifier to lowercase, so it would not resolve to a
+   *  Prisma table anyway. Precise by construction — no bare-word false positives from comments or
+   *  column names. */
+  const recordRawReads = (sql: string, node: ts.Node, rel: string, mod: string): void => {
+    if (encapsulatedTables.length === 0) return;
+    for (const { table, model, owner } of encapsulatedTables) {
+      if (owner === mod) continue; // own-module raw read of an own table — always allowed
+      if (!sql.includes(`"${table}"`)) continue;
+      reads.push({ file: rel, module: mod, model, owner, ownerKind: kindOf.get(owner), symbol: enclosingSymbol(node) });
+    }
+  };
+
   const moduleOf = (rel: string): string => {
     const top = rel.includes('/') ? rel.slice(0, rel.indexOf('/')) : '';
     return dirToModule[top] ?? 'platform';
@@ -581,11 +619,13 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
         if (RAW_METHOD_NAMES.includes(method)) {
           const sql = collectSqlText(node);
           if (isWriteSql(sql)) rawWrites.push({ file: rel, module: mod, symbol: enclosingSymbol(node), sql });
+          recordRawReads(sql, node, rel, mod);
         }
       }
       if (ts.isTaggedTemplateExpression(node) && ts.isPropertyAccessExpression(node.tag) && RAW_METHOD_NAMES.includes(node.tag.name.text)) {
         const sql = collectSqlText(node);
         if (isWriteSql(sql)) rawWrites.push({ file: rel, module: mod, symbol: enclosingSymbol(node), sql });
+        recordRawReads(sql, node, rel, mod);
       }
       ts.forEachChild(node, visit);
     };
@@ -702,6 +742,7 @@ export function analyzeRuntimeBoundaries({ srcRoot, tsconfigPath }: { srcRoot: s
     crossWaivers: CROSS_MODULE_WRITE_WAIVERS,
     delegates,
     readEncapsulatedBy: readEncapsulation(MODULE_MANIFESTS),
+    tablesOf: prismaModelTables(),
   });
   return { delegates, ownershipFindings, routeFindings, persistence, runtimeFiles };
 }

@@ -1184,6 +1184,28 @@ SQL
 assert_rejects "labour T3C2 finding 1: a revoked muster is terminal (no second stamp)" \
   "UPDATE \"LabourAttendance\" SET \"revokeReason\"='changed my mind' WHERE \"id\"='UPL-T3CMAN'"
 
+# ── Task-3 correction ROUND 3 (20270225000000) ────────────────────────────────────────────────
+# Finding 1 — the invalid-legacy marker is RESERVED for the audited operator repair (t3c:repair),
+# which only ever UPDATEs an existing row and always revokes it in the same statement. No ordinary
+# write may claim it, and no marked row may be left live: otherwise a forged marker would read like
+# operator provenance and a repaired muster could still count as presence.
+assert_rejects "labour T3C3 finding 1: an ordinary INSERT claiming the reserved invalid-legacy marker" \
+  "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"manualReason\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3C3M1','p1','UPL-T3W','2026-08-21','day','[invalid-legacy:blank-manual-reason] forged','USER-1','UPL-CMD1')"
+assert_rejects "labour T3C3 finding 1: the marker prefix even with trailing text of its own" \
+  "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"manualReason\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3C3M2','p1','UPL-T3W','2026-08-22','day','[invalid-legacy:blank-manual-reason] retired by ops','USER-1','UPL-CMD1')"
+# … and a REAL manual reason that merely mentions the words is still accepted (precision, not a
+# blanket substring ban): only the reserved PREFIX is refused.
+$PSQL >/dev/null <<SQL && printf 'ok      %s\n' "labour T3C3 finding 1: a real reason mentioning 'invalid legacy' is still accepted (prefix-scoped, not a word ban)" || { printf 'FAILED  %s\n' "labour T3C3 a legitimate reason was rejected"; FAIL=1; }
+INSERT INTO "LabourAttendance"("id","projectId","workerId","civilDate","shift","manualReason","recordedById","sourceCommandId")
+  VALUES('UPL-T3C3OK','p1','UPL-T3W','2026-08-23','day','device replaced after an invalid legacy tag was found on it','USER-1','UPL-CMD1');
+SQL
+# Finding 3 — the project readiness lock trigger is installed and fires FIRST on WorkerAllocation,
+# which is what makes two opposite-order raw batches serialize instead of deadlocking.
+$PSQL -tA -c "SELECT tgname FROM pg_trigger WHERE tgrelid='\"WorkerAllocation\"'::regclass AND NOT tgisinternal AND (tgtype & 4) <> 0 AND (tgtype & 2) <> 0 ORDER BY tgname LIMIT 1" \
+  | grep -qx 'WorkerAllocation_00_project_lock' \
+  && printf 'ok      %s\n' "labour T3C3 finding 3: the per-project readiness lock is the FIRST BEFORE-INSERT trigger on WorkerAllocation" \
+  || { printf 'FAILED  %s\n' "labour T3C3 finding 3: the project-lock trigger does not fire first"; FAIL=1; }
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

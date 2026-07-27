@@ -353,41 +353,156 @@ them can abort a deploy, and only over pre-existing data:
 device evidence — but its stated reason is empty or whitespace. That is an unevidenced presence claim
 with nothing behind it, and the migration refuses to install a constraint that would silently bless it.
 
-**Why there is no automatic repair.** Only the person who recorded the muster knows why there was no
-device. Inventing a reason would be worse than the blank: it would look like evidence. So:
+**Nothing is deleted, and nothing is invented.** An earlier version of this section told you to
+disable `LabourAttendance_append_only` and `DELETE` the offending rows. That was wrong: it erases the
+original observation, its recorder, its timestamps and its correction chain — the exact record a
+labour audit needs — while the trigger being disabled says in as many words that attendance rows are
+never deleted. **No repair path may delete a `LabourAttendance` row.** Equally, no repair may invent
+the missing real-world reason: only the person who recorded the muster knows why there was no device,
+and a fabricated reason would be worse than a blank one because it would look like evidence.
 
-1. **List them** (the abort message samples up to 20; this is the full set):
-   ```sql
-   SELECT "id", "projectId", "workerId", "civilDate", "shift", "recordedById", "recordedAt"
-     FROM "LabourAttendance"
-    WHERE "manualReason" IS NOT NULL AND btrim("manualReason", E' \t\n\x0B\f\r') = ''
-    ORDER BY "projectId", "civilDate";
-   ```
-2. **Revoke each one through the application**, not with SQL — `POST …/labour/attendance/:id/revoke`
-   with a real reason. Attendance is append-only: a revocation is the sanctioned correction and it
-   keeps the original row as history. (A revoked row still trips the diagnostic, because its blank
-   `manualReason` is still recorded; see step 3.)
-3. **Re-record the presence** for each revoked muster with its true justification (or with the
-   worker's bound device, if one exists). Then remove the blank rows — these are pre-correction rows
-   that never carried meaning, and this is the ONE sanctioned deletion, performed under maintenance
-   with the append-only trigger disabled by name, exactly as §T45 does:
-   ```sql
-   BEGIN;
-   ALTER TABLE "LabourAttendance" DISABLE TRIGGER "LabourAttendance_append_only";
-   DELETE FROM "LabourAttendance"
-    WHERE "manualReason" IS NOT NULL AND btrim("manualReason", E' \t\n\x0B\f\r') = '';
-   ALTER TABLE "LabourAttendance" ENABLE TRIGGER "LabourAttendance_append_only";
-   -- verify the trigger is enabled again BEFORE committing
-   SELECT tgenabled FROM pg_trigger WHERE tgname = 'LabourAttendance_append_only';  -- must be 'O'
-   COMMIT;
-   ```
-4. **Redeploy.** The diagnostic now finds nothing and the migration applies.
+The sanctioned repair therefore RETIRES the record instead. It writes a reserved marker that states
+only what is true — *the original reason was blank and the real justification was never recorded* —
+and revokes the row in the same statement, so it can never contribute active presence. The complete
+original row, including the blank bytes and the recorder, is preserved in durable repair evidence,
+and because revocation frees the live partial unique, a genuine replacement muster is a SEPARATE,
+separately-attributable row rather than an edit of this one.
+
+### 1. Back up, then diagnose
+
+Take a backup you can restore from. Then run the preflight, which is READ-ONLY:
+
+```
+pnpm --filter api t3c:preflight
+```
+
+It prints a per-finding count with up to 20 identifying samples (`id`, project, worker, civil date,
+shift, `recordedById`, `recordedAt`) plus the `20270220…`/`20270225…` migration states. Exit 0 means
+clean and safe to deploy; exit 3 means findings are present. Two findings exist:
+
+| code | meaning |
+|---|---|
+| `F1.blank` | a muster whose `manualReason` is blank — the state `20270220` refuses to seal over |
+| `F1.marker` | a muster carrying the reserved invalid-legacy marker that is NOT revoked (see §P4T3C3) |
+
+This preflight is also **enforced in production**: `apps/api/scripts/migrate.sh` runs the COMPILED
+`dist/labour/t3c/t3c.cli.js preflight` before `prisma migrate deploy` and fails closed, so Prisma
+never starts over a dirty database and `20270220` is never recorded as a failed migration. A
+fresh/empty or pre-Task-3 database reports "not applicable" and passes.
+
+### 2. Classify the migration record
+
+```
+pnpm --filter api t3c:migration-state
+```
+
+- `not-applied` — nothing to resolve; go to step 3.
+- `failed-pending` — a previous deploy aborted inside `20270220`. After the repair you must run
+  `npx prisma migrate resolve --rolled-back 20270220000000_phase4_t3_correction2` before redeploying.
+- `applied` — the migration is already in; a `F1.blank` finding is impossible in this state.
+
+### 3. Decide, then repair
+
+Write an explicit plan naming every row and the accountable human who authorizes retiring it. The
+repair never guesses: `revokedById` must resolve to a real `User`, and `revokeReason` is your own
+words about the RETIREMENT (not about why the worker was present, which you do not know).
+
+```json
+{
+  "actions": [
+    {
+      "finding": "F1.blank",
+      "op": "f1-mark-invalid-legacy",
+      "id": "<LabourAttendance id from the preflight sample>",
+      "revokedById": "<User id of the person authorizing this>",
+      "revokeReason": "original justification was never recorded; raise a replacement muster if this presence is real"
+    }
+  ]
+}
+```
+
+```
+pnpm --filter api t3c:repair --plan ./t3c-plan.json \
+  --operator you@example.com --reason "<release>: retire pre-20270220 blank-reason musters"
+```
+
+One bounded maintenance transaction runs: it creates the durable `T3CRepairAction` evidence table,
+records the **complete before-image** of every row it touches (with operator, reason, timestamp and
+row id), disables ONLY `LabourAttendance_append_only` by name, applies your plan, re-enables and
+VERIFIES the full §C immutability trigger set, re-runs every diagnostic, and commits **only** if
+everything reads clean. Anything off — a healthy row named by mistake, an unknown `revokedById`, a
+finding left uncleared — rolls the whole transaction back: data, evidence rows and trigger toggles
+alike, with every seal firing. Exit 0 on a clean commit, 1 on an abort.
+
+### 4. Resolve and redeploy
+
+```
+npx prisma migrate resolve --rolled-back 20270220000000_phase4_t3_correction2   # only if step 2 said failed-pending
+npx prisma migrate deploy
+```
+
+### 5. Verify
+
+```
+pnpm --filter api t3c:preflight      # exit 0, both findings zero
+```
+
+The retired rows are still queryable, and so is everything about them:
+
+```sql
+SELECT a."id", a."workerId", a."civilDate", a."recordedById", a."recordedAt",
+       a."revokedAt", a."revokedById", a."revokeReason",
+       r."operator", r."reason", r."at", r."beforeImage"
+  FROM "LabourAttendance" a
+  JOIN "T3CRepairAction" r ON r."rowId" = a."id"
+ WHERE a."manualReason" LIKE '[invalid-legacy:blank-manual-reason]%';
+```
+
+`beforeImage` holds the original row verbatim — including the blank `manualReason` and the original
+recorder — so the fact that a presence was once claimed, by whom and when, is never lost.
 
 **Note on the trim set.** PostgreSQL's one-argument `btrim(text)` strips spaces only, so the explicit
-`E' \t\r\n'` set is used everywhere above — a tab-only reason is exactly as blank as a space-only one.
+`E' \t\n\x0B\f\r'` set is used everywhere above — a tab-only reason is exactly as blank as a
+space-only one.
 
 The migration's other change (the allocation trigger taking the `ActivityRequirementRoot` lock before
 reading the head) needs no operator action: it alters a function, touches no rows, and cannot abort.
+
+`scripts/phase4-t3-correction3-abort-proof.sh` drives this exact sequence end-to-end against real
+PostgreSQL (dirty database → preflight names it → deploy aborts → `t3c:repair` → clean redeploy),
+and proves that a fabricating plan is refused and rolled back and that the row is never deleted.
+`scripts/phase4-t3-correction3-production-runner-proof.sh` drives the REAL `migrate.sh` over fresh,
+pre-Task-3, clean, dirty and already-corrected databases.
+
+## §P4T3C3. Phase 4 Task-3 correction 3 — a marked muster that is not revoked (rare)
+
+`20270225000000_phase4_t3_correction3` adds the seals that make the §P4T3C2 repair provably honest.
+Only one of them can abort a deploy:
+
+> `phase4 t3 correction3 finding 1: N LabourAttendance row(s) carry the reserved invalid-legacy marker but are NOT revoked (sample: …)`
+
+**What it means.** A row carries `[invalid-legacy:blank-manual-reason]…` in `manualReason` but has no
+revocation. Only `t3c:repair` may write that marker, and it always writes the revocation triple in the
+same statement — so this state means the marker was forged before the reserving trigger existed, or a
+repair was somehow interrupted outside its transaction. Either way a human must look at it: a marked
+row that is still live is an unevidenced presence claim wearing something that looks like an
+explanation.
+
+**What to do.** Run `pnpm --filter api t3c:preflight` to list them (`F1.marker`), then decide per row:
+
+- If it is a repaired legacy record, revoke it through the application
+  (`POST …/labour/attendance/:id/revoke`) with a reason naming the repair. The row stays; the marker
+  stays; it simply stops counting as presence.
+- If it is NOT a repaired record — i.e. someone wrote the marker themselves — treat it as a forged
+  attendance record: revoke it, record the incident, and re-record the real presence as a new,
+  separately-attributable muster if it is genuine.
+
+Then redeploy. After this migration applies, the state is unreachable: a BEFORE INSERT trigger
+reserves the marker prefix (no ordinary write can claim it) and a CHECK requires any marked row to be
+revoked.
+
+The migration's other change (the `WorkerAllocation` project-readiness lock trigger) needs no operator
+action: it creates a trigger, touches no rows, and cannot abort over data.
 
 ## 1. Drain all OLD application instances
 

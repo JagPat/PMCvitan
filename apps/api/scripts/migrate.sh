@@ -62,6 +62,30 @@ else
   exit 1
 fi
 
+# ── T3C preflight (Phase 4 Task 3 §C attendance-integrity diagnostics) — ENFORCED ────────────────
+# Run the COMPILED preflight (never tsx) AFTER the T2C preflight and BEFORE `prisma migrate deploy`.
+# It is schema-aware:
+#   - a fresh/empty or pre-Task-3 database reports "not applicable" and passes (exit 0), so the
+#     migrations that CREATE the §C attendance schema still run;
+#   - an eligible database (LabourAttendance.manualReason present, incl. a fully-corrected one) runs
+#     the F1.blank / F1.marker diagnostics; any unrepaired violation prints the named report and exits
+#     non-zero, so Prisma NEVER starts and migrations 20270220 / 20270225 are never recorded as
+#     failed. Repair per docs/RUNBOOK.md §P4T3C2 (t3c:repair — which MARKS AND REVOKES, and never
+#     deletes an attendance row), then redeploy.
+# The compiled artifact is produced by the image build; a missing artifact means a broken build — fail closed.
+T3C_PREFLIGHT="dist/labour/t3c/t3c.cli.js"
+if [ -f "$T3C_PREFLIGHT" ]; then
+  echo "[migrate] T3C preflight (compiled artifact): node $T3C_PREFLIGHT preflight"
+  if ! node "$T3C_PREFLIGHT" preflight; then
+    echo "[migrate] T3C preflight FAILED — unrepaired §C attendance violations block this deploy."
+    echo "[migrate] Repair per docs/RUNBOOK.md §P4T3C2 (t3c:repair), then redeploy. Prisma was NOT started."
+    exit 1
+  fi
+else
+  echo "[migrate] ERROR: compiled T3C preflight ($T3C_PREFLIGHT) is missing — the build is incomplete; refusing to deploy."
+  exit 1
+fi
+
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"

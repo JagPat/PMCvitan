@@ -161,6 +161,28 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
     }
     throw new Error(`barrier timeout: expected a backend blocked on a row lock while running ${queryLike}`);
   };
+  /**
+   * ROUND-3 CORRECTION (finding 3) MOVED THE SERIALIZATION POINT EARLIER — and this barrier follows
+   * it. A raw `WorkerAllocation` insert now takes the per-project readiness ADVISORY lock as its very
+   * first act (`WorkerAllocation_00_project_lock`), before any requirement-root or commitment row
+   * lock. So when session A is a raw allocation held open, a second same-project writer — canonical
+   * cancel or canonical allocate — blocks on `pg_advisory_xact_lock` and never reaches its
+   * `ActivityRequirementRoot … FOR UPDATE`. Waiting on the root text would now time out even though
+   * the two sessions ARE serialized, and serialized strictly earlier than before.
+   *
+   * The probes' assertions are unchanged; only where the wait is observed moved. Requiring an
+   * UNGRANTED `advisory` lock keeps this a real barrier rather than a loosened one.
+   */
+  const waitUntilBlockedOnProjectLock = async (): Promise<void> => {
+    for (let i = 0; i < 200; i++) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
+        `SELECT COUNT(*)::int AS c FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+      );
+      if (Number(rows[0]!.c) >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('barrier timeout: expected a backend blocked on the per-project readiness advisory lock');
+  };
 
   // ── FINDING 1 — the manual muster's justification is part of the observation ───────────────────
 
@@ -331,8 +353,10 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
       requirements.cancel(c.projectId, c.req.requirementId, { expectedRevision: c.req.revision, reason: 'scope dropped' }, pmc(c.projectId)),
     );
 
-    // BARRIER 2 — proceed only once B is genuinely waiting on the root row lock.
-    await waitUntilBlocked('%ActivityRequirementRoot%FOR UPDATE%');
+    // BARRIER 2 — proceed only once B is genuinely waiting. Since the round-3 correction, session A's
+    // raw insert holds the per-project readiness advisory lock, so B (which takes it as the first
+    // statement of `cancel`) waits THERE, one step before the root it would otherwise contend for.
+    await waitUntilBlockedOnProjectLock();
     release.open();
     await sessionA;
     const b = await sessionB;
@@ -462,7 +486,9 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
     const sessionB = reflect(
       capacity.allocate(c.projectId, { activityId: c.activityId, requirementId: c.req.requirementId, civilDate: '2026-08-10', workerId: c.wSvc, capacityCommitmentId: c.commitmentId }, pmc(c.projectId)),
     );
-    await waitUntilBlocked('%ActivityRequirementRoot%FOR UPDATE%');
+    // Since the round-3 correction the raw insert holds the per-project readiness advisory lock, so
+    // the canonical allocate waits there — earlier than the root, and earlier than the commitment.
+    await waitUntilBlockedOnProjectLock();
     release.open();
     await sessionA;
     const b = await sessionB;

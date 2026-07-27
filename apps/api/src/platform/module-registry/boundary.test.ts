@@ -329,6 +329,59 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
       expect(f[0].message).toContain("owned by 'labour'");
     });
 
+    // Phase 4 Task 3 correction 3 (finding 2) — RAW SQL names TABLES, not delegates, so the
+    // delegate-level analysis above was blind to `tx.$queryRaw`SELECT … FROM "ActivityRequirementRoot"
+    // … FOR UPDATE``: precisely the read that let a LEAF module reach into Activities' persistence.
+    // These fixtures pin the raw-read detection permanently, in BOTH raw forms, and prove it is
+    // ownership-driven rather than name-driven.
+    it('a foreign module RAW-READING a read-encapsulated table → cross-module-read (tagged template)', () => {
+      const f = analyzeFixture({
+        'activities/evil-raw-read.ts':
+          'export async function evilRawRead(prisma: PrismaLike, id: string) { await prisma.$queryRaw`SELECT "id" FROM "Decision" WHERE "id" = ${id} FOR UPDATE`; }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+      expect(f[0].message).toContain("owned by 'decisions'");
+    });
+
+    it('a foreign module RAW-READING a read-encapsulated table → cross-module-read ($queryRawUnsafe)', () => {
+      const f = analyzeFixture({
+        'activities/evil-raw-read-unsafe.ts':
+          'export async function evilRawReadUnsafe(prisma: PrismaLike, id: string) { await prisma.$queryRawUnsafe(`SELECT count(*) FROM "Decision" WHERE "id" = $1`, id); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('the OWNING module raw-reading its own read-encapsulated table is NOT a finding', () => {
+      const f = analyzeFixture({
+        'decisions/own-raw-read.ts':
+          'export async function ownRawRead(prisma: PrismaLike, id: string) { await prisma.$queryRaw`SELECT "id" FROM "Decision" WHERE "id" = ${id} FOR UPDATE`; }',
+      });
+      expect(f).toEqual([]);
+    });
+
+    it('the raw-read detection is COUPLED to the live manifests — Activities raw-reading a labour table is flagged', () => {
+      // Same coupling discipline as the WorkerSkill fixture above: analyzed against the REAL
+      // manifest-derived read-encapsulation, so dropping `workerSkill` from labour's
+      // `readEncapsulated` makes this fixture fail rather than silently stop protecting anything.
+      const realEnc = readEncapsulation(MODULE_MANIFESTS);
+      const f = analyzeFixture(
+        {
+          'activities/evil-raw-workerskill.ts':
+            'export async function evilRaw(prisma: PrismaLike, p: string) { await prisma.$queryRawUnsafe(`SELECT "skillCode" FROM "WorkerSkill" WHERE "projectId" = $1`, p); }',
+        },
+        {},
+        realEnc,
+      );
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('workerSkill');
+      expect(f[0].message).toContain("owned by 'labour'");
+    });
+
     // Phase 4 Task 1 correction 2 (re-review finding 3) — permanently pin the NESTED foreign read
     // detection the packet claimed. An own-module delegate call whose include/select pulls a
     // read-encapsulated FOREIGN relation is a cross-module-read, exactly like a direct foreign read.
