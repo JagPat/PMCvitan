@@ -165,6 +165,21 @@ export function recoverySettlementContext(recoveryRequest) {
   return recoveryRequest?.status?.context ?? null;
 }
 
+export async function persistRecoveryRequest(
+  client,
+  expectedHead,
+  pullRequest,
+  authorizedStatus,
+) {
+  return client.setStatus(
+    expectedHead,
+    'pending',
+    `recovery: requested terminal status ${authorizedStatus.id}`,
+    pullRequest.html_url,
+    recoveryRequestContext(authorizedStatus.id),
+  );
+}
+
 export function recoveryRequestTerminal(statuses, request) {
   if (!request) return null;
   const terminalStatus = latestTerminalReviewStatus(statuses);
@@ -439,7 +454,7 @@ function statusBody({ state, head, detail, attempt, next }) {
   ].join('\n');
 }
 
-async function settleRecoveryRequest(
+export async function settleRecoveryRequest(
   client,
   expectedHead,
   pullRequest,
@@ -656,6 +671,16 @@ export function contextForEvent(eventName, event, dispatchNumber) {
   return null;
 }
 
+export function assertCurrentHeadForContext(context, currentHead, mode) {
+  if (!context.expectedHead || context.expectedHead === currentHead) return true;
+  if (context.trigger === 'dispatch' && mode === 'request-recovery') {
+    throw new Error(
+      `Recovery dispatch head ${context.expectedHead} no longer matches current head ${currentHead}`,
+    );
+  }
+  return false;
+}
+
 async function eventContext() {
   const eventName = requiredEnvironment('GITHUB_EVENT_NAME');
   const event = JSON.parse(
@@ -683,7 +708,8 @@ export async function run() {
   }
 
   const expectedHead = context.expectedHead ?? pullRequest.head.sha;
-  if (pullRequest.head.sha !== expectedHead) {
+  const mode = process.env.AUTONOMOUS_REVIEW_MODE ?? 'orchestrate';
+  if (!assertCurrentHeadForContext(context, pullRequest.head.sha, mode)) {
     console.log('Workflow event was superseded by a newer pull-request head.');
     return;
   }
@@ -693,7 +719,7 @@ export async function run() {
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
 
-  if (process.env.AUTONOMOUS_REVIEW_MODE === 'request-recovery') {
+  if (mode === 'request-recovery') {
     const authorizedStatus = authorizeRecoveryDispatch(
       existingStatuses,
       context.terminalStatusId,
@@ -704,12 +730,11 @@ export async function run() {
           + `${STATUS_CONTEXT} status ID`,
       );
     }
-    await client.setStatus(
+    await persistRecoveryRequest(
+      client,
       expectedHead,
-      'pending',
-      `recovery: requested terminal status ${authorizedStatus.id}`,
-      pullRequest.html_url,
-      recoveryRequestContext(authorizedStatus.id),
+      pullRequest,
+      authorizedStatus,
     );
     console.log(
       `Persisted recovery request for terminal status ${authorizedStatus.id}.`,

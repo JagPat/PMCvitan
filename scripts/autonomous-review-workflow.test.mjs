@@ -19,6 +19,33 @@ function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function statusClient(statuses) {
+  let nextId = 1_000;
+  return {
+    async setStatus(head, state, description, targetUrl, context) {
+      const status = {
+        id: nextId,
+        context,
+        state,
+        description,
+        target_url: targetUrl,
+        sha: head,
+      };
+      nextId += 1;
+      statuses.unshift(status);
+      return status;
+    },
+  };
+}
+
 test('requires every named CI check to have a successful latest run', () => {
   const success = REQUIRED_CHECKS.map((name) => checkRun(name));
   assert.deepEqual(summarizeRequiredChecks(success), {
@@ -494,37 +521,88 @@ test('manual recovery records intent before entering the single owner lane', asy
   assert.match(gate, /finalCheckSummary/);
 });
 
-test('an older owner settles only its own recovery request context', () => {
-  const oldRequest = {
-    status: {
-      id: 201,
-      context: reviewGate.recoveryRequestContext('103'),
-      state: 'pending',
-      description: 'recovery: requested terminal status 103',
-    },
-    terminalStatusId: '103',
+test('an older owner cannot consume a newer request persisted while it is paused', async () => {
+  const oldTerminal = {
+    id: 103,
+    context: 'codex-current-head',
+    state: 'failure',
+    description: 'review: bootstrap exact-head review requested',
   };
-  const newRequest = {
-    id: 202,
-    context: reviewGate.recoveryRequestContext('106'),
-    state: 'pending',
-    description: 'recovery: requested terminal status 106',
+  const newerTerminal = {
+    id: 106,
+    context: 'codex-current-head',
+    state: 'failure',
+    description: 'review: Codex review timed out after two attempts',
   };
-  const oldOwnerSettlement = {
-    id: 203,
-    context: reviewGate.recoverySettlementContext(oldRequest),
-    state: 'success',
-    description: 'recovery: consumed by review timeout',
+  const statuses = [oldTerminal];
+  const client = statusClient(statuses);
+  const pullRequest = {
+    number: 230,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
+  };
+  const expectedHead = 'a'.repeat(40);
+
+  await reviewGate.persistRecoveryRequest(
+    client,
+    expectedHead,
+    pullRequest,
+    oldTerminal,
+  );
+  const oldRequest = reviewGate.pendingRecoveryRequest(statuses);
+  const ownerPaused = deferred();
+  const resumeOwner = deferred();
+  const oldOwner = (async () => {
+    ownerPaused.resolve();
+    await resumeOwner.promise;
+    await reviewGate.settleRecoveryRequest(
+      client,
+      expectedHead,
+      pullRequest,
+      oldRequest,
+      'review timeout',
+    );
+  })();
+
+  await ownerPaused.promise;
+  statuses.unshift(newerTerminal);
+  await reviewGate.persistRecoveryRequest(
+    client,
+    expectedHead,
+    pullRequest,
+    newerTerminal,
+  );
+  resumeOwner.resolve();
+  await oldOwner;
+
+  assert.equal(statuses[0].context, 'codex-recovery-request/103');
+  assert.equal(statuses[0].state, 'success');
+  assert.equal(
+    reviewGate.pendingRecoveryRequest(statuses).terminalStatusId,
+    '106',
+  );
+});
+
+test('stale manual recovery heads fail instead of reporting a green no-op', () => {
+  const context = {
+    expectedHead: 'a'.repeat(40),
+    trigger: 'dispatch',
   };
 
-  assert.equal(oldOwnerSettlement.context, 'codex-recovery-request/103');
+  assert.throws(
+    () => reviewGate.assertCurrentHeadForContext(
+      context,
+      'b'.repeat(40),
+      'request-recovery',
+    ),
+    /Recovery dispatch head .* no longer matches current head/u,
+  );
   assert.equal(
-    reviewGate.pendingRecoveryRequest([
-      oldOwnerSettlement,
-      newRequest,
-      oldRequest.status,
-    ]).status,
-    newRequest,
+    reviewGate.assertCurrentHeadForContext(
+      { ...context, trigger: 'ci' },
+      'b'.repeat(40),
+      'orchestrate',
+    ),
+    false,
   );
 });
 
@@ -547,7 +625,7 @@ test('workflow gives one exact-head run sole ownership of review and merge', asy
   assert.match(gate, /reviewAttempt\(/);
   assert.match(workflow, /request-recovery:/);
   assert.match(workflow, /autonomous-review-owner-/);
-  assert.match(gate, /process\.env\.AUTONOMOUS_REVIEW_MODE === 'request-recovery'/);
+  assert.match(gate, /mode === 'request-recovery'/);
   assert.match(gate, /pendingRecoveryRequest\(/);
   assert.match(gate, /ensureTerminalReviewState\(/);
   assert.match(workflow, /statuses:\s*write/);
