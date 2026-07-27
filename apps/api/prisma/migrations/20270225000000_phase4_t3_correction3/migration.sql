@@ -47,28 +47,37 @@ $$ LANGUAGE plpgsql;
 -- `LabourAttendance_revoke_attribution_check` a raw update can set `revokedAt` alone, creating a
 -- permanently unattributed correction this migration's own marker CHECK then builds on.
 --
--- Presence and (for triggers) exact binding are asserted HERE; the FULL semantic verification —
--- canonical-expression identity for every CHECK, column/predicate identity plus VALID/READY for
--- every unique key, column-mapping identity for every FK, and canonical function-BODY identity for
--- every trigger (`CREATE OR REPLACE FUNCTION` preserves a function's identity, so name + tgtype
--- alone accept a trigger still enforcing a pre-correction body) — lives in `t3c seals`, which
--- gates every `migrate.sh` path including the P3005 baseline. This block is the in-file
+-- Presence, exact binding AND canonical function-BODY identity are asserted HERE for every
+-- prerequisite trigger. `CREATE OR REPLACE FUNCTION` preserves a function's identity, so a name +
+-- tgtype test accepts a trigger still bound to a hollowed body — on a ledger-backed upgrade a
+-- no-op `phase4_t3_skill_substitution_append_only` used to pass this block, and the ordinary
+-- `migrate.sh` success path never re-asked `t3c seals`, so the database reported successfully
+-- upgraded while an approved skill substitution stayed rewritable. The body is compared by
+-- `md5(prosrc)` against the SAME canonical layer bodies the `t3c seals` verifier pins (the
+-- machine-extracted `t3c-canonical-fn-bodies.generated.ts`; the md5 literals below are pinned to
+-- those bodies by `phase4-t3-correction3.test.ts` R3k-A2, so the two sources cannot drift). Each
+-- function accepts EXACTLY the bodies its prerequisite seal accepts: the two functions this
+-- migration itself re-asserts/replaces additionally accept their stale-but-healed-by-this-file
+-- layers, and `phase4_t3c_allocation_head_live` accepts its own 20270225 body so a RETRY of this
+-- migration is not refused. The full semantic verification of CHECKs/uniques/FKs still lives in
+-- `t3c seals`, which now gates EVERY `migrate.sh` path — the P3005 baseline AND the ordinary
+-- success path (the post-deploy verification in `scripts/migrate.sh`). This block is the in-file
 -- restatement for a direct `prisma migrate deploy`, kept auditable on sight.
 DO $$
-DECLARE n INT; want RECORD;
+DECLARE n INT; n_body INT; want RECORD;
 BEGIN
   FOR want IN
     SELECT * FROM (VALUES
-      ('LabourAttendance_append_only',          'LabourAttendance',          'phase4_t3_attendance_append_only',         27),
-      ('WorkerAllocation_frozen',               'WorkerAllocation',          'phase4_t3_allocation_frozen',              27),
-      ('LabourWorkFact_append_only',            'LabourWorkFact',            'phase3_immutable_row',                     27),
-      ('ApprovedSkillSubstitution_append_only', 'ApprovedSkillSubstitution', 'phase4_t3_skill_substitution_append_only', 27),
-      ('LabourWorkFact_matches_allocation',     'LabourWorkFact',            'phase4_t3_work_matches_allocation',         7),
-      ('WorkerAllocation_worker_active',        'WorkerAllocation',          'phase4_t3_allocation_worker_active',        7),
-      ('LabourAttendance_device_bound',         'LabourAttendance',          'phase4_t3_attendance_device_bound',         7),
-      ('WorkerAllocation_within_commitment',    'WorkerAllocation',          'phase4_t3_allocation_within_commitment',    7),
-      ('WorkerAllocation_head_live',            'WorkerAllocation',          'phase4_t3c_allocation_head_live',           7)
-    ) AS v(tgname, rel, fn, exact_tgtype)
+      ('LabourAttendance_append_only',          'LabourAttendance',          'phase4_t3_attendance_append_only',         27, ARRAY['e40c8d80b2e85c5b3bf55af1c633189c','6119798541f2e2f6c5237778d43f0261']),
+      ('WorkerAllocation_frozen',               'WorkerAllocation',          'phase4_t3_allocation_frozen',              27, ARRAY['82586c967d94ad1877c971ef3737f9cd']),
+      ('LabourWorkFact_append_only',            'LabourWorkFact',            'phase3_immutable_row',                     27, ARRAY['c04bfdc33260bb73cf2e292e0be17bc1']),
+      ('ApprovedSkillSubstitution_append_only', 'ApprovedSkillSubstitution', 'phase4_t3_skill_substitution_append_only', 27, ARRAY['4def82917b35a3e5b3e0973b52fce404']),
+      ('LabourWorkFact_matches_allocation',     'LabourWorkFact',            'phase4_t3_work_matches_allocation',         7, ARRAY['e8fa84354112b7195c7b4e4680ade44d']),
+      ('WorkerAllocation_worker_active',        'WorkerAllocation',          'phase4_t3_allocation_worker_active',        7, ARRAY['7f8475f572b3ca696f7f057ec240132e']),
+      ('LabourAttendance_device_bound',         'LabourAttendance',          'phase4_t3_attendance_device_bound',         7, ARRAY['ff1dee9533725ee8c29f9cad2cfbcb68']),
+      ('WorkerAllocation_within_commitment',    'WorkerAllocation',          'phase4_t3_allocation_within_commitment',    7, ARRAY['5ff32e885352933eeaaad85515d06dcc']),
+      ('WorkerAllocation_head_live',            'WorkerAllocation',          'phase4_t3c_allocation_head_live',           7, ARRAY['560ca401f8098cad4e411b7fad7d1ae1','d392fda0af7ac51bbf301b6d85a9a29d','3b4894baf45a77a004e61a9c21eecae5'])
+    ) AS v(tgname, rel, fn, exact_tgtype, body_md5s)
   LOOP
     SELECT count(*) INTO n FROM pg_trigger t
      WHERE t.tgname = want.tgname AND NOT t.tgisinternal
@@ -78,6 +87,16 @@ BEGIN
     IF n <> 1 THEN
       RAISE EXCEPTION 'P4T3C3 ABORT: prerequisite trigger % on % (function %, tgtype exactly %) from 20270210/20270215 is not installed and enforcing — this database has the §C tables without the §C guards; do NOT baseline it. See docs/RUNBOOK.md §P4T3C3.',
         want.tgname, want.rel, want.fn, want.exact_tgtype;
+    END IF;
+    SELECT count(*) INTO n_body FROM pg_trigger t
+     WHERE t.tgname = want.tgname AND NOT t.tgisinternal
+       AND t.tgrelid = to_regclass('"' || want.rel || '"')
+       AND t.tgenabled = 'O' AND t.tgfoid::regproc::text = want.fn
+       AND t.tgtype = want.exact_tgtype
+       AND md5((SELECT p.prosrc FROM pg_proc p WHERE p.oid = t.tgfoid)) = ANY(want.body_md5s);
+    IF n_body <> 1 THEN
+      RAISE EXCEPTION 'P4T3C3 ABORT: prerequisite trigger % on % is bound correctly but its function body (%) is NOT a deployed canonical version — `CREATE OR REPLACE` preserves a function''s identity, so this is a hollowed or tampered guard, not a layer state; do NOT deploy over it. See docs/RUNBOOK.md §P4T3C3.',
+        want.tgname, want.rel, want.fn;
     END IF;
   END LOOP;
 

@@ -397,9 +397,43 @@ psql -X -q -d "$DB" -c "INSERT INTO \"LabourAttendance\" (\"id\",\"projectId\",\
 run_migrate_sh "$DB"
 [ "$RUN_RC" = "0" ] && ok "a repeat migrate.sh run on the baselined database is a clean no-op" || bad "repeat migrate.sh run failed"
 
+# ── Case 9 — ORDINARY success path: a hollowed prerequisite body fails the deploy CLOSED ──────────
+# `prisma migrate deploy` proves the LEDGER is complete, not that the physical guards enforce.
+# `CREATE OR REPLACE FUNCTION` preserves a function's identity, so on a fully-migrated database a
+# no-op `phase4_t3_skill_substitution_append_only` — right name, right trigger, right tgtype,
+# enforcing NOTHING — used to ride the ordinary success path straight to exit 0: nothing was
+# pending, nothing re-ran, and the runner never re-asked `t3c seals`. The post-deploy verification
+# must catch it, name it, and refuse the deploy.
+note "Case 9 — ordinary path: hollowed prerequisite trigger body is refused by the post-deploy seal verification"
+DB=pmcvitan_t3cpr_hollow
+build_db "$DB"
+psql -X -q -d "$DB" -c "CREATE OR REPLACE FUNCTION phase4_t3_skill_substitution_append_only() RETURNS trigger AS \$\$ BEGIN RETURN NEW; END; \$\$ LANGUAGE plpgsql;" >/dev/null \
+  || { bad "could not hollow the skill-substitution body"; }
+run_migrate_sh "$DB"
+[ "$RUN_RC" != "0" ] && ok "migrate.sh REFUSES the ordinary deploy over a hollowed body (rc=$RUN_RC)" \
+  || bad "migrate.sh exited 0 over a hollowed skill-substitution body — the ordinary path is not verified"
+echo "$RUN_OUT" | grep -q "ApprovedSkillSubstitution_append_only" \
+  && ok "the refusal NAMES the unenforcing seal (ApprovedSkillSubstitution_append_only)" \
+  || bad "the refusal does not name the seal"
+echo "$RUN_OUT" | grep -q "seal verification FAILED" \
+  && ok "the refusal states the ledger-complete-but-guard-hollow diagnosis" \
+  || bad "the refusal does not state the diagnosis"
+# Restore the canonical body BYTE-EXACTLY from the compiled generated module — the same runner then
+# passes: the check is precise, not merely strict.
+node -e "
+const { T3C_CANONICAL_FN_BODIES } = require('./dist/labour/t3c/t3c-canonical-fn-bodies.generated.js');
+const body = T3C_CANONICAL_FN_BODIES.phase4_t3_skill_substitution_append_only[0].body;
+process.stdout.write('CREATE OR REPLACE FUNCTION phase4_t3_skill_substitution_append_only() RETURNS trigger AS \$canon\$' + body + '\$canon\$ LANGUAGE plpgsql;');
+" > /tmp/t3cpr-restore-skill-fn.sql || bad "could not extract the canonical body from the compiled module"
+psql -X -q -v ON_ERROR_STOP=1 -d "$DB" -f /tmp/t3cpr-restore-skill-fn.sql >/dev/null \
+  || bad "could not restore the canonical skill-substitution body"
+run_migrate_sh "$DB"
+[ "$RUN_RC" = "0" ] && ok "with the canonical body restored the SAME runner deploys cleanly (precision, not just strictness)" \
+  || bad "migrate.sh still refuses after the canonical body was restored"
+
 # ── cleanup ──────────────────────────────────────────────────────────────────────────────────────
 note "cleanup"
-for db in pmcvitan_t3cpr_fresh pmcvitan_t3cpr_pretask3 pmcvitan_t3cpr_base pmcvitan_t3cpr_clean pmcvitan_t3cpr_dirty pmcvitan_t3cpr_corrected pmcvitan_t3cpr_dbpush pmcvitan_t3cpr_restored pmcvitan_t3cpr_forged; do
+for db in pmcvitan_t3cpr_fresh pmcvitan_t3cpr_pretask3 pmcvitan_t3cpr_base pmcvitan_t3cpr_clean pmcvitan_t3cpr_dirty pmcvitan_t3cpr_corrected pmcvitan_t3cpr_dbpush pmcvitan_t3cpr_restored pmcvitan_t3cpr_forged pmcvitan_t3cpr_hollow; do
   kill_conns "$db"; $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $db;" >/dev/null 2>&1 || true
 done
 
@@ -410,9 +444,11 @@ if [ "$FAIL" = "0" ]; then
   echo "started + fabrication refused + explicit repair then clean redeploy), already-corrected and"
   echo "pre-baseline P3005 databases — a db-push schema is REFUSED (prerequisite guards absent), and a"
   echo "really-migrated dump/restore has BOTH re-runnable corrections' raw-SQL seals VERIFIED and really"
-  echo "executed rather than blanket-resolved as applied. And the repair MARKS AND REVOKES, preserving"
-  echo "the original row, its recorder, its timestamps and a complete before-image. No attendance row"
-  echo "is ever deleted."
+  echo "executed rather than blanket-resolved as applied. The ORDINARY success path verifies the full"
+  echo "seal set after every deploy — a ledger-complete database carrying a hollowed prerequisite"
+  echo "trigger body is refused by name, and the canonical body deploys cleanly. And the repair MARKS"
+  echo "AND REVOKES, preserving the original row, its recorder, its timestamps and a complete"
+  echo "before-image. No attendance row is ever deleted."
 else
   echo "T3C PRODUCTION-RUNNER PROOF FAILED: see the assertions above."
 fi

@@ -89,7 +89,22 @@ fi
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"
-[ $code -eq 0 ] && exit 0
+if [ $code -eq 0 ]; then
+  # ORDINARY success path — verify the full T3C seal set before reporting the deploy good.
+  # `prisma migrate deploy` proves the LEDGER is complete, not that the physical guards enforce:
+  # `CREATE OR REPLACE FUNCTION` preserves a function's identity, so a hollowed trigger body (e.g. a
+  # no-op `phase4_t3_skill_substitution_append_only`) survives a ledger-backed upgrade — every
+  # migration is already applied, nothing re-runs, and without this check the runner exited 0 while
+  # an approved skill substitution stayed rewritable. `t3c seals` verifies canonical function-BODY
+  # identity, CHECK expressions, VALID/READY unique keys and FK mappings; after a full deploy the
+  # only acceptable answer is 0 (sealed). Anything else fails CLOSED with the named objects.
+  if ! node "$T3C_PREFLIGHT" seals; then
+    echo "[migrate] ERROR: 'prisma migrate deploy' succeeded but the T3C seal verification FAILED — the ledger is complete while a physical guard is missing, disabled or not the canonical body."
+    echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md §P4T3C3, then redeploy."
+    exit 1
+  fi
+  exit 0
+fi
 
 if echo "$out" | grep -q "P3005"; then
   echo "[migrate] pre-baseline database detected (P3005) — marking existing migrations as applied"

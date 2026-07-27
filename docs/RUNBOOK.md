@@ -724,6 +724,18 @@ which schema this actually is becomes a human judgement, not something a runner 
 ever baseline by hand, hold yourself to the same rule: never `migrate resolve --applied` anything
 until `pnpm --filter api t3c:seals` exits 0.
 
+**Ordinary (ledger-backed) deploys are verified too.** A successful `prisma migrate deploy` proves
+the LEDGER is complete, not that the physical guards enforce: `CREATE OR REPLACE FUNCTION`
+preserves a function's identity, so a fully-migrated database can carry a hollowed trigger body
+(e.g. a no-op `phase4_t3_skill_substitution_append_only`) that nothing re-runs and nothing heals.
+`scripts/migrate.sh` therefore runs the full `t3c seals` verification AFTER every successful
+deploy on the ordinary path as well; the only acceptable answer is 0 (sealed). Anything else fails
+the deploy CLOSED with the named objects — repair the named seal (for a hollowed prerequisite body,
+re-install the canonical function body from the deployed migration file), then redeploy. The
+`20270225000000` migration additionally pins `md5(prosrc)` for all nine prerequisite trigger
+functions in its own prerequisite block, so a direct `prisma migrate deploy` that still has the
+correction pending aborts over a hollowed body before touching anything.
+
 ## 1. Drain all OLD application instances
 
 Stop routing to and shut down every instance running the PREVIOUS build. The single-sender

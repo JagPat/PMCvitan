@@ -1290,26 +1290,36 @@ export class T3CRepairService {
   /** Assert every §C immutability trigger is enabled (`tgenabled='O'`); throw (roll back) otherwise
    *  — a repair that leaves any seal off is not a valid repair. */
   private async assertTriggersEnabled(tx: T3CTxClient): Promise<string[]> {
+    // The rows are keyed by TABLE + name, never by name alone. Trigger names are only unique per
+    // table in PostgreSQL, so a name-keyed Map collapsed globally duplicated names into one
+    // arbitrary winner: a fully canonical `LabourAttendance_append_only` riding an UNRELATED table
+    // could stand in for the attendance table's own trigger — the repair then committed after
+    // restoring a no-op (or nothing at all), leaving the repaired marker and row freely rewritable.
+    // Only current-schema rows are considered, so a same-named decoy in another schema cannot
+    // collide with the key either.
     const rows = await tx.$queryRawUnsafe<
-      Array<{ tgname: string; tgenabled: string; fn: string; tgtype: number; prosrc: string | null }>
+      Array<{ tgname: string; tbl: string; tgenabled: string; fn: string; tgtype: number; prosrc: string | null }>
     >(
-      `SELECT t.tgname, t.tgenabled, t.tgfoid::regproc::text AS fn, t.tgtype::int AS tgtype,
+      `SELECT t.tgname, c.relname AS tbl, t.tgenabled, t.tgfoid::regproc::text AS fn, t.tgtype::int AS tgtype,
               (SELECT p.prosrc FROM pg_proc p WHERE p.oid = t.tgfoid) AS prosrc
-         FROM pg_trigger t WHERE t.tgname = ANY($1::text[]) AND NOT t.tgisinternal`,
+         FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+         JOIN pg_namespace ns ON ns.oid = c.relnamespace
+        WHERE t.tgname = ANY($1::text[]) AND NOT t.tgisinternal AND ns.nspname = current_schema()`,
       IMMUTABILITY_TRIGGERS as unknown as string[],
     );
-    const byName = new Map(rows.map((r) => [r.tgname, r]));
+    const byTableAndName = new Map(rows.map((r) => [`${r.tbl}.${r.tgname}`, r]));
     const bad: string[] = [];
     for (const name of IMMUTABILITY_TRIGGERS) {
-      const row = byName.get(name);
-      if (!row) { bad.push(`${name}=MISSING`); continue; }
+      const seal = EXPECTED_TRIGGER_SEAL[name]!;
+      const row = byTableAndName.get(`${seal.table}.${name}`);
+      if (!row) { bad.push(`${name} on "${seal.table}"=MISSING`); continue; }
       if (row.tgenabled !== 'O') { bad.push(`${name}=${row.tgenabled}`); continue; }
       // A NAME is not enforcement, and neither is a name plus a function. For the triggers this
       // engine creates itself the whole seal is known and checked — an enabled same-named no-op, or
       // one bound to the right function but declared for the wrong EVENTS (a `BEFORE UPDATE`-only
       // append-only trigger leaves DELETE open), would otherwise pass this verification and let the
       // repair commit while its own before-image stayed erasable.
-      const seal = EXPECTED_TRIGGER_SEAL[name]!;
       if (row.fn !== seal.fn) { bad.push(`${name}=bound to ${row.fn}, expected ${seal.fn}`); continue; }
       const bits = Number(row.tgtype);
       if (bits !== seal.tgtype) {

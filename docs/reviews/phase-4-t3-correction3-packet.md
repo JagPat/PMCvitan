@@ -514,6 +514,47 @@ but the intercepted decisions JSON payload read `null`, a response-capture race 
 round does not touch; clean re-run 31/31) and `test:e2e:api:outbox` **25 passed / 6
 sender-mode-skipped**, EXIT 0, clean on the first run.
 
+## Round 3k — the current-head Codex review of `a43b875` (2 findings)
+
+Two findings (both P1), each reproduced RED at `a43b875` before the fix. Both are about the same
+gap from different sides: the body-aware seal DETECTOR has existed since round 3i, but two of the
+paths that should ASK it did not.
+
+| # | finding (P) | fix |
+|---|---|---|
+| 1 | on a ledger-backed upgrade, a hollowed prerequisite trigger body (the reviewer's example: a no-op `phase4_t3_skill_substitution_append_only` — right name, right binding, right tgtype, enforcing NOTHING) sailed through: the `20270225000000` prerequisite block never checked `prosrc`, and the ORDINARY `migrate.sh` success path exited 0 straight off `prisma migrate deploy` without ever running the body-aware `seals` verifier — the migration's own comment even claimed `t3c seals` "gates every migrate.sh path", which the ordinary path falsified (P1) | BOTH gates now ask: `scripts/migrate.sh` runs the full compiled `t3c seals` verification AFTER every successful deploy on the ordinary path (the only acceptable post-deploy answer is 0/sealed; anything else fails CLOSED naming the objects), and the `20270225000000` prerequisite block gains layer-aware `md5(prosrc)` verification for ALL NINE prerequisite triggers — each function accepting EXACTLY the bodies its service prerequisite seal accepts (the two functions this migration itself re-asserts/heals additionally accept their stale-but-healed layers; `phase4_t3c_allocation_head_live` accepts its own 20270225 body so a RETRY is not refused; a body matching NO accepted layer is a named abort, distinguished from a missing/misbound trigger). The md5 literals are pinned to the machine-extracted canonical bodies by the new `R3k-A2` test — migration and service verify ONE truth and cannot drift (`R3k-A`: the hollowed body is refused by the migration replay with the named diagnostic, and the canonical body replays clean; runner proof Case 9: the REAL `migrate.sh` refuses the ordinary deploy over the hollowed body BY NAME and deploys cleanly once the canonical body — restored byte-exactly from the compiled generated module — is back) |
+| 2 | `assertTriggersEnabled` queried `pg_trigger` by NAME alone and keyed its Map by name — trigger names are only unique per TABLE in PostgreSQL, so globally duplicated names collapsed to one arbitrary row: a fully canonical `LabourAttendance_append_only` riding an UNRELATED table could stand in for the attendance table's own trigger, and the repair committed after "restoring" a no-op or nothing at all (P1) | the verification query joins `pg_class` (+ `pg_namespace`, current schema only) and the answer is keyed by `table.name`; each seal is verified at ITS OWN `seal.table`, and a missing trigger is reported as `… on "<table>"=MISSING`. The diagnostics-side `T3C_TRIGGER_SEAL_SQL` and the repair's `evidenceSealGuard` already bound `tgrelid` — this was the one name-global site (`R3k-B`: with the evidence register provisioned by a REAL repair, the real attendance trigger DROPPED, and a canonical-everything decoy on `t3k_decoy`, the fixed verification throws naming the missing attendance trigger — the old code resolved over the decoy; and with the real trigger canonical the same decoy neither masks nor breaks anything) |
+
+**Honest notes.** (1) The round-3i/3j detector was never wrong — `correctionSeals()` refused the
+hollowed body all along (asserted inside `R3k-A`); what round 3k adds are the two GATES that ask
+it: the ordinary `migrate.sh` success path and the migration's own in-file prerequisite. The
+migration's comment claiming `t3c seals` gated "every migrate.sh path" was false until now and has
+been rewritten to say exactly what runs where. (2) The `R3k-B` RED shape is deliberate: a REAL
+repair provisions the evidence register first, because without it the OLD code also threw — for
+the unrelated reason that the evidence seals were missing — and the probe would have proven
+nothing about the name-collapse hole. (3) The migration md5 pins mirror the SERVICE's accepted
+sets exactly — including that `phase4_t3_allocation_within_commitment` accepts ONLY its 20270215
+body (its 20270210 body takes no commitment row lock and NOTHING re-asserts it later, so it is
+unhealable drift → refusal), while the attendance and head-live functions accept their
+stale-but-healable layers per round 3j's attribution rules.
+
+**Gates (round 3k):** reproduce-first — `R3k-A` (the 20270225 replay accepted the hollowed body),
+`R3k-A2` (no md5 pins existed) and `R3k-B` (the name-keyed verification resolved over the decoy)
+all RED at the `a43b875` runtime, GREEN after; the `migrate.sh` half demonstrated directly — the
+`a43b875` runner exited **0** over the hollowed `phase4_t3_skill_substitution_append_only` on a
+fully-migrated scratch database, the fixed runner exits **1** naming
+`ApprovedSkillSubstitution_append_only`, and exits **0** once the canonical body is restored
+byte-exactly. The focused `phase4-t3-correction3.test.ts` **59/59**. `pnpm check` EXIT 0 (web
+432/432, API **671/671**, `check:automation` included). Full integration suite on a pristine
+migrated DB: **69 files / 649 tests**, EXIT 0. `upgrade-proof.sh` PASSED, EXIT 0 (the legacy
+fixture upgrades cleanly through the new md5-verified prerequisite block — the pins are precise,
+not merely strict). `phase4-t3-correction3-production-runner-proof.sh` PASSED — **77 assertions**
+(73 prior + the new Case 9 ordinary-path refusal/restore cycle), EXIT 0.
+`test:e2e:api:allmodules` **31/31**, clean on the first run. `test:e2e:api:outbox` **25 passed /
+6 sender-mode-skipped** (one first-run failure in the documented timing-sensitive `pillar-chain`
+change-loop step — a browser visibility timeout on the re-approval text, no labour surface;
+clean re-run).
+
 The PR is held per the directive: pushed normally, threads left for Codex, no self-promotion of
 draft state, no self-merge. On merge, `docs/STATUS.md` moves Task 3 to `merged`; only then may the
 runner start Task 4. **Task 4 remains blocked.**

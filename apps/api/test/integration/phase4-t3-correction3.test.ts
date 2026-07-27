@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
@@ -11,7 +12,7 @@ import { LabourService } from '../../src/labour/labour.service';
 import { LabourCapacityService } from '../../src/labour/labour-capacity.service';
 import { CapabilitiesService, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
 import { T3CRepairService, RepairAbortedError } from '../../src/labour/t3c/t3c-repair.service';
-import { t3cRenderTs, T3C_INVALID_LEGACY_PREFIX } from '../../src/labour/t3c/t3c-diagnostics';
+import { t3cRenderTs, T3C_INVALID_LEGACY_PREFIX, T3C_PREREQUISITE_TRIGGER_SEALS } from '../../src/labour/t3c/t3c-diagnostics';
 import type { AuthUser } from '../../src/common/auth';
 
 /**
@@ -2563,6 +2564,118 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
       seed,
     );
     expect(Number(evidence[0]!.n)).toBe(1);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
+    expect((await repairs.correctionSeals()).installed).toBe(true);
+  });
+
+  // ── ROUND 3k — the two Codex findings on `a43b875` ─────────────────────────────────────────────
+
+  it('R3k-A: the 20270225 prerequisite refuses a prerequisite trigger whose FUNCTION BODY is not a deployed layer', async () => {
+    // RED at a43b875: the migration's prerequisite loop asserted name + table + function + exact
+    // tgtype but never `prosrc`, so a direct `prisma migrate deploy` accepted a hollowed
+    // `phase4_t3_skill_substitution_append_only` — and the ordinary `migrate.sh` success path never
+    // ran the body-aware `seals` verifier either, so a ledger-backed upgrade reported success while
+    // an approved skill substitution (the evidence behind a qualification claim) stayed rewritable.
+    // The DETECTOR existed since round 3i (`correctionSeals` refuses the body); what was missing
+    // were the two GATES that ask it.
+    const fn = 'phase4_t3_skill_substitution_append_only';
+    const L210 = '20270210000000_phase4_t3_time_capacity';
+    try {
+      await installFnBody(fn, '\nBEGIN\n  RETURN NEW;\nEND;\n'); // right name, right tgtype, enforces NOTHING
+      // the round-3i detector already refuses it…
+      const seals = await repairs.correctionSeals();
+      expect(seals.prerequisitesMissing).toContain('ApprovedSkillSubstitution_append_only');
+      // …and now the MIGRATION refuses it too (RED: this replay exited 0 over the hollow body).
+      const run = runMigration();
+      expect(run.code).not.toBe(0);
+      expect(run.output).toMatch(/prerequisite trigger .* function body|P4T3C3 ABORT/);
+    } finally {
+      await installFnBody(fn, migrationFnBody(L210, fn));
+    }
+    // Precision: the canonical body replays clean, and the seals answer recovers.
+    expect(runMigration().code).toBe(0);
+    expect((await repairs.correctionSeals()).installed).toBe(true);
+  });
+
+  it('R3k-A2: the md5s the migration pins ARE the prerequisite seals\' canonical bodies (no drift)', () => {
+    // The migration cannot import the generated module, so it pins md5(prosrc) literals. This pin
+    // holds the two enforcement sites to ONE truth: for each of the nine prerequisite triggers, the
+    // migration's accepted-md5 set must equal the md5s of exactly the bodies the service's
+    // prerequisite seal accepts (`T3C_PREREQUISITE_TRIGGER_SEALS[..].fnBodies` — themselves the
+    // machine-extracted canonical layer bodies). A body the service refuses must not deploy, and a
+    // body the service accepts (a stale-but-healable layer, or head_live's own 20270225 retry
+    // state) must not be refused by the migration.
+    const sql = readFileSync(
+      join(__dirname, '..', '..', 'prisma', 'migrations', '20270225000000_phase4_t3_correction3', 'migration.sql'),
+      'utf8',
+    );
+    const md5 = (s: string) => createHash('md5').update(s).digest('hex');
+    const rows = [...sql.matchAll(
+      /\('([A-Za-z_]+)',\s*'([A-Za-z]+)',\s*'([a-z0-9_]+)',\s*(\d+),\s*ARRAY\[([^\]]+)\]\)/g,
+    )];
+    const pinned = new Map(rows.map((m) => [m[3]!, { table: m[2]!, tgtype: Number(m[4]!), md5s: m[5]!.split(',').map((h) => h.trim().replace(/'/g, '')) }]));
+    expect(T3C_PREREQUISITE_TRIGGER_SEALS.length).toBe(9);
+    for (const seal of T3C_PREREQUISITE_TRIGGER_SEALS) {
+      const row = pinned.get(seal.fn);
+      expect(row, `migration pins md5s for ${seal.fn}`).toBeDefined();
+      expect(row!.table, `table for ${seal.fn}`).toBe(seal.table);
+      expect(row!.tgtype, `tgtype for ${seal.fn}`).toBe(seal.tgtype);
+      expect([...row!.md5s].sort(), `md5 set for ${seal.fn}`).toEqual(
+        seal.fnBodies.map((b) => md5(b)).sort(),
+      );
+    }
+  });
+
+  it('R3k-B: repair trigger verification is bound to the sealed TABLE — a same-named canonical decoy on another table proves nothing', async () => {
+    // RED at a43b875: `assertTriggersEnabled` queried `pg_trigger` by NAME alone and keyed its
+    // answer by name, so globally duplicated trigger names collapsed to one arbitrary row. The
+    // deterministic shape of the hole: the REAL attendance trigger is DROPPED and a fully canonical
+    // decoy — same name, same function, same exact tgtype 27, enabled — rides an unrelated table.
+    // The name-keyed verification found the decoy and reported the seal enforced while
+    // "LabourAttendance" had NO trigger at all.
+    //
+    // A REAL repair runs first so the evidence register and its own three seals exist — otherwise
+    // the old code would reject too, but for the unrelated reason that the evidence triggers are
+    // missing, and the probe would prove nothing about the name-collapse hole.
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2027-01-10');
+    await repairs.repair({
+      operator: 'ops@vitan.in',
+      reason: 'provision the evidence register for the table-binding probe',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+    const probe = repairs as unknown as { assertTriggersEnabled(tx: unknown): Promise<string[]> };
+    try {
+      await t.prisma.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS "t3k_decoy" ("id" TEXT PRIMARY KEY)`);
+      await t.prisma.$executeRawUnsafe(
+        `CREATE TRIGGER "LabourAttendance_append_only" BEFORE UPDATE OR DELETE ON "t3k_decoy"
+           FOR EACH ROW EXECUTE FUNCTION phase4_t3_attendance_append_only()`,
+      );
+      await t.prisma.$executeRawUnsafe(`DROP TRIGGER "LabourAttendance_append_only" ON "LabourAttendance"`);
+      await expect(probe.assertTriggersEnabled(t.prisma)).rejects.toThrow(
+        /LabourAttendance_append_only on "LabourAttendance"=MISSING/,
+      );
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "t3k_decoy" CASCADE`);
+      await t.prisma.$executeRawUnsafe(
+        `CREATE TRIGGER "LabourAttendance_append_only" BEFORE UPDATE OR DELETE ON "LabourAttendance"
+           FOR EACH ROW EXECUTE FUNCTION phase4_t3_attendance_append_only()`,
+      );
+    }
+    // Precision: with the REAL trigger canonical, a coincidental same-named trigger on an
+    // unrelated table neither masks the sealed table nor breaks its verification.
+    try {
+      await t.prisma.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS "t3k_decoy" ("id" TEXT PRIMARY KEY)`);
+      await t.prisma.$executeRawUnsafe(
+        `CREATE TRIGGER "LabourAttendance_append_only" BEFORE UPDATE OR DELETE ON "t3k_decoy"
+           FOR EACH ROW EXECUTE FUNCTION phase4_t3_attendance_append_only()`,
+      );
+      await expect(probe.assertTriggersEnabled(t.prisma)).resolves.toBeTruthy();
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "t3k_decoy" CASCADE`);
+    }
     await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
     expect((await repairs.correctionSeals()).installed).toBe(true);
   });
