@@ -69,10 +69,12 @@ so directly rather than framing it as a suggestion.
 
 - This project runs as an autonomous loop. Do not block on human sign-off, and do
   not tell the author to wait for approval — no one is standing by to give it.
-- Review still happens BEFORE merge. Every PR starts as a draft; Codex reviews
-  every pushed head, and Claude marks it ready only after the Codex review on the
-  exact current head contains no blocking finding. A human approval is not a
-  substitute for this independent review.
+- Review still happens BEFORE merge. Every PR starts as a draft with Claude Code
+  web Auto-fix enabled. After the five required CI jobs pass, the trusted GitHub
+  orchestrator marks the PR ready to trigger Codex on the exact current head.
+- A human approval is not a substitute for the required `codex-current-head`
+  commit status. Every push creates a new head and therefore invalidates the old
+  status. Missing, stale, or timed-out review evidence fails closed.
 - Expect reproduce-first evidence: a failing (RED) probe at the base commit before
   the fix was written. Flag fixes shipped without a reproduction.
 - Scope discipline is reviewable. A PR that mixes an unrelated refactor into a
@@ -100,10 +102,13 @@ so directly rather than framing it as a suggestion.
 
 ## Review → fix handoff
 
-- Codex reviews the PR and posts a verdict plus a concrete next instruction. Codex
-  does not fix its own findings; that keeps the reviewer independent of the author.
-- Fixes are made by Claude Code, triggered automatically from the review. No human
-  tags anyone, and no human approval is involved at any point in this loop.
-- Applying a CHANGES-NEEDED verdict is routine. Claude keeps the PR draft, fixes
-  forward, and waits for Codex to review the new head. The runner continues to the
-  next task only after the clean-reviewed PR merges and `docs/STATUS.md` advances.
+- Codex reviews only after the orchestrator moves the CI-green draft to ready.
+  Codex does not fix its own findings; that keeps the reviewer independent of the
+  author.
+- A current-head finding makes `codex-current-head` fail and returns the PR to
+  draft. Claude Code web Auto-fix, which must remain subscribed until merge or
+  close, reads the finding, reproduces it, fixes forward, and pushes a new head.
+- A fresh current-head clean signal makes `codex-current-head` succeed and queues
+  squash auto-merge. No human tags anyone and no human technical approval is
+  involved. The runner continues only after the reviewed PR merges and
+  `docs/STATUS.md` advances.

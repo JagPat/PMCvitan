@@ -13,10 +13,10 @@ narrative and may lag behind reality.
 phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
 task: 3
-task_state: correction_required
+task_state: in_review
 work_item: correction_round_3
 reviewed_merge: 2a6112b
-open_pr: null
+open_pr: 230
 next_task: 4
 blocking_directive: docs/reviews/phase-4-t3-correction3-directive.md
 updated: 2026-07-27
@@ -31,7 +31,7 @@ Review Stops" section of the phase plan.
 |---|---|---|
 | 1 | Labour capability + type-routed demand + trusted workforce identity (§B/§D/§H) | merged |
 | 2 | Supplier reuse + labour commitment documents (§F) | merged |
-| 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | correction_required — round 3 after PR #226 post-merge review |
+| 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | in_review — correction round 3 is open as PR #230 |
 | 4 | Canonical labour coverage + Team gate + combined readiness + seventh projection + LEAF module graph (§A/§G) | not_started |
 | 5 | Daily-Log reconciliation (§E) + planned-vs-actual + productivity (§I) | not_started |
 | 6 | Frontend surfaces + pilot acceptance chain + consolidated Phase-4 packet (§J) | not_started |
@@ -51,11 +51,10 @@ Review Stops" section of the phase plan.
 
 - Work one task at a time. A correction keeps its parent task open. Do not open a
   PR for task N+1 while task N is not `merged`.
-- **Open every PR as a draft.** Mark it ready only after Codex has reviewed the
-  latest commit and no unaddressed findings remain. This is load-bearing: branch
-  protection gates on CI only, and Codex publishes no status check and cannot
-  approve, so a non-draft PR can merge before Codex has finished reading it. The
-  draft flag is the only thing keeping review ahead of merge.
+- **Open every PR as a draft with Claude Code web Auto-fix enabled.** The trusted
+  GitHub workflow marks an exact CI-green head ready to trigger Codex. A finding
+  returns it to draft; only the required exact-SHA `codex-current-head` status may
+  queue auto-merge. A human ready/merge action is not review clearance.
 - After a clean-reviewed merge: set that task to `merged`, set the next task to
   `in_progress`, update `open_pr` and `updated`. If post-merge review finds a
   defect, return the parent task to `in_progress` and name its blocking directive.

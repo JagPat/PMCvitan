@@ -1,5 +1,10 @@
 # Autonomous Review Loop Design
 
+> **Superseded protocol:** the repository-only handoff in this document was the
+> starting point for PR #229. The executable subscription-backed state machine in
+> `2026-07-27-subscription-autonomous-review-loop-design.md` now governs review
+> triggering and merge safety.
+
 ## Objective
 
 PMC Vitan must continue its phase plan without requiring the owner's laptop or technical approval. Claude Code authors and corrects changes; Codex Cloud remains the independent reviewer. GitHub is the durable control plane and Coolify deploys only merged `main`.
@@ -16,11 +21,11 @@ PMC Vitan must continue its phase plan without requiring the owner's laptop or t
 ## Roles And Flow
 
 1. A cloud runner reads `docs/STATUS.md` and starts only the current work item.
-2. Claude Code implements on `claude/**` and opens a draft PR.
-3. Codex Cloud reviews every pushed head while the PR remains draft.
-4. Claude fixes blocking findings reproduce-first and pushes a new head.
-5. Claude marks the PR ready only after Codex reports no blocking finding on that exact head.
-6. Required CI passes, GitHub queues the squash merge, and Coolify deploys `main`.
+2. Claude Code implements on `claude/**`, opens a draft PR, and enables web Auto-fix.
+3. Required CI passes; trusted GitHub automation marks the exact head ready to trigger Codex.
+4. A finding returns the PR to draft; Claude fixes it reproduce-first and pushes a new head.
+5. A fresh clean Codex signal succeeds the exact-head `codex-current-head` gate.
+6. GitHub queues the squash merge, and Coolify deploys `main`.
 7. The runner advances `docs/STATUS.md` and starts the next task.
 
 No human approval is required. Review still happens before merge. Codex never implements its own findings, preserving author/reviewer independence.
@@ -34,8 +39,8 @@ No Coolify token, SMTP password, database password, chat transcript, or local at
 ## Failure Handling
 
 - A draft PR cannot merge.
-- Auto-merge must find a Codex review tied to the current head SHA.
-- Claude must not mark a PR ready when that review contains a blocking finding.
+- Auto-merge requires the successful `codex-current-head` status on the current SHA.
+- Only trusted GitHub automation promotes a CI-green draft to trigger Codex.
 - Migration corrections are additive; deployed migration bytes never change.
 - If CI, review, or deployment fails, the current task remains current and the runner must not start the next task.
 - If `docs/STATUS.md` conflicts with narrative history, `docs/STATUS.md` wins and the conflict is corrected in the active PR.
