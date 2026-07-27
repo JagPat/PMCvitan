@@ -97,6 +97,15 @@ test('rechecks the live head before terminal PR mutations', async () => {
   assert.match(gate, /resolveCodexThreads/);
 });
 
+test('reclassifies Codex evidence immediately before publishing success', async () => {
+  const implementation = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(implementation, /reclassifyCurrentCodexEvidence/);
+  assert.match(implementation, /verifiedResult\.state !== 'clear'/);
+});
+
 test('CI runs once per pull-request head', async () => {
   const ci = await readFile(ciPath, 'utf8');
 

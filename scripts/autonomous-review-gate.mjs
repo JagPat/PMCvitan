@@ -377,6 +377,29 @@ async function reviewAttempt(
   }
 }
 
+async function reclassifyCurrentCodexEvidence(
+  client,
+  number,
+  expectedHead,
+  reviewNotBefore,
+) {
+  const [reviews, comments, reactions] = await Promise.all([
+    client.reviews(number),
+    client.reviewComments(number),
+    client.reactions(number),
+  ]);
+  const now = new Date();
+  return classifyCodexState({
+    expectedHead,
+    readyAt: reviewNotBefore,
+    deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
+    now: now.toISOString(),
+    reviews,
+    comments,
+    reactions,
+  });
+}
+
 async function eventContext() {
   const eventName = requiredEnvironment('GITHUB_EVENT_NAME');
   const event = JSON.parse(
@@ -533,6 +556,41 @@ export async function run() {
         pullRequest.number,
         expectedHead,
       );
+      const verifiedResult = await reclassifyCurrentCodexEvidence(
+        client,
+        pullRequest.number,
+        expectedHead,
+        reviewNotBefore,
+      );
+      if (verifiedResult.state !== 'clear') {
+        pullRequest = await setDraftForCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+          true,
+        );
+        if (!pullRequest) return;
+        const detail = verifiedResult.state === 'changes_required'
+          ? verifiedResult.detail
+          : 'Codex evidence changed during final verification';
+        await client.setStatus(
+          expectedHead,
+          'failure',
+          detail,
+          pullRequest.html_url,
+        );
+        await client.updateStickyComment(
+          pullRequest.number,
+          statusBody({
+            state: 'changes_required',
+            head: expectedHead,
+            detail,
+            attempt,
+            next: 'Claude Auto-fix handles the latest review evidence and pushes a new head.',
+          }),
+        );
+        throw new Error(detail);
+      }
       await client.setStatus(
         expectedHead,
         'success',
