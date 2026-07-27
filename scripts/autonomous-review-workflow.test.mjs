@@ -208,6 +208,7 @@ test('review evidence cannot cancel the active review-start run', async () => {
     workflow,
     /startsWith\(github\.event_name, 'pull_request_review'\) && github\.run_id \|\| 'start'/,
   );
+  assert.match(workflow, /cancel-in-progress:\s*false/);
 });
 
 test('terminal failures restore draft and CI failures run before recovery', async () => {

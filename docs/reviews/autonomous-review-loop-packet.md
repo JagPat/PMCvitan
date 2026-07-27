@@ -101,7 +101,10 @@ before presentation mutations, and draft the PR. They cannot call `reviewAttempt
 or mark a PR ready. This preserves delayed-finding safety without creating another
 review request. Each result-only run uses its own `github.run_id` concurrency
 suffix, so rejected human events and accepted Codex evidence cannot cancel the
-single per-PR review-start run.
+single per-PR review-start run. Review-start runs are serialized rather than
+cancelled: a pushed head supersedes the active poll on its next bounded check,
+while a same-head CI rerun waits and then consumes the terminal status instead of
+performing another draft-to-ready transition.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with
