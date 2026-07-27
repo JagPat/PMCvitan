@@ -27,7 +27,7 @@ This repository is designed to progress without the owner's laptop or technical 
 1. The runner selects only the work item in `docs/STATUS.md`.
 2. Claude starts from latest `origin/main`, records the base SHA, opens a draft PR, enables web Auto-fix, and remains subscribed.
 3. GitHub requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. When all five pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
-4. Marking the PR ready triggers Codex. The workflow accepts only review evidence from `chatgpt-codex-connector[bot]` for the exact current SHA and current review cycle.
+4. Marking the PR ready triggers Codex. The same exact-head workflow run polls that one invocation to its terminal result and accepts only evidence from `chatgpt-codex-connector[bot]` for the current SHA and review cycle. Review and review-comment webhooks never start or mutate the merge workflow.
 5. A current-head finding fails `codex-current-head` and returns the PR to draft. Claude Auto-fix reproduces the finding, fixes forward, and pushes a new head; that push invalidates every prior clearance.
 6. A fresh current-head clean Codex signal succeeds `codex-current-head` and queues squash auto-merge. Missing CI, stale evidence, timeout, or inactive authoring all fail closed.
 7. Coolify deploys `main`. The runner updates `docs/STATUS.md` and begins the next work item only after merge.
@@ -71,6 +71,9 @@ gh workflow run auto-merge.yml --repo JagPat/PMCvitan \
 
 Both inputs are required. The workflow refuses a stale SHA, and the dispatch
 shares the exact head's concurrency lane so it cannot duplicate an active cycle.
+Ordinary review-result webhooks are intentionally not orchestrator triggers. The
+Codex App's finding comments still wake the subscription-backed Claude Auto-fix
+session directly; GitHub Actions does not need an AI key or a second result writer.
 
 ## GitHub Enforcement
 

@@ -54,26 +54,21 @@ test('keeps the Codex trigger retry bounded', () => {
   assert.equal(MAX_REVIEW_ATTEMPTS, 2);
 });
 
-test('result-only events accept only exact-head Codex evidence', () => {
+test('only CI completion or exact-head dispatch can own a review cycle', () => {
   assert.equal(typeof reviewGate.contextForEvent, 'function');
   const head = 'a'.repeat(40);
   const pullRequest = { number: 230, head: { sha: head } };
   const codex = { login: 'chatgpt-codex-connector[bot]' };
 
-  assert.deepEqual(
+  assert.equal(
     reviewGate.contextForEvent('pull_request_review', {
       action: 'submitted',
       pull_request: pullRequest,
       review: { user: codex, commit_id: head },
     }),
-    {
-      number: 230,
-      expectedHead: head,
-      trigger: 'evidence',
-      evidenceDetail: 'Codex submitted a current-head review',
-    },
+    null,
   );
-  assert.deepEqual(
+  assert.equal(
     reviewGate.contextForEvent('pull_request_review_comment', {
       action: 'created',
       pull_request: pullRequest,
@@ -83,12 +78,7 @@ test('result-only events accept only exact-head Codex evidence', () => {
         original_commit_id: head,
       },
     }),
-    {
-      number: 230,
-      expectedHead: head,
-      trigger: 'evidence',
-      evidenceDetail: 'Codex submitted a current-head finding',
-    },
+    null,
   );
   assert.equal(
     reviewGate.contextForEvent('pull_request_review', {
@@ -118,6 +108,22 @@ test('result-only events accept only exact-head Codex evidence', () => {
       expectedHead: head,
       ciConclusion: null,
       trigger: 'dispatch',
+    },
+  );
+  assert.deepEqual(
+    reviewGate.contextForEvent('workflow_run', {
+      workflow_run: {
+        event: 'pull_request',
+        pull_requests: [{ number: 230 }],
+        head_sha: head,
+        conclusion: 'success',
+      },
+    }),
+    {
+      number: 230,
+      expectedHead: head,
+      ciConclusion: 'success',
+      trigger: 'ci',
     },
   );
 });
@@ -272,7 +278,7 @@ test('terminal recovery scopes its failure latch to the latest review cycle', ()
   );
 });
 
-test('workflow separates review-start events from result-only evidence events', async () => {
+test('workflow gives one exact-head run sole ownership of review and merge', async () => {
   const [workflow, gate] = await Promise.all([
     readFile(workflowPath, 'utf8'),
     readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8'),
@@ -281,20 +287,15 @@ test('workflow separates review-start events from result-only evidence events', 
   assert.match(workflow, /workflow_run:/);
   assert.match(workflow, /workflows:\s*\[CI\]/);
   assert.match(workflow, /workflow_dispatch:/);
-  assert.match(workflow, /pull_request_review:\s*\n\s*types:\s*\[submitted\]/);
-  assert.match(workflow, /pull_request_review_comment:\s*\n\s*types:\s*\[created\]/);
-  assert.match(gate, /eventName === 'pull_request_review'/);
-  assert.match(gate, /eventName === 'pull_request_review_comment'/);
-  assert.match(gate, /trigger:\s*'evidence'/);
-  assert.match(gate, /handleCodexEvidence\(/);
-  const evidenceHandler = gate.slice(
-    gate.indexOf('async function handleCodexEvidence'),
-    gate.indexOf('async function waitForRequiredChecks'),
-  );
-  assert.doesNotMatch(evidenceHandler, /reviewAttempt\(/);
-  assert.doesNotMatch(evidenceHandler, /setDraftForCurrentHead[\s\S]*false/);
+  assert.doesNotMatch(workflow, /pull_request_review:/);
+  assert.doesNotMatch(workflow, /pull_request_review_comment:/);
+  assert.doesNotMatch(gate, /eventName === 'pull_request_review'/);
+  assert.doesNotMatch(gate, /eventName === 'pull_request_review_comment'/);
+  assert.doesNotMatch(gate, /trigger:\s*'evidence'/);
+  assert.doesNotMatch(gate, /handleCodexEvidence/);
+  assert.doesNotMatch(gate, /admitAutoMerge/);
+  assert.match(gate, /reviewAttempt\(/);
   assert.match(gate, /context\.trigger === 'ci'/);
-  assert.match(gate, /client\.latestStatus\(/);
   assert.match(gate, /ensureTerminalReviewState\(/);
   assert.match(workflow, /statuses:\s*write/);
   assert.match(workflow, /pull-requests:\s*write/);
@@ -306,7 +307,7 @@ test('workflow separates review-start events from result-only evidence events', 
   assert.doesNotMatch(workflow, /pull_request_target:/);
 });
 
-test('terminal success checks the failure latch before auto-merge', async () => {
+test('one polled Codex invocation owns terminal success and auto-merge', async () => {
   const gate = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
     'utf8',
@@ -316,45 +317,24 @@ test('terminal success checks the failure latch before auto-merge', async () => 
     gate.indexOf("if (result.state === 'clear')"),
     gate.indexOf('if (attempt < MAX_REVIEW_ATTEMPTS)'),
   );
-  const publishedSuccess = clearBranch.indexOf("'success'");
-  const settledEvidence = clearBranch.lastIndexOf(
+  const finalEvidence = clearBranch.lastIndexOf(
     'reclassifyCurrentCodexEvidence',
   );
-  const settledStatuses = clearBranch.lastIndexOf('client.statuses');
-  const failureLatch = clearBranch.lastIndexOf(
-    'hasTerminalReviewFailureSince',
-  );
-  const admission = clearBranch.lastIndexOf('admitAutoMerge');
-  assert.ok(publishedSuccess >= 0);
-  assert.ok(settledEvidence > publishedSuccess);
-  assert.ok(settledStatuses > settledEvidence);
-  assert.ok(failureLatch > settledStatuses);
-  assert.ok(admission > failureLatch);
-
-  const admissionHelper = gate.slice(
-    gate.indexOf('export async function admitAutoMerge'),
-    gate.indexOf('async function waitForRequiredChecks'),
-  );
-  assert.equal(
-    [...admissionHelper.matchAll(/client\.statuses/g)].length,
-    2,
-  );
-  assert.ok(
-    admissionHelper.lastIndexOf('hasTerminalReviewFailureSince')
-      < admissionHelper.indexOf('enableAutoMerge'),
-  );
+  const publishedSuccess = clearBranch.lastIndexOf("'success'");
+  const autoMerge = clearBranch.lastIndexOf('enableAutoMerge');
+  assert.ok(finalEvidence >= 0);
+  assert.ok(publishedSuccess > finalEvidence);
+  assert.ok(autoMerge > publishedSuccess);
+  assert.doesNotMatch(clearBranch, /TERMINAL_SETTLE_MS/);
+  assert.doesNotMatch(clearBranch, /admitAutoMerge/);
+  assert.doesNotMatch(clearBranch, /handleCodexEvidence/);
 });
 
-test('review evidence runs independently without cancelling review starts', async () => {
+test('review cycles are serialized by pull request and exact head', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
-  assert.match(
-    workflow,
-    /startsWith\(github\.event_name, 'pull_request_review'\) && github\.run_id/,
-  );
-  assert.match(
-    workflow,
-    /github\.event\.workflow_run\.head_sha/,
-  );
+  assert.match(workflow, /github\.event\.workflow_run\.head_sha/);
+  assert.match(workflow, /inputs\.head_sha/);
+  assert.doesNotMatch(workflow, /github\.event\.pull_request/);
   assert.match(workflow, /cancel-in-progress:\s*false/);
 });
 
@@ -372,68 +352,15 @@ test('failure-latch status history is fully paginated', async () => {
   assert.match(statusesMethod, /statuses\.push\(\.\.\.batch\)/);
 });
 
-test('a concurrent evidence handler wins the terminal admission barrier', async () => {
-  assert.equal(typeof reviewGate.admitAutoMerge, 'function');
-  assert.equal(typeof reviewGate.handleCodexEvidence, 'function');
-  const expectedHead = 'a'.repeat(40);
-  const pullRequest = {
-    number: 236,
-    state: 'open',
-    draft: false,
-    head: { sha: expectedHead },
-    html_url: 'https://github.test/pr/236',
-  };
-  const statuses = [];
-  let autoMergeEnabled = false;
-  let releaseBarrier;
-  let barrierReached;
-  const reached = new Promise((resolve) => { barrierReached = resolve; });
-  const release = new Promise((resolve) => { releaseBarrier = resolve; });
-  const client = {
-    pullRequest: async () => ({ ...pullRequest }),
-    setDraft: async (_pullRequest, draft) => {
-      pullRequest.draft = draft;
-      return { ...pullRequest };
-    },
-    setStatus: async (_head, state, description) => {
-      statuses.unshift({
-        context: 'codex-current-head',
-        state,
-        description,
-        created_at: new Date().toISOString(),
-      });
-    },
-    statuses: async () => statuses.map((status) => ({ ...status })),
-    enableAutoMerge: async () => { autoMergeEnabled = true; },
-    updateStickyComment: async () => {},
-  };
-
-  const admission = reviewGate.admitAutoMerge(
-    client,
-    pullRequest,
-    expectedHead,
-    '2026-07-27T00:00:00Z',
-    async () => {
-      barrierReached();
-      await release;
-    },
+test('result webhooks cannot publish review state or queue auto-merge', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
   );
-  await reached;
-  await reviewGate.handleCodexEvidence(
-    client,
-    pullRequest,
-    expectedHead,
-    'Codex submitted a current-head finding',
-  );
-  releaseBarrier();
-
-  assert.deepEqual(await admission, {
-    state: 'failure',
-    detail: 'A current-head Codex finding was published during merge admission',
-  });
-  assert.equal(pullRequest.draft, true);
-  assert.equal(autoMergeEnabled, false);
-  assert.equal(statuses[0].state, 'failure');
+  assert.equal(reviewGate.handleCodexEvidence, undefined);
+  assert.equal(reviewGate.admitAutoMerge, undefined);
+  assert.doesNotMatch(gate, /handleCodexEvidence/);
+  assert.doesNotMatch(gate, /admitAutoMerge/);
 });
 
 test('terminal failures restore draft and CI failures run before recovery', async () => {
@@ -443,7 +370,7 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
   );
   const terminalHelper = gate.slice(
     gate.indexOf('async function ensureTerminalReviewState'),
-    gate.indexOf('async function handleCodexEvidence'),
+    gate.indexOf('async function waitForRequiredChecks'),
   );
   assert.match(terminalHelper, /status\.state === 'success'/);
   assert.match(terminalHelper, /reviewCycleStartedAt/);

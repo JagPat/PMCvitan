@@ -44,9 +44,10 @@ packet does not embed a self-referential final SHA.
   both builds clean).
 - Reproduce-first same-head contracts failed before each correction: review/comment
   re-entry, CI-rerun terminal-state loss, legacy review-only failure, late evidence,
-  head-scoped/paginated failure-latch recovery, and the barrier-driven concurrent
-  finding probe and executable exact-head recovery runbook. The final focused
-  battery passed 34/34.
+  head-scoped/paginated failure-latch recovery, and executable exact-head recovery.
+  The final architectural regression proves that review-result webhooks cannot
+  enter the merge orchestrator or publish its status. The focused battery passed
+  34/34.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
 - Final `pnpm check` after protocol alignment passed: automation 34/34, web
   432/432 plus production build, and API 659/659 plus production build.
@@ -80,8 +81,10 @@ packet does not embed a self-referential final SHA.
 - GitHub cannot manufacture a Claude Code web session. Auto-fix must be enabled
   from the Claude subscription before unattended operation begins.
 - Codex's clean result is represented by the installed GitHub integration's fresh
-  `+1` reaction. The classifier pins the exact bot actor and review-cycle time;
-  any integration behavior change fails closed and requires a classifier update.
+  `+1` reaction. For one review invocation, finding-bearing review evidence and
+  that clean reaction are mutually exclusive terminal outcomes. The classifier
+  pins the exact bot actor and review-cycle time; an integration contract change
+  requires a classifier and protocol review.
 - The workflow retries a timed-out review once. Continued provider unavailability
   leaves the PR draft and blocked for a later manual dispatch; it never bypasses
   independent review.
@@ -95,19 +98,22 @@ review. A Codex finding therefore triggered another review of the unchanged SHA;
 that review triggered another workflow run, producing a live same-head loop on
 PR #230.
 
-The correction separates **review-start** from **review-result** behavior. Only CI
-completion for a head without a terminal Codex status, or an explicit operator
-dispatch, may initiate draft-to-ready. `pull_request_review: submitted` and
-`pull_request_review_comment: created` remain as result-only listeners: they
-accept only the Codex GitHub App and the exact current head, fail branch protection
-before presentation mutations, and draft the PR. They cannot call `reviewAttempt`
-or mark a PR ready. This preserves delayed-finding safety without creating another
-review request. Result handlers use independent non-cancelling lanes, so a finding
-is never queued behind the review-start poll. Review-start runs remain serialized:
-their lane includes the exact head SHA, so a stale-head rerun cannot displace the
-new head's pending start. A pushed head supersedes the old poll on its next
-bounded check, while a same-head CI rerun waits and then consumes the terminal
-status instead of performing another draft-to-ready transition.
+The final correction gives **one exact-head run sole ownership of review and
+merge**. Only CI completion for a head without a terminal Codex status, or an
+explicit operator dispatch carrying that exact head, may initiate draft-to-ready.
+`pull_request_review` and `pull_request_review_comment` are not orchestrator
+triggers and `contextForEvent` rejects them. The owning run polls reviews, inline
+comments, and reactions until the one invocation emits a terminal outcome. A
+finding-bearing review fails the gate and drafts the PR; the mutually exclusive
+clean reaction succeeds the gate and queues auto-merge. Codex review comments
+still reach Claude Code web Auto-fix through the installed subscription-backed
+GitHub App, without creating a second merge-state writer.
+
+Review runs remain serialized by PR number plus exact head SHA. A pushed head
+supersedes the old poll on its next bounded check. A same-head CI rerun waits and
+then consumes the terminal status instead of performing another draft-to-ready
+transition. A manual recovery dispatch shares that lane and requires the live
+head SHA, making retries explicit rather than webhook-driven.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with
@@ -120,28 +126,20 @@ Only `workflow_dispatch` can deliberately retry a terminal same-head review. It
 requires the exact head SHA and shares that head's start lane, so recovery cannot
 duplicate an already-active review cycle.
 
-Review success is published while auto-merge remains disabled. The handler then
-waits through a bounded settlement window and re-reads exact-head evidence plus
-every paginated page of append-only status history for this review cycle. An
-independently published failure remains latched even if the clear path wrote a
-newer success;
-that latch converts the head back to failure plus draft. Auto-merge is enabled
-only after live evidence and the monotonic failure latch remain clean. A
-barrier-driven test releases a concurrent result handler between two admission
-reads and proves that failure plus draft win while auto-merge remains disabled.
-The workflow has a 60-minute budget for the bounded CI wait, both review attempts,
-settlement, and terminal mutations. A CI rerun
-that observes terminal success first applies the same latch from the latest
-review-cycle pending status; only a success with no later failure may idempotently
-enable auto-merge. A process failure between success publication and queueing is
-therefore recoverable without another review request or bypassing a finding.
-Terminal failures similarly restore draft state before returning.
+The earlier settlement-and-admission design was removed because no finite series
+of reads can atomically exclude a future webhook writer. Eliminating that writer
+closes the race at its source. After the polled invocation reports clean, the run
+reclassifies exact-head evidence, publishes success, refreshes the live head, and
+queues auto-merge. A process failure between success publication and queueing is
+recoverable: a same-head CI rerun observes the terminal status and idempotently
+queues auto-merge without requesting another review. Historical paginated status
+latching remains only to fail closed when recovering heads touched by the retired
+multi-writer implementation. Terminal failures restore draft state before return.
 
 A failed CI rerun is handled before terminal-review recovery. When the durable
 review verdict is success, the CI handoff preserves both that verdict and the PR's
 ready state, so a later green rerun can resume auto-merge without another
 draft-to-ready review request. Other CI failures draft the PR, and no CI outcome
-overwrites an existing terminal review verdict. Regression tests cover event-role
-and concurrency separation, the same-head CI-rerun guard, legacy terminal values,
-late exact-head findings, terminal-state recovery/publication, and failed-CI
-ordering.
+overwrites an existing terminal review verdict. Regression tests cover exclusive
+event ownership, exact-head serialization, the same-head CI-rerun guard, legacy
+terminal values, terminal-state recovery/publication, and failed-CI ordering.

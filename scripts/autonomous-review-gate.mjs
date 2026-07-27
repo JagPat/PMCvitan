@@ -2,7 +2,6 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 import {
-  CODEX_LOGIN,
   codexThreadIdsToResolve,
   classifyCodexState,
   isEligiblePullRequest,
@@ -23,7 +22,6 @@ const API_ROOT = 'https://api.github.com';
 const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 10 * 60_000);
 const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 15 * 60_000);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
-const TERMINAL_SETTLE_MS = Number(process.env.TERMINAL_SETTLE_MS ?? 5_000);
 
 export function summarizeRequiredChecks(checkRuns) {
   const missing = [];
@@ -168,11 +166,6 @@ class GitHubClient {
       if (batch.length < 100) return statuses;
       page += 1;
     }
-  }
-
-  async latestStatus(head, context) {
-    const statuses = await this.statuses(head);
-    return statuses.find((status) => status.context === context) ?? null;
   }
 
   reviews(number) {
@@ -402,95 +395,6 @@ async function ensureTerminalReviewState(
   return true;
 }
 
-export async function handleCodexEvidence(
-  client,
-  pullRequest,
-  expectedHead,
-  detail,
-) {
-  const live = await refreshCurrentHead(
-    client,
-    pullRequest.number,
-    expectedHead,
-  );
-  if (!live) return;
-
-  // Fail branch protection before any best-effort presentation mutation.
-  await client.setStatus(
-    expectedHead,
-    'failure',
-    `review: ${detail}`,
-    live.html_url,
-  );
-  const draft = await setDraftForCurrentHead(
-    client,
-    pullRequest.number,
-    expectedHead,
-    true,
-  );
-  if (!draft) return;
-  await client.updateStickyComment(
-    pullRequest.number,
-    statusBody({
-      state: 'changes_required',
-      head: expectedHead,
-      detail,
-      attempt: 0,
-      next: 'Claude Auto-fix handles the review evidence and pushes a new head.',
-    }),
-  );
-}
-
-export async function admitAutoMerge(
-  client,
-  pullRequest,
-  expectedHead,
-  reviewNotBefore,
-  admissionBarrier = () => sleep(0),
-) {
-  const failureDetail =
-    'A current-head Codex finding was published during merge admission';
-  const failClosed = async () => {
-    await client.setStatus(
-      expectedHead,
-      'failure',
-      `review: ${failureDetail}`,
-      pullRequest.html_url,
-    );
-    const draft = await setDraftForCurrentHead(
-      client,
-      pullRequest.number,
-      expectedHead,
-      true,
-    );
-    return draft
-      ? { state: 'failure', detail: failureDetail }
-      : { state: 'superseded' };
-  };
-
-  const initialStatuses = await client.statuses(expectedHead);
-  if (hasTerminalReviewFailureSince(initialStatuses, reviewNotBefore)) {
-    return failClosed();
-  }
-
-  // Give a concurrently scheduled result-only handler an execution point,
-  // then read the append-only latch again immediately before admission.
-  await admissionBarrier();
-  const admissionStatuses = await client.statuses(expectedHead);
-  if (hasTerminalReviewFailureSince(admissionStatuses, reviewNotBefore)) {
-    return failClosed();
-  }
-
-  const live = await refreshCurrentHead(
-    client,
-    pullRequest.number,
-    expectedHead,
-  );
-  if (!live) return { state: 'superseded' };
-  await client.enableAutoMerge(live);
-  return { state: 'clear' };
-}
-
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
   while (true) {
@@ -611,37 +515,6 @@ export function contextForEvent(eventName, event, dispatchNumber) {
       trigger: 'ci',
     };
   }
-  if (eventName === 'pull_request_review' && event.action === 'submitted') {
-    const expectedHead = event.pull_request?.head?.sha;
-    if (
-      event.review?.user?.login !== CODEX_LOGIN
-      || event.review?.commit_id !== expectedHead
-    ) return null;
-    return {
-      number: Number(event.pull_request?.number),
-      expectedHead,
-      trigger: 'evidence',
-      evidenceDetail: 'Codex submitted a current-head review',
-    };
-  }
-  if (
-    eventName === 'pull_request_review_comment'
-    && event.action === 'created'
-  ) {
-    const expectedHead = event.pull_request?.head?.sha;
-    const postedHead = event.comment?.original_commit_id
-      ?? event.comment?.commit_id;
-    if (
-      event.comment?.user?.login !== CODEX_LOGIN
-      || postedHead !== expectedHead
-    ) return null;
-    return {
-      number: Number(event.pull_request?.number),
-      expectedHead,
-      trigger: 'evidence',
-      evidenceDetail: 'Codex submitted a current-head finding',
-    };
-  }
   return null;
 }
 
@@ -674,16 +547,6 @@ export async function run() {
   const expectedHead = context.expectedHead ?? pullRequest.head.sha;
   if (pullRequest.head.sha !== expectedHead) {
     console.log('Workflow event was superseded by a newer pull-request head.');
-    return;
-  }
-
-  if (context.trigger === 'evidence') {
-    await handleCodexEvidence(
-      client,
-      pullRequest,
-      expectedHead,
-      context.evidenceDetail,
-    );
     return;
   }
 
@@ -869,123 +732,22 @@ export async function run() {
         );
         throw new Error(detail);
       }
-      const finalResult = await reclassifyCurrentCodexEvidence(
-        client,
-        pullRequest.number,
-        expectedHead,
-        reviewNotBefore,
-      );
-      const finalStatus = await client.latestStatus(
-        expectedHead,
-        STATUS_CONTEXT,
-      );
-      const concurrentReviewFailure = finalStatus?.state === 'failure'
-        && isTerminalReviewStatus(finalStatus);
-      if (finalResult.state !== 'clear' || concurrentReviewFailure) {
-        const detail = finalResult.state === 'changes_required'
-          ? finalResult.detail
-          : concurrentReviewFailure
-            ? finalStatus.description
-            : 'Codex evidence changed during terminal publication';
-        await client.setStatus(
-          expectedHead,
-          'failure',
-          `review: ${detail}`,
-          pullRequest.html_url,
-        );
-        pullRequest = await setDraftForCurrentHead(
-          client,
-          pullRequest.number,
-          expectedHead,
-          true,
-        );
-        if (!pullRequest) return;
-        await client.updateStickyComment(
-          pullRequest.number,
-          statusBody({
-            state: 'changes_required',
-            head: expectedHead,
-            detail,
-            attempt,
-            next: 'Claude Auto-fix handles the terminal review evidence and pushes a new head.',
-          }),
-        );
-        throw new Error(detail);
-      }
+      // One run polls one Codex invocation to its mutually exclusive terminal
+      // result: finding-bearing evidence or the clean reaction. Review webhooks
+      // never enter this orchestrator, so no second writer can race admission.
       await client.setStatus(
         expectedHead,
         'success',
         'review: Codex found no blocking issue on this exact head',
         pullRequest.html_url,
       );
-
-      // Evidence handlers run independently and publish append-only failure
-      // statuses. Keep auto-merge disabled until both live evidence and the
-      // whole review-cycle status history remain clear after settlement.
-      await sleep(TERMINAL_SETTLE_MS);
-      const settledResult = await reclassifyCurrentCodexEvidence(
+      pullRequest = await refreshCurrentHead(
         client,
         pullRequest.number,
         expectedHead,
-        reviewNotBefore,
       );
-      const settledStatuses = await client.statuses(expectedHead);
-      const latchedReviewFailure = hasTerminalReviewFailureSince(
-        settledStatuses,
-        reviewNotBefore,
-      );
-      if (settledResult.state !== 'clear' || latchedReviewFailure) {
-        const detail = settledResult.state === 'changes_required'
-          ? settledResult.detail
-          : latchedReviewFailure
-            ? 'A current-head Codex finding was published during terminal settlement'
-            : 'Codex evidence changed during terminal settlement';
-        await client.setStatus(
-          expectedHead,
-          'failure',
-          `review: ${detail}`,
-          pullRequest.html_url,
-        );
-        pullRequest = await setDraftForCurrentHead(
-          client,
-          pullRequest.number,
-          expectedHead,
-          true,
-        );
-        if (!pullRequest) return;
-        await client.updateStickyComment(
-          pullRequest.number,
-          statusBody({
-            state: 'changes_required',
-            head: expectedHead,
-            detail,
-            attempt,
-            next: 'Claude Auto-fix handles the settled review evidence and pushes a new head.',
-          }),
-        );
-        throw new Error(detail);
-      }
-
-      const admission = await admitAutoMerge(
-        client,
-        pullRequest,
-        expectedHead,
-        reviewNotBefore,
-      );
-      if (admission.state === 'superseded') return;
-      if (admission.state === 'failure') {
-        await client.updateStickyComment(
-          pullRequest.number,
-          statusBody({
-            state: 'changes_required',
-            head: expectedHead,
-            detail: admission.detail,
-            attempt,
-            next: 'Claude Auto-fix handles the merge-admission evidence and pushes a new head.',
-          }),
-        );
-        throw new Error(admission.detail);
-      }
+      if (!pullRequest) return;
+      await client.enableAutoMerge(pullRequest);
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
