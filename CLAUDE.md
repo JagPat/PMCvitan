@@ -6,9 +6,13 @@ Before using the historical chronology below, read `docs/STATUS.md`, then
 `docs/AUTONOMOUS_LOOP.md`, then the active plan and any `blocking_directive`
 named by STATUS. STATUS is authoritative when narrative history lags.
 
-Every PR starts as a draft. Codex reviews each pushed head independently; keep
-the PR draft while a blocking finding remains and never start the next task while
-STATUS keeps the current task open. No human approval is required.
+Every PR starts as a draft with Claude Code web Auto-fix enabled, and Claude stays
+subscribed until the PR merges or closes. After required CI passes, the trusted
+GitHub orchestrator marks the PR ready and triggers Codex on the exact head. A
+finding returns the PR to draft for a fix-forward push; a fresh clean signal sets
+the required `codex-current-head` status and queues auto-merge. Never start the
+next task while STATUS keeps the current task open. No human technical approval
+is required, but the exact-head GitHub gate is mandatory and fails closed.
 
 Before architecture or implementation work, read:
 
