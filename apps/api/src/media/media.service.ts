@@ -185,7 +185,6 @@ export class MediaService {
     const projectId = user.projectId;
     const row = await this.prisma.media.findUnique({ where: { id } });
     if (!row || row.projectId !== projectId) return false;
-    if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
     const actor = await resolveActor(this.prisma, user);
     const events = await this.prisma.$transaction(async (tx) => {
       // Phase 3 Task 4 — the §C stock ledger is immutable, so a photo cited as stock quality
@@ -204,6 +203,13 @@ export class MediaService {
       const removedEv = await emitEvent(tx, { projectId, actor, eventType: 'media.removed', entityType: 'Media', entityId: id, effectKey: 'media.removed', dispatch: {} });
       return evidenceEv ? [evidenceEv, removedEv] : [removedEv];
     });
+    // Task-3 correction 2 (finding 2) — the bucket object is removed LAST, and only on the success
+    // path. It used to go first, so a participant refusal above (labour presence evidence, inventory
+    // ledger evidence) left the row intact with its bytes already gone: an append-only fact still
+    // citing evidence that no longer existed. Now a rejected delete touches neither the row nor the
+    // object, and by the time we get here the database no longer references the object at all, so
+    // failing to clean it up is a harmless orphan — never a reason to fail a committed delete.
+    if (row.storageKey) await this.storage.remove(row.storageKey).catch(() => {});
     await this.dispatcher.dispatchCommitted(events);
     return true;
   }
