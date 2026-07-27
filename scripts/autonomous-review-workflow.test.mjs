@@ -101,11 +101,16 @@ test('only CI completion or exact-head dispatch can own a review cycle', () => {
   );
   assert.deepEqual(
     reviewGate.contextForEvent('workflow_dispatch', {
-      inputs: { pr_number: '230', head_sha: head },
+      inputs: {
+        pr_number: '230',
+        head_sha: head,
+        terminal_status_id: '987654321',
+      },
     }),
     {
       number: 230,
       expectedHead: head,
+      terminalStatusId: '987654321',
       ciConclusion: null,
       trigger: 'dispatch',
     },
@@ -278,46 +283,94 @@ test('terminal recovery scopes its failure latch to the latest review cycle', ()
   );
 });
 
-test('a queued dispatch consumes a terminal result created after it was queued', async () => {
-  assert.equal(typeof reviewGate.shouldConsumeTerminalReviewStatus, 'function');
-  let status = null;
-  let releaseBarrier;
-  const barrier = new Promise((resolve) => { releaseBarrier = resolve; });
-  const queuedDispatch = (async () => {
-    await barrier;
-    return reviewGate.shouldConsumeTerminalReviewStatus(
-      status,
-      'dispatch',
-      '2026-07-27T19:09:00Z',
-    );
-  })();
-
-  status = {
+test('a recovery dispatch requires the exact latest failed terminal status', () => {
+  assert.equal(typeof reviewGate.authorizeRecoveryDispatch, 'function');
+  const terminal = {
+    id: 987654321,
+    context: 'codex-current-head',
     state: 'success',
     description: 'review: Codex found no blocking issue',
     created_at: '2026-07-27T19:10:00Z',
   };
-  releaseBarrier();
-  assert.equal(await queuedDispatch, true);
-  assert.equal(
-    reviewGate.shouldConsumeTerminalReviewStatus(
-      status,
-      'dispatch',
-      '2026-07-27T19:11:00Z',
-    ),
-    false,
-  );
-  assert.equal(
-    reviewGate.shouldConsumeTerminalReviewStatus(status, 'ci', null),
-    true,
-  );
+  const failed = {
+    ...terminal,
+    id: 987654322,
+    state: 'failure',
+    description: 'review: Codex review timed out after 2 attempts',
+  };
+  const olderFailedInSameSecond = {
+    ...failed,
+    id: 987654320,
+  };
 
-  const gate = await readFile(
-    new URL('./autonomous-review-gate.mjs', import.meta.url),
-    'utf8',
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch(
+      [failed, olderFailedInSameSecond, terminal],
+      '987654322',
+    ),
+    failed,
   );
-  assert.match(gate, /client\.workflowRun\(/);
-  assert.match(gate, /GITHUB_RUN_ID/);
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch(
+      [failed, olderFailedInSameSecond, terminal],
+      '987654320',
+    ),
+    null,
+  );
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch([terminal], '987654321'),
+    null,
+  );
+});
+
+test('legacy CI statuses cannot bury a terminal review result', () => {
+  assert.equal(typeof reviewGate.recoverableTerminalReviewStatus, 'function');
+  const terminal = {
+    id: 101,
+    context: 'codex-current-head',
+    state: 'success',
+    description: 'review: Codex found no blocking issue',
+    created_at: '2026-07-27T19:10:00Z',
+  };
+  const pending = {
+    id: 102,
+    context: 'codex-current-head',
+    state: 'pending',
+    description: 'review: pending required CI and current-head Codex review',
+    created_at: '2026-07-27T19:11:00Z',
+  };
+  const ciFailure = {
+    id: 103,
+    context: 'codex-current-head',
+    state: 'failure',
+    description: 'ci: api-e2e failed',
+    created_at: '2026-07-27T19:12:00Z',
+  };
+
+  assert.equal(
+    reviewGate.recoverableTerminalReviewStatus([ciFailure, pending, terminal]),
+    terminal,
+  );
+  assert.equal(
+    reviewGate.recoverableTerminalReviewStatus([pending, terminal]),
+    null,
+  );
+  assert.equal(
+    reviewGate.recoverableTerminalReviewStatus([terminal]),
+    terminal,
+  );
+});
+
+test('recovery uses a durable status token and a CI-independent lane', async () => {
+  const [workflow, gate] = await Promise.all([
+    readFile(workflowPath, 'utf8'),
+    readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8'),
+  ]);
+
+  assert.match(workflow, /terminal_status_id:/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch' && 'recovery'/);
+  assert.match(gate, /authorizeRecoveryDispatch\(/);
+  assert.doesNotMatch(gate, /GITHUB_RUN_ID/);
 });
 
 test('workflow gives one exact-head run sole ownership of review and merge', async () => {
@@ -445,6 +498,8 @@ test('workflow recovery is exact-head serialized and has terminal time budget', 
   const workflow = await readFile(workflowPath, 'utf8');
   assert.match(workflow, /head_sha:/);
   assert.match(workflow, /inputs\.head_sha/);
+  assert.match(workflow, /terminal_status_id:/);
+  assert.match(workflow, /inputs\.terminal_status_id/);
   assert.match(workflow, /timeout-minutes:\s*60/);
 });
 
@@ -457,6 +512,7 @@ test('operator recovery documents the required current head SHA', async () => {
   assert.match(recovery, /gh pr view/);
   assert.match(recovery, /headRefOid/);
   assert.match(recovery, /-f head_sha="\$HEAD_SHA"/);
+  assert.match(recovery, /-f terminal_status_id="\$TERMINAL_STATUS_ID"/);
 });
 
 test('workflow invokes the exact-head gate and CI executes its tests', async () => {

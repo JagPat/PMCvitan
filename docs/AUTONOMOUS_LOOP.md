@@ -65,15 +65,22 @@ After the subscription service is healthy, recover only the PR's current head:
 ```bash
 PR=230
 HEAD_SHA=$(gh pr view "$PR" --repo JagPat/PMCvitan --json headRefOid --jq .headRefOid)
+TERMINAL_STATUS_ID=$(gh api --paginate --slurp \
+  "repos/JagPat/PMCvitan/commits/$HEAD_SHA/statuses?per_page=100" \
+  --jq '(add | map(select(.context == "codex-current-head" and .state == "failure") | select((.description // "") as $description | ($description | startswith("review:")) or ($description | contains("current-head Codex finding")) or ($description | contains("Codex submitted a current-head review")) or ($description | contains("Codex review timed out")) or ($description | contains("Codex evidence changed")))) | .[0].id) // empty')
+test -n "$TERMINAL_STATUS_ID"
 gh workflow run auto-merge.yml --repo JagPat/PMCvitan \
-  -f pr_number="$PR" -f head_sha="$HEAD_SHA"
+  -f pr_number="$PR" -f head_sha="$HEAD_SHA" \
+  -f terminal_status_id="$TERMINAL_STATUS_ID"
 ```
 
-Both inputs are required. The workflow refuses a stale SHA, and the dispatch
-shares the exact head's concurrency lane. If it was queued behind an active cycle,
-it consumes any terminal verdict created after its own GitHub run was queued and
-does not request another review. A dispatch created after an existing terminal
-verdict remains an explicit operator retry.
+All three inputs are required. The workflow refuses a stale SHA and authorizes a
+retry only when `terminal_status_id` is the exact latest failed terminal review
+status on that head. Pending, successful, or superseded status IDs fail closed.
+Recovery uses a CI-independent concurrency lane, so a later same-head CI run cannot
+replace an explicit retry. Ordinary CI recovery searches the complete paginated
+status history, including terminal review results hidden below legacy `pending` or
+`ci:` statuses.
 Ordinary review-result webhooks are intentionally not orchestrator triggers. The
 Codex App's finding comments still wake the subscription-backed Claude Auto-fix
 session directly; GitHub Actions does not need an AI key or a second result writer.

@@ -87,27 +87,44 @@ export function hasTerminalReviewFailureSince(statuses, since) {
 
 export function reviewCycleStartedAt(statuses) {
   const pending = statuses.find((status) =>
-    status.context === STATUS_CONTEXT
+    isReviewPendingStatus(status));
+  return pending?.created_at ?? null;
+}
+
+function isReviewPendingStatus(status) {
+  return status.context === STATUS_CONTEXT
     && status.state === 'pending'
     && (
       status.description?.startsWith('review: pending')
       || status.description?.startsWith('Waiting for required CI')
-    ));
-  return pending?.created_at ?? null;
+    );
 }
 
-export function shouldConsumeTerminalReviewStatus(
-  status,
-  trigger,
-  triggerQueuedAt,
-) {
-  if (!isTerminalReviewStatus(status)) return false;
-  if (trigger !== 'dispatch') return true;
+export function recoverableTerminalReviewStatus(statuses) {
+  const reviewStatuses = statuses.filter(
+    (status) => status.context === STATUS_CONTEXT,
+  );
+  const terminalIndex = reviewStatuses.findIndex(isTerminalReviewStatus);
+  if (terminalIndex < 0) return null;
+  if (terminalIndex === 0) return reviewStatuses[0];
 
-  const statusAt = Date.parse(status.created_at);
-  const queuedAt = Date.parse(triggerQueuedAt);
-  if (!Number.isFinite(statusAt) || !Number.isFinite(queuedAt)) return true;
-  return statusAt >= queuedAt;
+  const newerStatuses = reviewStatuses.slice(0, terminalIndex);
+  const pendingIndex = newerStatuses.findIndex(isReviewPendingStatus);
+  if (pendingIndex < 0) return reviewStatuses[terminalIndex];
+
+  const newerCycleFailedBeforeReview = newerStatuses
+    .slice(0, pendingIndex)
+    .some((status) =>
+      status.state === 'failure' && !isTerminalReviewStatus(status));
+  return newerCycleFailedBeforeReview ? reviewStatuses[terminalIndex] : null;
+}
+
+export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
+  const terminalStatus = recoverableTerminalReviewStatus(statuses);
+  if (!terminalStatus || terminalStatus.state !== 'failure') return null;
+  return String(terminalStatus.id) === String(requestedStatusId)
+    ? terminalStatus
+    : null;
 }
 
 function sleep(milliseconds) {
@@ -180,12 +197,6 @@ class GitHubClient {
       if (batch.length < 100) return statuses;
       page += 1;
     }
-  }
-
-  workflowRun(runId) {
-    return this.request(
-      `/repos/${this.repository}/actions/runs/${runId}`,
-    );
   }
 
   reviews(number) {
@@ -523,6 +534,7 @@ export function contextForEvent(eventName, event, dispatchNumber) {
     return {
       number: Number(dispatchNumber ?? event.inputs?.pr_number),
       expectedHead: event.inputs?.head_sha ?? null,
+      terminalStatusId: event.inputs?.terminal_status_id ?? null,
       ciConclusion: null,
       trigger: 'dispatch',
     };
@@ -576,9 +588,7 @@ export async function run() {
   const existingStatus = existingStatuses.find(
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
-  const triggerQueuedAt = context.trigger === 'dispatch'
-    ? (await client.workflowRun(requiredEnvironment('GITHUB_RUN_ID'))).created_at
-    : null;
+  const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     pullRequest = shouldDraftForCiFailure(existingStatus)
@@ -615,24 +625,29 @@ export async function run() {
     throw new Error(`CI workflow concluded ${context.ciConclusion}`);
   }
 
-  if (
-    shouldConsumeTerminalReviewStatus(
-      existingStatus,
-      context.trigger,
-      triggerQueuedAt,
-    )
-  ) {
+  if (context.trigger === 'dispatch') {
+    const authorizedStatus = authorizeRecoveryDispatch(
+      existingStatuses,
+      context.terminalStatusId,
+    );
+    if (!authorizedStatus) {
+      throw new Error(
+        'Recovery dispatch requires the exact latest failed terminal '
+          + `${STATUS_CONTEXT} status ID`,
+      );
+    }
+  } else if (terminalStatus) {
     if (
       await ensureTerminalReviewState(
         client,
         pullRequest,
         expectedHead,
-        existingStatus,
+        terminalStatus,
         existingStatuses,
       )
     ) {
       console.log(
-        'Exact head reached a terminal Codex state after this run was queued; no review will be requested.',
+        'Exact head already has a recoverable terminal Codex state; no review will be requested.',
       );
       return;
     }

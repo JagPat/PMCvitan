@@ -44,12 +44,13 @@ packet does not embed a self-referential final SHA.
   both builds clean).
 - Reproduce-first same-head contracts failed before each correction: review/comment
   re-entry, CI-rerun terminal-state loss, legacy review-only failure, late evidence,
-  head-scoped/paginated failure-latch recovery, and executable exact-head recovery.
+  head-scoped/paginated failure-latch recovery, durable retry authorization,
+  buried terminal-result recovery, and executable exact-head recovery.
   The final architectural regression proves that review-result webhooks cannot
   enter the merge orchestrator or publish its status. The focused battery passed
-  35/35.
+  37/37.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 35/35, web
+- Final `pnpm check` after protocol alignment passed: automation 37/37, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -62,8 +63,10 @@ packet does not embed a self-referential final SHA.
    available on the default branch yet.
 4. Add `codex-current-head` to the existing five required checks, set strict mode,
    and enforce protection for administrators.
-5. Dispatch `Autonomous review and merge` with `pr_number=230` and the exact
-   current `head_sha`. From that point, GitHub drives the regular CI -> ready ->
+5. Publish the one explicit failed bootstrap `codex-current-head` status on PR
+   #230's current SHA, then dispatch `Autonomous review and merge` with
+   `pr_number=230`, the exact current `head_sha`, and that status's ID as
+   `terminal_status_id`. From that point, GitHub drives the regular CI -> ready ->
    Codex -> Claude Auto-fix -> merge loop.
 
 ## External Verification To Record After Merge
@@ -110,13 +113,15 @@ still reach Claude Code web Auto-fix through the installed subscription-backed
 GitHub App, without creating a second merge-state writer.
 
 Review runs remain serialized by PR number plus exact head SHA. A pushed head
-supersedes the old poll on its next bounded check. A same-head CI rerun waits and
-then consumes the terminal status instead of performing another draft-to-ready
-transition. A manual recovery dispatch shares that lane and requires the live
-head SHA. The gate compares the dispatch Actions run's `created_at` with the
-terminal status: a verdict created after the dispatch was queued is consumed as
-the active cycle's result, while a dispatch created after an existing verdict is
-an explicit retry. A deterministic barrier test pins that queued interleaving.
+supersedes the old poll on its next bounded check. A same-head CI rerun recovers a
+terminal review result from the complete paginated status history instead of
+performing another draft-to-ready transition, even when newer legacy `pending` or
+`ci:` statuses obscure that result. A manual recovery dispatch uses a separate
+CI-independent concurrency lane and requires both the live head SHA and the exact
+latest failed terminal status ID. Pending, successful, and superseded IDs are
+rejected before any status or draft mutation. This durable marker removes
+same-second timestamp ambiguity, and the independent lane prevents a later CI run
+from replacing a queued explicit retry. Deterministic regressions pin both cases.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with
@@ -126,8 +131,8 @@ ordinary CI events; CI failures remain retryable. New statuses use `review:` and
 `ci:` prefixes, while the classifier recognizes all unprefixed terminal statuses
 emitted by the earlier gate, including `Codex submitted a current-head review`.
 Only `workflow_dispatch` can deliberately retry a terminal same-head review. It
-requires the exact head SHA and shares that head's start lane, so recovery cannot
-duplicate an already-active review cycle.
+requires the exact head SHA and latest failed terminal status ID. An active cycle
+has a newer pending marker and therefore cannot authorize a duplicate retry.
 
 The earlier settlement-and-admission design was removed because no finite series
 of reads can atomically exclude a future webhook writer. Eliminating that writer
@@ -145,4 +150,5 @@ ready state, so a later green rerun can resume auto-merge without another
 draft-to-ready review request. Other CI failures draft the PR, and no CI outcome
 overwrites an existing terminal review verdict. Regression tests cover exclusive
 event ownership, exact-head serialization, the same-head CI-rerun guard, legacy
-terminal values, terminal-state recovery/publication, and failed-CI ordering.
+terminal values, terminal-state recovery/publication, durable recovery tokens,
+CI-independent retry admission, and failed-CI ordering.
