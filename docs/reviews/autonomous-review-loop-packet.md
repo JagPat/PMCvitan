@@ -53,7 +53,8 @@ packet does not embed a self-referential final SHA.
   state restoration before auto-merging a recovered clean verdict. The documented
   recovery jq expression is also executed against a retryable-status fixture.
   Recovery accepts an exact active pending marker for abandoned-owner takeover,
-  while a same-cycle non-retryable finding vetoes timeout recovery.
+  inherits a retryable timeout that lands while that takeover is queued, and still
+  lets a same-cycle non-retryable finding veto recovery.
   The final architectural regression proves that review-result webhooks cannot
   enter the merge orchestrator or publish its status. The focused battery passed
   43/43.

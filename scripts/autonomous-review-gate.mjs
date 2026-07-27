@@ -195,9 +195,13 @@ export function recoveryRequestTerminal(statuses, request) {
     && String(status.id) === String(request.terminalStatusId));
   const sourceStatus = sourceIndex < 0 ? null : statuses[sourceIndex];
   if (isReviewPendingStatus(sourceStatus)) {
-    const superseded = statuses.slice(0, sourceIndex).some((status) =>
+    const supersedingTerminal = statuses.slice(0, sourceIndex).find((status) =>
       status.context === STATUS_CONTEXT && isTerminalReviewStatus(status));
-    return superseded ? null : sourceStatus;
+    if (!supersedingTerminal) return sourceStatus;
+    if (hasPersistentReviewFailureAfterPending(statuses)) return null;
+    return isRetryableTerminalReviewFailure(supersedingTerminal)
+      ? supersedingTerminal
+      : null;
   }
   if (hasPersistentReviewFailureAfterPending(statuses)) return null;
   const terminalStatus = latestTerminalReviewStatus(statuses);

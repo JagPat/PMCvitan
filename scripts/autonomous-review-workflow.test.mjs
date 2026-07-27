@@ -617,6 +617,31 @@ test('a durable recovery request survives owner-job replacement', () => {
     ),
     stuckPending,
   );
+  const laterTimeout = {
+    id: 110,
+    context: 'codex-current-head',
+    state: 'failure',
+    description: 'review: Codex review timed out after two attempts',
+  };
+  assert.equal(
+    reviewGate.recoveryRequestTerminal(
+      [laterTimeout, pendingSourceRequestStatus, stuckPending],
+      pendingSourceRequest,
+    ),
+    laterTimeout,
+  );
+  const laterFinding = {
+    ...laterTimeout,
+    id: 111,
+    description: 'review: 1 current-head Codex finding',
+  };
+  assert.equal(
+    reviewGate.recoveryRequestTerminal(
+      [laterFinding, pendingSourceRequestStatus, stuckPending],
+      pendingSourceRequest,
+    ),
+    null,
+  );
 });
 
 test('manual recovery records intent before entering the single owner lane', async () => {
