@@ -80,3 +80,19 @@ packet does not embed a self-referential final SHA.
 - The workflow retries a timed-out review once. Continued provider unavailability
   leaves the PR draft and blocked for a later manual dispatch; it never bypasses
   independent review.
+
+## Same-Head Re-Review Incident
+
+After bootstrap, PR #234 added `pull_request_review` and
+`pull_request_review_comment` as orchestrator triggers. Those events entered the
+same path as CI completion, which converts the PR draft-to-ready to request a
+review. A Codex finding therefore triggered another review of the unchanged SHA;
+that review triggered another workflow run, producing a live same-head loop on
+PR #230.
+
+The correction removes both review events from the workflow and from
+`eventContext`. Only CI completion for a new head or an explicit operator dispatch
+may initiate draft-to-ready. The CI-triggered run already polls reviews, inline
+comments, and clean reactions until it reaches a terminal exact-head result, so a
+second event listener is unnecessary. The regression contract asserts that neither
+review event can re-enter the review-start path.

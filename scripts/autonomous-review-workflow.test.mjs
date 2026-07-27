@@ -49,14 +49,19 @@ test('keeps the Codex trigger retry bounded', () => {
   assert.equal(MAX_REVIEW_ATTEMPTS, 2);
 });
 
-test('workflow runs from trusted default-branch code after CI or dispatch', async () => {
-  const workflow = await readFile(workflowPath, 'utf8');
+test('workflow starts a review only after CI or an operator dispatch', async () => {
+  const [workflow, gate] = await Promise.all([
+    readFile(workflowPath, 'utf8'),
+    readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8'),
+  ]);
 
   assert.match(workflow, /workflow_run:/);
-  assert.match(workflow, /pull_request_review:/);
-  assert.match(workflow, /pull_request_review_comment:/);
   assert.match(workflow, /workflows:\s*\[CI\]/);
   assert.match(workflow, /workflow_dispatch:/);
+  assert.doesNotMatch(workflow, /pull_request_review:/);
+  assert.doesNotMatch(workflow, /pull_request_review_comment:/);
+  assert.doesNotMatch(gate, /eventName === 'pull_request_review'/);
+  assert.doesNotMatch(gate, /eventName === 'pull_request_review_comment'/);
   assert.match(workflow, /statuses:\s*write/);
   assert.match(workflow, /pull-requests:\s*write/);
   assert.match(workflow, /issues:\s*write/);
