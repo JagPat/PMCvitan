@@ -389,7 +389,7 @@ test('terminal recovery scopes its failure latch to the latest review cycle', ()
   );
 });
 
-test('a recovery dispatch requires the exact latest failed terminal status', () => {
+test('recovery requires an exact retryable failure or active pending status', () => {
   assert.equal(typeof reviewGate.authorizeRecoveryDispatch, 'function');
   const terminal = {
     id: 987654321,
@@ -418,6 +418,20 @@ test('a recovery dispatch requires the exact latest failed terminal status', () 
     id: 987654324,
     description: 'review: bootstrap exact-head review requested',
   };
+  const stuckPending = {
+    ...failed,
+    id: 987654325,
+    state: 'pending',
+    description: 'review: pending required CI and current-head Codex review',
+  };
+  const findingBeforeTimeout = {
+    ...persistentFinding,
+    id: 987654326,
+  };
+  const timeoutAfterFinding = {
+    ...failed,
+    id: 987654327,
+  };
 
   assert.equal(
     reviewGate.authorizeRecoveryDispatch(
@@ -444,6 +458,21 @@ test('a recovery dispatch requires the exact latest failed terminal status', () 
   assert.equal(
     reviewGate.authorizeRecoveryDispatch([bootstrap], '987654324'),
     bootstrap,
+  );
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch([stuckPending], '987654325'),
+    stuckPending,
+  );
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch([stuckPending], '987654324'),
+    null,
+  );
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch(
+      [timeoutAfterFinding, findingBeforeTimeout, stuckPending],
+      '987654327',
+    ),
+    null,
   );
 });
 
@@ -563,6 +592,30 @@ test('a durable recovery request survives owner-job replacement', () => {
   assert.notEqual(
     reviewGate.recoveryRequestContext('103'),
     reviewGate.recoveryRequestContext('106'),
+  );
+
+  const stuckPending = {
+    id: 108,
+    context: 'codex-current-head',
+    state: 'pending',
+    description: 'review: pending required CI and current-head Codex review',
+  };
+  const pendingSourceRequestStatus = {
+    id: 109,
+    context: 'codex-recovery-request/108',
+    state: 'pending',
+    description: 'recovery: requested terminal status 108',
+  };
+  const pendingSourceRequest = reviewGate.pendingRecoveryRequest([
+    pendingSourceRequestStatus,
+    stuckPending,
+  ]);
+  assert.equal(
+    reviewGate.recoveryRequestTerminal(
+      [pendingSourceRequestStatus, stuckPending],
+      pendingSourceRequest,
+    ),
+    stuckPending,
   );
 });
 
@@ -827,7 +880,7 @@ test('operator recovery documents the required current head SHA', async () => {
   assert.match(recovery, /-f terminal_status_id="\$TERMINAL_STATUS_ID"/);
 });
 
-test('documented recovery jq selects the retryable terminal status id', async () => {
+test('documented recovery jq selects an authorized review status id', async () => {
   const runbook = await readFile(autonomousLoopPath, 'utf8');
   const recovery = runbook.slice(
     runbook.indexOf('## Recovery'),
@@ -836,20 +889,27 @@ test('documented recovery jq selects the retryable terminal status id', async ()
   const expression = recovery.match(/--jq '([^']+)'/u)?.[1];
   assert.ok(expression, 'recovery command must include a jq expression');
 
-  const result = spawnSync('jq', ['-r', expression], {
+  const runExpression = (status) => spawnSync('jq', ['-r', expression], {
     encoding: 'utf8',
-    input: JSON.stringify([[
-      {
-        id: 777,
-        context: 'codex-current-head',
-        state: 'failure',
-        description: 'review: Codex review timed out after two attempts',
-      },
-    ]]),
+    input: JSON.stringify([[status]]),
   });
+  const timeout = runExpression({
+    id: 777,
+    context: 'codex-current-head',
+    state: 'failure',
+    description: 'review: Codex review timed out after two attempts',
+  });
+  assert.equal(timeout.status, 0, timeout.stderr);
+  assert.equal(timeout.stdout.trim(), '777');
 
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout.trim(), '777');
+  const pending = runExpression({
+    id: 778,
+    context: 'codex-current-head',
+    state: 'pending',
+    description: 'review: pending required CI and current-head Codex review',
+  });
+  assert.equal(pending.status, 0, pending.stderr);
+  assert.equal(pending.stdout.trim(), '778');
 });
 
 test('workflow invokes the exact-head gate and CI executes its tests', async () => {

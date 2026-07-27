@@ -15,7 +15,7 @@ on:
         required: true
         type: string
       terminal_status_id:
-        description: Exact failed codex-current-head status ID authorizing this retry
+        description: Exact retryable failure or active pending codex-current-head status ID
         required: true
         type: string
 

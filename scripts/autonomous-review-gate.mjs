@@ -89,6 +89,14 @@ export function hasTerminalReviewFailureAfterPending(statuses) {
     && isTerminalReviewStatus(status));
 }
 
+export function hasPersistentReviewFailureAfterPending(statuses) {
+  return statusesAfterLatestReviewPending(statuses).some((status) =>
+    status.context === STATUS_CONTEXT
+    && status.state === 'failure'
+    && isTerminalReviewStatus(status)
+    && !isRetryableTerminalReviewFailure(status));
+}
+
 function hasCiFailureAfterPending(statuses) {
   return statusesAfterLatestReviewPending(statuses).some((status) =>
     status.context === STATUS_CONTEXT
@@ -182,6 +190,16 @@ export async function persistRecoveryRequest(
 
 export function recoveryRequestTerminal(statuses, request) {
   if (!request) return null;
+  const sourceIndex = statuses.findIndex((status) =>
+    status.context === STATUS_CONTEXT
+    && String(status.id) === String(request.terminalStatusId));
+  const sourceStatus = sourceIndex < 0 ? null : statuses[sourceIndex];
+  if (isReviewPendingStatus(sourceStatus)) {
+    const superseded = statuses.slice(0, sourceIndex).some((status) =>
+      status.context === STATUS_CONTEXT && isTerminalReviewStatus(status));
+    return superseded ? null : sourceStatus;
+  }
+  if (hasPersistentReviewFailureAfterPending(statuses)) return null;
   const terminalStatus = latestTerminalReviewStatus(statuses);
   if (!isRetryableTerminalReviewFailure(terminalStatus)) return null;
   return String(terminalStatus.id) === String(request.terminalStatusId)
@@ -201,6 +219,15 @@ export function isRetryableTerminalReviewFailure(status) {
 }
 
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
+  if (hasPersistentReviewFailureAfterPending(statuses)) return null;
+  const latestReviewStatus = statuses.find(
+    (status) => status.context === STATUS_CONTEXT,
+  );
+  if (isReviewPendingStatus(latestReviewStatus)) {
+    if (String(latestReviewStatus.id) === String(requestedStatusId)) {
+      return latestReviewStatus;
+    }
+  }
   let terminalStatus = recoverableTerminalReviewStatus(statuses);
   if (!terminalStatus) {
     const existingRequest = pendingRecoveryRequest(statuses);
