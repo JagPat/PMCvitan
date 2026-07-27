@@ -67,7 +67,7 @@ PR=230
 HEAD_SHA=$(gh pr view "$PR" --repo JagPat/PMCvitan --json headRefOid --jq .headRefOid)
 TERMINAL_STATUS_ID=$(gh api --paginate --slurp \
   "repos/JagPat/PMCvitan/commits/$HEAD_SHA/statuses?per_page=100" \
-  --jq '(add | map(select(.context == "codex-current-head" and .state == "failure") | select((.description // "") as $description | ($description | contains("Codex review timed out")) or ($description | contains("Codex evidence changed during final verification")) or $description == "review: Required CI changed during current-head Codex review" or $description == "review: bootstrap exact-head review requested")) | .[0].id) // empty')
+  --jq '(add | map(select(.context == "codex-current-head" and .state == "failure") | select((.description // "") as $description | ($description | contains("Codex review timed out")) or ($description | contains("Codex evidence changed during final verification")) or $description == "review: Required CI changed during current-head Codex review" or $description == "review: bootstrap exact-head review requested"))) | (.[0].id // empty)')
 test -n "$TERMINAL_STATUS_ID"
 gh workflow run auto-merge.yml --repo JagPat/PMCvitan \
   -f pr_number="$PR" -f head_sha="$HEAD_SHA" \

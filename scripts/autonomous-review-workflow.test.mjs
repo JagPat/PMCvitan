@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import * as reviewGate from './autonomous-review-gate.mjs';
@@ -824,6 +825,31 @@ test('operator recovery documents the required current head SHA', async () => {
   assert.match(recovery, /headRefOid/);
   assert.match(recovery, /-f head_sha="\$HEAD_SHA"/);
   assert.match(recovery, /-f terminal_status_id="\$TERMINAL_STATUS_ID"/);
+});
+
+test('documented recovery jq selects the retryable terminal status id', async () => {
+  const runbook = await readFile(autonomousLoopPath, 'utf8');
+  const recovery = runbook.slice(
+    runbook.indexOf('## Recovery'),
+    runbook.indexOf('## GitHub Enforcement'),
+  );
+  const expression = recovery.match(/--jq '([^']+)'/u)?.[1];
+  assert.ok(expression, 'recovery command must include a jq expression');
+
+  const result = spawnSync('jq', ['-r', expression], {
+    encoding: 'utf8',
+    input: JSON.stringify([[
+      {
+        id: 777,
+        context: 'codex-current-head',
+        state: 'failure',
+        description: 'review: Codex review timed out after two attempts',
+      },
+    ]]),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), '777');
 });
 
 test('workflow invokes the exact-head gate and CI executes its tests', async () => {
