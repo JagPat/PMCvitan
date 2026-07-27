@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 import {
+  CODEX_LOGIN,
   codexThreadIdsToResolve,
   classifyCodexState,
   isEligiblePullRequest,
@@ -64,6 +65,7 @@ export function isTerminalReviewStatus(status) {
   const description = status.description ?? '';
   return description.startsWith('review:')
     || description.includes('current-head Codex finding')
+    || description.includes('Codex submitted a current-head review')
     || description.includes('Codex review timed out')
     || description.includes('Codex evidence changed');
 }
@@ -316,6 +318,63 @@ async function setDraftForCurrentHead(
     : null;
 }
 
+async function ensureTerminalReviewState(
+  client,
+  pullRequest,
+  expectedHead,
+  status,
+) {
+  if (!isTerminalReviewStatus(status)) return false;
+  if (status.state === 'success') {
+    const live = await refreshCurrentHead(
+      client,
+      pullRequest.number,
+      expectedHead,
+    );
+    if (live) await client.enableAutoMerge(live);
+  }
+  return true;
+}
+
+async function handleCodexEvidence(
+  client,
+  pullRequest,
+  expectedHead,
+  detail,
+) {
+  const live = await refreshCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+  );
+  if (!live) return;
+
+  // Fail branch protection before any best-effort presentation mutation.
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `review: ${detail}`,
+    live.html_url,
+  );
+  const draft = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!draft) return;
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'changes_required',
+      head: expectedHead,
+      detail,
+      attempt: 0,
+      next: 'Claude Auto-fix handles the review evidence and pushes a new head.',
+    }),
+  );
+}
+
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
   while (true) {
@@ -419,14 +478,10 @@ async function reclassifyCurrentCodexEvidence(
   });
 }
 
-async function eventContext() {
-  const eventName = requiredEnvironment('GITHUB_EVENT_NAME');
-  const event = JSON.parse(
-    await readFile(requiredEnvironment('GITHUB_EVENT_PATH'), 'utf8'),
-  );
+export function contextForEvent(eventName, event, dispatchNumber) {
   if (eventName === 'workflow_dispatch') {
     return {
-      number: Number(process.env.PR_NUMBER ?? event.inputs?.pr_number),
+      number: Number(dispatchNumber ?? event.inputs?.pr_number),
       expectedHead: null,
       ciConclusion: null,
       trigger: 'dispatch',
@@ -440,7 +495,46 @@ async function eventContext() {
       trigger: 'ci',
     };
   }
+  if (eventName === 'pull_request_review' && event.action === 'submitted') {
+    const expectedHead = event.pull_request?.head?.sha;
+    if (
+      event.review?.user?.login !== CODEX_LOGIN
+      || event.review?.commit_id !== expectedHead
+    ) return null;
+    return {
+      number: Number(event.pull_request?.number),
+      expectedHead,
+      trigger: 'evidence',
+      evidenceDetail: 'Codex submitted a current-head review',
+    };
+  }
+  if (
+    eventName === 'pull_request_review_comment'
+    && event.action === 'created'
+  ) {
+    const expectedHead = event.pull_request?.head?.sha;
+    const postedHead = event.comment?.original_commit_id
+      ?? event.comment?.commit_id;
+    if (
+      event.comment?.user?.login !== CODEX_LOGIN
+      || postedHead !== expectedHead
+    ) return null;
+    return {
+      number: Number(event.pull_request?.number),
+      expectedHead,
+      trigger: 'evidence',
+      evidenceDetail: 'Codex submitted a current-head finding',
+    };
+  }
   return null;
+}
+
+async function eventContext() {
+  const eventName = requiredEnvironment('GITHUB_EVENT_NAME');
+  const event = JSON.parse(
+    await readFile(requiredEnvironment('GITHUB_EVENT_PATH'), 'utf8'),
+  );
+  return contextForEvent(eventName, event, process.env.PR_NUMBER);
 }
 
 export async function run() {
@@ -467,12 +561,29 @@ export async function run() {
     return;
   }
 
+  if (context.trigger === 'evidence') {
+    await handleCodexEvidence(
+      client,
+      pullRequest,
+      expectedHead,
+      context.evidenceDetail,
+    );
+    return;
+  }
+
   if (context.trigger === 'ci') {
     const existingStatus = await client.latestStatus(
       expectedHead,
       STATUS_CONTEXT,
     );
-    if (isTerminalReviewStatus(existingStatus)) {
+    if (
+      await ensureTerminalReviewState(
+        client,
+        pullRequest,
+        expectedHead,
+        existingStatus,
+      )
+    ) {
       console.log(
         'Exact head already has a terminal Codex state; CI rerun will not request review.',
       );
@@ -630,6 +741,13 @@ export async function run() {
         );
         throw new Error(detail);
       }
+      pullRequest = await refreshCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+      );
+      if (!pullRequest) return;
+      await client.enableAutoMerge(pullRequest);
       await client.setStatus(
         expectedHead,
         'success',
@@ -646,13 +764,6 @@ export async function run() {
           next: 'GitHub auto-merge is queued behind branch protection.',
         }),
       );
-      pullRequest = await refreshCurrentHead(
-        client,
-        pullRequest.number,
-        expectedHead,
-      );
-      if (!pullRequest) return;
-      await client.enableAutoMerge(pullRequest);
       return;
     }
 

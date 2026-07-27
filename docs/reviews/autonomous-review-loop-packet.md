@@ -42,9 +42,11 @@ packet does not embed a self-referential final SHA.
   old workflow merged on review existence alone, then GREEN after replacement.
 - Baseline before implementation: `pnpm check` passed (web 432/432, API 659/659,
   both builds clean).
-- Focused automation battery after the final head-race guard: 14/14 passed.
+- Reproduce-first same-head contracts failed before each correction: review/comment
+  re-entry, CI-rerun terminal-state loss, legacy review-only failure, late evidence,
+  and success-before-auto-merge ordering. The final focused battery passed 25/25.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 14/14, web
+- Final `pnpm check` after protocol alignment passed: automation 25/25, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -90,18 +92,27 @@ review. A Codex finding therefore triggered another review of the unchanged SHA;
 that review triggered another workflow run, producing a live same-head loop on
 PR #230.
 
-The correction removes both review events from the workflow and from
-`eventContext`. Only CI completion for a head without a terminal Codex status, or
-an explicit operator dispatch, may initiate draft-to-ready. The CI-triggered run
-already polls reviews, inline comments, and clean reactions until it reaches a
-terminal exact-head result, so a second event listener is unnecessary.
+The correction separates **review-start** from **review-result** events. Only CI
+completion for a head without a terminal Codex status, or an explicit operator
+dispatch, may initiate draft-to-ready. `pull_request_review: submitted` and
+`pull_request_review_comment: created` remain as result-only listeners: they
+accept only the Codex GitHub App and the exact current head, fail branch protection
+before presentation mutations, and draft the PR. They cannot call `reviewAttempt`
+or mark a PR ready. This preserves delayed-finding safety without creating another
+review request.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with
 `pending`. The follow-up guard reads the latest `codex-current-head` status before
 any status or draft mutation. A review success or review failure is terminal for
 ordinary CI events; CI failures remain retryable. New statuses use `review:` and
-`ci:` prefixes, while the classifier recognizes the unprefixed terminal statuses
-already present on PR #230. Only `workflow_dispatch` can deliberately retry a
-terminal same-head review. Regression tests cover both trigger removal and the
-same-head CI-rerun guard.
+`ci:` prefixes, while the classifier recognizes all unprefixed terminal statuses
+emitted by the earlier gate, including `Codex submitted a current-head review`.
+Only `workflow_dispatch` can deliberately retry a terminal same-head review.
+
+Auto-merge is queued before review success is published. If a CI rerun observes an
+existing terminal success, it idempotently verifies or enables auto-merge before
+returning. This closes the cancellation window in which a newer per-PR workflow
+could otherwise stop the original run after success but before the queue operation.
+Regression tests cover event-role separation, the same-head CI-rerun guard, legacy
+terminal values, late exact-head findings, and terminal-success recovery.

@@ -4,6 +4,10 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -19,14 +23,16 @@ permissions:
   statuses: write
 
 concurrency:
-  group: autonomous-review-${{ github.event.workflow_run.pull_requests[0].number || inputs.pr_number || github.run_id }}
+  group: autonomous-review-${{ github.event.workflow_run.pull_requests[0].number || github.event.pull_request.number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   orchestrate:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.event == 'pull_request'
+      github.event.workflow_run.event == 'pull_request' ||
+      github.event_name == 'pull_request_review' ||
+      github.event_name == 'pull_request_review_comment'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

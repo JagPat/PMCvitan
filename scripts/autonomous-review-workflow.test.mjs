@@ -51,6 +51,63 @@ test('keeps the Codex trigger retry bounded', () => {
   assert.equal(MAX_REVIEW_ATTEMPTS, 2);
 });
 
+test('result-only events accept only exact-head Codex evidence', () => {
+  assert.equal(typeof reviewGate.contextForEvent, 'function');
+  const head = 'a'.repeat(40);
+  const pullRequest = { number: 230, head: { sha: head } };
+  const codex = { login: 'chatgpt-codex-connector[bot]' };
+
+  assert.deepEqual(
+    reviewGate.contextForEvent('pull_request_review', {
+      action: 'submitted',
+      pull_request: pullRequest,
+      review: { user: codex, commit_id: head },
+    }),
+    {
+      number: 230,
+      expectedHead: head,
+      trigger: 'evidence',
+      evidenceDetail: 'Codex submitted a current-head review',
+    },
+  );
+  assert.deepEqual(
+    reviewGate.contextForEvent('pull_request_review_comment', {
+      action: 'created',
+      pull_request: pullRequest,
+      comment: {
+        user: codex,
+        commit_id: head,
+        original_commit_id: head,
+      },
+    }),
+    {
+      number: 230,
+      expectedHead: head,
+      trigger: 'evidence',
+      evidenceDetail: 'Codex submitted a current-head finding',
+    },
+  );
+  assert.equal(
+    reviewGate.contextForEvent('pull_request_review', {
+      action: 'submitted',
+      pull_request: pullRequest,
+      review: { user: codex, commit_id: 'b'.repeat(40) },
+    }),
+    null,
+  );
+  assert.equal(
+    reviewGate.contextForEvent('pull_request_review_comment', {
+      action: 'created',
+      pull_request: pullRequest,
+      comment: {
+        user: { login: 'human-reviewer' },
+        original_commit_id: head,
+      },
+    }),
+    null,
+  );
+});
+
 test('a CI rerun cannot reopen a terminal review cycle on the same head', () => {
   assert.equal(typeof reviewGate.isTerminalReviewStatus, 'function');
   assert.equal(
@@ -64,6 +121,13 @@ test('a CI rerun cannot reopen a terminal review cycle on the same head', () => 
     reviewGate.isTerminalReviewStatus({
       state: 'failure',
       description: '11 current-head Codex findings',
+    }),
+    true,
+  );
+  assert.equal(
+    reviewGate.isTerminalReviewStatus({
+      state: 'failure',
+      description: 'Codex submitted a current-head review',
     }),
     true,
   );
@@ -90,7 +154,7 @@ test('a CI rerun cannot reopen a terminal review cycle on the same head', () => 
   );
 });
 
-test('workflow starts a review only after CI or an operator dispatch', async () => {
+test('workflow separates review-start events from result-only evidence events', async () => {
   const [workflow, gate] = await Promise.all([
     readFile(workflowPath, 'utf8'),
     readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8'),
@@ -99,13 +163,21 @@ test('workflow starts a review only after CI or an operator dispatch', async () 
   assert.match(workflow, /workflow_run:/);
   assert.match(workflow, /workflows:\s*\[CI\]/);
   assert.match(workflow, /workflow_dispatch:/);
-  assert.doesNotMatch(workflow, /pull_request_review:/);
-  assert.doesNotMatch(workflow, /pull_request_review_comment:/);
-  assert.doesNotMatch(gate, /eventName === 'pull_request_review'/);
-  assert.doesNotMatch(gate, /eventName === 'pull_request_review_comment'/);
+  assert.match(workflow, /pull_request_review:\s*\n\s*types:\s*\[submitted\]/);
+  assert.match(workflow, /pull_request_review_comment:\s*\n\s*types:\s*\[created\]/);
+  assert.match(gate, /eventName === 'pull_request_review'/);
+  assert.match(gate, /eventName === 'pull_request_review_comment'/);
+  assert.match(gate, /trigger:\s*'evidence'/);
+  assert.match(gate, /handleCodexEvidence\(/);
+  const evidenceHandler = gate.slice(
+    gate.indexOf('async function handleCodexEvidence'),
+    gate.indexOf('async function waitForRequiredChecks'),
+  );
+  assert.doesNotMatch(evidenceHandler, /reviewAttempt\(/);
+  assert.doesNotMatch(evidenceHandler, /setDraftForCurrentHead[\s\S]*false/);
   assert.match(gate, /context\.trigger === 'ci'/);
   assert.match(gate, /client\.latestStatus\(/);
-  assert.match(gate, /isTerminalReviewStatus\(existingStatus\)/);
+  assert.match(gate, /ensureTerminalReviewState\(/);
   assert.match(workflow, /statuses:\s*write/);
   assert.match(workflow, /pull-requests:\s*write/);
   assert.match(workflow, /issues:\s*write/);
@@ -114,6 +186,20 @@ test('workflow starts a review only after CI or an operator dispatch', async () 
   assert.match(workflow, /actions\/checkout@[0-9a-f]{40}/);
   assert.match(workflow, /actions\/setup-node@[0-9a-f]{40}/);
   assert.doesNotMatch(workflow, /pull_request_target:/);
+});
+
+test('terminal success queues auto-merge before it can end the workflow', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(gate, /ensureTerminalReviewState\(/);
+  const clearBranch = gate.slice(
+    gate.indexOf("if (result.state === 'clear')"),
+    gate.indexOf('if (attempt < MAX_REVIEW_ATTEMPTS)'),
+  );
+  assert.ok(clearBranch.indexOf('enableAutoMerge') >= 0);
+  assert.ok(clearBranch.indexOf('enableAutoMerge') < clearBranch.indexOf("'success'"));
 });
 
 test('workflow has no AI action or AI credential dependency', async () => {
