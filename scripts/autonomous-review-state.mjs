@@ -12,6 +12,26 @@ function isCodexActor(item) {
   return item?.user?.login === CODEX_LOGIN;
 }
 
+/**
+ * The commit a review comment was POSTED against.
+ *
+ * GitHub keeps two SHAs on a review comment. `original_commit_id` is the head Codex actually
+ * reviewed and never changes. `commit_id` is the newest commit the comment still applies to, and
+ * GitHub ADVANCES it every time the branch moves, for every comment whose anchor still resolves.
+ *
+ * Reading `commit_id` therefore makes yesterday's findings look like a review of today's head: a
+ * corrective push inherits every still-anchorable comment from the previous round, the gate fails
+ * again, the pull request returns to draft, and the loop can never clear — no review of the new
+ * head has happened or is even required for that to occur. Binding to `original_commit_id` asks the
+ * question that actually matters: did Codex review THIS head and find something?
+ *
+ * `commit_id` is the fallback only for a payload that omits the original (older API shapes and
+ * hand-written fixtures), so a comment is never silently ignored.
+ */
+function postedAgainst(comment) {
+  return comment?.original_commit_id ?? comment?.commit_id;
+}
+
 export function isEligiblePullRequest(pullRequest) {
   const state = String(pullRequest?.state ?? '').toUpperCase();
   const headRepository = pullRequest?.headRepository?.nameWithOwner;
@@ -42,7 +62,7 @@ export function classifyCodexState({
   const nowMs = timestamp(now, 'now');
 
   const currentHeadComments = comments.filter(
-    (comment) => isCodexActor(comment) && comment.commit_id === expectedHead,
+    (comment) => isCodexActor(comment) && postedAgainst(comment) === expectedHead,
   );
   if (currentHeadComments.length > 0) {
     const count = currentHeadComments.length;
