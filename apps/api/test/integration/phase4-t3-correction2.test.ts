@@ -5,6 +5,8 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { LabourService } from '../../src/labour/labour.service';
 import { LabourCapacityService } from '../../src/labour/labour-capacity.service';
+import { LabourProcurementService } from '../../src/labour/labour-procurement.service';
+import { VendorsService } from '../../src/procurement/vendors.service';
 import { WorkerDevicesService } from '../../src/orgs/worker-devices.service';
 import { CapabilitiesService, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
@@ -34,6 +36,8 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
   let requirements: RequirementsService;
   let labour: LabourService;
   let capacity: LabourCapacityService;
+  let commercial: LabourProcurementService;
+  let vendors: VendorsService;
   let devices: WorkerDevicesService;
   let capabilities: CapabilitiesService;
   let seq = 0;
@@ -46,6 +50,7 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
     'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourQuoteComparison", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability", "Media" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
+  const orgAdmin = (): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc', projectId: '' }) as AuthUser;
 
   beforeAll(async () => {
     t = await createTestApp();
@@ -53,6 +58,8 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
     requirements = t.app.get(RequirementsService);
     labour = t.app.get(LabourService);
     capacity = t.app.get(LabourCapacityService);
+    commercial = t.app.get(LabourProcurementService);
+    vendors = t.app.get(VendorsService);
     devices = t.app.get(WorkerDevicesService);
     capabilities = t.app.get(CapabilitiesService);
     raceDb = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
@@ -60,11 +67,13 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
   afterAll(async () => {
     await raceDb?.$disconnect();
     await t?.prisma.$executeRawUnsafe(TRUNCATE);
+    await t?.prisma.vendor.deleteMany({ where: { orgId: f.orgA.id } });
     await f?.cleanup();
     await t?.close();
   });
   afterEach(async () => {
     await t.prisma.$executeRawUnsafe(TRUNCATE);
+    await t.prisma.vendor.deleteMany({ where: { orgId: f.orgA.id } });
     for (const [model, where] of [
       ['auditLog', { projectId: { startsWith: 'it-p4y-' } }],
       ['activity', { projectId: { startsWith: 'it-p4y-' } }],
@@ -189,7 +198,10 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
     // RED at e7e8744: `LabourAttendance_trusted_evidence` only tests IS NOT NULL, so a string of
     // spaces passed — an unevidenced presence claim wearing an empty justification, which is exactly
     // the state the finding says the Team gate must never read as execution truth.
-    for (const blank of ['', '   ', '\t', '\n  \t ']) {
+    // The set is the COMPLETE ASCII whitespace class. `\v` and `\f` are here because the first draft
+    // used `btrim(x, E' \t\r\n')` — which strips neither — so a vertical-tab-only reason passed the
+    // CHECK. Unreachable from a keyboard, entirely reachable through an import or a raw write.
+    for (const blank of ['', '   ', '\t', '\n  \t ', '\v', '\f', '\v\f\t \r\n']) {
       await expect(
         t.prisma.$executeRawUnsafe(
           `INSERT INTO "LabourAttendance" ("id","projectId","workerId","civilDate","shift","manualReason","recordedById","sourceCommandId")
@@ -242,6 +254,28 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
   ) =>
     `INSERT INTO "WorkerAllocation" ("id","projectId","workerId","civilDate","shift","activityId","requirementId","originRevision","labourSpecFingerprint","allocatedById","sourceCommandId")
      VALUES ('${a.id}','${a.projectId}','${a.workerId}',DATE '2026-08-10','day','${a.activityId}','${a.requirementId}',${a.revision},'${a.fingerprint}','${a.userId}','${a.commandId}')`;
+
+  /** an ISSUED labour PO line + its CapacityCommitment for ONE (civilDate, qty) slice */
+  const committedCapacity = async (
+    projectId: string, req: { requirementId: string; revision: number }, civilDate: string, qty: number,
+  ): Promise<string> => {
+    const vendor = await vendors.create(f.orgA.id, { name: `Supplier ${seq++}` }, orgAdmin());
+    await vendors.bind(projectId, { vendorId: vendor.id }, pmc(projectId));
+    const requisition = await commercial.createRequisition(projectId, { title: `req ${seq++}`, lines: [{ requirementId: req.requirementId, revision: req.revision, civilDate, personShiftQty: qty }] }, pmc(projectId));
+    const line = requisition.lines[0]!;
+    await commercial.submitRequisition(projectId, requisition.id, pmc(projectId));
+    await commercial.approveRequisition(projectId, requisition.id, pmc(projectId));
+    const rfq = await commercial.createRfq(projectId, { requisitionId: requisition.id }, pmc(projectId));
+    await commercial.recordQuote(projectId, rfq.id, { vendorId: vendor.id, validUntil: '2026-12-31', lines: [{ requisitionLineId: line.id, ratePerPersonShift: '1000', shiftPremium: '0', landedPerPersonShift: '1000', matchesSpecification: true }] }, pmc(projectId));
+    await commercial.createComparison(projectId, rfq.id, pmc(projectId));
+    const quoteId = (await commercial.readRfq(projectId, rfq.id, pmc(projectId))).quotes[0]!.id;
+    await commercial.approveComparison(projectId, rfq.id, { selectedQuoteId: quoteId, reason: 'single in-spec quote' }, pmc(projectId));
+    const comparisonId = (await commercial.readRfq(projectId, rfq.id, pmc(projectId))).comparison!.id;
+    const po = await commercial.createPo(projectId, { comparisonId, lines: [{ requisitionLineId: line.id, personShiftQty: qty }] }, pmc(projectId));
+    const poLine = po.currentVersion.lines[0]!;
+    await commercial.issuePo(projectId, po.id, pmc(projectId));
+    return (await commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: civilDate }, pmc(projectId))).id;
+  };
 
   const allocationChain = async () => {
     const projectId = await freshProject();
@@ -375,5 +409,85 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
     expect(b.status === 'rejected' && String(b.reason)).toMatch(/cancelled/i);
     const state = await assertCoherent(c.projectId, c.req.requirementId);
     expect(state).toEqual({ cancelled: true, active: 0 });
+  });
+
+  // ── LOCK ORDER — a raw allocation and the canonical one never form a cycle ────────────────────
+
+  /**
+   * Re-review finding: the two rows an allocation touches are the requirement ROOT and the
+   * CAPACITY COMMITMENT. PostgreSQL fires BEFORE INSERT row triggers in NAME order, so the insert
+   * itself takes `WorkerAllocation_head_live` (root) then `WorkerAllocation_within_commitment`
+   * (commitment) — root → commitment. The service used to lock the commitment FIRST and only reach
+   * the root inside its own insert, i.e. commitment → root. A raw insert holding the root and
+   * waiting for the commitment, against a canonical allocate holding the commitment and waiting for
+   * the root, is a lock CYCLE: PostgreSQL breaks it by aborting one otherwise-valid allocation.
+   *
+   * `requirementHead` now takes the root FIRST, so every path requests the pair in the same order
+   * and one simply waits. Both orderings are driven here; neither may produce a deadlock (40P01),
+   * and the §F bound-3 quantity of 1 still admits exactly one winner.
+   */
+  const lockOrderChain = async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const activityId = await freshActivity(projectId);
+    const req = await labourRequirement(projectId, activityId, [{ civilDate: '2026-08-10', personShiftQty: 1 }]);
+    const commitmentId = await committedCapacity(projectId, req, '2026-08-10', 1);
+    const [wRaw, wSvc] = [await onboardWorker(projectId), await onboardWorker(projectId)];
+    const spec = await t.prisma.labourRequirementSpec.findFirstOrThrow({
+      where: { projectId, requirementId: req.requirementId }, orderBy: { revision: 'desc' },
+    });
+    const commandId = await rawCommand(projectId, 'labour.allocation.allocate');
+    const rawInsert =
+      `INSERT INTO "WorkerAllocation" ("id","projectId","workerId","civilDate","shift","activityId","requirementId","originRevision","labourSpecFingerprint","capacityCommitmentId","allocatedById","sourceCommandId")
+       VALUES ('lo-${seq++}','${projectId}','${wRaw}',DATE '2026-08-10','day','${activityId}','${req.requirementId}',${spec.revision},'${spec.labourSpecFingerprint}','${commitmentId}','${f.memberUser.id}','${commandId}')`;
+    return { projectId, activityId, req, commitmentId, wSvc, rawInsert };
+  };
+
+  const isDeadlock = (e: unknown) => /deadlock detected|40P01/i.test(String(e));
+
+  it('lock order: a RAW allocation holding the root, then the canonical allocate — no deadlock, one winner', async () => {
+    const c = await lockOrderChain();
+    const held = gate();
+    const release = gate();
+
+    // Session A: raw insert — its triggers take root, then commitment. Held open.
+    const sessionA = raceDb.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(c.rawInsert);
+      held.open();
+      await release.promise;
+    }, { timeout: 30_000, maxWait: 10_000 });
+    await held.promise;
+
+    // Session B: the CANONICAL path, which now takes the root before the commitment.
+    const sessionB = reflect(
+      capacity.allocate(c.projectId, { activityId: c.activityId, requirementId: c.req.requirementId, civilDate: '2026-08-10', workerId: c.wSvc, capacityCommitmentId: c.commitmentId }, pmc(c.projectId)),
+    );
+    await waitUntilBlocked('%ActivityRequirementRoot%FOR UPDATE%');
+    release.open();
+    await sessionA;
+    const b = await sessionB;
+
+    // The canonical side must LOSE on the bound (the single person-shift is taken) — never abort
+    // with a deadlock, which would be the database destroying a valid request over lock ordering.
+    expect(b.status).toBe('rejected');
+    expect(b.status === 'rejected' && isDeadlock(b.reason), `must not be a deadlock: ${b.status === 'rejected' ? String(b.reason) : ''}`).toBe(false);
+    expect(await t.prisma.workerAllocation.count({ where: { projectId: c.projectId, capacityCommitmentId: c.commitmentId, status: 'active' } })).toBe(1);
+  });
+
+  it('lock order: the canonical allocate holding both rows, then a RAW allocation — no deadlock, one winner', async () => {
+    const c = await lockOrderChain();
+
+    // The canonical allocation commits first, taking the single committed person-shift…
+    const first = await capacity.allocate(
+      c.projectId, { activityId: c.activityId, requirementId: c.req.requirementId, civilDate: '2026-08-10', workerId: c.wSvc, capacityCommitmentId: c.commitmentId }, pmc(c.projectId),
+    );
+    expect(first.allocations).toHaveLength(1);
+
+    // …so the raw insert is refused by the §F bound-3 trigger — on the bound, not on a lock cycle.
+    const raw = await reflect(raceDb.$executeRawUnsafe(c.rawInsert));
+    expect(raw.status).toBe('rejected');
+    expect(raw.status === 'rejected' && isDeadlock(raw.reason), 'a bound refusal, never a deadlock').toBe(false);
+    expect(raw.status === 'rejected' && String(raw.reason)).toMatch(/commit|bound|person-shift/i);
+    expect(await t.prisma.workerAllocation.count({ where: { projectId: c.projectId, capacityCommitmentId: c.commitmentId, status: 'active' } })).toBe(1);
   });
 });

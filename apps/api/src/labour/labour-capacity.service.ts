@@ -175,6 +175,21 @@ export class LabourCapacityService {
    * revision, not the newest labour row.
    */
   private async requirementHead(tx: CommandTx, projectId: string, requirementId: string) {
+    // LOCK ORDER (correction 2, re-review): take the `ActivityRequirementRoot` row FIRST, before any
+    // `CapacityCommitment` lock this command will later need. PostgreSQL fires BEFORE INSERT row
+    // triggers in NAME order, so a `WorkerAllocation` insert acquires
+    // `WorkerAllocation_head_live` (root) and only then `WorkerAllocation_within_commitment`
+    // (commitment) — root → commitment. Locking the commitment first here would give this path
+    // commitment → root, and a raw insert racing a canonical allocate on the same pair would form a
+    // lock CYCLE that PostgreSQL breaks by aborting one otherwise-valid allocation. Every path now
+    // requests the two rows in the SAME order, so one simply waits: a deadlock is impossible by
+    // construction, exactly as the ascending-`workerId` rule below does for crews.
+    //
+    // It also makes the head authoritative: the status read below cannot change under this command,
+    // because a concurrent revise/cancel serializes on this very row (`lockRootHead`).
+    await tx.$queryRaw`
+      SELECT "id" FROM "ActivityRequirementRoot"
+      WHERE "projectId" = ${projectId} AND "id" = ${requirementId} FOR UPDATE`;
     const head = await this.activityParticipant.labourRequirementHead(tx, { projectId, requirementId });
     if (!head) throw new NotFoundException('No requirement with that id in this project');
     if (head.status === 'cancelled') {

@@ -1175,8 +1175,8 @@ assert_rejects "labour T3C2 finding 1: rewriting a recorded manualReason after t
   "UPDATE \"LabourAttendance\" SET \"manualReason\"='a different story' WHERE \"id\"='UPL-T3CMAN'"
 assert_rejects "labour T3C2 finding 1: a whitespace-only manualReason (spaces)" \
   "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"manualReason\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3C2B1','p1','UPL-T3W','2026-08-19','day','   ','USER-1','UPL-CMD1')"
-assert_rejects "labour T3C2 finding 1: a whitespace-only manualReason (tab/newline — btrim's default set does NOT cover these)" \
-  "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"manualReason\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3C2B2','p1','UPL-T3W','2026-08-20','day',E'\t\n ','USER-1','UPL-CMD1')"
+assert_rejects "labour T3C2 finding 1: a whitespace-only manualReason (tab/newline/VT/FF — none are in btrim's default set)" \
+  "INSERT INTO \"LabourAttendance\"(\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"manualReason\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T3C2B2','p1','UPL-T3W','2026-08-20','day',E'\t\n\x0B\f ','USER-1','UPL-CMD1')"
 # … while the ONE permitted mutation still works: a single revocation stamp, reason preserved.
 $PSQL >/dev/null <<SQL && printf 'ok      %s\n' "labour T3C2 finding 1: the one-time revocation stamp is still permitted (precision, not just strictness)" || { printf 'FAILED  %s\n' "labour T3C2 revocation stamp rejected"; FAIL=1; }
 UPDATE "LabourAttendance" SET "revokedAt"=NOW(),"revokedById"='USER-1',"revokeReason"='recorded against the wrong worker' WHERE "id"='UPL-T3CMAN';

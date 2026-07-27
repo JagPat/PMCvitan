@@ -360,7 +360,7 @@ device. Inventing a reason would be worse than the blank: it would look like evi
    ```sql
    SELECT "id", "projectId", "workerId", "civilDate", "shift", "recordedById", "recordedAt"
      FROM "LabourAttendance"
-    WHERE "manualReason" IS NOT NULL AND btrim("manualReason", E' \t\r\n') = ''
+    WHERE "manualReason" IS NOT NULL AND btrim("manualReason", E' \t\n\x0B\f\r') = ''
     ORDER BY "projectId", "civilDate";
    ```
 2. **Revoke each one through the application**, not with SQL — `POST …/labour/attendance/:id/revoke`
@@ -375,7 +375,7 @@ device. Inventing a reason would be worse than the blank: it would look like evi
    BEGIN;
    ALTER TABLE "LabourAttendance" DISABLE TRIGGER "LabourAttendance_append_only";
    DELETE FROM "LabourAttendance"
-    WHERE "manualReason" IS NOT NULL AND btrim("manualReason", E' \t\r\n') = '';
+    WHERE "manualReason" IS NOT NULL AND btrim("manualReason", E' \t\n\x0B\f\r') = '';
    ALTER TABLE "LabourAttendance" ENABLE TRIGGER "LabourAttendance_append_only";
    -- verify the trigger is enabled again BEFORE committing
    SELECT tgenabled FROM pg_trigger WHERE tgname = 'LabourAttendance_append_only';  -- must be 'O'
