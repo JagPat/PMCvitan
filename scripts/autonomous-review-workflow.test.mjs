@@ -1007,6 +1007,11 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
   );
   const terminalRecovery = runBody.indexOf('ensureTerminalReviewState(');
   assert.ok(ciFailure >= 0 && ciFailure < terminalRecovery);
+  const liveFindingGuard = runBody.indexOf('guardAgainstCurrentHeadFinding(');
+  assert.ok(
+    liveFindingGuard >= 0 && liveFindingGuard < terminalRecovery,
+    'live Codex evidence must be checked before recovered success can return',
+  );
   assert.match(runBody, /if \(!isTerminalReviewStatus\(existingStatus\)\)[\s\S]*`ci:/);
 });
 

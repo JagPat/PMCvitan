@@ -900,6 +900,14 @@ export async function run() {
     }
   }
 
+  const existingFinding = await guardAgainstCurrentHeadFinding(
+    client,
+    pullRequest,
+    expectedHead,
+    recoveryRequest,
+  );
+  if (existingFinding) throw new Error(existingFinding);
+
   if (!requestedTerminalStatus && terminalStatus) {
     if (
       await ensureTerminalReviewState(
@@ -916,14 +924,6 @@ export async function run() {
       return;
     }
   }
-
-  const existingFinding = await guardAgainstCurrentHeadFinding(
-    client,
-    pullRequest,
-    expectedHead,
-    recoveryRequest,
-  );
-  if (existingFinding) throw new Error(existingFinding);
 
   await client.setStatus(
     expectedHead,
