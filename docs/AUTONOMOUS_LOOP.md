@@ -80,11 +80,12 @@ status on that head. Pending, successful, or superseded status IDs fail closed.
 Recovery uses a CI-independent concurrency lane, so a later same-head CI run cannot
 replace an explicit retry. Its pending status carries the owning Actions run ID;
 parallel CI observes that live owner and stands down. If the owner ends without a
-terminal result, the next CI run fails the review state explicitly, while a new
-exact-token dispatch may take over the completed lease. The run ID is ownership,
-not timestamp-based admission. Ordinary CI recovery searches the complete
-paginated status history, including terminal review results hidden below legacy
-`pending` or `ci:` statuses.
+terminal result, statuses are refreshed before the next CI run fails the review
+state explicitly, while a new exact-token dispatch may take over the completed
+lease. Failed CI is processed before stand-down, and the owner rechecks required
+CI before publishing review success. The run ID is ownership, not timestamp-based
+admission. Ordinary CI recovery searches the complete paginated status history,
+including terminal review results hidden below legacy `pending` or `ci:` statuses.
 Ordinary review-result webhooks are intentionally not orchestrator triggers. The
 Codex App's finding comments still wake the subscription-backed Claude Auto-fix
 session directly; GitHub Actions does not need an AI key or a second result writer.

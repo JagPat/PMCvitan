@@ -407,6 +407,28 @@ test('an active recovery owner blocks parallel CI admission', () => {
   );
 });
 
+test('failed CI preempts recovery stand-down and completed leases are refreshed', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const ciFailureIndex = gate.indexOf(
+    "context.ciConclusion && context.ciConclusion !== 'success'",
+  );
+  const recoveryStandDownIndex = gate.indexOf(
+    "context.trigger === 'ci'\n    && activeRecoveryRunId(existingStatuses, recoveryRun)",
+  );
+
+  assert.notEqual(ciFailureIndex, -1);
+  assert.notEqual(recoveryStandDownIndex, -1);
+  assert.ok(ciFailureIndex < recoveryStandDownIndex);
+  assert.match(
+    gate,
+    /if \(recoveryRun\?\.status === 'completed'\) \{[\s\S]*existingStatuses = await client\.statuses\(expectedHead\)/,
+  );
+  assert.match(gate, /finalCheckSummary/);
+});
+
 test('recovery uses a durable status token and a CI-independent lane', async () => {
   const [workflow, gate] = await Promise.all([
     readFile(workflowPath, 'utf8'),

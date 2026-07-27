@@ -48,9 +48,9 @@ packet does not embed a self-referential final SHA.
   buried terminal-result recovery, and executable exact-head recovery.
   The final architectural regression proves that review-result webhooks cannot
   enter the merge orchestrator or publish its status. The focused battery passed
-  38/38.
+  39/39.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 38/38, web
+- Final `pnpm check` after protocol alignment passed: automation 39/39, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -121,11 +121,14 @@ CI-independent concurrency lane and requires both the live head SHA and the exac
 latest failed terminal status ID. Pending, successful, and superseded IDs are
 rejected before any status or draft mutation. The recovery pending status records
 the owning Actions run ID. A parallel CI run queries that owner and stands down
-while it is live; a completed owner without a terminal result is failed explicitly
-or taken over by a new exact-token dispatch. The run ID is a lease identity, never
-a timestamp admission heuristic. This removes same-second ambiguity, prevents a
-later CI run from replacing a queued retry, and prevents the two lanes from owning
-the same review concurrently. Deterministic regressions pin all three cases.
+while it is live, except that failed CI is handled first and latched for the owner.
+A completed owner causes a fresh status-history read before it is declared stale;
+an actually abandoned lease is failed explicitly or taken over by a new exact-token
+dispatch. The owner also rechecks required CI before review success. The run ID is
+a lease identity, never a timestamp admission heuristic. This removes same-second
+ambiguity, prevents a later CI run from replacing a queued retry, and prevents the
+two lanes from owning the same review concurrently. Deterministic regressions pin
+all three cases and both completion boundaries.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with

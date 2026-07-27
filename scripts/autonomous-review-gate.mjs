@@ -85,6 +85,15 @@ export function hasTerminalReviewFailureSince(statuses, since) {
     && Date.parse(status.created_at) >= sinceTime);
 }
 
+function hasCiFailureSince(statuses, since) {
+  const sinceTime = Date.parse(since);
+  return statuses.some((status) =>
+    status.context === STATUS_CONTEXT
+    && status.state === 'failure'
+    && status.description?.startsWith('ci:')
+    && Date.parse(status.created_at) >= sinceTime);
+}
+
 export function reviewCycleStartedAt(statuses) {
   const pending = statuses.find((status) =>
     isReviewPendingStatus(status));
@@ -627,17 +636,65 @@ export async function run() {
     return;
   }
 
-  const existingStatuses = context.trigger === 'ci' || context.trigger === 'dispatch'
+  let existingStatuses = context.trigger === 'ci' || context.trigger === 'dispatch'
     ? await client.statuses(expectedHead)
     : [];
   const existingStatus = existingStatuses.find(
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
-  const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
-  const recoveryRunId = recoveryPendingRunId(existingStatuses);
-  const recoveryRun = recoveryRunId
+
+  if (context.ciConclusion && context.ciConclusion !== 'success') {
+    pullRequest = shouldDraftForCiFailure(existingStatus)
+      ? await setDraftForCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+          true,
+        )
+      : await refreshCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+        );
+    if (!pullRequest) return;
+    if (!isTerminalReviewStatus(existingStatus)) {
+      await client.setStatus(
+        expectedHead,
+        'failure',
+        `ci: workflow concluded ${context.ciConclusion}`,
+        pullRequest.html_url,
+      );
+    }
+    await client.updateStickyComment(
+      pullRequest.number,
+      statusBody({
+        state: 'blocked',
+        head: expectedHead,
+        detail: `CI workflow concluded ${context.ciConclusion}`,
+        attempt: 0,
+        next: 'Claude Auto-fix addresses CI before review begins.',
+      }),
+    );
+    throw new Error(`CI workflow concluded ${context.ciConclusion}`);
+  }
+
+  let terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
+  let recoveryRunId = recoveryPendingRunId(existingStatuses);
+  let recoveryRun = recoveryRunId
     ? await client.workflowRun(recoveryRunId)
     : null;
+
+  if (recoveryRun?.status === 'completed') {
+    existingStatuses = await client.statuses(expectedHead);
+    terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
+    const refreshedRunId = recoveryPendingRunId(existingStatuses);
+    if (refreshedRunId !== recoveryRunId) {
+      recoveryRunId = refreshedRunId;
+      recoveryRun = recoveryRunId
+        ? await client.workflowRun(recoveryRunId)
+        : null;
+    }
+  }
 
   if (
     context.trigger === 'ci'
@@ -679,41 +736,6 @@ export async function run() {
       }),
     );
     throw new Error(detail);
-  }
-
-  if (context.ciConclusion && context.ciConclusion !== 'success') {
-    pullRequest = shouldDraftForCiFailure(existingStatus)
-      ? await setDraftForCurrentHead(
-          client,
-          pullRequest.number,
-          expectedHead,
-          true,
-        )
-      : await refreshCurrentHead(
-          client,
-          pullRequest.number,
-          expectedHead,
-        );
-    if (!pullRequest) return;
-    if (!isTerminalReviewStatus(existingStatus)) {
-      await client.setStatus(
-        expectedHead,
-        'failure',
-        `ci: workflow concluded ${context.ciConclusion}`,
-        pullRequest.html_url,
-      );
-    }
-    await client.updateStickyComment(
-      pullRequest.number,
-      statusBody({
-        state: 'blocked',
-        head: expectedHead,
-        detail: `CI workflow concluded ${context.ciConclusion}`,
-        attempt: 0,
-        next: 'Claude Auto-fix addresses CI before review begins.',
-      }),
-    );
-    throw new Error(`CI workflow concluded ${context.ciConclusion}`);
   }
 
   if (context.trigger === 'dispatch') {
@@ -867,6 +889,42 @@ export async function run() {
             detail,
             attempt,
             next: 'Claude Auto-fix handles the latest review evidence and pushes a new head.',
+          }),
+        );
+        throw new Error(detail);
+      }
+      const finalStatuses = await client.statuses(expectedHead);
+      const finalCheckSummary = summarizeRequiredChecks(
+        await client.checkRuns(expectedHead),
+      );
+      const cycleStartedAt = reviewCycleStartedAt(finalStatuses)
+        ?? reviewNotBefore;
+      if (
+        finalCheckSummary.state !== 'success'
+        || hasCiFailureSince(finalStatuses, cycleStartedAt)
+      ) {
+        pullRequest = await setDraftForCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+          true,
+        );
+        if (!pullRequest) return;
+        const detail = 'Required CI changed during current-head Codex review';
+        await client.setStatus(
+          expectedHead,
+          'failure',
+          `review: ${detail}`,
+          pullRequest.html_url,
+        );
+        await client.updateStickyComment(
+          pullRequest.number,
+          statusBody({
+            state: 'blocked',
+            head: expectedHead,
+            detail,
+            attempt,
+            next: 'Re-dispatch after required CI is green on this exact head.',
           }),
         );
         throw new Error(detail);
