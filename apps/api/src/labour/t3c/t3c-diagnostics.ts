@@ -178,6 +178,22 @@ function markerPredicate(haveEvidence: boolean): string {
  * about this row's actual history. `manualReason` is deliberately excluded from the equality check —
  * rewriting it is the one thing the repair does — but its SHAPE is checked per op, which is what
  * distinguishes a retirement's before-image from a quarantine's.
+ *
+ * EVERY comparison here is TOTAL: it returns true or false for any JSON value and can never raise.
+ * That is a correctness requirement, not a style preference. A `::date` or `::timestamptz` cast of an
+ * attacker-supplied string raises a conversion error instead of evaluating false, and this predicate
+ * is used by BOTH the preflight and the quarantine — so a single `"civilDate": "not-a-date"` would
+ * make the preflight exit with an opaque PostgreSQL error AND make the quarantine that is supposed to
+ * file that very row fail the same way, leaving the deploy blocked with no exit at all. `civilDate` is
+ * therefore compared as text against `to_char(…, 'YYYY-MM-DD')`, which is exactly how `row_to_json`
+ * renders a DATE.
+ *
+ * `recordedAt` is checked for PRESENCE only, and deliberately not for value. `row_to_json` renders a
+ * timestamptz using the session's own DateStyle/TimeZone, so a text comparison would be a false
+ * negative whenever the capture and the check ran under different settings — and no cast of it can be
+ * made total. Its value adds little: the row's identity is already pinned by eight exact string
+ * comparisons including `id`, `sourceCommandId` and `recordedById`. Requiring the key to exist still
+ * rejects the truncated before-image this rule exists to catch.
  */
 export function t3cGenuineEvidenceSql(alias: string): string {
   /** Immutable per `phase4_t3_attendance_append_only`; `manualReason` is excluded (the repair rewrites it). */
@@ -195,11 +211,10 @@ export function t3cGenuineEvidenceSql(alias: string): string {
                AND r."beforeImage"->>'id'              = ${alias}."id"
                AND r."beforeImage"->>'projectId'       = ${alias}."projectId"
                AND r."beforeImage"->>'workerId'        = ${alias}."workerId"
-               AND (r."beforeImage"->>'civilDate')::date = ${alias}."civilDate"
+               AND r."beforeImage"->>'civilDate'       = to_char(${alias}."civilDate", 'YYYY-MM-DD')
                AND r."beforeImage"->>'shift'           = ${alias}."shift"
                AND r."beforeImage"->>'deviceId'        IS NOT DISTINCT FROM ${alias}."deviceId"
                AND r."beforeImage"->>'evidenceMediaId' IS NOT DISTINCT FROM ${alias}."evidenceMediaId"
-               AND (r."beforeImage"->>'recordedAt')::timestamptz = ${alias}."recordedAt"
                AND r."beforeImage"->>'recordedById'    = ${alias}."recordedById"
                AND r."beforeImage"->>'sourceCommandId' = ${alias}."sourceCommandId"
                AND (

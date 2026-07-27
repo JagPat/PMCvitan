@@ -1201,6 +1201,107 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     expect(Number(orphan[0]!.n), 'the legacy row is preserved, not erased').toBe(1);
   });
 
+  // ══ ROUND-6 RE-REVIEW — no predicate may THROW, and no seal may be trusted by name ═══════════
+
+  it('R6-A: a malformed before-image value is REJECTED, not an error — the row stays quarantinable', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2026-11-01');
+    await repairs.repair({
+      operator: 'ops@vitan.in', reason: 'create the evidence table',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+
+    const fake = '88888888-8888-8888-8888-888888888888';
+    const forged = await forgedMarkedMuster(
+      projectId, await onboardWorker(projectId), `${T3C_INVALID_LEGACY_PREFIX} repair=${fake}; junk dates`, '2026-11-02',
+    );
+    const row = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id: forged } });
+    // Complete, but with garbage where a date belongs. RED at 12190c0: the predicate cast this with
+    // `::date`, so PostgreSQL raised a conversion error — the PREFLIGHT exited opaquely AND the
+    // quarantine, which asks the same question, failed identically. The row could never be filed and
+    // the deploy was blocked with no exit at all.
+    await rawEvidence(fake, forged, JSON.stringify({
+      id: forged, projectId, workerId: row.workerId, civilDate: 'not-a-date', shift: 'day',
+      deviceId: null, evidenceMediaId: null, manualReason: '   ',
+      recordedAt: 'also-not-a-date', recordedById: row.recordedById, sourceCommandId: row.sourceCommandId,
+    }));
+
+    const report = await repairs.preflight();   // must not throw
+    const marker = report.findings.find((x) => x.code === 'F1.marker')!;
+    expect(marker.samples.map((s) => s['id'])).toContain(forged);
+    expect(marker.samples.find((s) => s['id'] === forged)!['exit']).toBe('quarantine');
+
+    // …and the exit actually works, which is the whole point
+    await repairs.repair({
+      operator: 'ops@vitan.in', reason: 'incident: cited evidence carries junk in place of a civil date',
+      actions: [{ op: 'f1-quarantine-forged-marker', id: forged, revokedById: f.ownerUser.id, revokeReason: 'before-image is not this row' }],
+    });
+    expect((await repairs.preflight()).clean).toBe(true);
+  });
+
+  it('R6-B: a same-named CHECK that enforces nothing is NOT a seal', async () => {
+    // RED at 12190c0: `correctionSeals` accepted any validated constraint with the right name, so a
+    // `CHECK (TRUE)` decoy reported the database as fully sealed — and on the P3005 baseline path
+    // `migrate.sh` would then resolve correction 3 as applied without ever running its real guard.
+    expect((await repairs.correctionSeals()).installed).toBe(true);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_marker_is_revoked"`);
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_marker_is_revoked" CHECK (TRUE)`,
+    );
+    try {
+      const seals = await repairs.correctionSeals();
+      expect(seals.installed).toBe(false);
+      expect(seals.missing).toContain('LabourAttendance_marker_is_revoked');
+    } finally {
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_marker_is_revoked"`);
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_marker_is_revoked"
+           CHECK ("manualReason" IS NULL
+               OR "manualReason" NOT LIKE '${T3C_INVALID_LEGACY_PREFIX}%'
+               OR "revokedAt" IS NOT NULL)`,
+      );
+    }
+    expect((await repairs.correctionSeals()).installed).toBe(true);
+  });
+
+  it('R6-C: a DECOY evidence trigger aborts the repair — it never commits over an unsealed table', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const seed = await legacyBlankMuster(projectId, workerId, '2026-11-03');
+    await repairs.repair({
+      operator: 'ops@vitan.in', reason: 'create the evidence table',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+
+    // A legacy table carrying an ENABLED same-named NO-OP trigger. RED at 12190c0: the create-guard
+    // skipped on the name and `assertTriggersEnabled` checked only name + enabled, so the repair
+    // committed while the before-image it had just written stayed freely updateable.
+    await t.prisma.$executeRawUnsafe(`DROP TRIGGER "T3CRepairAction_append_only" ON "T3CRepairAction"`);
+    await t.prisma.$executeRawUnsafe(
+      `CREATE OR REPLACE FUNCTION phase4_t3c_decoy() RETURNS trigger AS $fn$ BEGIN RETURN NEW; END; $fn$ LANGUAGE plpgsql`,
+    );
+    await t.prisma.$executeRawUnsafe(
+      `CREATE TRIGGER "T3CRepairAction_append_only" BEFORE UPDATE OR DELETE ON "T3CRepairAction"
+         FOR EACH ROW EXECUTE FUNCTION phase4_t3c_decoy()`,
+    );
+
+    const next = await legacyBlankMuster(projectId, await onboardWorker(projectId), '2026-11-04');
+    await expect(
+      repairs.repair({
+        operator: 'ops@vitan.in', reason: 'repair over a decoy-sealed evidence table',
+        actions: [{ op: 'f1-mark-invalid-legacy', id: next, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+      }),
+    ).rejects.toThrow(/does not seal the evidence|not enforcing/i);
+
+    // the refusal rolled everything back — the muster is untouched, still blank, still a finding
+    const untouched = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id: next } });
+    expect(untouched.manualReason).toBe('   ');
+    expect(untouched.revokedAt).toBeNull();
+  });
+
   it('R8: the repair EVIDENCE is append-only — its before-image can be neither rewritten nor deleted', async () => {
     const projectId = await freshProject();
     await enableLabour(projectId);

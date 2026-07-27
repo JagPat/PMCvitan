@@ -121,14 +121,19 @@ BEGIN
                                       AND jsonb_exists(r."beforeImage", 'recordedById')
                                       AND jsonb_exists(r."beforeImage", 'sourceCommandId')
                                       -- … and CORRESPOND to the row it claims to be about
+                                      -- EVERY comparison is TOTAL — a cast of an attacker-supplied
+                                      -- string would RAISE instead of evaluating false, aborting the
+                                      -- deploy opaquely and breaking the quarantine that uses this
+                                      -- same rule. `row_to_json` renders a DATE as YYYY-MM-DD, so
+                                      -- text equality is exact; `recordedAt` is presence-only (its
+                                      -- rendering is session-dependent and no cast can be total).
                                       AND r."beforeImage"->>'id'              = a."id"
                                       AND r."beforeImage"->>'projectId'       = a."projectId"
                                       AND r."beforeImage"->>'workerId'        = a."workerId"
-                                      AND (r."beforeImage"->>'civilDate')::date = a."civilDate"
+                                      AND r."beforeImage"->>'civilDate'       = to_char(a."civilDate", 'YYYY-MM-DD')
                                       AND r."beforeImage"->>'shift'           = a."shift"
                                       AND r."beforeImage"->>'deviceId'        IS NOT DISTINCT FROM a."deviceId"
                                       AND r."beforeImage"->>'evidenceMediaId' IS NOT DISTINCT FROM a."evidenceMediaId"
-                                      AND (r."beforeImage"->>'recordedAt')::timestamptz = a."recordedAt"
                                       AND r."beforeImage"->>'recordedById'    = a."recordedById"
                                       AND r."beforeImage"->>'sourceCommandId' = a."sourceCommandId"
                                       AND (

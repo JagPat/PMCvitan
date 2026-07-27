@@ -207,16 +207,27 @@ one of those (F6) is a trap the round-3d fix itself introduced. All six are clos
 | E | P1 | the runbook's classify query labelled evidence from metadata alone while the diagnostic validated shape and attribution: a row citing an action with `beforeImage = {}` read as "evidenced", the operator was told to revoke and explicitly not quarantine, and afterwards the finding was still there with the same unusable instruction | the `F1.marker` sample now carries an **`exit`** column derived from the same predicate as the finding, and §P4T3C3 tells the operator to read it. The hand-written SQL is gone — there is one classifier | `R5-B` also asserts the sample's `exit` |
 | F | P1 | round 3d's own non-blank attribution CHECK aborted every repair when a legacy blank-attribution action existed. The evidence is append-only so the row cannot be edited away, the quarantine appends good evidence without removing the bad action, and an ORPHAN malformed action blocked every deploy without even producing an `F1.marker` | the rule is installed **NOT VALID** when such rows exist (a `WARNING`, not an abort): every FUTURE insert is rejected, the legacy rows are preserved verbatim, nothing is blocked. On a clean table it is VALIDATED — the stronger claim, still pinned by `R4-C`. Any marker relying on such an action is an `F1.marker` with `exit: quarantine` | `R5-F` |
 
+## Round 3f — the current-head Codex review of `12190c0` (3 findings)
+
+All three are in code rounds 3d/3e introduced, and the first is the "no exit" class one more time —
+this time created by round 3e's own correspondence check.
+
+| # | sev | finding | fix | RED evidence at `12190c0` |
+|---|---|---|---|---|
+| A | P1 | `(beforeImage->>'civilDate')::date` and the `::timestamptz` cast RAISE on a malformed value instead of evaluating false. The preflight would exit with an opaque PostgreSQL conversion error, and the quarantine — which calls the same predicate — would fail identically, so the very row that needs filing could not be filed and the deploy stayed blocked | every comparison is now TOTAL. `civilDate` is compared as text against `to_char(…, 'YYYY-MM-DD')`, exactly how `row_to_json` renders a DATE. `recordedAt` drops to PRESENCE-only: its rendering is session-dependent (DateStyle/TimeZone), so a text comparison would be a false negative across settings and no cast of it can be made total. Identity is still pinned by eight exact string comparisons including `id`, `sourceCommandId` and `recordedById` | `R6-A` |
+| B | P1 | `correctionSeals` accepted any validated constraint with the right name, so a same-named `CHECK (TRUE)` reported the database as fully sealed — and on the P3005 baseline path `migrate.sh` would resolve correction 3 as applied without ever executing its real guard | the DEFINITION is checked too (`contype='c'`, `convalidated`, and `pg_get_constraintdef` mentioning both the reserved prefix and `revokedAt`) — the same test the migration's own guard applies | `R6-B` |
+| C | P1 | the evidence-seal create-guards accepted any same-named trigger regardless of function, events or enabled state, and `assertTriggersEnabled` checked only name + enabled. An enabled same-named no-op meant a repair committed while the before-image it had just written stayed freely updateable | the guards check the bound function AND the firing events (`tgtype`) and ABORT on a decoy rather than skipping it; `assertTriggersEnabled` additionally verifies the bound function for the two triggers this engine owns (`EXPECTED_TRIGGER_FUNCTION`) | `R6-C` |
+
 ## Gates
 
-All figures below are from the post-round-3e tree.
+All figures below are from the post-round-3f tree.
 
 | gate | result |
 |---|---|
 | `pnpm check` | **EXIT 0** — web 432/432, API 667/667, build clean |
 | all 67 migrations over an empty database | **applied cleanly** (the merged finding-A block is valid SQL on a fresh schema) |
-| full live-PostgreSQL integration suite (recreated DB) | **69 files / 620 tests passed** |
-| `phase4-t3-correction3.test.ts` | **30/30** (12 directive + 6 round-3b + 2 round-3c + 4 round-3d + 6 round-3e) |
+| full live-PostgreSQL integration suite (recreated DB) | **69 files / 623 tests passed** |
+| `phase4-t3-correction3.test.ts` | **33/33** (12 directive + 6 round-3b + 2 round-3c + 4 round-3d + 6 round-3e + 3 round-3f) |
 | `phase4-t3-correction2.test.ts` | **6/6** with the project-scoped advisory barrier |
 | `boundary.test.ts` / `module-registry.test.ts` / `cross-module-graph.test.ts` | GREEN (114 tests; +4 indirect-SQL fixtures) |
 | `scripts/upgrade-proof.sh` | **PASSED** — the 4 round-3 assertions plus every prior Phase-1…Phase-4-T3C2 rejection |
@@ -240,6 +251,10 @@ a table-wide `pg_locks` scan.
   advisory lock and never reaches the `ActivityRequirementRoot … FOR UPDATE` those barriers watched.
   The new `waitUntilBlockedOnProjectLock()` requires an UNGRANTED `advisory` lock, so it is a real
   barrier and not a loosened one. Every assertion in both probes is unchanged and still passes.
+- **`recordedAt` value equality was REMOVED, not merely relaxed.** Round 3e checked it; round 3f
+  checks only that the key is present. That is a real reduction in what the predicate proves, made
+  because no total comparison of a session-rendered timestamptz exists. It is stated here rather than
+  presented as equivalent.
 - **Two probes changed their expected values, deliberately.** `R4-B` now names the row's actual
   revoker (finding C makes a mismatched id a refusal) and asserts the corrected `detail` shape
   (`revokeReason` = the preserved original, `repairNote` = the operator's words). Neither assertion

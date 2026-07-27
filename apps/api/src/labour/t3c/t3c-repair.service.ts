@@ -83,6 +83,19 @@ const IMMUTABILITY_TRIGGERS: ReadonlyArray<string> = [
 ];
 
 /**
+ * The function each verified trigger MUST be bound to, where this engine is the authority on it.
+ *
+ * Only the two evidence triggers appear: they are created here, so their correct binding is known
+ * here. The four `20270210000000` triggers are deliberately absent — this file does not own their
+ * definitions and asserting a guessed function name would be a claim it cannot back. For those,
+ * name + enabled remains the check, which is what it has always been.
+ */
+const EXPECTED_TRIGGER_FUNCTION: Readonly<Record<string, string>> = {
+  T3CRepairAction_append_only: 'phase4_t3c_repair_action_append_only',
+  T3CRepairAction_no_truncate: 'phase4_t3c_repair_action_no_truncate',
+};
+
+/**
  * The evidence table's own seal. INSERT is the only permitted operation: an audit row is never
  * corrected, superseded or tidied away — a mistaken repair is answered by another repair, which
  * writes another row. Deliberately NOT in {@link DISABLEABLE_TRIGGERS}, so no repair plan can ever
@@ -109,16 +122,38 @@ const EVIDENCE_SEAL_SQL = [
        RAISE EXCEPTION 'T3CRepairAction is append-only — repair evidence is never truncated';
      END;
    $fn$ LANGUAGE plpgsql`,
-  `DO $do$ BEGIN
-     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'T3CRepairAction_append_only'
-                     AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal) THEN
+  // "Absent" is decided by VALIDITY, not by name — the same rule the migration applies. A legacy
+  // table carrying an ENABLED same-named no-op trigger would otherwise make this guard skip
+  // creation, and `assertTriggersEnabled` (which also checks the bound function) is the only thing
+  // left standing between that and a repair committing while its freshly written before-image stays
+  // freely updateable. A decoy is an ABORT, not something to replace silently: replacing it would
+  // erase the evidence that someone put it there.
+  `DO $do$
+     DECLARE tg pg_trigger%ROWTYPE;
+   BEGIN
+     SELECT * INTO tg FROM pg_trigger WHERE tgname = 'T3CRepairAction_append_only'
+       AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal;
+     IF NOT FOUND THEN
        CREATE TRIGGER "T3CRepairAction_append_only" BEFORE UPDATE OR DELETE ON "T3CRepairAction"
          FOR EACH ROW EXECUTE FUNCTION phase4_t3c_repair_action_append_only();
+     ELSIF tg.tgenabled <> 'O'
+        OR tg.tgfoid::regproc::text <> 'phase4_t3c_repair_action_append_only'
+        OR (tg.tgtype & 8) = 0     -- fires on UPDATE
+        OR (tg.tgtype & 16) = 0 THEN -- …and on DELETE
+       RAISE EXCEPTION 'T3CRepairAction_append_only exists but does not seal the evidence (enabled=%, function=%, tgtype=%) — refusing to write repair evidence a later write could rewrite. See docs/RUNBOOK.md §P4T3C3.',
+         tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
      END IF;
-     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'T3CRepairAction_no_truncate'
-                     AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal) THEN
+
+     SELECT * INTO tg FROM pg_trigger WHERE tgname = 'T3CRepairAction_no_truncate'
+       AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal;
+     IF NOT FOUND THEN
        CREATE TRIGGER "T3CRepairAction_no_truncate" BEFORE TRUNCATE ON "T3CRepairAction"
          FOR EACH STATEMENT EXECUTE FUNCTION phase4_t3c_repair_action_no_truncate();
+     ELSIF tg.tgenabled <> 'O'
+        OR tg.tgfoid::regproc::text <> 'phase4_t3c_repair_action_no_truncate'
+        OR (tg.tgtype & 32) = 0 THEN -- fires on TRUNCATE
+       RAISE EXCEPTION 'T3CRepairAction_no_truncate exists but does not seal the evidence against TRUNCATE (enabled=%, function=%, tgtype=%). See docs/RUNBOOK.md §P4T3C3.',
+         tg.tgenabled, tg.tgfoid::regproc::text, tg.tgtype;
      END IF;
    END $do$`,
   // The attribution must SAY something. `operator` and `reason` are NOT NULL, but NOT NULL is
@@ -369,11 +404,24 @@ export class T3CRepairService {
             )
           : // `convalidated` matters as much as existence: a CHECK added NOT VALID does not constrain
             // the rows already in the table, so a database carrying it unvalidated is not sealed.
+            //
+            // And the DEFINITION matters as much as the name. A same-named `CHECK (TRUE)` is
+            // validated, is a check constraint, and enforces nothing — accepting it would report a
+            // database as fully sealed, and on the P3005 baseline path `migrate.sh` would then
+            // resolve correction 3 as applied without ever executing its real guard, leaving live
+            // reserved-marker rows permitted forever. The definition must mention both halves of the
+            // rule it is supposed to be: the reserved prefix, and the revocation that must accompany
+            // it. This is the same test the migration's own guard applies.
             await this.prisma.$queryRawUnsafe<Array<{ n: number }>>(
               `SELECT count(*)::int AS n FROM pg_constraint c
-                WHERE c.conname = $1 AND c.conrelid = to_regclass($2) AND c.convalidated`,
+                WHERE c.conname = $1 AND c.conrelid = to_regclass($2)
+                  AND c.contype = 'c' AND c.convalidated
+                  AND pg_get_constraintdef(c.oid) LIKE $3
+                  AND pg_get_constraintdef(c.oid) LIKE $4`,
               item.name,
               `"${item.table}"`,
+              `%${T3C_INVALID_LEGACY_PREFIX}%`,
+              '%revokedAt%',
             );
       if (Number(rows[0]?.n ?? 0) > 0) present.push(item.name);
       else missing.push(item.name);
@@ -705,18 +753,25 @@ export class T3CRepairService {
   /** Assert every §C immutability trigger is enabled (`tgenabled='O'`); throw (roll back) otherwise
    *  — a repair that leaves any seal off is not a valid repair. */
   private async assertTriggersEnabled(tx: T3CTxClient): Promise<string[]> {
-    const rows = await tx.$queryRawUnsafe<Array<{ tgname: string; tgenabled: string }>>(
-      `SELECT t.tgname, t.tgenabled FROM pg_trigger t WHERE t.tgname = ANY($1::text[])`,
+    const rows = await tx.$queryRawUnsafe<Array<{ tgname: string; tgenabled: string; fn: string }>>(
+      `SELECT t.tgname, t.tgenabled, t.tgfoid::regproc::text AS fn
+         FROM pg_trigger t WHERE t.tgname = ANY($1::text[]) AND NOT t.tgisinternal`,
       IMMUTABILITY_TRIGGERS as unknown as string[],
     );
-    const byName = new Map(rows.map((r) => [r.tgname, r.tgenabled]));
-    const notEnabled: string[] = [];
+    const byName = new Map(rows.map((r) => [r.tgname, r]));
+    const bad: string[] = [];
     for (const name of IMMUTABILITY_TRIGGERS) {
-      const state = byName.get(name);
-      if (state !== 'O') notEnabled.push(`${name}=${state ?? 'MISSING'}`);
+      const row = byName.get(name);
+      if (!row) { bad.push(`${name}=MISSING`); continue; }
+      if (row.tgenabled !== 'O') { bad.push(`${name}=${row.tgenabled}`); continue; }
+      // A NAME is not enforcement. For the two triggers this engine creates itself, the bound
+      // function is known and checked — an enabled same-named no-op would otherwise pass this
+      // verification and let the repair commit while its own before-image stayed rewritable.
+      const expected = EXPECTED_TRIGGER_FUNCTION[name];
+      if (expected && row.fn !== expected) bad.push(`${name}=bound to ${row.fn}, expected ${expected}`);
     }
-    if (notEnabled.length > 0) {
-      throw new RepairAbortedError(`trigger verification failed — not re-enabled: ${notEnabled.join(', ')}`);
+    if (bad.length > 0) {
+      throw new RepairAbortedError(`trigger verification failed — not re-enabled or not enforcing: ${bad.join(', ')}`);
     }
     return [...IMMUTABILITY_TRIGGERS];
   }
