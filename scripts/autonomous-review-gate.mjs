@@ -70,6 +70,13 @@ export function isTerminalReviewStatus(status) {
     || description.includes('Codex evidence changed');
 }
 
+export function shouldDraftForCiFailure(status) {
+  return !(
+    isTerminalReviewStatus(status)
+    && status.state === 'success'
+  );
+}
+
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -586,12 +593,18 @@ export async function run() {
     : null;
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
-    pullRequest = await setDraftForCurrentHead(
-      client,
-      pullRequest.number,
-      expectedHead,
-      true,
-    );
+    pullRequest = shouldDraftForCiFailure(existingStatus)
+      ? await setDraftForCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+          true,
+        )
+      : await refreshCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+        );
     if (!pullRequest) return;
     if (!isTerminalReviewStatus(existingStatus)) {
       await client.setStatus(
@@ -760,6 +773,49 @@ export async function run() {
       );
       if (!pullRequest) return;
       await client.enableAutoMerge(pullRequest);
+      const finalResult = await reclassifyCurrentCodexEvidence(
+        client,
+        pullRequest.number,
+        expectedHead,
+        reviewNotBefore,
+      );
+      const finalStatus = await client.latestStatus(
+        expectedHead,
+        STATUS_CONTEXT,
+      );
+      const concurrentReviewFailure = finalStatus?.state === 'failure'
+        && isTerminalReviewStatus(finalStatus);
+      if (finalResult.state !== 'clear' || concurrentReviewFailure) {
+        const detail = finalResult.state === 'changes_required'
+          ? finalResult.detail
+          : concurrentReviewFailure
+            ? finalStatus.description
+            : 'Codex evidence changed during terminal publication';
+        await client.setStatus(
+          expectedHead,
+          'failure',
+          `review: ${detail}`,
+          pullRequest.html_url,
+        );
+        pullRequest = await setDraftForCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+          true,
+        );
+        if (!pullRequest) return;
+        await client.updateStickyComment(
+          pullRequest.number,
+          statusBody({
+            state: 'changes_required',
+            head: expectedHead,
+            detail,
+            attempt,
+            next: 'Claude Auto-fix handles the terminal review evidence and pushes a new head.',
+          }),
+        );
+        throw new Error(detail);
+      }
       await client.setStatus(
         expectedHead,
         'success',

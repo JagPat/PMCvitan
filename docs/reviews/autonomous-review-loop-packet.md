@@ -44,9 +44,9 @@ packet does not embed a self-referential final SHA.
   both builds clean).
 - Reproduce-first same-head contracts failed before each correction: review/comment
   re-entry, CI-rerun terminal-state loss, legacy review-only failure, late evidence,
-  and success-before-auto-merge ordering. The final focused battery passed 27/27.
+  and success-before-auto-merge ordering. The final focused battery passed 28/28.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 27/27, web
+- Final `pnpm check` after protocol alignment passed: automation 28/28, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -119,9 +119,16 @@ Auto-merge is queued before review success is published. If a CI rerun observes 
 existing terminal success, it idempotently verifies or enables auto-merge before
 returning. This closes the cancellation window in which a newer per-PR workflow
 could otherwise stop the original run after success but before the queue operation.
-Terminal failures similarly restore draft state before returning. A failed CI rerun
-is handled before terminal-review recovery; when a terminal review verdict already
-exists, the CI handoff does not overwrite that durable review state. Regression
-tests cover event-role and concurrency separation, the same-head CI-rerun guard,
-legacy terminal values, late exact-head findings, terminal-state recovery, and
-failed-CI ordering.
+Immediately before success, the gate re-reads both exact-head Codex evidence and
+the latest durable status; a concurrently published review failure is republished
+as failure before the PR is drafted. Terminal failures similarly restore draft
+state before returning.
+
+A failed CI rerun is handled before terminal-review recovery. When the durable
+review verdict is success, the CI handoff preserves both that verdict and the PR's
+ready state, so a later green rerun can resume auto-merge without another
+draft-to-ready review request. Other CI failures draft the PR, and no CI outcome
+overwrites an existing terminal review verdict. Regression tests cover event-role
+and concurrency separation, the same-head CI-rerun guard, legacy terminal values,
+late exact-head findings, terminal-state recovery/publication, and failed-CI
+ordering.

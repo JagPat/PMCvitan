@@ -154,6 +154,31 @@ test('a CI rerun cannot reopen a terminal review cycle on the same head', () => 
   );
 });
 
+test('a failed CI rerun preserves readiness after a terminal review success', () => {
+  assert.equal(typeof reviewGate.shouldDraftForCiFailure, 'function');
+  assert.equal(
+    reviewGate.shouldDraftForCiFailure({
+      state: 'success',
+      description: 'review: Codex found no blocking issue',
+    }),
+    false,
+  );
+  assert.equal(
+    reviewGate.shouldDraftForCiFailure({
+      state: 'failure',
+      description: 'review: 1 current-head Codex finding',
+    }),
+    true,
+  );
+  assert.equal(
+    reviewGate.shouldDraftForCiFailure({
+      state: 'failure',
+      description: 'ci: api failed',
+    }),
+    true,
+  );
+});
+
 test('workflow separates review-start events from result-only evidence events', async () => {
   const [workflow, gate] = await Promise.all([
     readFile(workflowPath, 'utf8'),
@@ -200,6 +225,14 @@ test('terminal success queues auto-merge before it can end the workflow', async 
   );
   assert.ok(clearBranch.indexOf('enableAutoMerge') >= 0);
   assert.ok(clearBranch.indexOf('enableAutoMerge') < clearBranch.indexOf("'success'"));
+  const finalEvidence = clearBranch.lastIndexOf(
+    'reclassifyCurrentCodexEvidence',
+  );
+  const finalStatus = clearBranch.lastIndexOf('client.latestStatus');
+  const publishedSuccess = clearBranch.indexOf("'success'");
+  assert.ok(finalEvidence > clearBranch.indexOf('enableAutoMerge'));
+  assert.ok(finalStatus > finalEvidence);
+  assert.ok(finalStatus < publishedSuccess);
 });
 
 test('review evidence cannot cancel the active review-start run', async () => {
