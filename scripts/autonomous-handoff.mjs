@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
 const MERGE_MARKER = '<!-- autonomous-post-merge:';
+const HANDOFF_ENABLED_AT = Date.parse('2026-07-27T00:00:00Z');
 const MERGEABILITY_TIMEOUT_MS = Number(
   process.env.MERGEABILITY_TIMEOUT_MS ?? 8 * 60_000,
 );
@@ -74,10 +75,36 @@ class GitHubClient {
     }
   }
 
-  comments(number) {
-    return this.request(
-      `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
-    );
+  async mergedPullRequestsSinceEnabled() {
+    const pullRequests = [];
+    for (let page = 1; ; page += 1) {
+      const batch = await this.request(
+        `/repos/${this.repository}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`,
+      );
+      for (const pullRequest of batch) {
+        if (Date.parse(pullRequest.updated_at) < HANDOFF_ENABLED_AT) {
+          return pullRequests;
+        }
+        if (
+          pullRequest.merged_at &&
+          Date.parse(pullRequest.merged_at) >= HANDOFF_ENABLED_AT
+        ) {
+          pullRequests.push(pullRequest);
+        }
+      }
+      if (batch.length < 100) return pullRequests;
+    }
+  }
+
+  async comments(number) {
+    const comments = [];
+    for (let page = 1; ; page += 1) {
+      const batch = await this.request(
+        `/repos/${this.repository}/issues/${number}/comments?per_page=100&page=${page}`,
+      );
+      comments.push(...batch);
+      if (batch.length < 100) return comments;
+    }
   }
 
   comment(number, body) {
@@ -170,17 +197,20 @@ export async function run() {
     token: requiredEnvironment('GITHUB_TOKEN'),
   });
 
+  // Drain the durable merge backlog on every surviving event. GitHub may replace
+  // a pending concurrency run, so correctness cannot depend on one closed event.
+  for (const mergedPullRequest of await client.mergedPullRequestsSinceEnabled()) {
+    await handOffMergedPullRequest(
+      client,
+      mergedPullRequest,
+      repository,
+      defaultBranch,
+    );
+  }
+
   if (eventName === 'pull_request_target') {
     const pullRequest = await client.pullRequest(event.pull_request.number);
-    if (event.action === 'closed') {
-      await handOffMergedPullRequest(
-        client,
-        pullRequest,
-        repository,
-        defaultBranch,
-      );
-      return;
-    }
+    if (event.action === 'closed') return;
     await handOffConflict(client, pullRequest, repository, defaultBranch);
     return;
   }

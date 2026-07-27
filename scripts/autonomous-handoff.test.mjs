@@ -75,4 +75,7 @@ test('handoff implementation covers both conflicts and behind-base states', asyn
   assert.match(implementation, /while \(live\.mergeable === null/);
   assert.match(implementation, /MERGEABILITY_TIMEOUT_MS/);
   assert.match(implementation, /pullRequest\?\.base\?\.ref !== defaultBranch/);
+  assert.match(implementation, /mergedPullRequestsSinceEnabled/);
+  assert.match(implementation, /HANDOFF_ENABLED_AT/);
+  assert.match(implementation, /comments\?per_page=100&page=\$\{page\}/);
 });
