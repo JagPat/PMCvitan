@@ -89,12 +89,12 @@ export function hasTerminalReviewFailureAfterPending(statuses) {
     && isTerminalReviewStatus(status));
 }
 
-export function hasPersistentReviewFailureAfterPending(statuses) {
-  return statusesAfterLatestReviewPending(statuses).some((status) =>
+export function persistentReviewFailure(statuses) {
+  return statuses.find((status) =>
     status.context === STATUS_CONTEXT
     && status.state === 'failure'
     && isTerminalReviewStatus(status)
-    && !isRetryableTerminalReviewFailure(status));
+    && !isRetryableTerminalReviewFailure(status)) ?? null;
 }
 
 function hasCiFailureAfterPending(statuses) {
@@ -114,6 +114,9 @@ function isReviewPendingStatus(status) {
 }
 
 export function recoverableTerminalReviewStatus(statuses) {
+  const persistentFailure = persistentReviewFailure(statuses);
+  if (persistentFailure) return persistentFailure;
+
   const reviewStatuses = statuses.filter(
     (status) => status.context === STATUS_CONTEXT,
   );
@@ -198,12 +201,12 @@ export function recoveryRequestTerminal(statuses, request) {
     const supersedingTerminal = statuses.slice(0, sourceIndex).find((status) =>
       status.context === STATUS_CONTEXT && isTerminalReviewStatus(status));
     if (!supersedingTerminal) return sourceStatus;
-    if (hasPersistentReviewFailureAfterPending(statuses)) return null;
+    if (persistentReviewFailure(statuses)) return null;
     return isRetryableTerminalReviewFailure(supersedingTerminal)
       ? supersedingTerminal
       : null;
   }
-  if (hasPersistentReviewFailureAfterPending(statuses)) return null;
+  if (persistentReviewFailure(statuses)) return null;
   const terminalStatus = latestTerminalReviewStatus(statuses);
   if (!isRetryableTerminalReviewFailure(terminalStatus)) return null;
   return String(terminalStatus.id) === String(request.terminalStatusId)
@@ -223,7 +226,7 @@ export function isRetryableTerminalReviewFailure(status) {
 }
 
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
-  if (hasPersistentReviewFailureAfterPending(statuses)) return null;
+  if (persistentReviewFailure(statuses)) return null;
   const latestReviewStatus = statuses.find(
     (status) => status.context === STATUS_CONTEXT,
   );
@@ -535,7 +538,7 @@ export async function ensureTerminalReviewState(
 ) {
   if (!isTerminalReviewStatus(status)) return false;
   if (status.state === 'success') {
-    if (hasTerminalReviewFailureAfterPending(statuses)) {
+    if (persistentReviewFailure(statuses)) {
       await client.setStatus(
         expectedHead,
         'failure',

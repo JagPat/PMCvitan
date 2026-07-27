@@ -432,6 +432,14 @@ test('recovery requires an exact retryable failure or active pending status', ()
     ...failed,
     id: 987654327,
   };
+  const pendingAfterFinding = {
+    ...stuckPending,
+    id: 987654328,
+  };
+  const pendingBeforeFinding = {
+    ...stuckPending,
+    id: 987654329,
+  };
 
   assert.equal(
     reviewGate.authorizeRecoveryDispatch(
@@ -474,6 +482,13 @@ test('recovery requires an exact retryable failure or active pending status', ()
     ),
     null,
   );
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch(
+      [pendingAfterFinding, findingBeforeTimeout, pendingBeforeFinding],
+      '987654328',
+    ),
+    null,
+  );
 });
 
 test('legacy CI statuses cannot bury a terminal review result', () => {
@@ -512,6 +527,85 @@ test('legacy CI statuses cannot bury a terminal review result', () => {
     reviewGate.recoverableTerminalReviewStatus([terminal]),
     terminal,
   );
+});
+
+test('a buried current-head finding vetoes recovered clean state', async () => {
+  const expectedHead = 'b'.repeat(40);
+  const cleanStatus = {
+    id: 401,
+    context: 'codex-current-head',
+    state: 'success',
+    description: 'review: Codex found no blocking issue',
+  };
+  const statuses = [
+    {
+      id: 404,
+      context: 'codex-current-head',
+      state: 'failure',
+      description: 'ci: api-e2e failed',
+    },
+    {
+      id: 403,
+      context: 'codex-current-head',
+      state: 'pending',
+      description: 'review: pending required CI and current-head Codex review',
+    },
+    cleanStatus,
+    {
+      id: 400,
+      context: 'codex-current-head',
+      state: 'failure',
+      description: 'review: 1 current-head Codex finding',
+    },
+    {
+      id: 399,
+      context: 'codex-current-head',
+      state: 'pending',
+      description: 'review: pending required CI and current-head Codex review',
+    },
+  ];
+  const pullRequest = {
+    number: 230,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
+  };
+  const draftTransitions = [];
+  const statusWrites = [];
+  let autoMergeCalls = 0;
+  const client = {
+    async pullRequest() {
+      return pullRequest;
+    },
+    async setDraft(current, draft) {
+      draftTransitions.push(draft);
+      current.draft = draft;
+      return current;
+    },
+    async setStatus(head, state, description) {
+      statusWrites.push({ head, state, description });
+    },
+    async enableAutoMerge() {
+      autoMergeCalls += 1;
+    },
+  };
+
+  assert.equal(
+    reviewGate.recoverableTerminalReviewStatus(statuses),
+    statuses[3],
+  );
+  await reviewGate.ensureTerminalReviewState(
+    client,
+    pullRequest,
+    expectedHead,
+    cleanStatus,
+    statuses,
+  );
+  assert.deepEqual(draftTransitions, [true]);
+  assert.equal(autoMergeCalls, 0);
+  assert.equal(statusWrites[0].state, 'failure');
+  assert.match(statusWrites[0].description, /finding latched/u);
 });
 
 test('a durable recovery request survives owner-job replacement', () => {
@@ -850,9 +944,9 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
   );
   assert.match(terminalHelper, /status\.state === 'success'/);
   assert.match(terminalHelper, /recovered prior clean Codex result/);
-  assert.match(terminalHelper, /hasTerminalReviewFailureAfterPending/);
+  assert.match(terminalHelper, /persistentReviewFailure/);
   assert.ok(
-    terminalHelper.indexOf('hasTerminalReviewFailureAfterPending')
+    terminalHelper.indexOf('persistentReviewFailure')
       < terminalHelper.indexOf('enableAutoMerge'),
   );
   assert.ok(
