@@ -70,7 +70,10 @@ gh workflow run auto-merge.yml --repo JagPat/PMCvitan \
 ```
 
 Both inputs are required. The workflow refuses a stale SHA, and the dispatch
-shares the exact head's concurrency lane so it cannot duplicate an active cycle.
+shares the exact head's concurrency lane. If it was queued behind an active cycle,
+it consumes any terminal verdict created after its own GitHub run was queued and
+does not request another review. A dispatch created after an existing terminal
+verdict remains an explicit operator retry.
 Ordinary review-result webhooks are intentionally not orchestrator triggers. The
 Codex App's finding comments still wake the subscription-backed Claude Auto-fix
 session directly; GitHub Actions does not need an AI key or a second result writer.

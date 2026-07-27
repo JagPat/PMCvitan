@@ -96,6 +96,20 @@ export function reviewCycleStartedAt(statuses) {
   return pending?.created_at ?? null;
 }
 
+export function shouldConsumeTerminalReviewStatus(
+  status,
+  trigger,
+  triggerQueuedAt,
+) {
+  if (!isTerminalReviewStatus(status)) return false;
+  if (trigger !== 'dispatch') return true;
+
+  const statusAt = Date.parse(status.created_at);
+  const queuedAt = Date.parse(triggerQueuedAt);
+  if (!Number.isFinite(statusAt) || !Number.isFinite(queuedAt)) return true;
+  return statusAt >= queuedAt;
+}
+
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -166,6 +180,12 @@ class GitHubClient {
       if (batch.length < 100) return statuses;
       page += 1;
     }
+  }
+
+  workflowRun(runId) {
+    return this.request(
+      `/repos/${this.repository}/actions/runs/${runId}`,
+    );
   }
 
   reviews(number) {
@@ -550,12 +570,15 @@ export async function run() {
     return;
   }
 
-  const existingStatuses = context.trigger === 'ci'
+  const existingStatuses = context.trigger === 'ci' || context.trigger === 'dispatch'
     ? await client.statuses(expectedHead)
     : [];
   const existingStatus = existingStatuses.find(
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
+  const triggerQueuedAt = context.trigger === 'dispatch'
+    ? (await client.workflowRun(requiredEnvironment('GITHUB_RUN_ID'))).created_at
+    : null;
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     pullRequest = shouldDraftForCiFailure(existingStatus)
@@ -592,7 +615,13 @@ export async function run() {
     throw new Error(`CI workflow concluded ${context.ciConclusion}`);
   }
 
-  if (context.trigger === 'ci') {
+  if (
+    shouldConsumeTerminalReviewStatus(
+      existingStatus,
+      context.trigger,
+      triggerQueuedAt,
+    )
+  ) {
     if (
       await ensureTerminalReviewState(
         client,
@@ -603,7 +632,7 @@ export async function run() {
       )
     ) {
       console.log(
-        'Exact head already has a terminal Codex state; CI rerun will not request review.',
+        'Exact head reached a terminal Codex state after this run was queued; no review will be requested.',
       );
       return;
     }

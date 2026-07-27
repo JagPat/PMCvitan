@@ -278,6 +278,48 @@ test('terminal recovery scopes its failure latch to the latest review cycle', ()
   );
 });
 
+test('a queued dispatch consumes a terminal result created after it was queued', async () => {
+  assert.equal(typeof reviewGate.shouldConsumeTerminalReviewStatus, 'function');
+  let status = null;
+  let releaseBarrier;
+  const barrier = new Promise((resolve) => { releaseBarrier = resolve; });
+  const queuedDispatch = (async () => {
+    await barrier;
+    return reviewGate.shouldConsumeTerminalReviewStatus(
+      status,
+      'dispatch',
+      '2026-07-27T19:09:00Z',
+    );
+  })();
+
+  status = {
+    state: 'success',
+    description: 'review: Codex found no blocking issue',
+    created_at: '2026-07-27T19:10:00Z',
+  };
+  releaseBarrier();
+  assert.equal(await queuedDispatch, true);
+  assert.equal(
+    reviewGate.shouldConsumeTerminalReviewStatus(
+      status,
+      'dispatch',
+      '2026-07-27T19:11:00Z',
+    ),
+    false,
+  );
+  assert.equal(
+    reviewGate.shouldConsumeTerminalReviewStatus(status, 'ci', null),
+    true,
+  );
+
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(gate, /client\.workflowRun\(/);
+  assert.match(gate, /GITHUB_RUN_ID/);
+});
+
 test('workflow gives one exact-head run sole ownership of review and merge', async () => {
   const [workflow, gate] = await Promise.all([
     readFile(workflowPath, 'utf8'),

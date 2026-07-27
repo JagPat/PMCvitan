@@ -47,9 +47,9 @@ packet does not embed a self-referential final SHA.
   head-scoped/paginated failure-latch recovery, and executable exact-head recovery.
   The final architectural regression proves that review-result webhooks cannot
   enter the merge orchestrator or publish its status. The focused battery passed
-  34/34.
+  35/35.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 34/34, web
+- Final `pnpm check` after protocol alignment passed: automation 35/35, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -113,7 +113,10 @@ Review runs remain serialized by PR number plus exact head SHA. A pushed head
 supersedes the old poll on its next bounded check. A same-head CI rerun waits and
 then consumes the terminal status instead of performing another draft-to-ready
 transition. A manual recovery dispatch shares that lane and requires the live
-head SHA, making retries explicit rather than webhook-driven.
+head SHA. The gate compares the dispatch Actions run's `created_at` with the
+terminal status: a verdict created after the dispatch was queued is consumed as
+the active cycle's result, while a dispatch created after an existing verdict is
+an explicit retry. A deterministic barrier test pins that queued interleaving.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with
