@@ -49,11 +49,26 @@ request paths, and neither is a single point of failure:
 
 | Path | Mechanism | Actor | Covers |
 | --- | --- | --- | --- |
-| A | `.github/workflows/codex-review.yml` | `github-actions[bot]` | Every open/reopen/push/ready, within seconds, once per head SHA |
-| B | The Claude review sweep | the repository owner | Any head that path A left unreviewed — the backstop if Codex ignores bot-authored comments |
+| A | `.github/workflows/codex-review.yml` | a Codex-connected user, via the `CODEX_REVIEW_TOKEN` secret | Every open/reopen/push/ready, within seconds, once per head SHA |
+| B | The Claude review sweep | the repository owner's own credentials | Any head path A left unreviewed — the backstop when the secret is unset or expired |
 
 Both paths are idempotent per head SHA: they skip if Codex has already reviewed that head, and skip
 if a request for that head is already in the thread.
+
+**`@codex review` is a per-user command, and the author matters.** Both identities were tried on real
+pull requests:
+
+| Comment author | Codex's response |
+| --- | --- |
+| `github-actions[bot]` (`GITHUB_TOKEN`) | *"To use Codex here, create a Codex account and connect to github."* — no review (PR #231) |
+| `JagPat` (repository owner) | 👀 acknowledgement, then a review — **on a draft** (PR #230) |
+
+So `GITHUB_TOKEN` cannot drive this, and path A requires `CODEX_REVIEW_TOKEN`. Without that secret
+the workflow **skips and says so** rather than posting a request Codex will refuse — an unanswered
+`@codex review` in the thread is worse than none, because it looks like the loop is working.
+
+The PR #230 result also settles a question worth recording: Codex **does** review a draft when asked
+by a connected user. Only its *automatic* triggers exclude drafts.
 
 ## Merge Gate
 
@@ -99,8 +114,14 @@ The Codex Cloud GitHub review integration and GitHub Actions operate without the
 
 ## Owner-Configured Settings (not in this repository)
 
-Two settings live in GitHub's UI and cannot be committed. Until they are set, the gate is advisory:
-it reports the right verdict, but nothing stops a merge past it.
+These live in GitHub's UI and cannot be committed. Until the branch-protection ones are set, the gate
+is advisory: it reports the right verdict, but nothing stops a merge past it.
+
+**Settings → Secrets and variables → Actions → `CODEX_REVIEW_TOKEN`:** a fine-grained personal access
+token belonging to a GitHub account **with Codex connected**, scoped to this repository with
+`Pull requests: read & write`. This is what lets `codex-review.yml` request reviews automatically;
+without it that workflow skips and the Claude review sweep is the only request path. Rotate it on the
+same schedule as any other credential — the workflow degrades to "skipped", never to a false green.
 
 **Settings → Branches → branch protection for `main`:**
 

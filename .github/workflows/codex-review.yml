@@ -20,12 +20,26 @@ name: Request Codex review
 # This workflow closes both gaps by using the ONE trigger that works regardless of draft state: it
 # comments "@codex review" naming the exact head SHA, once per head.
 #
-# LIMITATION, STATED HONESTLY: this comment is authored by `github-actions[bot]` using GITHUB_TOKEN.
-# GitHub Apps do receive webhooks for bot-authored comments, but some bots deliberately ignore other
-# bots. If Codex ignores this, the request is a harmless no-op — and the Claude review sweep
-# (docs/AUTONOMOUS_LOOP.md, "Review trigger chain") posts the same request as the repository owner,
-# which is guaranteed to be honoured. The two paths are independent on purpose; neither is the single
-# point of failure.
+# WHO POSTS IT MATTERS — this is measured, not assumed. `@codex review` is a per-USER command: the
+# author of the comment must have a Codex account connected to GitHub. Both identities were tried on
+# real pull requests:
+#
+#   github-actions[bot] (GITHUB_TOKEN)  →  Codex replies "To use Codex here, create a Codex account
+#                                          and connect to github." and does NOT review.   (PR #231)
+#   JagPat (repository owner)           →  Codex acknowledges with 👀 and reviews.          (PR #230)
+#
+# So GITHUB_TOKEN is useless here. This job posts as a Codex-connected human using the
+# CODEX_REVIEW_TOKEN secret (a fine-grained PAT with Pull requests: read & write). If that secret is
+# absent the job SKIPS with an explanation rather than posting a request Codex will refuse — a
+# refused request is worse than none, because the thread then shows an unanswered "@codex review"
+# that looks like the loop is working.
+#
+# The Claude review sweep (docs/AUTONOMOUS_LOOP.md, "Review trigger chain") posts the same request
+# under the owner's own credentials and is the backstop when the secret is unset or expired. The two
+# paths are independent on purpose; neither is the single point of failure.
+#
+# Secrets are not exposed to `pull_request` runs from forks, so this path covers same-repository
+# branches only — which is every branch the loop creates.
 
 on:
   pull_request:
@@ -47,12 +61,22 @@ jobs:
     steps:
       - name: Ask Codex to review the current head (once per head SHA)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A Codex-connected identity. GITHUB_TOKEN is deliberately NOT a fallback: Codex refuses
+          # `@codex review` from github-actions[bot], so falling back would post a request that is
+          # answered with a refusal and leave the thread looking like the loop ran.
+          GH_TOKEN: ${{ secrets.CODEX_REVIEW_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "CODEX_REVIEW_TOKEN is not configured — skipping."
+            echo "Codex only honours '@codex review' from a user with a connected Codex account, so a"
+            echo "request from github-actions[bot] would be refused. Until the secret is set, the"
+            echo "Claude review sweep is the only request path (docs/AUTONOMOUS_LOOP.md)."
+            exit 0
+          fi
           echo "PR #$PR head: $HEAD_SHA"
 
           # Already reviewed this exact head? Nothing to ask for.
