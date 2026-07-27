@@ -48,9 +48,9 @@ packet does not embed a self-referential final SHA.
   buried terminal-result recovery, and executable exact-head recovery.
   The final architectural regression proves that review-result webhooks cannot
   enter the merge orchestrator or publish its status. The focused battery passed
-  39/39.
+  38/38.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 39/39, web
+- Final `pnpm check` after protocol alignment passed: automation 38/38, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -116,19 +116,25 @@ Review runs remain serialized by PR number plus exact head SHA. A pushed head
 supersedes the old poll on its next bounded check. A same-head CI rerun recovers a
 terminal review result from the complete paginated status history instead of
 performing another draft-to-ready transition, even when newer legacy `pending` or
-`ci:` statuses obscure that result. A manual recovery dispatch uses a separate
-CI-independent concurrency lane and requires both the live head SHA and the exact
-latest failed terminal status ID. Pending, successful, and superseded IDs are
-rejected before any status or draft mutation. The recovery pending status records
-the owning Actions run ID. A parallel CI run queries that owner and stands down
-while it is live, except that failed CI is handled first and latched for the owner.
-A completed owner causes a fresh status-history read before it is declared stale;
-an actually abandoned lease is failed explicitly or taken over by a new exact-token
-dispatch. The owner also rechecks required CI before review success. The run ID is
-a lease identity, never a timestamp admission heuristic. This removes same-second
-ambiguity, prevents a later CI run from replacing a queued retry, and prevents the
-two lanes from owning the same review concurrently. Deterministic regressions pin
-all three cases and both completion boundaries.
+`ci:` statuses obscure that result. A manual recovery dispatch requires both the
+live head SHA and the exact latest failed terminal status ID. Pending, successful,
+and superseded IDs are rejected before any draft or review mutation. The dispatch
+job records only a durable `codex-recovery-request` commit status. It does not
+invoke Codex or write the authoritative review status.
+
+Normal CI and recovery feed one job-level concurrency group keyed by PR and exact
+head. That serialized owner is the only job allowed to change draft state, invoke
+and poll Codex, publish `codex-current-head`, or queue auto-merge. GitHub may replace
+an older queued job when another owner is queued, but it cannot erase the durable
+request marker; the next owner consumes it. Duplicate dispatches refresh the same
+request, including after an interrupted owner, and queue behind the same owner
+instead of creating another review lane.
+A request remains pending across CI failure and is consumed only after a terminal
+review outcome. The owner also rechecks required CI before review success. This
+removes same-second and lease-boundary ambiguity by eliminating the second owner,
+instead of attempting to coordinate two independently mutable lanes. Deterministic
+regressions pin durable request recovery, single-owner workflow structure, final CI
+revalidation, and the absence of timestamp- or run-ID-based admission.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with
@@ -158,4 +164,4 @@ draft-to-ready review request. Other CI failures draft the PR, and no CI outcome
 overwrites an existing terminal review verdict. Regression tests cover exclusive
 event ownership, exact-head serialization, the same-head CI-rerun guard, legacy
 terminal values, terminal-state recovery/publication, durable recovery tokens,
-CI-independent retry admission, and failed-CI ordering.
+single-owner retry admission, and failed-CI ordering.

@@ -77,18 +77,21 @@ gh workflow run auto-merge.yml --repo JagPat/PMCvitan \
 All three inputs are required. The workflow refuses a stale SHA and authorizes a
 retry only when `terminal_status_id` is the exact latest failed terminal review
 status on that head. Pending, successful, or superseded status IDs fail closed.
-Recovery uses a CI-independent concurrency lane, so a later same-head CI run cannot
-replace an explicit retry. Its pending status carries the owning Actions run ID;
-parallel CI observes that live owner and stands down. If the owner ends without a
-terminal result, statuses are refreshed before the next CI run fails the review
-state explicitly, while a new exact-token dispatch may take over the completed
-lease. Failed CI is processed before stand-down, and the owner rechecks required
-CI before publishing review success. The run ID is ownership, not timestamp-based
-admission. Ordinary CI recovery searches the complete paginated status history,
-including terminal review results hidden below legacy `pending` or `ci:` statuses.
-Ordinary review-result webhooks are intentionally not orchestrator triggers. The
-Codex App's finding comments still wake the subscription-backed Claude Auto-fix
-session directly; GitHub Actions does not need an AI key or a second result writer.
+The dispatch job only writes a durable `codex-recovery-request` marker; it never
+changes draft state, invokes Codex, publishes `codex-current-head`, or queues a
+merge. Both normal CI and recovery then enter the same job-level concurrency group
+for that PR and exact head. That one serialized owner performs every review and
+merge mutation. If GitHub replaces a queued owner job, the durable request remains
+pending and the next owner consumes it. Duplicate dispatches may refresh the same
+request, including after an interrupted owner, but cannot create a concurrent
+reviewer. A request is consumed only after
+a terminal review outcome; CI failure leaves it pending for the next green owner.
+The owner rechecks required CI immediately before publishing review success.
+Ordinary CI recovery searches the complete paginated status history, including
+terminal review results hidden below legacy `pending` or `ci:` statuses. Review
+and review-comment webhooks are intentionally not orchestrator triggers. The Codex
+App's finding comments still wake the subscription-backed Claude Auto-fix session
+directly; GitHub Actions does not need an AI key or a second result writer.
 
 ## GitHub Enforcement
 

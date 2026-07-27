@@ -361,14 +361,14 @@ test('legacy CI statuses cannot bury a terminal review result', () => {
   );
 });
 
-test('an active recovery owner blocks parallel CI admission', () => {
-  assert.equal(typeof reviewGate.recoveryPendingRunId, 'function');
-  assert.equal(typeof reviewGate.activeRecoveryRunId, 'function');
-  const pendingRecovery = {
+test('a durable recovery request survives owner-job replacement', () => {
+  assert.equal(typeof reviewGate.pendingRecoveryRequest, 'function');
+  assert.equal(typeof reviewGate.recoveryRequestTerminal, 'function');
+  const requestStatus = {
     id: 104,
-    context: 'codex-current-head',
+    context: 'codex-recovery-request',
     state: 'pending',
-    description: 'review: pending recovery run 30298398004',
+    description: 'recovery: requested terminal status 103',
     created_at: '2026-07-27T19:13:00Z',
   };
   const priorFailure = {
@@ -378,69 +378,69 @@ test('an active recovery owner blocks parallel CI admission', () => {
     description: 'review: Codex review timed out after two attempts',
     created_at: '2026-07-27T19:12:00Z',
   };
+  const abandonedOwnerPending = {
+    id: 105,
+    context: 'codex-current-head',
+    state: 'pending',
+    description: 'review: pending required CI and current-head Codex review',
+    created_at: '2026-07-27T19:14:00Z',
+  };
 
+  const request = reviewGate.pendingRecoveryRequest([
+    abandonedOwnerPending,
+    requestStatus,
+    priorFailure,
+  ]);
+  assert.deepEqual(request, {
+    status: requestStatus,
+    terminalStatusId: '103',
+  });
   assert.equal(
-    reviewGate.recoveryPendingRunId([pendingRecovery, priorFailure]),
-    '30298398004',
-  );
-  assert.equal(
-    reviewGate.activeRecoveryRunId(
-      [pendingRecovery, priorFailure],
-      { id: 30298398004, status: 'in_progress' },
-    ),
-    '30298398004',
-  );
-  assert.equal(
-    reviewGate.activeRecoveryRunId(
-      [pendingRecovery, priorFailure],
-      { id: 30298398004, status: 'completed' },
-    ),
-    null,
-  );
-  assert.equal(
-    reviewGate.authorizeRecoveryDispatch(
-      [pendingRecovery, priorFailure],
-      '103',
-      'completed',
+    reviewGate.recoveryRequestTerminal(
+      [abandonedOwnerPending, requestStatus, priorFailure],
+      request,
     ),
     priorFailure,
   );
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch(
+      [abandonedOwnerPending, requestStatus, priorFailure],
+      '103',
+    ),
+    priorFailure,
+  );
+  assert.equal(
+    reviewGate.recoveryRequestTerminal(
+      [
+        { ...priorFailure, id: 106, created_at: '2026-07-27T19:15:00Z' },
+        requestStatus,
+        priorFailure,
+      ],
+      request,
+    ),
+    null,
+  );
 });
 
-test('failed CI preempts recovery stand-down and completed leases are refreshed', async () => {
-  const gate = await readFile(
-    new URL('./autonomous-review-gate.mjs', import.meta.url),
-    'utf8',
-  );
-  const ciFailureIndex = gate.indexOf(
-    "context.ciConclusion && context.ciConclusion !== 'success'",
-  );
-  const recoveryStandDownIndex = gate.indexOf(
-    "context.trigger === 'ci'\n    && activeRecoveryRunId(existingStatuses, recoveryRun)",
-  );
-
-  assert.notEqual(ciFailureIndex, -1);
-  assert.notEqual(recoveryStandDownIndex, -1);
-  assert.ok(ciFailureIndex < recoveryStandDownIndex);
-  assert.match(
-    gate,
-    /if \(recoveryRun\?\.status === 'completed'\) \{[\s\S]*existingStatuses = await client\.statuses\(expectedHead\)/,
-  );
-  assert.match(gate, /finalCheckSummary/);
-});
-
-test('recovery uses a durable status token and a CI-independent lane', async () => {
+test('manual recovery records intent before entering the single owner lane', async () => {
   const [workflow, gate] = await Promise.all([
     readFile(workflowPath, 'utf8'),
     readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8'),
   ]);
 
   assert.match(workflow, /terminal_status_id:/);
-  assert.match(workflow, /github\.event_name == 'workflow_dispatch' && 'recovery'/);
+  assert.match(workflow, /request-recovery:/);
+  assert.match(workflow, /AUTONOMOUS_REVIEW_MODE: request-recovery/);
+  assert.match(workflow, /needs:\s*\[request-recovery\]/);
+  assert.match(workflow, /autonomous-review-owner-/);
+  assert.doesNotMatch(workflow, /&& 'recovery' \|\| 'ci'/);
   assert.match(gate, /authorizeRecoveryDispatch\(/);
-  assert.match(gate, /client\.workflowRun\(recoveryRunId\)/);
-  assert.match(gate, /review: pending recovery run/);
+  assert.match(gate, /RECOVERY_CONTEXT/);
+  assert.match(gate, /pendingRecoveryRequest\(/);
+  assert.match(gate, /recoveryRequestTerminal\(/);
+  assert.doesNotMatch(gate, /client\.workflowRun\(/);
   assert.doesNotMatch(gate, /triggerQueuedAt|queuedAt|statusAt/);
+  assert.match(gate, /finalCheckSummary/);
 });
 
 test('workflow gives one exact-head run sole ownership of review and merge', async () => {
@@ -460,7 +460,10 @@ test('workflow gives one exact-head run sole ownership of review and merge', asy
   assert.doesNotMatch(gate, /handleCodexEvidence/);
   assert.doesNotMatch(gate, /admitAutoMerge/);
   assert.match(gate, /reviewAttempt\(/);
-  assert.match(gate, /context\.trigger === 'ci'/);
+  assert.match(workflow, /request-recovery:/);
+  assert.match(workflow, /autonomous-review-owner-/);
+  assert.match(gate, /process\.env\.AUTONOMOUS_REVIEW_MODE === 'request-recovery'/);
+  assert.match(gate, /pendingRecoveryRequest\(/);
   assert.match(gate, /ensureTerminalReviewState\(/);
   assert.match(workflow, /statuses:\s*write/);
   assert.match(workflow, /pull-requests:\s*write/);
@@ -565,11 +568,16 @@ test('workflow has no AI action or AI credential dependency', async () => {
 });
 
 test('workflow recovery is exact-head serialized and has terminal time budget', async () => {
-  const workflow = await readFile(workflowPath, 'utf8');
+  const [workflow, gate] = await Promise.all([
+    readFile(workflowPath, 'utf8'),
+    readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8'),
+  ]);
   assert.match(workflow, /head_sha:/);
   assert.match(workflow, /inputs\.head_sha/);
   assert.match(workflow, /terminal_status_id:/);
-  assert.match(workflow, /inputs\.terminal_status_id/);
+  assert.match(gate, /event\.inputs\?\.terminal_status_id/);
+  assert.match(workflow, /needs:\s*\[request-recovery\]/);
+  assert.match(workflow, /autonomous-review-owner-/);
   assert.match(workflow, /timeout-minutes:\s*60/);
 });
 

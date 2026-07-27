@@ -17,6 +17,7 @@ export const REQUIRED_CHECKS = [
 export const MAX_REVIEW_ATTEMPTS = 2;
 
 const STATUS_CONTEXT = 'codex-current-head';
+const RECOVERY_CONTEXT = 'codex-recovery-request';
 const COMMENT_MARKER = '<!-- autonomous-review-state -->';
 const API_ROOT = 'https://api.github.com';
 const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 10 * 60_000);
@@ -133,41 +134,40 @@ function latestTerminalReviewStatus(statuses) {
     status.context === STATUS_CONTEXT && isTerminalReviewStatus(status)) ?? null;
 }
 
-export function recoveryPendingRunId(statuses) {
-  const latestReviewStatus = statuses.find(
-    (status) => status.context === STATUS_CONTEXT,
+export function pendingRecoveryRequest(statuses) {
+  const latestRequestStatus = statuses.find(
+    (status) => status.context === RECOVERY_CONTEXT,
   );
-  if (!isReviewPendingStatus(latestReviewStatus)) return null;
-  const match = /^review: pending recovery run ([0-9]+)$/u.exec(
-    latestReviewStatus.description ?? '',
+  if (latestRequestStatus?.state !== 'pending') return null;
+  const match = /^recovery: requested terminal status ([0-9]+)$/u.exec(
+    latestRequestStatus.description ?? '',
   );
-  return match?.[1] ?? null;
+  if (!match) return null;
+  return {
+    status: latestRequestStatus,
+    terminalStatusId: match[1],
+  };
 }
 
-export function activeRecoveryRunId(statuses, workflowRun) {
-  const runId = recoveryPendingRunId(statuses);
-  if (
-    !runId
-    || String(workflowRun?.id) !== runId
-    || workflowRun.status === 'completed'
-  ) {
-    return null;
-  }
-  return runId;
+export function recoveryRequestTerminal(statuses, request) {
+  if (!request) return null;
+  const terminalStatus = latestTerminalReviewStatus(statuses);
+  if (!terminalStatus || terminalStatus.state !== 'failure') return null;
+  return String(terminalStatus.id) === String(request.terminalStatusId)
+    ? terminalStatus
+    : null;
 }
 
-export function authorizeRecoveryDispatch(
-  statuses,
-  requestedStatusId,
-  recoveryRunStatus = null,
-) {
+export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
   let terminalStatus = recoverableTerminalReviewStatus(statuses);
-  if (
-    !terminalStatus
-    && recoveryPendingRunId(statuses)
-    && recoveryRunStatus === 'completed'
-  ) {
-    terminalStatus = latestTerminalReviewStatus(statuses);
+  if (!terminalStatus) {
+    const existingRequest = pendingRecoveryRequest(statuses);
+    if (
+      existingRequest
+      && String(existingRequest.terminalStatusId) === String(requestedStatusId)
+    ) {
+      terminalStatus = recoveryRequestTerminal(statuses, existingRequest);
+    }
   }
   if (!terminalStatus || terminalStatus.state !== 'failure') return null;
   return String(terminalStatus.id) === String(requestedStatusId)
@@ -247,12 +247,6 @@ class GitHubClient {
     }
   }
 
-  workflowRun(runId) {
-    return this.request(
-      `/repos/${this.repository}/actions/runs/${runId}`,
-    );
-  }
-
   reviews(number) {
     return this.request(
       `/repos/${this.repository}/pulls/${number}/reviews?per_page=100`,
@@ -271,12 +265,18 @@ class GitHubClient {
     );
   }
 
-  setStatus(head, state, description, targetUrl) {
+  setStatus(
+    head,
+    state,
+    description,
+    targetUrl,
+    context = STATUS_CONTEXT,
+  ) {
     return this.request(`/repos/${this.repository}/statuses/${head}`, {
       method: 'POST',
       body: {
         state,
-        context: STATUS_CONTEXT,
+        context,
         description: description.slice(0, 140),
         target_url: targetUrl,
       },
@@ -410,6 +410,23 @@ function statusBody({ state, head, detail, attempt, next }) {
     'This comment is maintained by GitHub. The required '
       + `\`${STATUS_CONTEXT}\` status on this exact SHA is authoritative.`,
   ].join('\n');
+}
+
+async function settleRecoveryRequest(
+  client,
+  expectedHead,
+  pullRequest,
+  recoveryRequest,
+  outcome,
+) {
+  if (!recoveryRequest) return;
+  await client.setStatus(
+    expectedHead,
+    'success',
+    `recovery: consumed by ${outcome}`,
+    pullRequest.html_url,
+    RECOVERY_CONTEXT,
+  );
 }
 
 async function refreshCurrentHead(client, number, expectedHead) {
@@ -636,12 +653,34 @@ export async function run() {
     return;
   }
 
-  let existingStatuses = context.trigger === 'ci' || context.trigger === 'dispatch'
-    ? await client.statuses(expectedHead)
-    : [];
+  const existingStatuses = await client.statuses(expectedHead);
   const existingStatus = existingStatuses.find(
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
+
+  if (process.env.AUTONOMOUS_REVIEW_MODE === 'request-recovery') {
+    const authorizedStatus = authorizeRecoveryDispatch(
+      existingStatuses,
+      context.terminalStatusId,
+    );
+    if (!authorizedStatus) {
+      throw new Error(
+        'Recovery dispatch requires the exact latest failed terminal '
+          + `${STATUS_CONTEXT} status ID`,
+      );
+    }
+    await client.setStatus(
+      expectedHead,
+      'pending',
+      `recovery: requested terminal status ${authorizedStatus.id}`,
+      pullRequest.html_url,
+      RECOVERY_CONTEXT,
+    );
+    console.log(
+      `Persisted recovery request for terminal status ${authorizedStatus.id}.`,
+    );
+    return;
+  }
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     pullRequest = shouldDraftForCiFailure(existingStatus)
@@ -678,79 +717,29 @@ export async function run() {
     throw new Error(`CI workflow concluded ${context.ciConclusion}`);
   }
 
-  let terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
-  let recoveryRunId = recoveryPendingRunId(existingStatuses);
-  let recoveryRun = recoveryRunId
-    ? await client.workflowRun(recoveryRunId)
-    : null;
-
-  if (recoveryRun?.status === 'completed') {
-    existingStatuses = await client.statuses(expectedHead);
-    terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
-    const refreshedRunId = recoveryPendingRunId(existingStatuses);
-    if (refreshedRunId !== recoveryRunId) {
-      recoveryRunId = refreshedRunId;
-      recoveryRun = recoveryRunId
-        ? await client.workflowRun(recoveryRunId)
-        : null;
-    }
-  }
-
-  if (
-    context.trigger === 'ci'
-    && activeRecoveryRunId(existingStatuses, recoveryRun)
-  ) {
-    console.log(
-      `Recovery workflow ${recoveryRunId} owns this exact-head review; CI is standing down.`,
-    );
-    return;
-  }
-
-  if (
-    context.trigger === 'ci'
-    && recoveryRunId
-    && recoveryRun?.status === 'completed'
-  ) {
-    pullRequest = await setDraftForCurrentHead(
-      client,
-      pullRequest.number,
-      expectedHead,
-      true,
-    );
-    if (!pullRequest) return;
-    const detail = `Recovery workflow ${recoveryRunId} ended without a terminal review result`;
+  const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
+  let recoveryRequest = pendingRecoveryRequest(existingStatuses);
+  const requestedTerminalStatus = recoveryRequestTerminal(
+    existingStatuses,
+    recoveryRequest,
+  );
+  if (recoveryRequest && !requestedTerminalStatus) {
     await client.setStatus(
       expectedHead,
       'failure',
-      `review: ${detail}`,
+      'recovery: request superseded by newer review state',
       pullRequest.html_url,
+      RECOVERY_CONTEXT,
     );
-    await client.updateStickyComment(
-      pullRequest.number,
-      statusBody({
-        state: 'blocked',
-        head: expectedHead,
-        detail,
-        attempt: 0,
-        next: 'Re-dispatch with the new failed terminal status ID.',
-      }),
-    );
-    throw new Error(detail);
-  }
-
-  if (context.trigger === 'dispatch') {
-    const authorizedStatus = authorizeRecoveryDispatch(
-      existingStatuses,
-      context.terminalStatusId,
-      recoveryRun?.status ?? null,
-    );
-    if (!authorizedStatus) {
+    recoveryRequest = null;
+    if (!terminalStatus) {
       throw new Error(
-        'Recovery dispatch requires the exact latest failed terminal '
-          + `${STATUS_CONTEXT} status ID`,
+        'Recovery request no longer matches the latest terminal review state',
       );
     }
-  } else if (terminalStatus) {
+  }
+
+  if (!requestedTerminalStatus && terminalStatus) {
     if (
       await ensureTerminalReviewState(
         client,
@@ -767,13 +756,10 @@ export async function run() {
     }
   }
 
-  const pendingDescription = context.trigger === 'dispatch'
-    ? `review: pending recovery run ${requiredEnvironment('GITHUB_RUN_ID')}`
-    : 'review: pending required CI and current-head Codex review';
   await client.setStatus(
     expectedHead,
     'pending',
-    pendingDescription,
+    'review: pending required CI and current-head Codex review',
     pullRequest.html_url,
   );
 
@@ -834,6 +820,13 @@ export async function run() {
         `review: ${result.detail}`,
         pullRequest.html_url,
       );
+      await settleRecoveryRequest(
+        client,
+        expectedHead,
+        pullRequest,
+        recoveryRequest,
+        'review finding',
+      );
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
@@ -881,6 +874,13 @@ export async function run() {
           `review: ${detail}`,
           pullRequest.html_url,
         );
+        await settleRecoveryRequest(
+          client,
+          expectedHead,
+          pullRequest,
+          recoveryRequest,
+          'changed review evidence',
+        );
         await client.updateStickyComment(
           pullRequest.number,
           statusBody({
@@ -917,6 +917,13 @@ export async function run() {
           `review: ${detail}`,
           pullRequest.html_url,
         );
+        await settleRecoveryRequest(
+          client,
+          expectedHead,
+          pullRequest,
+          recoveryRequest,
+          'changed CI',
+        );
         await client.updateStickyComment(
           pullRequest.number,
           statusBody({
@@ -937,6 +944,13 @@ export async function run() {
         'success',
         'review: Codex found no blocking issue on this exact head',
         pullRequest.html_url,
+      );
+      await settleRecoveryRequest(
+        client,
+        expectedHead,
+        pullRequest,
+        recoveryRequest,
+        'clean review',
       );
       pullRequest = await refreshCurrentHead(
         client,
@@ -992,6 +1006,13 @@ export async function run() {
     'failure',
     'review: Codex review timed out after two attempts',
     pullRequest.html_url,
+  );
+  await settleRecoveryRequest(
+    client,
+    expectedHead,
+    pullRequest,
+    recoveryRequest,
+    'review timeout',
   );
   await client.updateStickyComment(
     pullRequest.number,
