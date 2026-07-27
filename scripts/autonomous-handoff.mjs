@@ -91,9 +91,7 @@ class GitHubClient {
         }
         if (
           pullRequest.merged_at &&
-          (Date.parse(pullRequest.merged_at) > cursor.mergedAt ||
-            (Date.parse(pullRequest.merged_at) === cursor.mergedAt &&
-              pullRequest.number > cursor.number))
+          Date.parse(pullRequest.merged_at) >= cursor.mergedAt
         ) {
           pullRequests.push(pullRequest);
         }
@@ -135,6 +133,10 @@ class GitHubClient {
       `/repos/${this.repository}/actions/workflows/autonomous-handoff.yml/dispatches`,
       { method: 'POST', body: { ref: defaultBranch } },
     );
+  }
+
+  combinedStatus(head) {
+    return this.request(`/repos/${this.repository}/commits/${head}/status`);
   }
 
   async comments(number) {
@@ -211,6 +213,17 @@ async function handOffMergedPullRequest(
     pullRequest?.base?.ref !== defaultBranch ||
     !pullRequest?.head?.ref?.startsWith('claude/')
   ) return;
+
+  const combinedStatus = await client.combinedStatus(pullRequest.head.sha);
+  const exactHeadStatus = combinedStatus.statuses?.find(
+    (status) => status.context === 'codex-current-head',
+  );
+  if (exactHeadStatus?.state !== 'success') {
+    console.warn(
+      `Skipping continuation for PR #${pullRequest.number}: exact-head Codex status was not successful`,
+    );
+    return;
+  }
 
   const marker = `${MERGE_MARKER}${pullRequest.merge_commit_sha} -->`;
   const comments = await client.comments(pullRequest.number);

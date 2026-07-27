@@ -53,6 +53,8 @@ test('workflow runs from trusted default-branch code after CI or dispatch', asyn
   const workflow = await readFile(workflowPath, 'utf8');
 
   assert.match(workflow, /workflow_run:/);
+  assert.match(workflow, /pull_request_review:/);
+  assert.match(workflow, /pull_request_review_comment:/);
   assert.match(workflow, /workflows:\s*\[CI\]/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /statuses:\s*write/);

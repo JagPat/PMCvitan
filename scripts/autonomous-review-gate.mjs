@@ -412,6 +412,17 @@ async function eventContext() {
       ciConclusion: null,
     };
   }
+  if (
+    (eventName === 'pull_request_review' ||
+      eventName === 'pull_request_review_comment') &&
+    event.pull_request
+  ) {
+    return {
+      number: Number(event.pull_request.number),
+      expectedHead: event.pull_request.head.sha,
+      ciConclusion: null,
+    };
+  }
   if (eventName === 'workflow_run' && event.workflow_run?.event === 'pull_request') {
     return {
       number: Number(event.workflow_run.pull_requests?.[0]?.number),

@@ -81,6 +81,8 @@ test('handoff implementation covers both conflicts and behind-base states', asyn
   assert.match(implementation, /STATE_ISSUE_NUMBER/);
   assert.match(implementation, /dispatchRetry/);
   assert.match(implementation, /ACTIONS_BOT_LOGIN/);
+  assert.match(implementation, /combinedStatus/);
+  assert.match(implementation, /codex-current-head/);
   assert.match(implementation, /comments\?per_page=100&page=\$\{page\}/);
   assert.doesNotMatch(implementation, /if \(eventName === 'pull_request_target'\)/);
 });
