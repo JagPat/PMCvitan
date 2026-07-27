@@ -7,9 +7,9 @@ This repository is designed to progress without the owner's laptop or technical 
 | Role | Responsibility |
 | --- | --- |
 | Cloud runner | Read `docs/STATUS.md`, start the current work item, and never skip ahead |
-| Claude Code | Author code, tests, migrations, packets, and corrections on `claude/**` |
+| Claude Code web | Author code, tests, migrations, packets, and corrections on `claude/**`; keep Auto-fix subscribed until the PR reaches a terminal state |
 | Codex Cloud | Independently review every PR head using `AGENTS.md`; never implement its own findings |
-| GitHub | Hold draft PRs, run required CI, enforce current-head review presence, and merge |
+| GitHub | Hold drafts, run required CI, trigger Codex by moving CI-green drafts to ready, enforce an exact-head review status, and merge |
 | Coolify | Deploy merged `main` |
 
 ## Authoritative Read Order
@@ -25,12 +25,12 @@ This repository is designed to progress without the owner's laptop or technical 
 ## One Cycle
 
 1. The runner selects only the work item in `docs/STATUS.md`.
-2. Claude starts from latest `origin/main`, records the base SHA, and opens a draft PR.
-3. Codex reviews the current head. Every corrective push invalidates the prior head review and triggers another review.
-4. Claude reproduces every blocking finding at the reviewed base, fixes it forward, and keeps the PR draft.
-5. Once Codex reports no blocking finding on the current head, Claude marks the PR ready.
-6. GitHub requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`; auto-merge then queues a squash merge.
-7. Coolify deploys `main`. The runner updates `docs/STATUS.md` and begins the next work item.
+2. Claude starts from latest `origin/main`, records the base SHA, opens a draft PR, enables web Auto-fix, and remains subscribed.
+3. GitHub requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. When all five pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
+4. Marking the PR ready triggers Codex. The workflow accepts only review evidence from `chatgpt-codex-connector[bot]` for the exact current SHA and current review cycle.
+5. A current-head finding fails `codex-current-head` and returns the PR to draft. Claude Auto-fix reproduces the finding, fixes forward, and pushes a new head; that push invalidates every prior clearance.
+6. A fresh current-head clean Codex signal succeeds `codex-current-head` and queues squash auto-merge. Missing CI, stale evidence, timeout, or inactive authoring all fail closed.
+7. Coolify deploys `main`. The runner updates `docs/STATUS.md` and begins the next work item only after merge.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
 
@@ -38,9 +38,14 @@ No human approval is required. The owner may interrupt or redirect the loop, but
 
 - Review happens before merge, especially for migrations.
 - Deployed migration bytes are immutable; corrections use new forward migrations.
-- A PR remains draft while any Codex finding is unresolved.
+- A PR remains draft while any Codex finding is unresolved. Its temporary ready
+  state exists only to invoke Codex after CI passes.
 - Claude does not self-certify a Codex finding as closed; Codex re-reviews the new head.
 - Task N+1 never starts while `docs/STATUS.md` keeps Task N open.
+- Never add `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or an AI action. Codex GitHub
+  review and Claude Code web Auto-fix use the owner's product subscriptions.
+- A write-capable workflow checks out only the trusted default branch, never PR
+  code. Only open same-repository PRs are eligible.
 - Credentials and raw transcripts never enter Git. In particular, never commit Coolify tokens, SMTP credentials, database passwords, `.env` contents, or local attachments.
 
 ## Recovery
@@ -53,10 +58,34 @@ When an accidental merge or stale state occurs:
 4. Change `docs/STATUS.md` back to `in_progress` for the correction.
 5. Fix forward from current `main`; never rewrite deployed history.
 
+If Codex or Claude web is unavailable, do not bypass the gate. The exact-head
+status remains pending or fails after the bounded retry, and the PR stays draft.
+Resume by manually dispatching `Autonomous review and merge` for the PR after the
+subscription service is healthy; the state machine re-evaluates the current head.
+
+## GitHub Enforcement
+
+After the autonomous workflow itself is merged, protect `main` with these exact
+settings:
+
+- Require status checks: `web`, `api`, `e2e`, `api-e2e`, `upgrade-proof`, and
+  `codex-current-head`.
+- Require branches to be up to date before merging (`strict: true`).
+- Enforce the protection for administrators.
+- Keep squash auto-merge enabled.
+
+Do not add `codex-current-head` before the workflow is present on the default
+branch; doing so would intentionally block every PR, including the bootstrap PR.
+
 ## Current Position
 
 Phase 4 Task 3 requires correction round 3 after the post-merge review of PR #226. See `docs/STATUS.md` and `docs/reviews/phase-4-t3-correction3-directive.md`. Task 4 is blocked until that correction receives a clean current-head Codex review and merges.
 
 ## External Dependencies
 
-The Codex Cloud GitHub review integration and GitHub Actions operate without the owner's computer. Starting and correcting work requires a separately configured cloud runner for Claude Code. Repository state is prepared for that runner; its provider credentials and schedules must remain in the provider's managed configuration, not this repository.
+The Codex GitHub review integration, GitHub Actions, and Claude Code web Auto-fix
+operate without the owner's computer. Codex and Claude use the owner's product
+subscriptions; GitHub stores no AI API key. Claude Auto-fix must be enabled on the
+PR before the laptop is unavailable. If that subscription-backed session stops,
+the GitHub gate deliberately leaves the PR unmerged rather than silently falling
+back to an unreviewed path.

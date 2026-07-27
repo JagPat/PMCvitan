@@ -1,5 +1,9 @@
 # Autonomous Review Loop Handoff Implementation Plan
 
+> **Historical plan:** PR #229 completed this repository handoff. Review and
+> merge orchestration is superseded by
+> `2026-07-27-subscription-autonomous-review-loop.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Codex Cloud review and Claude Code correction work from GitHub alone while accurately blocking Phase 4 Task 4 on the validated Task 3 correction.
@@ -42,7 +46,8 @@
 - Produces: Accurate reviewer instructions and a machine-readable Task 3 block.
 
 - [ ] **Step 1:** Correct the non-blank rule to the complete ASCII whitespace set.
-- [ ] **Step 2:** State that every current PR head is reviewed before Claude marks it ready.
+- [x] **Step 2:** State that trusted GitHub automation marks a CI-green head ready,
+  then requires a fresh exact-head Codex result before merge.
 - [ ] **Step 3:** Record Task 3 correction round 3 as current and keep Task 4 `not_started`.
 
 ### Task 3: Correction Round 3 Directive
