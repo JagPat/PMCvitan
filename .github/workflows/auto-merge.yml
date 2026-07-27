@@ -23,7 +23,7 @@ permissions:
   statuses: write
 
 concurrency:
-  group: autonomous-review-${{ github.event.workflow_run.pull_requests[0].number || github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  group: autonomous-review-${{ github.event.workflow_run.pull_requests[0].number || github.event.pull_request.number || inputs.pr_number || github.run_id }}-${{ startsWith(github.event_name, 'pull_request_review') && github.run_id || 'start' }}
   cancel-in-progress: true
 
 jobs:

@@ -44,9 +44,9 @@ packet does not embed a self-referential final SHA.
   both builds clean).
 - Reproduce-first same-head contracts failed before each correction: review/comment
   re-entry, CI-rerun terminal-state loss, legacy review-only failure, late evidence,
-  and success-before-auto-merge ordering. The final focused battery passed 25/25.
+  and success-before-auto-merge ordering. The final focused battery passed 27/27.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 25/25, web
+- Final `pnpm check` after protocol alignment passed: automation 27/27, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -99,7 +99,9 @@ dispatch, may initiate draft-to-ready. `pull_request_review: submitted` and
 accept only the Codex GitHub App and the exact current head, fail branch protection
 before presentation mutations, and draft the PR. They cannot call `reviewAttempt`
 or mark a PR ready. This preserves delayed-finding safety without creating another
-review request.
+review request. Each result-only run uses its own `github.run_id` concurrency
+suffix, so rejected human events and accepted Codex evidence cannot cancel the
+single per-PR review-start run.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with
@@ -114,5 +116,9 @@ Auto-merge is queued before review success is published. If a CI rerun observes 
 existing terminal success, it idempotently verifies or enables auto-merge before
 returning. This closes the cancellation window in which a newer per-PR workflow
 could otherwise stop the original run after success but before the queue operation.
-Regression tests cover event-role separation, the same-head CI-rerun guard, legacy
-terminal values, late exact-head findings, and terminal-success recovery.
+Terminal failures similarly restore draft state before returning. A failed CI rerun
+is handled before terminal-review recovery; when a terminal review verdict already
+exists, the CI handoff does not overwrite that durable review state. Regression
+tests cover event-role and concurrency separation, the same-head CI-rerun guard,
+legacy terminal values, late exact-head findings, terminal-state recovery, and
+failed-CI ordering.

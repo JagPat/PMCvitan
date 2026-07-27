@@ -202,6 +202,35 @@ test('terminal success queues auto-merge before it can end the workflow', async 
   assert.ok(clearBranch.indexOf('enableAutoMerge') < clearBranch.indexOf("'success'"));
 });
 
+test('review evidence cannot cancel the active review-start run', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  assert.match(
+    workflow,
+    /startsWith\(github\.event_name, 'pull_request_review'\) && github\.run_id \|\| 'start'/,
+  );
+});
+
+test('terminal failures restore draft and CI failures run before recovery', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const terminalHelper = gate.slice(
+    gate.indexOf('async function ensureTerminalReviewState'),
+    gate.indexOf('async function handleCodexEvidence'),
+  );
+  assert.match(terminalHelper, /status\.state === 'success'/);
+  assert.match(terminalHelper, /setDraftForCurrentHead[\s\S]*true/);
+
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  const ciFailure = runBody.indexOf(
+    "context.ciConclusion && context.ciConclusion !== 'success'",
+  );
+  const terminalRecovery = runBody.indexOf('ensureTerminalReviewState(');
+  assert.ok(ciFailure >= 0 && ciFailure < terminalRecovery);
+  assert.match(runBody, /if \(!isTerminalReviewStatus\(existingStatus\)\)[\s\S]*`ci:/);
+});
+
 test('workflow has no AI action or AI credential dependency', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
 

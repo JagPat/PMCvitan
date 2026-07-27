@@ -332,6 +332,13 @@ async function ensureTerminalReviewState(
       expectedHead,
     );
     if (live) await client.enableAutoMerge(live);
+  } else {
+    await setDraftForCurrentHead(
+      client,
+      pullRequest.number,
+      expectedHead,
+      true,
+    );
   }
   return true;
 }
@@ -571,11 +578,43 @@ export async function run() {
     return;
   }
 
-  if (context.trigger === 'ci') {
-    const existingStatus = await client.latestStatus(
+  const existingStatus = context.trigger === 'ci'
+    ? await client.latestStatus(
+        expectedHead,
+        STATUS_CONTEXT,
+      )
+    : null;
+
+  if (context.ciConclusion && context.ciConclusion !== 'success') {
+    pullRequest = await setDraftForCurrentHead(
+      client,
+      pullRequest.number,
       expectedHead,
-      STATUS_CONTEXT,
+      true,
     );
+    if (!pullRequest) return;
+    if (!isTerminalReviewStatus(existingStatus)) {
+      await client.setStatus(
+        expectedHead,
+        'failure',
+        `ci: workflow concluded ${context.ciConclusion}`,
+        pullRequest.html_url,
+      );
+    }
+    await client.updateStickyComment(
+      pullRequest.number,
+      statusBody({
+        state: 'blocked',
+        head: expectedHead,
+        detail: `CI workflow concluded ${context.ciConclusion}`,
+        attempt: 0,
+        next: 'Claude Auto-fix addresses CI before review begins.',
+      }),
+    );
+    throw new Error(`CI workflow concluded ${context.ciConclusion}`);
+  }
+
+  if (context.trigger === 'ci') {
     if (
       await ensureTerminalReviewState(
         client,
@@ -597,33 +636,6 @@ export async function run() {
     'Waiting for required CI and current-head Codex review',
     pullRequest.html_url,
   );
-
-  if (context.ciConclusion && context.ciConclusion !== 'success') {
-    pullRequest = await setDraftForCurrentHead(
-      client,
-      pullRequest.number,
-      expectedHead,
-      true,
-    );
-    if (!pullRequest) return;
-    await client.setStatus(
-      expectedHead,
-      'failure',
-      `ci: workflow concluded ${context.ciConclusion}`,
-      pullRequest.html_url,
-    );
-    await client.updateStickyComment(
-      pullRequest.number,
-      statusBody({
-        state: 'blocked',
-        head: expectedHead,
-        detail: `CI workflow concluded ${context.ciConclusion}`,
-        attempt: 0,
-        next: 'Claude Auto-fix addresses CI before review begins.',
-      }),
-    );
-    throw new Error(`CI workflow concluded ${context.ciConclusion}`);
-  }
 
   const checks = await waitForRequiredChecks(client, pullRequest, expectedHead);
   if (checks.state === 'superseded') return;
