@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 import {
+  codexThreadIdsToResolve,
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
@@ -173,6 +174,51 @@ class GitHubClient {
       }`,
       { id: pullRequest.node_id },
     );
+  }
+
+  async reviewThreads(number) {
+    const [owner, name] = this.repository.split('/');
+    const threads = [];
+    let after = null;
+    do {
+      const data = await this.graphql(
+        `query($owner: String!, $name: String!, $number: Int!, $after: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100, after: $after) {
+                nodes {
+                  id
+                  isResolved
+                  comments(first: 1) { nodes { author { login } } }
+                }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        }`,
+        { owner, name, number, after },
+      );
+      const page = data.repository?.pullRequest?.reviewThreads;
+      if (!page) throw new Error('Pull-request review threads were unavailable');
+      threads.push(...page.nodes);
+      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+    } while (after);
+    return threads;
+  }
+
+  async resolveCodexThreads(number) {
+    const ids = codexThreadIdsToResolve(await this.reviewThreads(number));
+    for (const threadId of ids) {
+      await this.graphql(
+        `mutation($threadId: ID!) {
+          resolveReviewThread(input: { threadId: $threadId }) {
+            thread { id isResolved }
+          }
+        }`,
+        { threadId },
+      );
+    }
+    return ids.length;
   }
 
   async updateStickyComment(number, body) {
@@ -478,6 +524,9 @@ export async function run() {
         expectedHead,
       );
       if (!pullRequest) return;
+      const resolvedThreadCount = await client.resolveCodexThreads(
+        pullRequest.number,
+      );
       await client.setStatus(
         expectedHead,
         'success',
@@ -489,7 +538,7 @@ export async function run() {
         statusBody({
           state: 'clear',
           head: expectedHead,
-          detail: result.detail,
+          detail: `${result.detail}; resolved ${resolvedThreadCount} verified Codex thread${resolvedThreadCount === 1 ? '' : 's'}`,
           attempt,
           next: 'GitHub auto-merge is queued behind branch protection.',
         }),

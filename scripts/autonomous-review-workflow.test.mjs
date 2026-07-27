@@ -94,4 +94,12 @@ test('rechecks the live head before terminal PR mutations', async () => {
   assert.match(gate, /async function refreshCurrentHead\(/);
   assert.match(gate, /enableAutoMerge\(pullRequest\)/);
   assert.match(gate, /if \(!pullRequest\) return;/);
+  assert.match(gate, /resolveCodexThreads/);
+});
+
+test('CI runs once per pull-request head', async () => {
+  const ci = await readFile(ciPath, 'utf8');
+
+  assert.match(ci, /pull_request:/);
+  assert.doesNotMatch(ci, /push:/);
 });
