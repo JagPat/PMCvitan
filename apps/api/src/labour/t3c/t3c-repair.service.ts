@@ -3,11 +3,12 @@ import type { PrismaService } from '../../prisma.service';
 import {
   runT3CDiagnostics,
   summarizeT3C,
+  t3cGenuineEvidenceSql,
   t3cInvalidLegacyMarker,
   t3cQuarantinedMarker,
+  T3C_BLANK_TRIM_SET,
   T3C_INVALID_LEGACY_PREFIX,
   T3C_MARKER_COLUMN,
-  T3C_MARKER_REPAIR_ID_REGEX,
   T3C_REFERENCED_TABLES,
   type T3CDiagnosticsReport,
   type T3CTxClient,
@@ -119,6 +120,33 @@ const EVIDENCE_SEAL_SQL = [
        CREATE TRIGGER "T3CRepairAction_no_truncate" BEFORE TRUNCATE ON "T3CRepairAction"
          FOR EACH STATEMENT EXECUTE FUNCTION phase4_t3c_repair_action_no_truncate();
      END IF;
+   END $do$`,
+  // The attribution must SAY something. `operator` and `reason` are NOT NULL, but NOT NULL is
+  // satisfied by a space: a raw or maintenance insert could store whitespace-only attribution, and
+  // because the rows above make the table append-only that emptiness is then permanent — a marked
+  // attendance row pointing at evidence that names nobody and states no reason. The CLI's `.trim()`
+  // is a courtesy to the operator, not an enforcement boundary; this is. It uses the repository's
+  // complete ASCII-whitespace trim set, so a tab-only operator is exactly as blank as a space-only
+  // one.
+  //
+  // Diagnosed BEFORE it is enforced, for the same reason every migration here is diagnostic-first:
+  // ADD CONSTRAINT validates existing rows, and an opaque check-violation on a table the operator
+  // has never heard of is not a usable error. A pre-existing blank row is named instead, and its
+  // exit is the quarantine — `t3cGenuineEvidenceSql` counts such evidence as invalid, so the marker
+  // it backs is reported as `F1.marker` and can be filed.
+  `DO $do$
+     DECLARE blank BIGINT;
+   BEGIN
+     IF EXISTS (SELECT 1 FROM pg_constraint
+                 WHERE conname = 'T3CRepairAction_attribution_non_blank'
+                   AND conrelid = '"T3CRepairAction"'::regclass) THEN RETURN; END IF;
+     SELECT count(*) INTO blank FROM "T3CRepairAction"
+      WHERE btrim("operator", ${T3C_BLANK_TRIM_SET}) = '' OR btrim("reason", ${T3C_BLANK_TRIM_SET}) = '';
+     IF blank > 0 THEN
+       RAISE EXCEPTION 'T3CRepairAction holds % row(s) whose operator or reason is blank — repair attribution that names nobody cannot be sealed as evidence. See docs/RUNBOOK.md §P4T3C3.', blank;
+     END IF;
+     ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
+       CHECK (btrim("operator", ${T3C_BLANK_TRIM_SET}) <> '' AND btrim("reason", ${T3C_BLANK_TRIM_SET}) <> '');
    END $do$`,
 ];
 
@@ -475,11 +503,19 @@ export class T3CRepairService {
             `f1-mark-invalid-legacy: LabourAttendance ${action.id} does not carry a blank manualReason (it is ${JSON.stringify(raw)}) — a recorded justification is never overwritten`,
           );
         }
-        if (before['revokedAt'] != null) {
-          throw new RepairAbortedError(
-            `f1-mark-invalid-legacy: LabourAttendance ${action.id} is already revoked — a revoked muster is terminal`,
-          );
-        }
+        // An ALREADY-REVOKED blank muster is repairable, and must be. `F1.blank` counts every blank
+        // `manualReason` regardless of revocation — correctly, since `20270220`'s CHECK does too — so
+        // a legacy row whose blank reason was revoked before correction 2 shipped is still a row the
+        // constraint cannot be installed over. Refusing it as "terminal" left the only two ops unable
+        // to clear the finding, and no path but an undocumented trigger bypass to unblock the deploy.
+        //
+        // What must NOT happen is restamping its revocation: that revocation is real history, made by
+        // a named person at a known time for a stated reason. So the marker is written and the
+        // EXISTING triple is preserved verbatim (the COALESCEs below); only a still-live row takes
+        // the operator's attribution. `revokeReason` is required either way — on a pre-revoked row it
+        // records what the OPERATOR did, in the evidence, without overwriting what the original
+        // revoker said.
+        const preRevoked = before['revokedAt'] != null;
         if (!action.revokeReason?.trim()) {
           throw new RepairAbortedError('f1-mark-invalid-legacy: revokeReason is required — say why this record is being retired');
         }
@@ -499,13 +535,22 @@ export class T3CRepairService {
           originalManualReason: raw,
           revokedById: action.revokedById,
           revokeReason: action.revokeReason,
+          // Stated in the evidence so a reader can tell which of the two shapes this repair took,
+          // without having to compare timestamps to work out whose revocation is recorded on the row.
+          revocationPreserved: preRevoked,
         });
         // ONE statement: the row is marked AND revoked together, so it can never be observed marked
         // but live. The revocation triple satisfies `LabourAttendance_revoke_attribution_check`.
+        // COALESCE is what preserves an EXISTING revocation: for a live row every column is written
+        // from the plan exactly as before; for a pre-revoked row the original who/when/why survive
+        // untouched and only the marker is added.
         try {
           await tx.$executeRawUnsafe(
             `UPDATE "LabourAttendance"
-                SET "manualReason" = $1, "revokedAt" = now(), "revokedById" = $2, "revokeReason" = $3
+                SET "manualReason" = $1,
+                    "revokedAt"    = COALESCE("revokedAt", now()),
+                    "revokedById"  = COALESCE("revokedById", $2),
+                    "revokeReason" = COALESCE("revokeReason", $3)
               WHERE "id" = $4`,
             marker,
             action.revokedById,
@@ -531,14 +576,18 @@ export class T3CRepairService {
             `f1-quarantine-forged-marker: LabourAttendance ${action.id} does not carry the reserved marker (it is ${JSON.stringify(raw)}) — this op exists only for the forged-marker state`,
           );
         }
-        const evidenced = await tx.$queryRawUnsafe<Array<{ n: number }>>(
-          `SELECT count(*)::int AS n FROM "T3CRepairAction"
-            WHERE "table" = 'LabourAttendance' AND "rowId" = $1
-              AND "repairId" = substring($2 from '${T3C_MARKER_REPAIR_ID_REGEX}')`,
+        // The SAME predicate the diagnostic uses, not a metadata-only count. Counting `(rowId,
+        // repairId)` alone treats an evidence row whose before-image is malformed — the exact thing
+        // `markerPredicate` rejects — as genuine, so the preflight would report this row while the
+        // repair refused to touch it. With the evidence append-only and the attendance row already
+        // revoked, that combination has no exit at all: the finding could never clear and the deploy
+        // would stay blocked. Asking the one question keeps report and repair in agreement by
+        // construction.
+        const genuine = await tx.$queryRawUnsafe<Array<{ genuine: boolean }>>(
+          `SELECT ${t3cGenuineEvidenceSql('a')} AS genuine FROM "LabourAttendance" a WHERE a."id" = $1`,
           action.id,
-          raw,
         );
-        if (Number(evidenced[0]?.n ?? 0) > 0) {
+        if (genuine[0]?.genuine === true) {
           throw new RepairAbortedError(
             `f1-quarantine-forged-marker: LabourAttendance ${action.id} already has repair evidence for the id its marker embeds — it is a real audited repair, not a forgery`,
           );

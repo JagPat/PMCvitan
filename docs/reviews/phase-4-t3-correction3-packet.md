@@ -168,15 +168,41 @@ One further inaccuracy was found while fixing #2 and corrected here: §P4T3C2 ci
 `scripts/phase4-t3-correction3-abort-proof.sh`, **which does not exist**. The section now cites the
 real script (`phase4-t3-correction3-production-runner-proof.sh`), which performs that exact sequence.
 
+## Round 3c — the current-head Codex review of `6d17949` (6 findings)
+
+Four were closed in `b053d1d`; the last two are closed in `5ff226c`.
+
+| # | sev | finding | fix |
+|---|---|---|---|
+| 1 | P1 | §P4T3C3 told the operator to revoke a forged marker — but a forged marker is written pre-revoked, so the instruction was unperformable and `F1.marker` could never clear | a new `f1-quarantine-forged-marker` op (files the forgery verbatim as its own before-image, rewrites the marker to embed a repair id that genuinely exists) **plus** the operator-facing §P4T3C3 rewrite: a classify query, the evidenced-but-live case routed to the application revoke, and the quarantine flow documented end to end |
+| 2 | P1 | the migration dropped-and-recreated objects, opening a window on retry | create-if-absent DO blocks for all three created objects |
+| 3 | P1 | the evidence seals were not re-asserted when `T3CRepairAction` exists | conditional re-assert block in the migration |
+| 4 | P1 | the marker predicate accepted evidence of the wrong SHAPE | the before-image must be the row itself and match the op's expected shape |
+| 5 | P1 | `correctionSeals` accepted a disabled trigger or an unvalidated CHECK | `tgenabled='O'` + bound function + `convalidated` |
+| 6 | P2 | probe 3a's barrier matched insert TEXT globally, so a sibling suite's insert on another project could open it | the barrier names the two backends and asks `pg_blocking_pids`; probe 2a's two equivalent weaknesses (a global `pg_locks` scan and a query-text match) are fixed the same way — the lock-held signal now comes from inside the holding transaction |
+
+## Round 3d — the current-head Codex review of `02bbeff` (4 findings)
+
+Every one is a state the correction could DIAGNOSE but not EXIT — a deploy blocked with no repair
+path — or the gap that made such a state reachable. All four are closed here.
+
+| # | sev | finding | fix | RED evidence at `02bbeff` |
+|---|---|---|---|---|
+| A | P1 | the diagnostic committed, then the seals were installed in later statements. This migration has no transaction wrapper, so that gap is real: a concurrent writer could insert a pre-revoked marked row into it, the later CHECK accepts it, nothing re-diagnoses, and the migration succeeds over forged provenance | the diagnostic and BOTH `LabourAttendance` seals are now ONE `DO` block — one statement, one transaction — opening with `LOCK TABLE … IN ACCESS EXCLUSIVE MODE`, so the table is read and sealed without any writer in between | `R4-A` — the three were separate top-level statements |
+| B | P1 | a legacy muster whose blank reason was revoked **before** correction 2 shipped is still counted by `F1.blank`, but `f1-mark-invalid-legacy` refused it as terminal and the quarantine op only accepts marked rows. Neither op could clear the finding: the deploy was blocked permanently short of an undocumented trigger bypass | the op accepts an already-revoked blank row and PRESERVES its revocation verbatim (`COALESCE` on all three columns) — that revocation is real history, made by a named person at a known time. Only a still-live row takes the operator's attribution; the operator's words are recorded in the evidence either way, and `detail.revocationPreserved` says which shape the repair took. The marker predicate's blank shape no longer requires an unrevoked before-image | `R4-B` — `RepairAbortedError: … already revoked — a revoked muster is terminal` |
+| C | P2 | `T3CRepairAction.operator`/`reason` were `NOT NULL` and nothing more, and `NOT NULL` is satisfied by a space. A raw insert could store attribution naming nobody, and the append-only seal makes it permanent | a `T3CRepairAction_attribution_non_blank` CHECK using the repository's complete ASCII-whitespace trim set, added diagnostic-first (a pre-existing blank row is named, not surfaced as an opaque violation) and re-asserted by the migration. The evidence predicate also requires non-blank attribution, so a marker backed by such a row is reported as `F1.marker` and can be quarantined | `R4-C` — three whitespace variants all inserted successfully |
+| D | P1 | the quarantine's refusal was a metadata-only `count(*)` on `(rowId, repairId)` while the diagnostic validated the before-image SHAPE. A malformed evidence row was therefore reported by the preflight and declined by the repair — and with the evidence append-only and the row already revoked, nothing could clear it | one exported predicate, `t3cGenuineEvidenceSql`, used by both. Report and repair now ask the identical question by construction | `R4-D` — `already has repair evidence … not a forgery` while the preflight listed the same row |
+
 ## Gates
 
-All figures below are from the post-round-3b tree.
+All figures below are from the post-round-3d tree.
 
 | gate | result |
 |---|---|
 | `pnpm check` | **EXIT 0** — web 432/432, API 667/667, build clean |
-| full live-PostgreSQL integration suite (pristine migrated DB) | **69 files / 608 tests passed** |
-| `phase4-t3-correction3.test.ts` | **18/18** (12 directive probes + 6 round-3b probes) |
+| all 67 migrations over an empty database | **applied cleanly** (the merged finding-A block is valid SQL on a fresh schema) |
+| full live-PostgreSQL integration suite | **69 files / 614 tests passed** |
+| `phase4-t3-correction3.test.ts` | **24/24** (12 directive + 6 round-3b + 2 round-3c quarantine + 4 round-3d) |
 | `phase4-t3-correction2.test.ts` | **6/6** with the project-scoped advisory barrier |
 | `boundary.test.ts` / `module-registry.test.ts` / `cross-module-graph.test.ts` | GREEN (114 tests; +4 indirect-SQL fixtures) |
 | `scripts/upgrade-proof.sh` | **PASSED** — the 4 round-3 assertions plus every prior Phase-1…Phase-4-T3C2 rejection |
@@ -186,10 +212,12 @@ All figures below are from the post-round-3b tree.
 
 ### Concurrency runs (directive item 5)
 
-`phase4-t3-correction3.test.ts` was run 10 consecutive times, 12/12 each time. The concurrency probes
-are barrier-driven, not sleep-driven: `3a` uses two dedicated `PrismaClient` sessions with
-`pg_stat_activity` / gate barriers, and `2a` confirms the blocked backend on `pg_stat_activity` before
-releasing the holder.
+`phase4-t3-correction3.test.ts` was run 10 consecutive times, green each time. The concurrency probes
+are barrier-driven, not sleep-driven, and as of round 3c the barriers are scoped to the two backends
+under test: `3a` and `2a` each capture both sessions' `pg_backend_pid()` and wait on
+`pg_blocking_pids`, so no other suite's contention on the shared database can open them. `2a` also
+signals "the lock is held" directly from inside the holding transaction rather than inferring it from
+a table-wide `pg_locks` scan.
 
 ### Honest notes
 
@@ -198,7 +226,13 @@ releasing the holder.
   advisory lock and never reaches the `ActivityRequirementRoot … FOR UPDATE` those barriers watched.
   The new `waitUntilBlockedOnProjectLock()` requires an UNGRANTED `advisory` lock, so it is a real
   barrier and not a loosened one. Every assertion in both probes is unchanged and still passes.
-- The API unit count moved 655 → 663: +4 boundary raw-read fixtures and +4 from the base's own
+- **What `R4-A` proves, and what it does not.** It proves the diagnostic, the lock and both seals are
+  one statement in the migration file, and that no second statement re-creates either seal. It does
+  not simulate a concurrent writer arriving mid-migration; the argument that no such window remains is
+  structural (one statement is one transaction, opened by an `ACCESS EXCLUSIVE` lock) rather than
+  observed. The migration applying cleanly over all 67 migrations on an empty database is separate
+  evidence that the merged block is valid SQL.
+- The API unit count moved 655 → 667: +4 boundary raw-read fixtures and +4 from the base's own
   intervening commits; no test was deleted or weakened.
 - The `T3CRepairAction` table is created by the repair transaction (idempotently) exactly as
   `T45RepairAction` / `T2CRepairAction` are, because a Prisma migration cannot run while `20270220` is

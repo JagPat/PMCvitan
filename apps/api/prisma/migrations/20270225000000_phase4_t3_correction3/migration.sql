@@ -12,10 +12,49 @@
 -- and is enforced by the boundary analyzer's new raw-SQL read detection. No SQL is required for it,
 -- and none is invented here.
 
--- ══ DIAGNOSTICS ═══════════════════════════════════════════════════════════════════════════════
+-- ══ FINDING 1 — the operator repair is non-destructive, and provably so ═══════════════════════
+-- `docs/RUNBOOK.md §P4T3C2` used to tell the operator to disable `LabourAttendance_append_only` and
+-- DELETE every blank-`manualReason` muster. That erases the original observation, its recorder, its
+-- timestamps and its correction chain — while the trigger being disabled says in as many words that
+-- attendance rows are never deleted. The sanctioned repair now MARKS and REVOKES instead (see
+-- `src/labour/t3c/`), and the seals below are what make that repair honest rather than merely
+-- documented.
+--
+-- The FUNCTION is created first and alone: creating it references nothing and enforces nothing, so
+-- it is safe outside the sealed block below.
+--
+-- (a) THE MARKER IS RESERVED. Only the repair may write it, and the repair only ever UPDATEs an
+--     existing row. An ordinary INSERT — a pmc recording a manual muster through the API, or any
+--     direct write — can never claim to be a repaired legacy record. Without this, a caller could
+--     type the marker into `manualReason` and manufacture something that reads like operator
+--     provenance. A BEFORE INSERT trigger (not a CHECK) is used deliberately: a CHECK would also
+--     fire on the repair's own UPDATE and make the repair impossible.
+CREATE OR REPLACE FUNCTION phase4_t3c3_attendance_reserved_marker() RETURNS trigger AS $$
+BEGIN
+  IF NEW."manualReason" IS NOT NULL AND NEW."manualReason" LIKE '[invalid-legacy:blank-manual-reason]%' THEN
+    RAISE EXCEPTION 'the invalid-legacy marker is RESERVED for the audited operator repair (t3c:repair) and can never be a recorded manual reason (%)', NEW."id";
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ══ DIAGNOSE AND SEAL — ONE STATEMENT, ONE TRANSACTION ════════════════════════════════════════
+-- This migration has NO transaction wrapper: Prisma runs the file statement by statement, so every
+-- statement boundary is a commit. Diagnosing in one statement and installing the guard in the next
+-- therefore leaves a real window — after the diagnostic has passed and before the marker prefix is
+-- reserved — in which a concurrent direct writer can insert a PRE-REVOKED marked row. The CHECK
+-- added later accepts it (it is revoked), no diagnostic runs again, and the migration succeeds over
+-- forged repair provenance: exactly the state this correction exists to make unreachable.
+--
+-- A single DO block is a single statement and therefore a single transaction. The ACCESS EXCLUSIVE
+-- lock is taken FIRST, so the diagnostic reads a table no one else can be mid-write on, and it is
+-- held until the seals are committed with it. There is no interval in which the check has passed
+-- and the guard is not yet in place.
 DO $$
 DECLARE bad BIGINT; sample TEXT; have_evidence BOOLEAN;
 BEGIN
+  LOCK TABLE "LabourAttendance" IN ACCESS EXCLUSIVE MODE;
+
   -- Finding 1 — every pre-existing row carrying the RESERVED invalid-legacy marker must be a REAL
   -- audited repair: revoked, AND backed by a matching `T3CRepairAction` before-image.
   --
@@ -52,11 +91,17 @@ BEGIN
                                       -- the evidence must be about THIS row, and be the right SHAPE:
                                       -- metadata alone would accept an appended action carrying '{}'
                                       AND r."beforeImage"->>'id' = a."id"
+                                      -- and the attribution must name someone and state something
+                                      AND btrim(r."operator", E' \t\n\x0B\f\r') <> ''
+                                      AND btrim(r."reason",   E' \t\n\x0B\f\r') <> ''
                                       AND (
+                                        -- the before-image is the BLANK pre-repair row. It may
+                                        -- already have been revoked: a legacy muster whose blank
+                                        -- reason was revoked before correction 2 shipped is still a
+                                        -- blank row the repair must be able to retire.
                                         (r."op" = 'f1-mark-invalid-legacy'
                                           AND r."beforeImage"->>'manualReason' IS NOT NULL
-                                          AND btrim(r."beforeImage"->>'manualReason', E' \t\n\x0B\f\r') = ''
-                                          AND r."beforeImage"->>'revokedAt' IS NULL)
+                                          AND btrim(r."beforeImage"->>'manualReason', E' \t\n\x0B\f\r') = '')
                                         OR
                                         (r."op" = 'f1-quarantine-forged-marker'
                                           AND r."beforeImage"->>'manualReason' LIKE '[invalid-legacy:blank-manual-reason]%')
@@ -75,52 +120,25 @@ BEGIN
     RAISE EXCEPTION
       'phase4 t3 correction3 finding 1: % LabourAttendance row(s) carry the reserved invalid-legacy marker without being a real audited repair — not revoked, or with no matching T3CRepairAction before-image for the embedded repair id (sample: %). See docs/RUNBOOK.md §P4T3C3.', bad, sample;
   END IF;
-END $$;
 
--- ══ FINDING 1 — the operator repair is non-destructive, and provably so ═══════════════════════
--- `docs/RUNBOOK.md §P4T3C2` used to tell the operator to disable `LabourAttendance_append_only` and
--- DELETE every blank-`manualReason` muster. That erases the original observation, its recorder, its
--- timestamps and its correction chain — while the trigger being disabled says in as many words that
--- attendance rows are never deleted. The sanctioned repair now MARKS and REVOKES instead (see
--- `src/labour/t3c/`), and these two seals are what make that repair honest rather than merely
--- documented.
-
--- (a) THE MARKER IS RESERVED. Only the repair may write it, and the repair only ever UPDATEs an
---     existing row. An ordinary INSERT — a pmc recording a manual muster through the API, or any
---     direct write — can never claim to be a repaired legacy record. Without this, a caller could
---     type the marker into `manualReason` and manufacture something that reads like operator
---     provenance. A BEFORE INSERT trigger (not a CHECK) is used deliberately: a CHECK would also
---     fire on the repair's own UPDATE and make the repair impossible.
-CREATE OR REPLACE FUNCTION phase4_t3c3_attendance_reserved_marker() RETURNS trigger AS $$
-BEGIN
-  IF NEW."manualReason" IS NOT NULL AND NEW."manualReason" LIKE '[invalid-legacy:blank-manual-reason]%' THEN
-    RAISE EXCEPTION 'the invalid-legacy marker is RESERVED for the audited operator repair (t3c:repair) and can never be a recorded manual reason (%)', NEW."id";
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
--- CREATED ONLY IF ABSENT — never dropped and recreated. This migration has no transaction wrapper,
--- so a DROP…CREATE pair opens a window in which the guard does not exist. On a RETRY after a partial
--- apply (the post-condition below can fail after this statement succeeded) the diagnostic has
--- already run, so a concurrent writer could slip a pre-revoked marked row through that window and
--- the CHECK further down would accept it. Retrying must be safe, not merely possible.
-DO $$ BEGIN
+  -- ── the table is clean AND still locked; install the seals before anyone can write again ──────
+  --
+  -- Both are CREATED ONLY IF ABSENT — never dropped and recreated. On a RETRY after a partial apply
+  -- (the post-condition at the end of this file can fail after this block committed) a DROP…CREATE
+  -- pair would reopen the very window this block exists to close. Retrying must be safe, not merely
+  -- possible.
   IF NOT EXISTS (SELECT 1 FROM pg_trigger
                   WHERE tgname = 'LabourAttendance_reserved_marker'
                     AND tgrelid = '"LabourAttendance"'::regclass AND NOT tgisinternal) THEN
     CREATE TRIGGER "LabourAttendance_reserved_marker" BEFORE INSERT ON "LabourAttendance"
       FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_attendance_reserved_marker();
   END IF;
-END $$;
 
--- (b) A MARKED ROW IS ALWAYS REVOKED. The repair sets the marker and the revocation triple in ONE
---     statement, so this CHECK can never be transiently false for it; what the CHECK forbids is any
---     other path leaving a marked row live (including a future edit that clears the revocation).
---     Combined with the live partial unique on (project, worker, civilDate, shift), a genuine
---     replacement muster is necessarily a SEPARATE, separately-attributable row.
--- Added only if absent, for the same retry reason: dropping a validated CHECK to re-add it leaves
--- the table unconstrained in between.
-DO $$ BEGIN
+  -- (b) A MARKED ROW IS ALWAYS REVOKED. The repair sets the marker and the revocation triple in ONE
+  --     statement, so this CHECK can never be transiently false for it; what the CHECK forbids is
+  --     any other path leaving a marked row live (including a future edit that clears the
+  --     revocation). Combined with the live partial unique on (project, worker, civilDate, shift),
+  --     a genuine replacement muster is necessarily a SEPARATE, separately-attributable row.
   IF NOT EXISTS (SELECT 1 FROM pg_constraint
                   WHERE conname = 'LabourAttendance_marker_is_revoked'
                     AND conrelid = '"LabourAttendance"'::regclass) THEN
@@ -139,6 +157,7 @@ END $$;
 --     here. Guarded on the table's existence: it is created by the repair, not by any migration, so
 --     on a database that never needed a repair there is simply nothing to seal.
 DO $$
+DECLARE bad BIGINT;
 BEGIN
   IF to_regclass('"T3CRepairAction"') IS NULL THEN RETURN; END IF;
 
@@ -167,6 +186,26 @@ BEGIN
                   AND tgrelid = '"T3CRepairAction"'::regclass AND NOT tgisinternal) THEN
     CREATE TRIGGER "T3CRepairAction_no_truncate" BEFORE TRUNCATE ON "T3CRepairAction"
       FOR EACH STATEMENT EXECUTE FUNCTION phase4_t3c_repair_action_no_truncate();
+  END IF;
+
+  -- (d) THE ATTRIBUTION SAYS SOMETHING. `operator` and `reason` are NOT NULL, and NOT NULL is
+  --     satisfied by a space. Because the seals above make this table append-only, whitespace-only
+  --     attribution becomes PERMANENT — a marked attendance row pointing at evidence that names
+  --     nobody. Diagnostic-first, like everything else here: a pre-existing blank row is named
+  --     rather than surfacing as an opaque check violation, and its exit is the quarantine (the
+  --     diagnostic above already counts such evidence as invalid, so the marker it backs reports as
+  --     finding 1 and can be filed).
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'T3CRepairAction_attribution_non_blank'
+                    AND conrelid = '"T3CRepairAction"'::regclass) THEN
+    SELECT COUNT(*) INTO bad FROM "T3CRepairAction"
+     WHERE btrim("operator", E' \t\n\x0B\f\r') = '' OR btrim("reason", E' \t\n\x0B\f\r') = '';
+    IF bad > 0 THEN
+      RAISE EXCEPTION
+        'phase4 t3 correction3: % T3CRepairAction row(s) carry a blank operator or reason — repair attribution that names nobody cannot be sealed as evidence. See docs/RUNBOOK.md §P4T3C3.', bad;
+    END IF;
+    ALTER TABLE "T3CRepairAction" ADD CONSTRAINT "T3CRepairAction_attribution_non_blank"
+      CHECK (btrim("operator", E' \t\n\x0B\f\r') <> '' AND btrim("reason", E' \t\n\x0B\f\r') <> '');
   END IF;
 END $$;
 

@@ -132,36 +132,57 @@ const BLANK_PREDICATE = `"manualReason" IS NOT NULL AND btrim("manualReason", ${
 function markerPredicate(haveEvidence: boolean): string {
   const carries = `a."manualReason" LIKE '${T3C_INVALID_LEGACY_PREFIX}%'`;
   if (!haveEvidence) return carries;
-  // The evidence must be the RIGHT SHAPE, not merely present. Matching on metadata alone
-  // (row id, op, repair id) accepts an appended action carrying `{}` as its before-image, which is
-  // exactly the forgery this rule exists to catch: a writer who can insert into the evidence table
-  // could otherwise mint provenance for any marker they like.
-  //
-  // Two shapes are legitimate, and they are told apart by the op that produced them:
-  //
-  //   f1-mark-invalid-legacy      the before-image is the BLANK pre-repair row — the state the
-  //                               repair exists to retire — so the recorded original must itself be
-  //                               that row, blank and not yet revoked.
-  //   f1-quarantine-forged-marker the before-image is the FORGERY VERBATIM, so the recorded original
-  //                               carries the marker. Nothing is pretended to be blank.
-  //
-  // Either way `beforeImage->>'id'` must be the row itself: evidence about some other row proves
-  // nothing about this one.
-  return `${carries} AND (a."revokedAt" IS NULL OR NOT EXISTS (
+  return `${carries} AND (a."revokedAt" IS NULL OR NOT ${t3cGenuineEvidenceSql('a')})`;
+}
+
+/**
+ * `EXISTS (…)`: does `<alias>` — a `LabourAttendance` row carrying the reserved marker — have the
+ * GENUINE repair evidence its marker claims?
+ *
+ * Exported because two callers must ask the identical question. The diagnostic asks it to decide
+ * whether a marked row is a finding; `T3CRepairService` asks it to decide whether a quarantine is
+ * refused. When those two diverge the operator is trapped: the preflight reports a row the repair
+ * declines to touch, and since the evidence is append-only and the attendance row is already
+ * revoked, nothing can clear the finding and the deploy is blocked permanently. One predicate, one
+ * answer.
+ *
+ * The evidence must be the RIGHT SHAPE, not merely present. Matching on metadata alone (row id, op,
+ * repair id) accepts an appended action carrying `{}` as its before-image, which is exactly the
+ * forgery this rule exists to catch: a writer who can insert into the evidence table could otherwise
+ * mint provenance for any marker they like.
+ *
+ * Two before-image shapes are legitimate, told apart by the op that produced them:
+ *
+ *   f1-mark-invalid-legacy      the before-image is the BLANK pre-repair row — the state the repair
+ *                               exists to retire — so the recorded original must itself be blank.
+ *                               It may already have been revoked: a legacy muster whose blank reason
+ *                               was revoked before correction 2 shipped is still a blank-reason row
+ *                               the repair must be able to retire, and requiring an unrevoked
+ *                               before-image here would make that row unrepairable.
+ *   f1-quarantine-forged-marker the before-image is the FORGERY VERBATIM, so the recorded original
+ *                               carries the marker. Nothing is pretended to be blank.
+ *
+ * `beforeImage->>'id'` must be the row itself: evidence about some other row proves nothing about
+ * this one. And the attribution must actually say something — an evidence row whose operator or
+ * reason is whitespace names nobody, and the append-only seal would make that emptiness permanent.
+ */
+export function t3cGenuineEvidenceSql(alias: string): string {
+  return `EXISTS (
             SELECT 1 FROM "T3CRepairAction" r
              WHERE r."table" = 'LabourAttendance'
-               AND r."rowId" = a."id"
-               AND r."repairId" = substring(a."manualReason" from '${T3C_MARKER_REPAIR_ID_REGEX}')
-               AND r."beforeImage"->>'id' = a."id"
+               AND r."rowId" = ${alias}."id"
+               AND r."repairId" = substring(${alias}."manualReason" from '${T3C_MARKER_REPAIR_ID_REGEX}')
+               AND r."beforeImage"->>'id' = ${alias}."id"
+               AND btrim(r."operator", ${T3C_BLANK_TRIM_SET}) <> ''
+               AND btrim(r."reason", ${T3C_BLANK_TRIM_SET}) <> ''
                AND (
                  (r."op" = 'f1-mark-invalid-legacy'
                    AND r."beforeImage"->>'manualReason' IS NOT NULL
-                   AND btrim(r."beforeImage"->>'manualReason', ${T3C_BLANK_TRIM_SET}) = ''
-                   AND r."beforeImage"->>'revokedAt' IS NULL)
+                   AND btrim(r."beforeImage"->>'manualReason', ${T3C_BLANK_TRIM_SET}) = '')
                  OR
                  (r."op" = 'f1-quarantine-forged-marker'
                    AND r."beforeImage"->>'manualReason' LIKE '${T3C_INVALID_LEGACY_PREFIX}%')
-               )))`;
+               ))`;
 }
 
 /**

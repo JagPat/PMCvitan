@@ -585,6 +585,25 @@ SELECT a."id", a."manualReason" AS quarantine_marker,
   JOIN "T3CRepairAction" r ON r."rowId" = a."id" AND r."op" = 'f1-quarantine-forged-marker';
 ```
 
+### A second, rarer abort: blank repair attribution
+
+> `phase4 t3 correction3: N T3CRepairAction row(s) carry a blank operator or reason — repair attribution that names nobody cannot be sealed as evidence`
+
+Only reachable on a database where something wrote directly into `T3CRepairAction`: `t3c:repair`
+refuses a plan with a blank `--operator` or `--reason` before it does anything. The evidence table is
+append-only, so the emptiness cannot be edited away, and it should not be — an audit row that names
+nobody is not evidence, and back-filling a name for it would be inventing one.
+
+Identify the rows, then treat the marker each one backs as unevidenced: it is diagnosed as
+`F1.marker` already (the finding-1 predicate requires non-blank attribution), so the quarantine flow
+above is its exit. The blank rows themselves stay, as the record that they were written.
+
+```sql
+SELECT "id", "repairId", "rowId", "at", "operator", "reason"
+  FROM "T3CRepairAction"
+ WHERE btrim("operator", E' \t\n\x0B\f\r') = '' OR btrim("reason", E' \t\n\x0B\f\r') = '';
+```
+
 ### Resolve the migration record, then redeploy
 
 If the abort happened inside `prisma migrate deploy` (a direct deploy, or a write that raced the
