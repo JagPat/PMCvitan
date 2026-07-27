@@ -44,9 +44,9 @@ packet does not embed a self-referential final SHA.
   both builds clean).
 - Reproduce-first same-head contracts failed before each correction: review/comment
   re-entry, CI-rerun terminal-state loss, legacy review-only failure, late evidence,
-  and monotonic failure-latch ordering. The final focused battery passed 29/29.
+  and monotonic failure-latch recovery. The final focused battery passed 30/30.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 29/29, web
+- Final `pnpm check` after protocol alignment passed: automation 30/30, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -120,9 +120,11 @@ the complete append-only status history for this review cycle. An independently
 published failure remains latched even if the clear path wrote a newer success;
 that latch converts the head back to failure plus draft. Auto-merge is enabled
 only after live evidence and the monotonic failure latch remain clean. A CI rerun
-that observes terminal success idempotently enables auto-merge, so a process
-failure between success publication and queueing is recoverable without another
-review request. Terminal failures similarly restore draft state before returning.
+that observes terminal success first applies the same latch from the latest
+review-cycle pending status; only a success with no later failure may idempotently
+enable auto-merge. A process failure between success publication and queueing is
+therefore recoverable without another review request or bypassing a finding.
+Terminal failures similarly restore draft state before returning.
 
 A failed CI rerun is handled before terminal-review recovery. When the durable
 review verdict is success, the CI handoff preserves both that verdict and the PR's

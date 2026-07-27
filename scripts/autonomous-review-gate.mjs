@@ -87,6 +87,17 @@ export function hasTerminalReviewFailureSince(statuses, since) {
     && Date.parse(status.created_at) >= sinceTime);
 }
 
+export function reviewCycleStartedAt(statuses) {
+  const pending = statuses.find((status) =>
+    status.context === STATUS_CONTEXT
+    && status.state === 'pending'
+    && (
+      status.description?.startsWith('review: pending')
+      || status.description?.startsWith('Waiting for required CI')
+    ));
+  return pending?.created_at ?? null;
+}
+
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -344,9 +355,29 @@ async function ensureTerminalReviewState(
   pullRequest,
   expectedHead,
   status,
+  statuses,
 ) {
   if (!isTerminalReviewStatus(status)) return false;
   if (status.state === 'success') {
+    const cycleStartedAt = reviewCycleStartedAt(statuses);
+    if (
+      cycleStartedAt
+      && hasTerminalReviewFailureSince(statuses, cycleStartedAt)
+    ) {
+      await client.setStatus(
+        expectedHead,
+        'failure',
+        'review: current-head Codex finding latched during recovery',
+        pullRequest.html_url,
+      );
+      await setDraftForCurrentHead(
+        client,
+        pullRequest.number,
+        expectedHead,
+        true,
+      );
+      return true;
+    }
     const live = await refreshCurrentHead(
       client,
       pullRequest.number,
@@ -599,12 +630,12 @@ export async function run() {
     return;
   }
 
-  const existingStatus = context.trigger === 'ci'
-    ? await client.latestStatus(
-        expectedHead,
-        STATUS_CONTEXT,
-      )
-    : null;
+  const existingStatuses = context.trigger === 'ci'
+    ? await client.statuses(expectedHead)
+    : [];
+  const existingStatus = existingStatuses.find(
+    (status) => status.context === STATUS_CONTEXT,
+  ) ?? null;
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     pullRequest = shouldDraftForCiFailure(existingStatus)
@@ -648,6 +679,7 @@ export async function run() {
         pullRequest,
         expectedHead,
         existingStatus,
+        existingStatuses,
       )
     ) {
       console.log(
@@ -660,7 +692,7 @@ export async function run() {
   await client.setStatus(
     expectedHead,
     'pending',
-    'Waiting for required CI and current-head Codex review',
+    'review: pending required CI and current-head Codex review',
     pullRequest.html_url,
   );
 

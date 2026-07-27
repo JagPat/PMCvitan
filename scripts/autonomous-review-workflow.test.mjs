@@ -6,6 +6,7 @@ import * as reviewGate from './autonomous-review-gate.mjs';
 
 const {
   hasTerminalReviewFailureSince,
+  reviewCycleStartedAt,
   MAX_REVIEW_ATTEMPTS,
   REQUIRED_CHECKS,
   summarizeRequiredChecks,
@@ -218,6 +219,47 @@ test('a review failure remains latched after a later success write', () => {
   );
 });
 
+test('terminal recovery scopes its failure latch to the latest review cycle', () => {
+  const statuses = [
+    {
+      context: 'codex-current-head',
+      state: 'success',
+      description: 'review: Codex found no blocking issue',
+      created_at: '2026-07-27T18:10:05Z',
+    },
+    {
+      context: 'codex-current-head',
+      state: 'failure',
+      description: 'review: current-head Codex finding',
+      created_at: '2026-07-27T18:10:04Z',
+    },
+    {
+      context: 'codex-current-head',
+      state: 'pending',
+      description: 'review: pending required CI and current-head Codex review',
+      created_at: '2026-07-27T18:10:00Z',
+    },
+    {
+      context: 'codex-current-head',
+      state: 'failure',
+      description: 'review: prior-cycle timeout',
+      created_at: '2026-07-27T18:00:05Z',
+    },
+    {
+      context: 'codex-current-head',
+      state: 'pending',
+      description: 'review: pending required CI and current-head Codex review',
+      created_at: '2026-07-27T18:00:00Z',
+    },
+  ];
+  const cycleStartedAt = reviewCycleStartedAt(statuses);
+  assert.equal(cycleStartedAt, '2026-07-27T18:10:00Z');
+  assert.equal(
+    hasTerminalReviewFailureSince(statuses, cycleStartedAt),
+    true,
+  );
+});
+
 test('workflow separates review-start events from result-only evidence events', async () => {
   const [workflow, gate] = await Promise.all([
     readFile(workflowPath, 'utf8'),
@@ -298,6 +340,12 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
     gate.indexOf('async function handleCodexEvidence'),
   );
   assert.match(terminalHelper, /status\.state === 'success'/);
+  assert.match(terminalHelper, /reviewCycleStartedAt/);
+  assert.match(terminalHelper, /hasTerminalReviewFailureSince/);
+  assert.ok(
+    terminalHelper.indexOf('hasTerminalReviewFailureSince')
+      < terminalHelper.indexOf('enableAutoMerge'),
+  );
   assert.match(terminalHelper, /setDraftForCurrentHead[\s\S]*true/);
 
   const runBody = gate.slice(gate.indexOf('export async function run()'));
