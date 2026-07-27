@@ -44,10 +44,10 @@ packet does not embed a self-referential final SHA.
   both builds clean).
 - Reproduce-first same-head contracts failed before each correction: review/comment
   re-entry, CI-rerun terminal-state loss, legacy review-only failure, late evidence,
-  and head-scoped/paginated failure-latch recovery. The final focused battery
-  passed 31/31.
+  head-scoped/paginated failure-latch recovery, and the barrier-driven concurrent
+  finding probe. The final focused battery passed 33/33.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 31/31, web
+- Final `pnpm check` after protocol alignment passed: automation 33/33, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -60,8 +60,9 @@ packet does not embed a self-referential final SHA.
    available on the default branch yet.
 4. Add `codex-current-head` to the existing five required checks, set strict mode,
    and enforce protection for administrators.
-5. Dispatch `Autonomous review and merge` with `pr_number=230`. From that point,
-   GitHub drives the regular CI -> ready -> Codex -> Claude Auto-fix -> merge loop.
+5. Dispatch `Autonomous review and merge` with `pr_number=230` and the exact
+   current `head_sha`. From that point, GitHub drives the regular CI -> ready ->
+   Codex -> Claude Auto-fix -> merge loop.
 
 ## External Verification To Record After Merge
 
@@ -114,15 +115,21 @@ any status or draft mutation. A review success or review failure is terminal for
 ordinary CI events; CI failures remain retryable. New statuses use `review:` and
 `ci:` prefixes, while the classifier recognizes all unprefixed terminal statuses
 emitted by the earlier gate, including `Codex submitted a current-head review`.
-Only `workflow_dispatch` can deliberately retry a terminal same-head review.
+Only `workflow_dispatch` can deliberately retry a terminal same-head review. It
+requires the exact head SHA and shares that head's start lane, so recovery cannot
+duplicate an already-active review cycle.
 
 Review success is published while auto-merge remains disabled. The handler then
 waits through a bounded settlement window and re-reads exact-head evidence plus
 every paginated page of append-only status history for this review cycle. An
-independently
-published failure remains latched even if the clear path wrote a newer success;
+independently published failure remains latched even if the clear path wrote a
+newer success;
 that latch converts the head back to failure plus draft. Auto-merge is enabled
-only after live evidence and the monotonic failure latch remain clean. A CI rerun
+only after live evidence and the monotonic failure latch remain clean. A
+barrier-driven test releases a concurrent result handler between two admission
+reads and proves that failure plus draft win while auto-merge remains disabled.
+The workflow has a 60-minute budget for the bounded CI wait, both review attempts,
+settlement, and terminal mutations. A CI rerun
 that observes terminal success first applies the same latch from the latest
 review-cycle pending status; only a success with no later failure may idempotently
 enable auto-merge. A process failure between success publication and queueing is

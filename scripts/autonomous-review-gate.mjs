@@ -402,7 +402,7 @@ async function ensureTerminalReviewState(
   return true;
 }
 
-async function handleCodexEvidence(
+export async function handleCodexEvidence(
   client,
   pullRequest,
   expectedHead,
@@ -439,6 +439,56 @@ async function handleCodexEvidence(
       next: 'Claude Auto-fix handles the review evidence and pushes a new head.',
     }),
   );
+}
+
+export async function admitAutoMerge(
+  client,
+  pullRequest,
+  expectedHead,
+  reviewNotBefore,
+  admissionBarrier = () => sleep(0),
+) {
+  const failureDetail =
+    'A current-head Codex finding was published during merge admission';
+  const failClosed = async () => {
+    await client.setStatus(
+      expectedHead,
+      'failure',
+      `review: ${failureDetail}`,
+      pullRequest.html_url,
+    );
+    const draft = await setDraftForCurrentHead(
+      client,
+      pullRequest.number,
+      expectedHead,
+      true,
+    );
+    return draft
+      ? { state: 'failure', detail: failureDetail }
+      : { state: 'superseded' };
+  };
+
+  const initialStatuses = await client.statuses(expectedHead);
+  if (hasTerminalReviewFailureSince(initialStatuses, reviewNotBefore)) {
+    return failClosed();
+  }
+
+  // Give a concurrently scheduled result-only handler an execution point,
+  // then read the append-only latch again immediately before admission.
+  await admissionBarrier();
+  const admissionStatuses = await client.statuses(expectedHead);
+  if (hasTerminalReviewFailureSince(admissionStatuses, reviewNotBefore)) {
+    return failClosed();
+  }
+
+  const live = await refreshCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+  );
+  if (!live) return { state: 'superseded' };
+  await client.enableAutoMerge(live);
+  return { state: 'clear' };
 }
 
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
@@ -548,7 +598,7 @@ export function contextForEvent(eventName, event, dispatchNumber) {
   if (eventName === 'workflow_dispatch') {
     return {
       number: Number(dispatchNumber ?? event.inputs?.pr_number),
-      expectedHead: null,
+      expectedHead: event.inputs?.head_sha ?? null,
       ciConclusion: null,
       trigger: 'dispatch',
     };
@@ -916,13 +966,26 @@ export async function run() {
         throw new Error(detail);
       }
 
-      pullRequest = await refreshCurrentHead(
+      const admission = await admitAutoMerge(
         client,
-        pullRequest.number,
+        pullRequest,
         expectedHead,
+        reviewNotBefore,
       );
-      if (!pullRequest) return;
-      await client.enableAutoMerge(pullRequest);
+      if (admission.state === 'superseded') return;
+      if (admission.state === 'failure') {
+        await client.updateStickyComment(
+          pullRequest.number,
+          statusBody({
+            state: 'changes_required',
+            head: expectedHead,
+            detail: admission.detail,
+            attempt,
+            next: 'Claude Auto-fix handles the merge-admission evidence and pushes a new head.',
+          }),
+        );
+        throw new Error(admission.detail);
+      }
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({

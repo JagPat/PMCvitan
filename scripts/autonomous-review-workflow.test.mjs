@@ -108,6 +108,17 @@ test('result-only events accept only exact-head Codex evidence', () => {
     }),
     null,
   );
+  assert.deepEqual(
+    reviewGate.contextForEvent('workflow_dispatch', {
+      inputs: { pr_number: '230', head_sha: head },
+    }),
+    {
+      number: 230,
+      expectedHead: head,
+      ciConclusion: null,
+      trigger: 'dispatch',
+    },
+  );
 });
 
 test('a CI rerun cannot reopen a terminal review cycle on the same head', () => {
@@ -304,7 +315,6 @@ test('terminal success checks the failure latch before auto-merge', async () => 
     gate.indexOf("if (result.state === 'clear')"),
     gate.indexOf('if (attempt < MAX_REVIEW_ATTEMPTS)'),
   );
-  assert.ok(clearBranch.indexOf('enableAutoMerge') >= 0);
   const publishedSuccess = clearBranch.indexOf("'success'");
   const settledEvidence = clearBranch.lastIndexOf(
     'reclassifyCurrentCodexEvidence',
@@ -313,12 +323,25 @@ test('terminal success checks the failure latch before auto-merge', async () => 
   const failureLatch = clearBranch.lastIndexOf(
     'hasTerminalReviewFailureSince',
   );
-  const enabledAutoMerge = clearBranch.lastIndexOf('enableAutoMerge');
+  const admission = clearBranch.lastIndexOf('admitAutoMerge');
   assert.ok(publishedSuccess >= 0);
   assert.ok(settledEvidence > publishedSuccess);
   assert.ok(settledStatuses > settledEvidence);
   assert.ok(failureLatch > settledStatuses);
-  assert.ok(enabledAutoMerge > failureLatch);
+  assert.ok(admission > failureLatch);
+
+  const admissionHelper = gate.slice(
+    gate.indexOf('export async function admitAutoMerge'),
+    gate.indexOf('async function waitForRequiredChecks'),
+  );
+  assert.equal(
+    [...admissionHelper.matchAll(/client\.statuses/g)].length,
+    2,
+  );
+  assert.ok(
+    admissionHelper.lastIndexOf('hasTerminalReviewFailureSince')
+      < admissionHelper.indexOf('enableAutoMerge'),
+  );
 });
 
 test('review evidence runs independently without cancelling review starts', async () => {
@@ -346,6 +369,70 @@ test('failure-latch status history is fully paginated', async () => {
   assert.match(statusesMethod, /page \+= 1/);
   assert.match(statusesMethod, /batch\.length < 100/);
   assert.match(statusesMethod, /statuses\.push\(\.\.\.batch\)/);
+});
+
+test('a concurrent evidence handler wins the terminal admission barrier', async () => {
+  assert.equal(typeof reviewGate.admitAutoMerge, 'function');
+  assert.equal(typeof reviewGate.handleCodexEvidence, 'function');
+  const expectedHead = 'a'.repeat(40);
+  const pullRequest = {
+    number: 236,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    html_url: 'https://github.test/pr/236',
+  };
+  const statuses = [];
+  let autoMergeEnabled = false;
+  let releaseBarrier;
+  let barrierReached;
+  const reached = new Promise((resolve) => { barrierReached = resolve; });
+  const release = new Promise((resolve) => { releaseBarrier = resolve; });
+  const client = {
+    pullRequest: async () => ({ ...pullRequest }),
+    setDraft: async (_pullRequest, draft) => {
+      pullRequest.draft = draft;
+      return { ...pullRequest };
+    },
+    setStatus: async (_head, state, description) => {
+      statuses.unshift({
+        context: 'codex-current-head',
+        state,
+        description,
+        created_at: new Date().toISOString(),
+      });
+    },
+    statuses: async () => statuses.map((status) => ({ ...status })),
+    enableAutoMerge: async () => { autoMergeEnabled = true; },
+    updateStickyComment: async () => {},
+  };
+
+  const admission = reviewGate.admitAutoMerge(
+    client,
+    pullRequest,
+    expectedHead,
+    '2026-07-27T00:00:00Z',
+    async () => {
+      barrierReached();
+      await release;
+    },
+  );
+  await reached;
+  await reviewGate.handleCodexEvidence(
+    client,
+    pullRequest,
+    expectedHead,
+    'Codex submitted a current-head finding',
+  );
+  releaseBarrier();
+
+  assert.deepEqual(await admission, {
+    state: 'failure',
+    detail: 'A current-head Codex finding was published during merge admission',
+  });
+  assert.equal(pullRequest.draft, true);
+  assert.equal(autoMergeEnabled, false);
+  assert.equal(statuses[0].state, 'failure');
 });
 
 test('terminal failures restore draft and CI failures run before recovery', async () => {
@@ -382,6 +469,13 @@ test('workflow has no AI action or AI credential dependency', async () => {
   assert.doesNotMatch(workflow, /OPENAI_API_KEY/);
   assert.doesNotMatch(workflow, /anthropics\/claude-code-action/);
   assert.doesNotMatch(workflow, /openai\/codex-action/);
+});
+
+test('workflow recovery is exact-head serialized and has terminal time budget', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  assert.match(workflow, /head_sha:/);
+  assert.match(workflow, /inputs\.head_sha/);
+  assert.match(workflow, /timeout-minutes:\s*60/);
 });
 
 test('workflow invokes the exact-head gate and CI executes its tests', async () => {
