@@ -1,5 +1,15 @@
 # PMCvitan Agent Entry Point
 
+## Operational Control Plane — Read First
+
+Before using the historical chronology below, read `docs/STATUS.md`, then
+`docs/AUTONOMOUS_LOOP.md`, then the active plan and any `blocking_directive`
+named by STATUS. STATUS is authoritative when narrative history lags.
+
+Every PR starts as a draft. Codex reviews each pushed head independently; keep
+the PR draft while a blocking finding remains and never start the next task while
+STATUS keeps the current task open. No human approval is required.
+
 Before architecture or implementation work, read:
 
 1. `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
