@@ -89,7 +89,7 @@ async function refreshedMergeability(client, pullRequest) {
 async function handOffConflict(client, pullRequest, repository) {
   if (!isAutonomousPullRequest(pullRequest, repository)) return;
   const live = await refreshedMergeability(client, pullRequest);
-  if (live.mergeable !== false) return;
+  if (live.mergeable !== false && live.mergeable_state !== 'behind') return;
 
   const marker = `${CONFLICT_MARKER}${live.head.sha} -->`;
   const comments = await client.comments(live.number);
@@ -99,7 +99,7 @@ async function handOffConflict(client, pullRequest, repository) {
     live.number,
     [
       marker,
-      '@claude This autonomous PR conflicts with the current `main` branch.',
+      '@claude This autonomous PR is behind or conflicts with the current `main` branch.',
       '',
       'Merge `origin/main` into this PR branch without rebasing or force-pushing. Resolve the conflicts according to `AGENTS.md`, run the complete documented validation suite, and push the resolution normally. Keep the PR in draft until CI and the exact-head Codex review are clean.',
     ].join('\n'),

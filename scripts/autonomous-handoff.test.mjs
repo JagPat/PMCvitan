@@ -51,3 +51,13 @@ test('handoff workflow is event-driven and runs trusted default-branch code', as
   assert.match(workflow, /scripts\/autonomous-handoff\.mjs/);
   assert.doesNotMatch(workflow, /schedule:/);
 });
+
+test('handoff implementation covers both conflicts and behind-base states', async () => {
+  const implementation = await readFile(
+    new URL('./autonomous-handoff.mjs', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(implementation, /live\.mergeable !== false/);
+  assert.match(implementation, /live\.mergeable_state !== 'behind'/);
+});
