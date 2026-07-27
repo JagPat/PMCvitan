@@ -21,6 +21,11 @@
 #                                          user, is REFUSED and rolls everything back (no row edited,
 #                                          no evidence table left behind, append-only trigger on).
 #   6. already-corrected database        → applicable + clean (state=applied); migrate deploy no-op.
+#   8. forged marker (revoked, no evidence) → preflight NAMES F1.marker; deploy refused, 20270220 untouched.
+#   7. pre-baseline (P3005) `db push` DB → the raw-SQL seals are ABSENT though the tables exist, so
+#                                          the runner leaves 20270225 PENDING instead of resolving it
+#                                          as applied, the retried deploy really executes it, and the
+#                                          seals are then verified present AND live (forgery rejected).
 #
 # DESTRUCTIVE for the scratch databases only. Connection via the standard PG* env vars; the dev
 # container uses PGUSER=vitan PGPASSWORD=vitan.
@@ -244,9 +249,85 @@ echo "$RUN_OUT" | grep -q '"applicable": true' && echo "$RUN_OUT" | grep -q '"cl
 echo "$RUN_OUT" | grep -q '"state": "applied"' && ok "T3C preflight reported migration state = applied" || bad "T3C preflight did not report state=applied"
 [ "$RUN_RC" = "0" ] && ok "migrate.sh is a clean no-op on the already-corrected DB" || bad "migrate.sh failed on the already-corrected DB"
 
+# ── Case 8 — a FORGED marker (revoked, but with no repair evidence) blocks the deploy ─────────────
+# Until 20270225 installs the reserving trigger, a direct writer can insert a marked row and fill in
+# the revocation triple, because that is what a real repair looks like. A revoked-only test would
+# bless it forever as an audited operator repair while no before-image has ever existed. The
+# diagnostic therefore demands the matching `T3CRepairAction` row for the repair id the marker
+# embeds — and here there is no evidence table at all, which is decisive: no repair has ever run.
+note "Case 8 — a forged marker with no repair evidence"
+DB=pmcvitan_t3cpr_forged
+clone_db pmcvitan_t3cpr_base "$DB"
+psql -X -q -v ON_ERROR_STOP=1 -d "$DB" >/dev/null <<SQL || { bad "could not plant the forged marker"; }
+INSERT INTO "LabourAttendance"
+  ("id","projectId","workerId","civilDate","shift","manualReason","recordedAt","recordedById","sourceCommandId","revokedAt","revokedById","revokeReason")
+VALUES ('ATT-FORGED','p1','W-1','2026-08-10','day',
+        '$MARKER repair=00000000-0000-0000-0000-000000000000; looks official', now(), 'USER-1','CMD-1',
+        now(),'USER-1','looks like a repair');
+SQL
+[ "$(q "$DB" "SELECT to_regclass('\"T3CRepairAction\"') IS NULL")" = "t" ] \
+  && ok "no repair has ever run here — there is no evidence table" || bad "the forged fixture unexpectedly has an evidence table"
+
+run_migrate_sh "$DB"
+[ "$RUN_RC" != "0" ] && ok "migrate.sh REFUSED to deploy over the forged marker" || bad "migrate.sh deployed over a forged marker"
+echo "$RUN_OUT" | grep -q 'F1.marker' && ok "the runner output NAMES F1.marker" || bad "the runner did not name F1.marker"
+echo "$RUN_OUT" | grep -q 'ATT-FORGED' && ok "the runner output identifies the forged row" || bad "the runner did not identify the forged row"
+corr2_absent "$DB" && ok "migration 20270220 was NEVER started/recorded" || bad "20270220 was recorded despite the forged marker"
+
+# ── Case 7 — PRE-BASELINE (P3005) database: the seals are verified, never assumed ─────────────────
+# A schema created by `prisma db push` has no `_prisma_migrations`, so `migrate deploy` answers
+# P3005 and the runner baselines. But `db push` reproduces only what schema.prisma MODELS: every
+# object 20270225 creates is raw SQL — two functions, two triggers, a CHECK — so this database looks
+# eligible and row-clean while carrying NONE of them. Blanket-resolving would record the correction
+# as installed forever without ever running it. The runner must instead leave 20270225 PENDING and
+# let the retried deploy execute it.
+note "Case 7 — pre-baseline (P3005) database created by db push"
+DB=pmcvitan_t3cpr_dbpush
+kill_conns "$DB"; $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB;" >/dev/null; $PSQL_ADMIN -c "CREATE DATABASE $DB;" >/dev/null
+DATABASE_URL="$URL_BASE/$DB?schema=public" pnpm exec prisma db push --skip-generate --accept-data-loss >/tmp/t3cpr-dbpush.log 2>&1 \
+  || { echo "db push failed"; tail -20 /tmp/t3cpr-dbpush.log; bad "could not build the pre-baseline fixture"; }
+
+# The premise, stated as an assertion rather than assumed: the tables are there, the seals are not.
+[ "$(q "$DB" "SELECT to_regclass('\"LabourAttendance\"') IS NOT NULL")" = "t" ] \
+  && ok "db push created the §C tables (so the preflight considers this database eligible)" \
+  || bad "db push did not create LabourAttendance"
+[ "$(q "$DB" "SELECT count(*) FROM pg_trigger WHERE tgname='WorkerAllocation_00_project_lock'")" = "0" ] \
+  && ok "db push did NOT create the raw-SQL correction seals (the exact hazard)" \
+  || bad "db push unexpectedly created the correction-3 triggers"
+[ "$(q "$DB" "SELECT count(*) FROM \"_prisma_migrations\"" 2>/dev/null)" = "" ] \
+  && ok "no _prisma_migrations ledger — migrate deploy will answer P3005" \
+  || bad "the db-push fixture already has a migration ledger"
+
+run_migrate_sh "$DB"
+[ "$RUN_RC" = "0" ] && ok "migrate.sh completed on the pre-baseline database" || { bad "migrate.sh failed on the pre-baseline database"; echo "$RUN_OUT" | tail -20; }
+echo "$RUN_OUT" | grep -q "P3005" && ok "the P3005 baseline branch was taken" || bad "the P3005 branch was not taken"
+echo "$RUN_OUT" | grep -q "seals MISSING" && ok "the runner NOTICED the correction-3 seals were missing" || bad "the runner did not check the correction-3 seals"
+echo "$RUN_OUT" | grep -q "skipping resolve --applied for $CORR3" \
+  && ok "20270225 was left PENDING instead of being resolved as applied" \
+  || bad "20270225 was blanket-resolved as applied without executing"
+
+# The decisive assertion: the objects EXIST afterwards, so the deployment really carries the seals.
+for trg in LabourAttendance_reserved_marker WorkerAllocation_00_project_lock; do
+  [ "$(q "$DB" "SELECT count(*) FROM pg_trigger WHERE tgname='$trg'")" = "1" ] \
+    && ok "seal installed after baseline+deploy: $trg" || bad "seal STILL missing after baseline+deploy: $trg"
+done
+[ "$(q "$DB" "SELECT count(*) FROM pg_constraint WHERE conname='LabourAttendance_marker_is_revoked'")" = "1" ] \
+  && ok "seal installed after baseline+deploy: LabourAttendance_marker_is_revoked" \
+  || bad "CHECK STILL missing after baseline+deploy"
+corr3_applied "$DB" && ok "20270225 is recorded applied — because it actually ran" || bad "20270225 is not recorded applied"
+
+# …and the seals are real, not just present: a forged marker insert is rejected.
+psql -X -q -d "$DB" -c "INSERT INTO \"LabourAttendance\" (\"id\",\"projectId\",\"workerId\",\"civilDate\",\"shift\",\"manualReason\",\"recordedAt\",\"recordedById\",\"sourceCommandId\") VALUES ('x','p','w','2026-01-01','day','$MARKER forged', now(), 'u', 'c');" >/dev/null 2>&1 \
+  && bad "a forged marker was accepted on the baselined database" \
+  || ok "a forged marker is rejected on the baselined database — the seal is live"
+
+# A SECOND run is a clean no-op: the seals are present, so the normal path resolves everything.
+run_migrate_sh "$DB"
+[ "$RUN_RC" = "0" ] && ok "a repeat migrate.sh run on the baselined database is a clean no-op" || bad "repeat migrate.sh run failed"
+
 # ── cleanup ──────────────────────────────────────────────────────────────────────────────────────
 note "cleanup"
-for db in pmcvitan_t3cpr_fresh pmcvitan_t3cpr_pretask3 pmcvitan_t3cpr_base pmcvitan_t3cpr_clean pmcvitan_t3cpr_dirty pmcvitan_t3cpr_corrected; do
+for db in pmcvitan_t3cpr_fresh pmcvitan_t3cpr_pretask3 pmcvitan_t3cpr_base pmcvitan_t3cpr_clean pmcvitan_t3cpr_dirty pmcvitan_t3cpr_corrected pmcvitan_t3cpr_dbpush pmcvitan_t3cpr_forged; do
   kill_conns "$db"; $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $db;" >/dev/null 2>&1 || true
 done
 
@@ -254,9 +335,11 @@ echo ""
 if [ "$FAIL" = "0" ]; then
   echo "T3C PRODUCTION-RUNNER PROOF PASSED: scripts/migrate.sh enforces the compiled, schema-aware T3C"
   echo "preflight across fresh, pre-Task-3, clean pre-correction, dirty F1.blank (named + 20270220 never"
-  echo "started + fabrication refused + explicit repair then clean redeploy) and already-corrected"
-  echo "databases — and the repair MARKS AND REVOKES, preserving the original row, its recorder, its"
-  echo "timestamps and a complete before-image. No attendance row is ever deleted."
+  echo "started + fabrication refused + explicit repair then clean redeploy), already-corrected and"
+  echo "pre-baseline P3005 databases — the last proving the correction's raw-SQL seals are VERIFIED and"
+  echo "really executed rather than blanket-resolved as applied. And the repair MARKS AND REVOKES,"
+  echo "preserving the original row, its recorder, its timestamps and a complete before-image. No"
+  echo "attendance row is ever deleted."
 else
   echo "T3C PRODUCTION-RUNNER PROOF FAILED: see the assertions above."
 fi

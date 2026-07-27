@@ -139,25 +139,50 @@ reports only the new directory.
 | `20270210000000_phase4_t3_time_capacity` | `2d6f022273bfd21830ef94168f6c7c1169d89a2d619940581fb5f2b73b85f1de` | unchanged |
 | `20270215000000_phase4_t3_correction` | `77394f1f8faa1253c7158032ccd5079443691ca31add84c492a7f19ae17c13f9` | unchanged |
 | `20270220000000_phase4_t3_correction2` | `0e1640310936b42bf2a247c37e9e6646d99e80c730920f5dd8399210613a6a7f` | unchanged |
-| `20270225000000_phase4_t3_correction3` | `04a5235f90e11eb1a5d408915aeec4354c6cfce87c8761b3fe3e7e8ec796b401` | **new** |
+| `20270225000000_phase4_t3_correction3` | `999fc820b9c5476022316709ecc0ed1abd6df4e0ab5d65640c02d8a83269b7b1` | **new** (amended in round 3b — see below; not deployed, so its bytes are not yet frozen) |
 
 `20270225000000` is diagnostic-first: it ABORTS with a bounded, named sample over any pre-existing
 marked-but-not-revoked muster before it installs anything, and its closing DO block fails the deploy
 if the project-lock trigger is not the first BEFORE-INSERT trigger on `WorkerAllocation`. It creates
 triggers and one CHECK; it edits no row and can abort over data only in the one diagnosed state.
 
+## Round 3b — the current-head Codex review of `0832c7d` (10 findings)
+
+Codex reviewed head `0832c7d` and raised ten findings. All ten are fixed here, on the same held draft
+PR; nothing from the three directive findings is rolled back.
+
+| # | sev | finding | fix | RED evidence at `0832c7d` |
+|---|---|---|---|---|
+| 1 | P1 | the migration could not be retried after a partial apply | `DROP TRIGGER IF EXISTS` / `DROP CONSTRAINT IF EXISTS` before each created object; the two functions were already `CREATE OR REPLACE` | re-running the migration over a partly-applied schema failed with "trigger already exists" |
+| 2 | P1 | §P4T3C3 never told the operator to resolve a `failed-pending` `20270225` | §P4T3C3 gains the `migrate resolve --rolled-back 20270225000000_phase4_t3_correction3` step + a verify block, exactly as §P4T3C2 has | the section had no resolve step; a post-abort redeploy would refuse |
+| 3 | P2 | the raw-read analyzer saw only inline literals, so `const sql = '…'; $queryRawUnsafe(sql)` escaped | `collectSqlText` resolves identifiers/property accesses to their declarations (and a `for…of` binding to the iterated expression), with a `seen` set for cycles | `boundary.test.ts` const / alias / const-array fixtures → 3 failures at `0832c7d`, GREEN after; the own-module negative passes in both |
+| 4 | P1 | the P3005 baseline path marked `20270225` applied without executing it | new `t3c seals` command + `migrate.sh` leaves that ONE migration pending when the seals are absent, then re-checks and fails closed | production-runner Case 7: a `db push` database has the tables and none of the seals |
+| 5 | P1 | `docs/STATUS.md` said `in_progress` while the PR was open and awaiting review | `task_state: in_review` in the YAML **and** the Task-3 table row | — (state, not behaviour) |
+| 6 | P1 | the repair engine read the Orgs-owned `User` table directly from a leaf | the read is deleted; `LabourAttendance_revokedBy_fkey`'s `23503` violation is translated into the same named `RepairAbortedError` | `R6` probe asserts no `FROM "User"` remains and the refusal message is unchanged |
+| 7 | P1 | a forged marker with the revocation triple pre-filled passed as an audited repair | the marker embeds `repair=<uuid>`; diagnostic **and** migration demand a matching `T3CRepairAction` before-image for that row AND that repair id (no evidence table ⇒ every marker is a finding) | `R7` probes: a revoked forgery, and one citing a real repair id for another row, both pass at `0832c7d` and are findings after |
+| 8 | P1 | `T3CRepairAction` was an ordinary mutable table | `T3CRepairAction_append_only` created in the same transaction that creates the table, re-asserted by the migration, and added to the verified `IMMUTABILITY_TRIGGERS` set (never disableable) | `R8` probe: `UPDATE`/`DELETE` on the evidence succeeded at `0832c7d` |
+| 9 | P2 | an operator plan could record a false finding classification permanently | `FINDING_OF_OP` decides what the evidence records; a stated `finding` that disagrees is refused *before* any trigger is disabled | `R-plan` probe: `finding: 'F1.marker'` ran the blank repair and wrote that classification |
+| 10 | P2 | the advisory-lock barrier counted ANY ungranted advisory lock globally | `waitUntilBlockedOnProjectLock(projectId)` reconstructs `hashtextextended('readiness:' || projectId, 0)` from `pg_locks.classid/objid`, excludes itself and requires `state='active'` | an unrelated waiter elsewhere could open the gate before the racing session arrived |
+
+One further inaccuracy was found while fixing #2 and corrected here: §P4T3C2 cited
+`scripts/phase4-t3-correction3-abort-proof.sh`, **which does not exist**. The section now cites the
+real script (`phase4-t3-correction3-production-runner-proof.sh`), which performs that exact sequence.
+
 ## Gates
+
+All figures below are from the post-round-3b tree.
 
 | gate | result |
 |---|---|
-| `pnpm check` | **EXIT 0** — web 432/432, API 663/663, build clean |
-| full live-PostgreSQL integration suite (pristine migrated DB) | **69 files / 602 tests passed** |
-| `phase4-t3-correction3.test.ts` | **12/12**, and **10 consecutive runs** 12/12 (concurrency probes 3a–3d included) |
-| `boundary.test.ts` / `module-registry.test.ts` / `cross-module-graph.test.ts` | GREEN |
+| `pnpm check` | **EXIT 0** — web 432/432, API 667/667, build clean |
+| full live-PostgreSQL integration suite (pristine migrated DB) | **69 files / 608 tests passed** |
+| `phase4-t3-correction3.test.ts` | **18/18** (12 directive probes + 6 round-3b probes) |
+| `phase4-t3-correction2.test.ts` | **6/6** with the project-scoped advisory barrier |
+| `boundary.test.ts` / `module-registry.test.ts` / `cross-module-graph.test.ts` | GREEN (114 tests; +4 indirect-SQL fixtures) |
 | `scripts/upgrade-proof.sh` | **PASSED** — the 4 round-3 assertions plus every prior Phase-1…Phase-4-T3C2 rejection |
-| `scripts/phase4-t3-correction3-production-runner-proof.sh` | **PASSED** — fresh / pre-Task-3 / clean / dirty-F1.blank (named, `20270220` never started, fabrication refused, repair, clean redeploy, row preserved) / already-corrected |
-| `pnpm test:e2e:api:allmodules` | **31/31** (one run flaked on the documented timing-sensitive `project-scope` browser-history test — no labour surface; clean re-run 31/31) |
-| `pnpm test:e2e:api:outbox` | **25/25** |
+| `scripts/phase4-t3-correction3-production-runner-proof.sh` | **PASSED** — fresh / pre-Task-3 / clean / dirty-F1.blank (named, `20270220` never started, fabrication refused, repair, clean redeploy, row preserved) / already-corrected / **forged marker refused (Case 8)** / **pre-baseline P3005 seals verified and really executed (Case 7)** |
+| `pnpm test:e2e:api:allmodules` | **31/31** |
+| `pnpm test:e2e:api:outbox` | **25/25** (6 skipped by mode) |
 
 ### Concurrency runs (directive item 5)
 

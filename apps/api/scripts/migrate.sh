@@ -93,11 +93,49 @@ echo "$out"
 
 if echo "$out" | grep -q "P3005"; then
   echo "[migrate] pre-baseline database detected (P3005) — marking existing migrations as applied"
+
+  # A pre-baseline database was created by `prisma db push`, which reproduces ONLY what schema.prisma
+  # models. Migration 20270225000000 creates nothing Prisma models — two functions, two triggers and
+  # a CHECK constraint, all raw SQL — so such a database can hold `LabourAttendance.manualReason`
+  # (looking eligible and row-clean to the preflight above) while carrying none of the seals.
+  # Blanket-resolving it as applied would record the correction as installed forever without ever
+  # running it, leaving production permanently without the reserved-marker trigger and the allocation
+  # project lock. So ASK the database first, and when the seals are absent leave that one migration
+  # PENDING for the retried `migrate deploy` to actually execute — everything it creates is
+  # raw-SQL-only, so it applies cleanly over a db-push schema, and its diagnostic-first DO block still
+  # aborts on dirty data exactly as on any other database.
+  T3C_CORRECTION="20270225000000_phase4_t3_correction3"
+  SKIP_T3C_CORRECTION=0
+  if [ -f "$T3C_PREFLIGHT" ]; then
+    if node "$T3C_PREFLIGHT" seals; then
+      echo "[migrate] T3C correction-3 seals present — resolving $T3C_CORRECTION as applied with the rest"
+    else
+      echo "[migrate] T3C correction-3 seals MISSING on this pre-baseline database — leaving $T3C_CORRECTION pending so it really applies"
+      SKIP_T3C_CORRECTION=1
+    fi
+  else
+    echo "[migrate] ERROR: compiled T3C preflight ($T3C_PREFLIGHT) is missing — cannot verify correction-3 seals; refusing to baseline."
+    exit 1
+  fi
+
   for dir in prisma/migrations/*/; do
     name=$(basename "$dir")
+    if [ "$SKIP_T3C_CORRECTION" -eq 1 ] && [ "$name" = "$T3C_CORRECTION" ]; then
+      echo "[migrate] skipping resolve --applied for $name (it will be executed by the deploy below)"
+      continue
+    fi
     npx prisma migrate resolve --applied "$name" || exit 1
   done
-  exec npx prisma migrate deploy
+
+  npx prisma migrate deploy || exit 1
+
+  # Fail closed if the seals STILL are not there: Prisma now considers every migration applied, so a
+  # missing object at this point would go unnoticed forever.
+  if ! node "$T3C_PREFLIGHT" seals; then
+    echo "[migrate] ERROR: T3C correction-3 seals are still missing after baseline + deploy — refusing to start."
+    exit 1
+  fi
+  exit 0
 fi
 
 echo "[migrate] migrate deploy failed — refusing to start (no db push fallback in production)"

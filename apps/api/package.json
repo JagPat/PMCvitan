@@ -28,6 +28,7 @@
     "t2c:migration-state": "tsx src/labour/t2c/t2c.cli.ts migration-state",
     "t2c:repair": "tsx src/labour/t2c/t2c.cli.ts repair",
     "t3c:preflight": "tsx src/labour/t3c/t3c.cli.ts preflight",
+    "t3c:seals": "tsx src/labour/t3c/t3c.cli.ts seals",
     "t3c:migration-state": "tsx src/labour/t3c/t3c.cli.ts migration-state",
     "t3c:repair": "tsx src/labour/t3c/t3c.cli.ts repair"
   },

@@ -608,4 +608,205 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
       ),
     ).rejects.toThrow(/cancelled/i);
   });
+
+  // ══ ROUND-3 RE-REVIEW — the marker must POINT AT EVIDENCE, and the evidence must be permanent ══
+
+  /** Write a marker directly, with the reserving trigger momentarily dropped — exactly what a direct
+   *  writer could do on a database that has not yet applied `20270225000000`. Nothing else about the
+   *  row is special: the forger fills in the revocation triple precisely because it looks legitimate. */
+  const forgedMarkedMuster = async (
+    projectId: string, workerId: string, marker: string, civilDate = '2026-09-01',
+  ): Promise<string> => {
+    const commandId = await rawCommand(projectId, 'labour.attendance.record');
+    const id = `att-forged-marker-${Date.now() % 1e6}-${seq++}`;
+    await t.prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS "LabourAttendance_reserved_marker" ON "LabourAttendance"`);
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DROP CONSTRAINT IF EXISTS "LabourAttendance_marker_is_revoked"`);
+    try {
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "LabourAttendance"
+           ("id","projectId","workerId","civilDate","shift","manualReason","recordedAt","recordedById","sourceCommandId","revokedAt","revokedById","revokeReason")
+         VALUES ($1,$2,$3,$4::date,'day',$5, now(), $6, $7, now(), $6, 'looks like a repair')`,
+        id, projectId, workerId, civilDate, marker, f.memberUser.id, commandId,
+      );
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `CREATE TRIGGER "LabourAttendance_reserved_marker" BEFORE INSERT ON "LabourAttendance"
+           FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_attendance_reserved_marker()`,
+      );
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_marker_is_revoked"
+           CHECK ("manualReason" IS NULL
+               OR "manualReason" NOT LIKE '${T3C_INVALID_LEGACY_PREFIX}%'
+               OR "revokedAt" IS NOT NULL) NOT VALID`,
+      );
+    }
+    return id;
+  };
+
+  it('R7: a REVOKED marker with no repair evidence is a FINDING — revocation alone never blesses it', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    // RED at 0832c7d: the diagnostic tested `revokedAt IS NULL`, so this row — revoked, marked, and
+    // backed by nothing — passed both the preflight and the migration, and from then on read
+    // permanently as an audited operator repair.
+    const forged = await forgedMarkedMuster(projectId, workerId, `${T3C_INVALID_LEGACY_PREFIX} repair=${'0'.repeat(8)}-0000-0000-0000-${'0'.repeat(12)}; forged`);
+
+    const report = await repairs.preflight();
+    expect(report.clean).toBe(false);
+    const marker = report.findings.find((x) => x.code === 'F1.marker')!;
+    expect(marker.count).toBe(1);
+    expect(marker.samples[0]!['id']).toBe(forged);
+
+    // The migration refuses too — a forged marker can never ride in on a deploy.
+    const sql = readFileSync(
+      join(__dirname, '..', '..', 'prisma/migrations/20270225000000_phase4_t3_correction3/migration.sql'),
+      'utf8',
+    );
+    expect(sql).toContain('T3CRepairAction');
+    expect(sql).toContain('repair=([0-9a-fA-F-]{36})');
+  });
+
+  it('R7: a marker whose embedded repair id does not match its evidence row is still a FINDING', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+
+    // A REAL repair first, so the evidence table exists and holds one genuine before-image.
+    const genuine = await legacyBlankMuster(projectId, workerId, '2026-09-02');
+    const outcome = await repairs.repair({
+      operator: 'ops@vitan.in',
+      reason: 'genuine repair',
+      actions: [{ finding: 'F1.blank', op: 'f1-mark-invalid-legacy', id: genuine, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+    expect((await repairs.preflight()).clean).toBe(true);
+
+    // Now a forgery that CITES that real repair id. The evidence row exists — but it is for another
+    // row, so "some repair once ran here" buys the forger nothing.
+    const forged = await forgedMarkedMuster(
+      projectId, await onboardWorker(projectId), `${T3C_INVALID_LEGACY_PREFIX} repair=${outcome.repairId}; borrowed someone else's evidence`, '2026-09-03',
+    );
+    const report = await repairs.preflight();
+    expect(report.clean).toBe(false);
+    const marker = report.findings.find((x) => x.code === 'F1.marker')!;
+    expect(marker.count).toBe(1);
+    expect(marker.samples[0]!['id']).toBe(forged);
+  });
+
+  it('R8: the repair EVIDENCE is append-only — its before-image can be neither rewritten nor deleted', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const id = await legacyBlankMuster(projectId, workerId, '2026-09-04');
+    const outcome = await repairs.repair({
+      operator: 'ops@vitan.in',
+      reason: 'retire legacy blank',
+      actions: [{ finding: 'F1.blank', op: 'f1-mark-invalid-legacy', id, revokedById: f.ownerUser.id, revokeReason: 'retired' }],
+    });
+    // The repair itself verified the seal was back on before committing.
+    expect(outcome.triggersRestored).toContain('T3CRepairAction_append_only');
+
+    // RED at 0832c7d: `T3CRepairAction` was an ordinary table, so both of these succeeded — the only
+    // surviving copy of the original blank bytes could be rewritten or erased while the attendance
+    // row went on claiming "Original row preserved in T3CRepairAction".
+    await expect(
+      t.prisma.$executeRawUnsafe(`UPDATE "T3CRepairAction" SET "operator" = 'someone else' WHERE "rowId" = $1`, id),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      t.prisma.$executeRawUnsafe(`DELETE FROM "T3CRepairAction" WHERE "rowId" = $1`, id),
+    ).rejects.toThrow(/append-only/i);
+
+    const still = await t.prisma.$queryRawUnsafe<Array<{ operator: string; beforeImage: Record<string, unknown> }>>(
+      `SELECT "operator", "beforeImage" FROM "T3CRepairAction" WHERE "rowId" = $1`, id,
+    );
+    expect(still).toHaveLength(1);
+    expect(still[0]!.operator).toBe('ops@vitan.in');
+    expect(still[0]!.beforeImage['manualReason']).toBe('   ');
+  });
+
+  it('R6: the repair validates the accountable human through the FK, not by reading Orgs persistence', async () => {
+    const repairSrc = readFileSync(join(__dirname, '..', '..', 'src/labour/t3c/t3c-repair.service.ts'), 'utf8');
+    // RED at 0832c7d: `SELECT count(*) … FROM "User"` — a LEAF module synchronously reading an
+    // Orgs-owned table. Being outside the runtime boundary scan did not make the crossing legitimate.
+    expect(repairSrc).not.toMatch(/FROM\s+"User"/);
+    expect(repairSrc).toContain('LabourAttendance_revokedBy_fkey');
+
+    // …and the refusal is still the same named one, now produced by translating the FK violation.
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const blankId = await legacyBlankMuster(projectId, await onboardWorker(projectId), '2026-09-05');
+    await expect(
+      repairs.repair({
+        operator: 'ops@vitan.in',
+        reason: 'attempted repair',
+        actions: [{ finding: 'F1.blank', op: 'f1-mark-invalid-legacy', id: blankId, revokedById: 'no-such-user', revokeReason: 'r' }],
+      }),
+    ).rejects.toThrow(/names no User/);
+    const untouched = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id: blankId } });
+    expect(untouched.manualReason).toBe('   ');
+    expect(untouched.revokedAt).toBeNull();
+  });
+
+  it('R-plan: a mis-stated finding is REFUSED, and the evidence records the op-derived classification', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const id = await legacyBlankMuster(projectId, await onboardWorker(projectId), '2026-09-06');
+
+    // RED at 0832c7d: the CLI casts operator-authored JSON to `Partial<RepairPlan>`, so a plan
+    // claiming `F1.marker` still ran the blank-row repair and wrote that false classification into
+    // `T3CRepairAction` — now permanently, since the evidence is append-only. Refused BEFORE any
+    // trigger is disabled: the operator is told what they are actually repairing.
+    await expect(
+      repairs.repair({
+        operator: 'ops@vitan.in',
+        reason: 'mis-stated plan',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        actions: [{ finding: 'F1.marker', op: 'f1-mark-invalid-legacy', id, revokedById: f.ownerUser.id, revokeReason: 'r' } as any],
+      }),
+    ).rejects.toThrow(/repairs F1\.blank, not "F1\.marker"/);
+    const untouched = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id } });
+    expect(untouched.manualReason).toBe('   ');
+
+    // A plan that states nothing still records the truth — the OP decides the classification.
+    await repairs.repair({
+      operator: 'ops@vitan.in',
+      reason: 'retire legacy blank',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      actions: [{ op: 'f1-mark-invalid-legacy', id, revokedById: f.ownerUser.id, revokeReason: 'retired' } as any],
+    });
+    const evidence = await t.prisma.$queryRawUnsafe<Array<{ finding: string }>>(
+      `SELECT "finding" FROM "T3CRepairAction" WHERE "rowId" = $1`, id,
+    );
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]!.finding).toBe('F1.blank');
+  });
+
+  it('R4: the correction seals are verifiable, and the baseline path refuses to bless them unseen', async () => {
+    // On a fully-migrated database every physical object is present.
+    const seals = await repairs.correctionSeals();
+    expect(seals.installed).toBe(true);
+    expect(seals.present.sort()).toEqual([
+      'LabourAttendance_marker_is_revoked', 'LabourAttendance_reserved_marker', 'WorkerAllocation_00_project_lock',
+    ]);
+
+    // Drop one — the shape a `prisma db push` database is permanently in — and the check names it.
+    await t.prisma.$executeRawUnsafe(`DROP TRIGGER "WorkerAllocation_00_project_lock" ON "WorkerAllocation"`);
+    try {
+      const missing = await repairs.correctionSeals();
+      expect(missing.installed).toBe(false);
+      expect(missing.missing).toEqual(['WorkerAllocation_00_project_lock']);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `CREATE TRIGGER "WorkerAllocation_00_project_lock" BEFORE INSERT ON "WorkerAllocation"
+           FOR EACH ROW EXECUTE FUNCTION phase4_t3c3_allocation_project_lock()`,
+      );
+    }
+
+    // RED at 0832c7d: the P3005 branch resolved EVERY migration as applied, so a db-push database
+    // recorded 20270225 as installed while carrying none of its objects, forever.
+    const migrateSh = readFileSync(join(__dirname, '..', '..', 'scripts/migrate.sh'), 'utf8');
+    expect(migrateSh).toContain('20270225000000_phase4_t3_correction3');
+    expect(migrateSh).toContain('seals');
+    expect(migrateSh).toMatch(/skipping resolve --applied/);
+  });
 });

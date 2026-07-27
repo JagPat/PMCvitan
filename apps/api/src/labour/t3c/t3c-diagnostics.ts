@@ -18,9 +18,14 @@ import type { Prisma } from '@prisma/client';
  *   - **F1.blank** mirrors the `20270220` abort exactly (the same explicit ASCII-whitespace trim
  *     set), so the preflight names it BEFORE Prisma starts instead of after a failed migration.
  *   - **F1.marker** is its post-repair companion: a row carrying the reserved invalid-legacy marker
- *     must ALSO be revoked, so a repaired muster can never contribute active presence. Migration
- *     `20270225000000` installs that as a CHECK; diagnosing it here means the preflight reports it
- *     by name rather than letting the CHECK fail opaquely.
+ *     must ALSO be revoked AND be backed by the matching `T3CRepairAction` before-image naming the
+ *     repair id the marker itself embeds. Revocation alone is not enough — until
+ *     `20270225000000`'s reserving trigger exists, a direct writer can insert a marked row with the
+ *     revocation triple already filled in, and a revoked-only test would bless it forever as an
+ *     audited repair while no record of the "original bytes" it claims to preserve has ever
+ *     existed. Migration `20270225000000` installs the revocation half as a CHECK; diagnosing the
+ *     whole rule here means the preflight reports it by name rather than letting the CHECK fail
+ *     opaquely or, worse, pass on a forgery.
  */
 
 const SAMPLE_LIMIT = 20;
@@ -43,6 +48,26 @@ export const T3C_INVALID_LEGACY_PREFIX = '[invalid-legacy:blank-manual-reason]';
 /** The ASCII whitespace class `20270220000000` trims — space, tab, newline, vertical tab, form feed,
  *  carriage return. Written as a SQL escape-string literal so the two predicates are identical. */
 export const T3C_BLANK_TRIM_SET = String.raw`E' \t\n\x0B\f\r'`;
+
+/**
+ * The machine-readable half of the marker: the repair id, written immediately after the prefix so it
+ * survives however the human-readable remainder is worded. This is what ties a marked attendance row
+ * to ONE specific `T3CRepairAction` before-image; without it "some repair once touched this row"
+ * would be all a checker could establish.
+ *
+ * The regex is a POSIX pattern usable directly in `substring(x from '…')`, and is duplicated verbatim
+ * in `20270225000000`'s SQL (a migration must be auditable without importing TypeScript).
+ */
+export const T3C_MARKER_REPAIR_ID_REGEX = String.raw`repair=([0-9a-fA-F-]{36})`;
+
+/** Build the reserved marker for one repair. The text states only what is KNOWN about the record. */
+export function t3cInvalidLegacyMarker(repairId: string, operator: string): string {
+  return (
+    `${T3C_INVALID_LEGACY_PREFIX} repair=${repairId}; the original manualReason was blank; the real ` +
+    `justification was never recorded and is not knowable from the data. Retired by operator ${operator}. ` +
+    `Original row preserved in T3CRepairAction.`
+  );
+}
 
 export interface T3CFindingReport {
   /** Stable finding code — `F1.blank`, `F1.marker`. */
@@ -76,9 +101,26 @@ interface Diag {
 
 /** Rows whose `manualReason` says nothing — the `20270220000000` abort predicate, verbatim. */
 const BLANK_PREDICATE = `"manualReason" IS NOT NULL AND btrim("manualReason", ${T3C_BLANK_TRIM_SET}) = ''`;
-/** Rows carrying the reserved repair marker that are NOT revoked — a repaired muster that could
- *  still be read as live presence. Only a broken/partial repair (or a forged write) creates this. */
-const MARKER_PREDICATE = `"manualReason" LIKE '${T3C_INVALID_LEGACY_PREFIX}%' AND "revokedAt" IS NULL`;
+
+/**
+ * Rows carrying the reserved repair marker that are NOT a real audited repair: either not revoked
+ * (a repaired muster that could still be read as live presence), or with no `T3CRepairAction`
+ * before-image for that exact row and the repair id the marker embeds.
+ *
+ * `haveEvidence=false` means the evidence table does not exist, so NO repair has ever run in this
+ * database and every marker present is therefore a forgery or a torn write — the absence is
+ * decisive, not inconvenient, so the predicate reduces to "carries the marker".
+ */
+function markerPredicate(haveEvidence: boolean): string {
+  const carries = `a."manualReason" LIKE '${T3C_INVALID_LEGACY_PREFIX}%'`;
+  if (!haveEvidence) return carries;
+  return `${carries} AND (a."revokedAt" IS NULL OR NOT EXISTS (
+            SELECT 1 FROM "T3CRepairAction" r
+             WHERE r."table" = 'LabourAttendance'
+               AND r."rowId" = a."id"
+               AND r."op" = 'f1-mark-invalid-legacy'
+               AND r."repairId" = substring(a."manualReason" from '${T3C_MARKER_REPAIR_ID_REGEX}')))`;
+}
 
 /**
  * The two diagnostics, in report order. Predicates are duplicated between the count and sample
@@ -86,23 +128,27 @@ const MARKER_PREDICATE = `"manualReason" LIKE '${T3C_INVALID_LEGACY_PREFIX}%' AN
  * migrations `20270220000000` / `20270225000000` on sight, so no clever abstraction hides what is
  * being counted.
  */
-const DIAGS: Diag[] = [
-  {
-    code: 'F1.blank',
-    description: 'LabourAttendance rows whose manualReason is blank (an unevidenced presence claim with nothing behind it)',
-    count: `SELECT count(*)::bigint AS n FROM "LabourAttendance" WHERE ${BLANK_PREDICATE}`,
-    sample: `SELECT "id", "projectId", "workerId", "civilDate", "shift", "recordedById", "recordedAt", "revokedAt" FROM "LabourAttendance" WHERE ${BLANK_PREDICATE} ORDER BY "projectId", "civilDate", "id" LIMIT ${SAMPLE_LIMIT}`,
-  },
-  {
-    code: 'F1.marker',
-    description: 'LabourAttendance rows carrying the reserved invalid-legacy marker that are NOT revoked (a repaired muster must never contribute active presence)',
-    count: `SELECT count(*)::bigint AS n FROM "LabourAttendance" WHERE ${MARKER_PREDICATE}`,
-    sample: `SELECT "id", "projectId", "workerId", "civilDate", "shift", "recordedById" FROM "LabourAttendance" WHERE ${MARKER_PREDICATE} ORDER BY "projectId", "civilDate", "id" LIMIT ${SAMPLE_LIMIT}`,
-  },
-];
+function diagsFor(haveEvidence: boolean): Diag[] {
+  const marker = markerPredicate(haveEvidence);
+  return [
+    {
+      code: 'F1.blank',
+      description: 'LabourAttendance rows whose manualReason is blank (an unevidenced presence claim with nothing behind it)',
+      count: `SELECT count(*)::bigint AS n FROM "LabourAttendance" WHERE ${BLANK_PREDICATE}`,
+      sample: `SELECT "id", "projectId", "workerId", "civilDate", "shift", "recordedById", "recordedAt", "revokedAt" FROM "LabourAttendance" WHERE ${BLANK_PREDICATE} ORDER BY "projectId", "civilDate", "id" LIMIT ${SAMPLE_LIMIT}`,
+    },
+    {
+      code: 'F1.marker',
+      description:
+        'LabourAttendance rows carrying the reserved invalid-legacy marker that are not a real audited repair — not revoked, or with no matching T3CRepairAction before-image for the repair id the marker embeds',
+      count: `SELECT count(*)::bigint AS n FROM "LabourAttendance" a WHERE ${marker}`,
+      sample: `SELECT a."id", a."projectId", a."workerId", a."civilDate", a."shift", a."recordedById", a."revokedAt" FROM "LabourAttendance" a WHERE ${marker} ORDER BY a."projectId", a."civilDate", a."id" LIMIT ${SAMPLE_LIMIT}`,
+    },
+  ];
+}
 
 /** All finding codes this correction diagnoses, for callers that want to enumerate them. */
-export const T3C_FINDING_CODES: string[] = DIAGS.map((d) => d.code);
+export const T3C_FINDING_CODES: string[] = diagsFor(true).map((d) => d.code);
 
 /**
  * Every table the diagnostics READ. The preflight checks these exist before running any diagnostic,
@@ -119,8 +165,14 @@ export const T3C_MARKER_COLUMN = { table: 'LabourAttendance', column: 'manualRea
  * a per-finding count + bounded samples and a `clean` flag. Never writes; safe to run on production.
  */
 export async function runT3CDiagnostics(client: RawQueryClient): Promise<T3CDiagnosticsReport> {
+  // The evidence table is created BY the repair transaction, so its presence is what decides which
+  // shape F1.marker takes. Asked before any diagnostic runs, over `to_regclass` so a database
+  // without it never has the missing relation parsed into a query.
+  const evidence = await client.$queryRawUnsafe<Array<{ present: boolean }>>(
+    `SELECT to_regclass('"T3CRepairAction"') IS NOT NULL AS present`,
+  );
   const findings: T3CFindingReport[] = [];
-  for (const d of DIAGS) {
+  for (const d of diagsFor(evidence[0]?.present === true)) {
     const countRows = await client.$queryRawUnsafe<Array<{ n: bigint | number }>>(d.count);
     const count = Number(countRows[0]?.n ?? 0);
     let samples: Array<Record<string, unknown>> = [];

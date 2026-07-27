@@ -363,6 +363,51 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
       expect(f).toEqual([]);
     });
 
+    // Round-3 re-review (finding 3) — literals directly under the call are not the only SQL a raw
+    // call executes. Naming the statement is the obvious way to write it, and the obvious way to
+    // slip past a literals-only scan; each of these fixtures is RED against that earlier version.
+    it('SQL held in a module-scope const is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'activities/evil-const-sql.ts':
+          'const SQL = `SELECT "id" FROM "Decision" WHERE "id" = $1 FOR UPDATE`;\n' +
+          'export async function evilConstSql(prisma: PrismaLike, id: string) { await prisma.$queryRawUnsafe(SQL, id); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('SQL reached through a local alias of a const is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'activities/evil-alias-sql.ts':
+          'const BASE = `SELECT "id" FROM "Decision"`;\n' +
+          'export async function evilAliasSql(prisma: PrismaLike) { const sql = BASE; await prisma.$queryRawUnsafe(sql); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('SQL held in a const ARRAY of statements is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'activities/evil-array-sql.ts':
+          'const STATEMENTS = [`SELECT 1`, `SELECT "id" FROM "Decision"`];\n' +
+          'export async function evilArraySql(prisma: PrismaLike) { for (const s of STATEMENTS) await prisma.$executeRawUnsafe(s); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('a const naming only OWN-module tables stays clean when resolved', () => {
+      const f = analyzeFixture({
+        'decisions/own-const-sql.ts':
+          'const SQL = `SELECT "id" FROM "Decision" WHERE "id" = $1`;\n' +
+          'export async function ownConstSql(prisma: PrismaLike, id: string) { await prisma.$queryRawUnsafe(SQL, id); }',
+      });
+      expect(f).toEqual([]);
+    });
+
     it('the raw-read detection is COUPLED to the live manifests — Activities raw-reading a labour table is flagged', () => {
       // Same coupling discipline as the WorkerSkill fixture above: analyzed against the REAL
       // manifest-derived read-encapsulation, so dropping `workerSkill` from labour's

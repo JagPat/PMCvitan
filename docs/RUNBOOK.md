@@ -404,8 +404,13 @@ pnpm --filter api t3c:migration-state
 ### 3. Decide, then repair
 
 Write an explicit plan naming every row and the accountable human who authorizes retiring it. The
-repair never guesses: `revokedById` must resolve to a real `User`, and `revokeReason` is your own
-words about the RETIREMENT (not about why the worker was present, which you do not know).
+repair never guesses: `revokedById` must resolve to a real `User` (enforced by
+`LabourAttendance_revokedBy_fkey` — an unknown id is refused, never invented), and `revokeReason` is
+your own words about the RETIREMENT (not about why the worker was present, which you do not know).
+
+`finding` is documentary and optional: the classification written to the evidence comes from the
+`op`, so a typo cannot record something untrue. If you state one and it disagrees with the op, the
+repair refuses rather than reinterpreting your plan.
 
 ```json
 {
@@ -468,41 +473,81 @@ space-only one.
 The migration's other change (the allocation trigger taking the `ActivityRequirementRoot` lock before
 reading the head) needs no operator action: it alters a function, touches no rows, and cannot abort.
 
-`scripts/phase4-t3-correction3-abort-proof.sh` drives this exact sequence end-to-end against real
-PostgreSQL (dirty database → preflight names it → deploy aborts → `t3c:repair` → clean redeploy),
-and proves that a fabricating plan is refused and rolled back and that the row is never deleted.
-`scripts/phase4-t3-correction3-production-runner-proof.sh` drives the REAL `migrate.sh` over fresh,
-pre-Task-3, clean, dirty and already-corrected databases.
+`scripts/phase4-t3-correction3-production-runner-proof.sh` drives this exact sequence end-to-end
+against real PostgreSQL through the REAL `migrate.sh` — fresh, pre-Task-3, clean, dirty F1.blank
+(preflight names it → deploy aborts before Prisma starts → `t3c:repair` → clean redeploy), a
+fabricating plan refused and rolled back with the row never deleted, a forged marker, an
+already-corrected database, and a pre-baseline (P3005) database whose raw-SQL seals are verified and
+really executed rather than blanket-resolved as applied.
 
-## §P4T3C3. Phase 4 Task-3 correction 3 — a marked muster that is not revoked (rare)
+## §P4T3C3. Phase 4 Task-3 correction 3 — a marked muster that is not a real audited repair (rare)
 
 `20270225000000_phase4_t3_correction3` adds the seals that make the §P4T3C2 repair provably honest.
 Only one of them can abort a deploy:
 
-> `phase4 t3 correction3 finding 1: N LabourAttendance row(s) carry the reserved invalid-legacy marker but are NOT revoked (sample: …)`
+> `phase4 t3 correction3 finding 1: N LabourAttendance row(s) carry the reserved invalid-legacy marker without being a real audited repair — not revoked, or with no matching T3CRepairAction before-image for the embedded repair id (sample: …)`
 
-**What it means.** A row carries `[invalid-legacy:blank-manual-reason]…` in `manualReason` but has no
-revocation. Only `t3c:repair` may write that marker, and it always writes the revocation triple in the
-same statement — so this state means the marker was forged before the reserving trigger existed, or a
-repair was somehow interrupted outside its transaction. Either way a human must look at it: a marked
-row that is still live is an unevidenced presence claim wearing something that looks like an
-explanation.
+**What it means.** A row carries `[invalid-legacy:blank-manual-reason] repair=<id>…` in `manualReason`
+but is not what that marker claims to be — either it is not revoked, or there is no `T3CRepairAction`
+row recording the before-image for that exact attendance row and that exact repair id. Only
+`t3c:repair` may write the marker, and it writes the evidence row, the marker and the revocation
+triple in ONE transaction — so this state means the marker was forged before the reserving trigger
+existed, or a repair was somehow interrupted outside its transaction. Either way a human must look at
+it: a marked row that is still live is an unevidenced presence claim wearing something that looks like
+an explanation, and a marked row with no before-image is a claim that evidence exists when it does
+not.
+
+Revocation alone is deliberately not accepted. Until this migration installs the reserving trigger, a
+direct writer can insert a marked row with the revocation triple already populated; blessing that
+would make a forgery permanently indistinguishable from an audited repair.
 
 **What to do.** Run `pnpm --filter api t3c:preflight` to list them (`F1.marker`), then decide per row:
 
-- If it is a repaired legacy record, revoke it through the application
-  (`POST …/labour/attendance/:id/revoke`) with a reason naming the repair. The row stays; the marker
-  stays; it simply stops counting as presence.
-- If it is NOT a repaired record — i.e. someone wrote the marker themselves — treat it as a forged
-  attendance record: revoke it, record the incident, and re-record the real presence as a new,
-  separately-attributable muster if it is genuine.
+- If it is a repaired legacy record whose evidence exists but which was left live, revoke it through
+  the application (`POST …/labour/attendance/:id/revoke`) with a reason naming the repair. The row
+  stays; the marker stays; it simply stops counting as presence.
+- If there is no matching `T3CRepairAction` row — i.e. someone wrote the marker themselves — treat it
+  as a forged attendance record: revoke it, record the incident, and re-record the real presence as a
+  new, separately-attributable muster if it is genuine. **Do not** hand-write an evidence row to make
+  the diagnostic pass: an invented before-image is worse than a named forgery, and `T3CRepairAction`
+  is append-only, so the invention would itself be permanent.
 
-Then redeploy. After this migration applies, the state is unreachable: a BEFORE INSERT trigger
-reserves the marker prefix (no ordinary write can claim it) and a CHECK requires any marked row to be
-revoked.
+### Resolve the migration record, then redeploy
+
+If the abort happened inside `prisma migrate deploy` (a direct deploy, or a write that raced the
+production preflight), `20270225000000` is left `failed-pending` and the next deploy refuses to start
+until that record is resolved — exactly as for correction 2 in §P4T3C2:
+
+```
+pnpm --filter api t3c:migration-state                                            # classify first
+npx prisma migrate resolve --rolled-back 20270225000000_phase4_t3_correction3    # only if failed-pending
+npx prisma migrate deploy
+```
+
+### Verify
+
+```
+pnpm --filter api t3c:preflight   # exit 0, both findings zero
+pnpm --filter api t3c:seals       # exit 0, all three physical objects present
+```
+
+After this migration applies, the state is unreachable: a BEFORE INSERT trigger reserves the marker
+prefix (no ordinary write can claim it) and a CHECK requires any marked row to be revoked. The
+`T3CRepairAction` evidence table is append-only from the same moment — a repair's before-image can
+never be rewritten or deleted, which is what makes "Original row preserved in T3CRepairAction" a
+guarantee rather than a sentence.
 
 The migration's other change (the `WorkerAllocation` project-readiness lock trigger) needs no operator
 action: it creates a trigger, touches no rows, and cannot abort over data.
+
+**Pre-baseline (`prisma db push`) databases.** Everything this migration creates is raw SQL, which
+`db push` does not reproduce, so such a database can look eligible and row-clean while carrying none
+of the seals. `scripts/migrate.sh` therefore runs `t3c seals` on the P3005 baseline path and, when the
+seals are absent, leaves `20270225000000` **pending** rather than resolving it as applied — the
+retried `migrate deploy` executes it for real — then re-checks and fails closed if the objects are
+still missing. If you ever baseline by hand, do the same: never
+`migrate resolve --applied 20270225000000_phase4_t3_correction3` without first confirming
+`pnpm --filter api t3c:seals` exits 0.
 
 ## 1. Drain all OLD application instances
 

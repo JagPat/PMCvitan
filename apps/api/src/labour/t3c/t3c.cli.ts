@@ -12,6 +12,13 @@ import { RepairAbortedError, T3CRepairService, type RepairPlan } from './t3c-rep
  *       database is clean (safe to `prisma migrate deploy`), 3 when any finding is present. Run this
  *       BEFORE deploy so the blank-reason state is reported explicitly and Prisma never starts.
  *
+ *   pnpm --filter api t3c:seals
+ *       READ-ONLY. Reports whether `20270225000000`'s PHYSICAL objects (the reserved-marker trigger,
+ *       the allocation project-lock trigger, the marker-is-revoked CHECK) exist in this database.
+ *       Exit 0 when installed or when the §C attendance schema is absent entirely; 3 when the schema
+ *       is present but a seal is missing. `scripts/migrate.sh` uses this on the P3005 baseline path
+ *       so a `db push` database is never marked as having a correction it does not carry.
+ *
  *   pnpm --filter api t3c:repair --plan <plan.json> --operator <identity> --reason <text>
  *       Applies an EXPLICIT operator-authored plan under one bounded maintenance transaction:
  *       durable before-image evidence, surgical (minimal) trigger disable, apply, trigger re-enable
@@ -61,6 +68,26 @@ async function main(): Promise<void> {
         );
         process.exitCode = 3;
       }
+    } else if (cmd === 'seals') {
+      // Are `20270225000000`'s raw-SQL objects physically present? Used by `scripts/migrate.sh` on
+      // the P3005 baseline path, where marking the migration applied without executing it would
+      // leave a database permanently without the seals while Prisma believed they were installed.
+      // Reports "not applicable" (exit 0) on a database with no §C attendance schema at all.
+      const eligibility = await svc.schemaEligible();
+      if (!eligibility.applicable) {
+        process.stdout.write(
+          JSON.stringify({ ok: true, applicable: false, reason: eligibility.reason, missing: eligibility.missing }, null, 2) + '\n',
+        );
+        return;
+      }
+      const seals = await svc.correctionSeals();
+      process.stdout.write(JSON.stringify({ ok: seals.installed, applicable: true, ...seals }, null, 2) + '\n');
+      if (!seals.installed) {
+        process.stderr.write(
+          `\nT3C correction-3 seals MISSING: ${seals.missing.join(', ')} — migration 20270225000000 has not physically applied here.\n`,
+        );
+        process.exitCode = 3;
+      }
     } else if (cmd === 'migration-state') {
       process.stdout.write(JSON.stringify(await svc.migrationState(), null, 2) + '\n');
     } else if (cmd === 'repair') {
@@ -90,7 +117,7 @@ async function main(): Promise<void> {
       );
     } else {
       process.stderr.write(
-        'usage: t3c <preflight | migration-state | repair --plan <plan.json> --operator <identity> --reason <text>>\n',
+        'usage: t3c <preflight | seals | migration-state | repair --plan <plan.json> --operator <identity> --reason <text>>\n',
       );
       process.exitCode = 2;
     }

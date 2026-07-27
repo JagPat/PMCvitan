@@ -13,7 +13,7 @@ narrative and may lag behind reality.
 phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
 task: 3
-task_state: in_progress
+task_state: in_review
 work_item: correction_round_3
 reviewed_merge: 2a6112b
 open_pr: 230
@@ -31,7 +31,7 @@ Review Stops" section of the phase plan.
 |---|---|---|
 | 1 | Labour capability + type-routed demand + trusted workforce identity (§B/§D/§H) | merged |
 | 2 | Supplier reuse + labour commitment documents (§F) | merged |
-| 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | in_progress — round-3 correction (`docs/reviews/phase-4-t3-correction3-directive.md`) on a held draft PR; evidence in `docs/reviews/phase-4-t3-correction3-packet.md` |
+| 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | in_review — round-3 correction (`docs/reviews/phase-4-t3-correction3-directive.md`) on a held draft PR, fixing forward from the current-head Codex review; evidence in `docs/reviews/phase-4-t3-correction3-packet.md` |
 | 4 | Canonical labour coverage + Team gate + combined readiness + seventh projection + LEAF module graph (§A/§G) | not_started |
 | 5 | Daily-Log reconciliation (§E) + planned-vs-actual + productivity (§I) | not_started |
 | 6 | Frontend surfaces + pilot acceptance chain + consolidated Phase-4 packet (§J) | not_started |

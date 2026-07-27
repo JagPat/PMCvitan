@@ -3,6 +3,7 @@ import type { PrismaService } from '../../prisma.service';
 import {
   runT3CDiagnostics,
   summarizeT3C,
+  t3cInvalidLegacyMarker,
   T3C_INVALID_LEGACY_PREFIX,
   T3C_MARKER_COLUMN,
   T3C_REFERENCED_TABLES,
@@ -57,15 +58,45 @@ const DISABLEABLE_TRIGGERS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Every §C immutability trigger whose ENABLED state the repair verifies before commit. All four are
- * installed by `20270210000000`, which is deployed before any repair can be needed. Triggers added
- * by `20270225000000` are deliberately absent: that migration has not applied at repair time.
+ * Every §C immutability trigger whose ENABLED state the repair verifies before commit. The first
+ * four are installed by `20270210000000`, which is deployed before any repair can be needed.
+ * Triggers added by `20270225000000` are deliberately absent: that migration has not applied at
+ * repair time.
+ *
+ * `T3CRepairAction_append_only` is the exception that is created HERE (see {@link EVIDENCE_SEAL_SQL})
+ * because the evidence table itself is created here. Without it the audit rows are an ordinary
+ * mutable table: a later direct write could rewrite or erase the operator, reason, timestamp or the
+ * complete before-image — the only surviving copy of the original blank bytes — while every marked
+ * attendance row goes on claiming "Original row preserved in T3CRepairAction". The marker's promise
+ * has to be enforced, not merely printed.
  */
 const IMMUTABILITY_TRIGGERS: ReadonlyArray<string> = [
   'LabourAttendance_append_only',
   'WorkerAllocation_frozen',
   'LabourWorkFact_append_only',
   'ApprovedSkillSubstitution_append_only',
+  'T3CRepairAction_append_only',
+];
+
+/**
+ * The evidence table's own seal. INSERT is the only permitted operation: an audit row is never
+ * corrected, superseded or tidied away — a mistaken repair is answered by another repair, which
+ * writes another row. Deliberately NOT in {@link DISABLEABLE_TRIGGERS}, so no repair plan can ever
+ * name it: the repair engine is not permitted to unseal its own evidence.
+ *
+ * Written idempotently (`CREATE OR REPLACE` + `DROP TRIGGER IF EXISTS`) because the repair
+ * transaction re-runs it on every invocation, and re-asserted by `20270225000000` so a database
+ * whose repair predates this seal gains it at deploy time.
+ */
+const EVIDENCE_SEAL_SQL = [
+  `CREATE OR REPLACE FUNCTION phase4_t3c_repair_action_append_only() RETURNS trigger AS $fn$
+     BEGIN
+       RAISE EXCEPTION 'T3CRepairAction is append-only — repair evidence is never updated or deleted (attempted % on row %)', TG_OP, COALESCE(OLD."id"::text, '<none>');
+     END;
+   $fn$ LANGUAGE plpgsql`,
+  `DROP TRIGGER IF EXISTS "T3CRepairAction_append_only" ON "T3CRepairAction"`,
+  `CREATE TRIGGER "T3CRepairAction_append_only" BEFORE UPDATE OR DELETE ON "T3CRepairAction"
+     FOR EACH ROW EXECUTE FUNCTION phase4_t3c_repair_action_append_only()`,
 ];
 
 export type RepairAction =
@@ -74,9 +105,12 @@ export type RepairAction =
    * `revokedById` is the accountable human the operator names; it must resolve to a real `User`
    * (never fabricated) because `LabourAttendance_revoke_attribution_check` demands the full
    * revocation triple. `revokeReason` is the operator's own words about the REPAIR.
+   *
+   * `finding` is OPTIONAL and documentary: the recorded classification comes from {@link FINDING_OF_OP}.
+   * When present it must match, so a mis-stated plan is refused rather than quietly reinterpreted.
    */
   {
-    finding: string;
+    finding?: string;
     op: 'f1-mark-invalid-legacy';
     id: string;
     revokedById: string;
@@ -109,6 +143,44 @@ export class RepairAbortedError extends Error {
 const TABLE_OF: Record<RepairAction['op'], string> = {
   'f1-mark-invalid-legacy': 'LabourAttendance',
 };
+
+/**
+ * The finding each op repairs. The op — not the plan's `finding` string — is what the evidence
+ * records: the CLI parses an operator-authored JSON file, so a typo or a copy-paste from another
+ * finding would otherwise write a false classification into `T3CRepairAction`, where it is now
+ * permanent (the evidence is append-only). A plan that names a finding is still checked against
+ * this, so a mismatch is a refusal rather than a silent correction — an operator who believes they
+ * are repairing `F1.marker` should be told they are not.
+ */
+const FINDING_OF_OP: Record<RepairAction['op'], string> = {
+  'f1-mark-invalid-legacy': 'F1.blank',
+};
+
+/** PostgreSQL's foreign-key-violation SQLSTATE. */
+const FK_VIOLATION_SQLSTATE = '23503';
+
+/**
+ * True when `error` is the named foreign key rejecting a write. Prisma reports a failed raw
+ * statement as `P2010` and carries the driver's SQLSTATE and message in `meta`, so both the error
+ * message and the meta payload are inspected rather than assuming one shape. The constraint name
+ * alone is not treated as sufficient: the error must also read as a foreign-key failure, so an
+ * unrelated error that merely mentions the constraint is re-thrown untouched.
+ */
+function isForeignKeyViolation(error: unknown, constraint: string): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const meta = (error as { meta?: Record<string, unknown> }).meta;
+  const text = [
+    (error as { message?: unknown }).message,
+    meta?.['code'],
+    meta?.['message'],
+    meta?.['constraint'],
+    meta?.['field_name'],
+  ]
+    .filter((part): part is string => typeof part === 'string')
+    .join('\n');
+  if (!text.includes(constraint)) return false;
+  return text.includes(FK_VIOLATION_SQLSTATE) || /foreign key/i.test(text);
+}
 
 /** The named trigger each op requires disabled — empty means the op needs NO trigger disabled. */
 const TRIGGERS_FOR_OP: Record<RepairAction['op'], string[]> = {
@@ -154,6 +226,50 @@ export class T3CRepairService {
     return { applicable: true, reason: '§C attendance schema present', missing: [] };
   }
 
+  /**
+   * Are `20270225000000`'s PHYSICAL objects actually installed?
+   *
+   * Every object that migration creates is raw SQL — two functions, two triggers and a CHECK
+   * constraint. `prisma db push` reproduces only what `schema.prisma` models, so a database created
+   * that way carries `LabourAttendance.manualReason` (and therefore looks eligible and row-clean)
+   * while carrying NONE of these seals. `migrate deploy` answers such a database with P3005, and the
+   * runner's baseline branch would otherwise mark every migration — this one included — as applied
+   * without ever executing it: Prisma would then consider the correction installed forever while the
+   * reserved-marker trigger and the allocation project lock simply do not exist.
+   *
+   * So the runner asks this question BEFORE resolving, and lets `migrate deploy` really run the
+   * migration when the answer is "missing". Checked over the catalogs rather than by parsing SQL,
+   * so it reflects the database as it actually is.
+   */
+  async correctionSeals(): Promise<{ installed: boolean; present: string[]; missing: string[] }> {
+    const expected = [
+      { name: 'LabourAttendance_reserved_marker', kind: 'trigger' as const, table: 'LabourAttendance' },
+      { name: 'WorkerAllocation_00_project_lock', kind: 'trigger' as const, table: 'WorkerAllocation' },
+      { name: 'LabourAttendance_marker_is_revoked', kind: 'constraint' as const, table: 'LabourAttendance' },
+    ];
+    const present: string[] = [];
+    const missing: string[] = [];
+    for (const item of expected) {
+      const rows =
+        item.kind === 'trigger'
+          ? await this.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+              `SELECT count(*)::int AS n FROM pg_trigger t
+                WHERE t.tgname = $1 AND NOT t.tgisinternal AND t.tgrelid = to_regclass($2)`,
+              item.name,
+              `"${item.table}"`,
+            )
+          : await this.prisma.$queryRawUnsafe<Array<{ n: number }>>(
+              `SELECT count(*)::int AS n FROM pg_constraint c
+                WHERE c.conname = $1 AND c.conrelid = to_regclass($2)`,
+              item.name,
+              `"${item.table}"`,
+            );
+      if (Number(rows[0]?.n ?? 0) > 0) present.push(item.name);
+      else missing.push(item.name);
+    }
+    return { installed: missing.length === 0, present, missing };
+  }
+
   /** Inspect the `_prisma_migrations` records for the two attendance migrations (three-state
    *  classify each). Robust to a pre-baseline database where `_prisma_migrations` does not exist. */
   async migrationState(): Promise<Record<string, { state: 'applied' | 'failed-pending' | 'not-applied'; row: Record<string, unknown> | null }>> {
@@ -196,6 +312,14 @@ export class T3CRepairService {
     for (const action of plan.actions) {
       const ops = TRIGGERS_FOR_OP[action.op];
       if (!ops) throw new RepairAbortedError(`unknown repair op ${JSON.stringify((action as RepairAction).op)}`);
+      // Checked BEFORE any trigger is disabled: the plan is operator-authored JSON, and a mis-stated
+      // finding means the operator thinks they are fixing something else. Refuse, do not reinterpret.
+      const expected = FINDING_OF_OP[action.op];
+      if (action.finding !== undefined && action.finding !== expected) {
+        throw new RepairAbortedError(
+          `${action.op} repairs ${expected}, not ${JSON.stringify(action.finding)} — correct the plan rather than let the evidence record a classification that is not true`,
+        );
+      }
       for (const t of ops) toDisable.add(t);
     }
     const disableList = [...toDisable];
@@ -219,6 +343,9 @@ export class T3CRepairService {
             "beforeImage" jsonb       NOT NULL,
             "detail"      jsonb
           )`);
+        // 0b. Seal it in the same breath. The evidence table exists to be the durable record of what
+        //     the repair overwrote; an evidence table that can be quietly rewritten is not evidence.
+        for (const statement of EVIDENCE_SEAL_SQL) await tx.$executeRawUnsafe(statement);
 
         // 1. Disable ONLY the named triggers the plan's ops require, by name, inside this transaction.
         for (const trigger of disableList) {
@@ -284,23 +411,17 @@ export class T3CRepairService {
         if (!action.revokeReason?.trim()) {
           throw new RepairAbortedError('f1-mark-invalid-legacy: revokeReason is required — say why this record is being retired');
         }
-        // NEVER fabricate the accountable human: the revocation triple is CHECK-enforced and the
-        // FK would fail opaquely, so resolve it here with a named error instead.
-        const user = await tx.$queryRawUnsafe<Array<{ n: bigint }>>(
-          `SELECT count(*)::bigint AS n FROM "User" WHERE "id" = $1`,
-          action.revokedById,
-        );
-        if (Number(user[0]?.n ?? 0) === 0) {
-          throw new RepairAbortedError(
-            `f1-mark-invalid-legacy: revokedById ${JSON.stringify(action.revokedById)} names no User — a revocation must be attributable to a real person`,
-          );
-        }
+        // The accountable human is validated by `LabourAttendance_revokedBy_fkey`, NOT by reading
+        // `User` here: that table is Orgs-owned and Labour is a leaf, and this file being outside
+        // the runtime boundary scan does not make the crossing legitimate. The FK is already the
+        // authority; the update below is wrapped so its violation surfaces as the same named error
+        // instead of an opaque constraint message. Nothing is fabricated either way — a
+        // `revokedById` that names no user simply cannot be written.
         // The marker is a truthful statement about the RECORD. It never claims to know why the
-        // worker was present; the original bytes are already in the evidence row written below.
-        const marker =
-          `${T3C_INVALID_LEGACY_PREFIX} the original manualReason was blank; the real justification was ` +
-          `never recorded and is not knowable from the data. Retired by operator ${plan.operator} under repair ${repairId}. ` +
-          `Original row preserved in T3CRepairAction.`;
+        // worker was present; the original bytes are already in the evidence row written below, and
+        // the embedded `repair=<id>` is what lets the diagnostic demand THAT row rather than settling
+        // for "some repair once ran here".
+        const marker = t3cInvalidLegacyMarker(repairId, plan.operator);
         await this.recordEvidence(tx, repairId, plan, action, table, before, {
           markerPrefix: T3C_INVALID_LEGACY_PREFIX,
           originalManualReason: raw,
@@ -309,15 +430,24 @@ export class T3CRepairService {
         });
         // ONE statement: the row is marked AND revoked together, so it can never be observed marked
         // but live. The revocation triple satisfies `LabourAttendance_revoke_attribution_check`.
-        await tx.$executeRawUnsafe(
-          `UPDATE "LabourAttendance"
-              SET "manualReason" = $1, "revokedAt" = now(), "revokedById" = $2, "revokeReason" = $3
-            WHERE "id" = $4`,
-          marker,
-          action.revokedById,
-          action.revokeReason,
-          action.id,
-        );
+        try {
+          await tx.$executeRawUnsafe(
+            `UPDATE "LabourAttendance"
+                SET "manualReason" = $1, "revokedAt" = now(), "revokedById" = $2, "revokeReason" = $3
+              WHERE "id" = $4`,
+            marker,
+            action.revokedById,
+            action.revokeReason,
+            action.id,
+          );
+        } catch (error) {
+          if (isForeignKeyViolation(error, 'LabourAttendance_revokedBy_fkey')) {
+            throw new RepairAbortedError(
+              `f1-mark-invalid-legacy: revokedById ${JSON.stringify(action.revokedById)} names no User — a revocation must be attributable to a real person`,
+            );
+          }
+          throw error;
+        }
         return;
       }
       default: {
@@ -350,7 +480,8 @@ export class T3CRepairService {
       repairId,
       plan.operator,
       plan.reason,
-      action.finding,
+      // The OP decides the finding, never the plan text — see FINDING_OF_OP.
+      FINDING_OF_OP[action.op],
       action.op,
       table,
       action.id,

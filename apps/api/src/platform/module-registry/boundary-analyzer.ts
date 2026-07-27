@@ -429,8 +429,34 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
     return '<module>';
   };
 
+  /** A `for (const s of STATEMENTS)` binding has no initializer of its own — the text it can hold is
+   *  whatever the loop iterates. Running a list of statements in a loop is an ordinary shape (the
+   *  T3C evidence seal is written that way), so the binding resolves to the iterated expression. */
+  const forOfSourceOf = (decl: ts.Declaration): ts.Expression | undefined => {
+    if (!ts.isVariableDeclaration(decl) || decl.initializer) return undefined;
+    const list = decl.parent;
+    if (!ts.isVariableDeclarationList(list)) return undefined;
+    const stmt = list.parent;
+    return ts.isForOfStatement(stmt) && stmt.initializer === list ? stmt.expression : undefined;
+  };
+
+  /**
+   * The SQL text a raw call can execute — every string literal beneath the call, PLUS the text
+   * reachable through the identifiers it names.
+   *
+   * Literals alone are not enough: `const sql = 'SELECT … FROM "Foo"'; tx.$queryRawUnsafe(sql)`
+   * puts no text under the call node at all, so a boundary crossing written that way would be
+   * invisible while the identical inline statement is caught. An identifier is therefore resolved
+   * through the checker to its declaration and that initializer is gathered too — which covers a
+   * `const` string, a template built from other constants, an array of statements, and a property
+   * of a constant object (the property symbol's declaration is its `PropertyAssignment`).
+   *
+   * `seen` makes the walk terminate on self- or mutually-referential declarations, and each
+   * declaration contributes its text once however many times it is named.
+   */
   const collectSqlText = (node: ts.Node): string => {
     let sql = '';
+    const seen = new Set<ts.Node>();
     const gather = (n: ts.Node): void => {
       if (
         ts.isStringLiteral(n) ||
@@ -440,6 +466,23 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
         n.kind === ts.SyntaxKind.TemplateTail
       ) {
         sql += ` ${(n as ts.LiteralLikeNode).text}`;
+      }
+      // Follow a named value to what it holds. Property NAMES and declaration names are skipped —
+      // only identifiers used as values denote SQL.
+      if (
+        (ts.isIdentifier(n) || ts.isPropertyAccessExpression(n)) &&
+        !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) &&
+        !(ts.isPropertyAssignment(n.parent) && n.parent.name === n)
+      ) {
+        for (const decl of checker.getSymbolAtLocation(n)?.declarations ?? []) {
+          const init =
+            (ts.isVariableDeclaration(decl) || ts.isPropertyDeclaration(decl) ? decl.initializer : undefined) ??
+            (ts.isPropertyAssignment(decl) ? decl.initializer : undefined) ??
+            forOfSourceOf(decl);
+          if (!init || seen.has(init)) continue;
+          seen.add(init);
+          gather(init);
+        }
       }
       ts.forEachChild(n, gather);
     };
