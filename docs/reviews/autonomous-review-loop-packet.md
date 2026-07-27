@@ -48,9 +48,9 @@ packet does not embed a self-referential final SHA.
   buried terminal-result recovery, and executable exact-head recovery.
   The final architectural regression proves that review-result webhooks cannot
   enter the merge orchestrator or publish its status. The focused battery passed
-  37/37.
+  38/38.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 37/37, web
+- Final `pnpm check` after protocol alignment passed: automation 38/38, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -119,9 +119,13 @@ performing another draft-to-ready transition, even when newer legacy `pending` o
 `ci:` statuses obscure that result. A manual recovery dispatch uses a separate
 CI-independent concurrency lane and requires both the live head SHA and the exact
 latest failed terminal status ID. Pending, successful, and superseded IDs are
-rejected before any status or draft mutation. This durable marker removes
-same-second timestamp ambiguity, and the independent lane prevents a later CI run
-from replacing a queued explicit retry. Deterministic regressions pin both cases.
+rejected before any status or draft mutation. The recovery pending status records
+the owning Actions run ID. A parallel CI run queries that owner and stands down
+while it is live; a completed owner without a terminal result is failed explicitly
+or taken over by a new exact-token dispatch. The run ID is a lease identity, never
+a timestamp admission heuristic. This removes same-second ambiguity, prevents a
+later CI run from replacing a queued retry, and prevents the two lanes from owning
+the same review concurrently. Deterministic regressions pin all three cases.
 
 The first correction still allowed a manual CI rerun on an unchanged head to emit
 another completed `workflow_run` and overwrite the terminal review status with

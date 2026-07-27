@@ -361,6 +361,52 @@ test('legacy CI statuses cannot bury a terminal review result', () => {
   );
 });
 
+test('an active recovery owner blocks parallel CI admission', () => {
+  assert.equal(typeof reviewGate.recoveryPendingRunId, 'function');
+  assert.equal(typeof reviewGate.activeRecoveryRunId, 'function');
+  const pendingRecovery = {
+    id: 104,
+    context: 'codex-current-head',
+    state: 'pending',
+    description: 'review: pending recovery run 30298398004',
+    created_at: '2026-07-27T19:13:00Z',
+  };
+  const priorFailure = {
+    id: 103,
+    context: 'codex-current-head',
+    state: 'failure',
+    description: 'review: Codex review timed out after two attempts',
+    created_at: '2026-07-27T19:12:00Z',
+  };
+
+  assert.equal(
+    reviewGate.recoveryPendingRunId([pendingRecovery, priorFailure]),
+    '30298398004',
+  );
+  assert.equal(
+    reviewGate.activeRecoveryRunId(
+      [pendingRecovery, priorFailure],
+      { id: 30298398004, status: 'in_progress' },
+    ),
+    '30298398004',
+  );
+  assert.equal(
+    reviewGate.activeRecoveryRunId(
+      [pendingRecovery, priorFailure],
+      { id: 30298398004, status: 'completed' },
+    ),
+    null,
+  );
+  assert.equal(
+    reviewGate.authorizeRecoveryDispatch(
+      [pendingRecovery, priorFailure],
+      '103',
+      'completed',
+    ),
+    priorFailure,
+  );
+});
+
 test('recovery uses a durable status token and a CI-independent lane', async () => {
   const [workflow, gate] = await Promise.all([
     readFile(workflowPath, 'utf8'),
@@ -370,7 +416,9 @@ test('recovery uses a durable status token and a CI-independent lane', async () 
   assert.match(workflow, /terminal_status_id:/);
   assert.match(workflow, /github\.event_name == 'workflow_dispatch' && 'recovery'/);
   assert.match(gate, /authorizeRecoveryDispatch\(/);
-  assert.doesNotMatch(gate, /GITHUB_RUN_ID/);
+  assert.match(gate, /client\.workflowRun\(recoveryRunId\)/);
+  assert.match(gate, /review: pending recovery run/);
+  assert.doesNotMatch(gate, /triggerQueuedAt|queuedAt|statusAt/);
 });
 
 test('workflow gives one exact-head run sole ownership of review and merge', async () => {

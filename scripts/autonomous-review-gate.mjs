@@ -119,8 +119,47 @@ export function recoverableTerminalReviewStatus(statuses) {
   return newerCycleFailedBeforeReview ? reviewStatuses[terminalIndex] : null;
 }
 
-export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
-  const terminalStatus = recoverableTerminalReviewStatus(statuses);
+function latestTerminalReviewStatus(statuses) {
+  return statuses.find((status) =>
+    status.context === STATUS_CONTEXT && isTerminalReviewStatus(status)) ?? null;
+}
+
+export function recoveryPendingRunId(statuses) {
+  const latestReviewStatus = statuses.find(
+    (status) => status.context === STATUS_CONTEXT,
+  );
+  if (!isReviewPendingStatus(latestReviewStatus)) return null;
+  const match = /^review: pending recovery run ([0-9]+)$/u.exec(
+    latestReviewStatus.description ?? '',
+  );
+  return match?.[1] ?? null;
+}
+
+export function activeRecoveryRunId(statuses, workflowRun) {
+  const runId = recoveryPendingRunId(statuses);
+  if (
+    !runId
+    || String(workflowRun?.id) !== runId
+    || workflowRun.status === 'completed'
+  ) {
+    return null;
+  }
+  return runId;
+}
+
+export function authorizeRecoveryDispatch(
+  statuses,
+  requestedStatusId,
+  recoveryRunStatus = null,
+) {
+  let terminalStatus = recoverableTerminalReviewStatus(statuses);
+  if (
+    !terminalStatus
+    && recoveryPendingRunId(statuses)
+    && recoveryRunStatus === 'completed'
+  ) {
+    terminalStatus = latestTerminalReviewStatus(statuses);
+  }
   if (!terminalStatus || terminalStatus.state !== 'failure') return null;
   return String(terminalStatus.id) === String(requestedStatusId)
     ? terminalStatus
@@ -197,6 +236,12 @@ class GitHubClient {
       if (batch.length < 100) return statuses;
       page += 1;
     }
+  }
+
+  workflowRun(runId) {
+    return this.request(
+      `/repos/${this.repository}/actions/runs/${runId}`,
+    );
   }
 
   reviews(number) {
@@ -589,6 +634,52 @@ export async function run() {
     (status) => status.context === STATUS_CONTEXT,
   ) ?? null;
   const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
+  const recoveryRunId = recoveryPendingRunId(existingStatuses);
+  const recoveryRun = recoveryRunId
+    ? await client.workflowRun(recoveryRunId)
+    : null;
+
+  if (
+    context.trigger === 'ci'
+    && activeRecoveryRunId(existingStatuses, recoveryRun)
+  ) {
+    console.log(
+      `Recovery workflow ${recoveryRunId} owns this exact-head review; CI is standing down.`,
+    );
+    return;
+  }
+
+  if (
+    context.trigger === 'ci'
+    && recoveryRunId
+    && recoveryRun?.status === 'completed'
+  ) {
+    pullRequest = await setDraftForCurrentHead(
+      client,
+      pullRequest.number,
+      expectedHead,
+      true,
+    );
+    if (!pullRequest) return;
+    const detail = `Recovery workflow ${recoveryRunId} ended without a terminal review result`;
+    await client.setStatus(
+      expectedHead,
+      'failure',
+      `review: ${detail}`,
+      pullRequest.html_url,
+    );
+    await client.updateStickyComment(
+      pullRequest.number,
+      statusBody({
+        state: 'blocked',
+        head: expectedHead,
+        detail,
+        attempt: 0,
+        next: 'Re-dispatch with the new failed terminal status ID.',
+      }),
+    );
+    throw new Error(detail);
+  }
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     pullRequest = shouldDraftForCiFailure(existingStatus)
@@ -629,6 +720,7 @@ export async function run() {
     const authorizedStatus = authorizeRecoveryDispatch(
       existingStatuses,
       context.terminalStatusId,
+      recoveryRun?.status ?? null,
     );
     if (!authorizedStatus) {
       throw new Error(
@@ -653,10 +745,13 @@ export async function run() {
     }
   }
 
+  const pendingDescription = context.trigger === 'dispatch'
+    ? `review: pending recovery run ${requiredEnvironment('GITHUB_RUN_ID')}`
+    : 'review: pending required CI and current-head Codex review';
   await client.setStatus(
     expectedHead,
     'pending',
-    'review: pending required CI and current-head Codex review',
+    pendingDescription,
     pullRequest.html_url,
   );
 
