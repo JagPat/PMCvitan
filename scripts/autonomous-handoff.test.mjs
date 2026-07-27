@@ -1,0 +1,53 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+
+import { isAutonomousPullRequest } from './autonomous-handoff.mjs';
+
+const repository = 'JagPat/PMCvitan';
+
+function pullRequest(overrides = {}) {
+  return {
+    state: 'open',
+    head: { ref: 'claude/task', repo: { full_name: repository } },
+    base: { ref: 'main', repo: { full_name: repository } },
+    ...overrides,
+  };
+}
+
+test('accepts only open same-repository Claude branches', () => {
+  assert.equal(isAutonomousPullRequest(pullRequest(), repository), true);
+  assert.equal(
+    isAutonomousPullRequest(pullRequest({ state: 'closed' }), repository),
+    false,
+  );
+  assert.equal(
+    isAutonomousPullRequest(
+      pullRequest({ head: { ref: 'feature/task', repo: { full_name: repository } } }),
+      repository,
+    ),
+    false,
+  );
+  assert.equal(
+    isAutonomousPullRequest(
+      pullRequest({ head: { ref: 'claude/task', repo: { full_name: 'fork/repo' } } }),
+      repository,
+    ),
+    false,
+  );
+});
+
+test('handoff workflow is event-driven and runs trusted default-branch code', async () => {
+  const workflow = await readFile(
+    new URL('../.github/workflows/autonomous-handoff.yml', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(workflow, /pull_request_target:/);
+  assert.match(workflow, /push:/);
+  assert.match(workflow, /branches:\s*\[main\]/);
+  assert.match(workflow, /ref:\s*\$\{\{ github\.event\.repository\.default_branch \}\}/);
+  assert.match(workflow, /persist-credentials:\s*false/);
+  assert.match(workflow, /scripts\/autonomous-handoff\.mjs/);
+  assert.doesNotMatch(workflow, /schedule:/);
+});
