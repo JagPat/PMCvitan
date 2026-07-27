@@ -4,7 +4,9 @@ import { pathToFileURL } from 'node:url';
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
 const MERGE_MARKER = '<!-- autonomous-post-merge:';
-const HANDOFF_ENABLED_AT = Date.parse('2026-07-27T00:00:00Z');
+// The backlog starts after this workflow was introduced, so historical Claude
+// merges cannot accidentally start competing continuation runners.
+const HANDOFF_ENABLED_AT = Date.parse('2026-07-27T14:53:00Z');
 const MERGEABILITY_TIMEOUT_MS = Number(
   process.env.MERGEABILITY_TIMEOUT_MS ?? 8 * 60_000,
 );
@@ -200,21 +202,19 @@ export async function run() {
   // Drain the durable merge backlog on every surviving event. GitHub may replace
   // a pending concurrency run, so correctness cannot depend on one closed event.
   for (const mergedPullRequest of await client.mergedPullRequestsSinceEnabled()) {
+    const liveMergedPullRequest = await client.pullRequest(
+      mergedPullRequest.number,
+    );
     await handOffMergedPullRequest(
       client,
-      mergedPullRequest,
+      liveMergedPullRequest,
       repository,
       defaultBranch,
     );
   }
 
-  if (eventName === 'pull_request_target') {
-    const pullRequest = await client.pullRequest(event.pull_request.number);
-    if (event.action === 'closed') return;
-    await handOffConflict(client, pullRequest, repository, defaultBranch);
-    return;
-  }
-
+  // Every event also drains open conflict state. A pending Actions run may be
+  // replaced within the global group, so no event-specific path is essential.
   for (const pullRequest of await client.openPullRequests()) {
     await handOffConflict(client, pullRequest, repository, defaultBranch);
   }
