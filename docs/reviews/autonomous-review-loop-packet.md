@@ -45,9 +45,10 @@ packet does not embed a self-referential final SHA.
 - Reproduce-first same-head contracts failed before each correction: review/comment
   re-entry, CI-rerun terminal-state loss, legacy review-only failure, late evidence,
   head-scoped/paginated failure-latch recovery, and the barrier-driven concurrent
-  finding probe. The final focused battery passed 33/33.
+  finding probe and executable exact-head recovery runbook. The final focused
+  battery passed 34/34.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 33/33, web
+- Final `pnpm check` after protocol alignment passed: automation 34/34, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure

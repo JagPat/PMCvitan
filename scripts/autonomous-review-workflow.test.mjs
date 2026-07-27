@@ -14,6 +14,7 @@ const {
 
 const workflowPath = new URL('../.github/workflows/auto-merge.yml', import.meta.url);
 const ciPath = new URL('../.github/workflows/ci.yml', import.meta.url);
+const autonomousLoopPath = new URL('../docs/AUTONOMOUS_LOOP.md', import.meta.url);
 
 function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
@@ -476,6 +477,17 @@ test('workflow recovery is exact-head serialized and has terminal time budget', 
   assert.match(workflow, /head_sha:/);
   assert.match(workflow, /inputs\.head_sha/);
   assert.match(workflow, /timeout-minutes:\s*60/);
+});
+
+test('operator recovery documents the required current head SHA', async () => {
+  const runbook = await readFile(autonomousLoopPath, 'utf8');
+  const recovery = runbook.slice(
+    runbook.indexOf('## Recovery'),
+    runbook.indexOf('## GitHub Enforcement'),
+  );
+  assert.match(recovery, /gh pr view/);
+  assert.match(recovery, /headRefOid/);
+  assert.match(recovery, /-f head_sha="\$HEAD_SHA"/);
 });
 
 test('workflow invokes the exact-head gate and CI executes its tests', async () => {

@@ -60,8 +60,17 @@ When an accidental merge or stale state occurs:
 
 If Codex or Claude web is unavailable, do not bypass the gate. The exact-head
 status remains pending or fails after the bounded retry, and the PR stays draft.
-Resume by manually dispatching `Autonomous review and merge` for the PR after the
-subscription service is healthy; the state machine re-evaluates the current head.
+After the subscription service is healthy, recover only the PR's current head:
+
+```bash
+PR=230
+HEAD_SHA=$(gh pr view "$PR" --repo JagPat/PMCvitan --json headRefOid --jq .headRefOid)
+gh workflow run auto-merge.yml --repo JagPat/PMCvitan \
+  -f pr_number="$PR" -f head_sha="$HEAD_SHA"
+```
+
+Both inputs are required. The workflow refuses a stale SHA, and the dispatch
+shares the exact head's concurrency lane so it cannot duplicate an active cycle.
 
 ## GitHub Enforcement
 
