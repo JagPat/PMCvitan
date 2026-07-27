@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   CODEX_LOGIN,
+  codexThreadIdsToResolve,
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
@@ -196,6 +197,42 @@ test('a finding posted against the current head still blocks when its comment ha
   });
 });
 
+test('resolves only historical unresolved threads opened by Codex', () => {
+  assert.deepEqual(
+    codexThreadIdsToResolve([
+      {
+        id: 'codex-open',
+        isResolved: false,
+        comments: {
+          nodes: [{ author: { login: CODEX_LOGIN }, originalCommit: { oid: 'old' } }],
+        },
+      },
+      {
+        id: 'codex-resolved',
+        isResolved: true,
+        comments: {
+          nodes: [{ author: { login: CODEX_LOGIN }, originalCommit: { oid: 'old' } }],
+        },
+      },
+      {
+        id: 'codex-current-head',
+        isResolved: false,
+        comments: {
+          nodes: [{ author: { login: CODEX_LOGIN }, originalCommit: { oid: HEAD } }],
+        },
+      },
+      {
+        id: 'human-open',
+        isResolved: false,
+        comments: {
+          nodes: [{ author: { login: 'reviewer' }, originalCommit: { oid: 'old' } }],
+        },
+      },
+    ], HEAD),
+    ['codex-open'],
+  );
+});
+
 test('remains pending before the deadline when Codex has not responded', () => {
   const result = classifyCodexState(input());
 
@@ -217,4 +254,3 @@ test('times out after the bounded deadline', () => {
     detail: 'Codex did not respond before the deadline',
   });
 });
-

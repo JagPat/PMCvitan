@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 import {
+  codexThreadIdsToResolve,
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
@@ -175,6 +176,56 @@ class GitHubClient {
     );
   }
 
+  async reviewThreads(number) {
+    const [owner, name] = this.repository.split('/');
+    const threads = [];
+    let after = null;
+    do {
+      const data = await this.graphql(
+        `query($owner: String!, $name: String!, $number: Int!, $after: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100, after: $after) {
+                nodes {
+                  id
+                  isResolved
+                  comments(first: 1) {
+                    nodes { author { login } originalCommit { oid } }
+                  }
+                }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        }`,
+        { owner, name, number, after },
+      );
+      const page = data.repository?.pullRequest?.reviewThreads;
+      if (!page) throw new Error('Pull-request review threads were unavailable');
+      threads.push(...page.nodes);
+      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+    } while (after);
+    return threads;
+  }
+
+  async resolveCodexThreads(number, expectedHead) {
+    const ids = codexThreadIdsToResolve(
+      await this.reviewThreads(number),
+      expectedHead,
+    );
+    for (const threadId of ids) {
+      await this.graphql(
+        `mutation($threadId: ID!) {
+          resolveReviewThread(input: { threadId: $threadId }) {
+            thread { id isResolved }
+          }
+        }`,
+        { threadId },
+      );
+    }
+    return ids.length;
+  }
+
   async updateStickyComment(number, body) {
     const comments = await this.request(
       `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
@@ -326,6 +377,29 @@ async function reviewAttempt(
   }
 }
 
+async function reclassifyCurrentCodexEvidence(
+  client,
+  number,
+  expectedHead,
+  reviewNotBefore,
+) {
+  const [reviews, comments, reactions] = await Promise.all([
+    client.reviews(number),
+    client.reviewComments(number),
+    client.reactions(number),
+  ]);
+  const now = new Date();
+  return classifyCodexState({
+    expectedHead,
+    readyAt: reviewNotBefore,
+    deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
+    now: now.toISOString(),
+    reviews,
+    comments,
+    reactions,
+  });
+}
+
 async function eventContext() {
   const eventName = requiredEnvironment('GITHUB_EVENT_NAME');
   const event = JSON.parse(
@@ -335,6 +409,17 @@ async function eventContext() {
     return {
       number: Number(process.env.PR_NUMBER ?? event.inputs?.pr_number),
       expectedHead: null,
+      ciConclusion: null,
+    };
+  }
+  if (
+    (eventName === 'pull_request_review' ||
+      eventName === 'pull_request_review_comment') &&
+    event.pull_request
+  ) {
+    return {
+      number: Number(event.pull_request.number),
+      expectedHead: event.pull_request.head.sha,
       ciConclusion: null,
     };
   }
@@ -478,6 +563,45 @@ export async function run() {
         expectedHead,
       );
       if (!pullRequest) return;
+      const resolvedThreadCount = await client.resolveCodexThreads(
+        pullRequest.number,
+        expectedHead,
+      );
+      const verifiedResult = await reclassifyCurrentCodexEvidence(
+        client,
+        pullRequest.number,
+        expectedHead,
+        reviewNotBefore,
+      );
+      if (verifiedResult.state !== 'clear') {
+        pullRequest = await setDraftForCurrentHead(
+          client,
+          pullRequest.number,
+          expectedHead,
+          true,
+        );
+        if (!pullRequest) return;
+        const detail = verifiedResult.state === 'changes_required'
+          ? verifiedResult.detail
+          : 'Codex evidence changed during final verification';
+        await client.setStatus(
+          expectedHead,
+          'failure',
+          detail,
+          pullRequest.html_url,
+        );
+        await client.updateStickyComment(
+          pullRequest.number,
+          statusBody({
+            state: 'changes_required',
+            head: expectedHead,
+            detail,
+            attempt,
+            next: 'Claude Auto-fix handles the latest review evidence and pushes a new head.',
+          }),
+        );
+        throw new Error(detail);
+      }
       await client.setStatus(
         expectedHead,
         'success',
@@ -489,7 +613,7 @@ export async function run() {
         statusBody({
           state: 'clear',
           head: expectedHead,
-          detail: result.detail,
+          detail: `${result.detail}; resolved ${resolvedThreadCount} verified Codex thread${resolvedThreadCount === 1 ? '' : 's'}`,
           attempt,
           next: 'GitHub auto-merge is queued behind branch protection.',
         }),
