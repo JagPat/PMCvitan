@@ -572,6 +572,17 @@ export async function ensureTerminalReviewState(
     );
     if (live) await client.enableAutoMerge(live);
   } else {
+    const latestStatus = statuses.find(
+      (candidate) => candidate.context === STATUS_CONTEXT,
+    );
+    if (String(latestStatus?.id) !== String(status.id)) {
+      await client.setStatus(
+        expectedHead,
+        'failure',
+        status.description ?? 'review: recovered current-head Codex failure',
+        pullRequest.html_url,
+      );
+    }
     await setDraftForCurrentHead(
       client,
       pullRequest.number,
@@ -683,6 +694,61 @@ async function reclassifyCurrentCodexEvidence(
     comments,
     reactions,
   });
+}
+
+export async function guardAgainstCurrentHeadFinding(
+  client,
+  pullRequest,
+  expectedHead,
+  recoveryRequest,
+) {
+  const [reviews, comments] = await Promise.all([
+    client.reviews(pullRequest.number),
+    client.reviewComments(pullRequest.number),
+  ]);
+  const now = new Date();
+  const result = classifyCodexState({
+    expectedHead,
+    readyAt: new Date(0).toISOString(),
+    deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
+    now: now.toISOString(),
+    reviews,
+    comments,
+    reactions: [],
+  });
+  if (result.state !== 'changes_required') return null;
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return result.detail;
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `review: ${result.detail}`,
+    pullRequest.html_url,
+  );
+  await settleRecoveryRequest(
+    client,
+    expectedHead,
+    pullRequest,
+    recoveryRequest,
+    'current-head finding observed before recovery',
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'changes_required',
+      head: expectedHead,
+      detail: result.detail,
+      attempt: 0,
+      next: 'Claude Auto-fix handles the review comments and pushes a new head.',
+    }),
+  );
+  return result.detail;
 }
 
 export function contextForEvent(eventName, event, dispatchNumber) {
@@ -850,6 +916,14 @@ export async function run() {
       return;
     }
   }
+
+  const existingFinding = await guardAgainstCurrentHeadFinding(
+    client,
+    pullRequest,
+    expectedHead,
+    recoveryRequest,
+  );
+  if (existingFinding) throw new Error(existingFinding);
 
   await client.setStatus(
     expectedHead,

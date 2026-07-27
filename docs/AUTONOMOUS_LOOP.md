@@ -67,7 +67,7 @@ PR=230
 HEAD_SHA=$(gh pr view "$PR" --repo JagPat/PMCvitan --json headRefOid --jq .headRefOid)
 TERMINAL_STATUS_ID=$(gh api --paginate --slurp \
   "repos/JagPat/PMCvitan/commits/$HEAD_SHA/statuses?per_page=100" \
-  --jq 'add | map(select(.context == "codex-current-head") | select((.state == "pending" and ((.description // "") | startswith("review: pending") or startswith("Waiting for required CI"))) or (.state == "failure" and ((.description // "") as $description | ($description | contains("Codex review timed out")) or ($description | contains("Codex evidence changed during final verification")) or $description == "review: Required CI changed during current-head Codex review" or $description == "review: bootstrap exact-head review requested")))) | (.[0].id // empty)')
+  --jq 'def active_pending: .state == "pending" and ((.description // "") | startswith("review: pending") or startswith("Waiting for required CI")); def retryable: .state == "failure" and ((.description // "") as $description | ($description | contains("Codex review timed out")) or ($description | contains("Codex evidence changed during final verification")) or $description == "review: Required CI changed during current-head Codex review" or $description == "review: bootstrap exact-head review requested"); def persistent: .state == "failure" and (((.description // "") | startswith("review:") or contains("current-head Codex finding") or contains("Codex submitted a current-head review")) and (retryable | not)); add | map(select(.context == "codex-current-head")) as $statuses | ($statuses[0] // {}) as $latest | if any($statuses[]; persistent) then empty elif ($latest | active_pending) then $latest.id else ($statuses | map(select(retryable)) | (.[0].id // empty)) end')
 test -n "$TERMINAL_STATUS_ID"
 gh workflow run auto-merge.yml --repo JagPat/PMCvitan \
   -f pr_number="$PR" -f head_sha="$HEAD_SHA" \
@@ -94,6 +94,10 @@ request, including after an interrupted owner, but cannot create a concurrent
 reviewer. Per-terminal contexts prevent an older owner from consuming a newer
 request. A request is consumed only after a terminal review outcome; CI failure
 leaves it pending for the next green owner.
+Before publishing a new pending status or changing readiness, the owner checks live
+current-head Codex reviews and inline comments. A finding that arrived after a
+timeout is republished as the required failure and requires a new SHA; recovery
+cannot trigger another review of that finding-bearing head.
 The owner rechecks required CI immediately before publishing review success.
 Ordinary CI recovery searches the complete paginated status history, including
 terminal review results hidden below legacy `pending` or `ci:` statuses. Review

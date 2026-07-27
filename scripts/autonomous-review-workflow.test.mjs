@@ -591,21 +591,67 @@ test('a buried current-head finding vetoes recovered clean state', async () => {
     },
   };
 
-  assert.equal(
-    reviewGate.recoverableTerminalReviewStatus(statuses),
-    statuses[3],
-  );
+  const recoveredFailure = reviewGate.recoverableTerminalReviewStatus(statuses);
+  assert.equal(recoveredFailure, statuses[3]);
   await reviewGate.ensureTerminalReviewState(
     client,
     pullRequest,
     expectedHead,
-    cleanStatus,
+    recoveredFailure,
     statuses,
   );
   assert.deepEqual(draftTransitions, [true]);
   assert.equal(autoMergeCalls, 0);
   assert.equal(statusWrites[0].state, 'failure');
-  assert.match(statusWrites[0].description, /finding latched/u);
+  assert.match(statusWrites[0].description, /current-head Codex finding/u);
+});
+
+test('live current-head findings stop recovery before another ready transition', async () => {
+  const expectedHead = 'c'.repeat(40);
+  const pullRequest = {
+    number: 230,
+    state: 'open',
+    draft: true,
+    head: { sha: expectedHead },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
+  };
+  const draftTransitions = [];
+  const statusWrites = [];
+  const client = {
+    async reviews() {
+      return [];
+    },
+    async reviewComments() {
+      return [{
+        user: { login: 'chatgpt-codex-connector[bot]' },
+        original_commit_id: expectedHead,
+        body: '**P2** finding arrived after timeout',
+      }];
+    },
+    async pullRequest() {
+      return pullRequest;
+    },
+    async setDraft(current, draft) {
+      draftTransitions.push(draft);
+      current.draft = draft;
+      return current;
+    },
+    async setStatus(head, state, description) {
+      statusWrites.push({ head, state, description });
+    },
+    async updateStickyComment() {},
+  };
+
+  const result = await reviewGate.guardAgainstCurrentHeadFinding(
+    client,
+    pullRequest,
+    expectedHead,
+    null,
+  );
+  assert.equal(result, '1 current-head Codex finding');
+  assert.deepEqual(draftTransitions, [true]);
+  assert.equal(statusWrites[0].state, 'failure');
+  assert.match(statusWrites[0].description, /1 current-head Codex finding/u);
 });
 
 test('a durable recovery request survives owner-job replacement', () => {
@@ -1008,27 +1054,55 @@ test('documented recovery jq selects an authorized review status id', async () =
   const expression = recovery.match(/--jq '([^']+)'/u)?.[1];
   assert.ok(expression, 'recovery command must include a jq expression');
 
-  const runExpression = (status) => spawnSync('jq', ['-r', expression], {
+  const runExpression = (statuses) => spawnSync('jq', ['-r', expression], {
     encoding: 'utf8',
-    input: JSON.stringify([[status]]),
+    input: JSON.stringify([statuses]),
   });
-  const timeout = runExpression({
+  const timeoutStatus = {
     id: 777,
     context: 'codex-current-head',
     state: 'failure',
     description: 'review: Codex review timed out after two attempts',
-  });
+  };
+  const timeout = runExpression([timeoutStatus]);
   assert.equal(timeout.status, 0, timeout.stderr);
   assert.equal(timeout.stdout.trim(), '777');
 
-  const pending = runExpression({
+  const pendingStatus = {
     id: 778,
     context: 'codex-current-head',
     state: 'pending',
     description: 'review: pending required CI and current-head Codex review',
-  });
+  };
+  const pending = runExpression([pendingStatus]);
   assert.equal(pending.status, 0, pending.stderr);
   assert.equal(pending.stdout.trim(), '778');
+
+  const buriedTimeout = runExpression([
+    {
+      id: 779,
+      context: 'codex-current-head',
+      state: 'failure',
+      description: 'ci: api-e2e failed',
+    },
+    pendingStatus,
+    timeoutStatus,
+  ]);
+  assert.equal(buriedTimeout.status, 0, buriedTimeout.stderr);
+  assert.equal(buriedTimeout.stdout.trim(), '777');
+
+  const findingBearing = runExpression([
+    { ...pendingStatus, id: 781 },
+    {
+      id: 780,
+      context: 'codex-current-head',
+      state: 'failure',
+      description: 'review: 1 current-head Codex finding',
+    },
+    pendingStatus,
+  ]);
+  assert.equal(findingBearing.status, 0, findingBearing.stderr);
+  assert.equal(findingBearing.stdout.trim(), '');
 });
 
 test('workflow invokes the exact-head gate and CI executes its tests', async () => {
