@@ -49,12 +49,13 @@ packet does not embed a self-referential final SHA.
   re-entry, CI-rerun terminal-state loss, legacy review-only failure, late evidence,
   head-scoped/paginated failure-latch recovery, durable retry authorization,
   buried terminal-result recovery, executable exact-head recovery, an explicit
-  paused-owner/newer-request barrier, and stale-dispatch failure semantics.
+  paused-owner/newer-request barrier, stale-dispatch failure semantics, and ready-
+  state restoration before auto-merging a recovered clean verdict.
   The final architectural regression proves that review-result webhooks cannot
   enter the merge orchestrator or publish its status. The focused battery passed
-  41/41.
+  42/42.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 41/41, web
+- Final `pnpm check` after protocol alignment passed: automation 42/42, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure

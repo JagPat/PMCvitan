@@ -495,7 +495,7 @@ async function setDraftForCurrentHead(
     : null;
 }
 
-async function ensureTerminalReviewState(
+export async function ensureTerminalReviewState(
   client,
   pullRequest,
   expectedHead,
@@ -530,10 +530,11 @@ async function ensureTerminalReviewState(
         pullRequest.html_url,
       );
     }
-    const live = await refreshCurrentHead(
+    const live = await setDraftForCurrentHead(
       client,
       pullRequest.number,
       expectedHead,
+      false,
     );
     if (live) await client.enableAutoMerge(live);
   } else {

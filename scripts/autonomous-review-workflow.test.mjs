@@ -230,6 +230,72 @@ test('a failed CI rerun preserves readiness after a terminal review success', ()
   );
 });
 
+test('recovering a buried clean verdict restores ready state before auto-merge', async () => {
+  const expectedHead = 'a'.repeat(40);
+  const cleanStatus = {
+    id: 301,
+    context: 'codex-current-head',
+    state: 'success',
+    description: 'review: Codex found no blocking issue on this exact head',
+  };
+  const statuses = [
+    {
+      id: 303,
+      context: 'codex-current-head',
+      state: 'failure',
+      description: 'ci: api-e2e failed',
+    },
+    {
+      id: 302,
+      context: 'codex-current-head',
+      state: 'pending',
+      description: 'Waiting for required CI before Codex review',
+    },
+    cleanStatus,
+  ];
+  const pullRequest = {
+    number: 230,
+    state: 'open',
+    draft: true,
+    head: { sha: expectedHead },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
+  };
+  const draftTransitions = [];
+  const statusWrites = [];
+  let autoMergeDraft = null;
+  const client = {
+    async pullRequest() {
+      return pullRequest;
+    },
+    async setDraft(current, draft) {
+      draftTransitions.push(draft);
+      current.draft = draft;
+      return current;
+    },
+    async setStatus(head, state, description) {
+      statusWrites.push({ head, state, description });
+    },
+    async enableAutoMerge(current) {
+      autoMergeDraft = current.draft;
+    },
+  };
+
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(
+      client,
+      pullRequest,
+      expectedHead,
+      cleanStatus,
+      statuses,
+    ),
+    true,
+  );
+  assert.deepEqual(draftTransitions, [false]);
+  assert.equal(autoMergeDraft, false);
+  assert.equal(statusWrites[0].state, 'success');
+  assert.match(statusWrites[0].description, /recovered prior clean/u);
+});
+
 test('a review failure remains latched after a later success write', () => {
   assert.equal(
     hasTerminalReviewFailureAfterPending(
