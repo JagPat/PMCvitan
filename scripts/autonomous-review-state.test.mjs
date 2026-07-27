@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  CODEX_GRAPHQL_LOGIN,
   CODEX_LOGIN,
   codexThreadIdsToResolve,
   classifyCodexState,
@@ -73,6 +74,22 @@ test('ignores a clean reaction created before the current ready transition', () 
           user: { login: CODEX_LOGIN },
           content: '+1',
           created_at: '2026-07-27T09:59:59Z',
+        },
+      ],
+    }),
+  );
+
+  assert.equal(result.state, 'pending');
+});
+
+test('does not trust the GraphQL thread alias in REST review evidence', () => {
+  const result = classifyCodexState(
+    input({
+      reactions: [
+        {
+          user: { login: CODEX_GRAPHQL_LOGIN },
+          content: '+1',
+          created_at: '2026-07-27T10:01:00Z',
         },
       ],
     }),
@@ -222,6 +239,13 @@ test('resolves only historical unresolved threads opened by Codex', () => {
         },
       },
       {
+        id: 'codex-graphql-open',
+        isResolved: false,
+        comments: {
+          nodes: [{ author: { login: CODEX_GRAPHQL_LOGIN }, originalCommit: { oid: 'old' } }],
+        },
+      },
+      {
         id: 'human-open',
         isResolved: false,
         comments: {
@@ -229,7 +253,7 @@ test('resolves only historical unresolved threads opened by Codex', () => {
         },
       },
     ], HEAD),
-    ['codex-open'],
+    ['codex-open', 'codex-graphql-open'],
   );
 });
 
