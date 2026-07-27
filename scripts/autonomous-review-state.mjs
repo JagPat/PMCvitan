@@ -10,10 +10,10 @@ function timestamp(value, field) {
 }
 
 function isCodexActor(item) {
-  return isCodexLogin(item?.user?.login);
+  return item?.user?.login === CODEX_LOGIN;
 }
 
-function isCodexLogin(login) {
+function isCodexThreadActor(login) {
   return login === CODEX_LOGIN || login === CODEX_GRAPHQL_LOGIN;
 }
 
@@ -55,7 +55,7 @@ export function codexThreadIdsToResolve(threads = [], expectedHead) {
       const firstComment = thread?.comments?.nodes?.[0];
       return (
         !thread?.isResolved &&
-        isCodexLogin(firstComment?.author?.login) &&
+        isCodexThreadActor(firstComment?.author?.login) &&
         firstComment?.originalCommit?.oid !== expectedHead
       );
     })

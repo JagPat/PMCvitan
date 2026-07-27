@@ -5,8 +5,7 @@ import { readFile } from 'node:fs/promises';
 import * as reviewGate from './autonomous-review-gate.mjs';
 
 const {
-  hasTerminalReviewFailureSince,
-  reviewCycleStartedAt,
+  hasTerminalReviewFailureAfterPending,
   MAX_REVIEW_ATTEMPTS,
   REQUIRED_CHECKS,
   summarizeRequiredChecks,
@@ -205,9 +204,8 @@ test('a failed CI rerun preserves readiness after a terminal review success', ()
 });
 
 test('a review failure remains latched after a later success write', () => {
-  const reviewStartedAt = '2026-07-27T18:00:00Z';
   assert.equal(
-    hasTerminalReviewFailureSince(
+    hasTerminalReviewFailureAfterPending(
       [
         {
           context: 'codex-current-head',
@@ -219,24 +217,40 @@ test('a review failure remains latched after a later success write', () => {
           context: 'codex-current-head',
           state: 'failure',
           description: 'review: current-head Codex finding',
-          created_at: '2026-07-27T18:00:02Z',
+          created_at: '2026-07-27T18:00:03Z',
+        },
+        {
+          context: 'codex-current-head',
+          state: 'pending',
+          description: 'review: pending required CI and current-head Codex review',
+          created_at: '2026-07-27T18:00:03Z',
         },
       ],
-      reviewStartedAt,
     ),
     true,
   );
   assert.equal(
-    hasTerminalReviewFailureSince(
+    hasTerminalReviewFailureAfterPending(
       [
+        {
+          context: 'codex-current-head',
+          state: 'success',
+          description: 'review: Codex found no blocking issue',
+          created_at: '2026-07-27T18:00:03Z',
+        },
+        {
+          context: 'codex-current-head',
+          state: 'pending',
+          description: 'review: pending required CI and current-head Codex review',
+          created_at: '2026-07-27T18:00:03Z',
+        },
         {
           context: 'codex-current-head',
           state: 'failure',
           description: 'review: stale finding',
-          created_at: '2026-07-27T17:59:59Z',
+          created_at: '2026-07-27T18:00:03Z',
         },
       ],
-      reviewStartedAt,
     ),
     false,
   );
@@ -275,10 +289,8 @@ test('terminal recovery scopes its failure latch to the latest review cycle', ()
       created_at: '2026-07-27T18:00:00Z',
     },
   ];
-  const cycleStartedAt = reviewCycleStartedAt(statuses);
-  assert.equal(cycleStartedAt, '2026-07-27T18:10:00Z');
   assert.equal(
-    hasTerminalReviewFailureSince(statuses, cycleStartedAt),
+    hasTerminalReviewFailureAfterPending(statuses),
     true,
   );
 });
@@ -384,7 +396,7 @@ test('a durable recovery request survives owner-job replacement', () => {
   assert.equal(typeof reviewGate.recoveryRequestTerminal, 'function');
   const requestStatus = {
     id: 104,
-    context: 'codex-recovery-request',
+    context: 'codex-recovery-request/103',
     state: 'pending',
     description: 'recovery: requested terminal status 103',
     created_at: '2026-07-27T19:13:00Z',
@@ -438,6 +450,26 @@ test('a durable recovery request survives owner-job replacement', () => {
     ),
     null,
   );
+
+  const newerRequest = {
+    id: 107,
+    context: 'codex-recovery-request/106',
+    state: 'pending',
+    description: 'recovery: requested terminal status 106',
+    created_at: '2026-07-27T19:16:00Z',
+  };
+  assert.equal(
+    reviewGate.pendingRecoveryRequest([
+      newerRequest,
+      requestStatus,
+      priorFailure,
+    ]).status,
+    newerRequest,
+  );
+  assert.notEqual(
+    reviewGate.recoveryRequestContext('103'),
+    reviewGate.recoveryRequestContext('106'),
+  );
 });
 
 test('manual recovery records intent before entering the single owner lane', async () => {
@@ -453,12 +485,47 @@ test('manual recovery records intent before entering the single owner lane', asy
   assert.match(workflow, /autonomous-review-owner-/);
   assert.doesNotMatch(workflow, /&& 'recovery' \|\| 'ci'/);
   assert.match(gate, /authorizeRecoveryDispatch\(/);
-  assert.match(gate, /RECOVERY_CONTEXT/);
+  assert.match(gate, /RECOVERY_CONTEXT_PREFIX/);
   assert.match(gate, /pendingRecoveryRequest\(/);
   assert.match(gate, /recoveryRequestTerminal\(/);
+  assert.match(gate, /recoveryRequest\.status\.context/);
   assert.doesNotMatch(gate, /client\.workflowRun\(/);
   assert.doesNotMatch(gate, /triggerQueuedAt|queuedAt|statusAt/);
   assert.match(gate, /finalCheckSummary/);
+});
+
+test('an older owner settles only its own recovery request context', () => {
+  const oldRequest = {
+    status: {
+      id: 201,
+      context: reviewGate.recoveryRequestContext('103'),
+      state: 'pending',
+      description: 'recovery: requested terminal status 103',
+    },
+    terminalStatusId: '103',
+  };
+  const newRequest = {
+    id: 202,
+    context: reviewGate.recoveryRequestContext('106'),
+    state: 'pending',
+    description: 'recovery: requested terminal status 106',
+  };
+  const oldOwnerSettlement = {
+    id: 203,
+    context: reviewGate.recoverySettlementContext(oldRequest),
+    state: 'success',
+    description: 'recovery: consumed by review timeout',
+  };
+
+  assert.equal(oldOwnerSettlement.context, 'codex-recovery-request/103');
+  assert.equal(
+    reviewGate.pendingRecoveryRequest([
+      oldOwnerSettlement,
+      newRequest,
+      oldRequest.status,
+    ]).status,
+    newRequest,
+  );
 });
 
 test('workflow gives one exact-head run sole ownership of review and merge', async () => {
@@ -559,10 +626,14 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
     gate.indexOf('async function waitForRequiredChecks'),
   );
   assert.match(terminalHelper, /status\.state === 'success'/);
-  assert.match(terminalHelper, /reviewCycleStartedAt/);
-  assert.match(terminalHelper, /hasTerminalReviewFailureSince/);
+  assert.match(terminalHelper, /recovered prior clean Codex result/);
+  assert.match(terminalHelper, /hasTerminalReviewFailureAfterPending/);
   assert.ok(
-    terminalHelper.indexOf('hasTerminalReviewFailureSince')
+    terminalHelper.indexOf('hasTerminalReviewFailureAfterPending')
+      < terminalHelper.indexOf('enableAutoMerge'),
+  );
+  assert.ok(
+    terminalHelper.indexOf('recovered prior clean Codex result')
       < terminalHelper.indexOf('enableAutoMerge'),
   );
   assert.match(terminalHelper, /setDraftForCurrentHead[\s\S]*true/);

@@ -17,7 +17,7 @@ export const REQUIRED_CHECKS = [
 export const MAX_REVIEW_ATTEMPTS = 2;
 
 const STATUS_CONTEXT = 'codex-current-head';
-const RECOVERY_CONTEXT = 'codex-recovery-request';
+const RECOVERY_CONTEXT_PREFIX = 'codex-recovery-request/';
 const COMMENT_MARKER = '<!-- autonomous-review-state -->';
 const API_ROOT = 'https://api.github.com';
 const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 10 * 60_000);
@@ -77,28 +77,23 @@ export function shouldDraftForCiFailure(status) {
   );
 }
 
-export function hasTerminalReviewFailureSince(statuses, since) {
-  const sinceTime = Date.parse(since);
-  return statuses.some((status) =>
-    status.context === STATUS_CONTEXT
-    && status.state === 'failure'
-    && isTerminalReviewStatus(status)
-    && Date.parse(status.created_at) >= sinceTime);
+function statusesAfterLatestReviewPending(statuses) {
+  const pendingIndex = statuses.findIndex(isReviewPendingStatus);
+  return pendingIndex < 0 ? [] : statuses.slice(0, pendingIndex);
 }
 
-function hasCiFailureSince(statuses, since) {
-  const sinceTime = Date.parse(since);
-  return statuses.some((status) =>
+export function hasTerminalReviewFailureAfterPending(statuses) {
+  return statusesAfterLatestReviewPending(statuses).some((status) =>
     status.context === STATUS_CONTEXT
     && status.state === 'failure'
-    && status.description?.startsWith('ci:')
-    && Date.parse(status.created_at) >= sinceTime);
+    && isTerminalReviewStatus(status));
 }
 
-export function reviewCycleStartedAt(statuses) {
-  const pending = statuses.find((status) =>
-    isReviewPendingStatus(status));
-  return pending?.created_at ?? null;
+function hasCiFailureAfterPending(statuses) {
+  return statusesAfterLatestReviewPending(statuses).some((status) =>
+    status.context === STATUS_CONTEXT
+    && status.state === 'failure'
+    && status.description?.startsWith('ci:'));
 }
 
 function isReviewPendingStatus(status) {
@@ -135,18 +130,39 @@ function latestTerminalReviewStatus(statuses) {
 }
 
 export function pendingRecoveryRequest(statuses) {
-  const latestRequestStatus = statuses.find(
-    (status) => status.context === RECOVERY_CONTEXT,
-  );
-  if (latestRequestStatus?.state !== 'pending') return null;
-  const match = /^recovery: requested terminal status ([0-9]+)$/u.exec(
-    latestRequestStatus.description ?? '',
-  );
-  if (!match) return null;
-  return {
-    status: latestRequestStatus,
-    terminalStatusId: match[1],
-  };
+  const latestByContext = new Map();
+  for (const status of statuses) {
+    if (
+      status.context?.startsWith(RECOVERY_CONTEXT_PREFIX)
+      && !latestByContext.has(status.context)
+    ) {
+      latestByContext.set(status.context, status);
+    }
+  }
+
+  let newestRequest = null;
+  for (const status of latestByContext.values()) {
+    const contextToken = status.context.slice(RECOVERY_CONTEXT_PREFIX.length);
+    const descriptionMatch = /^recovery: requested terminal status ([0-9]+)$/u
+      .exec(status.description ?? '');
+    if (!descriptionMatch || descriptionMatch[1] !== contextToken) continue;
+    if (
+      !newestRequest
+      || BigInt(contextToken) > BigInt(newestRequest.terminalStatusId)
+    ) {
+      newestRequest = { status, terminalStatusId: contextToken };
+    }
+  }
+
+  return newestRequest?.status.state === 'pending' ? newestRequest : null;
+}
+
+export function recoveryRequestContext(terminalStatusId) {
+  return `${RECOVERY_CONTEXT_PREFIX}${terminalStatusId}`;
+}
+
+export function recoverySettlementContext(recoveryRequest) {
+  return recoveryRequest?.status?.context ?? null;
 }
 
 export function recoveryRequestTerminal(statuses, request) {
@@ -431,12 +447,13 @@ async function settleRecoveryRequest(
   outcome,
 ) {
   if (!recoveryRequest) return;
+  const context = recoverySettlementContext(recoveryRequest);
   await client.setStatus(
     expectedHead,
     'success',
     `recovery: consumed by ${outcome}`,
     pullRequest.html_url,
-    RECOVERY_CONTEXT,
+    context,
   );
 }
 
@@ -472,11 +489,7 @@ async function ensureTerminalReviewState(
 ) {
   if (!isTerminalReviewStatus(status)) return false;
   if (status.state === 'success') {
-    const cycleStartedAt = reviewCycleStartedAt(statuses);
-    if (
-      cycleStartedAt
-      && hasTerminalReviewFailureSince(statuses, cycleStartedAt)
-    ) {
+    if (hasTerminalReviewFailureAfterPending(statuses)) {
       await client.setStatus(
         expectedHead,
         'failure',
@@ -490,6 +503,17 @@ async function ensureTerminalReviewState(
         true,
       );
       return true;
+    }
+    const latestStatus = statuses.find(
+      (candidate) => candidate.context === STATUS_CONTEXT,
+    );
+    if (String(latestStatus?.id) !== String(status.id)) {
+      await client.setStatus(
+        expectedHead,
+        'success',
+        'review: recovered prior clean Codex result on this exact head',
+        pullRequest.html_url,
+      );
     }
     const live = await refreshCurrentHead(
       client,
@@ -685,7 +709,7 @@ export async function run() {
       'pending',
       `recovery: requested terminal status ${authorizedStatus.id}`,
       pullRequest.html_url,
-      RECOVERY_CONTEXT,
+      recoveryRequestContext(authorizedStatus.id),
     );
     console.log(
       `Persisted recovery request for terminal status ${authorizedStatus.id}.`,
@@ -740,7 +764,7 @@ export async function run() {
       'failure',
       'recovery: request superseded by newer review state',
       pullRequest.html_url,
-      RECOVERY_CONTEXT,
+      recoveryRequest.status.context,
     );
     recoveryRequest = null;
     if (!terminalStatus) {
@@ -908,11 +932,9 @@ export async function run() {
       const finalCheckSummary = summarizeRequiredChecks(
         await client.checkRuns(expectedHead),
       );
-      const cycleStartedAt = reviewCycleStartedAt(finalStatuses)
-        ?? reviewNotBefore;
       if (
         finalCheckSummary.state !== 'success'
-        || hasCiFailureSince(finalStatuses, cycleStartedAt)
+        || hasCiFailureAfterPending(finalStatuses)
       ) {
         pullRequest = await setDraftForCurrentHead(
           client,

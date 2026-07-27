@@ -32,9 +32,9 @@ packet does not embed a self-referential final SHA.
 7. Missing evidence, timeout, ineligible PRs, or an unavailable subscription
    service fail closed.
 8. No `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or AI GitHub Action is used.
-9. Codex identity is normalized across REST (`chatgpt-codex-connector[bot]`)
-   and GraphQL (`chatgpt-codex-connector`) so historical Codex threads are
-   resolved after a clean replacement head without touching human threads.
+9. Codex's GraphQL alias (`chatgpt-codex-connector`) is accepted only while
+   resolving historical review threads. REST review evidence still requires
+   `chatgpt-codex-connector[bot]`, so a bare account cannot satisfy the gate.
 
 ## Reproduce-First Evidence
 
@@ -51,9 +51,9 @@ packet does not embed a self-referential final SHA.
   buried terminal-result recovery, and executable exact-head recovery.
   The final architectural regression proves that review-result webhooks cannot
   enter the merge orchestrator or publish its status. The focused battery passed
-  38/38.
+  40/40.
 - `node --check` passed for both automation modules; the workflow parsed as YAML.
-- Final `pnpm check` after protocol alignment passed: automation 38/38, web
+- Final `pnpm check` after protocol alignment passed: automation 40/40, web
   432/432 plus production build, and API 659/659 plus production build.
 
 ## Bootstrap Procedure
@@ -125,16 +125,17 @@ live head SHA and the exact latest retryable terminal status ID. Timeouts, chang
 CI, changed provider evidence, and the documented bootstrap marker are retryable;
 finding-bearing reviews require a new head. Pending, successful, persistent-
 finding, and superseded IDs are rejected before any draft or review mutation. The
-dispatch job records only a durable `codex-recovery-request` commit status. It does
-not invoke Codex or write the authoritative review status.
+dispatch job records only a durable `codex-recovery-request/<terminal-id>` commit
+status. It does not invoke Codex or write the authoritative review status.
 
 Normal CI and recovery feed one job-level concurrency group keyed by PR and exact
 head. That serialized owner is the only job allowed to change draft state, invoke
 and poll Codex, publish `codex-current-head`, or queue auto-merge. GitHub may replace
 an older queued job when another owner is queued, but it cannot erase the durable
-request marker; the next owner consumes it. Duplicate dispatches refresh the same
-request, including after an interrupted owner, and queue behind the same owner
-instead of creating another review lane.
+request marker; the next owner consumes it. Per-terminal contexts prevent an old
+owner from consuming a newer request. Duplicate dispatches refresh the same request,
+including after an interrupted owner, and queue behind the same owner instead of
+creating another review lane.
 A request remains pending across CI failure and is consumed only after a terminal
 review outcome. The owner also rechecks required CI before review success. This
 removes same-second and lease-boundary ambiguity by eliminating the second owner,

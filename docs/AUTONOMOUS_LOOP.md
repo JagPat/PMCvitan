@@ -80,15 +80,17 @@ status on that head and its outcome is retryable. Timeout, changed-CI, changed
 provider evidence, and the documented bootstrap marker are retryable. A current-
 head Codex finding or review is not: Claude must fix it and push a new SHA. Pending,
 successful, finding-bearing, or superseded status IDs fail closed.
-The dispatch job only writes a durable `codex-recovery-request` marker; it never
+The dispatch job only writes a durable `codex-recovery-request/<terminal-id>`
+marker; it never
 changes draft state, invokes Codex, publishes `codex-current-head`, or queues a
 merge. Both normal CI and recovery then enter the same job-level concurrency group
 for that PR and exact head. That one serialized owner performs every review and
 merge mutation. If GitHub replaces a queued owner job, the durable request remains
 pending and the next owner consumes it. Duplicate dispatches may refresh the same
 request, including after an interrupted owner, but cannot create a concurrent
-reviewer. A request is consumed only after
-a terminal review outcome; CI failure leaves it pending for the next green owner.
+reviewer. Per-terminal contexts prevent an older owner from consuming a newer
+request. A request is consumed only after a terminal review outcome; CI failure
+leaves it pending for the next green owner.
 The owner rechecks required CI immediately before publishing review success.
 Ordinary CI recovery searches the complete paginated status history, including
 terminal review results hidden below legacy `pending` or `ci:` statuses. Review

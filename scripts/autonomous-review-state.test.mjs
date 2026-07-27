@@ -82,6 +82,22 @@ test('ignores a clean reaction created before the current ready transition', () 
   assert.equal(result.state, 'pending');
 });
 
+test('does not trust the GraphQL thread alias in REST review evidence', () => {
+  const result = classifyCodexState(
+    input({
+      reactions: [
+        {
+          user: { login: CODEX_GRAPHQL_LOGIN },
+          content: '+1',
+          created_at: '2026-07-27T10:01:00Z',
+        },
+      ],
+    }),
+  );
+
+  assert.equal(result.state, 'pending');
+});
+
 test('current-head inline findings block even when a fresh clean reaction exists', () => {
   const result = classifyCodexState(
     input({
