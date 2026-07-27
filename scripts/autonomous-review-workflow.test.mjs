@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-import {
+import * as reviewGate from './autonomous-review-gate.mjs';
+
+const {
   MAX_REVIEW_ATTEMPTS,
   REQUIRED_CHECKS,
   summarizeRequiredChecks,
-} from './autonomous-review-gate.mjs';
+} = reviewGate;
 
 const workflowPath = new URL('../.github/workflows/auto-merge.yml', import.meta.url);
 const ciPath = new URL('../.github/workflows/ci.yml', import.meta.url);
@@ -49,6 +51,45 @@ test('keeps the Codex trigger retry bounded', () => {
   assert.equal(MAX_REVIEW_ATTEMPTS, 2);
 });
 
+test('a CI rerun cannot reopen a terminal review cycle on the same head', () => {
+  assert.equal(typeof reviewGate.isTerminalReviewStatus, 'function');
+  assert.equal(
+    reviewGate.isTerminalReviewStatus({
+      state: 'failure',
+      description: 'review: 3 current-head Codex findings',
+    }),
+    true,
+  );
+  assert.equal(
+    reviewGate.isTerminalReviewStatus({
+      state: 'failure',
+      description: '11 current-head Codex findings',
+    }),
+    true,
+  );
+  assert.equal(
+    reviewGate.isTerminalReviewStatus({
+      state: 'success',
+      description: 'review: Codex found no blocking issue',
+    }),
+    true,
+  );
+  assert.equal(
+    reviewGate.isTerminalReviewStatus({
+      state: 'failure',
+      description: 'ci: api-e2e failed',
+    }),
+    false,
+  );
+  assert.equal(
+    reviewGate.isTerminalReviewStatus({
+      state: 'pending',
+      description: 'Waiting for Codex',
+    }),
+    false,
+  );
+});
+
 test('workflow starts a review only after CI or an operator dispatch', async () => {
   const [workflow, gate] = await Promise.all([
     readFile(workflowPath, 'utf8'),
@@ -62,6 +103,9 @@ test('workflow starts a review only after CI or an operator dispatch', async () 
   assert.doesNotMatch(workflow, /pull_request_review_comment:/);
   assert.doesNotMatch(gate, /eventName === 'pull_request_review'/);
   assert.doesNotMatch(gate, /eventName === 'pull_request_review_comment'/);
+  assert.match(gate, /context\.trigger === 'ci'/);
+  assert.match(gate, /client\.latestStatus\(/);
+  assert.match(gate, /isTerminalReviewStatus\(existingStatus\)/);
   assert.match(workflow, /statuses:\s*write/);
   assert.match(workflow, /pull-requests:\s*write/);
   assert.match(workflow, /issues:\s*write/);

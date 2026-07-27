@@ -56,6 +56,18 @@ export function summarizeRequiredChecks(checkRuns) {
   };
 }
 
+export function isTerminalReviewStatus(status) {
+  if (!status || status.state === 'pending') return false;
+  if (status.state === 'success') return true;
+  if (status.state !== 'failure') return false;
+
+  const description = status.description ?? '';
+  return description.startsWith('review:')
+    || description.includes('current-head Codex finding')
+    || description.includes('Codex review timed out')
+    || description.includes('Codex evidence changed');
+}
+
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -113,6 +125,13 @@ class GitHubClient {
       `/repos/${this.repository}/commits/${head}/check-runs?filter=latest&per_page=100`,
     );
     return payload.check_runs;
+  }
+
+  async latestStatus(head, context) {
+    const statuses = await this.request(
+      `/repos/${this.repository}/commits/${head}/statuses?per_page=100`,
+    );
+    return statuses.find((status) => status.context === context) ?? null;
   }
 
   reviews(number) {
@@ -410,6 +429,7 @@ async function eventContext() {
       number: Number(process.env.PR_NUMBER ?? event.inputs?.pr_number),
       expectedHead: null,
       ciConclusion: null,
+      trigger: 'dispatch',
     };
   }
   if (eventName === 'workflow_run' && event.workflow_run?.event === 'pull_request') {
@@ -417,6 +437,7 @@ async function eventContext() {
       number: Number(event.workflow_run.pull_requests?.[0]?.number),
       expectedHead: event.workflow_run.head_sha,
       ciConclusion: event.workflow_run.conclusion,
+      trigger: 'ci',
     };
   }
   return null;
@@ -446,6 +467,19 @@ export async function run() {
     return;
   }
 
+  if (context.trigger === 'ci') {
+    const existingStatus = await client.latestStatus(
+      expectedHead,
+      STATUS_CONTEXT,
+    );
+    if (isTerminalReviewStatus(existingStatus)) {
+      console.log(
+        'Exact head already has a terminal Codex state; CI rerun will not request review.',
+      );
+      return;
+    }
+  }
+
   await client.setStatus(
     expectedHead,
     'pending',
@@ -464,7 +498,7 @@ export async function run() {
     await client.setStatus(
       expectedHead,
       'failure',
-      `CI workflow concluded ${context.ciConclusion}`,
+      `ci: workflow concluded ${context.ciConclusion}`,
       pullRequest.html_url,
     );
     await client.updateStickyComment(
@@ -493,7 +527,12 @@ export async function run() {
     const detail = checks.failed?.length
       ? `Failed checks: ${checks.failed.join(', ')}`
       : `Checks did not settle: ${[...(checks.missing ?? []), ...(checks.pending ?? [])].join(', ')}`;
-    await client.setStatus(expectedHead, 'failure', detail, pullRequest.html_url);
+    await client.setStatus(
+      expectedHead,
+      'failure',
+      `ci: ${detail}`,
+      pullRequest.html_url,
+    );
     await client.updateStickyComment(
       pullRequest.number,
       statusBody({
@@ -529,7 +568,7 @@ export async function run() {
       await client.setStatus(
         expectedHead,
         'failure',
-        result.detail,
+        `review: ${result.detail}`,
         pullRequest.html_url,
       );
       await client.updateStickyComment(
@@ -576,7 +615,7 @@ export async function run() {
         await client.setStatus(
           expectedHead,
           'failure',
-          detail,
+          `review: ${detail}`,
           pullRequest.html_url,
         );
         await client.updateStickyComment(
@@ -594,7 +633,7 @@ export async function run() {
       await client.setStatus(
         expectedHead,
         'success',
-        'Codex found no blocking issue on this exact head',
+        'review: Codex found no blocking issue on this exact head',
         pullRequest.html_url,
       );
       await client.updateStickyComment(
@@ -649,7 +688,7 @@ export async function run() {
   await client.setStatus(
     expectedHead,
     'failure',
-    'Codex review timed out after two attempts',
+    'review: Codex review timed out after two attempts',
     pullRequest.html_url,
   );
   await client.updateStickyComment(

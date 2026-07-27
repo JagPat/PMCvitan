@@ -91,8 +91,17 @@ that review triggered another workflow run, producing a live same-head loop on
 PR #230.
 
 The correction removes both review events from the workflow and from
-`eventContext`. Only CI completion for a new head or an explicit operator dispatch
-may initiate draft-to-ready. The CI-triggered run already polls reviews, inline
-comments, and clean reactions until it reaches a terminal exact-head result, so a
-second event listener is unnecessary. The regression contract asserts that neither
-review event can re-enter the review-start path.
+`eventContext`. Only CI completion for a head without a terminal Codex status, or
+an explicit operator dispatch, may initiate draft-to-ready. The CI-triggered run
+already polls reviews, inline comments, and clean reactions until it reaches a
+terminal exact-head result, so a second event listener is unnecessary.
+
+The first correction still allowed a manual CI rerun on an unchanged head to emit
+another completed `workflow_run` and overwrite the terminal review status with
+`pending`. The follow-up guard reads the latest `codex-current-head` status before
+any status or draft mutation. A review success or review failure is terminal for
+ordinary CI events; CI failures remain retryable. New statuses use `review:` and
+`ci:` prefixes, while the classifier recognizes the unprefixed terminal statuses
+already present on PR #230. Only `workflow_dispatch` can deliberately retry a
+terminal same-head review. Regression tests cover both trigger removal and the
+same-head CI-rerun guard.
