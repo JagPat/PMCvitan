@@ -16,15 +16,16 @@ function pullRequest(overrides = {}) {
 }
 
 test('accepts only open same-repository Claude branches', () => {
-  assert.equal(isAutonomousPullRequest(pullRequest(), repository), true);
+  assert.equal(isAutonomousPullRequest(pullRequest(), repository, 'main'), true);
   assert.equal(
-    isAutonomousPullRequest(pullRequest({ state: 'closed' }), repository),
+    isAutonomousPullRequest(pullRequest({ state: 'closed' }), repository, 'main'),
     false,
   );
   assert.equal(
     isAutonomousPullRequest(
       pullRequest({ head: { ref: 'feature/task', repo: { full_name: repository } } }),
       repository,
+      'main',
     ),
     false,
   );
@@ -32,6 +33,15 @@ test('accepts only open same-repository Claude branches', () => {
     isAutonomousPullRequest(
       pullRequest({ head: { ref: 'claude/task', repo: { full_name: 'fork/repo' } } }),
       repository,
+      'main',
+    ),
+    false,
+  );
+  assert.equal(
+    isAutonomousPullRequest(
+      pullRequest({ base: { ref: 'release', repo: { full_name: repository } } }),
+      repository,
+      'main',
     ),
     false,
   );
@@ -50,6 +60,8 @@ test('handoff workflow is event-driven and runs trusted default-branch code', as
   assert.match(workflow, /persist-credentials:\s*false/);
   assert.match(workflow, /scripts\/autonomous-handoff\.mjs/);
   assert.doesNotMatch(workflow, /schedule:/);
+  assert.match(workflow, /group:\s*autonomous-handoff/);
+  assert.match(workflow, /cancel-in-progress:\s*false/);
 });
 
 test('handoff implementation covers both conflicts and behind-base states', async () => {
@@ -60,9 +72,7 @@ test('handoff implementation covers both conflicts and behind-base states', asyn
 
   assert.match(implementation, /live\.mergeable !== false/);
   assert.match(implementation, /live\.mergeable_state !== 'behind'/);
-  assert.match(
-    implementation,
-    /let live = await client\.pullRequest\(pullRequest\.number\)/,
-  );
+  assert.match(implementation, /while \(live\.mergeable === null/);
+  assert.match(implementation, /MERGEABILITY_TIMEOUT_MS/);
   assert.match(implementation, /pullRequest\?\.base\?\.ref !== defaultBranch/);
 });

@@ -189,7 +189,9 @@ class GitHubClient {
                 nodes {
                   id
                   isResolved
-                  comments(first: 1) { nodes { author { login } } }
+                  comments(first: 1) {
+                    nodes { author { login } originalCommit { oid } }
+                  }
                 }
                 pageInfo { hasNextPage endCursor }
               }
@@ -206,8 +208,11 @@ class GitHubClient {
     return threads;
   }
 
-  async resolveCodexThreads(number) {
-    const ids = codexThreadIdsToResolve(await this.reviewThreads(number));
+  async resolveCodexThreads(number, expectedHead) {
+    const ids = codexThreadIdsToResolve(
+      await this.reviewThreads(number),
+      expectedHead,
+    );
     for (const threadId of ids) {
       await this.graphql(
         `mutation($threadId: ID!) {
@@ -526,6 +531,7 @@ export async function run() {
       if (!pullRequest) return;
       const resolvedThreadCount = await client.resolveCodexThreads(
         pullRequest.number,
+        expectedHead,
       );
       await client.setStatus(
         expectedHead,

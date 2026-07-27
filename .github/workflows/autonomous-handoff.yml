@@ -13,8 +13,10 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: autonomous-handoff-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # One global queue makes the read-marker/write-comment sequence idempotent
+  # across overlapping main-push and pull-request events.
+  group: autonomous-handoff
+  cancel-in-progress: false
 
 jobs:
   handoff:

@@ -197,25 +197,38 @@ test('a finding posted against the current head still blocks when its comment ha
   });
 });
 
-test('resolves only unresolved threads opened by Codex', () => {
+test('resolves only historical unresolved threads opened by Codex', () => {
   assert.deepEqual(
     codexThreadIdsToResolve([
       {
         id: 'codex-open',
         isResolved: false,
-        comments: { nodes: [{ author: { login: CODEX_LOGIN } }] },
+        comments: {
+          nodes: [{ author: { login: CODEX_LOGIN }, originalCommit: { oid: 'old' } }],
+        },
       },
       {
         id: 'codex-resolved',
         isResolved: true,
-        comments: { nodes: [{ author: { login: CODEX_LOGIN } }] },
+        comments: {
+          nodes: [{ author: { login: CODEX_LOGIN }, originalCommit: { oid: 'old' } }],
+        },
+      },
+      {
+        id: 'codex-current-head',
+        isResolved: false,
+        comments: {
+          nodes: [{ author: { login: CODEX_LOGIN }, originalCommit: { oid: HEAD } }],
+        },
       },
       {
         id: 'human-open',
         isResolved: false,
-        comments: { nodes: [{ author: { login: 'reviewer' } }] },
+        comments: {
+          nodes: [{ author: { login: 'reviewer' }, originalCommit: { oid: 'old' } }],
+        },
       },
-    ]),
+    ], HEAD),
     ['codex-open'],
   );
 });

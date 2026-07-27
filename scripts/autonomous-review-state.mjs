@@ -44,13 +44,14 @@ export function isEligiblePullRequest(pullRequest) {
   );
 }
 
-export function codexThreadIdsToResolve(threads = []) {
+export function codexThreadIdsToResolve(threads = [], expectedHead) {
   return threads
     .filter((thread) => {
       const firstComment = thread?.comments?.nodes?.[0];
       return (
         !thread?.isResolved &&
-        firstComment?.author?.login === CODEX_LOGIN
+        firstComment?.author?.login === CODEX_LOGIN &&
+        firstComment?.originalCommit?.oid !== expectedHead
       );
     })
     .map((thread) => thread.id);

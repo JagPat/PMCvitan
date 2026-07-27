@@ -4,6 +4,12 @@ import { pathToFileURL } from 'node:url';
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
 const MERGE_MARKER = '<!-- autonomous-post-merge:';
+const MERGEABILITY_TIMEOUT_MS = Number(
+  process.env.MERGEABILITY_TIMEOUT_MS ?? 8 * 60_000,
+);
+const MERGEABILITY_POLL_MS = Number(
+  process.env.MERGEABILITY_POLL_MS ?? 5_000,
+);
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -15,11 +21,16 @@ function requiredEnvironment(name) {
   return value;
 }
 
-export function isAutonomousPullRequest(pullRequest, repository) {
+export function isAutonomousPullRequest(
+  pullRequest,
+  repository,
+  defaultBranch,
+) {
   return (
     pullRequest?.state === 'open' &&
     pullRequest?.head?.repo?.full_name === repository &&
     pullRequest?.base?.repo?.full_name === repository &&
+    pullRequest?.base?.ref === defaultBranch &&
     pullRequest?.head?.ref?.startsWith('claude/')
   );
 }
@@ -78,16 +89,27 @@ class GitHubClient {
 }
 
 async function refreshedMergeability(client, pullRequest) {
+  const deadline = Date.now() + MERGEABILITY_TIMEOUT_MS;
   let live = await client.pullRequest(pullRequest.number);
-  for (let attempt = 0; attempt < 2 && live.mergeable === null; attempt += 1) {
-    await sleep(2_000);
+  while (live.mergeable === null && Date.now() < deadline) {
+    await sleep(MERGEABILITY_POLL_MS);
     live = await client.pullRequest(pullRequest.number);
+  }
+  if (live.mergeable === null) {
+    throw new Error(
+      `GitHub did not compute mergeability for PR #${pullRequest.number} before the deadline`,
+    );
   }
   return live;
 }
 
-async function handOffConflict(client, pullRequest, repository) {
-  if (!isAutonomousPullRequest(pullRequest, repository)) return;
+async function handOffConflict(
+  client,
+  pullRequest,
+  repository,
+  defaultBranch,
+) {
+  if (!isAutonomousPullRequest(pullRequest, repository, defaultBranch)) return;
   const live = await refreshedMergeability(client, pullRequest);
   if (live.mergeable !== false && live.mergeable_state !== 'behind') return;
 
@@ -159,12 +181,12 @@ export async function run() {
       );
       return;
     }
-    await handOffConflict(client, pullRequest, repository);
+    await handOffConflict(client, pullRequest, repository, defaultBranch);
     return;
   }
 
   for (const pullRequest of await client.openPullRequests()) {
-    await handOffConflict(client, pullRequest, repository);
+    await handOffConflict(client, pullRequest, repository, defaultBranch);
   }
 }
 
