@@ -76,6 +76,8 @@ const MODEL_OWNER: Record<string, string> = {
   // by its recompute consumer
   approvedSubstitution: 'activities',
   materialReadinessProjection: 'activities',
+  // Phase 4 Task 4 — the seventh rebuildable projection's generation-scoped store (labour-owned).
+  labourReadinessProjection: 'labour',
   // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
   rfq: 'procurement', vendorQuote: 'procurement', vendorQuoteLine: 'procurement', quoteComparison: 'procurement',
@@ -191,6 +193,11 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // the SINGLE external-effect sender once post-commit. The activity target is validated through
   // the ACTIVITIES PARTICIPANT (the cycle-exempt channel), so no foreign model is written here.
   'labour/labour-capacity.service.ts': { domain: 'labour', foreign: {}, dispatch: 7 },
+  // Phase 4 Task 4 — the §A labour coverage authority: PURE READS of labour-owned §C facts on the
+  // CALLER's transaction (execution truth for `activities.start`, forecast truth for the seventh
+  // projection + the `labour.readiness` read). Writes nothing, emits nothing, dispatches nothing;
+  // the requirement snapshots are passed IN by the caller, so no foreign model is read either.
+  'labour/labour-coverage.service.ts': { domain: 'labour', foreign: {}, dispatch: 0 },
 };
 
 // Services that WRITE but are NOT pillar signal emitters. Documented so a new

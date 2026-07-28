@@ -761,11 +761,13 @@ seal — the new build serves traffic while the operator steps below run.
 pnpm --filter api projection:rebuild --operator <you@example.com> --reason "<release>: repair pre-correction generations"
 ```
 
-No `--project` and no `--consumer` flag: every project is rebuilt for **ALL SIX production
+No `--project` and no `--consumer` flag: every project is rebuilt for **ALL SEVEN production
 projection consumers** — `decisions.inbox`, `daily-log.inbox`, `drawings.inbox`,
-`inspections.inbox`, `activities.schedule`, and `activities.material-readiness` (Phase 3 Task 6 —
+`inspections.inbox`, `activities.schedule`, `activities.material-readiness` (Phase 3 Task 6 —
 the pilot's recompute-only UI material-readiness projection; on a non-pilot project it rebuilds to
-an empty verdict set). This step MUST complete (gated by step 4) **before**
+an empty verdict set), and `labour.readiness` (Phase 4 Task 4 — the labour-pilot's recompute-only
+forecast projection, its requirements folded from the consumed `requirement.*` event payloads; on
+a non-pilot project it rebuilds to an empty forecast set). This step MUST complete (gated by step 4) **before**
 enabling all module-query reads on the web deployment (`VITE_*_READ=moduleQuery`) and before
 switching to outbox sender mode (step 7): a database upgraded from a pre-#183 build can carry a
 legacy `decisions.inbox` generation that is active and caught-up but holds only a SUBSET of the
@@ -819,7 +821,7 @@ unexpected build is deployed — go back to step 2).
 - `pnpm --filter api outbox:status` — `dead: 0`, `blocked: 0`, `oldestPendingSeconds` low/falling
   (the relay is the sole external sender now and must be draining).
 - `pnpm --filter api projection:rebuild --operator <you> --reason "post-cutover readiness check" --project <spot-check id>`
-  on a spot-check project — covers all six consumers; expect `corruptBefore: 0` and `after.state`
+  on a spot-check project — covers all seven consumers; expect `corruptBefore: 0` and `after.state`
   of `current-match` (or `lagging` that clears on the next status check). The run is idempotent and
   non-disruptive.
 

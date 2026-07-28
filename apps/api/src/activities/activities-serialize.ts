@@ -3,6 +3,8 @@ import { deriveReadiness, type DecisionStatus, type ReadinessDrawing, type Readi
 import { toIsoCivilDate } from '../common/civil-date';
 import { deriveMaterialReading } from './material-readiness';
 import type { RequirementCoverage } from '../inventory/coverage';
+import { deriveTeamReading } from '../labour/team-readiness';
+import type { RequirementLabourCoverage } from '../labour/coverage';
 import type { ActivityDto, PhaseDto } from '../snapshot/types';
 
 /**
@@ -92,6 +94,10 @@ export interface ActivitiesBakeInputs {
   /** Phase 3 Task 6 — per-activity canonical material coverage (§A). Present ONLY on a pilot
    *  project; absent for non-pilot reads, whose material gate stays the stored flag byte-for-byte. */
   materialCoverage?: ReadonlyMap<string, RequirementCoverage[]>;
+  /** Phase 4 Task 4 — per-activity canonical labour EXECUTION coverage (§A). Present ONLY on a
+   *  labour-pilot project; absent for non-pilot reads, whose Team gate stays the stored flag
+   *  byte-for-byte. */
+  labourCoverage?: ReadonlyMap<string, RequirementLabourCoverage[]>;
 }
 
 /** stored → wire status remap (moved verbatim from the snapshot service). */
@@ -195,6 +201,15 @@ export function bakeActivities(base: ActivitiesBase, inputs: ActivitiesBakeInput
     if (inputs.materialCoverage && readiness.material.source !== 'override') {
       readiness.material = deriveMaterialReading(inputs.materialCoverage.get(a.id) ?? [], a.gateMaterial === 'fail');
     }
+    // Phase 4 Task 4 (§A/§D): on a LABOUR-pilot project the Team gate is CANONICAL execution
+    // coverage, baked LIVE here exactly like the material gate above — never the stored flag.
+    // `labourCoverage` is present ONLY when the caller resolved coverage for a labour-pilot
+    // project; absent for non-pilot reads, so their Team gate stays byte-for-byte the stored
+    // flag. An unexpired team override still supersedes. The labour-mismatch fact family lands
+    // in Task 5 — no mismatch latch exists yet (false).
+    if (inputs.labourCoverage && readiness.team.source !== 'override') {
+      readiness.team = deriveTeamReading(inputs.labourCoverage.get(a.id) ?? [], false);
+    }
     return {
       id: a.id,
       name: a.name,
@@ -214,7 +229,7 @@ export function bakeActivities(base: ActivitiesBase, inputs: ActivitiesBakeInput
       // legacy stored flags (deprecated display fields; `readiness` is the truth). Under the pilot
       // the material display flag tracks the derived gate so the two never disagree.
       gm: (inputs.materialCoverage ? readiness.material.v : a.gateMaterial) as ActivityDto['gm'],
-      gt: a.gateTeam as ActivityDto['gt'],
+      gt: (inputs.labourCoverage ? readiness.team.v : a.gateTeam) as ActivityDto['gt'],
       gi: a.gateInspection as ActivityDto['gi'],
       block: a.block ?? undefined,
       readiness,

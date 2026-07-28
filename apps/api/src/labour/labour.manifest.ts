@@ -16,8 +16,10 @@ import { LABOUR_COMMANDS, LABOUR_QUERIES, type ModuleManifest } from '@vitan/sha
  * Task 1 emits NO domain event: onboarding is a roster surface (attributable via `recordAudit`,
  * idempotent via the command ledger). Labour capacity facts (allocation/attendance/work) — and
  * their event family — arrive in Tasks 3–5. The `requirement.*` events that carry the labour
- * demand stay Activities-owned (a discriminated `type` payload); Labour's async
- * `consumesEvents` read-model + the coverage read edge land in Task 4, not here.
+ * demand stay Activities-owned (a discriminated `type` payload); Task 4 adds Labour's async
+ * `consumesEvents` read-model (the fold in `labour-readiness.projection.ts`), the coverage read
+ * edge (`activities → labour` via `LabourCoverageService`/`deriveTeamReading`), and the SEVENTH
+ * rebuildable projection (`labour.readiness`, forecast truth).
  */
 export const labourManifest: ModuleManifest = {
   id: 'labour',
@@ -34,6 +36,8 @@ export const labourManifest: ModuleManifest = {
     'capacityCommitment', 'capacityPromise',
     // Phase 4 Task 3 — the §C time-capacity facts (distinct units, no bucket ledger).
     'workerAllocation', 'labourAttendance', 'labourWorkFact', 'approvedSkillSubstitution',
+    // Phase 4 Task 4 — the seventh rebuildable projection's generation-scoped store.
+    'labourReadinessProjection',
   ],
   readEncapsulated: [
     'labourTrade', 'labourSkill', 'worker', 'workerSkill', 'crew', 'crewMembership',
@@ -43,6 +47,7 @@ export const labourManifest: ModuleManifest = {
     'labourPurchaseOrder', 'labourPurchaseOrderVersion', 'labourPurchaseOrderLine',
     'capacityCommitment', 'capacityPromise',
     'workerAllocation', 'labourAttendance', 'labourWorkFact', 'approvedSkillSubstitution',
+    'labourReadinessProjection',
   ],
   // A LEAF (round-3): NO synchronous read edge to any module. The Activities requirement command
   // writes the labour detail INTO this module through LabourRequirementParticipant (a workflow edge
@@ -69,7 +74,11 @@ export const labourManifest: ModuleManifest = {
     'allocation.made', 'allocation.released', 'attendance.recorded', 'attendance.revoked',
     'labour_work.recorded', 'skill_substitution.approved', 'skill_substitution.revoked',
   ],
-  consumesEvents: [],
+  // Phase 4 Task 4 (§G, round-3) — the FIRST async consumption edge in the registry: Labour folds
+  // the Activities-owned `requirement.*` event PAYLOADS into its own read-model (the forecast
+  // projection's requirement truth), so it never reads Activities persistence. Async event
+  // consumption is NOT a `dependsOn` edge — the graph stays acyclic with Labour a leaf.
+  consumesEvents: ['requirement.created', 'requirement.revised', 'requirement.cancelled'],
   commands: [...LABOUR_COMMANDS],
   queries: [...LABOUR_QUERIES],
   routes: [

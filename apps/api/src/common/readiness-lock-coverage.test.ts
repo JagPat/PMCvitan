@@ -150,6 +150,12 @@ const SECTION_A_COMMANDS: Array<{ label: string; file: string; method: string }>
   { label: 'labour.work.record', file: 'labour/labour-capacity.service.ts', method: 'recordWork' },
   { label: 'labour.skillSubstitution.approve', file: 'labour/labour-capacity.service.ts', method: 'approveSkillSubstitution' },
   { label: 'labour.skillSubstitution.revoke', file: 'labour/labour-capacity.service.ts', method: 'revokeSkillSubstitution' },
+  // Phase 4 Task 4 — the §A tripwire extension: the capacity-commitment lifecycle moves the
+  // FORECAST Team truth (a commitment covers a slice's shortfall; a default removes that cover),
+  // so all three join the enumeration — they already took the lock in Task 2, this pins it.
+  { label: 'labour.commitment.commit', file: 'labour/labour-procurement.service.ts', method: 'commitCapacity' },
+  { label: 'labour.commitment.revise', file: 'labour/labour-procurement.service.ts', method: 'reviseCapacity' },
+  { label: 'labour.commitment.default', file: 'labour/labour-procurement.service.ts', method: 'defaultCapacity' },
 ];
 
 /** The body of `async <method>(` up to the next same-indent `async ` (or end of file). */
@@ -173,11 +179,12 @@ describe('readiness-lock §A COMMAND-LEVEL coverage (Phase 3 Task 6)', () => {
     });
   }
 
-  it('enumerates every command in the §A lock-coverage table (29 commands)', () => {
-    // A mechanical guard on completeness: the table has 29 rows across activities/procurement/
+  it('enumerates every command in the §A lock-coverage table (32 commands)', () => {
+    // A mechanical guard on completeness: the table has 32 rows across activities/procurement/
     // inventory/daily-log/labour (Task 6 correction added delivery.fulfill + po.close-short — both
-    // remove inbound coverage; Phase 4 Task 3 added the seven §C time-capacity fact commands).
+    // remove inbound coverage; Phase 4 Task 3 added the seven §C time-capacity fact commands;
+    // Phase 4 Task 4 added the three capacity-commitment lifecycle commands — forecast cover).
     // Adding a §A command without listing it here is a visible, reviewed change.
-    expect(SECTION_A_COMMANDS).toHaveLength(29);
+    expect(SECTION_A_COMMANDS).toHaveLength(32);
   });
 });

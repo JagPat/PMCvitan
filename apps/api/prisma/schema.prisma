@@ -432,6 +432,23 @@ model MaterialReadinessProjection {
   @@unique([generationId, projectId])
 }
 
+// Phase 4 Task 4 — the SEVENTH rebuildable projection: per-project labour-readiness FORECAST (§A/§G).
+// Recompute-only: a labour-owned consumer re-derives every labour-requirement-bearing activity's
+// forecast verdict from the labour-owned requirement read-model (folded from the consumed
+// `requirement.*` event payloads — never an Activities persistence read; Labour stays a LEAF) plus
+// the §C facts. It feeds UI/Inbox/Dashboard ONLY — command authority (activities.start) reads
+// EXECUTION coverage in-tx, never this projection. Storing a derived verdict produces NO domain
+// event (§G).
+model LabourReadinessProjection {
+  id           String   @id @default(uuid())
+  generationId String
+  projectId    String
+  dto          Json // { forecast: { [activityId]: { verdict, reason, coveringDate } } }, activityId-sorted
+  updatedAt    DateTime @updatedAt
+
+  @@unique([generationId, projectId])
+}
+
 // Phase 2 Task 10 (Module 3) correction — the INSPECTION-OWNED evidence link. Item-level photo evidence
 // was formerly read off the Media table by the inspections serializer (a cross-module read the projection
 // could not observe when a photo was uploaded/removed). Each row is an inspection-owned link from an

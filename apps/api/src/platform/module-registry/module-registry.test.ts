@@ -39,7 +39,8 @@ describe('Phase 2 Task 7 — module registry', () => {
       'approvedSkillSubstitution', 'capacityCommitment', 'capacityPromise', 'crew', 'crewMembership',
       'labourAttendance', 'labourDemandSlice',
       'labourPurchaseOrder', 'labourPurchaseOrderLine', 'labourPurchaseOrderVersion',
-      'labourQuoteComparison', 'labourRequirementSpec', 'labourRequisition', 'labourRequisitionLine',
+      'labourQuoteComparison', 'labourReadinessProjection', 'labourRequirementSpec', 'labourRequisition',
+      'labourRequisitionLine',
       'labourRfq', 'labourSkill', 'labourTrade', 'labourWorkFact', 'supplierLabourQuote',
       'supplierLabourQuoteLine', 'vendorLabourProfile', 'worker', 'workerAllocation', 'workerSkill',
     ];
@@ -138,6 +139,63 @@ describe('Phase 2 Task 7 — module registry', () => {
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);
     }
+  });
+
+  // Phase 4 Task 4 — the §G acyclic-graph ACCEPTANCE test (plan round 3). (a) The exact edge
+  // table: labour is a LEAF that CONSUMES the Activities-owned requirement events (the FIRST
+  // non-empty consumesEvents in the registry — an async channel, never a dependsOn edge), and
+  // activities carries the coverage read edge. (b) A topological sort of the COMPLETE dependsOn
+  // graph succeeds — proven RED against the round-2 cyclic manifest (labour.dependsOn:
+  // ['activities','decisions','procurement'] closed activities → labour → activities), which the
+  // validator rejects with `cycle` and the sort reports unsortable.
+  it('§G acyclic-graph acceptance: exact labour edges + a topological sort of dependsOn succeeds', () => {
+    const labour = MODULE_MANIFESTS.find((m) => m.id === 'labour')!;
+    const activities = MODULE_MANIFESTS.find((m) => m.id === 'activities')!;
+    expect(labour.dependsOn).toEqual([]);
+    expect(labour.consumesEvents).toEqual(['requirement.created', 'requirement.revised', 'requirement.cancelled']);
+    expect(activities.producesEvents).toEqual(expect.arrayContaining([...labour.consumesEvents]));
+    expect(activities.dependsOn).toContain('labour');
+    expect(activities.workflowParticipants).toContain('labour');
+
+    // Kahn's algorithm over the LIVE manifests: every module must be emitted (no cycle).
+    const topologicalOrder = (manifests: readonly ModuleManifest[]): string[] | null => {
+      const ids = manifests.map((m) => m.id);
+      const inDegree = new Map(ids.map((id) => [id, 0]));
+      const dependents = new Map<string, string[]>(ids.map((id) => [id, []]));
+      for (const m of manifests) {
+        for (const dep of m.dependsOn) {
+          if (!inDegree.has(dep)) continue; // dangling deps are a separate validator finding
+          inDegree.set(m.id, (inDegree.get(m.id) ?? 0) + 1);
+          dependents.get(dep)!.push(m.id);
+        }
+      }
+      const queue = ids.filter((id) => inDegree.get(id) === 0).sort();
+      const order: string[] = [];
+      while (queue.length) {
+        const id = queue.shift()!;
+        order.push(id);
+        for (const d of dependents.get(id) ?? []) {
+          inDegree.set(d, inDegree.get(d)! - 1);
+          if (inDegree.get(d) === 0) queue.push(d);
+        }
+      }
+      return order.length === ids.length ? order : null;
+    };
+    const order = topologicalOrder(MODULE_MANIFESTS);
+    expect(order, 'the dependsOn graph has a cycle — no topological order exists').not.toBeNull();
+    // A leaf sorts before its dependents: labour precedes activities in every valid order.
+    expect(order!.indexOf('labour')).toBeLessThan(order!.indexOf('activities'));
+
+    // RED fixture — the round-2 cyclic manifest the plan's correction removed: substituting
+    // labour.dependsOn: ['activities','decisions','procurement'] closes
+    // activities → labour → activities, the validator raises `cycle`, and no topological order
+    // exists. Coupled to the LIVE manifests so the proof can never drift from reality.
+    const cyclic = MODULE_MANIFESTS.map((m) =>
+      m.id === 'labour' ? { ...m, dependsOn: ['activities', 'decisions', 'procurement'] } : m,
+    );
+    const codes = new Set(validateRegistry(cyclic, KNOWN_ROLES).map((e) => e.code));
+    expect(codes.has('cycle')).toBe(true);
+    expect(topologicalOrder(cyclic)).toBeNull();
   });
 
   it('a deliberately broken registry (shared model + cycle + unknown role) is rejected', () => {

@@ -8,6 +8,8 @@ import { makeDailyLogProjectionConsumer, DAILY_LOG_PROJECTION } from '../../dail
 import { makeInspectionsProjectionConsumer, INSPECTIONS_PROJECTION } from '../../inspections/inspections.projection';
 import { makeActivitiesProjectionConsumer, ACTIVITIES_PROJECTION } from '../../activities/activities.projection';
 import { makeMaterialReadinessProjectionConsumer, bindMaterialReadinessDeps, MATERIAL_READINESS_PROJECTION } from '../../activities/material-readiness.projection';
+import { makeLabourReadinessProjectionConsumer, bindLabourReadinessDeps, LABOUR_READINESS_PROJECTION } from '../../labour/labour-readiness.projection';
+import { LabourCoverageService } from '../../labour/labour-coverage.service';
 import { InventoryService } from '../../inventory/inventory.service';
 import { SubstitutionsService } from '../../activities/substitutions.service';
 import { ProcurementParticipant } from '../../procurement/procurement.participant';
@@ -20,8 +22,9 @@ import { RequirementsQueryService } from '../../activities/requirements.query';
  *   pnpm --filter api projection:rebuild --operator <identity> --reason <text> \
  *        [--project <id>] [--consumer <name>]
  *
- * With no `--consumer`, the run covers ALL FIVE production projection consumers
- * (decisions.inbox, daily-log.inbox, drawings.inbox, inspections.inbox, activities.schedule) —
+ * With no `--consumer`, the run covers ALL SEVEN production projection consumers
+ * (decisions.inbox, daily-log.inbox, drawings.inbox, inspections.inbox, activities.schedule,
+ * activities.material-readiness, labour.readiness) —
  * the production upgrade path depends on this default: a legacy `decisions.inbox` generation can
  * hold a non-empty SUBSET of the canonical register while presenting as caught-up, and only a
  * rebuild (or the next decision event) repairs it.
@@ -67,6 +70,7 @@ async function main(): Promise<void> {
       [INSPECTIONS_PROJECTION]: makeInspectionsProjectionConsumer,
       [ACTIVITIES_PROJECTION]: makeActivitiesProjectionConsumer,
       [MATERIAL_READINESS_PROJECTION]: makeMaterialReadinessProjectionConsumer,
+      [LABOUR_READINESS_PROJECTION]: makeLabourReadinessProjectionConsumer,
     };
     // Phase 3 Task 6 — the material-readiness recompute routes coverage through inventory +
     // substitutions; the CLI runs standalone, so bind the minimal instances (only the read-only
@@ -75,6 +79,9 @@ async function main(): Promise<void> {
       inventory: new InventoryService(prisma, {} as never, new ProcurementParticipant(new RequirementsQueryService()), {} as never, {} as never),
       substitutions: new SubstitutionsService(prisma, {} as never, {} as never),
     });
+    // Phase 4 Task 4 — the labour-readiness recompute routes forecast coverage through the labour
+    // coverage authority (pure reads over the tx; no command surface).
+    bindLabourReadinessDeps({ coverage: new LabourCoverageService(prisma) });
     for (const name of Object.keys(REBUILDABLE_PROJECTIONS)) {
       const make = factories[name];
       if (!make) throw new Error(`no consumer factory wired for rebuildable projection ${name}`);

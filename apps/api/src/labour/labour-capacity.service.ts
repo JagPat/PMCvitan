@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import {
   ROLE_POLICY, computeLabourSpecFingerprint, isLabourShift,
   type LabourCapacityDto, type WorkerAllocationDto, type LabourAttendanceDto,
-  type LabourWorkFactDto, type ApprovedSkillSubstitutionDto,
+  type LabourWorkFactDto, type ApprovedSkillSubstitutionDto, type LabourReadinessDto,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { CapabilitiesService, LABOUR_CAPABILITY } from '../platform/capabilities.service';
@@ -21,6 +21,7 @@ import type {
   AllocateLabourInput, ReleaseLabourAllocationInput, RecordAttendanceInput, RevokeAttendanceInput,
   RecordLabourWorkInput, ApproveSkillSubstitutionInput, RevokeSkillSubstitutionInput,
 } from '../contracts';
+import { computeLabourReadinessDto } from './labour-readiness.projection';
 
 /**
  * Phase 4 Task 3 — the §C TIME-CAPACITY facts (plan §C/§F bound 3/§H).
@@ -661,5 +662,16 @@ export class LabourCapacityService {
       workFacts: workFacts.map(serializeWorkFact),
       skillSubstitutions: skillSubstitutions.map(serializeSubstitution),
     };
+  }
+
+  /** `labour.readiness` (Phase 4 Task 4) — the per-activity FORECAST verdicts (§A forecast
+   *  table), computed LIVE through the ONE shared `computeLabourReadinessDto` the projection
+   *  consumer and the operator rebuild also use — so live == projection == rebuild by
+   *  construction. Feeds UI/Inbox/Dashboard ONLY; `activities.start` reads EXECUTION coverage
+   *  in-tx, never this read. */
+  async readiness(projectId: string, user: AuthUser): Promise<LabourReadinessDto> {
+    await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
+    this.assertRead(user);
+    return this.prisma.$transaction(async (tx) => computeLabourReadinessDto(tx, projectId));
   }
 }

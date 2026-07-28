@@ -80,6 +80,10 @@ export const LABOUR_QUERIES = [
   // Phase 4 Task 3 — the §C fact register (allocations + attendance + effort + substitutions) for
   // a civil-date window. A READ of labour-owned facts only; the derived Team gate lands in Task 4.
   'labour.capacity',
+  // Phase 4 Task 4 — the FORECAST labour-readiness read (§A): per-activity forecast verdicts
+  // derived from the labour-owned requirement read-model + the §C facts. Feeds UI/Inbox/Dashboard
+  // ONLY; `activities.start` never reads it (execution truth is evaluated in-tx under the lock).
+  'labour.readiness',
 ] as const;
 export type LabourQuery = (typeof LABOUR_QUERIES)[number];
 
@@ -420,4 +424,42 @@ export interface LabourCapacityDto {
   readonly attendance: readonly LabourAttendanceDto[];
   readonly workFacts: readonly LabourWorkFactDto[];
   readonly skillSubstitutions: readonly ApprovedSkillSubstitutionDto[];
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 Task 4 — §A labour readiness (execution vs forecast truth).
+// ---------------------------------------------------------------------------
+
+/**
+ * The FORECAST verdict for a labour demand slice / requirement / activity (§A forecast table):
+ * `ready` = allocated capacity covers it; `at-risk` = the shortfall is covered by a live
+ * `CapacityCommitment` for the SAME `(civilDate, shift)` slice whose latest arrival promise is
+ * not after the slice date; `blocked` = neither. Presence is NOT consulted — the forecast and
+ * execution tables differ ONLY in whether presence is required.
+ */
+export type LabourForecastVerdict = 'ready' | 'at-risk' | 'blocked';
+
+/** Per-slice coverage detail (§B: coverage arithmetic runs PER `(civilDate, shift)` slice —
+ *  capacity for one slice can never satisfy another). Counts are person-shifts (integers). */
+export interface LabourSliceCoverageDto {
+  readonly civilDate: string;
+  readonly shift: string;
+  readonly personShiftQty: number;
+  readonly allocated: number;
+  readonly present: number;
+  readonly worked: number;
+}
+
+/** One activity's forecast row in the `labour.readiness` read / projection dto. */
+export interface LabourActivityForecastDto {
+  readonly verdict: LabourForecastVerdict;
+  readonly reason: string;
+  /** Set ONLY when `verdict === 'at-risk'`: the latest covering arrival-promise date. */
+  readonly coveringDate: string | null;
+}
+
+/** The `labour.readiness` query result AND the seventh rebuildable projection's dto —
+ *  activityId-keyed forecast verdicts; only activities WITH a live labour requirement appear. */
+export interface LabourReadinessDto {
+  readonly forecast: Record<string, LabourActivityForecastDto>;
 }

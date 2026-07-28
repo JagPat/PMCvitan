@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   // hold the PREVIOUS run's state — a stale-served projection by construction. Truncate the generations and
   // every projection table alongside the events/cursors so each run rebuilds its read models from ITS data.
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "MaterialReadinessProjection"',
+    'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "MaterialReadinessProjection", "LabourReadinessProjection"',
   );
   // Phase 3 append-only tables (BEFORE UPDATE/DELETE triggers block deleteMany): the requirement
   // spec/revision/root chain and the immutable decision approval register — TRUNCATEd together

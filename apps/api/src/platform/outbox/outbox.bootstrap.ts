@@ -11,8 +11,10 @@ import { makeDrawingsProjectionConsumer } from '../../drawings/drawings.projecti
 import { makeInspectionsProjectionConsumer } from '../../inspections/inspections.projection';
 import { makeActivitiesProjectionConsumer } from '../../activities/activities.projection';
 import { makeMaterialReadinessProjectionConsumer, bindMaterialReadinessDeps } from '../../activities/material-readiness.projection';
+import { makeLabourReadinessProjectionConsumer, bindLabourReadinessDeps } from '../../labour/labour-readiness.projection';
 import { InventoryService } from '../../inventory/inventory.service';
 import { SubstitutionsService } from '../../activities/substitutions.service';
+import { LabourCoverageService } from '../../labour/labour-coverage.service';
 import { effectCoverageVersion } from '../external-effects';
 
 /**
@@ -34,6 +36,9 @@ export class OutboxBootstrap implements OnModuleInit {
     // owning services; boot binds them once for both the consumer and the operator rebuild diagnostic.
     private readonly inventory: InventoryService,
     private readonly substitutions: SubstitutionsService,
+    // Phase 4 Task 4 — the labour-readiness projection recompute routes forecast coverage through
+    // the labour coverage authority; boot binds it once for consumer + rebuild diagnostic.
+    private readonly labourCoverage: LabourCoverageService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -71,6 +76,12 @@ export class OutboxBootstrap implements OnModuleInit {
     // deps first so both the consumer and the operator rebuild diagnostic share one computation.
     bindMaterialReadinessDeps({ inventory: this.inventory, substitutions: this.substitutions });
     registerConsumer(makeMaterialReadinessProjectionConsumer());
+    // Phase 4 Task 4 — the SEVENTH rebuildable projection: per-project labour-readiness FORECAST
+    // (§A/§G), recompute-only from the forecast-affecting canonical events, its requirements folded
+    // from the consumed `requirement.*` event payloads (the labour-owned read-model — Labour stays
+    // a LEAF and never reads Activities persistence).
+    bindLabourReadinessDeps({ coverage: this.labourCoverage });
+    registerConsumer(makeLabourReadinessProjectionConsumer());
     // PR B — persist each consumer's contract BEFORE the relay starts, so the (consumer,
     // consumerKind) delivery FK always resolves and the durable obligation is complete. A contract
     // drift or a failed sync ABORTS boot (never downgraded to a warning): an unsynced catalog would

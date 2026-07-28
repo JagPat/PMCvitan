@@ -25,9 +25,13 @@ import { InspectionParticipant } from '../inspections/inspection.participant';
 import { DrawingParticipant } from '../drawings/drawing.participant';
 import { InventoryService } from '../inventory/inventory.service';
 import { SubstitutionsService } from './substitutions.service';
-import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
+import { CapabilitiesService, LABOUR_CAPABILITY, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
 import { deriveMaterialReading } from './material-readiness';
 import { loadCoverageRequirements } from './coverage-requirements';
+import { LabourCoverageService } from '../labour/labour-coverage.service';
+import { LabourRequirementQuery } from '../labour/labour.query';
+import { deriveTeamReading } from '../labour/team-readiness';
+import { loadLabourCoverageRequirements } from './labour-coverage-requirements';
 
 @Injectable()
 export class ActivitiesService {
@@ -59,6 +63,12 @@ export class ActivitiesService {
     private readonly inventory: InventoryService,
     private readonly substitutions: SubstitutionsService,
     private readonly capabilities: CapabilitiesService,
+    // Phase 4 Task 4 — the §G `activities → labour` read edge (canonical labour coverage): the
+    // execution Team gate on a labour-pilot project. Activities passes its OWN requirement
+    // snapshots into the labour coverage authority (loader above the seam), and reads the
+    // Labour-owned detail/substitutions through the query contract — Labour stays a LEAF.
+    private readonly labourCoverage: LabourCoverageService,
+    private readonly labourQuery: LabourRequirementQuery,
   ) {}
 
   /**
@@ -82,6 +92,25 @@ export class ActivitiesService {
     const requirements = await loadCoverageRequirements(tx, projectId, this.substitutions, [activity.id]);
     const coverage = await this.inventory.coverageFor(tx, projectId, requirements);
     return deriveMaterialReading(coverage, activity.gateMaterial === 'fail');
+  }
+
+  /**
+   * Phase 4 Task 4 — the CANONICAL Team gate for one activity on a labour-pilot project,
+   * evaluated on the caller's transaction (under the readiness lock) at the project-timezone
+   * civil date `asOf`: the §A EXECUTION truth over labour's `coverageFor` (allocated AND present,
+   * per demand slice, before-window/overdue rows included). The labour-MISMATCH fact family
+   * lands in Task 5 — until then no mismatch latch exists, so `false` is passed; the stored
+   * team flag is NOT read on a pilot project (no second writable truth, §A).
+   */
+  async teamReading(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    activity: { id: string },
+    asOf: string,
+  ) {
+    const requirements = await loadLabourCoverageRequirements(tx, projectId, this.labourQuery, [activity.id]);
+    const coverage = await this.labourCoverage.coverageFor(tx, projectId, requirements, asOf);
+    return deriveTeamReading(coverage, false);
   }
 
   /** Planned civil dates for a write: prefer explicit ISO input; else derive from the
@@ -152,6 +181,12 @@ export class ActivitiesService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'activities.create', idempotencyKey, requestHash,
       run: async (tx) => {
+        // Phase 4 Task 4 (§A): a labour-pilot project derives the Team gate from canonical
+        // facts — an explicit non-default stored team flag at creation would seed a second
+        // writable truth and is refused (the zod default 'na' passes untouched).
+        if (input.gateTeam !== 'na' && (await this.capabilities.isEnabled(projectId, LABOUR_CAPABILITY, tx))) {
+          throw new ConflictException('The Team gate is derived from canonical labour facts on this project — the stored team flag is not writable (§A)');
+        }
         await tx.activity.create({
           data: {
             id,
@@ -227,6 +262,12 @@ export class ActivitiesService {
       run: async (tx) => {
         // stored material/team flags and the decision link move readiness (finding 1)
         await lockProjectReadiness(tx, projectId);
+        // Phase 4 Task 4 (§A): when the labour capability is ON, the Team gate derives ENTIRELY
+        // from canonical labour facts — the stored flag is a second writable truth and its
+        // mutation is REJECTED. Off-pilot (legacy projects) the stored stub stays byte-identical.
+        if (input.gateTeam !== undefined && (await this.capabilities.isEnabled(projectId, LABOUR_CAPABILITY, tx))) {
+          throw new ConflictException('The Team gate is derived from canonical labour facts on this project — the stored team flag is not writable (§A)');
+        }
         await tx.activity.update({ where: { id: activityId }, data });
         // Task 10 (Module 3) correction — a rename re-stamps the INSPECTION-OWNED activity label on every
         // linked inspection through the participant, which appends `inspection.relabeled` so the projection's
@@ -351,6 +392,17 @@ export class ActivitiesService {
         // for this commit). An unexpired material OVERRIDE still supersedes (Phase-1 rule unchanged).
         if (readiness.material.source !== 'override' && (await this.capabilities.isEnabled(projectId, MATERIALS_CAPABILITY, tx))) {
           readiness.material = await this.materialReading(tx, projectId, a);
+        }
+        // Phase 4 Task 4 (§A): on a LABOUR-pilot project, the Team gate is CANONICAL execution
+        // coverage — allocated AND present per demand slice at today's project-timezone civil
+        // date — never the stored flag or a projection. Evaluated on THIS transaction under the
+        // readiness lock, so a concurrent allocation/release/attendance/requirement-revision/
+        // commitment-default serializes: it lands strictly before (this start observes it) or
+        // strictly after (it waits for this commit). An unexpired team OVERRIDE still supersedes
+        // (Phase-1 rule unchanged). Material and Team compose worst-gate (§A): material-ok with
+        // labour under-allocated refuses, and vice versa.
+        if (readiness.team.source !== 'override' && (await this.capabilities.isEnabled(projectId, LABOUR_CAPABILITY, tx))) {
+          readiness.team = await this.teamReading(tx, projectId, a, today);
         }
         if (!readinessReady(readiness)) {
           const blocking = (Object.entries(readiness) as Array<[string, { v: GateState; reason: string }]>)
