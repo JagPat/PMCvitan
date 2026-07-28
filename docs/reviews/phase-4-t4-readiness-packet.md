@@ -181,3 +181,57 @@ deterministic first-match tables differing only in presence, the pilot is provab
 off-capability, Labour stays a LEAF whose requirement truth arrives by consumed event payloads,
 and every conclusion a reviewer must trust is either DB-sealed (Tasks 1–3) or reproduced by a
 red-first probe in this packet.
+
+## 7. Codex round-1 correction (5 findings on head `09db0a5`)
+
+The exact-head Codex review of `09db0a54b2` raised five P2 findings. Each was reproduced RED at
+`09db0a5` by a new probe in `phase4-t4-labour-readiness.test.ts` (the `ROUND-1` block) before the
+fix; every prior Task-4 test is retained unchanged. No deployed migration is touched — the ONLY
+migration edit is to `20270301000000`, which exists solely on this held PR.
+
+- **F1 — retry-safe migration.** `20270301000000_phase4_t4_labour_readiness` used bare
+  `CREATE TABLE` / `CREATE UNIQUE INDEX`, so a crash after the table was created but before
+  Prisma recorded the migration left an unrerunnable partial apply. Both statements now carry
+  `IF NOT EXISTS`. Probe: every statement of the migration file re-applied verbatim against an
+  already-migrated database is a no-op (RED: `relation already exists`).
+- **F2 — conserved commitment residuals.** `forecastFor` recomputed each requirement's remaining
+  commitment quantity from per-requirement counts, so ONE quantity-1 commitment could mark TWO
+  same-slice shortfalls `at-risk`, and a draw-down by one requirement's allocation was invisible
+  to every other requirement. Committed person-shifts are now CONSERVED: drawn quantity is
+  project-wide (`groupBy` over ALL active allocations naming the commitment), and the undrawn
+  remainder is assigned by a deterministic matching — requirement-slices in canonical
+  `(activityId, requirementId, civilDate)` order, earliest-promise supplies first, augmenting
+  reroutes (a coverable shortfall is never refused while a compatible rearrangement exists, so
+  overlapping substitution sets cannot cause false `blocked`), all-or-nothing per slice (a slice
+  the pool cannot fully cover consumes nothing). Verdicts are a pure, caller-order-invariant
+  function of the facts (§G: live == projection == rebuild). Probe: two one-person shortfalls +
+  one quantity-1 commitment → exactly one `at-risk`, one `blocked`; after requirement A's
+  allocation draws the commitment, B flips to `blocked` (the draw is spent globally).
+- **F3 — present ∪ worked as distinct people.** Execution satisfaction used
+  `max(present, worked)`, so a two-person slice covered by one mustered worker plus a DIFFERENT
+  worker's delivered work fact read 1-of-2 and blocked the start. `countsFor` now counts the
+  UNION of distinct worker ids: `covered = |present ∪ worked|` for §A rows 4–5 (surfaced on
+  `LabourSliceCoverageDto.covered`) and `|allocated ∪ worked|` as the sourced quantity for rows
+  6–7 and the forecast. Probe: worker A mustered + worker B worked → execution `ok`; releasing
+  B after the work keeps the forecast `ready` (one active allocation + one delivered shift).
+- **F4 — allocations bound to the head's activity.** Coverage matched allocations by requirement
+  id + fingerprint + slice only, so revising a requirement onto a DIFFERENT activity let the new
+  activity's Team gate count the crew still FK-pinned to the previous activity. `countsFor` now
+  also requires `allocation.activityId === head.activityId` — a moved requirement strands the old
+  activity's allocations (and their work facts) exactly like a fingerprint strand; the §C
+  carry-forward is unchanged when the activity is unchanged. Probe: allocate + muster on activity
+  A, revise the requirement onto activity B → B is `fail` (under-allocated) and forecast
+  `blocked`, never `ok` on A's crew.
+- **F5 — only drawable commitments forecast.** `forecastFor` admitted
+  `status ∈ {committed, revised}`, but the allocation command (and its
+  `WorkerAllocation_within_commitment` DB trigger, both cleared in Task 3) draw down ONLY
+  `committed` rows — a `revised` commitment was §A cover that could never convert into execution
+  capacity. The forecast now reads `status = 'committed'` alone. Probe: `reviseCapacity` flips
+  the at-risk slice to `blocked`, and the same-commitment allocation attempt 409s (ground truth
+  pinned in the same test).
+
+Correction-round battery (all first-run, no re-kicks): `pnpm check` EXIT 0 (web 432/432, API
+678/678); full integration on a PRISTINE migrated DB **70 files / 675 tests** (+5 ROUND-1
+probes; zero pre-existing tests modified); `upgrade-proof.sh` PASSED (the guarded migration
+applies over the legacy fixture, table row-free); `test:e2e:api:allmodules` **31/31** and
+`:outbox` **25/25**.

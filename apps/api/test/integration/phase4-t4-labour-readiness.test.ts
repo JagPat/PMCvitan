@@ -613,4 +613,120 @@ describe('Phase 4 Task 4 — §A labour readiness (live PG)', () => {
     // and the live recompute already reflects the strand
     expect((await liveDto(projectId)).forecast[act]?.verdict).toBe('blocked');
   });
+
+  // ── Codex round-1 corrections (5 findings on head 09db0a5) — each reproduced RED first ────────
+
+  it('ROUND-1 F1 (retry-safe migration): re-applying the Task-4 migration SQL to a migrated database is a no-op', async () => {
+    // A crash between CREATE TABLE and Prisma recording the migration must leave a RERUNNABLE
+    // migration. The table already exists on this migrated test DB — every statement must be
+    // guarded (IF NOT EXISTS) so the retry passes instead of stopping on "relation already exists".
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const sql = readFileSync(
+      join(__dirname, '..', '..', 'prisma', 'migrations', '20270301000000_phase4_t4_labour_readiness', 'migration.sql'),
+      'utf8',
+    );
+    const executable = sql.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n');
+    const statements = executable.split(';').map((s) => s.trim()).filter((s) => s.length > 0);
+    expect(statements.length).toBeGreaterThan(0);
+    for (const statement of statements) {
+      await t.prisma.$executeRawUnsafe(statement); // RED at 09db0a5: "already exists"
+    }
+  });
+
+  it('ROUND-1 F3 (present ∪ worked): two distinct people — one mustered, one with a work fact — cover a two-person slice', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const act = await freshActivity(projectId);
+    const req = await labourRequirement(projectId, act, [{ civilDate: today, personShiftQty: 2 }]);
+    const wA = await onboardWorker(projectId);
+    const wB = await onboardWorker(projectId);
+    await allocate(projectId, act, req.requirementId, today, wA);
+    const allocB = (await allocate(projectId, act, req.requirementId, today, wB)).allocations[0]!;
+    await muster(projectId, wA, today); // A is present, has not worked
+    await capacity.recordWork(projectId, { allocationId: allocB.id, workedMinutes: 480 }, pmc(projectId)); // B worked, never mustered
+    // Every required person-shift is either mustered or already delivered — §A row 5 is satisfied
+    // by the UNION of the two one-person sets, not by max(1, 1) = 1.
+    const team = await teamOf(projectId, act);
+    expect(team.v).toBe('ok'); // RED at 09db0a5: 'wait' (muster pending)
+
+    // The same union governs FORECAST sourcing (allocated ∪ worked): release B after the work —
+    // one active allocation + one delivered person-shift still fully sources the slice.
+    await capacity.release(projectId, allocB.id, { reason: 'shift delivered' }, pmc(projectId));
+    const rows = await forecastOf(projectId, act);
+    expect(rows[0]!.verdict).toBe('ready');
+  });
+
+  it('ROUND-1 F4 (activity binding): allocations pinned to a previous activity never cover the revised head on a NEW activity', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const actA = await freshActivity(projectId);
+    const actB = await freshActivity(projectId);
+    const req = await labourRequirement(projectId, actA, [{ civilDate: today, personShiftQty: 1 }]);
+    const w = await onboardWorker(projectId);
+    await allocate(projectId, actA, req.requirementId, today, w);
+    await muster(projectId, w, today);
+    expect((await teamOf(projectId, actA)).v).toBe('ok');
+
+    // Revise the requirement onto activity B — same fingerprint, same slice. The allocation stays
+    // FK-pinned to activity A, so NOTHING actually targets B; its Team gate must not inherit A's crew.
+    await reviseLabour(projectId, req, actB, [{ civilDate: today, personShiftQty: 1 }]);
+    const team = await teamOf(projectId, actB);
+    expect(team.v).toBe('fail'); // RED at 09db0a5: 'ok' — A's crew counted for B
+    expect(team.reason).toContain('Under-allocated');
+    // and the forecast agrees: no allocation targets B
+    const rows = await forecastOf(projectId, actB);
+    expect(rows[0]!.verdict).toBe('blocked');
+  });
+
+  it('ROUND-1 F2 (conserved commitments): one committed person-shift covers at most ONE forecast shortfall, and a drawn commitment is spent GLOBALLY', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const actA = await freshActivity(projectId);
+    const actB = await freshActivity(projectId);
+    const d = day(3);
+    const reqA = await labourRequirement(projectId, actA, [{ civilDate: d, personShiftQty: 1 }]);
+    const reqB = await labourRequirement(projectId, actB, [{ civilDate: d, personShiftQty: 1 }]);
+    const { commitmentId } = await committedCapacity(projectId, reqA, d, 1);
+
+    // (a) Both requirements are short one person-shift of the SAME (fingerprint, civilDate, shift)
+    // slice; the single quantity-1 commitment can make only ONE of them at-risk — the other stays
+    // blocked. RED at 09db0a5: both at-risk (the residual was recomputed per requirement).
+    const verdicts = async (): Promise<Map<string, string>> =>
+      new Map(Object.entries((await liveDto(projectId)).forecast).map(([id, fc]) => [id, fc.verdict]));
+    const both = await verdicts();
+    expect([...both.values()].sort()).toEqual(['at-risk', 'blocked']);
+    // deterministic + input-order-invariant: the projection recompute agrees with itself
+    expect(await verdicts()).toEqual(both);
+
+    // (b) Draw the commitment down with a REAL allocation for requirement A: the person-shift is
+    // spent for EVERY requirement, not only the one whose allocation drew it. A is now sourced by
+    // its allocation (ready); B's shortfall has NO undrawn commitment left → blocked.
+    // RED at 09db0a5: B stayed at-risk because A's draw was invisible to B's per-row counts.
+    const w = await onboardWorker(projectId);
+    await capacity.allocate(projectId, { activityId: actA, requirementId: reqA.requirementId, civilDate: d, workerId: w, capacityCommitmentId: commitmentId }, pmc(projectId));
+    const after = await verdicts();
+    expect(after.get(actA)).toBe('ready');
+    expect(after.get(actB)).toBe('blocked');
+  });
+
+  it('ROUND-1 F5 (drawable forecast): a REVISED commitment cannot be drawn by allocation, so the forecast never advertises it', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const act = await freshActivity(projectId);
+    const d = day(2);
+    const req = await labourRequirement(projectId, act, [{ civilDate: d, personShiftQty: 1 }]);
+    const { commitmentId } = await committedCapacity(projectId, req, d, 1);
+    expect((await forecastOf(projectId, act))[0]!.verdict).toBe('at-risk');
+
+    // The supplier re-promises: the commitment enters 'revised' — a state the allocation command
+    // (and its DB trigger) REFUSE to draw down. Advertising it as covering the shortfall would be
+    // §A cover that cannot convert into execution capacity.
+    await commercial.reviseCapacity(projectId, commitmentId, { promisedDate: d, reason: 'supplier re-promise' }, pmc(projectId));
+    const w = await onboardWorker(projectId);
+    await expect(
+      capacity.allocate(projectId, { activityId: act, requirementId: req.requirementId, civilDate: d, workerId: w, capacityCommitmentId: commitmentId }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 }); // ground truth: not drawable
+    expect((await forecastOf(projectId, act))[0]!.verdict).toBe('blocked'); // RED at 09db0a5: 'at-risk'
+  });
 });

@@ -448,6 +448,10 @@ export interface LabourSliceCoverageDto {
   readonly allocated: number;
   readonly present: number;
   readonly worked: number;
+  /** §A execution satisfaction: DISTINCT workers present OR with a work fact (the union — one
+   *  mustered worker plus a DIFFERENT worker who already delivered are TWO covered person-shifts;
+   *  `present`/`worked` alone cannot express that, a worker may appear in both). */
+  readonly covered: number;
 }
 
 /** One activity's forecast row in the `labour.readiness` read / projection dto. */

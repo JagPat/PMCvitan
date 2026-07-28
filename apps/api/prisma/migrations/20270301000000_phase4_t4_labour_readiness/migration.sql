@@ -4,7 +4,10 @@
 -- projection's requirements come from the labour-owned `requirement.*` event read-model (folded
 -- from event payloads), so no backfill and no data movement: a legacy database upgrades with
 -- this table row-free and the consumer/rebuild populates it from canonical facts.
-CREATE TABLE "LabourReadinessProjection" (
+--
+-- RETRY-SAFE: every statement is guarded so a crash between a statement and Prisma recording the
+-- migration leaves a rerunnable migration — the retry is a no-op, never "relation already exists".
+CREATE TABLE IF NOT EXISTS "LabourReadinessProjection" (
     "id" TEXT NOT NULL,
     "generationId" TEXT NOT NULL,
     "projectId" TEXT NOT NULL,
@@ -15,4 +18,4 @@ CREATE TABLE "LabourReadinessProjection" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "LabourReadinessProjection_generationId_projectId_key" ON "LabourReadinessProjection"("generationId", "projectId");
+CREATE UNIQUE INDEX IF NOT EXISTS "LabourReadinessProjection_generationId_projectId_key" ON "LabourReadinessProjection"("generationId", "projectId");
