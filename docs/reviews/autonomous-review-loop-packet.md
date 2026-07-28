@@ -259,3 +259,10 @@ explicit dispatch, backlog recovery, and any surviving native event. The dispatc
 is retried three times for transient API failures, and an hourly GitHub-side
 watchdog drains the same cursor if the immediate dispatch never starts; neither
 recovery path needs a laptop or an external AI API key.
+
+The first exact-head review of this dispatch path identified a starvation case:
+an auto-merge target still open after the bounded wait was rescheduled before
+the durable backlog was read. The correction records the open target, drains
+all merged continuations and open conflict state, and only then reschedules one
+wait. A source-order probe pins backlog-before-reschedule so a delayed merge
+cannot starve unrelated completed work in the global handoff lane.

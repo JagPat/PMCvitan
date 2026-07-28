@@ -276,15 +276,13 @@ export async function run() {
   });
 
   const waitForPullRequest = Number(event.inputs?.wait_for_pr ?? 0);
+  let retryWaitForPullRequest = null;
   if (waitForPullRequest > 0) {
     const terminal = await waitForTerminalPullRequest(
       client,
       waitForPullRequest,
     );
-    if (!terminal) {
-      await client.dispatchRetry(defaultBranch, waitForPullRequest);
-      return;
-    }
+    if (!terminal) retryWaitForPullRequest = waitForPullRequest;
   }
 
   // Drain the durable merge backlog on every surviving event. GitHub may replace
@@ -323,7 +321,9 @@ export async function run() {
       console.warn(error.message);
     }
   }
-  if (retryNeeded) await client.dispatchRetry(defaultBranch);
+  if (retryWaitForPullRequest || retryNeeded) {
+    await client.dispatchRetry(defaultBranch, retryWaitForPullRequest);
+  }
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;

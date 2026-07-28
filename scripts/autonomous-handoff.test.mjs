@@ -90,3 +90,27 @@ test('handoff implementation covers both conflicts and behind-base states', asyn
   assert.match(implementation, /comments\?per_page=100&page=\$\{page\}/);
   assert.doesNotMatch(implementation, /if \(eventName === 'pull_request_target'\)/);
 });
+
+test('an open queued-merge wait drains durable work before it reschedules', async () => {
+  const implementation = await readFile(
+    new URL('./autonomous-handoff.mjs', import.meta.url),
+    'utf8',
+  );
+  const waitStart = implementation.indexOf(
+    'const waitForPullRequest = Number',
+  );
+  const backlogStart = implementation.indexOf(
+    'const cursor = await client.runnerCursor()',
+  );
+  const retryStart = implementation.indexOf(
+    'if (retryWaitForPullRequest || retryNeeded)',
+  );
+
+  assert.ok(waitStart >= 0);
+  assert.ok(backlogStart > waitStart);
+  assert.ok(retryStart > backlogStart);
+  assert.doesNotMatch(
+    implementation.slice(waitStart, backlogStart),
+    /dispatchRetry|\breturn;/,
+  );
+});
