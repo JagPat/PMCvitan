@@ -124,7 +124,11 @@ branch; doing so would intentionally block every PR, including the bootstrap PR.
 
 ## Current Position
 
-Phase 4 Task 3 requires correction round 3 after the post-merge review of PR #226. See `docs/STATUS.md` and `docs/reviews/phase-4-t3-correction3-directive.md`. Task 4 is blocked until that correction receives a clean current-head Codex review and merges.
+Phase 4 Task 3 is merged and cleared (PR #230 through the exact-head gate; STATUS flip PR #237).
+Phase 4 Task 4 (canonical labour coverage + the derived Team gate + the seventh projection, §A/§G)
+is delivered on a held draft PR and sits at the plan's MANDATORY narrow review stop. Tasks 5–6 do
+not begin until that review returns clean and the PR merges. See `docs/STATUS.md` and
+`docs/reviews/phase-4-t4-readiness-packet.md`.
 
 ## External Dependencies
 

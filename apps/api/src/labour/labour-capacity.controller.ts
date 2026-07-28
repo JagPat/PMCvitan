@@ -114,4 +114,13 @@ export class LabourCapacityController {
   ) {
     return this.capacity.capacity(projectId, user, from, to);
   }
+
+  @Get('labour/readiness')
+  @RolesFor('labour.read')
+  readiness(
+    @Param('projectId') projectId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.capacity.readiness(projectId, user);
+  }
 }

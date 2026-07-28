@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { ActivitiesModuleResult, MaterialReadinessResult, RequirementReadinessRow, ActivityReadinessRow, ActivityShortageRow, ShortageImpact, ReservationPlan } from '@vitan/shared';
 import { toIsoCivilDate } from '../common/civil-date';
@@ -11,9 +11,14 @@ import { ACTIVITIES_PROJECTION } from './activities.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import { InventoryService } from '../inventory/inventory.service';
 import { SubstitutionsService } from './substitutions.service';
-import { CapabilitiesService, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
+import { CapabilitiesService, LABOUR_CAPABILITY, MATERIALS_CAPABILITY } from '../platform/capabilities.service';
 import { loadCoverageRequirements } from './coverage-requirements';
 import type { RequirementCoverage } from '../inventory/coverage';
+import { CLOCK, type Clock } from '../common/clock';
+import { LabourCoverageService } from '../labour/labour-coverage.service';
+import { LabourRequirementQuery } from '../labour/labour.query';
+import { loadLabourCoverageRequirements } from './labour-coverage-requirements';
+import type { RequirementLabourCoverage } from '../labour/coverage';
 
 /** A phase's copyable STRUCTURE (never actuals) a project-copy/module-extract reads through this
  *  boundary. */
@@ -63,6 +68,13 @@ export class ActivitiesQueryService {
     private readonly inventory: InventoryService,
     private readonly substitutions: SubstitutionsService,
     private readonly capabilities: CapabilitiesService,
+    // Phase 4 Task 4 — the §A Team gate is baked LIVE from canonical labour coverage on a
+    // labour-pilot project (the same authority `activities.start` reads), so the read path is
+    // never stale. Execution truth needs today's project-timezone civil date — the injected
+    // clock, never `new Date()`.
+    private readonly labourCoverage: LabourCoverageService,
+    private readonly labourQuery: LabourRequirementQuery,
+    @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
   /** Per-activity canonical material coverage for a PILOT project (§A/§D) — undefined on a
@@ -81,16 +93,36 @@ export class ActivitiesQueryService {
     return map;
   }
 
+  /** Per-activity canonical labour EXECUTION coverage for a LABOUR-pilot project (§A/§D) —
+   *  undefined on a non-pilot project, so the bake keeps the stored Team gate byte-for-byte.
+   *  Read LIVE at today's project-timezone civil date; the start command reads the same
+   *  authority in-tx. */
+  private async labourExecutionCoverage(projectId: string): Promise<ReadonlyMap<string, RequirementLabourCoverage[]> | undefined> {
+    if (!(await this.capabilities.isEnabled(projectId, LABOUR_CAPABILITY))) return undefined;
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { timeZone: true } });
+    const asOf = this.clock.today(project.timeZone);
+    const requirements = await loadLabourCoverageRequirements(this.prisma, projectId, this.labourQuery);
+    const coverage = await this.labourCoverage.coverageFor(this.prisma, projectId, requirements, asOf);
+    const map = new Map<string, RequirementLabourCoverage[]>();
+    for (const c of coverage) {
+      const list = map.get(c.activityId) ?? [];
+      list.push(c);
+      map.set(c.activityId, list);
+    }
+    return map;
+  }
+
   /** Fetch the FOREIGN readiness inputs fresh — through the owning modules' query contracts. The
    *  snapshot passes its already-fetched decision status map to avoid a duplicate read; the module GET
    *  fetches its own. */
   private async bakeInputs(projectId: string, decisionStatuses?: ReadonlyMap<string, string>): Promise<ActivitiesBakeInputs> {
-    const [statuses, inspections, drawings, activeMembers, materialCoverage] = await Promise.all([
+    const [statuses, inspections, drawings, activeMembers, materialCoverage, labourCoverage] = await Promise.all([
       decisionStatuses ?? this.decisionsQuery.statusMap(projectId),
       this.inspectionsQuery.readinessSlice(projectId),
       this.drawingsQuery.readinessSlice(projectId),
       this.prisma.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
       this.materialCoverage(projectId),
+      this.labourExecutionCoverage(projectId),
     ]);
     return {
       decisionStatuses: statuses,
@@ -99,6 +131,7 @@ export class ActivitiesQueryService {
       activeMemberIds: activeMembers.map((m) => m.userId),
       now: new Date(),
       materialCoverage,
+      labourCoverage,
     };
   }
 

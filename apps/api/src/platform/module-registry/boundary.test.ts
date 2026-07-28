@@ -77,6 +77,9 @@ interface PrismaLike {
   // Phase 4 Task 1 correction 4 — the labour-owned, read-encapsulated WorkerSkill (correction 3's
   // normalized worker-skill relation). A foreign module reading it must be flagged cross-module-read.
   workerSkill: Delegate;
+  // Phase 4 Task 4 — the Activities-owned, read-encapsulated requirement row. The labour-readiness
+  // projection's read-model must be EVENT-PAYLOAD-sourced; a labour file reading this is flagged.
+  activityRequirement: Delegate;
 }
 type TxLike = PrismaLike;
 `;
@@ -327,6 +330,26 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
       // the owning module (labour) is attributed in the finding message — matching the shape of every
       // other cross-module-read/-write finding, which carry the owner in the message, not a field.
       expect(f[0].message).toContain("owned by 'labour'");
+    });
+
+    // Phase 4 Task 4 — the INVERSE coupling proof: Labour is a LEAF whose requirement read-model is
+    // folded from `requirement.*` event PAYLOADS. If the labour-readiness projection (or any labour
+    // file) instead read the Activities-owned `ActivityRequirement` by delegate, the analyzer flags
+    // it — coupled to the LIVE manifests exactly like the workerSkill fixture above.
+    it('a labour file reading the Activities-owned ActivityRequirement → cross-module-read (the read-model must stay payload-sourced)', () => {
+      const realEnc = readEncapsulation(MODULE_MANIFESTS);
+      expect(realEnc.get('activityRequirement'), 'activityRequirement must be read-encapsulated by activities in the live manifest').toBe('activities');
+      const f = analyzeFixture(
+        {
+          'labour/evil-requirement-read.ts': `export async function evilRequirementRead(prisma: PrismaLike) { await prisma.activityRequirement.findMany({ where: {} }); }`,
+        },
+        {},
+        realEnc,
+      );
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('activityRequirement');
+      expect(f[0].message).toContain("owned by 'activities'");
     });
 
     // Phase 4 Task 3 correction 3 (finding 2) — RAW SQL names TABLES, not delegates, so the

@@ -90,4 +90,34 @@ export class LabourRequirementQuery {
     const w = await db.worker.findFirst({ where: { id: workerId, projectId }, select: { id: true, revokedAt: true } });
     return w ? { id: w.id, revoked: w.revokedAt !== null } : null;
   }
+
+  /**
+   * Phase 4 Task 4 — the ACTIVE skill-substitution targets per requirement (§B satisfaction),
+   * the labour sibling of `SubstitutionsService.activeTargets`. `ApprovedSkillSubstitution` is
+   * Labour-owned and read-encapsulated, so the Activities coverage loader must not reach into it
+   * directly — it calls THIS contract (the same `activities → labour` read edge as `detailsFor`).
+   * The caller applies the F2 rule: an edge widens the acceptable set ONLY while its
+   * `fromFingerprint` still equals the CURRENT head fingerprint.
+   */
+  async activeSkillTargets(
+    projectId: string,
+    requirementIds: readonly string[],
+    tx?: Prisma.TransactionClient,
+  ): Promise<Map<string, Array<{ fromFingerprint: string; toFingerprint: string }>>> {
+    const out = new Map<string, Array<{ fromFingerprint: string; toFingerprint: string }>>();
+    if (requirementIds.length === 0) return out;
+    const db = tx ?? this.prisma;
+    const rows = await db.approvedSkillSubstitution.findMany({
+      where: { projectId, requirementId: { in: [...requirementIds] }, revokedAt: null },
+      select: { requirementId: true, fromFingerprint: true, toFingerprint: true },
+      orderBy: { at: 'asc' },
+    });
+    for (const r of rows) {
+      const bucket = out.get(r.requirementId);
+      const edge = { fromFingerprint: r.fromFingerprint, toFingerprint: r.toFingerprint };
+      if (bucket) bucket.push(edge);
+      else out.set(r.requirementId, [edge]);
+    }
+    return out;
+  }
 }

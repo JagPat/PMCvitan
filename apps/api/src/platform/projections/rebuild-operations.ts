@@ -7,6 +7,7 @@ import { DAILY_LOG_PROJECTION } from '../../daily-log/daily-log.projection';
 import { INSPECTIONS_PROJECTION } from '../../inspections/inspections.projection';
 import { ACTIVITIES_PROJECTION } from '../../activities/activities.projection';
 import { MATERIAL_READINESS_PROJECTION, computeMaterialReadingsDto } from '../../activities/material-readiness.projection';
+import { LABOUR_READINESS_PROJECTION, computeLabourReadinessDto } from '../../labour/labour-readiness.projection';
 import { computeDrawingsBase } from '../../drawings/drawings-serialize';
 import { computeDailyLogSlice } from '../../daily-log/daily-log-serialize';
 import { computeInspectionsBase } from '../../inspections/inspections-serialize';
@@ -92,7 +93,7 @@ interface Rebuildable {
 }
 
 /**
- * The projections this operator command can rebuild — ALL FIVE production projection consumers,
+ * The projections this operator command can rebuild — ALL SEVEN production projection consumers,
  * each judged by its module's OWN serializer. The registry is EXPLICIT (no reflection over the
  * consumer registry): adding a projection consumer without teaching the operator command how to
  * diagnose it must be a visible, reviewed change here, never a silent default.
@@ -139,6 +140,16 @@ export const REBUILDABLE_PROJECTIONS: Record<string, Rebuildable> = {
     stored: async (tx, generationId, projectId) =>
       (await tx.materialReadinessProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
     canonical: (tx, projectId) => computeMaterialReadingsDto(tx, projectId),
+  },
+  // Phase 4 Task 4 — the SEVENTH projection: per-project labour-readiness FORECAST. Its stored
+  // composite (or null for a project with no labour demand) is compared against the CANONICAL §A
+  // recompute through the SAME `computeLabourReadinessDto` the consumer refreshes with — so
+  // live == projection == rebuild, and an operator diagnosis reports drift exactly as it does for
+  // the other six.
+  [LABOUR_READINESS_PROJECTION]: {
+    stored: async (tx, generationId, projectId) =>
+      (await tx.labourReadinessProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
+    canonical: (tx, projectId) => computeLabourReadinessDto(tx, projectId),
   },
 };
 

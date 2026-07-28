@@ -12,6 +12,7 @@ import { DAILY_LOG_PROJECTION } from '../../src/daily-log/daily-log.projection';
 import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projection';
 import { ACTIVITIES_PROJECTION } from '../../src/activities/activities.projection';
 import { MATERIAL_READINESS_PROJECTION } from '../../src/activities/material-readiness.projection';
+import { LABOUR_READINESS_PROJECTION } from '../../src/labour/labour-readiness.projection';
 import type { AuthUser } from '../../src/common/auth';
 import { Prisma } from '@prisma/client';
 
@@ -156,13 +157,14 @@ describe('Task 10 finalization — checkpoint-aware operator rebuild diagnostics
     expect(drawingsAttempt.after?.state).toBe('current-match');
 
     // The invocation record precedes the per-pair outcome records, and every pair recorded one —
-    // the default run covers ALL FIVE production projections (final-review P1 correction).
+    // the default run covers ALL SEVEN production projections (final-review P1 correction;
+    // Phase 4 Task 4 added labour.readiness).
     const audits = await t.prisma.outboxOperatorAction.findMany({ where: { operatorIdentity: OPERATOR }, orderBy: { at: 'asc' } });
     expect(audits[0]!.action).toBe('projection.rebuild');
     expect(audits[0]!.reason).toBe('repair corrupted probe generation');
     const outcomes = audits.filter((a) => a.action === 'projection.rebuild.result');
     expect(outcomes.map((o) => o.consumer).sort()).toEqual(
-      [DECISIONS_PROJECTION, DAILY_LOG_PROJECTION, DRAWINGS_PROJECTION, INSPECTIONS_PROJECTION, ACTIVITIES_PROJECTION, MATERIAL_READINESS_PROJECTION].sort(),
+      [DECISIONS_PROJECTION, DAILY_LOG_PROJECTION, DRAWINGS_PROJECTION, INSPECTIONS_PROJECTION, ACTIVITIES_PROJECTION, MATERIAL_READINESS_PROJECTION, LABOUR_READINESS_PROJECTION].sort(),
     );
     for (const o of outcomes) {
       expect(o.projectId).toBe(projectId);
