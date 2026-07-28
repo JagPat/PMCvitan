@@ -77,6 +77,16 @@ export function shouldDraftForCiFailure(status) {
   );
 }
 
+export function shouldRetryCiFailure(context, existingStatus) {
+  return context?.trigger === 'ci'
+    && context.ciConclusion
+    && context.ciConclusion !== 'success'
+    && Number.isInteger(context.ciRunId)
+    && context.ciRunId > 0
+    && context.ciRunAttempt === 1
+    && !isTerminalReviewStatus(existingStatus);
+}
+
 function statusesAfterLatestReviewPending(statuses) {
   const pendingIndex = statuses.findIndex(isReviewPendingStatus);
   return pendingIndex < 0 ? [] : statuses.slice(0, pendingIndex);
@@ -308,6 +318,13 @@ class GitHubClient {
       `/repos/${this.repository}/commits/${head}/check-runs?filter=latest&per_page=100`,
     );
     return payload.check_runs;
+  }
+
+  rerunFailedJobs(runId) {
+    return this.request(
+      `/repos/${this.repository}/actions/runs/${runId}/rerun-failed-jobs`,
+      { method: 'POST' },
+    );
   }
 
   async statuses(head) {
@@ -837,6 +854,8 @@ export function contextForEvent(eventName, event, dispatchNumber) {
       number: Number(event.workflow_run.pull_requests?.[0]?.number),
       expectedHead: event.workflow_run.head_sha,
       ciConclusion: event.workflow_run.conclusion,
+      ciRunId: Number(event.workflow_run.id),
+      ciRunAttempt: Number(event.workflow_run.run_attempt ?? 1),
       trigger: 'ci',
     };
   }
@@ -915,6 +934,27 @@ export async function run() {
   }
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
+    if (shouldRetryCiFailure(context, existingStatus)) {
+      try {
+        await client.rerunFailedJobs(context.ciRunId);
+        await client.updateStickyComment(
+          pullRequest.number,
+          statusBody({
+            state: 'ci_retry',
+            head: expectedHead,
+            detail: `CI workflow concluded ${context.ciConclusion}`,
+            attempt: 0,
+            next: 'GitHub is retrying failed CI jobs once before requiring a code change.',
+          }),
+        );
+        console.log(`Requested one failed-job retry for CI run ${context.ciRunId}.`);
+        return;
+      } catch (error) {
+        console.warn(
+          `Could not request the bounded CI retry; failing closed: ${error.message}`,
+        );
+      }
+    }
     pullRequest = shouldDraftForCiFailure(existingStatus)
       ? await setDraftForCurrentHead(
           client,

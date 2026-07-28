@@ -238,3 +238,11 @@ exact-head CI, review, and merge sequence, the trusted handoff workflow must pos
 one marked `@claude` continuation on the merged PR. That durable GitHub comment is
 the laptop-independent wakeup for the subscription-backed Claude Code runner;
 duplicate push/close events must not post a second continuation.
+
+The first run of that follow-up proof exposed the known `pillar-chain.spec.ts`
+timing failure in `api-e2e`. The autonomy controller now asks GitHub to rerun only
+the failed jobs once when the first pre-review CI attempt fails. It does not
+publish review success or invoke Codex during that retry. A second failure follows
+the existing fail-closed path: the PR stays draft, the CI status fails, and Claude
+must push a corrected head. Terminal review results are never retried or reopened
+by this mechanism.
