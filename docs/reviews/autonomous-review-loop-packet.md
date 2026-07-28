@@ -223,3 +223,26 @@ Codex review for the exact head, publish `codex-current-head=success`, and merge
 that same head through the corrected default-branch controller without a human
 ready or merge action. The PR timeline, commit statuses, and Actions run are the
 authoritative immutable proof.
+
+PR #240 satisfied that acceptance condition on its first attempt. The controller
+promoted exact head `aa1932d643fe3e7826e1dc82412994ffcfc153f3` only after all
+five CI contexts passed, accepted one fresh clean Codex result, published the
+required success status, and squash-merged as
+`50b0213c326c983595db1391d306185191797894`. GitHub records
+`github-actions[bot]` as the merging actor. The successful autonomous-controller
+run is `30329286253`; no human ready or merge action was used.
+
+The follow-up evidence PR containing this paragraph uses the production
+`claude/**` branch class to validate the other half of the loop. After the same
+exact-head CI, review, and merge sequence, the trusted handoff workflow must post
+one marked `@claude` continuation on the merged PR. That durable GitHub comment is
+the laptop-independent wakeup for the subscription-backed Claude Code runner;
+duplicate push/close events must not post a second continuation.
+
+The first run of that follow-up proof exposed the known `pillar-chain.spec.ts`
+timing failure in `api-e2e`. The autonomy controller now asks GitHub to rerun only
+the failed jobs once when the first pre-review CI attempt fails. It does not
+publish review success or invoke Codex during that retry. A second failure follows
+the existing fail-closed path: the PR stays draft, the CI status fails, and Claude
+must push a corrected head. Terminal review results are never retried or reopened
+by this mechanism.

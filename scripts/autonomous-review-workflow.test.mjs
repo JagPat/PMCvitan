@@ -145,6 +145,8 @@ test('only CI completion or exact-head dispatch can own a review cycle', () => {
   assert.deepEqual(
     reviewGate.contextForEvent('workflow_run', {
       workflow_run: {
+        id: 30329510227,
+        run_attempt: 1,
         event: 'pull_request',
         pull_requests: [{ number: 230 }],
         head_sha: head,
@@ -155,9 +157,57 @@ test('only CI completion or exact-head dispatch can own a review cycle', () => {
       number: 230,
       expectedHead: head,
       ciConclusion: 'success',
+      ciRunId: 30329510227,
+      ciRunAttempt: 1,
       trigger: 'ci',
     },
   );
+});
+
+test('a first pre-review CI failure gets one GitHub-native retry', () => {
+  assert.equal(typeof reviewGate.shouldRetryCiFailure, 'function');
+  assert.equal(
+    reviewGate.shouldRetryCiFailure({
+      trigger: 'ci',
+      ciConclusion: 'failure',
+      ciRunId: 30329510227,
+      ciRunAttempt: 1,
+    }, null),
+    true,
+  );
+  assert.equal(
+    reviewGate.shouldRetryCiFailure({
+      trigger: 'ci',
+      ciConclusion: 'failure',
+      ciRunId: 30329510227,
+      ciRunAttempt: 2,
+    }, null),
+    false,
+  );
+  assert.equal(
+    reviewGate.shouldRetryCiFailure({
+      trigger: 'ci',
+      ciConclusion: 'failure',
+      ciRunId: 30329510227,
+      ciRunAttempt: 1,
+    }, {
+      state: 'success',
+      description: 'review: Codex found no blocking issue',
+    }),
+    false,
+  );
+});
+
+test('the bounded CI retry has only the permission and endpoint it needs', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(workflow, /permissions:[\s\S]*actions:\s*write/);
+  assert.match(gate, /actions\/runs\/\$\{runId\}\/rerun-failed-jobs/);
+  assert.match(gate, /context\.ciRunAttempt === 1/);
+  assert.match(gate, /!isTerminalReviewStatus\(existingStatus\)/);
 });
 
 test('a CI rerun cannot reopen a terminal review cycle on the same head', () => {
