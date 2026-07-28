@@ -309,6 +309,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     state: 'open',
     draft: true,
     head: { sha: expectedHead },
+    base: { ref: 'main' },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -331,6 +332,10 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     },
     async enableAutoMerge(current) {
       autoMergeDraft = current.draft;
+    },
+    async dispatchHandoff(ref, number) {
+      assert.equal(ref, 'main');
+      assert.equal(number, 230);
     },
   };
 
@@ -1050,6 +1055,7 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
     state: 'open',
     draft: false,
     head: { sha: expectedHead },
+    base: { ref: 'main' },
   };
   const calls = [];
   const client = {
@@ -1059,6 +1065,9 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
     },
     async enableAutoMerge() {
       calls.push(['auto-merge']);
+    },
+    async dispatchHandoff(ref, number) {
+      calls.push(['handoff', ref, number]);
     },
   };
 
@@ -1070,7 +1079,10 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
     ),
     'merged',
   );
-  assert.deepEqual(calls, [['merge', 230, expectedHead]]);
+  assert.deepEqual(calls, [
+    ['merge', 230, expectedHead],
+    ['handoff', 'main', 230],
+  ]);
 });
 
 test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
@@ -1081,6 +1093,7 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
     state: 'open',
     draft: false,
     head: { sha: expectedHead },
+    base: { ref: 'main' },
   };
   const calls = [];
   const client = {
@@ -1090,6 +1103,9 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
     },
     async enableAutoMerge(current, head) {
       calls.push(['auto-merge', current.number, head]);
+    },
+    async dispatchHandoff(ref, number) {
+      calls.push(['handoff', ref, number]);
     },
   };
 
@@ -1104,6 +1120,7 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
   assert.deepEqual(calls, [
     ['merge', 230, expectedHead],
     ['auto-merge', 230, expectedHead],
+    ['handoff', 'main', 230],
   ]);
 });
 
@@ -1115,6 +1132,7 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
     state: 'open',
     draft: false,
     head: { sha: expectedHead },
+    base: { ref: 'main' },
   };
   let mergeAttempts = 0;
   const client = {
@@ -1130,6 +1148,10 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
       throw new Error(
         'GitHub GraphQL failed: Pull request Pull request is in clean status',
       );
+    },
+    async dispatchHandoff(ref, number) {
+      assert.equal(ref, 'main');
+      assert.equal(number, 230);
     },
   };
 

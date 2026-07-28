@@ -327,6 +327,28 @@ class GitHubClient {
     );
   }
 
+  async dispatchHandoff(ref, pullRequestNumber) {
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await this.request(
+          `/repos/${this.repository}/actions/workflows/autonomous-handoff.yml/dispatches`,
+          {
+            method: 'POST',
+            body: {
+              ref,
+              inputs: { wait_for_pr: String(pullRequestNumber) },
+            },
+          },
+        );
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) await sleep(attempt * 1_000);
+      }
+    }
+    throw lastError;
+  }
+
   async statuses(head) {
     const statuses = [];
     let page = 1;
@@ -592,10 +614,14 @@ export async function completeReviewedPullRequest(
     pullRequest.number,
     expectedHead,
   );
-  if (direct?.merged) return 'merged';
+  if (direct?.merged) {
+    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
+    return 'merged';
+  }
 
   try {
     await client.enableAutoMerge(pullRequest, expectedHead);
+    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
     return 'queued';
   } catch (error) {
     if (
@@ -608,7 +634,10 @@ export async function completeReviewedPullRequest(
       pullRequest.number,
       expectedHead,
     );
-    if (raced?.merged) return 'merged';
+    if (raced?.merged) {
+      await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
+      return 'merged';
+    }
     throw new Error(
       `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
       { cause: error },
