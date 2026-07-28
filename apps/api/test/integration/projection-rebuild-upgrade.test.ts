@@ -13,6 +13,7 @@ import { DRAWINGS_PROJECTION } from '../../src/drawings/drawings.projection';
 import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projection';
 import { ACTIVITIES_PROJECTION } from '../../src/activities/activities.projection';
 import { MATERIAL_READINESS_PROJECTION } from '../../src/activities/material-readiness.projection';
+import { LABOUR_READINESS_PROJECTION } from '../../src/labour/labour-readiness.projection';
 import type { AuthUser } from '../../src/common/auth';
 import { Prisma } from '@prisma/client';
 
@@ -43,7 +44,7 @@ import { Prisma } from '@prisma/client';
  *     partial, lagging and corrupt.
  */
 
-const ALL_FIVE = [DECISIONS_PROJECTION, DAILY_LOG_PROJECTION, DRAWINGS_PROJECTION, INSPECTIONS_PROJECTION, ACTIVITIES_PROJECTION, MATERIAL_READINESS_PROJECTION];
+const ALL_FIVE = [DECISIONS_PROJECTION, DAILY_LOG_PROJECTION, DRAWINGS_PROJECTION, INSPECTIONS_PROJECTION, ACTIVITIES_PROJECTION, MATERIAL_READINESS_PROJECTION, LABOUR_READINESS_PROJECTION];
 
 describe('P1 correction — legacy partial decisions.inbox generation upgrade path (live PG)', () => {
   let t: TestApp;

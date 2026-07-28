@@ -12,12 +12,12 @@ narrative and may lag behind reality.
 ```yaml
 phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
-task: 3
-task_state: merged
-work_item: none
+task: 4
+task_state: in_review
+work_item: phase-4-task-4-labour-readiness
 reviewed_merge: 33d37a3
-open_pr: none
-next_task: 4
+open_pr: TBD
+next_task: 5
 blocking_directive: none
 updated: 2026-07-28
 ```
@@ -32,7 +32,7 @@ Review Stops" section of the phase plan.
 | 1 | Labour capability + type-routed demand + trusted workforce identity (§B/§D/§H) | merged |
 | 2 | Supplier reuse + labour commitment documents (§F) | merged |
 | 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | merged — correction round 3 merged as PR #230 (`main` `33d37a3`) through the exact-head `codex-current-head` gate; evidence `docs/reviews/phase-4-t3-correction3-packet.md` |
-| 4 | Canonical labour coverage + Team gate + combined readiness + seventh projection + LEAF module graph (§A/§G) | not_started |
+| 4 | Canonical labour coverage + Team gate + combined readiness + seventh projection + LEAF module graph (§A/§G) | in_review — delivered on held PR (branch `claude/phase4-task4`); evidence `docs/reviews/phase-4-t4-readiness-packet.md`; MANDATORY narrow review stop before Task 5 |
 | 5 | Daily-Log reconciliation (§E) + planned-vs-actual + productivity (§I) | not_started |
 | 6 | Frontend surfaces + pilot acceptance chain + consolidated Phase-4 packet (§J) | not_started |
 

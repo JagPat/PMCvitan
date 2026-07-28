@@ -1206,6 +1206,14 @@ $PSQL -tA -c "SELECT tgname FROM pg_trigger WHERE tgrelid='\"WorkerAllocation\"'
   && printf 'ok      %s\n' "labour T3C3 finding 3: the per-project readiness lock is the FIRST BEFORE-INSERT trigger on WorkerAllocation" \
   || { printf 'FAILED  %s\n' "labour T3C3 finding 3: the project-lock trigger does not fire first"; FAIL=1; }
 
+# ── Phase 4 Task 4 — the SEVENTH rebuildable projection store (§A/§G). A purely additive,
+#    row-free capability add: the generation-scoped LabourReadinessProjection table exists and
+#    holds ZERO rows over the legacy DB (the forecast dto is recomputed from canonical facts by
+#    the consumer/rebuild — the migration never writes data, and the labour pilot has no rows).
+assert "the Phase-4 Task-4 LabourReadinessProjection table exists and is ROW-FREE over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'LabourReadinessProjection')::text || '|' || (SELECT COUNT(*) FROM \"LabourReadinessProjection\")::text;" \
+  "1|0"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."
