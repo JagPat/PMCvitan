@@ -270,3 +270,91 @@ session already holds the project).
   The required GitHub CI on a fresh runner executes the same suites on the pushed head and the
   exact-head gate demands it green regardless — that run is the deciding evidence for this
   suite.
+
+## 6. Codex correction round 2 (the seven current-head findings on `17fc0f0`)
+
+Codex's re-review of the round-1 head closed all six round-1 findings and raised seven new P2s —
+all in the labour UI/store staying truthful to server rules it had not yet mirrored. All seven
+are corrected on this head, each reproduced RED at `17fc0f0` first (11 behaviour probes fail
+against the stashed pre-fix source; all green after). Frontend + tests + docs ONLY. The two
+findings that assert server behaviour were VERIFIED against `labour-capacity.service.ts` before
+coding, and one round-1 probe that had pinned the WRONG drawdown rule is reversed with the
+citation.
+
+### R2-A — a `changed` ping refreshes the labour bundle
+
+`useApiSync.refresh()` now calls `loadLabour()` alongside `requestFreshSnapshot()` +
+`loadMaterials()` — the labour DTOs are module-query-only (never in the snapshot), so another
+client's allocation/muster/revision otherwise left `labourView` and the Labour/Inbox badges
+stale until a manual refresh. Capability-guarded — a no-op off-pilot. Probe:
+`labour-socket-refresh.test.ts` (the drawings socket harness) — `changed` AND reconnect both run
+the labour loader.
+
+### R2-B — a REVISED commitment is never offered
+
+The server accepts only `status === 'committed'` for `capacityCommitmentId`
+(`labour-capacity.service.ts` line 317); the round-1 helper also admitted `revised`, a
+deterministic terminal 409. `pickCommitmentFor` now filters to committed-only (a committed
+sibling is still picked over a revised one).
+
+### R2-E — a RELEASED draw frees the commitment
+
+The server's bound-3 drawdown counts ONLY `status: 'active'` rows under the commitment
+`FOR UPDATE` (line 327) — releasing a supplier-backed worker who never worked re-advertises the
+capacity, and the round-1 helper (counting every draw regardless of status) suppressed the
+commitment id on the replacement, stranding it. The helper now counts active draws only; the
+round-1 probe that asserted released-stays-consumed is REVERSED with the server citation (that
+rule belongs to the FORECAST's coverage, not allocation).
+
+### R2-C — pickers respect the worker's active window
+
+New pure `workerActiveOn(w, civilDate)`: the server refuses allocation AND attendance outside
+`[activeFrom, activeTo]` with terminal 400s the outbox drops (service lines 302/441). The
+allocation offer is filtered per SLICE date and the manual-muster picker by project-today; a
+stale muster pick of a now-ineligible worker can no longer submit. Probes: the boundary table
+(before/first/last/after/open-ended/revoked) + both rendered pickers excluding a future-dated
+worker.
+
+### R2-F — a booked worker is not offered twice
+
+New pure `bookedWorkerIds(allocations, civilDate, shift)`: §C's one-live-allocation partial
+unique makes a second active allocation for the same worker/date/shift a certain 409, so the
+per-slice offer excludes workers already ACTIVE on that (civilDate, shift) anywhere in the
+project (a released row frees them). Probes: the unit table + the rendered picker excluding a
+worker allocated to a DIFFERENT requirement on the same slice.
+
+### R2-G — a full slice closes the allocate action
+
+The server caps only supplier drawdown — an own-workforce allocation past the demand would
+strand a worker on an already-ready slice. At `allocated n/n` the picker + button disable with
+an explicit "Fully allocated" and the supplier hint is suppressed; under-allocated slices are
+unchanged. Probes: rendered full-slice (disabled + no hint) and under-allocated (enabled +
+hint) states.
+
+### R2-D — the snapshot that DELIVERS the timezone reloads presence
+
+On a cold pilot boot `loadShell()` can trigger the first `loadLabour()` before any snapshot has
+populated `timeZone`, so that load's presence read fell back to the browser's civil day — and
+nothing reloaded it. `acceptSnapshot` (the ONE ordered apply path) now reloads the labour bundle
+when an applied snapshot CHANGES the known timezone (capability-guarded; both boot orders
+converge; an unchanged-tz snapshot never reloads). `timeZone` also joins every scope teardown
+(auth adoption, switch, sign-out) so a new project's zone is honestly unknown until its own
+snapshot lands. Probes: the tz-delivery reload (presence re-read for the SITE's day; no reload
+on unchanged tz) + the off-pilot no-op.
+
+### Round-2 gate battery (this head)
+
+- Reproduce-first: **11 behaviour probes RED** with the pre-fix source stashed at `17fc0f0` →
+  all GREEN on this head.
+- `pnpm check` EXIT 0 — web **491/491** (481 + the 10 round-2 probes), API unit 680/680.
+- Full integration on a pristine migrated DB — **71 files / 693 tests** (API untouched).
+- `upgrade-proof.sh` PASSED (no migration; unchanged).
+- e2e: `test:e2e:api:allmodules` (legacy) **35/35** CLEAN; `:outbox` 33/35 — the
+  **labour-pilot suite passed 4/4 in BOTH modes** (8/8 across the two gates, exercising every
+  round-2 UI change in a real browser), and the two outbox failures were `drawings-module-query`
+  and `project-scope` "empty project is truthful" — BOTH long-documented pre-existing
+  timing-sensitive legacy tests (each already in the d538c15 honest flake record), NEITHER a
+  labour surface, and a DIFFERENT random pair from the pillar-chain trio that failed the round-1
+  outbox runs and was base-proven environmental (that trio passed this run). The container's
+  outbox-mode timing degradation is established by the round-1 base proof; fresh-runner CI on
+  the pushed head is the deciding evidence the exact-head gate requires green regardless.

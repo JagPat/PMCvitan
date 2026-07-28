@@ -88,11 +88,13 @@ export function allocatedCountFor(
   ).length;
 }
 
-/** F2 — the live same-slice commitment (exact fingerprint + civil date + shift) with undrawn
- *  quantity, or null for own-workforce allocation. Draws are counted over ALL allocations naming
- *  the commitment regardless of status — a delivered-then-released draw stays consumed (the
- *  Task-4 round-2 rule). The server re-derives the bound under `FOR UPDATE`; a stale pick is a
- *  deterministic 409 that the flush reconciles. */
+/** F2 — the drawable same-slice commitment (exact fingerprint + civil date + shift) with undrawn
+ *  quantity, or null for own-workforce allocation. Mirrors the SERVER's §F bound-3 rule exactly
+ *  (Codex round 2, verified against `labour-capacity.service.ts`): only a `committed` commitment
+ *  is drawable (a `revised` one is refused with a deterministic 409), and drawdown counts ONLY
+ *  ACTIVE draws — a released allocation frees the commitment for a replacement (the
+ *  delivered-stays-consumed rule belongs to the FORECAST's coverage, not to allocation). The
+ *  server re-derives the bound under `FOR UPDATE`; a stale pick is a 409 the flush reconciles. */
 export function pickCommitmentFor(
   commitments: readonly CapacityCommitmentDto[],
   allocations: readonly WorkerAllocationDto[],
@@ -101,7 +103,9 @@ export function pickCommitmentFor(
 ): string | null {
   const draws = new Map<string, number>();
   for (const a of allocations) {
-    if (a.capacityCommitmentId) draws.set(a.capacityCommitmentId, (draws.get(a.capacityCommitmentId) ?? 0) + 1);
+    if (a.capacityCommitmentId && a.status === 'active') {
+      draws.set(a.capacityCommitmentId, (draws.get(a.capacityCommitmentId) ?? 0) + 1);
+    }
   }
   const live = commitments
     .filter(
@@ -109,9 +113,35 @@ export function pickCommitmentFor(
         c.labourSpecFingerprint === spec.labourSpecFingerprint &&
         c.civilDate === civilDate &&
         c.shift === spec.shift &&
-        (c.status === 'committed' || c.status === 'revised') &&
+        c.status === 'committed' &&
         c.personShiftQty - (draws.get(c.id) ?? 0) > 0,
     )
     .sort((a, b) => (a.id < b.id ? -1 : 1)); // deterministic pick
   return live[0]?.id ?? null;
+}
+
+/** Codex round 2 — whether a (non-revoked) worker's active window admits a civil date. The
+ *  server refuses allocation AND attendance outside `[activeFrom, activeTo]` with a terminal
+ *  400 the outbox drops, so the pickers must never offer the action (ISO civil dates compare
+ *  lexicographically). */
+export function workerActiveOn(
+  w: Pick<WorkerDto, 'revokedAt' | 'activeFrom' | 'activeTo'>,
+  civilDate: string,
+): boolean {
+  return w.revokedAt === null && w.activeFrom <= civilDate && (w.activeTo === null || civilDate <= w.activeTo);
+}
+
+/** Codex round 2 — workers already holding an ACTIVE allocation on a `(civilDate, shift)`.
+ *  Worker-level conservation (§C) admits ONE live allocation per worker/date/shift project-wide;
+ *  offering a booked worker for a second slice is a guaranteed terminal 409. */
+export function bookedWorkerIds(
+  allocations: readonly WorkerAllocationDto[],
+  civilDate: string,
+  shift: string,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const a of allocations) {
+    if (a.civilDate === civilDate && a.shift === shift && a.status === 'active') ids.add(a.workerId);
+  }
+  return ids;
 }

@@ -7,7 +7,7 @@ import type { LabourForecastVerdict, RequirementListItem, WorkerDto } from '@vit
 import { decAdd } from '@/lib/decimal';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { compatibleWorkerIds, allocatedCountFor, pickCommitmentFor } from '@/lib/labourSelection';
+import { compatibleWorkerIds, allocatedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds } from '@/lib/labourSelection';
 import styles from './responsive.module.css';
 
 /**
@@ -89,6 +89,9 @@ export function LabourScreen() {
   const blockedCount = forecastEntries.filter(([, f]) => f.verdict === 'blocked').length;
   const labourReqs = labour ? labour.requirements.filter((r) => r.labourSpec !== null) : [];
   const workers = labour ? labour.workforce.workers.filter((w) => w.revokedAt === null) : [];
+  // Codex round 2 — the muster picker offers only workers ACTIVE today (project civil day):
+  // the server refuses attendance outside the active window with a terminal 400.
+  const musterable = workers.filter((w) => workerActiveOn(w, todayCivil(timeZone)));
   const workerName = (id: string): string => labour?.workforce.workers.find((w) => w.id === id)?.name ?? id;
   // Codex F-TZ — the hub's "today" is the PROJECT's civil date, matching the server's
   // `clock.today(project.timeZone)` truth (a viewer abroad must muster against the site's day).
@@ -248,31 +251,39 @@ export function LabourScreen() {
                   // the requirement's head fingerprint or to an ACTIVE approved substitution target;
                   // an electrician is never offered for a mason slice.
                   const compat = compatibleWorkerIds(workers, labour.workerFingerprints, spec, r.requirementId, substitutions);
-                  const offerable = workers.filter((w: WorkerDto) => compat.has(w.id));
                   return (
                     <div key={r.requirementId} data-testid={`labour-alloc-req-${r.requirementId}`} style={rowCard}>
                       <div style={{ fontWeight: 600, fontSize: 13.5 }}>{[spec.tradeCode, spec.skillCode, spec.shift].filter(Boolean).join(' · ')} · {activityName(r.activityId)}</div>
                       {spec.demandSlices.map((sl) => {
                         const sliceKey = `${r.requirementId}:${sl.civilDate}`;
+                        // Codex round 2 — the offer is PER SLICE: compatible AND active on the slice's
+                        // civil date (the server 400s outside the window) AND not already booked on
+                        // that (civilDate, shift) anywhere (§C one-live-allocation → a certain 409).
+                        const booked = bookedWorkerIds(labour.capacity.allocations, sl.civilDate, sl.shift);
+                        const offerable = workers.filter((w: WorkerDto) => compat.has(w.id) && workerActiveOn(w, sl.civilDate) && !booked.has(w.id));
                         const chosenRaw = allocWorker[sliceKey] ?? '';
-                        const chosen = compat.has(chosenRaw) ? chosenRaw : ''; // a stale pick never survives a compat change
+                        const chosen = offerable.some((w) => w.id === chosenRaw) ? chosenRaw : ''; // a stale pick never survives an eligibility change
                         const aKey = chosen ? allocateCoalesceKey(r.activityId, r.requirementId, sl.civilDate, chosen) : '';
                         // Codex F6 — count only allocations the server's coverage would count: ACTIVE,
                         // bound to the requirement's CURRENT activity AND a currently-satisfying
                         // fingerprint (a row stranded by a revision is not "allocated").
                         const done = allocatedCountFor(labour.capacity.allocations, r.requirementId, r.activityId, sl.civilDate, spec, substitutions);
-                        // Codex F2 — a commitment-covered slice draws DOWN the matching live commitment
-                        // (§F bound 3): pass its id so the server consumes the supplier capacity.
+                        // Codex round 2 — the server caps only supplier drawdown; an own-workforce
+                        // allocation past the demand would strand a worker on a slice that is already
+                        // ready, so the UI stops offering once the demand is satisfied.
+                        const full = done >= sl.personShiftQty;
+                        // Codex F2 — a commitment-covered slice draws DOWN the matching drawable
+                        // commitment (§F bound 3): pass its id so the server consumes the capacity.
                         const commitmentId = pickCommitmentFor(labour.commitments, labour.capacity.allocations, spec, sl.civilDate);
                         return (
                           <div key={sl.civilDate} data-testid={`labour-alloc-slice-${r.requirementId}-${sl.civilDate}`} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 7 }}>
-                            <span style={{ fontSize: 12.5, minWidth: 190 }}>{sl.civilDate} · {sl.shift} · allocated {done}/{sl.personShiftQty}{commitmentId ? ' · supplier capacity available' : ''}</span>
-                            <select value={chosen} data-testid={`labour-worker-select-${r.requirementId}-${sl.civilDate}`} onChange={(e) => setAllocWorker((m) => ({ ...m, [sliceKey]: e.target.value }))} style={selectStyle}>
-                              <option value="">{offerable.length ? 'Choose worker…' : 'No compatible workers'}</option>
-                              {offerable.map((w: WorkerDto) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}
+                            <span style={{ fontSize: 12.5, minWidth: 190 }}>{sl.civilDate} · {sl.shift} · allocated {done}/{sl.personShiftQty}{!full && commitmentId ? ' · supplier capacity available' : ''}</span>
+                            <select value={chosen} disabled={full} data-testid={`labour-worker-select-${r.requirementId}-${sl.civilDate}`} onChange={(e) => setAllocWorker((m) => ({ ...m, [sliceKey]: e.target.value }))} style={selectStyle}>
+                              <option value="">{full ? 'Fully allocated' : offerable.length ? 'Choose worker…' : 'No available workers'}</option>
+                              {!full && offerable.map((w: WorkerDto) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}
                             </select>
-                            <Button variant="outline" disabled={!chosen || pending(aKey)} data-testid={`labour-do-allocate-${r.requirementId}-${sl.civilDate}`} onClick={() => chosen && allocateWorker(r.activityId, r.requirementId, sl.civilDate, chosen, commitmentId)} style={{ fontSize: 11.5, flex: 'none' }}>
-                              {chosen && pending(aKey) ? 'Allocating…' : 'Allocate'}
+                            <Button variant="outline" disabled={full || !chosen || pending(aKey)} data-testid={`labour-do-allocate-${r.requirementId}-${sl.civilDate}`} onClick={() => !full && chosen && allocateWorker(r.activityId, r.requirementId, sl.civilDate, chosen, commitmentId)} style={{ fontSize: 11.5, flex: 'none' }}>
+                              {full ? 'Fully allocated' : chosen && pending(aKey) ? 'Allocating…' : 'Allocate'}
                             </Button>
                           </div>
                         );
@@ -321,7 +332,7 @@ export function LabourScreen() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <select value={musterWorkerId} data-testid="labour-muster-worker-select" onChange={(e) => setMusterWorkerId(e.target.value)} style={selectStyle}>
                       <option value="">Choose worker…</option>
-                      {workers.map((w) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}
+                      {musterable.map((w) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}
                     </select>
                     <select value={musterShift} data-testid="labour-muster-shift" onChange={(e) => setMusterShift(e.target.value === 'night' ? 'night' : 'day')} style={selectStyle}>
                       <option value="day">day</option>
@@ -329,7 +340,7 @@ export function LabourScreen() {
                     </select>
                     <input value={musterReason} placeholder="Reason (e.g. device battery dead)" data-testid="labour-muster-reason" onChange={(e) => setMusterReason(e.target.value)} style={{ ...selectStyle, flex: '1 1 180px' }} />
                     {(() => {
-                      const ready = musterWorkerId !== '' && musterReason.trim().length > 0;
+                      const ready = musterable.some((w) => w.id === musterWorkerId) && musterReason.trim().length > 0;
                       const mKey = ready ? musterCoalesceKey(musterWorkerId, today, musterShift) : '';
                       return (
                         <Button variant="outline" disabled={!ready || pending(mKey)} data-testid="labour-do-muster" onClick={() => ready && musterWorker(musterWorkerId, today, musterShift, musterReason.trim())} style={{ fontSize: 11.5, flex: 'none' }}>

@@ -48,6 +48,10 @@ export function useApiSync(): void {
       // gated by the `materials` capability). The initial call before the shell loads is a no-op; the
       // shell load then triggers the first real fetch, and subsequent `changed` pings refresh it.
       useStore.getState().loadMaterials();
+      // Phase 4 Task 6 (Codex round 2) — the Labour bundle is module-query-only (never in the
+      // snapshot), so another client's allocation/muster/revision would leave `labourView` and the
+      // Labour/Inbox badges stale without this. Same discipline as materials: a no-op off-pilot.
+      useStore.getState().loadLabour();
     };
 
     (async () => {

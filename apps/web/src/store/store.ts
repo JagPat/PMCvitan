@@ -1039,7 +1039,14 @@ export const useStore = create<Store>()(
       // Task 9/10 — the module decisions + daily-log + drawings + inspections + activities reads (if any)
       // rode the SAME lease as the snapshot, so they pass the identical scope/newest-owner ordering checks:
       // a stale module response is dropped with its snapshot, never applied over a newer scope's data.
+      const prevTimeZone = st.timeZone;
       applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
+      // Phase 4 Task 6 (Codex round 2) — on a cold labour-pilot boot the shell can trigger the
+      // FIRST labour load before any snapshot has delivered the project timezone, so that load's
+      // presence read fell back to the BROWSER's civil day. When an applied snapshot CHANGES the
+      // known timezone, reload the labour bundle so today's presence re-reads for the SITE's civil
+      // day (loadLabour is capability-guarded — a no-op off-pilot; both boot orders converge).
+      if (get().timeZone !== prevTimeZone) get().loadLabour();
       return 'applied';
     };
 
@@ -1489,6 +1496,7 @@ export const useStore = create<Store>()(
             s.descriptor = '';
             s.stage = '';
             s.siteCode = '';
+            s.timeZone = null; // the next project's zone is unknown until its snapshot lands
             Object.assign(s, emptyProjectData());
             Object.assign(s, emptyModuleReadState()); // finding 4: a new project's reads start fresh, not stale-'ready'
           }
@@ -1586,6 +1594,7 @@ export const useStore = create<Store>()(
         // user's records leave memory, and the generation bump refuses any of their
         // replies still in flight — nothing survives for the next identity to see.
         s.projectScopeGeneration += 1;
+        s.timeZone = null; // the demo store has no project zone; the next sign-in's snapshot supplies one
         Object.assign(s, emptyProjectData());
         Object.assign(s, emptyModuleReadState()); // finding 4: sign-out tears down the module read state too
         s.projectLoadState = 'idle';
@@ -2574,6 +2583,7 @@ export const useStore = create<Store>()(
         s.descriptor = '';
         s.stage = '';
         s.siteCode = '';
+        s.timeZone = null; // the target project's zone is unknown until its snapshot lands
         Object.assign(s, emptyProjectData());
         Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
       });

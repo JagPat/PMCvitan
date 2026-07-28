@@ -6,7 +6,7 @@ import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { LabourView } from '@/store/labour';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, pickCommitmentFor } from '@/lib/labourSelection';
+import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds } from '@/lib/labourSelection';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { LabourReadinessDto, LabourActivityForecastDto, WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto } from '@vitan/shared';
 
@@ -602,13 +602,47 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     expect(pickCommitmentFor([commitment({ status: 'defaulted' })], [], spec, '2026-08-01')).toBeNull(); // the source reneged
   });
 
-  it('a fully-drawn commitment is exhausted — and a delivered-then-released draw STAYS consumed (Task-4 round-2 rule)', () => {
+  it('CODEX R2 — a fully-drawn commitment is exhausted by ACTIVE draws only; a RELEASED draw frees it (the server\'s bound-3 rule)', () => {
+    // Verified against labour-capacity.service.ts: drawdown counts `status: 'active'` rows under
+    // the commitment FOR UPDATE — a released allocation frees the commitment for a replacement.
+    // (The delivered-stays-consumed rule is the FORECAST's coverage concern, not allocation's.)
     const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
     const one = commitment({ id: 'CC-A', personShiftQty: 1 });
     expect(pickCommitmentFor([one], [alloc({ capacityCommitmentId: 'CC-A' })], spec, '2026-08-01')).toBeNull();
-    expect(pickCommitmentFor([one], [alloc({ capacityCommitmentId: 'CC-A', status: 'released' })], spec, '2026-08-01')).toBeNull();
-    // quantity 2 with 1 drawn still offers the remainder
+    expect(pickCommitmentFor([one], [alloc({ capacityCommitmentId: 'CC-A', status: 'released' })], spec, '2026-08-01')).toBe('CC-A');
+    // quantity 2 with 1 active draw still offers the remainder
     expect(pickCommitmentFor([commitment({ id: 'CC-A', personShiftQty: 2 })], [alloc({ capacityCommitmentId: 'CC-A' })], spec, '2026-08-01')).toBe('CC-A');
+  });
+
+  it('CODEX R2 — a REVISED commitment is never offered (the server accepts only status=committed; a pick would 409 terminally)', () => {
+    const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', status: 'revised' })], [], spec, '2026-08-01')).toBeNull();
+    // a committed sibling is still picked over the revised one
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', status: 'revised' }), commitment({ id: 'CC-B' })], [], spec, '2026-08-01')).toBe('CC-B');
+  });
+
+  it('CODEX R2 — workerActiveOn admits only the worker\'s active window (the server 400s outside it, a terminal drop)', () => {
+    const w = worker('W-1', 'mason', [], { activeFrom: '2026-08-01', activeTo: '2026-08-10' });
+    expect(workerActiveOn(w, '2026-07-31')).toBe(false); // before the window
+    expect(workerActiveOn(w, '2026-08-01')).toBe(true);  // first day
+    expect(workerActiveOn(w, '2026-08-10')).toBe(true);  // last day
+    expect(workerActiveOn(w, '2026-08-11')).toBe(false); // after the window
+    expect(workerActiveOn(worker('W-2', 'mason', [], { activeFrom: '2026-01-01', activeTo: null }), '2027-12-31')).toBe(true); // open-ended
+    expect(workerActiveOn(worker('W-3', 'mason', [], { revokedAt: '2026-07-01T00:00:00Z' }), '2026-08-01')).toBe(false); // revoked never active
+  });
+
+  it('CODEX R2 — bookedWorkerIds names workers with an ACTIVE allocation on the (civilDate, shift) — §C one-live-allocation', () => {
+    const rows = [
+      alloc({ id: 'A1', workerId: 'W-BOOKED' }),                                              // active on (08-01, day)
+      alloc({ id: 'A2', workerId: 'W-RELEASED', status: 'released' }),                        // released — free again
+      alloc({ id: 'A3', workerId: 'W-OTHER-DAY', civilDate: '2026-08-02' }),                  // other date
+      alloc({ id: 'A4', workerId: 'W-NIGHT', shift: 'night' }),                               // other shift
+    ];
+    const booked = bookedWorkerIds(rows, '2026-08-01', 'day');
+    expect(booked.has('W-BOOKED')).toBe(true);
+    expect(booked.has('W-RELEASED')).toBe(false);
+    expect(booked.has('W-OTHER-DAY')).toBe(false);
+    expect(booked.has('W-NIGHT')).toBe(false);
   });
 
   it('allocateWorker FORWARDS the commitment id so the server\'s drawdown actually runs (omits it for own workforce)', async () => {
@@ -641,6 +675,55 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     s().allocateWorker('ACT-1', 'REQ-2', '2026-08-01', 'WKR-1', null);
     await vi.waitFor(() => { if (g.allocateLabour.mock.calls.length !== 2) throw new Error('pending'); });
     expect(g.allocateLabour.mock.calls[1]![0]).toEqual({ activityId: 'ACT-1', requirementId: 'REQ-2', civilDate: '2026-08-01', workerId: 'WKR-1' });
+  });
+});
+
+describe('CODEX R2 — an applied snapshot that CHANGES the timezone reloads the labour bundle', () => {
+  const labourGw = () => ({
+    labourReadiness: vi.fn().mockResolvedValue(readiness({})),
+    materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
+    labourWorkforce: vi.fn().mockResolvedValue({ workers: [], crews: [] }),
+    labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
+    labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
+    labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
+    labourCommitments: vi.fn().mockResolvedValue({ commitments: [] }),
+    labourCapacity: vi.fn().mockResolvedValue({ allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] }),
+    labourPresence: vi.fn().mockResolvedValue({ civilDate: '2026-07-28', musters: [], mismatches: [] }),
+    labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
+  });
+  const snapWith = (tz: string) => ({
+    project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', timeZone: tz, projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+    decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+    drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+  });
+
+  it('a cold pilot boot\'s labour load can precede the timezone; the snapshot that DELIVERS the tz reloads presence for the SITE\'s day', async () => {
+    useStore.setState(getInitialState());
+    const g = labourGw();
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: ['labour'], activeProjectId: 'ambli' });
+    expect(s().timeZone).toBeNull();
+    // the snapshot lands with the project timezone → the labour bundle reloads for the site's day
+    expect(s().applySnapshot(snapWith('Asia/Kolkata') as never)).toBe(true);
+    await flush();
+    expect(s().timeZone).toBe('Asia/Kolkata');
+    expect(g.labourReadiness).toHaveBeenCalledTimes(1);
+    expect(g.labourPresence).toHaveBeenCalledWith(todayCivil('Asia/Kolkata'));
+    // an UNCHANGED-tz snapshot does not reload again
+    s().applySnapshot(snapWith('Asia/Kolkata') as never);
+    await flush();
+    expect(g.labourReadiness).toHaveBeenCalledTimes(1);
+  });
+
+  it('off-pilot the tz change never loads labour (loadLabour stays inert)', async () => {
+    useStore.setState(getInitialState());
+    const g = labourGw();
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: [], activeProjectId: 'ambli' });
+    s().applySnapshot(snapWith('UTC') as never);
+    await flush();
+    expect(s().timeZone).toBe('UTC');
+    expect(g.labourReadiness).not.toHaveBeenCalled();
   });
 });
 

@@ -37,9 +37,9 @@ const requirement = (fp: string): RequirementListItem => ({
   createdAt: '2026-07-01T00:00:00Z', createdById: 'u', revisions: 1,
 });
 
-const worker = (id: string, tradeCode: string): WorkerDto => ({
+const worker = (id: string, tradeCode: string, over: Partial<WorkerDto> = {}): WorkerDto => ({
   id, name: id, tradeCode, skillCodes: [], activeFrom: '2026-01-01', activeTo: null,
-  revokedAt: null, revokedById: null, createdAt: '2026-01-01T00:00:00Z', createdById: 'u',
+  revokedAt: null, revokedById: null, createdAt: '2026-01-01T00:00:00Z', createdById: 'u', ...over,
 });
 
 const alloc = (over: Partial<WorkerAllocationDto>): WorkerAllocationDto => ({
@@ -126,7 +126,8 @@ describe('CODEX F1 — the rendered picker offers only compatible workers', () =
     const select = r.getByTestId(`labour-worker-select-REQ-1-${day}`);
     const options = Array.from(select.querySelectorAll('option'));
     expect(options).toHaveLength(1); // only the placeholder
-    expect(options[0]!.textContent).toMatch(/No compatible workers/);
+    // (round 2 widened the placeholder: ineligibility can be compatibility, window, or booking)
+    expect(options[0]!.textContent).toMatch(/No available workers/);
   });
 });
 
@@ -142,7 +143,7 @@ describe('CODEX F6/F2 — the rendered slice line reflects coverage truth', () =
     expect(r.getByTestId(`labour-alloc-slice-REQ-1-${day}`).textContent).toContain('allocated 0/1');
   });
 
-  it('a CURRENT compatible allocation shows allocated 1/1; a live same-slice commitment is surfaced', async () => {
+  it('CODEX R2-G — a FULL slice (allocated 1/1) disables the picker + button and drops the supplier hint', async () => {
     const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
     await primeLabour({
       capacity: { allocations: [alloc({ labourSpecFingerprint: fp })], attendance: [], workFacts: [], skillSubstitutions: [] },
@@ -153,6 +154,71 @@ describe('CODEX F6/F2 — the rendered slice line reflects coverage truth', () =
     fireEvent.click(r.getByTestId('labour-tab-allocation'));
     const text = r.getByTestId(`labour-alloc-slice-REQ-1-${day}`).textContent!;
     expect(text).toContain('allocated 1/1');
+    expect(text).toContain('Fully allocated'); // the action is closed, not silently 200-ing extra workers
+    expect(text).not.toContain('supplier capacity available');
+    expect((r.getByTestId(`labour-worker-select-REQ-1-${day}`) as HTMLSelectElement).disabled).toBe(true);
+    expect((r.getByTestId(`labour-do-allocate-REQ-1-${day}`) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('CODEX R2-G — an UNDER-allocated commitment-covered slice still offers + surfaces the supplier hint', async () => {
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    await primeLabour({ commitments: [commitment(fp)] });
+    useStore.setState({ role: 'pmc' });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const text = r.getByTestId(`labour-alloc-slice-REQ-1-${day}`).textContent!;
+    expect(text).toContain('allocated 0/1');
     expect(text).toContain('supplier capacity available');
+    expect((r.getByTestId(`labour-worker-select-REQ-1-${day}`) as HTMLSelectElement).disabled).toBe(false);
+  });
+});
+
+describe('CODEX R2 — the pickers respect worker windows and existing bookings', () => {
+  it('R2-C: a worker whose active window excludes the slice date is NOT offered for allocation', async () => {
+    const futureMason = worker('W-FUTURE', 'mason', { activeFrom: '2027-01-01' });
+    const currentMason = worker('W-MASON', 'mason');
+    await primeLabour({
+      workforce: { workers: [currentMason, futureMason], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([currentMason, futureMason]),
+    });
+    useStore.setState({ role: 'pmc' });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const values = Array.from(r.getByTestId(`labour-worker-select-REQ-1-${day}`).querySelectorAll('option')).map((o) => o.getAttribute('value'));
+    expect(values).toContain('W-MASON');
+    expect(values).not.toContain('W-FUTURE'); // the server would 400 the allocation terminally
+  });
+
+  it('R2-C: the manual muster picker offers only workers active TODAY', async () => {
+    const futureMason = worker('W-FUTURE', 'mason', { activeFrom: '2027-01-01' });
+    const currentMason = worker('W-MASON', 'mason');
+    await primeLabour({
+      workforce: { workers: [currentMason, futureMason], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([currentMason, futureMason]),
+    });
+    useStore.setState({ role: 'pmc' });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-attendance'));
+    const values = Array.from(r.getByTestId('labour-muster-worker-select').querySelectorAll('option')).map((o) => o.getAttribute('value'));
+    expect(values).toContain('W-MASON');
+    expect(values).not.toContain('W-FUTURE'); // the server would 400 the muster terminally
+  });
+
+  it('R2-F: a worker ACTIVELY allocated on the (civilDate, shift) — even to ANOTHER requirement — is not offered again', async () => {
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const m1 = worker('W-MASON', 'mason');
+    const m2 = worker('W-MASON-2', 'mason');
+    await primeLabour({
+      workforce: { workers: [m1, m2], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([m1, m2]),
+      // W-MASON is already active on (day, day) for a DIFFERENT requirement/activity
+      capacity: { allocations: [alloc({ workerId: 'W-MASON', requirementId: 'REQ-OTHER', activityId: 'ACT-OTHER', labourSpecFingerprint: fp })], attendance: [], workFacts: [], skillSubstitutions: [] },
+    });
+    useStore.setState({ role: 'pmc' });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const values = Array.from(r.getByTestId(`labour-worker-select-REQ-1-${day}`).querySelectorAll('option')).map((o) => o.getAttribute('value'));
+    expect(values).toContain('W-MASON-2');
+    expect(values).not.toContain('W-MASON'); // §C one-live-allocation — a second pick is a certain 409
   });
 });
