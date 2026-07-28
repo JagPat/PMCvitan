@@ -246,3 +246,16 @@ publish review success or invoke Codex during that retry. A second failure follo
 the existing fail-closed path: the PR stays draft, the CI status fails, and Claude
 must push a corrected head. Terminal review results are never retried or reopened
 by this mechanism.
+
+PR #241 then proved the exact-head review and merge path on a `claude/**` branch,
+but no post-merge comment appeared. This exposed a distinct GitHub control-plane
+rule: events produced by a workflow's `GITHUB_TOKEN`, including its merge, do not
+start another workflow. The merge controller now explicitly dispatches
+`autonomous-handoff.yml` with the completed PR number. The trusted handoff waits
+for that PR to become merged or closed (covering the queued auto-merge path),
+re-dispatches itself after a bounded wait when necessary, and then drains the
+existing durable cursor. Comment markers keep the continuation idempotent across
+explicit dispatch, backlog recovery, and any surviving native event. The dispatch
+is retried three times for transient API failures, and an hourly GitHub-side
+watchdog drains the same cursor if the immediate dispatch never starts; neither
+recovery path needs a laptop or an external AI API key.

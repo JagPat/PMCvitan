@@ -5,7 +5,16 @@ on:
     branches: [main]
   pull_request_target:
     types: [opened, reopened, synchronize, closed]
+  schedule:
+    # GitHub suppresses ordinary events produced by GITHUB_TOKEN. This low-cost
+    # watchdog drains the durable cursor if an explicit dispatch is interrupted.
+    - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      wait_for_pr:
+        description: Pull request number whose merge should wake the handoff backlog
+        required: false
+        type: string
 
 permissions:
   actions: write

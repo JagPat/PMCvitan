@@ -15,6 +15,8 @@ const MERGEABILITY_TIMEOUT_MS = Number(
 const MERGEABILITY_POLL_MS = Number(
   process.env.MERGEABILITY_POLL_MS ?? 5_000,
 );
+const TERMINAL_WAIT_MS = Number(process.env.TERMINAL_WAIT_MS ?? 420_000);
+const TERMINAL_POLL_MS = Number(process.env.TERMINAL_POLL_MS ?? 5_000);
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -128,10 +130,18 @@ class GitHubClient {
     );
   }
 
-  dispatchRetry(defaultBranch) {
+  dispatchRetry(defaultBranch, waitForPullRequest = null) {
     return this.request(
       `/repos/${this.repository}/actions/workflows/autonomous-handoff.yml/dispatches`,
-      { method: 'POST', body: { ref: defaultBranch } },
+      {
+        method: 'POST',
+        body: {
+          ref: defaultBranch,
+          ...(waitForPullRequest
+            ? { inputs: { wait_for_pr: String(waitForPullRequest) } }
+            : {}),
+        },
+      },
     );
   }
 
@@ -171,6 +181,16 @@ async function refreshedMergeability(client, pullRequest) {
     );
   }
   return live;
+}
+
+export async function waitForTerminalPullRequest(client, number) {
+  const deadline = Date.now() + TERMINAL_WAIT_MS;
+  let pullRequest = await client.pullRequest(number);
+  while (pullRequest.state === 'open' && Date.now() < deadline) {
+    await sleep(TERMINAL_POLL_MS);
+    pullRequest = await client.pullRequest(number);
+  }
+  return pullRequest.state === 'open' ? null : pullRequest;
 }
 
 async function handOffConflict(
@@ -254,6 +274,18 @@ export async function run() {
     repository,
     token: requiredEnvironment('GITHUB_TOKEN'),
   });
+
+  const waitForPullRequest = Number(event.inputs?.wait_for_pr ?? 0);
+  if (waitForPullRequest > 0) {
+    const terminal = await waitForTerminalPullRequest(
+      client,
+      waitForPullRequest,
+    );
+    if (!terminal) {
+      await client.dispatchRetry(defaultBranch, waitForPullRequest);
+      return;
+    }
+  }
 
   // Drain the durable merge backlog on every surviving event. GitHub may replace
   // a pending concurrency run, so correctness cannot depend on one closed event.
