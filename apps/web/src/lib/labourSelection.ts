@@ -225,6 +225,29 @@ export function pendingBookedWorkerIds(
   return ids;
 }
 
+/** Codex round 9 — supplier draws still IN FLIGHT, keyed per commitment (the round-6 fold),
+ *  EXCLUDING ops pinned to a STALE revision: such an op is a guaranteed head-drift 409 the
+ *  flush will shed (round 3), so its commitment id will never actually be drawn — reserving it
+ *  would WITHHOLD the supplier commitment from the current head's replacement allocation, which
+ *  then dispatches as own workforce while committed capacity sits idle (the §F bound-3 drawdown
+ *  never runs and the supplier is paid for an undrawn slot). The same current-revision check as
+ *  slice fullness (round 6) and bookings (round 8); an op whose requirement has LEFT the view
+ *  still reserves CONSERVATIVELY (no revision to compare — over-reserving for one render beats
+ *  double-drawing a commitment the server would 409). */
+export function pendingCommitmentDraws(
+  pendingAllocations: ReadonlyArray<{ requirementId: string; capacityCommitmentId?: string | null; originRevision?: number }>,
+  requirements: ReadonlyArray<{ requirementId: string; revision: number }>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const op of pendingAllocations) {
+    if (typeof op.capacityCommitmentId !== 'string') continue;
+    const req = requirements.find((r) => r.requirementId === op.requirementId);
+    if (req && op.originRevision != null && op.originRevision !== req.revision) continue;
+    out[op.capacityCommitmentId] = (out[op.capacityCommitmentId] ?? 0) + 1;
+  }
+  return out;
+}
+
 /** Codex round 7 — whether ANY work op still in flight targets this allocation row OR another
  *  allocation of the same `(workerId, civilDate, shift)` (the server's cumulative frame). The
  *  work coalesce key carries the MINUTES, so editing the input while a record is pending would

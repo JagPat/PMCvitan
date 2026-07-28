@@ -768,3 +768,37 @@ worker dispatches the head basis and keeps its commitment draw.
   documented `inspections-module-query` switcher timeout plus a `daily-log-module-query`
   visibility miss — neither a labour surface, both clean on the single deciding re-run.
 - `test:e2e:api:allmodules:outbox`: **35/35** CLEAN first run; labour-pilot 4/4.
+
+## §13 — Codex correction round 9 (one finding on `b6956d6`)
+
+One P2 web finding — the third outbox fold catching up with the stale-revision rule. Reproduce-
+first: pre-fix `apps/web/src` restored at `b6956d6` → web labour suites **2 failed | 84 passed**
+(exactly the two new probes); fixes restored → **86/86** GREEN.
+
+### R9-1 — a stale-revision queued draw never withholds the supplier commitment (web)
+
+The round-6 `pendingDraws` fold reserved EVERY queued allocate op's `capacityCommitmentId`, but
+an op pinned to `originRevision` N is a deterministic head-drift 409 once the requirement head
+moved to N+1 — its draw will never happen. Reserving it made `pickCommitmentFor` withhold the
+commitment from the CURRENT head's replacement allocation, which then dispatched as own
+workforce: the paid-for supplier slot sat idle (free to cover another shortfall) while the slice
+consumed a second own worker. The fold is now the pure `pendingCommitmentDraws(pendingAllocations,
+requirements)` applying the SAME current-revision check as slice fullness (round 6) and bookings
+(round 8): a stale-pinned op reserves nothing; an unpinned op or one whose requirement has left
+the view still reserves CONSERVATIVELY (over-reserving for one render beats double-drawing a
+commitment the server would 409). Probes: the helper table (current-pin reserves · stale-pin
+reserves nothing · unpinned reserves · left-view reserves · own-workforce contributes nothing ·
+per-commitment sum excludes the stale op) + rendered (a rev-1 queued draw on CC-1 with the view
+at rev 2: the current-head allocate still dispatches WITH `CC-1`).
+
+### Round-9 gate battery (this head)
+
+- **Reproduce-first**: pre-fix src at `b6956d6` → **2 failed | 84 passed**; fixed → **86/86**,
+  typecheck clean.
+- `pnpm check` **EXIT 0** — web **523/523** (42 files, +2 round-9 probes), API **680/680**
+  (55 files), builds clean. ALL CLEAN single pass.
+- Full API integration on a pristine migrated DB (psql drop/create + `prisma migrate deploy`):
+  **72 files / 697 tests** passing (unchanged — web-only round).
+- `upgrade-proof.sh` **PASSED** (no migration; every prior seal survives).
+- `test:e2e:api:allmodules` (legacy): **35/35** CLEAN first run; labour-pilot 4/4.
+- `test:e2e:api:allmodules:outbox`: **35/35** CLEAN first run; labour-pilot 4/4.

@@ -7,7 +7,7 @@ import type { LabourForecastVerdict, WorkerDto } from '@vitan/shared';
 import { decAdd } from '@/lib/decimal';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { compatibleWorkerIds, satisfyingFingerprints, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, SHIFT_MINUTES, pendingBookedWorkerIds, hasPendingWorkFor } from '@/lib/labourSelection';
+import { compatibleWorkerIds, satisfyingFingerprints, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, SHIFT_MINUTES, pendingBookedWorkerIds, hasPendingWorkFor, pendingCommitmentDraws } from '@/lib/labourSelection';
 import styles from './responsive.module.css';
 
 /**
@@ -83,17 +83,7 @@ export function LabourScreen() {
   const pending = (key: string): boolean => labourPending.includes(key);
 
   const activityName = (id: string): string => activities.find((a) => a.id === id)?.name ?? id;
-  // Codex round 6 — supplier draws still IN FLIGHT: a queued allocate op carrying a commitment id
-  // must reserve that capacity in the picker, or a second worker chosen before the labour reload
-  // lands re-picks a fully-drawn commitment and the flush 409s the second command under §F
-  // bound 3 (own-workforce would have covered the remaining demand).
-  const pendingDraws: Record<string, number> = {};
-  for (const op of outbox) {
-    if (op.t === 'allocateLabour' && typeof op.input.capacityCommitmentId === 'string') {
-      pendingDraws[op.input.capacityCommitmentId] = (pendingDraws[op.input.capacityCommitmentId] ?? 0) + 1;
-    }
-  }
-  // Codex round 7 — the queued allocate ops also RESERVE their worker for the (date, shift)
+  // Codex round 7 — the queued allocate ops RESERVE their worker for the (date, shift)
   // (`pendingBookedWorkerIds`), and the queued work ops disable further entry for their
   // allocation/worker-shift (`hasPendingWorkFor`) — both folded from the durable outbox.
   const pendingAllocInputs = outbox.flatMap((op) => (op.t === 'allocateLabour' ? [op.input] : []));
@@ -103,6 +93,13 @@ export function LabourScreen() {
   const atRiskCount = forecastEntries.filter(([, f]) => f.verdict === 'at-risk').length;
   const blockedCount = forecastEntries.filter(([, f]) => f.verdict === 'blocked').length;
   const labourReqs = labour ? labour.requirements.filter((r) => r.labourSpec !== null) : [];
+  // Codex round 6 — supplier draws still IN FLIGHT: a queued allocate op carrying a commitment id
+  // must reserve that capacity in the picker, or a second worker chosen before the labour reload
+  // lands re-picks a fully-drawn commitment and the flush 409s the second command under §F
+  // bound 3 (own-workforce would have covered the remaining demand). Round 9 — a STALE-revision
+  // op reserves NOTHING: its replay is a guaranteed head-drift 409, so holding its commitment
+  // would push the current head's replacement to own workforce while committed capacity idles.
+  const pendingDraws = pendingCommitmentDraws(pendingAllocInputs, labourReqs);
   const workers = labour ? labour.workforce.workers.filter((w) => w.revokedAt === null) : [];
   // Codex round 2 — the muster picker offers only workers ACTIVE today (project civil day):
   // the server refuses attendance outside the active window with a terminal 400.

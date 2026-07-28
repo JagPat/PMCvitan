@@ -6,7 +6,7 @@ import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { LabourView } from '@/store/labour';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, isWorkPendingForAllocation, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, pendingBookedWorkerIds, hasPendingWorkFor } from '@/lib/labourSelection';
+import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, pendingBookedWorkerIds, hasPendingWorkFor, pendingCommitmentDraws } from '@/lib/labourSelection';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { LabourReadinessDto, LabourActivityForecastDto, WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto, LabourWorkFactDto, LabourRequisitionDto } from '@vitan/shared';
 
@@ -759,6 +759,30 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     expect(day.has('W-STALE')).toBe(false);   // stale revision — will 409 and drop, never books
     expect(day.has('W-UNPINNED')).toBe(true); // unpinned op behaves as current
     expect(pendingBookedWorkerIds(ops, reqs, '2026-08-01', 'night').has('W-2')).toBe(true);
+  });
+
+  it('CODEX R9 — pendingCommitmentDraws reserves in-flight supplier draws, but a STALE-revision op reserves NOTHING', () => {
+    const reqs = [{ requirementId: 'REQ-1', revision: 2 }];
+    // current-revision pin reserves; an unpinned op (pre-round-3 queue entry) reserves as current
+    expect(pendingCommitmentDraws([{ requirementId: 'REQ-1', capacityCommitmentId: 'CC-1', originRevision: 2 }], reqs)).toEqual({ 'CC-1': 1 });
+    expect(pendingCommitmentDraws([{ requirementId: 'REQ-1', capacityCommitmentId: 'CC-1' }], reqs)).toEqual({ 'CC-1': 1 });
+    // Codex round 9 — a STALE pin is a guaranteed head-drift 409 + drop: its commitment id will
+    // never be drawn, and reserving it would withhold the supplier from the CURRENT head's
+    // replacement (dispatched own-workforce while committed capacity idles)
+    expect(pendingCommitmentDraws([{ requirementId: 'REQ-1', capacityCommitmentId: 'CC-1', originRevision: 1 }], reqs)).toEqual({});
+    // a requirement no longer in view → CONSERVATIVE reserve (no revision to compare)
+    expect(pendingCommitmentDraws([{ requirementId: 'REQ-GONE', capacityCommitmentId: 'CC-9', originRevision: 1 }], reqs)).toEqual({ 'CC-9': 1 });
+    // own-workforce ops (no commitment id, or explicit null) contribute nothing
+    expect(pendingCommitmentDraws([{ requirementId: 'REQ-1', originRevision: 2 }, { requirementId: 'REQ-1', capacityCommitmentId: null, originRevision: 2 }], reqs)).toEqual({});
+    // sums LIVE draws per commitment; the stale one is excluded from the sum
+    expect(pendingCommitmentDraws(
+      [
+        { requirementId: 'REQ-1', capacityCommitmentId: 'CC-1', originRevision: 2 },
+        { requirementId: 'REQ-1', capacityCommitmentId: 'CC-1' },
+        { requirementId: 'REQ-1', capacityCommitmentId: 'CC-1', originRevision: 1 },
+      ],
+      reqs,
+    )).toEqual({ 'CC-1': 2 });
   });
 
   it('CODEX R7 — hasPendingWorkFor covers the allocation AND its worker-shift siblings; isWorkPendingForAllocation matches ANY minutes', () => {

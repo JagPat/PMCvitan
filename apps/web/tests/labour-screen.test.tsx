@@ -553,6 +553,39 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     expect(spy).toHaveBeenCalledWith('ACT-1', 'REQ-1', 1, day, 'W-CARP', null, carpFp);
   });
 
+  it('R9-1: a STALE-revision queued draw does NOT withhold the commitment — the current-head allocate still draws the supplier', async () => {
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const m1 = worker('W-MASON', 'mason');
+    const m2 = worker('W-MASON-2', 'mason');
+    // the view's head moved to revision 2 (same identity — e.g. a responsible-only revision)
+    const rev2 = { ...requirement(fp), id: 'rev-2', revision: 2, revisions: 2 };
+    const spy = vi.fn();
+    const { allocateCoalesceKey } = await import('@/lib/labourKeys');
+    // the queued op pinned revision 1 WITH the CC-1 draw — its replay is a guaranteed
+    // head-drift 409 the flush sheds (round 3), so CC-1 will never actually be drawn by it
+    const staleOp = {
+      t: 'allocateLabour' as const,
+      input: { activityId: 'ACT-1', requirementId: 'REQ-1', originRevision: 1, civilDate: day, workerId: 'W-MASON', capacityCommitmentId: 'CC-1' },
+      idempotencyKey: 'idem-stale',
+      coalesceKey: allocateCoalesceKey('ACT-1', 'REQ-1', 1, day, 'W-MASON'),
+    };
+    await primeLabour({
+      requirements: [rev2],
+      commitments: [commitment(fp)], // ONE person-shift of live supplier capacity
+      workforce: { workers: [m1, m2], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([m1, m2]),
+    });
+    useStore.setState({ role: 'pmc', allocateWorker: spy, outbox: [staleOp] as never, labourPending: [staleOp.coalesceKey] });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    // pre-fix: the stale op's phantom draw reserved CC-1, so this allocation went OWN-WORKFORCE
+    // and the paid-for supplier commitment sat idle (free to cover another shortfall) while the
+    // slice consumed a second own worker
+    fireEvent.change(r.getByTestId(`labour-worker-select-REQ-1-${day}`), { target: { value: 'W-MASON-2' } });
+    fireEvent.click(r.getByTestId(`labour-do-allocate-REQ-1-${day}`));
+    expect(spy).toHaveBeenCalledWith('ACT-1', 'REQ-1', 2, day, 'W-MASON-2', 'CC-1', fp);
+  });
+
   it('R3-5: Team onboarding stamps activeFrom with the PROJECT civil day, not the browser/UTC date', async () => {
     await primeLabour({ catalog: { trades: [{ code: 'mason', name: 'Mason' }], skills: [] } });
     const spy = vi.fn();
