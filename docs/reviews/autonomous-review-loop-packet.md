@@ -28,7 +28,8 @@ packet does not embed a self-referential final SHA.
 5. Current-head inline findings and review findings take precedence over a clean
    reaction. Stale-head and pre-cycle evidence are ignored.
 6. Findings return the PR to draft for Claude Code web Auto-fix. A fresh clean
-   Codex signal is required before squash auto-merge is queued.
+   Codex signal is required before the exact reviewed SHA is squash-merged or
+   queued through the waiting-state auto-merge fallback.
 7. Missing evidence, timeout, ineligible PRs, or an unavailable subscription
    service fail closed.
 8. No `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or AI GitHub Action is used.
@@ -118,9 +119,9 @@ explicit operator dispatch carrying that exact head, may initiate draft-to-ready
 triggers and `contextForEvent` rejects them. The owning run polls reviews, inline
 comments, and reactions until the one invocation emits a terminal outcome. A
 finding-bearing review fails the gate and drafts the PR; the mutually exclusive
-clean reaction succeeds the gate and queues auto-merge. Codex review comments
-still reach Claude Code web Auto-fix through the installed subscription-backed
-GitHub App, without creating a second merge-state writer.
+clean reaction succeeds the gate and completes the exact-head merge. Codex review
+comments still reach Claude Code web Auto-fix through the installed
+subscription-backed GitHub App, without creating a second merge-state writer.
 
 Review runs remain serialized by PR number plus exact head SHA. A pushed head
 supersedes the old poll on its next bounded check. A same-head CI rerun recovers a
@@ -164,17 +165,37 @@ The earlier settlement-and-admission design was removed because no finite series
 of reads can atomically exclude a future webhook writer. Eliminating that writer
 closes the race at its source. After the polled invocation reports clean, the run
 reclassifies exact-head evidence, publishes success, refreshes the live head, and
-queues auto-merge. A process failure between success publication and queueing is
-recoverable: a same-head CI rerun observes the terminal status and idempotently
-queues auto-merge without requesting another review. Historical paginated status
-latching remains only to fail closed when recovering heads touched by the retired
-multi-writer implementation. Terminal failures restore draft state before return.
+completes the exact-head merge. A process failure between success publication and
+merge completion is recoverable: a same-head CI rerun observes the terminal status
+and idempotently retries completion without requesting another review. Historical
+paginated status latching remains only to fail closed when recovering heads touched
+by the retired multi-writer implementation. Terminal failures restore draft state
+before return.
 
 A failed CI rerun is handled before terminal-review recovery. When the durable
 review verdict is success, the CI handoff preserves both that verdict and the PR's
-ready state, so a later green rerun can resume auto-merge without another
+ready state, so a later green rerun can resume merge completion without another
 draft-to-ready review request. Other CI failures draft the PR, and no CI outcome
 overwrites an existing terminal review verdict. Regression tests cover exclusive
 event ownership, exact-head serialization, the same-head CI-rerun guard, legacy
 terminal values, terminal-state recovery/publication, durable recovery tokens,
 single-owner retry admission, and failed-CI ordering.
+
+## Clean-State Merge Correction
+
+The first hosted clean-head proof exposed a final control-plane mismatch. The
+controller published the required `codex-current-head=success` status and then
+called `enablePullRequestAutoMerge`. At that instant all branch-protection gates
+were already satisfied, so GitHub classified the PR as clean and rejected the
+GraphQL mutation with `Pull request is in clean status`. PR #230 was reviewed and
+safe but still needed a human merge.
+
+The corrected completion policy first sends `PUT /pulls/{number}/merge` with
+`merge_method=squash` and the exact reviewed head in the `sha` field. GitHub
+therefore rejects a stale head and continues to enforce branch protection. A 405
+waiting-state response falls back to auto-merge. If the fallback races with the
+PR becoming clean and returns the observed clean-status error, the controller
+retries the same exact-SHA merge once. The fallback mutation includes
+`expectedHeadOid`, binding it to the reviewed SHA even if a push lands after the
+first direct attempt. Any other error fails closed. Regression tests pin immediate
+merge, waiting-state fallback, the expected-head mutation, and the clean-state race.
