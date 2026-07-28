@@ -161,6 +161,47 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
     }
     throw new Error(`barrier timeout: expected a backend blocked on a row lock while running ${queryLike}`);
   };
+  /**
+   * ROUND-3 CORRECTION (finding 3) MOVED THE SERIALIZATION POINT EARLIER — and this barrier follows
+   * it. A raw `WorkerAllocation` insert now takes the per-project readiness ADVISORY lock as its very
+   * first act (`WorkerAllocation_00_project_lock`), before any requirement-root or commitment row
+   * lock. So when session A is a raw allocation held open, a second same-project writer — canonical
+   * cancel or canonical allocate — blocks on `pg_advisory_xact_lock` and never reaches its
+   * `ActivityRequirementRoot … FOR UPDATE`. Waiting on the root text would now time out even though
+   * the two sessions ARE serialized, and serialized strictly earlier than before.
+   *
+   * The probes' assertions are unchanged; only where the wait is observed moved.
+   *
+   * The wait is scoped to THIS PROJECT's advisory key, not to "some ungranted advisory lock
+   * anywhere". A global count is satisfied by any unrelated backend — a sibling suite, another
+   * project — so it could open the gate before the racing session ever reached the readiness lock,
+   * and the probe would then pass on a plain serial execution having proven nothing. Each probe uses
+   * a fresh project, so the key identifies exactly the contention under test.
+   *
+   * `pg_advisory_xact_lock(bigint)` records the key split across `pg_locks`: `classid` is its high
+   * 32 bits and `objid` its low 32 (both `oid`, i.e. unsigned), with `objsubid = 1`. The same
+   * `hashtextextended('readiness:' || projectId, 0)` the lock protocol computes is split the same way
+   * here, so the comparison is against the real key rather than a restatement of it.
+   */
+  const waitUntilBlockedOnProjectLock = async (projectId: string): Promise<void> => {
+    const sql = `
+      SELECT COUNT(*)::int AS c
+        FROM pg_locks l
+        JOIN pg_stat_activity a ON a.pid = l.pid
+       WHERE l.locktype = 'advisory'
+         AND NOT l.granted
+         AND l.objsubid = 1
+         AND a.state = 'active'
+         AND a.pid <> pg_backend_pid()
+         AND l.classid::bigint = ((hashtextextended('readiness:' || $1, 0) >> 32) & 4294967295)
+         AND l.objid::bigint   =  (hashtextextended('readiness:' || $1, 0)       & 4294967295)`;
+    for (let i = 0; i < 200; i++) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(sql, projectId);
+      if (Number(rows[0]!.c) >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`barrier timeout: expected a backend blocked on project ${projectId}'s readiness advisory lock`);
+  };
 
   // ── FINDING 1 — the manual muster's justification is part of the observation ───────────────────
 
@@ -331,8 +372,10 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
       requirements.cancel(c.projectId, c.req.requirementId, { expectedRevision: c.req.revision, reason: 'scope dropped' }, pmc(c.projectId)),
     );
 
-    // BARRIER 2 — proceed only once B is genuinely waiting on the root row lock.
-    await waitUntilBlocked('%ActivityRequirementRoot%FOR UPDATE%');
+    // BARRIER 2 — proceed only once B is genuinely waiting. Since the round-3 correction, session A's
+    // raw insert holds the per-project readiness advisory lock, so B (which takes it as the first
+    // statement of `cancel`) waits THERE, one step before the root it would otherwise contend for.
+    await waitUntilBlockedOnProjectLock(c.projectId);
     release.open();
     await sessionA;
     const b = await sessionB;
@@ -462,7 +505,9 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
     const sessionB = reflect(
       capacity.allocate(c.projectId, { activityId: c.activityId, requirementId: c.req.requirementId, civilDate: '2026-08-10', workerId: c.wSvc, capacityCommitmentId: c.commitmentId }, pmc(c.projectId)),
     );
-    await waitUntilBlocked('%ActivityRequirementRoot%FOR UPDATE%');
+    // Since the round-3 correction the raw insert holds the per-project readiness advisory lock, so
+    // the canonical allocate waits there — earlier than the root, and earlier than the commitment.
+    await waitUntilBlockedOnProjectLock(c.projectId);
     release.open();
     await sessionA;
     const b = await sessionB;

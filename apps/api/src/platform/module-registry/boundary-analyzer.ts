@@ -134,6 +134,16 @@ export function prismaModelDelegates(): Set<string> {
   return new Set(Prisma.dmmf.datamodel.models.map((m) => m.name.charAt(0).toLowerCase() + m.name.slice(1)));
 }
 
+/** `delegate (lower-first) -> the PHYSICAL table name` (`@@map` wins), from the DMMF. Raw SQL names
+ *  tables, not delegates, so the raw-read analysis needs this to attribute a `SELECT` to a model. */
+export function prismaModelTables(): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const m of Prisma.dmmf.datamodel.models) {
+    out.set(m.name.charAt(0).toLowerCase() + m.name.slice(1), m.dbName ?? m.name);
+  }
+  return out;
+}
+
 /** `delegate (lower-first) -> { relationField -> related delegate (lower-first) }`, from the DMMF.
  *  A Prisma NESTED write (`data: { <relation>: { create|update|delete|… } }`) mutates the RELATED
  *  model's table, so the analyzer resolves the relation field to the foreign delegate through this. */
@@ -295,6 +305,9 @@ export interface PersistenceOptions {
   /** `read-encapsulated model -> owning module id` (Task 8). A READ of one of these models from a
    *  module other than its owner is a `cross-module-read` finding. Empty ⇒ reads are unrestricted. */
   readonly readEncapsulatedBy?: ReadonlyMap<string, string>;
+  /** `delegate -> physical table name` for RAW-SQL read attribution (defaults to the live DMMF via
+   *  {@link prismaModelTables}). Fixtures inject a synthetic map. */
+  readonly tablesOf?: ReadonlyMap<string, string>;
 }
 
 export interface PersistenceResult {
@@ -343,6 +356,16 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
   const delegates = opts.delegates ?? prismaModelDelegates();
   const relationsOf = opts.relationsOf ?? prismaModelRelations();
   const readEncapsulatedBy = opts.readEncapsulatedBy ?? new Map<string, string>();
+  const tablesOf = opts.tablesOf ?? prismaModelTables();
+  // Round-3 finding 2 — RAW SQL names TABLES, so the delegate-level read analysis above is blind to
+  // `tx.$queryRaw\`SELECT … FROM "ActivityRequirementRoot" … FOR UPDATE\``. Build the reverse index
+  // ONCE: physical table name -> { model, owner } for every read-encapsulated model, so any raw
+  // statement mentioning a foreign owner's table is attributed exactly like a delegate read.
+  const encapsulatedTables: Array<{ table: string; model: string; owner: string }> = [];
+  for (const [model, owner] of readEncapsulatedBy) {
+    const table = tablesOf.get(model);
+    if (table) encapsulatedTables.push({ table, model, owner });
+  }
   const checker = program.getTypeChecker();
   const moduleIds = new Set(kindOf.keys());
 
@@ -406,8 +429,34 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
     return '<module>';
   };
 
+  /** A `for (const s of STATEMENTS)` binding has no initializer of its own — the text it can hold is
+   *  whatever the loop iterates. Running a list of statements in a loop is an ordinary shape (the
+   *  T3C evidence seal is written that way), so the binding resolves to the iterated expression. */
+  const forOfSourceOf = (decl: ts.Declaration): ts.Expression | undefined => {
+    if (!ts.isVariableDeclaration(decl) || decl.initializer) return undefined;
+    const list = decl.parent;
+    if (!ts.isVariableDeclarationList(list)) return undefined;
+    const stmt = list.parent;
+    return ts.isForOfStatement(stmt) && stmt.initializer === list ? stmt.expression : undefined;
+  };
+
+  /**
+   * The SQL text a raw call can execute — every string literal beneath the call, PLUS the text
+   * reachable through the identifiers it names.
+   *
+   * Literals alone are not enough: `const sql = 'SELECT … FROM "Foo"'; tx.$queryRawUnsafe(sql)`
+   * puts no text under the call node at all, so a boundary crossing written that way would be
+   * invisible while the identical inline statement is caught. An identifier is therefore resolved
+   * through the checker to its declaration and that initializer is gathered too — which covers a
+   * `const` string, a template built from other constants, an array of statements, and a property
+   * of a constant object (the property symbol's declaration is its `PropertyAssignment`).
+   *
+   * `seen` makes the walk terminate on self- or mutually-referential declarations, and each
+   * declaration contributes its text once however many times it is named.
+   */
   const collectSqlText = (node: ts.Node): string => {
     let sql = '';
+    const seen = new Set<ts.Node>();
     const gather = (n: ts.Node): void => {
       if (
         ts.isStringLiteral(n) ||
@@ -417,6 +466,44 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
         n.kind === ts.SyntaxKind.TemplateTail
       ) {
         sql += ` ${(n as ts.LiteralLikeNode).text}`;
+      }
+      // Follow a named value to what it holds. Property NAMES and declaration names are skipped —
+      // only identifiers used as values denote SQL.
+      if (
+        (ts.isIdentifier(n) || ts.isPropertyAccessExpression(n)) &&
+        !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) &&
+        !(ts.isPropertyAssignment(n.parent) && n.parent.name === n)
+      ) {
+        // An IMPORTED name resolves to an alias symbol whose only declaration is the
+        // `ImportSpecifier` — which has no initializer and no `for…of` source, so walking it
+        // gathered nothing and a foreign read moved into a shared SQL constant slipped straight
+        // through the boundary. Resolve the alias to the symbol it stands for first, so the module
+        // that USES the query is held to the same rule as the module that spells it inline.
+        let symbol = checker.getSymbolAtLocation(n);
+        if (symbol && symbol.flags & ts.SymbolFlags.Alias) {
+          try {
+            symbol = checker.getAliasedSymbol(symbol);
+          } catch {
+            // an unresolvable alias (a missing module) tells us nothing; leave the original symbol
+          }
+        }
+        for (const decl of symbol?.declarations ?? []) {
+          const init =
+            (ts.isVariableDeclaration(decl) || ts.isPropertyDeclaration(decl) ? decl.initializer : undefined) ??
+            (ts.isPropertyAssignment(decl) ? decl.initializer : undefined) ??
+            // A FUNCTION that returns SQL has no initializer at all — `function sql() { return
+            // 'SELECT … FROM "Decision"' }` followed by `$queryRawUnsafe(sql())` gathered nothing,
+            // so the same foreign read an imported constant now surfaces stayed invisible when
+            // wrapped in a call. The function BODY is gathered instead (arrow/function-expression
+            // initializers were already covered by the initializer walk above); every literal in
+            // the body contributes, which is the same conservative over-approximation the rest of
+            // this collector applies.
+            (ts.isFunctionDeclaration(decl) || ts.isMethodDeclaration(decl) ? decl.body : undefined) ??
+            forOfSourceOf(decl);
+          if (!init || seen.has(init)) continue;
+          seen.add(init);
+          gather(init);
+        }
       }
       ts.forEachChild(n, gather);
     };
@@ -541,6 +628,21 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
     }
   };
 
+  /** Round-3 finding 2 — attribute a RAW statement's references to read-encapsulated foreign tables.
+   *  Only the QUOTED identifier form is matched (`"ActivityRequirementRoot"`, including a
+   *  schema-qualified `public."…"`): every raw statement in this codebase quotes its identifiers, and
+   *  PostgreSQL folds an unquoted mixed-case identifier to lowercase, so it would not resolve to a
+   *  Prisma table anyway. Precise by construction — no bare-word false positives from comments or
+   *  column names. */
+  const recordRawReads = (sql: string, node: ts.Node, rel: string, mod: string): void => {
+    if (encapsulatedTables.length === 0) return;
+    for (const { table, model, owner } of encapsulatedTables) {
+      if (owner === mod) continue; // own-module raw read of an own table — always allowed
+      if (!sql.includes(`"${table}"`)) continue;
+      reads.push({ file: rel, module: mod, model, owner, ownerKind: kindOf.get(owner), symbol: enclosingSymbol(node) });
+    }
+  };
+
   const moduleOf = (rel: string): string => {
     const top = rel.includes('/') ? rel.slice(0, rel.indexOf('/')) : '';
     return dirToModule[top] ?? 'platform';
@@ -581,11 +683,13 @@ export function analyzePersistence(opts: PersistenceOptions): PersistenceResult 
         if (RAW_METHOD_NAMES.includes(method)) {
           const sql = collectSqlText(node);
           if (isWriteSql(sql)) rawWrites.push({ file: rel, module: mod, symbol: enclosingSymbol(node), sql });
+          recordRawReads(sql, node, rel, mod);
         }
       }
       if (ts.isTaggedTemplateExpression(node) && ts.isPropertyAccessExpression(node.tag) && RAW_METHOD_NAMES.includes(node.tag.name.text)) {
         const sql = collectSqlText(node);
         if (isWriteSql(sql)) rawWrites.push({ file: rel, module: mod, symbol: enclosingSymbol(node), sql });
+        recordRawReads(sql, node, rel, mod);
       }
       ts.forEachChild(node, visit);
     };
@@ -702,6 +806,7 @@ export function analyzeRuntimeBoundaries({ srcRoot, tsconfigPath }: { srcRoot: s
     crossWaivers: CROSS_MODULE_WRITE_WAIVERS,
     delegates,
     readEncapsulatedBy: readEncapsulation(MODULE_MANIFESTS),
+    tablesOf: prismaModelTables(),
   });
   return { delegates, ownershipFindings, routeFindings, persistence, runtimeFiles };
 }

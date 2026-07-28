@@ -126,7 +126,14 @@ describe('Phase 2 Task 7 — module registry', () => {
       // Phase 4 Task 3 adds `activities`: an allocation names the activity it serves, validated
       // through ActivityParticipant.labourTarget — also cycle-exempt (§G's READ edge runs
       // activities → labour, so a labour → activities READ would close a cycle).
-      labour: ['procurement', 'activities'],
+      // Task 3 correction 3 (round 3h) adds `orgs`: the t3c repair engine validates a revoker's
+      // ROLE-QUALIFIED standing through OrgsParticipant.hasProjectRoleStanding (round 3l: mere
+      // project standing was not authority — the roles come from ROLE_POLICY['attendance.revoke'])
+      // — the owner answers the membership question; Membership/Project/OrgMembership are never
+      // queried from labour. Cycle-exempt for
+      // the same reason (orgs.dependsOn includes labour, so a labour → orgs READ would close a
+      // cycle; the participant channel does not).
+      labour: ['procurement', 'activities', 'orgs'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);

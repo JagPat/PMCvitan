@@ -154,12 +154,36 @@ export class ActivityParticipant {
    * revision copies the labour spec forward (F4). The requirement root, its revision sequence and
    * its status are Activities' truth, so Labour asks for them HERE — through the cycle-exempt
    * participant channel, never a direct read of `ActivityRequirement`.
+   *
+   * ROUND-3 CORRECTION (finding 2) — THIS OPERATION ALSO TAKES THE LOCK. Labour used to run its own
+   * `SELECT … FROM "ActivityRequirementRoot" … FOR UPDATE` immediately before calling this method:
+   * a synchronous Labour→Activities PERSISTENCE read, in raw SQL, against a table Activities owns
+   * and read-encapsulates. It produced the right runtime behaviour by reaching across the boundary
+   * the leaf-module rule exists to forbid, and it split one indivisible operation into two halves a
+   * caller could get wrong (lock the wrong row, lock it after the read, or forget it entirely).
+   *
+   * Locking the ROOT and reading the head are now ONE participant operation, executed in the
+   * caller's transaction. `RequirementsService.revise/cancel` serialize on the same root row
+   * (`lockRootHead`), so whoever reaches it first wins and the second blocks and then re-reads a
+   * head it can actually trust — the status returned here cannot change under the caller.
+   *
+   * LOCK ORDER is part of the contract: this takes the requirement root BEFORE the caller takes any
+   * `CapacityCommitment` row lock (and the project readiness advisory lock is always taken before
+   * either). PostgreSQL fires the `WorkerAllocation` BEFORE INSERT triggers in name order — project
+   * lock, then root, then commitment — so the canonical path and a raw insert request the same rows
+   * in the same order and cannot form a cycle.
    */
   async labourRequirementHead(
     db: Prisma.TransactionClient,
     params: { projectId: string; requirementId: string },
   ): Promise<{ revision: number; activityId: string; status: string; type: string } | null> {
     const { projectId, requirementId } = params;
+    // SERIALIZE first, then read — the row lock is what makes the head below authoritative rather
+    // than a snapshot a concurrent revise/cancel may already have invalidated.
+    const root = await db.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "ActivityRequirementRoot"
+      WHERE "projectId" = ${projectId} AND "id" = ${requirementId} FOR UPDATE`;
+    if (root.length === 0) return null;
     const head = await db.activityRequirement.findFirst({
       where: { projectId, requirementId },
       orderBy: { revision: 'desc' },

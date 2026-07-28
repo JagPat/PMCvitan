@@ -329,6 +329,159 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
       expect(f[0].message).toContain("owned by 'labour'");
     });
 
+    // Phase 4 Task 3 correction 3 (finding 2) — RAW SQL names TABLES, not delegates, so the
+    // delegate-level analysis above was blind to `tx.$queryRaw`SELECT … FROM "ActivityRequirementRoot"
+    // … FOR UPDATE``: precisely the read that let a LEAF module reach into Activities' persistence.
+    // These fixtures pin the raw-read detection permanently, in BOTH raw forms, and prove it is
+    // ownership-driven rather than name-driven.
+    it('a foreign module RAW-READING a read-encapsulated table → cross-module-read (tagged template)', () => {
+      const f = analyzeFixture({
+        'activities/evil-raw-read.ts':
+          'export async function evilRawRead(prisma: PrismaLike, id: string) { await prisma.$queryRaw`SELECT "id" FROM "Decision" WHERE "id" = ${id} FOR UPDATE`; }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+      expect(f[0].message).toContain("owned by 'decisions'");
+    });
+
+    it('a foreign module RAW-READING a read-encapsulated table → cross-module-read ($queryRawUnsafe)', () => {
+      const f = analyzeFixture({
+        'activities/evil-raw-read-unsafe.ts':
+          'export async function evilRawReadUnsafe(prisma: PrismaLike, id: string) { await prisma.$queryRawUnsafe(`SELECT count(*) FROM "Decision" WHERE "id" = $1`, id); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('the OWNING module raw-reading its own read-encapsulated table is NOT a finding', () => {
+      const f = analyzeFixture({
+        'decisions/own-raw-read.ts':
+          'export async function ownRawRead(prisma: PrismaLike, id: string) { await prisma.$queryRaw`SELECT "id" FROM "Decision" WHERE "id" = ${id} FOR UPDATE`; }',
+      });
+      expect(f).toEqual([]);
+    });
+
+    // Round-3 re-review (finding 3) — literals directly under the call are not the only SQL a raw
+    // call executes. Naming the statement is the obvious way to write it, and the obvious way to
+    // slip past a literals-only scan; each of these fixtures is RED against that earlier version.
+    it('SQL held in a module-scope const is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'activities/evil-const-sql.ts':
+          'const SQL = `SELECT "id" FROM "Decision" WHERE "id" = $1 FOR UPDATE`;\n' +
+          'export async function evilConstSql(prisma: PrismaLike, id: string) { await prisma.$queryRawUnsafe(SQL, id); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('SQL reached through a local alias of a const is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'activities/evil-alias-sql.ts':
+          'const BASE = `SELECT "id" FROM "Decision"`;\n' +
+          'export async function evilAliasSql(prisma: PrismaLike) { const sql = BASE; await prisma.$queryRawUnsafe(sql); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    // Round-7 re-review — an IMPORTED name resolves to an ALIAS symbol whose only declaration is the
+    // `ImportSpecifier`: no initializer, no `for…of` source, so the walker gathered nothing and
+    // moving an otherwise-detected query into a shared constant bypassed the boundary entirely.
+    // RED at 170bcd6 (zero findings). Both fixtures below name the SAME query from another file.
+    it('SQL IMPORTED from another module file is followed → cross-module-read (named import)', () => {
+      const f = analyzeFixture({
+        'shared/queries.ts': 'export const DECISION_SQL = `SELECT "id" FROM "Decision" WHERE "id" = $1`;',
+        'activities/evil-imported-sql.ts':
+          "import { DECISION_SQL } from '../shared/queries';\n" +
+          'export async function evilImportedSql(prisma: PrismaLike, id: string) { await prisma.$queryRawUnsafe(DECISION_SQL, id); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('SQL reached through an ALIASED import is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'shared/queries2.ts': 'export const DECISION_SQL = `SELECT "id" FROM "Decision"`;',
+        'activities/evil-renamed-import.ts':
+          "import { DECISION_SQL as Q } from '../shared/queries2';\n" +
+          'export async function evilRenamedImport(prisma: PrismaLike) { await prisma.$queryRawUnsafe(Q); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    // Round 3h — a FUNCTION that returns SQL has no initializer at all, so the declaration walk
+    // gathered nothing: `function sql() { return 'SELECT … FROM "Decision"' }` followed by
+    // `$queryRawUnsafe(sql())` produced ZERO findings while the identical inline statement (and,
+    // since round 7, the identical imported constant) was caught. RED at cd7b30c for both shapes.
+    it('SQL RETURNED by a local function declaration is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'activities/evil-fn-sql.ts':
+          'function decisionSql(): string { return `SELECT "id" FROM "Decision"`; }\n' +
+          'export async function evilFnSql(prisma: PrismaLike) { await prisma.$queryRawUnsafe(decisionSql()); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('SQL RETURNED by an IMPORTED function is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'shared/queries3.ts': 'export function decisionSql(): string { return `SELECT "id" FROM "Decision"`; }',
+        'activities/evil-imported-fn.ts':
+          "import { decisionSql } from '../shared/queries3';\n" +
+          'export async function evilImportedFn(prisma: PrismaLike) { await prisma.$queryRawUnsafe(decisionSql()); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('SQL held in a const ARRAY of statements is followed → cross-module-read', () => {
+      const f = analyzeFixture({
+        'activities/evil-array-sql.ts':
+          'const STATEMENTS = [`SELECT 1`, `SELECT "id" FROM "Decision"`];\n' +
+          'export async function evilArraySql(prisma: PrismaLike) { for (const s of STATEMENTS) await prisma.$executeRawUnsafe(s); }',
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('decision');
+    });
+
+    it('a const naming only OWN-module tables stays clean when resolved', () => {
+      const f = analyzeFixture({
+        'decisions/own-const-sql.ts':
+          'const SQL = `SELECT "id" FROM "Decision" WHERE "id" = $1`;\n' +
+          'export async function ownConstSql(prisma: PrismaLike, id: string) { await prisma.$queryRawUnsafe(SQL, id); }',
+      });
+      expect(f).toEqual([]);
+    });
+
+    it('the raw-read detection is COUPLED to the live manifests — Activities raw-reading a labour table is flagged', () => {
+      // Same coupling discipline as the WorkerSkill fixture above: analyzed against the REAL
+      // manifest-derived read-encapsulation, so dropping `workerSkill` from labour's
+      // `readEncapsulated` makes this fixture fail rather than silently stop protecting anything.
+      const realEnc = readEncapsulation(MODULE_MANIFESTS);
+      const f = analyzeFixture(
+        {
+          'activities/evil-raw-workerskill.ts':
+            'export async function evilRaw(prisma: PrismaLike, p: string) { await prisma.$queryRawUnsafe(`SELECT "skillCode" FROM "WorkerSkill" WHERE "projectId" = $1`, p); }',
+        },
+        {},
+        realEnc,
+      );
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('cross-module-read');
+      expect(f[0].model).toBe('workerSkill');
+      expect(f[0].message).toContain("owned by 'labour'");
+    });
+
     // Phase 4 Task 1 correction 2 (re-review finding 3) — permanently pin the NESTED foreign read
     // detection the packet claimed. An own-module delegate call whose include/select pulls a
     // read-encapsulated FOREIGN relation is a cross-module-read, exactly like a direct foreign read.

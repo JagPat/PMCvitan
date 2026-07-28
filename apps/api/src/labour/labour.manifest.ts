@@ -54,7 +54,11 @@ export const labourManifest: ModuleManifest = {
   // `ActivityParticipant.labourTarget` — the CYCLE-EXEMPT `labour → activities` workflow-participant
   // edge (§G's READ edge runs activities → labour for the Task-4 coverage read, so a labour →
   // activities READ would close a cycle). `dependsOn` therefore stays empty and the graph is acyclic.
-  workflowParticipants: ['procurement', 'activities'],
+  // Task 3 correction 3 adds `orgs`: the t3c repair engine validates a revoker's PROJECT STANDING
+  // through `OrgsParticipant.hasProjectRoleStanding` (Membership/Project/OrgMembership are orgs-owned;
+  // the owner answers the question) — cycle-exempt for the same reason (`orgs.dependsOn` includes
+  // `labour`, so a labour → orgs READ edge would close a cycle; the participant channel does not).
+  workflowParticipants: ['procurement', 'activities', 'orgs'],
   // Phase 4 Task 2 — the labour commercial event family (signal-only, invalidate:true, push:null).
   producesEvents: [
     'labour.requisition.submitted', 'labour.requisition.approved', 'labour.comparison.approved',

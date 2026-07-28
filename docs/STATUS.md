@@ -31,7 +31,7 @@ Review Stops" section of the phase plan.
 |---|---|---|
 | 1 | Labour capability + type-routed demand + trusted workforce identity (§B/§D/§H) | merged |
 | 2 | Supplier reuse + labour commitment documents (§F) | merged |
-| 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | in_review — correction round 3 is open as PR #230 |
+| 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | in_review — correction round 3 is open as PR #230; directive `docs/reviews/phase-4-t3-correction3-directive.md`, evidence `docs/reviews/phase-4-t3-correction3-packet.md` |
 | 4 | Canonical labour coverage + Team gate + combined readiness + seventh projection + LEAF module graph (§A/§G) | not_started |
 | 5 | Daily-Log reconciliation (§E) + planned-vs-actual + productivity (§I) | not_started |
 | 6 | Frontend surfaces + pilot acceptance chain + consolidated Phase-4 packet (§J) | not_started |
