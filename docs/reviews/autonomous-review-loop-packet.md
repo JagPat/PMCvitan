@@ -195,5 +195,7 @@ The corrected completion policy first sends `PUT /pulls/{number}/merge` with
 therefore rejects a stale head and continues to enforce branch protection. A 405
 waiting-state response falls back to auto-merge. If the fallback races with the
 PR becoming clean and returns the observed clean-status error, the controller
-retries the same exact-SHA merge once. Any other error fails closed. Regression
-tests pin immediate merge, waiting-state fallback, and the clean-state race.
+retries the same exact-SHA merge once. The fallback mutation includes
+`expectedHeadOid`, binding it to the reviewed SHA even if a push lands after the
+first direct attempt. Any other error fails closed. Regression tests pin immediate
+merge, waiting-state fallback, the expected-head mutation, and the clean-state race.

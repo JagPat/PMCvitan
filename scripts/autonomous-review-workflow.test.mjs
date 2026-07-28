@@ -1012,8 +1012,8 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
       calls.push(['merge', number, head]);
       return { merged: false, message: 'Not ready to merge' };
     },
-    async enableAutoMerge(current) {
-      calls.push(['auto-merge', current.number]);
+    async enableAutoMerge(current, head) {
+      calls.push(['auto-merge', current.number, head]);
     },
   };
 
@@ -1027,7 +1027,7 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
   );
   assert.deepEqual(calls, [
     ['merge', 230, expectedHead],
-    ['auto-merge', 230],
+    ['auto-merge', 230, expectedHead],
   ]);
 });
 
@@ -1074,6 +1074,19 @@ test('review cycles are serialized by pull request and exact head', async () => 
   assert.match(workflow, /inputs\.head_sha/);
   assert.doesNotMatch(workflow, /github\.event\.pull_request/);
   assert.match(workflow, /cancel-in-progress:\s*false/);
+});
+
+test('the auto-merge fallback sends GitHub the reviewed head OID', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const autoMergeMethod = gate.slice(
+    gate.indexOf('async enableAutoMerge'),
+    gate.indexOf('async mergeExactHead'),
+  );
+  assert.match(autoMergeMethod, /expectedHeadOid:\s*\$expectedHead/);
+  assert.match(autoMergeMethod, /\{ id: pullRequest\.node_id, expectedHead \}/);
 });
 
 test('failure-latch status history is fully paginated', async () => {

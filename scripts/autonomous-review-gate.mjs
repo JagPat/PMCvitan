@@ -376,17 +376,21 @@ class GitHubClient {
     return this.pullRequest(pullRequest.number);
   }
 
-  async enableAutoMerge(pullRequest) {
+  async enableAutoMerge(pullRequest, expectedHead) {
     if (pullRequest.auto_merge) return;
     await this.graphql(
-      `mutation($id: ID!) {
+      `mutation($id: ID!, $expectedHead: GitObjectID!) {
         enablePullRequestAutoMerge(
-          input: { pullRequestId: $id, mergeMethod: SQUASH }
+          input: {
+            pullRequestId: $id
+            expectedHeadOid: $expectedHead
+            mergeMethod: SQUASH
+          }
         ) {
           pullRequest { id autoMergeRequest { enabledAt } }
         }
       }`,
-      { id: pullRequest.node_id },
+      { id: pullRequest.node_id, expectedHead },
     );
   }
 
@@ -574,7 +578,7 @@ export async function completeReviewedPullRequest(
   if (direct?.merged) return 'merged';
 
   try {
-    await client.enableAutoMerge(pullRequest);
+    await client.enableAutoMerge(pullRequest, expectedHead);
     return 'queued';
   } catch (error) {
     if (

@@ -96,7 +96,9 @@ The orchestrator is the only repository automation that completes a reviewed PR.
 It sends the exact reviewed SHA to GitHub's squash-merge endpoint when the PR is
 already clean. If GitHub still reports a waiting state, it queues auto-merge; if
 that mutation races with the PR becoming clean, it retries the exact-SHA merge
-once. Branch protection remains authoritative in every path. The old
+once. The auto-merge mutation carries the same expected head OID, so a push makes
+the stale owner fail rather than arming a newer head. Branch protection remains
+authoritative in every path. The old
 existence-only Codex review check is removed.
 
 ## Claude Subscription Contract
