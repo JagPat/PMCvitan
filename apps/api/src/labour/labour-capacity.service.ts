@@ -718,14 +718,16 @@ export class LabourCapacityService {
             recordedById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });
-        await this.activityParticipant.blockForLabourMismatch(tx, { projectId, activityId: input.activityId });
+        const blockedEv = await this.activityParticipant.blockForLabourMismatch(tx, { projectId, activityId: input.activityId, actor });
         await recordAudit(tx, { projectId, actor, action: 'labour.mismatch.record', entity: 'LabourMismatch', entityId: row.id });
-        const ev = await emitEvent(tx, {
+        const events: EmittedEventMeta[] = [];
+        events.push(await emitEvent(tx, {
           projectId, actor, eventType: 'labour_mismatch.recorded', entityType: 'LabourMismatch', entityId: row.id,
           payload: { mismatchId: row.id, activityId: row.activityId, civilDate: input.civilDate, shift: row.shift, kind: row.kind } as unknown as Prisma.InputJsonValue,
           effectKey: 'labour_mismatch.recorded', dispatch: {},
-        });
-        return { resultRef: row.id, events: [ev] };
+        }));
+        if (blockedEv) events.push(blockedEv);
+        return { resultRef: row.id, events };
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
@@ -794,7 +796,9 @@ export class LabourCapacityService {
         orderBy: [{ shift: 'asc' }, { workerId: 'asc' }],
       }),
       this.prisma.labourMismatch.findMany({
-        where: { projectId, civilDate },
+        // UNRESOLVED only — the API fails closed: a resolved observation never re-enters the
+        // Daily-Log's active mismatch list (history lives on the mismatch register itself).
+        where: { projectId, civilDate, resolution: { is: null } },
         include: { resolution: true },
         orderBy: { recordedAt: 'asc' },
       }),

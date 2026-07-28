@@ -98,13 +98,37 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- CHECKs: the observation kind is closed; measured output is strictly positive.
+-- Provenance: every fact row cites the committed command that produced it — a nonexistent or
+-- other-project command id is unrepresentable (the §C composite-FK rule).
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'LabourMismatch_projectId_sourceCommandId_fkey') THEN
+    ALTER TABLE "LabourMismatch" ADD CONSTRAINT "LabourMismatch_projectId_sourceCommandId_fkey" FOREIGN KEY ("projectId", "sourceCommandId") REFERENCES "CommandExecution"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'LabourMismatchResolution_projectId_sourceCommandId_fkey') THEN
+    ALTER TABLE "LabourMismatchResolution" ADD CONSTRAINT "LabourMismatchResolution_projectId_sourceCommandId_fkey" FOREIGN KEY ("projectId", "sourceCommandId") REFERENCES "CommandExecution"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityWorkOutput_projectId_sourceCommandId_fkey') THEN
+    ALTER TABLE "ActivityWorkOutput" ADD CONSTRAINT "ActivityWorkOutput_projectId_sourceCommandId_fkey" FOREIGN KEY ("projectId", "sourceCommandId") REFERENCES "CommandExecution"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+  END IF;
+END $$;
+
+-- CHECKs: the observation kind is closed; measured output is strictly positive; user-supplied
+-- evidence text can never be blank (the complete-whitespace set, incl. VT/FF).
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'LabourMismatch_kind_check') THEN
     ALTER TABLE "LabourMismatch" ADD CONSTRAINT "LabourMismatch_kind_check" CHECK ("kind" IN ('wrong_trade', 'shortfall'));
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityWorkOutput_quantity_check') THEN
     ALTER TABLE "ActivityWorkOutput" ADD CONSTRAINT "ActivityWorkOutput_quantity_check" CHECK ("quantity" > 0);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'LabourMismatch_note_nonblank') THEN
+    ALTER TABLE "LabourMismatch" ADD CONSTRAINT "LabourMismatch_note_nonblank" CHECK (btrim("note", E' \t\n\x0B\f\r') <> '');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'LabourMismatchResolution_text_nonblank') THEN
+    ALTER TABLE "LabourMismatchResolution" ADD CONSTRAINT "LabourMismatchResolution_text_nonblank" CHECK (btrim("resolution", E' \t\n\x0B\f\r') <> '' AND btrim("reason", E' \t\n\x0B\f\r') <> '');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityWorkOutput_text_nonblank') THEN
+    ALTER TABLE "ActivityWorkOutput" ADD CONSTRAINT "ActivityWorkOutput_text_nonblank" CHECK (btrim("uom", E' \t\n\x0B\f\r') <> '' AND ("note" IS NULL OR btrim("note", E' \t\n\x0B\f\r') <> ''));
   END IF;
 END $$;
 

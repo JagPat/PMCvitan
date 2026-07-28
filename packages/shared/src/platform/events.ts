@@ -118,6 +118,7 @@ export const DOMAIN_EVENT_TYPES = [
   // Activities'), even though the unblock is appended by the labour resolve command through the
   // cycle-exempt participant — the material_unblocked rule verbatim.
   'labour_mismatch.recorded',
+  'activity.labour_blocked',
   'labour_mismatch.resolved',
   'activity.labour_unblocked',
   'activity_output.recorded',

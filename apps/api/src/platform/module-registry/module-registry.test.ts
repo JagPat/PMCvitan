@@ -38,8 +38,10 @@ describe('Phase 2 Task 7 — module registry', () => {
     const expected = [
       'approvedSkillSubstitution', 'capacityCommitment', 'capacityPromise', 'crew', 'crewMembership',
       'labourAttendance', 'labourDemandSlice',
+      'labourMismatch', 'labourMismatchResolution',
       'labourPurchaseOrder', 'labourPurchaseOrderLine', 'labourPurchaseOrderVersion',
-      'labourQuoteComparison', 'labourReadinessProjection', 'labourRequirementSpec', 'labourRequisition',
+      'labourQuoteComparison',
+      'labourReadinessProjection', 'labourRequirementSpec', 'labourRequisition',
       'labourRequisitionLine',
       'labourRfq', 'labourSkill', 'labourTrade', 'labourWorkFact', 'supplierLabourQuote',
       'supplierLabourQuoteLine', 'vendorLabourProfile', 'worker', 'workerAllocation', 'workerSkill',

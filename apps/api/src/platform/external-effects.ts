@@ -124,6 +124,7 @@ export const EXTERNAL_EFFECTS = {
   // Phase 4 Task 5 — §E mismatch observation/resolution + §I measured output (signal-only).
   'labour_mismatch.recorded': { eventType: 'labour_mismatch.recorded', invalidate: true, push: null },
   'labour_mismatch.resolved': { eventType: 'labour_mismatch.resolved', invalidate: true, push: null },
+  'activity.labour_blocked': { eventType: 'activity.labour_blocked', invalidate: true, push: null },
   'activity.labour_unblocked': { eventType: 'activity.labour_unblocked', invalidate: true, push: null },
   'activity_output.recorded': { eventType: 'activity_output.recorded', invalidate: true, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },

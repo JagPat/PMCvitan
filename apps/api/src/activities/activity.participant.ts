@@ -4,6 +4,7 @@ import { emitEvent } from '../platform/events';
 import type { Actor } from '../common/actor';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import type { GateState } from '../domain/transitions';
+import { LabourRequirementQuery } from '../labour/labour.query';
 
 /** The §E labour block banner — the clear selector, so a material block is never labour-cleared. */
 export const LABOUR_MISMATCH_BLOCK = 'Crew ≠ allocated';
@@ -32,6 +33,11 @@ export const LABOUR_MISMATCH_BLOCK = 'Crew ≠ allocated';
  */
 @Injectable()
 export class ActivityParticipant {
+  // Phase 4 Task 5 (§E) — labour truth for the block handover is read through the QUERY CONTRACT
+  // (the declared `activities → labour` read edge; LabourRequirementQuery injects only Prisma, so
+  // no DI cycle with the labour services that use this participant).
+  constructor(private readonly labourQuery: LabourRequirementQuery) {}
+
   /**
    * The sign-off TARGET a closing-inspection decide reads before its command runs: the linked
    * activity's identity, display name (fast pre-validation only — the in-transaction methods below
@@ -214,14 +220,22 @@ export class ActivityParticipant {
     const blocked = await tx.activity.findMany({
       where: { projectId, decisionId, gateMaterial: 'fail', status: 'blocked' },
     });
+    // Phase 4 Task 5 (§E): a material clear must not erase a still-unresolved LABOUR dispute on
+    // the same activity — the labour block is re-asserted (banner handover) instead of restored.
+    // Labour truth is read through the query contract (the declared activities → labour edge).
+    const labourBlocked = blocked.length
+      ? await this.labourQuery.unresolvedMismatchActivityIds(projectId, blocked.map((a) => a.id), tx)
+      : new Set<string>();
     for (const a of blocked) {
       await tx.activity.update({
         where: { id: a.id },
-        data: {
-          gateMaterial: 'wait' as GateState,
-          status: a.actualStart != null || a.actualStartDate != null ? 'in_progress' : 'not_started',
-          block: null,
-        },
+        data: labourBlocked.has(a.id)
+          ? { gateMaterial: 'wait' as GateState, block: LABOUR_MISMATCH_BLOCK }
+          : {
+              gateMaterial: 'wait' as GateState,
+              status: a.actualStart != null || a.actualStartDate != null ? 'in_progress' : 'not_started',
+              block: null,
+            },
       });
     }
     if (blocked.length === 0) return null;
@@ -240,15 +254,23 @@ export class ActivityParticipant {
    */
   async blockForLabourMismatch(
     tx: Prisma.TransactionClient,
-    params: { projectId: string; activityId: string },
-  ): Promise<void> {
-    const { projectId, activityId } = params;
+    params: { projectId: string; activityId: string; actor: Actor },
+  ): Promise<EmittedEventMeta | null> {
+    const { projectId, activityId, actor } = params;
     const a = await tx.activity.findFirst({ where: { projectId, id: activityId } });
-    if (!a || a.status === 'done' || a.status === 'blocked') return;
+    // Only a running-or-pending activity is operationally blocked: `done` is history,
+    // `awaiting_signoff` keeps its pending completion claim (the derived Team gate still fails —
+    // the mismatch fact is the truth), and an ALREADY-blocked activity keeps its current banner
+    // (a material block that clears later re-asserts the labour block, see
+    // clearMaterialMismatchBlock — the labour dispute is never silently dropped).
+    if (!a || (a.status !== 'not_started' && a.status !== 'in_progress')) return null;
     await tx.activity.update({
       where: { id: a.id },
       data: { status: 'blocked', block: LABOUR_MISMATCH_BLOCK },
     });
+    // The activities projection refreshes on ACTIVITY-owned signals only — without this event a
+    // servable schedule projection would keep serving the pre-block status.
+    return emitEvent(tx, { projectId, actor, eventType: 'activity.labour_blocked', entityType: 'Activity', entityId: a.id, payload: { activityId: a.id }, effectKey: 'activity.labour_blocked', dispatch: {} });
   }
 
   /**

@@ -43,8 +43,6 @@ export class MediaService {
     private readonly decisions: DecisionsQueryService,
     // Task 10 — a linked daily-log reference is validated through the daily-log query.
     private readonly dailyLog: DailyLogQueryService,
-    // Phase 4 Task 5 (§I) — measured-output evidence is delete-sealed while cited.
-    private readonly activityParticipant: ActivityParticipant,
     // Task 10 (Module 3) — an evidence upload's inspection linkage is validated through the inspections query.
     private readonly inspections: InspectionsQueryService,
     // Task 10 (Module 3) correction — item evidence is linked through the inspections participant (in-tx),
@@ -53,6 +51,8 @@ export class MediaService {
     // Phase 3 Task 4 — a delete is refused while the photo is immutable stock-ledger evidence.
     private readonly inventoryParticipant: InventoryParticipant,
     private readonly labourParticipant: LabourRequirementParticipant,
+    // Phase 4 Task 5 (§I) — measured-output evidence is delete-sealed while cited.
+    private readonly activityParticipant: ActivityParticipant,
   ) {}
 
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.

@@ -156,6 +156,10 @@ const SECTION_A_COMMANDS: Array<{ label: string; file: string; method: string }>
   { label: 'labour.commitment.commit', file: 'labour/labour-procurement.service.ts', method: 'commitCapacity' },
   { label: 'labour.commitment.revise', file: 'labour/labour-procurement.service.ts', method: 'reviseCapacity' },
   { label: 'labour.commitment.default', file: 'labour/labour-procurement.service.ts', method: 'defaultCapacity' },
+  // Phase 4 Task 5 — §E: an unresolved mismatch flips the derived Team gate, so both the
+  // observation and its resolution serialize with `start` on the ONE project lock.
+  { label: 'labour.mismatch.record', file: 'labour/labour-capacity.service.ts', method: 'recordMismatch' },
+  { label: 'labour.mismatch.resolve', file: 'labour/labour-capacity.service.ts', method: 'resolveMismatch' },
 ];
 
 /** The body of `async <method>(` up to the next same-indent `async ` (or end of file). */
@@ -185,6 +189,6 @@ describe('readiness-lock §A COMMAND-LEVEL coverage (Phase 3 Task 6)', () => {
     // remove inbound coverage; Phase 4 Task 3 added the seven §C time-capacity fact commands;
     // Phase 4 Task 4 added the three capacity-commitment lifecycle commands — forecast cover).
     // Adding a §A command without listing it here is a visible, reviewed change.
-    expect(SECTION_A_COMMANDS).toHaveLength(32);
+    expect(SECTION_A_COMMANDS).toHaveLength(34);
   });
 });

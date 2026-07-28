@@ -76,6 +76,9 @@ function make(
   // Phase 4 Task 3 correction (F2) — the delete tx also asks LABOUR whether the photo is cited as
   // presence evidence; the live refusal has its own probe in `phase4-t3-correction.test.ts`.
   const labourParticipant = { assertMediaDisposable: vi.fn(async () => {}) } as unknown as LabourRequirementParticipant;
+  // Phase 4 Task 5 (§I) — the delete tx also asks ACTIVITIES whether the photo is cited as
+  // measured-output evidence; the live refusal has its own probe in the Task-5 suite.
+  const activityParticipant = { assertMediaDisposable: vi.fn(async () => {}) } as unknown as ActivityParticipant;
   const svc = new MediaService(
     prisma as unknown as PrismaService,
     storage as unknown as StorageService,
@@ -89,6 +92,7 @@ function make(
     inspectionParticipant,
     inventoryParticipant,
     labourParticipant,
+    activityParticipant,
   );
   return { svc, prisma, storage, signed, dispatcher, snapshot, created, inventoryParticipant, labourParticipant };
 }
