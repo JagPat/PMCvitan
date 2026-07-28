@@ -199,3 +199,27 @@ retries the same exact-SHA merge once. The fallback mutation includes
 `expectedHeadOid`, binding it to the reviewed SHA even if a push lands after the
 first direct attempt. Any other error fails closed. Regression tests pin immediate
 merge, waiting-state fallback, the expected-head mutation, and the clean-state race.
+
+## Hosted Activation Evidence
+
+PR #238 bootstrapped the clean-state merge correction onto the default branch.
+Its final reviewed head was
+`91a2e02ea9eb6278d63ab3e9656ad50e0eb50027`: all five required CI contexts were
+green and `codex-current-head` was `success` on that exact SHA. The old
+default-branch controller then reproduced the expected clean-status GraphQL
+failure, so the bootstrap used the exact-SHA REST merge path once and landed as
+`93fe2c3df99db136d82f97a4daeefb691e99d388`. No force push, rebase, stale-head
+clearance, or status bypass was used.
+
+At activation, `main` protection remained strict and administrator-enforced with
+these six required contexts: `web`, `api`, `e2e`, `api-e2e`, `upgrade-proof`, and
+`codex-current-head`. PR #239, an overlapping implementation that did not bind
+the auto-merge fallback to the reviewed head, was closed unmerged as superseded.
+
+The evidence-only PR containing this section is the first post-bootstrap live
+proof. Its acceptance condition is intentionally operational rather than a
+self-referential embedded SHA: GitHub must run the five CI contexts, request one
+Codex review for the exact head, publish `codex-current-head=success`, and merge
+that same head through the corrected default-branch controller without a human
+ready or merge action. The PR timeline, commit statuses, and Actions run are the
+authoritative immutable proof.
