@@ -112,6 +112,16 @@ export const DOMAIN_EVENT_TYPES = [
   'labour_work.recorded',
   'skill_substitution.approved',
   'skill_substitution.revoked',
+  // Phase 4 Task 5 — §E reconciliation (labour-owned observation + resolution) and the §I
+  // measured-output fact. All signal-only. `activity.labour_unblocked` and
+  // `activity_output.recorded` are ACTIVITIES-owned (the activity/output facts they announce are
+  // Activities'), even though the unblock is appended by the labour resolve command through the
+  // cycle-exempt participant — the material_unblocked rule verbatim.
+  'labour_mismatch.recorded',
+  'activity.labour_blocked',
+  'labour_mismatch.resolved',
+  'activity.labour_unblocked',
+  'activity_output.recorded',
   // Phase 3 Task 4 — the inventory stock ledger (plan §G catalog: ONE event per appended §C
   // ledger row — receipts, acceptance, rejection, vendor-return, adjustment, reversal; buckets
   // are derived, so there is no bucket-changed event)

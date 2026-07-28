@@ -12,12 +12,12 @@ narrative and may lag behind reality.
 ```yaml
 phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
-task: 4
+task: 5
 task_state: in_review
-work_item: phase-4-task-4-labour-readiness
-reviewed_merge: 33d37a3
-open_pr: 242
-next_task: 5
+work_item: phase-4-task-5-reconciliation
+reviewed_merge: 861b622
+open_pr: 245
+next_task: 6
 blocking_directive: none
 updated: 2026-07-28
 ```
@@ -32,8 +32,8 @@ Review Stops" section of the phase plan.
 | 1 | Labour capability + type-routed demand + trusted workforce identity (§B/§D/§H) | merged |
 | 2 | Supplier reuse + labour commitment documents (§F) | merged |
 | 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | merged — correction round 3 merged as PR #230 (`main` `33d37a3`) through the exact-head `codex-current-head` gate; evidence `docs/reviews/phase-4-t3-correction3-packet.md` |
-| 4 | Canonical labour coverage + Team gate + combined readiness + seventh projection + LEAF module graph (§A/§G) | in_review — delivered on held PR (branch `claude/phase4-task4`); evidence `docs/reviews/phase-4-t4-readiness-packet.md`; MANDATORY narrow review stop before Task 5 |
-| 5 | Daily-Log reconciliation (§E) + planned-vs-actual + productivity (§I) | not_started |
+| 4 | Canonical labour coverage + Team gate + combined readiness + seventh projection + LEAF module graph (§A/§G) | merged — PR #242 merged at `main` `861b622` after two Codex correction rounds and a fresh clean +1 through the exact-head `codex-current-head` gate; evidence `docs/reviews/phase-4-t4-readiness-packet.md` |
+| 5 | Daily-Log reconciliation (§E) + planned-vs-actual + productivity (§I) | in_review — delivered on PR #245 (branch `claude/phase4-task5`); the six findings from Codex's WIP-head review of `f4e6ab1` the five from its attempt-2 review of `4802d9a` (CAS block transition, shift/kind↔worker SQL seals, media↔activities participant edge, published activity events, Decimal productivity), AND the one from its review of `5f1e316` (the recordOutput evidence validation no longer reads Media — the same-project composite FK is the validation authority, its violation translated to the same 400) are all folded in-branch with reproduce-first probes; evidence `docs/reviews/phase-4-t5-reconciliation-packet.md` |
 | 6 | Frontend surfaces + pilot acceptance chain + consolidated Phase-4 packet (§J) | not_started |
 
 ## State values

@@ -28,7 +28,7 @@ describe('Task 10 — the activities module implements its shared command/query 
     expect(activitiesManifest.readEncapsulated).toEqual(activitiesManifest.ownsModels);
     // the activity spine owns EXACTLY its canonical models + the rebuildable projection table — no other
     // module reads any of them directly (the boundary check enforces it).
-    expect(activitiesManifest.ownsModels).toEqual(['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection']);
+    expect(activitiesManifest.ownsModels).toEqual(['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection', 'activityWorkOutput']);
   });
 
   it('the manifest publishes the activity/phase lifecycle + the participant signal events', () => {
@@ -59,6 +59,11 @@ describe('Task 10 — the activities module implements its shared command/query 
         // Phase 3 Task 6 — approved-substitution facts (§B); the readiness projection consumes them
         'substitution.approved',
         'substitution.revoked',
+        // Phase 4 Task 5 (§E/§I) — the labour-dispute operational signals (appended by the labour
+        // mismatch commands through ActivityParticipant) + the measured-output fact.
+        'activity.labour_blocked',
+        'activity.labour_unblocked',
+        'activity_output.recorded',
       ].sort(),
     );
     // the atomic activity↔inspection edges stay WORKFLOW contracts (participant), not cross-module

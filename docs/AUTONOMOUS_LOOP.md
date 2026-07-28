@@ -124,11 +124,14 @@ branch; doing so would intentionally block every PR, including the bootstrap PR.
 
 ## Current Position
 
-Phase 4 Task 3 is merged and cleared (PR #230 through the exact-head gate; STATUS flip PR #237).
-Phase 4 Task 4 (canonical labour coverage + the derived Team gate + the seventh projection, §A/§G)
-is delivered on a held draft PR and sits at the plan's MANDATORY narrow review stop. Tasks 5–6 do
-not begin until that review returns clean and the PR merges. See `docs/STATUS.md` and
-`docs/reviews/phase-4-t4-readiness-packet.md`.
+Phase 4 Task 4 is merged and cleared (PR #242 at `main` `861b622` — two Codex correction rounds,
+then a fresh clean +1 through the exact-head gate; the mandatory post-Task-4 review stop is
+satisfied). Phase 4 Task 5 (Daily-Log labour reconciliation §E + planned-vs-actual + productivity
+§I) is delivered on PR #245 (branch `claude/phase4-task5`) and is in review through the exact-head
+gate; the six findings Codex raised against the WIP head `f4e6ab1` and the five it raised on the
+attempt-2 review of `4802d9a` are all folded in-branch with reproduce-first probes. Task 6 does
+not begin until Task 5 merges. See `docs/STATUS.md` and
+`docs/reviews/phase-4-t5-reconciliation-packet.md`.
 
 ## External Dependencies
 

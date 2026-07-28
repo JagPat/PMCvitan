@@ -61,3 +61,22 @@ export function rethrowActivityRefViolation(e: unknown, field = 'activityId'): n
   }
   throw e;
 }
+
+/**
+ * Phase 4 Task 5 (§I) — the SAME rule for a MEDIA evidence reference stored by a foreign module:
+ * validating through a Media read from another module's service would be an undeclared
+ * Activities→Media boundary dependency, so the composite `(projectId, mediaId)` tenant FK is the
+ * validation authority (it admits exactly this project's photos) and its violation translates
+ * into the same human-readable 400 a query-based validation would raise. Any other error
+ * rethrows untouched.
+ */
+export function rethrowMediaRefViolation(e: unknown, field = 'evidenceMediaId'): never {
+  if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2003') {
+    const meta = (e.meta ?? {}) as Record<string, unknown>;
+    const constraint = String(meta.constraint ?? meta.field_name ?? '');
+    if (constraint.includes('MediaId') || constraint.includes('mediaId')) {
+      throw new BadRequestException(`${field} does not name a photo in this project`);
+    }
+  }
+  throw e;
+}

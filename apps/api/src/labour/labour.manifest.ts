@@ -38,6 +38,9 @@ export const labourManifest: ModuleManifest = {
     'workerAllocation', 'labourAttendance', 'labourWorkFact', 'approvedSkillSubstitution',
     // Phase 4 Task 4 — the seventh rebuildable projection's generation-scoped store.
     'labourReadinessProjection',
+    // Phase 4 Task 5 — §E: the mismatch observation + its append-only resolution register.
+    'labourMismatch',
+    'labourMismatchResolution',
   ],
   readEncapsulated: [
     'labourTrade', 'labourSkill', 'worker', 'workerSkill', 'crew', 'crewMembership',
@@ -48,6 +51,8 @@ export const labourManifest: ModuleManifest = {
     'capacityCommitment', 'capacityPromise',
     'workerAllocation', 'labourAttendance', 'labourWorkFact', 'approvedSkillSubstitution',
     'labourReadinessProjection',
+    'labourMismatch',
+    'labourMismatchResolution',
   ],
   // A LEAF (round-3): NO synchronous read edge to any module. The Activities requirement command
   // writes the labour detail INTO this module through LabourRequirementParticipant (a workflow edge
@@ -73,6 +78,8 @@ export const labourManifest: ModuleManifest = {
     // NO event (a derived verdict is never a domain fact); the Team gate lands with Task 4.
     'allocation.made', 'allocation.released', 'attendance.recorded', 'attendance.revoked',
     'labour_work.recorded', 'skill_substitution.approved', 'skill_substitution.revoked',
+    // Phase 4 Task 5 — §E mismatch observation/resolution (signal-only).
+    'labour_mismatch.recorded', 'labour_mismatch.resolved',
   ],
   // Phase 4 Task 4 (§G, round-3) — the FIRST async consumption edge in the registry: Labour folds
   // the Activities-owned `requirement.*` event PAYLOADS into its own read-model (the forecast
@@ -119,6 +126,9 @@ export const labourManifest: ModuleManifest = {
     'POST /projects/:projectId/labour/work',
     'POST /projects/:projectId/labour/skill-substitutions',
     'POST /projects/:projectId/labour/skill-substitutions/:substitutionId/revoke',
+    // Phase 4 Task 5 — §E reconciliation
+    'POST /projects/:projectId/labour/mismatches',
+    'POST /projects/:projectId/labour/mismatches/:mismatchId/resolve',
   ],
   permissions: ['pmc', 'engineer'],
 };

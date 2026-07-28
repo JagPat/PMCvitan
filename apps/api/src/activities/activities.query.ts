@@ -112,17 +112,25 @@ export class ActivitiesQueryService {
     return map;
   }
 
+  /** Phase 4 Task 5 (§E) — the unresolved-mismatch activity set for the read bake, from Labour's
+   *  own truth via the query contract (capability-gated exactly like the coverage input). */
+  private async labourMismatchBlockedSet(projectId: string): Promise<ReadonlySet<string> | undefined> {
+    if (!(await this.capabilities.isEnabled(projectId, LABOUR_CAPABILITY))) return undefined;
+    return this.labourQuery.unresolvedMismatchActivityIds(projectId);
+  }
+
   /** Fetch the FOREIGN readiness inputs fresh — through the owning modules' query contracts. The
    *  snapshot passes its already-fetched decision status map to avoid a duplicate read; the module GET
    *  fetches its own. */
   private async bakeInputs(projectId: string, decisionStatuses?: ReadonlyMap<string, string>): Promise<ActivitiesBakeInputs> {
-    const [statuses, inspections, drawings, activeMembers, materialCoverage, labourCoverage] = await Promise.all([
+    const [statuses, inspections, drawings, activeMembers, materialCoverage, labourCoverage, labourMismatchBlocked] = await Promise.all([
       decisionStatuses ?? this.decisionsQuery.statusMap(projectId),
       this.inspectionsQuery.readinessSlice(projectId),
       this.drawingsQuery.readinessSlice(projectId),
       this.prisma.membership.findMany({ where: { projectId, status: 'active' }, select: { userId: true } }),
       this.materialCoverage(projectId),
       this.labourExecutionCoverage(projectId),
+      this.labourMismatchBlockedSet(projectId),
     ]);
     return {
       decisionStatuses: statuses,
@@ -132,6 +140,7 @@ export class ActivitiesQueryService {
       now: new Date(),
       materialCoverage,
       labourCoverage,
+      labourMismatchBlocked,
     };
   }
 
@@ -457,5 +466,85 @@ export class ActivitiesQueryService {
       throw new BadRequestException(`${field} does not belong to this project`);
     }
     return id;
+  }
+  /**
+   * Phase 4 Task 5 (§I) — planned-vs-actual + PRODUCTIVITY, composed on the ACTIVITIES side:
+   * planned person-shifts + presence come from the labour coverage authority (execution truth),
+   * effort via `LabourQuery.effortFor` (the activities → labour read edge), measured output from
+   * the Activities-owned `ActivityWorkOutput`. Productivity = quantity ÷ (workedMinutes/60) per
+   * UOM — a DERIVED read, `null` when no effort exists (never a division by zero). Labour never
+   * reads `ActivityWorkOutput` (§G). Pilot-gated (404 off-pilot).
+   */
+  async labourProductivity(projectId: string): Promise<{
+    activities: Array<{
+      activityId: string;
+      rows: Array<{
+        civilDate: string; shift: string;
+        plannedPersonShifts: number; presentWorkers: number; workedMinutes: number;
+        outputs: Array<{ quantity: string; uom: string }>;
+        productivityPerHour: Array<{ uom: string; quantityPerHour: string }> | null;
+      }>;
+    }>;
+  }> {
+    await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
+    const project = await this.prisma.project.findUnique({ where: { id: projectId }, select: { timeZone: true } });
+    const asOf = this.clock.today(project?.timeZone ?? 'Asia/Kolkata');
+    const requirements = await loadLabourCoverageRequirements(this.prisma, projectId, this.labourQuery);
+    const coverage = await this.labourCoverage.coverageFor(this.prisma, projectId, requirements, asOf);
+    const effort = await this.labourQuery.effortFor(projectId, {});
+    const outputs = await this.prisma.activityWorkOutput.findMany({
+      where: { projectId },
+      orderBy: [{ activityId: 'asc' }, { civilDate: 'asc' }, { recordedAt: 'asc' }],
+    });
+
+    type Row = {
+      civilDate: string; shift: string;
+      plannedPersonShifts: number; presentWorkers: number; workedMinutes: number;
+      outputs: Array<{ quantity: string; uom: string }>;
+      productivityPerHour: Array<{ uom: string; quantityPerHour: string }> | null;
+    };
+    const byActivity = new Map<string, Map<string, Row>>();
+    const rowFor = (activityId: string, civilDate: string, shift: string): Row => {
+      const rows = byActivity.get(activityId) ?? new Map<string, Row>();
+      byActivity.set(activityId, rows);
+      const key = `${civilDate}|${shift}`;
+      const existing = rows.get(key);
+      if (existing) return existing;
+      const fresh: Row = { civilDate, shift, plannedPersonShifts: 0, presentWorkers: 0, workedMinutes: 0, outputs: [], productivityPerHour: null };
+      rows.set(key, fresh);
+      return fresh;
+    };
+    for (const c of coverage) {
+      for (const slice of c.slices) {
+        const row = rowFor(c.activityId, slice.civilDate, slice.shift);
+        row.plannedPersonShifts += slice.personShiftQty;
+        row.presentWorkers += slice.present;
+      }
+    }
+    for (const e of effort) rowFor(e.activityId, e.civilDate, e.shift).workedMinutes += e.workedMinutes;
+    for (const o of outputs) {
+      const iso = toIsoCivilDate(o.civilDate) ?? '';
+      rowFor(o.activityId, iso, o.shift).outputs.push({ quantity: o.quantity.toString(), uom: o.uom });
+    }
+    for (const rows of byActivity.values()) {
+      for (const row of rows.values()) {
+        if (row.workedMinutes > 0 && row.outputs.length > 0) {
+          // Decimal end-to-end (the stored quantity is Decimal(18,6)): a float64 round-trip loses
+          // exact scale at large magnitudes, so the sum and the ÷hours stay in Prisma.Decimal and
+          // only the FINAL value is formatted to the 6-decimal wire shape.
+          const perUom = new Map<string, Prisma.Decimal>();
+          for (const o of row.outputs) perUom.set(o.uom, (perUom.get(o.uom) ?? new Prisma.Decimal(0)).plus(o.quantity));
+          row.productivityPerHour = [...perUom.entries()]
+            .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+            .map(([uom, qty]) => ({ uom, quantityPerHour: qty.mul(60).div(row.workedMinutes).toFixed(6) }));
+        }
+      }
+    }
+    return {
+      activities: [...byActivity.keys()].sort().map((activityId) => ({
+        activityId,
+        rows: [...byActivity.get(activityId)!.values()].sort((a, b) => (a.civilDate + a.shift < b.civilDate + b.shift ? -1 : 1)),
+      })),
+    };
   }
 }

@@ -14,7 +14,10 @@ export const mediaManifest: ModuleManifest = {
   // InspectionEvidence write + its signal event commit atomically with the media write.
   // Phase 3 Task 4 — the delete transaction also invokes the inventory participant
   // (assertMediaDisposable): photos cited by the immutable §C stock ledger are not deletable.
-  workflowParticipants: ['inspections', 'inventory', 'labour'],
+  // Phase 4 Task 5 (§I) adds `activities`: the delete transaction consults
+  // ActivityParticipant.assertMediaDisposable so a photo cited as measured-output
+  // evidence is never deletable (the same rule as inventory/labour evidence).
+  workflowParticipants: ['activities', 'inspections', 'inventory', 'labour'],
   producesEvents: ['media.uploaded', 'media.refiled', 'media.removed'],
   consumesEvents: [],
   commands: ['media.create', 'media.setNode', 'media.remove'],

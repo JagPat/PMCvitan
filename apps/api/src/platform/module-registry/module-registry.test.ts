@@ -38,8 +38,10 @@ describe('Phase 2 Task 7 — module registry', () => {
     const expected = [
       'approvedSkillSubstitution', 'capacityCommitment', 'capacityPromise', 'crew', 'crewMembership',
       'labourAttendance', 'labourDemandSlice',
+      'labourMismatch', 'labourMismatchResolution',
       'labourPurchaseOrder', 'labourPurchaseOrderLine', 'labourPurchaseOrderVersion',
-      'labourQuoteComparison', 'labourReadinessProjection', 'labourRequirementSpec', 'labourRequisition',
+      'labourQuoteComparison',
+      'labourReadinessProjection', 'labourRequirementSpec', 'labourRequisition',
       'labourRequisitionLine',
       'labourRfq', 'labourSkill', 'labourTrade', 'labourWorkFact', 'supplierLabourQuote',
       'supplierLabourQuoteLine', 'vendorLabourProfile', 'worker', 'workerAllocation', 'workerSkill',
@@ -107,7 +109,9 @@ describe('Phase 2 Task 7 — module registry', () => {
       // photo is immutable stock-ledger quality evidence (assertMediaDisposable)
       // Phase 4 Task 3 correction (F2) — deleting a photo also consults LABOUR: a muster's presence
       // evidence cannot be deleted while cited (cycle-exempt, and labour is a LEAF).
-      media: ['inspections', 'inventory', 'labour'], // evidence add/remove (edges via the media create/remove tx)
+      // Phase 4 Task 5 (§I) adds `activities`: the delete tx refuses while a photo is cited as
+      // measured-output evidence (ActivityParticipant.assertMediaDisposable — the inventory rule).
+      media: ['activities', 'inspections', 'inventory', 'labour'], // evidence add/remove (edges via the media create/remove tx)
       // Phase 3 Task 4 — the §G inventory→procurement edge: the receipt tx invokes the
       // procurement-owned PO-line lock + received-progress fact (§F bound 3); procurement does
       // not depend back on inventory, so the graph stays acyclic. Task 5 adds the activities

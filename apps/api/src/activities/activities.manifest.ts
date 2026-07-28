@@ -22,8 +22,8 @@ export const activitiesManifest: ModuleManifest = {
   // Task 10 (Module 4) — a fully-extracted module: it read-encapsulates every model it owns (incl. its
   // rebuildable projection), so no other module reads activity persistence directly — every cross-module
   // read routes through the ActivitiesQueryService contract (the boundary check enforces it).
-  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection'],
-  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection'],
+  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection', 'activityWorkOutput'],
+  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection', 'activityWorkOutput'],
   // Task 8/10 — reads decisions + the drawing gate + the inspection-gate readiness/next-id via their query
   // contracts (the readiness BAKE consumes all three at read time). The reverse inspections→activities
   // edge is a workflow participant (cycle-exempt), so this dependsOn graph stays acyclic — which is also
@@ -73,6 +73,13 @@ export const activitiesManifest: ModuleManifest = {
     // projection consumes them to recompute coverage (still NO material.readiness_changed event).
     'substitution.approved',
     'substitution.revoked',
+    // Phase 4 Task 5 (§E) — the labour-dispute operational signals, appended by the labour
+    // mismatch commands through ActivityParticipant (the material_blocked owner-aligned rule):
+    // the activities projection refreshes on ACTIVITY-owned signals only. Signal-only (no push).
+    'activity.labour_blocked',
+    'activity.labour_unblocked',
+    // Phase 4 Task 5 (§I) — the activities-owned measured-output fact.
+    'activity_output.recorded',
   ],
   consumesEvents: [],
   commands: [...ACTIVITIES_COMMANDS],
@@ -98,6 +105,8 @@ export const activitiesManifest: ModuleManifest = {
     // substitutions.controller (Phase 3 Task 6 — capability-gated, pmc-only)
     'POST /projects/:projectId/requirements/:requirementId/substitutions',
     'POST /projects/:projectId/substitutions/:substitutionId/revoke',
+    // Phase 4 Task 5 — the §I measured-output fact (pilot-gated on the labour capability)
+    'POST /projects/:projectId/activities/outputs',
   ],
   permissions: ['pmc', 'engineer'],
 };

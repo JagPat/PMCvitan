@@ -78,6 +78,9 @@ const MODEL_OWNER: Record<string, string> = {
   materialReadinessProjection: 'activities',
   // Phase 4 Task 4 — the seventh rebuildable projection's generation-scoped store (labour-owned).
   labourReadinessProjection: 'labour',
+  labourMismatch: 'labour',
+  labourMismatchResolution: 'labour',
+  activityWorkOutput: 'activities',
   // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
   rfq: 'procurement', vendorQuote: 'procurement', vendorQuoteLine: 'procurement', quoteComparison: 'procurement',
@@ -138,7 +141,7 @@ const MODEL_OWNER: Record<string, string> = {
 const SERVICES: Record<string, { domain: string; foreign: Record<string, number>; dispatch: number }> = {
   'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 5 },
   // edge 1 (closing inspection) → inspection.participant; edge 5 (drawing unlink) → FK SET NULL
-  'activities/activities.service.ts': { domain: 'activities', foreign: {}, dispatch: 7 },
+  'activities/activities.service.ts': { domain: 'activities', foreign: {}, dispatch: 8 },
   // edge 6 (phase→activity detach) → FK SET NULL (phaseId)
   'activities/phases.service.ts': { domain: 'phases', foreign: {}, dispatch: 2 },
   // Phase 3 Task 1 — requirement create/revise/cancel (capability-gated; append-only revisions)
@@ -192,7 +195,7 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // the skill-substitution approve/revoke. Seven commands, each handing its committed events to
   // the SINGLE external-effect sender once post-commit. The activity target is validated through
   // the ACTIVITIES PARTICIPANT (the cycle-exempt channel), so no foreign model is written here.
-  'labour/labour-capacity.service.ts': { domain: 'labour', foreign: {}, dispatch: 7 },
+  'labour/labour-capacity.service.ts': { domain: 'labour', foreign: {}, dispatch: 9 },
   // Phase 4 Task 4 — the §A labour coverage authority: PURE READS of labour-owned §C facts on the
   // CALLER's transaction (execution truth for `activities.start`, forecast truth for the seventh
   // projection + the `labour.readiness` read). Writes nothing, emits nothing, dispatches nothing;
@@ -308,7 +311,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   ],
   'activities/activities.controller.ts': [
     'Post()', "Patch(':activityId')", "Delete(':activityId')", "Post(':activityId/start')", "Post(':activityId/complete')",
-    "Post(':activityId/override')", "Delete(':activityId/override/:overrideId')",
+    "Post(':activityId/override')", "Delete(':activityId/override/:overrideId')", "Post('outputs')",
   ],
   'drawings/drawings.controller.ts': [
     "Post('projects/:projectId/drawings')", "Post('projects/:projectId/drawings/:drawingId/publish')", "Post('projects/:projectId/drawings/presign')",
@@ -414,6 +417,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('labour/attendance')", "Post('labour/attendance/:attendanceId/revoke')",
     "Post('labour/work')",
     "Post('labour/skill-substitutions')", "Post('labour/skill-substitutions/:substitutionId/revoke')",
+    "Post('labour/mismatches')", "Post('labour/mismatches/:mismatchId/resolve')",
   ],
   'push/push.controller.ts': ["Post('projects/:projectId/push/subscribe')"],
 };
@@ -480,9 +484,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('77 external-effect dispatch sites total across the pillar services (70 + Phase-4 Task-3 §C time-capacity facts 7)', () => {
+    it('80 external-effect dispatch sites total across the pillar services (77 + Phase-4 Task-5 §E mismatch record/resolve + §I output)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(77);
+      expect(total).toBe(80);
     });
   });
 
@@ -495,10 +499,10 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
     }
     it('144 mutating routes total (§4 command inventory; +7 Phase-4 Task-3 §C time-capacity facts, +1 device binding)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(144);
+      expect(total).toBe(147);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(144);
+      expect(live).toBe(147);
     });
   });
 

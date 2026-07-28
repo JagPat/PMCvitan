@@ -4,6 +4,7 @@ import {
   ROLE_POLICY, computeLabourSpecFingerprint, isLabourShift,
   type LabourCapacityDto, type WorkerAllocationDto, type LabourAttendanceDto,
   type LabourWorkFactDto, type ApprovedSkillSubstitutionDto, type LabourReadinessDto,
+  type LabourMismatchDto, type LabourPresenceDto,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { CapabilitiesService, LABOUR_CAPABILITY } from '../platform/capabilities.service';
@@ -20,6 +21,7 @@ import type { AuthUser } from '../common/auth';
 import type {
   AllocateLabourInput, ReleaseLabourAllocationInput, RecordAttendanceInput, RevokeAttendanceInput,
   RecordLabourWorkInput, ApproveSkillSubstitutionInput, RevokeSkillSubstitutionInput,
+  RecordLabourMismatchInput, ResolveLabourMismatchInput,
 } from '../contracts';
 import { computeLabourReadinessDto } from './labour-readiness.projection';
 
@@ -55,6 +57,18 @@ import { computeLabourReadinessDto } from './labour-readiness.projection';
  *  `(worker, civilDate, shift)` is re-derived under the worker `FOR UPDATE` (round-3 guardrail 2 —
  *  a per-row CHECK alone cannot stop several rows summing past the shift). */
 export const SHIFT_MINUTES = 720;
+
+type MismatchRow = Prisma.LabourMismatchGetPayload<{ include: { resolution: true } }>;
+function serializeMismatch(m: MismatchRow): LabourMismatchDto {
+  return {
+    id: m.id, activityId: m.activityId, civilDate: toIsoCivilDate(m.civilDate) ?? '', shift: m.shift,
+    kind: m.kind as LabourMismatchDto['kind'], workerId: m.workerId, note: m.note,
+    recordedAt: m.recordedAt.toISOString(), recordedById: m.recordedById,
+    resolution: m.resolution
+      ? { resolution: m.resolution.resolution, reason: m.resolution.reason, resolvedAt: m.resolution.resolvedAt.toISOString(), resolvedById: m.resolution.resolvedById }
+      : null,
+  };
+}
 
 type AllocationRow = Prisma.WorkerAllocationGetPayload<Record<string, never>>;
 type AttendanceRow = Prisma.LabourAttendanceGetPayload<Record<string, never>>;
@@ -150,7 +164,7 @@ export class LabourCapacityService {
   }
 
   /** Service-level backstops for the route guards (§H matrix) — a direct caller cannot bypass them. */
-  private assertPolicy(user: AuthUser, action: 'allocation.manage' | 'attendance.record' | 'attendance.revoke' | 'labour.work.record' | 'labour.override', surface: string): void {
+  private assertPolicy(user: AuthUser, action: 'allocation.manage' | 'attendance.record' | 'attendance.revoke' | 'labour.work.record' | 'labour.override' | 'labour.mismatch.record' | 'labour.mismatch.resolve', surface: string): void {
     if (!(ROLE_POLICY[action] as readonly string[]).includes(user.role)) {
       throw new ForbiddenException(surface);
     }
@@ -673,5 +687,129 @@ export class LabourCapacityService {
     await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
     this.assertRead(user);
     return this.prisma.$transaction(async (tx) => computeLabourReadinessDto(tx, projectId));
+  }
+
+  // ── Phase 4 Task 5 — §E labour mismatch (observation + pmc-only resolution) + presence ──────
+
+  /** Record a crew-vs-allocation mismatch OBSERVATION. Runs under the ONE project readiness lock
+   *  because an unresolved observation flips the derived Team gate (§A first-match `fail`); the
+   *  activity's operational block is applied through the cycle-exempt participant. Append-only —
+   *  the correction path is a RESOLUTION, never an edit. */
+  async recordMismatch(projectId: string, input: RecordLabourMismatchInput, user: AuthUser, idempotencyKey?: string): Promise<LabourMismatchDto> {
+    const { actor, scope } = await this.begin(projectId, user);
+    this.assertPolicy(user, 'labour.mismatch.record', 'Recording a labour mismatch is a pmc/engineer surface');
+    const civilDate = fromIsoCivilDate(input.civilDate);
+    if (!civilDate) throw new BadRequestException('civilDate must be an ISO civil date');
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'labour.mismatch.record', idempotencyKey, requestHash: hashRequest(input),
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        const activity = await this.activityParticipant.labourTarget(tx, { projectId, activityId: input.activityId });
+        if (!activity) throw new BadRequestException('activityId does not name an activity in this project');
+        if (input.workerId) {
+          const worker = await tx.worker.findFirst({ where: { projectId, id: input.workerId }, select: { id: true } });
+          if (!worker) throw new BadRequestException('workerId does not name a worker in this project');
+        }
+        const row = await tx.labourMismatch.create({
+          data: {
+            projectId, activityId: input.activityId, civilDate, shift: input.shift, kind: input.kind,
+            workerId: input.workerId ?? null, note: input.note,
+            recordedById: actor.actorId, sourceCommandId: ctx.commandId!,
+          },
+        });
+        const blockedEv = await this.activityParticipant.blockForLabourMismatch(tx, { projectId, activityId: input.activityId, actor });
+        await recordAudit(tx, { projectId, actor, action: 'labour.mismatch.record', entity: 'LabourMismatch', entityId: row.id });
+        const events: EmittedEventMeta[] = [];
+        events.push(await emitEvent(tx, {
+          projectId, actor, eventType: 'labour_mismatch.recorded', entityType: 'LabourMismatch', entityId: row.id,
+          payload: { mismatchId: row.id, activityId: row.activityId, civilDate: input.civilDate, shift: row.shift, kind: row.kind } as unknown as Prisma.InputJsonValue,
+          effectKey: 'labour_mismatch.recorded', dispatch: {},
+        }));
+        if (blockedEv) events.push(blockedEv);
+        return { resultRef: row.id, events };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    const row = await this.prisma.labourMismatch.findFirstOrThrow({ where: { projectId, id: outcome.resultRef }, include: { resolution: true } });
+    return serializeMismatch(row);
+  }
+
+  /** Close exactly ONE observation with an append-only resolution register row (§E, pmc-only).
+   *  The observation is NEVER edited; when no unresolved mismatch remains for the ACTIVITY the
+   *  operational block clears through the participant with ONE `activity.labour_unblocked`. */
+  async resolveMismatch(projectId: string, mismatchId: string, input: ResolveLabourMismatchInput, user: AuthUser, idempotencyKey?: string): Promise<LabourMismatchDto> {
+    const { actor, scope } = await this.begin(projectId, user);
+    this.assertPolicy(user, 'labour.mismatch.resolve', 'Resolving a labour mismatch is pmc authority (§E)');
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'labour.mismatch.resolve', idempotencyKey, requestHash: hashRequest({ mismatchId, ...input }),
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        const mismatch = await tx.labourMismatch.findFirst({ where: { projectId, id: mismatchId }, include: { resolution: true } });
+        if (!mismatch) throw new NotFoundException('Mismatch observation not found in this project');
+        if (mismatch.resolution) throw new ConflictException('This observation is already resolved (§E — one resolution per observation)');
+        let resolution;
+        try {
+          resolution = await tx.labourMismatchResolution.create({
+            data: { projectId, mismatchId, resolution: input.resolution, reason: input.reason, resolvedById: actor.actorId, sourceCommandId: ctx.commandId! },
+          });
+        } catch (e) {
+          if (isUniqueViolation(e)) throw new ConflictException('This observation is already resolved (§E — one resolution per observation)');
+          throw e;
+        }
+        await recordAudit(tx, { projectId, actor, action: 'labour.mismatch.resolve', entity: 'LabourMismatchResolution', entityId: resolution.id });
+        const events: EmittedEventMeta[] = [];
+        events.push(await emitEvent(tx, {
+          projectId, actor, eventType: 'labour_mismatch.resolved', entityType: 'LabourMismatch', entityId: mismatch.id,
+          payload: { mismatchId: mismatch.id, activityId: mismatch.activityId, resolution: input.resolution, authority: actor.actorId } as unknown as Prisma.InputJsonValue,
+          effectKey: 'labour_mismatch.resolved', dispatch: {},
+        }));
+        const remaining = await tx.labourMismatch.count({
+          where: { projectId, activityId: mismatch.activityId, id: { not: mismatch.id }, resolution: { is: null } },
+        });
+        if (remaining === 0) {
+          const unblocked = await this.activityParticipant.clearLabourMismatchBlock(tx, { projectId, activityId: mismatch.activityId, actor });
+          if (unblocked) events.push(unblocked);
+        }
+        return { resultRef: resolution.id, events };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    const row = await this.prisma.labourMismatch.findFirstOrThrow({ where: { projectId, id: mismatchId }, include: { resolution: true } });
+    return serializeMismatch(row);
+  }
+
+  /** `labour.presence` — the §E Daily-Log read: per-worker musters (worker identity JOINED from
+   *  the labour register, copied nowhere) + that date's mismatch observations. A separate,
+   *  pilot-gated labour read: the daily-log module is untouched, so the non-pilot daily-log
+   *  response stays byte-identical, and the aggregate `CrewRow` steppers remain display-only. */
+  async presence(projectId: string, civilDateIso: string, user: AuthUser): Promise<LabourPresenceDto> {
+    await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
+    this.assertRead(user);
+    const civilDate = fromIsoCivilDate(civilDateIso);
+    if (!civilDate) throw new BadRequestException('civilDate must be an ISO civil date');
+    const [musters, mismatches] = await Promise.all([
+      this.prisma.labourAttendance.findMany({
+        where: { projectId, civilDate, revokedAt: null },
+        include: { worker: { select: { name: true, tradeCode: true } } },
+        orderBy: [{ shift: 'asc' }, { workerId: 'asc' }],
+      }),
+      this.prisma.labourMismatch.findMany({
+        // UNRESOLVED only — the API fails closed: a resolved observation never re-enters the
+        // Daily-Log's active mismatch list (history lives on the mismatch register itself).
+        where: { projectId, civilDate, resolution: { is: null } },
+        include: { resolution: true },
+        orderBy: { recordedAt: 'asc' },
+      }),
+    ]);
+    return {
+      civilDate: civilDateIso,
+      musters: musters.map((m) => ({
+        workerId: m.workerId, workerName: m.worker.name, tradeCode: m.worker.tradeCode, shift: m.shift,
+        deviceId: m.deviceId, manualReason: m.manualReason, recordedAt: m.recordedAt.toISOString(),
+      })),
+      mismatches: mismatches.map(serializeMismatch),
+    };
   }
 }

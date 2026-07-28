@@ -8,7 +8,7 @@ import { InspectionsQueryService } from '../inspections/inspections.query';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { deriveReadiness, gateReady, readinessReady, type ActivityReadiness, type DecisionStatus, type GateState } from '../domain/transitions';
 import { resolveProjectNode } from '../nodes/node-scope';
-import { resolveProjectRef } from '../common/project-ref';
+import { resolveProjectRef, rethrowMediaRefViolation } from '../common/project-ref';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { resolveActor } from '../common/actor';
 import { ddMmmYyyy } from '../domain/dates';
@@ -16,7 +16,7 @@ import { CLOCK, type Clock } from '../common/clock';
 import { addCivilDays, diffCivilDays, fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import type { AuthUser } from '../common/auth';
-import type { CreateActivityInput, OverrideGateInput, UpdateActivityInput } from '../contracts';
+import type { CreateActivityInput, OverrideGateInput, RecordActivityOutputInput, UpdateActivityInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -110,7 +110,54 @@ export class ActivitiesService {
   ) {
     const requirements = await loadLabourCoverageRequirements(tx, projectId, this.labourQuery, [activity.id]);
     const coverage = await this.labourCoverage.coverageFor(tx, projectId, requirements, asOf);
-    return deriveTeamReading(coverage, false);
+    // Phase 4 Task 5 (§E) — the mismatch latch is REAL: an unresolved labour mismatch fact for
+    // this activity is the §A first-match `fail`, read from Labour's own truth via the query
+    // contract (never a stored flag).
+    const mismatched = await this.labourQuery.unresolvedMismatchActivityIds(projectId, [activity.id], tx);
+    return deriveTeamReading(coverage, mismatched.has(activity.id));
+  }
+
+  /**
+   * Phase 4 Task 5 (§I) — record the ACTIVITIES-owned measured-output fact: quantity + UOM
+   * (+ optional photo evidence), immutable and append-only. Pilot-gated on the LABOUR capability
+   * (the §I productivity model ships with the labour pilot; a non-pilot project 404s). No
+   * readiness lock: measured output feeds no gate — productivity is a derived read.
+   */
+  async recordOutput(projectId: string, input: RecordActivityOutputInput, user: AuthUser, idempotencyKey?: string): Promise<{ id: string }> {
+    await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const civilDate = fromIsoCivilDate(input.civilDate);
+    if (!civilDate) throw new BadRequestException('civilDate must be an ISO civil date');
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'activities.recordOutput', idempotencyKey, requestHash: hashRequest(input),
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
+        const a = await tx.activity.findFirst({ where: { projectId, id: input.activityId }, select: { id: true } });
+        if (!a) throw new BadRequestException('activityId does not name an activity in this project');
+        // Supporting evidence must be THIS project's photo. A Media read from this service would
+        // be an undeclared Activities→Media boundary dependency, so the same-project composite
+        // `(projectId, evidenceMediaId)` FK is the validation authority — the attendance-evidence
+        // and activity-reference precedent — with its violation translated to the same 400.
+        const row = await tx.activityWorkOutput.create({
+          data: {
+            projectId, activityId: input.activityId, civilDate, shift: input.shift,
+            quantity: input.quantity, uom: input.uom, evidenceMediaId: input.evidenceMediaId ?? null,
+            note: input.note ?? null,
+            recordedById: actor.actorId, sourceCommandId: ctx.commandId!,
+          },
+        }).catch((e) => rethrowMediaRefViolation(e));
+        await recordAudit(tx, { projectId, actor, action: 'activities.recordOutput', entity: 'ActivityWorkOutput', entityId: row.id });
+        const ev = await emitEvent(tx, {
+          projectId, actor, eventType: 'activity_output.recorded', entityType: 'ActivityWorkOutput', entityId: row.id,
+          payload: { outputId: row.id, activityId: row.activityId, civilDate: input.civilDate, shift: row.shift, quantity: input.quantity, uom: row.uom },
+          effectKey: 'activity_output.recorded', dispatch: {},
+        });
+        return { resultRef: row.id, events: [ev] };
+      },
+    });
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return { id: outcome.resultRef };
   }
 
   /** Planned civil dates for a write: prefer explicit ISO input; else derive from the

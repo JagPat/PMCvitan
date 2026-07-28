@@ -74,6 +74,14 @@ export const ROLE_POLICY = {
   'attendance.revoke': ['pmc'],
   'labour.work.record': ['pmc', 'engineer', 'contractor'],
   'labour.override': ['pmc'],
+  // Phase 4 Task 5 — §E reconciliation + §I measured output. OBSERVING a crew-vs-allocation
+  // mismatch is site work (the same authority that records presence, minus the worker device
+  // path); RESOLVING one is pmc authority — the §E rule, mirroring `dailyLog.resolveMismatch`.
+  // Recording measured construction output mirrors `labour.work.record` (site facts are entered
+  // by the people on site; the fact is immutable and evidence-bearing).
+  'labour.mismatch.record': ['pmc', 'engineer'],
+  'labour.mismatch.resolve': ['pmc'],
+  'activity.output.record': ['pmc', 'engineer', 'contractor'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

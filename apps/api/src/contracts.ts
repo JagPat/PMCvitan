@@ -1155,6 +1155,54 @@ export const recordLabourWorkSchema = z
   .strict();
 export type RecordLabourWorkInput = z.infer<typeof recordLabourWorkSchema>;
 
+// ── Phase 4 Task 5 — §E labour mismatch (observation + pmc-only resolution) + §I output ───────
+/** Record a crew-vs-allocation mismatch OBSERVATION (§E): a present worker of the wrong trade
+ *  names the worker; a shortfall names none. Append-only — a correction is a resolution, never
+ *  an edit. */
+export const recordLabourMismatchSchema = z
+  .object({
+    activityId: z.string().min(1),
+    civilDate: isoCivilDateSchema,
+    shift: z.enum(['day', 'night']),
+    kind: z.enum(['wrong_trade', 'shortfall']),
+    workerId: z.string().min(1).nullish(),
+    note: z.string().trim().min(1).max(1000),
+  })
+  .strict()
+  .refine((v) => v.kind !== 'wrong_trade' || Boolean(v.workerId), {
+    message: 'a wrong_trade observation names the observed worker',
+  })
+  .refine((v) => v.kind !== 'shortfall' || !v.workerId, {
+    message: 'a shortfall observation names no worker',
+  });
+export type RecordLabourMismatchInput = z.infer<typeof recordLabourMismatchSchema>;
+
+/** Close exactly ONE mismatch observation with an append-only resolution register row (§E —
+ *  pmc authority; the observation itself is never edited). */
+export const resolveLabourMismatchSchema = z
+  .object({
+    resolution: z.string().trim().min(1).max(300),
+    reason: z.string().trim().min(1).max(1000),
+  })
+  .strict();
+export type ResolveLabourMismatchInput = z.infer<typeof resolveLabourMismatchSchema>;
+
+/** Record the §I ACTIVITIES-owned measured-output fact: quantity + UOM (+ optional photo
+ *  evidence), immutable. Quantity travels as a decimal string (the shared decimal rule). */
+export const recordActivityOutputSchema = z
+  .object({
+    activityId: z.string().min(1),
+    civilDate: isoCivilDateSchema,
+    shift: z.enum(['day', 'night']),
+    quantity: z.string().regex(/^\d{1,12}(\.\d{1,6})?$/, 'quantity must be a positive decimal'),
+    uom: z.string().trim().min(1).max(32),
+    evidenceMediaId: z.string().min(1).nullish(),
+    note: z.string().trim().min(1).max(1000).nullish(),
+  })
+  .strict()
+  .refine((v) => Number(v.quantity) > 0, { message: 'quantity must be > 0' });
+export type RecordActivityOutputInput = z.infer<typeof recordActivityOutputSchema>;
+
 /** Widen §B satisfaction for ONE requirement: work of the given trade/skill/shift may satisfy the
  *  requirement's CURRENT head identity. The server computes both fingerprints — `from` from the
  *  head spec, `to` from this technical triple — so neither is ever caller-authored. */

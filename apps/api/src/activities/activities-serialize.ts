@@ -98,6 +98,9 @@ export interface ActivitiesBakeInputs {
    *  labour-pilot project; absent for non-pilot reads, whose Team gate stays the stored flag
    *  byte-for-byte. */
   labourCoverage?: ReadonlyMap<string, RequirementLabourCoverage[]>;
+  /** Phase 4 Task 5 (§E): activities with an UNRESOLVED labour mismatch fact — the §A
+   *  first-match `fail`, from Labour's own truth via the query contract. */
+  labourMismatchBlocked?: ReadonlySet<string>;
 }
 
 /** stored → wire status remap (moved verbatim from the snapshot service). */
@@ -208,7 +211,7 @@ export function bakeActivities(base: ActivitiesBase, inputs: ActivitiesBakeInput
     // flag. An unexpired team override still supersedes. The labour-mismatch fact family lands
     // in Task 5 — no mismatch latch exists yet (false).
     if (inputs.labourCoverage && readiness.team.source !== 'override') {
-      readiness.team = deriveTeamReading(inputs.labourCoverage.get(a.id) ?? [], false);
+      readiness.team = deriveTeamReading(inputs.labourCoverage.get(a.id) ?? [], inputs.labourMismatchBlocked?.has(a.id) ?? false);
     }
     return {
       id: a.id,

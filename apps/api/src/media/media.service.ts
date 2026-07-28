@@ -11,6 +11,7 @@ import { InspectionsQueryService } from '../inspections/inspections.query';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { InventoryParticipant } from '../inventory/inventory.participant';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
+import { ActivityParticipant } from '../activities/activity.participant';
 import { resolveProjectNode } from '../nodes/node-scope';
 import { resolveProjectRef } from '../common/project-ref';
 import type { AuthUser } from '../common/auth';
@@ -50,6 +51,8 @@ export class MediaService {
     // Phase 3 Task 4 — a delete is refused while the photo is immutable stock-ledger evidence.
     private readonly inventoryParticipant: InventoryParticipant,
     private readonly labourParticipant: LabourRequirementParticipant,
+    // Phase 4 Task 5 (§I) — measured-output evidence is delete-sealed while cited.
+    private readonly activityParticipant: ActivityParticipant,
   ) {}
 
   /** Persist an uploaded photo and return its id + a signed, resolvable URL.
@@ -195,6 +198,8 @@ export class MediaService {
       // append-only observation the Team gate reads, so its selfie/QR capture cannot be deleted
       // while cited (the attendance composite FK is the database backstop).
       await this.labourParticipant.assertMediaDisposable(tx, projectId, id);
+      // Phase 4 Task 5 (§I): a photo cited as measured-output evidence is not deletable
+      await this.activityParticipant.assertMediaDisposable(tx, projectId, id);
       // Task 10 (Module 3) correction — unlink any inspection-owned evidence FIRST (participant appends
       // `inspection.evidence_removed` when a link existed), THEN delete the media row, so the projection
       // observes the removal. `null` when this media was not item-level evidence.

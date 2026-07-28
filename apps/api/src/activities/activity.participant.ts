@@ -4,6 +4,10 @@ import { emitEvent } from '../platform/events';
 import type { Actor } from '../common/actor';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 import type { GateState } from '../domain/transitions';
+import { LabourRequirementQuery } from '../labour/labour.query';
+
+/** The §E labour block banner — the clear selector, so a material block is never labour-cleared. */
+export const LABOUR_MISMATCH_BLOCK = 'Crew ≠ allocated';
 
 /**
  * Phase 2 Task 7 / Task 10 (Module 4) — the activity module's transaction-bound WORKFLOW PARTICIPANT.
@@ -29,6 +33,11 @@ import type { GateState } from '../domain/transitions';
  */
 @Injectable()
 export class ActivityParticipant {
+  // Phase 4 Task 5 (§E) — labour truth for the block handover is read through the QUERY CONTRACT
+  // (the declared `activities → labour` read edge; LabourRequirementQuery injects only Prisma, so
+  // no DI cycle with the labour services that use this participant).
+  constructor(private readonly labourQuery: LabourRequirementQuery) {}
+
   /**
    * The sign-off TARGET a closing-inspection decide reads before its command runs: the linked
    * activity's identity, display name (fast pre-validation only — the in-transaction methods below
@@ -211,18 +220,105 @@ export class ActivityParticipant {
     const blocked = await tx.activity.findMany({
       where: { projectId, decisionId, gateMaterial: 'fail', status: 'blocked' },
     });
+    // Phase 4 Task 5 (§E): a material clear must not erase a still-unresolved LABOUR dispute on
+    // the same activity — the labour block is re-asserted (banner handover) instead of restored.
+    // Labour truth is read through the query contract (the declared activities → labour edge).
+    const labourBlocked = blocked.length
+      ? await this.labourQuery.unresolvedMismatchActivityIds(projectId, blocked.map((a) => a.id), tx)
+      : new Set<string>();
     for (const a of blocked) {
       await tx.activity.update({
         where: { id: a.id },
-        data: {
-          gateMaterial: 'wait' as GateState,
-          status: a.actualStart != null || a.actualStartDate != null ? 'in_progress' : 'not_started',
-          block: null,
-        },
+        data: labourBlocked.has(a.id)
+          ? { gateMaterial: 'wait' as GateState, block: LABOUR_MISMATCH_BLOCK }
+          : {
+              gateMaterial: 'wait' as GateState,
+              status: a.actualStart != null || a.actualStartDate != null ? 'in_progress' : 'not_started',
+              block: null,
+            },
       });
     }
     if (blocked.length === 0) return null;
     return emitEvent(tx, { projectId, actor, eventType: 'activity.material_unblocked', entityType: 'Activity', entityId: blocked[0].id, payload: { decisionId, unblocked: blocked.length }, effectKey: 'activity.material_unblocked', dispatch: {} });
+  }
+
+  /**
+   * Phase 4 Task 5 (§E) — the labour sibling of {@link blockForMaterialMismatch}, invoked by the
+   * labour `mismatch.record` command inside ITS locked transaction (cycle-exempt participant
+   * edge). Unlike the material pair this NEVER touches the stored `gateTeam`: on a labour-pilot
+   * project the Team gate is DERIVED, and the first-match `fail` comes from the unresolved
+   * `LabourMismatch` facts themselves. What the participant owns is the activity's OPERATIONAL
+   * state — status `blocked` + the block banner — so the site sees the dispute. Appends ONE
+   * activities-owned `activity.labour_blocked` signal when the status changed, so the activities
+   * projection observes the block (the labour-owned `labour_mismatch.recorded` in the same
+   * transaction announces the FACT; this signal announces the activity-state consequence).
+   */
+  async blockForLabourMismatch(
+    tx: Prisma.TransactionClient,
+    params: { projectId: string; activityId: string; actor: Actor },
+  ): Promise<EmittedEventMeta | null> {
+    const { projectId, activityId, actor } = params;
+    // Only a running-or-pending activity is operationally blocked: `done` is history,
+    // `awaiting_signoff` keeps its pending completion claim (the derived Team gate still fails —
+    // the mismatch fact is the truth), and an ALREADY-blocked activity keeps its current banner
+    // (a material block that clears later re-asserts the labour block, see
+    // clearMaterialMismatchBlock — the labour dispute is never silently dropped).
+    // The transition is a CAS, not read-then-write: `activities.complete` does NOT take the
+    // readiness lock, so a concurrent completion can commit `awaiting_signoff` between a plain
+    // read and an id-only update. The status predicate re-evaluates under the row lock, so the
+    // later writer observes the committed transition and this block simply does not happen.
+    const { count } = await tx.activity.updateMany({
+      where: { projectId, id: activityId, status: { in: ['not_started', 'in_progress'] } },
+      data: { status: 'blocked', block: LABOUR_MISMATCH_BLOCK },
+    });
+    if (count === 0) return null;
+    // The activities projection refreshes on ACTIVITY-owned signals only — without this event a
+    // servable schedule projection would keep serving the pre-block status.
+    return emitEvent(tx, { projectId, actor, eventType: 'activity.labour_blocked', entityType: 'Activity', entityId: activityId, payload: { activityId }, effectKey: 'activity.labour_blocked', dispatch: {} });
+  }
+
+  /**
+   * Phase 4 Task 5 (§E) — the INVERSE: called by the labour mismatch-resolution command (same
+   * locked transaction) ONLY after it proved no unresolved mismatch observation remains for the
+   * activity. Selection is by the labour block banner, so a material block on the same activity
+   * is never cleared by a labour resolution. Status derives honestly from recorded work state;
+   * appends ONE `activity.labour_unblocked` signal (activities-owned, the material rule).
+   */
+  async clearLabourMismatchBlock(
+    tx: Prisma.TransactionClient,
+    params: { projectId: string; activityId: string; actor: Actor },
+  ): Promise<EmittedEventMeta | null> {
+    const { projectId, activityId, actor } = params;
+    const blocked = await tx.activity.findMany({
+      where: { projectId, id: activityId, status: 'blocked', block: LABOUR_MISMATCH_BLOCK },
+    });
+    let changed = 0;
+    for (const a of blocked) {
+      // CAS on the same selector (the F-A rule): only a row STILL carrying the labour banner is
+      // restored, so a transition that landed between the read and this write is never overwritten.
+      const { count } = await tx.activity.updateMany({
+        where: { projectId, id: a.id, status: 'blocked', block: LABOUR_MISMATCH_BLOCK },
+        data: {
+          status: a.actualStart != null || a.actualStartDate != null ? 'in_progress' : 'not_started',
+          block: null,
+        },
+      });
+      changed += count;
+    }
+    if (changed === 0) return null;
+    return emitEvent(tx, { projectId, actor, eventType: 'activity.labour_unblocked', entityType: 'Activity', entityId: activityId, payload: { activityId, unblocked: changed }, effectKey: 'activity.labour_unblocked', dispatch: {} });
+  }
+
+  /**
+   * Phase 4 Task 5 (§I) — refuse deleting a photo cited as measured-output evidence, invoked BY
+   * the owning media module's delete transaction (the inventory/labour pattern): history without
+   * its evidence is not history.
+   */
+  async assertMediaDisposable(tx: Prisma.TransactionClient, projectId: string, mediaId: string): Promise<void> {
+    const cited = await tx.activityWorkOutput.count({ where: { projectId, evidenceMediaId: mediaId } });
+    if (cited > 0) {
+      throw new ConflictException('This photo is cited as measured-output evidence and cannot be deleted (§I)');
+    }
   }
 
   /**
