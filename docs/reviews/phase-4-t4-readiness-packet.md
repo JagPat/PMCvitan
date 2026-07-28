@@ -235,3 +235,38 @@ Correction-round battery (all first-run, no re-kicks): `pnpm check` EXIT 0 (web 
 probes; zero pre-existing tests modified); `upgrade-proof.sh` PASSED (the guarded migration
 applies over the legacy fixture, table row-free); `test:e2e:api:allmodules` **31/31** and
 `:outbox` **25/25**.
+
+## 8. Codex round-2 correction (3 findings on the late `38e5c42` review) + the main merge
+
+Codex's timed-out attempt for `38e5c42` landed late with three P2 findings. The gate's exact-head
+rule discards stale-head evidence — and its FRESH review of `e8b1c4a` (identical app code)
+returned a clean +1 — but the three defects are REAL: each was reproduced RED at `e8b1c4a` (the
+`ROUND-2` probes) before fixing, so they do not ride to merge silently. The same push carries the
+conflict-bot-directed merge of `origin/main` (PRs #241/#243 — orchestrator scripts only, zero
+app code), which was required regardless: the branch was behind and no verdict could merge it.
+
+- **R2-A — only drawable commitments forecast.** `acceptableFingerprints` (head + active
+  substitution targets) governed committed-capacity matching, but the allocation command (and
+  its DB trigger) draw ONLY the head fingerprint — a substitution widens what an existing
+  ALLOCATION may satisfy (§B), never what a commitment can be drawn for. Supply matching now
+  uses the new explicit `LabourCoverageRequirement.headFingerprint` (set by both loaders).
+  Probe: head revised A→B + a B→A substitution + an A commitment → allocation 400s (ground
+  truth) and the forecast is `blocked`, never `at-risk`.
+- **R2-B — delivered draws stay consumed.** The project-wide drawn count admitted only
+  `status='active'` allocations, so releasing an allocation whose WORK FACT still sources its
+  requirement freed the commitment to cover a second shortfall — one delivered supplier
+  person-shift counted twice. Drawn now counts allocations that are active OR carry ≥1 work
+  fact. Probe distinguishes both sides: a workless release FREES the draw (the allocation
+  command may re-draw it — Task-3 semantics preserved, one at-risk + one blocked), while a
+  delivered-then-released draw keeps requirement A `ready` (worked guardrail) and requirement B
+  `blocked`.
+- **R2-C — heads resolve before activity scoping.** `loadLabourCoverageRequirements` filtered by
+  `activityId` in SQL before choosing the max revision, so a requirement revised onto a NEW
+  activity left its stale revision as an "open head" on the OLD activity — gating A on demand B
+  now owns. Heads are now folded PROJECT-WIDE, then scoped by the activity that owns the head.
+  Probe: after the move, activity A's Team gate is `na` and B carries the real `fail`.
+
+Correction-round battery (all first-run): `pnpm check` EXIT 0 (automation 52/52, web 432/432,
+API 678/678); full integration on a PRISTINE migrated DB **70 files / 678 tests** (+3 ROUND-2
+probes); `upgrade-proof.sh` PASSED; `test:e2e:api:allmodules` **31/31** and `:outbox` **25/25**.
+NO migration change in this round (`20270301000000` retains only its round-1 guards).

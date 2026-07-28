@@ -98,6 +98,7 @@ async function loadLabourForecastRequirements(
       revision: p.revision,
       activityId: p.activityId,
       shift: spec.shift,
+      headFingerprint: own,
       acceptableFingerprints: [own, ...substituteTargets],
       slices: spec.demandSlices.map((s) => ({ civilDate: s.civilDate, personShiftQty: s.personShiftQty })),
     };

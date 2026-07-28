@@ -729,4 +729,70 @@ describe('Phase 4 Task 4 — §A labour readiness (live PG)', () => {
     ).rejects.toMatchObject({ status: 409 }); // ground truth: not drawable
     expect((await forecastOf(projectId, act))[0]!.verdict).toBe('blocked'); // RED at 09db0a5: 'at-risk'
   });
+
+  // ── Codex round-2 corrections (3 findings on the 38e5c42 review) — each reproduced RED first ──
+
+  it('ROUND-2 A: a commitment for a SUBSTITUTE fingerprint is never forecast — allocation draws only the head fingerprint', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const act = await freshActivity(projectId);
+    const d = day(3);
+    // head A (mason/bar-bending): commit supplier capacity carrying fingerprint A
+    const req = await labourRequirement(projectId, act, [{ civilDate: d, personShiftQty: 1 }]);
+    const { commitmentId } = await committedCapacity(projectId, req, d, 1);
+    // revise to head B (carpenter/shuttering), then approve the A spec as a SUBSTITUTE for B —
+    // acceptable fingerprints are now {B, A}, but only B is DRAWABLE
+    await reviseLabour(projectId, req, act, [{ civilDate: d, personShiftQty: 1 }], { tradeCode: 'carpenter', skillCode: 'shuttering' });
+    await capacity.approveSkillSubstitution(projectId, { requirementId: req.requirementId, tradeCode: 'mason', skillCode: 'bar-bending', shift: 'day', reason: 'masons may stand in' }, pmc(projectId));
+    // ground truth: the A commitment cannot be drawn for head B
+    const w = await onboardWorker(projectId);
+    await expect(
+      capacity.allocate(projectId, { activityId: act, requirementId: req.requirementId, civilDate: d, workerId: w, capacityCommitmentId: commitmentId }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 400 });
+    // so the forecast must not advertise it (RED at e8b1c4a: 'at-risk')
+    expect((await forecastOf(projectId, act))[0]!.verdict).toBe('blocked');
+  });
+
+  it('ROUND-2 B: a released allocation with a WORK FACT keeps its commitment draw consumed; a workless release frees it', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const actA = await freshActivity(projectId);
+    const actB = await freshActivity(projectId);
+    const d = day(2);
+    const reqA = await labourRequirement(projectId, actA, [{ civilDate: d, personShiftQty: 1 }]);
+    await labourRequirement(projectId, actB, [{ civilDate: d, personShiftQty: 1 }]);
+    const { commitmentId } = await committedCapacity(projectId, reqA, d, 1);
+    const w = await onboardWorker(projectId);
+    const first = (await capacity.allocate(projectId, { activityId: actA, requirementId: reqA.requirementId, civilDate: d, workerId: w, capacityCommitmentId: commitmentId }, pmc(projectId))).allocations[0]!;
+
+    // (a) release with NO work: the supplier person-shift was never delivered — the commitment is
+    // freed (the allocation command may re-draw it), so it may cover exactly ONE shortfall again
+    await capacity.release(projectId, first.id, { reason: 'reassigned before the shift' }, pmc(projectId));
+    const freed = await liveDto(projectId);
+    expect([freed.forecast[actA]?.verdict, freed.forecast[actB]?.verdict].sort()).toEqual(['at-risk', 'blocked']);
+
+    // (b) re-draw, DELIVER (work fact), then release: the person-shift was SPENT — reqA stays
+    // sourced via the §A worked guardrail, and the commitment must NOT resurface for B
+    const second = (await capacity.allocate(projectId, { activityId: actA, requirementId: reqA.requirementId, civilDate: d, workerId: w, capacityCommitmentId: commitmentId }, pmc(projectId))).allocations[0]!;
+    await capacity.recordWork(projectId, { allocationId: second.id, workedMinutes: 480 }, pmc(projectId));
+    await capacity.release(projectId, second.id, { reason: 'shift delivered' }, pmc(projectId));
+    const after = await liveDto(projectId);
+    expect(after.forecast[actA]?.verdict).toBe('ready'); // delivered work keeps A sourced
+    expect(after.forecast[actB]?.verdict).toBe('blocked'); // RED at e8b1c4a: 'at-risk' — the release freed the draw
+  });
+
+  it('ROUND-2 C: a requirement revised onto a NEW activity leaves NO labour demand on the old one — heads resolve before activity scoping', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const actA = await freshActivity(projectId);
+    const actB = await freshActivity(projectId);
+    const req = await labourRequirement(projectId, actA, [{ civilDate: today, personShiftQty: 1 }]);
+    await reviseLabour(projectId, req, actB, [{ civilDate: today, personShiftQty: 1 }]);
+    // Activity A no longer owns any labour demand: its Team gate is na. RED at e8b1c4a: the
+    // A-scoped loader chose the head WITHIN the activity filter, resurrecting revision 1 as an
+    // open head and failing A on demand that activity B now owns.
+    expect((await teamOf(projectId, actA)).v).toBe('na');
+    // B carries the real (unsatisfied) demand
+    expect((await teamOf(projectId, actB)).v).toBe('fail');
+  });
 });

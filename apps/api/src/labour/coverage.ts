@@ -21,6 +21,12 @@ export interface LabourCoverageRequirement {
   revision: number;
   activityId: string;
   shift: string;
+  /** The head revision's OWN fingerprint — the ONLY fingerprint the allocation command (and its
+   *  DB trigger) will draw a `CapacityCommitment` for, so it is the only fingerprint the
+   *  FORECAST may match committed capacity against (round-2: a substitution widens what an
+   *  EXISTING allocation may satisfy, §B — it never makes a foreign-fingerprint commitment
+   *  drawable). */
+  headFingerprint: string;
   acceptableFingerprints: string[];
   slices: ReadonlyArray<{ civilDate: string; personShiftQty: number }>;
 }

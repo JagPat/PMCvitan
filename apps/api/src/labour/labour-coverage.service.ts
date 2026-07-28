@@ -268,14 +268,26 @@ export class LabourCoverageService {
         })
       : [];
     // F2 — a person-shift drawn by ANY active allocation anywhere in the project is spent.
+    // Round-2: an allocation that produced a WORK FACT stays consumed even after release — the
+    // supplier person-shift was DELIVERED (the work fact keeps its requirement sourced via the
+    // §A worked guardrail), so releasing the row must not free the commitment to cover a second
+    // shortfall. Only a release with NO recorded work returns the capacity (the worker never
+    // served; the allocation command may re-draw it, and the forecast may re-advertise it).
     const drawnRows = commitments.length
-      ? await tx.workerAllocation.groupBy({
-          by: ['capacityCommitmentId'],
-          where: { projectId, status: 'active', capacityCommitmentId: { in: commitments.map((c) => c.id) } },
-          _count: { _all: true },
+      ? await tx.workerAllocation.findMany({
+          where: {
+            projectId,
+            capacityCommitmentId: { in: commitments.map((c) => c.id) },
+            OR: [{ status: 'active' }, { work: { some: {} } }],
+          },
+          select: { capacityCommitmentId: true },
         })
       : [];
-    const drawn = new Map(drawnRows.map((row) => [row.capacityCommitmentId as string, row._count._all]));
+    const drawn = new Map<string, number>();
+    for (const row of drawnRows) {
+      const id = row.capacityCommitmentId as string;
+      drawn.set(id, (drawn.get(id) ?? 0) + 1);
+    }
 
     // Expand the undrawn remainder into unit supply slots, earliest promise first (deterministic).
     const slots: SupplySlot[] = [];
@@ -312,14 +324,18 @@ export class LabourCoverageService {
       return false;
     };
     for (const r of [...requirements].sort(canonicalOrder)) {
-      const acceptable = new Set(r.acceptableFingerprints);
       for (const s of r.slices) {
         const c = counts.get(sliceKey(r.requirementId, s.civilDate, r.shift)) ?? EMPTY_COUNTS;
         const need = s.personShiftQty - c.coveredSourced;
         if (need <= 0) continue;
+        // Round-2: committed capacity matches the HEAD fingerprint ONLY. The allocation command
+        // (and its DB trigger) refuse to draw a commitment whose fingerprint differs from the
+        // current head — a substitution widens what an existing ALLOCATION may satisfy (§B), but
+        // it never makes a foreign-fingerprint commitment drawable, so advertising one would be
+        // §A cover that cannot convert into execution capacity.
         const eligibleSlots = slots
           .map((slot, i) => ({ slot, i }))
-          .filter(({ slot }) => slot.civilDate === s.civilDate && slot.shift === r.shift && acceptable.has(slot.fingerprint))
+          .filter(({ slot }) => slot.civilDate === s.civilDate && slot.shift === r.shift && slot.fingerprint === r.headFingerprint)
           .map(({ i }) => i);
         const shortfall: SliceShortfall = { requirementId: r.requirementId, civilDate: s.civilDate, need, units: [], matched: false, coveringDate: null };
         shortfalls.set(sliceKey(r.requirementId, s.civilDate, r.shift), shortfall);

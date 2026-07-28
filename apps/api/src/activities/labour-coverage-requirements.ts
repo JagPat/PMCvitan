@@ -25,8 +25,12 @@ export async function loadLabourCoverageRequirements(
   activityIds?: readonly string[],
 ): Promise<LabourCoverageRequirement[]> {
   if (activityIds && activityIds.length === 0) return [];
+  // Round-2: resolve the head revision PROJECT-WIDE before any activity scoping. A revision may
+  // move a requirement onto a DIFFERENT activity; filtering by activity first would resurrect the
+  // old activity's stale revision as an open head and gate that activity on demand it no longer
+  // owns. The head is chosen across every revision, then scoped by the activity that owns it NOW.
   const rows = await tx.activityRequirement.findMany({
-    where: { projectId, type: 'labour', ...(activityIds ? { activityId: { in: [...activityIds] } } : {}) },
+    where: { projectId, type: 'labour' },
     orderBy: [{ requirementId: 'asc' }, { revision: 'asc' }],
     select: { requirementId: true, revision: true, activityId: true, status: true },
   });
@@ -35,7 +39,10 @@ export async function loadLabourCoverageRequirements(
     const cur = head.get(r.requirementId);
     if (!cur || r.revision > cur.revision) head.set(r.requirementId, r);
   }
-  const heads = [...head.values()].filter((r) => r.status === 'open');
+  const scope = activityIds ? new Set(activityIds) : null;
+  const heads = [...head.values()].filter(
+    (r) => r.status === 'open' && (!scope || scope.has(r.activityId)),
+  );
   if (heads.length === 0) return [];
   const [details, targets] = await Promise.all([
     labourQuery.detailsFor(projectId, heads, tx),
@@ -54,6 +61,7 @@ export async function loadLabourCoverageRequirements(
       revision: h.revision,
       activityId: h.activityId,
       shift: spec.shift,
+      headFingerprint: own,
       acceptableFingerprints: [own, ...substituteTargets],
       slices: spec.demandSlices.map((s) => ({ civilDate: s.civilDate, personShiftQty: s.personShiftQty })),
     });
