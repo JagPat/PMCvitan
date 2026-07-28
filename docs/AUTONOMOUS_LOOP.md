@@ -128,9 +128,13 @@ Phase 4 Task 5 is merged and cleared (PR #245 at `main` `d8a9c50` — a fresh cl
 exact head `119816b`; twelve findings across three in-branch Codex rounds all fixed with
 reproduce-first probes; one gate recovery dispatch was needed after a transient double Codex
 timeout, validated against the exact terminal `codex-current-head` status ID). Phase 4 Task 6
-(§J frontend surfaces + the pilot acceptance chain + the consolidated Phase-4 packet) is IN
-PROGRESS on branch `claude/phase4-task6` from `main` `d8a9c50` — the FINAL Phase-4 review stop.
-See `docs/STATUS.md` and `docs/reviews/phase-4-t5-reconciliation-packet.md`.
+(§J frontend surfaces + the pilot acceptance chain + the consolidated Phase-4 packet) is
+DELIVERED on draft PR #246 (branch `claude/phase4-task6` from `main` `d8a9c50`) riding the
+exact-head `codex-current-head` gate — the FINAL Phase-4 review stop. The Labour hub, store
+slice, field ops, extended surfaces, web suite and the real-browser labour-pilot acceptance
+chain are frontend-only (no schema, no migration, no API change) over the cleared Tasks 1–5
+facts. See `docs/STATUS.md`, `docs/reviews/phase-4-t6-frontend-packet.md` and
+`docs/reviews/phase-4-consolidated-review-packet.md`.
 
 ## External Dependencies
 

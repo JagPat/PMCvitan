@@ -46,6 +46,14 @@ import type {
   PurchaseOrderDto,
   StockLotDto,
   MaterialIssueDto,
+  LabourReadinessDto,
+  LabourWorkforceDto,
+  LabourCatalogDto,
+  LabourRequisitionsDto,
+  LabourPurchaseOrdersDto,
+  LabourCommitmentsDto,
+  LabourCapacityDto,
+  LabourPresenceDto,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -853,6 +861,86 @@ export class ApiGateway {
     return this.cmd('/requisitions', input, idempotencyKey);
   }
 
+  // ── Phase 4 Task 6 (§J) — the pilot LABOUR reads (capability-gated on the server; 404 off-pilot).
+  //    Greenfield module reads, module-query-only: fetched together in `loadLabour()` only when the
+  //    project has the `labour` capability. The requirements list is SHARED with materials (the
+  //    type-neutral GET serves both types when either capability is on). ──
+
+  /** The forecast Team readiness per activity (labour-owned, projection-backed). */
+  labourReadiness(): Promise<LabourReadinessDto> {
+    return this.req<LabourReadinessDto>(`/projects/${this.projectId}/labour/readiness`);
+  }
+  /** The workforce roster: workers (+skills, active windows, revocation) and crews. */
+  labourWorkforce(): Promise<LabourWorkforceDto> {
+    return this.req<LabourWorkforceDto>(`/projects/${this.projectId}/labour/workforce`);
+  }
+  /** The project trade/skill catalog (the §J trade pickers read this). */
+  labourCatalog(): Promise<LabourCatalogDto> {
+    return this.req<LabourCatalogDto>(`/projects/${this.projectId}/labour/catalog`);
+  }
+  /** The labour requisitions (§F chain, each with its demand-slice lines). */
+  labourRequisitions(): Promise<LabourRequisitionsDto> {
+    return this.req<LabourRequisitionsDto>(`/projects/${this.projectId}/labour/requisitions`);
+  }
+  /** The labour purchase orders (versions → slice lines with frozen rates). */
+  labourPurchaseOrders(): Promise<LabourPurchaseOrdersDto> {
+    return this.req<LabourPurchaseOrdersDto>(`/projects/${this.projectId}/labour/pos`);
+  }
+  /** The capacity commitments (per PO-line slice, with the append-only promise history). */
+  labourCommitments(): Promise<LabourCommitmentsDto> {
+    return this.req<LabourCommitmentsDto>(`/projects/${this.projectId}/labour/commitments`);
+  }
+  /** The §C capacity facts: allocations, attendance, work facts, skill substitutions. */
+  labourCapacity(): Promise<LabourCapacityDto> {
+    return this.req<LabourCapacityDto>(`/projects/${this.projectId}/labour/capacity`);
+  }
+  /** The §E presence read for ONE civil date: per-worker musters + UNRESOLVED mismatches. */
+  labourPresence(civilDate: string): Promise<LabourPresenceDto> {
+    return this.req<LabourPresenceDto>(`/projects/${this.projectId}/labour/presence?civilDate=${encodeURIComponent(civilDate)}`);
+  }
+  /** The §I planned-vs-actual productivity rows (activities-owned derived join). */
+  labourProductivity(): Promise<LabourProductivityResult> {
+    return this.req<LabourProductivityResult>(`/projects/${this.projectId}/activities/labour-productivity`);
+  }
+
+  // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command
+  //    routed through the durable write-ahead outbox with the two-key split (see OutboxOp), so a
+  //    lost/uncertain response replays the SAME command exactly once. ──
+
+  /** Allocate ONE worker (or expand a crew) onto a requirement's demand slice (§C `allocation.allocate`). */
+  allocateLabour(input: AllocateLabourInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/labour/allocations', input, idempotencyKey);
+  }
+  /** Record a worker's muster for a (civilDate, shift) — device-evidenced or a pmc manual exception. */
+  recordLabourAttendance(input: RecordLabourAttendanceInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/labour/attendance', input, idempotencyKey);
+  }
+  /** Record worked minutes against an ACTIVE allocation (§C `work.record`). */
+  recordLabourWork(input: RecordLabourWorkInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/labour/work', input, idempotencyKey);
+  }
+  /** Raise ONE labour requisition for a shortfall's demand slices (§F chain). */
+  createLabourRequisition(input: CreateLabourRequisitionInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/labour/requisitions', input, idempotencyKey);
+  }
+
+  // ── Phase 4 Task 6 (§J) — labour ROSTER commands (Team-screen onboarding surface). These are
+  //    pmc-authored, low-frequency and dispatched DIRECTLY (not via the field outbox) with a fresh
+  //    Idempotency-Key per action — the daily field ops above are the offline-first set. ──
+
+  onboardWorker(input: { name: string; tradeCode: string; skillCodes: string[]; activeFrom: string; activeTo?: string | null }, idempotencyKey?: string): Promise<{ id: string }> {
+    return this.cmd('/labour/workers', input, idempotencyKey);
+  }
+  formCrew(input: { name: string; inchargeWorkerId?: string; activeFrom: string; activeTo?: string | null }, idempotencyKey?: string): Promise<{ id: string }> {
+    return this.cmd('/labour/crews', input, idempotencyKey);
+  }
+  addCrewMember(crewId: string, workerId: string, idempotencyKey?: string): Promise<{ id: string }> {
+    return this.cmd(`/labour/crews/${crewId}/members`, { workerId }, idempotencyKey);
+  }
+  bindWorkerDevice(deviceId: string, workerId: string, idempotencyKey?: string): Promise<{ deviceId: string; workerId: string }> {
+    return this.cmd(`/worker-devices/${deviceId}/bind`, { workerId }, idempotencyKey);
+  }
+
   /** POST to a project-scoped route returning the ROUTE's own JSON (not an ApiSnapshot). Mirrors `p`'s
    *  idempotency-key behavior for the module-owned Phase-3 operational commands. */
   private cmd<T = unknown>(path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
@@ -1061,6 +1149,51 @@ export interface CreateMaterialRequisitionInput {
   lines: { requirementId: string; revision: number; qty: string }[];
 }
 
+// ── Phase 4 Task 6 (§J) — labour field-op inputs (server zod contracts mirror these). `lines`
+//    arrays are mutable for the same immer-draft reason as the materials inputs. ──
+export interface AllocateLabourInput {
+  activityId: string;
+  requirementId: string;
+  civilDate: string;
+  workerId?: string;
+  crewId?: string;
+  capacityCommitmentId?: string;
+}
+export interface RecordLabourAttendanceInput {
+  workerId: string;
+  civilDate: string;
+  shift: 'day' | 'night';
+  deviceId?: string;
+  manualReason?: string;
+  evidenceMediaId?: string;
+}
+export interface RecordLabourWorkInput {
+  allocationId: string;
+  workedMinutes: number;
+  note?: string;
+}
+export interface CreateLabourRequisitionInput {
+  title: string;
+  notes?: string;
+  lines: { requirementId: string; revision: number; civilDate: string; personShiftQty: number }[];
+}
+
+/** The §I productivity read (activities-owned; inline server shape, no shared DTO). */
+export interface LabourProductivityResult {
+  activities: {
+    activityId: string;
+    rows: {
+      civilDate: string;
+      shift: string;
+      plannedPersonShifts: number;
+      presentWorkers: number;
+      workedMinutes: number;
+      outputs: { quantity: string; uom: string }[];
+      productivityPerHour: { uom: string; quantityPerHour: string }[] | null;
+    }[];
+  }[];
+}
+
 export type OutboxOp =
   // the decision-pillar ops carry a stable idempotencyKey (Phase 2 Task 5): a queued op replayed
   // on reconnect reaches the server under the SAME key it was first sent with, so a lost-response
@@ -1104,6 +1237,13 @@ export type OutboxOp =
   | { t: 'issueStock'; input: IssueStockInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'consumeStock'; input: ConsumeStockInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'createRequisition'; input: CreateMaterialRequisitionInput; idempotencyKey: string; coalesceKey: string }
+  // Phase 4 Task 6 (§J) — the labour field ops, born with the SAME two-key split (labourKeys.ts):
+  // a fresh per-action idempotencyKey (exactly-once replay) + a deterministic coalesceKey
+  // (equivalent-action dedupe while pending).
+  | { t: 'allocateLabour'; input: AllocateLabourInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'recordAttendance'; input: RecordLabourAttendanceInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'recordLabourWork'; input: RecordLabourWorkInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'createLabourRequisition'; input: CreateLabourRequisitionInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
@@ -1174,6 +1314,16 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.consumeStock(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'createRequisition':
       return gw.createMaterialRequisition(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    // Phase 4 Task 6 (§J) — the labour field ops follow the identical replay contract: route JSON
+    // chased with a snapshot refetch; the store's labour reconcile hook reloads the labour view.
+    case 'allocateLabour':
+      return gw.allocateLabour(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'recordAttendance':
+      return gw.recordLabourAttendance(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'recordLabourWork':
+      return gw.recordLabourWork(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'createLabourRequisition':
+      return gw.createLabourRequisition(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'uploadMedia':
       // uploadMedia returns {id,url}, not a snapshot — refetch so the flush
       // reconciles dailyLog.photos (the real, server-stored photo replaces the

@@ -1,0 +1,160 @@
+# Phase 4 Task 6 — Frontend surfaces + pilot acceptance chain (§J) — Review Packet
+
+Vision alignment: Phase 4 fills the "Team" readiness gate with the same canonical, transactional,
+lock-protected discipline Phase 3 gave the "Material" gate. Task 6 is the §J FRONTEND completion:
+the ONE capability-gated Labour hub plus the extended Schedule/DailyLog/Team/Inbox surfaces and the
+offline/idempotent field ops, proven by a real-browser live-PG acceptance chain in BOTH capability
+states. It is read + UI over the already-cleared Tasks 1–5 facts — **no domain schema, no
+migration, no API change**. One project = one site; project records never become global; one fact
+has one canonical owner (every number this UI shows is a server read; no verdict is derived in the
+browser); attributable approvals preserved (every command carries the session identity + an
+Idempotency-Key); tenant isolation unchanged (the store's project-scope teardown covers the new
+labour state).
+
+Base: `main` `d8a9c50` (Task 5 merged + cleared). Branch: `claude/phase4-task6`. Draft PR: #246.
+
+## 1. What this PR contains
+
+### The Labour hub (§J — the ONE new screen)
+
+`apps/web/src/screens/LabourScreen.tsx` — capability-gated (`SCREEN_CAPABILITY.labour='labour'`),
+cloning the Materials hub idioms exactly: seven tabs **readiness · demand · suppliers ·
+commitments · allocation · attendance · productivity**; summary tiles from the server forecast;
+honest `reading` / `unavailable+Retry` / `stale+Retry` load states; every action button disabled
+while its coalesce key is pending. The readiness tab shows the SERVER's `labour.readiness`
+FORECAST verdicts (`ready`/`at-risk`/`blocked` + reason + covering date); the EXECUTION Team gate
+that authorizes `activities.start` is evaluated server-side in-tx (Task 4) and reaches the
+Schedule through the baked `ActivityReadiness.team` — the browser never derives either.
+
+Operational commands (each ONE server command; no browser-side fan-out):
+
+- **allocate** — per demand slice, choose an active worker → `labour.allocation.allocate`
+  (`allocateCoalesceKey(activity, requirement, civilDate, worker)`).
+- **muster (manual exception)** — worker + shift + a REQUIRED attributable reason →
+  `labour.attendance.record` with `manualReason` (`musterCoalesceKey(worker, civilDate, shift)`).
+  The canonical §H path — the worker's OWN bound device — is server truth cleared in Task 3; the
+  hub records only the explicit pmc exception, and the button stays disabled without a reason.
+- **record work** — bounded minutes input (1–720, default 480) per ACTIVE allocation →
+  `labour.work.record` (`workCoalesceKey(allocation, minutes)`).
+- **raise labour requisition** — one command carrying the requirement's explicit
+  `(civilDate, personShiftQty)` slices → `labour.requisition.create`
+  (`labourRequisitionCoalesceKey(lines)`, content-deterministic + order-insensitive).
+
+### The store labour slice (the cleared materials discipline, cloned)
+
+- `store/labour.ts` — `LabourView` (readiness + shared type-neutral requirements + workforce +
+  catalog + requisitions + POs + commitments + §C capacity facts + today's presence +
+  productivity), all greenfield module-query reads.
+- `store/store.ts` — `loadLabour()` with latest-request ownership (`labourLoadSeq`) + project-scope
+  guard + stale-while-revalidate + last-good-on-error; `dispatchLabour()` (capability guard →
+  coalesce vs the durable outbox + `labourPending` → write-ahead); the labour flush hook (resolved
+  coalesce keys unblock buttons, ANY attempted labour op — success, terminal drop, or transient —
+  reloads the labour truth, scope-guarded); `hydrateOutbox` runs `normalizeLabourOutbox` (labour
+  ops are BORN two-keyed — a malformed row is dropped, never replayed with broken identity) and
+  rebuilds `labourPending`; `loadShell` triggers the bundle when the shell reports `labour`.
+- `lib/labourKeys.ts` — the labour twin of `materialsKeys.ts`, born already carrying the PR-#208
+  two-key split (fresh `idempotencyKey` per deliberate action; deterministic `coalesceKey` for
+  equivalent-action-while-pending dedupe).
+- `data/apiGateway.ts` — 10 labour reads, 4 outbox field commands, 4 direct roster commands, 4
+  `OutboxOp` variants + replay cases (route JSON chased with a snapshot refetch; the labour
+  reconcile hook reloads the bundle).
+- `store/projectScope.ts` — `labourView`/`labourPending` join `ProjectDataState` and `labourLoad`
+  joins `ModuleReadState`, so every scope change tears the labour state down.
+
+### Extended surfaces (§J table)
+
+| §J surface | Delivered as |
+|---|---|
+| Capability gate + nav | `lib/screens.ts`: `SCREEN_META.labour`, `SCREEN_CAPABILITY.labour='labour'`, `SCREEN_MODULE.labour=null` (module filter no-op — the capability gates), `screensFor` pmc + engineer; `useNavItems` labour badge = at-risk + blocked forecast count |
+| Inbox | `store/selectors.ts` — the `labour-shortage` action (pmc/engineer, `labourView` null-guard is the off-pilot gate, counts blocked/at-risk from the server forecast, red when anything is blocked, worst reason in the detail, jumps to the hub) |
+| Site Schedule Team gate | **No frontend change needed** — `gatesFor` already reads `readiness.team` verbatim, and Task 4's read-path bake derives the Team gate server-side on-pilot. The e2e proves the derived gate by starting the activity through it. |
+| Daily Log attendance | `DailyLogScreen.tsx` — a pilot-only per-worker presence section from the labour-owned `labour.presence` read (musters + unresolved mismatches, en/hi/gu `labourLabels`); the aggregate `CrewRow` steppers are UNTOUCHED and stay display-only; `labourView` is null off-pilot so the non-pilot daily log renders byte-identically |
+| Team roster | `TeamScreen.tsx` — the labour roster section (workers + crews from `labour.workforce`, pmc onboarding against the `labour.catalog` trade/skill pickers, device→worker binding via `orgs.workerDevice.bind`) |
+| Team Access onboarding | **Deliberately homed on the Team screen** (documented deviation): TeamAccess is the AUTH step machine whose anonymous QR/tap device flow must stay byte-identical (§D/§H — Task 1/3 proofs); worker onboarding + device binding are pmc ROSTER authority, so they live next to the human team roster. No TeamAccess change. |
+| i18n | `packages/shared/src/i18n/dictionary.ts` — `labourLabels` (attendance/present/crew/worker/shifts/mismatch) en/hi/gu + the `labour` i18next namespace |
+
+### Honest §J residuals (stated, not hidden)
+
+- The manual-exception muster form ships WITHOUT inline photo capture. `evidenceMediaId` is
+  server-supported (Task-3 F2: same-project Media FK + delete seal) and the op rides the same
+  durable outbox as daily-log field captures, but wiring an offline photo→muster two-step was
+  deferred rather than half-built: the §H TRUSTED evidence path is the worker's own bound device
+  (server-sealed), and the manual path already REQUIRES an attributable reason.
+- Crew-level allocate/`formCrew` UI is not on the hub (the gateway carries `formCrew`/
+  `addCrewMember`; crew expansion is server truth cleared in Task 3). The hub allocates named
+  workers — the §C atomic capacity source.
+
+## 2. Tests
+
+### `apps/web/tests/labour.test.ts` — 26 probes
+
+- **§D nav gating** — hidden without the capability (even with every module enabled), shown for
+  pmc + engineer with it, never for client/contractor/consultant, and materials↔labour gate
+  INDEPENDENTLY.
+- **Inbox** — one `labour-shortage` item (red when blocked / amber at-risk-only, worst reason,
+  counts), absent when ready / no bundle / other roles.
+- **loadLabour** — off-pilot no-op (and materials-only no-op); full bundle → `ready` (presence
+  called with today's civil date); failure keeps last-good + `error`; an OLDER late success AND an
+  OLDER late failure never overwrite a NEWER result; `loadShell` triggers the bundle.
+- **Field ops** — exact inputs for allocate/muster/work/requisition; inert off-pilot; PROBE 5a
+  (double-click coalesces to ONE command), PROBE 5b (transient failure replays the SAME
+  idempotency key), PROBE 6 (terminal 4xx drops the op, clears pending, refreshes truth), PROBE 7
+  (a scope switch mid-command never mutates or toasts the new scope), DIRECTIVE #1 (two legitimate
+  identical actions separated by a confirmed completion use DIFFERENT keys), DIRECTIVE #4 (a
+  transient failure retains the op + refreshes truth, no success toast).
+- **Hydration** — persisted two-key labour ops rebuild `labourPending` + stay coalesced + replay
+  the ORIGINAL key; a malformed labour op (missing either key) is dropped and persisted back;
+  `normalizeLabourOutbox` table probes + requisition-key order-insensitivity.
+
+### `apps/web/tests/e2e-api/labour-pilot.spec.ts` — the §J acceptance chain (real browser, live PG)
+
+1. **The principal Phase-4 vertical chain** — labour requirement (one slice dated today) → the §F
+   commercial fixture (requisition → submit → approve → RFQ → vendor + profile → quote →
+   comparison → approve → PO → issue → capacity commitment promised today) → the hub shows
+   **AT-RISK** → the BROWSER allocates the named worker → **READY** (the visible forecast
+   transition) → the BROWSER records the same-day manual muster → **`activities.start` succeeds**
+   (the in-tx execution Team gate green — allocated AND present today) → the BROWSER records 480
+   worked minutes → a §I output lands → the productivity tab shows the derived join.
+2. **Shortfall** — an uncommitted labour requirement is BLOCKED, surfaces the `labour-shortage`
+   Inbox card on the For-You home, and the demand tab raises ONE labour requisition that appears
+   under suppliers.
+3. **Roster** — the Team screen onboards a worker against the catalog; the workforce register
+   confirms it.
+4. **INERT** — the plain project has NO Labour nav and `GET …/labour/readiness` 404s.
+
+Determinism: the browser context is pinned to UTC and the pilot project is created with
+`timeZone:'UTC'`, so the spec's, the server's and the browser's civil "today" agree at any
+wall-clock moment (execution coverage and the muster form both key on today). Each test provisions
+its OWN tagged trade/worker/activity; the suite ran clean twice CONSECUTIVELY against the same DB
+(4/4 + 4/4).
+
+## 3. Gate battery
+
+- **`pnpm check` EXIT 0** — automation 53/53, web lint (oxlint) + `tsc -b` typecheck clean, web
+  **458/458** (432 existing + the 26 new labour probes), web build clean, API unit **680/680**.
+- **Full integration on a pristine migrated DB** — **71 files / 693 tests** passed (the API is
+  untouched by this PR; the counts match the Task-5 merge exactly).
+- **`upgrade-proof.sh` PASSED** — no migration in this PR; every prior Phase-1..Phase-4-T5
+  seal/forgery rejection survives verbatim.
+- **`test:e2e:api:allmodules` 35/35** and **`test:e2e:api:allmodules:outbox` 35/35** — both full
+  suites CLEAN, each including `labour-pilot.spec.ts` (4 tests) and `materials-pilot.spec.ts`.
+  Honest flake record: four earlier legacy-mode runs each failed ONE long-standing
+  timing-sensitive legacy test (`project-scope` browser-history/empty-project twice,
+  `pillar-chain` inspection once, `drawings-module-query` once — never a labour surface), every
+  failing test passing on the other runs; the `project-scope` history failure was REPRODUCED with
+  an identical goBack signature on the UNCHANGED base (`d8a9c50`, changes stashed, fresh seed),
+  proving the flake is pre-existing and not attributable to this PR. The final clean runs above
+  are complete, unedited suite executions.
+- **`labour-pilot.spec.ts` re-runnability** — 4/4 twice CONSECUTIVELY against the same DB during
+  iteration, before the full-suite runs.
+
+## 4. Files touched
+
+Frontend + shared + tests + docs only. `packages/shared`: `domain/types.ts` (`ScreenKey` +
+`'labour'`), `i18n/dictionary.ts` (`labourLabels`). `apps/web/src`: `lib/labourKeys.ts` (NEW),
+`lib/screens.ts`, `data/apiGateway.ts`, `store/labour.ts` (NEW), `store/store.ts`,
+`store/projectScope.ts`, `store/selectors.ts`, `layout/useNavItems.ts`, `layout/ScreenView.tsx`,
+`screens/LabourScreen.tsx` (NEW), `screens/DailyLogScreen.tsx`, `screens/TeamScreen.tsx`.
+`apps/web/tests`: `labour.test.ts` (NEW), `e2e-api/labour-pilot.spec.ts` (NEW). Docs:
+`docs/STATUS.md`, `docs/AUTONOMOUS_LOOP.md`, `CLAUDE.md`, this packet, and
+`docs/reviews/phase-4-consolidated-review-packet.md`. **No `apps/api` change; no migration.**

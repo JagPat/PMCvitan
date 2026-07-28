@@ -329,6 +329,31 @@ export function selectActionItems(s: AppState): ActionItem[] {
     }
   }
 
+  // Phase 4 Task 6 (§J) — labour SHORTFALLS produce the twin Inbox action: one item when any
+  // activity's labour FORECAST is at-risk/blocked (the server's `labour.readiness` verdicts —
+  // never derived in the browser), red when anything is blocked outright, amber when every
+  // shortfall has committed supplier capacity inbound. Jumps to the Labour hub to resolve.
+  // Absent on a non-labour-pilot project (no bundle).
+  if ((s.role === 'pmc' || s.role === 'engineer') && s.labourView) {
+    const shortfalls = Object.values(s.labourView.readiness.forecast).filter((f) => f.verdict !== 'ready');
+    if (shortfalls.length) {
+      const blockedN = shortfalls.filter((f) => f.verdict === 'blocked').length;
+      const atRiskN = shortfalls.length - blockedN;
+      const parts: string[] = [];
+      if (blockedN) parts.push(`${blockedN} blocked`);
+      if (atRiskN) parts.push(`${atRiskN} at-risk`);
+      const worst = shortfalls.find((f) => f.verdict === 'blocked') ?? shortfalls[0];
+      items.push({
+        key: 'labour-shortage',
+        title: `${shortfalls.length} labour shortfall${plural(shortfalls.length)} (${parts.join(', ')})`,
+        detail: worst.reason,
+        screen: 'labour',
+        cta: 'Open labour',
+        tone: blockedN > 0 ? 'red' : 'amber',
+      });
+    }
+  }
+
   if (s.role === 'consultant') {
     const disc = s.memberships.find((m) => m.projectId === s.activeProjectId)?.discipline ?? (s.memberships.length === 0 ? 'structural' : undefined);
     if (disc) {

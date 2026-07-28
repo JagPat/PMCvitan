@@ -16,6 +16,7 @@ import type {
   ReservationPlan,
 } from '@vitan/shared';
 import type { MaterialsView } from './materials';
+import type { LabourView } from './labour';
 
 /**
  * The frontend project-scope lifecycle (Phase 0 Task 2).
@@ -63,6 +64,11 @@ export interface ProjectDataState {
   // them down so a stale plan/pending key never leaks into another project's Materials hub.
   reservationPlans: Record<string, ReservationPlan>;
   materialsPending: string[];
+  // Phase 4 Task 6 (§J) — the pilot Labour bundle + the in-flight labour field-op coalesce keys.
+  // Project-owned exactly like the materials pair: a scope change tears them down so a stale
+  // labour bundle / pending key never leaks into another project's Labour hub.
+  labourView: LabourView | null;
+  labourPending: string[];
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */
@@ -88,6 +94,8 @@ export function emptyProjectData(): ProjectDataState {
     materialsView: null,
     reservationPlans: {},
     materialsPending: [],
+    labourView: null,
+    labourPending: [],
   };
 }
 
@@ -115,6 +123,9 @@ export interface ModuleReadState {
   // Phase 3 Task 7 — the pilot Materials bundle load status (module-query-only, greenfield; no snapshot
   // fallback, so no `source`). 'idle' on a non-pilot project; the pilot's shell load triggers 'loading'.
   materialsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  // Phase 4 Task 6 (§J) — the pilot Labour bundle load status (module-query-only, greenfield; no
+  // snapshot fallback, so no `source`). 'idle' on a non-pilot project; the shell load triggers it.
+  labourLoad: 'idle' | 'loading' | 'ready' | 'error';
 }
 export function emptyModuleReadState(): ModuleReadState {
   return {
@@ -129,6 +140,7 @@ export function emptyModuleReadState(): ModuleReadState {
     activitiesLoad: 'idle',
     activitiesSource: null,
     materialsLoad: 'idle',
+    labourLoad: 'idle',
   };
 }
 

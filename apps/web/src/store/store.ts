@@ -62,12 +62,14 @@ import {
 import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
+import type { LabourView } from './labour';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
+import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, isLabourOpType, normalizeLabourOutbox } from '@/lib/labourKeys';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -215,6 +217,12 @@ export interface AppState {
   // pending). Both project-owned (torn down on scope change via emptyProjectData).
   reservationPlans: Record<string, ReservationPlan>;
   materialsPending: string[];
+  // Phase 4 Task 6 (§J) — the pilot LABOUR bundle + its module-query load status + the in-flight
+  // labour field-op coalesce keys. Same discipline as materials: greenfield module reads (no
+  // snapshot fallback), `null`/'idle' off-pilot, project-owned → torn down on scope change.
+  labourView: LabourView | null;
+  labourLoad: 'idle' | 'loading' | 'ready' | 'error';
+  labourPending: string[];
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
@@ -365,6 +373,20 @@ export interface AppActions {
   issueMaterial: (lotId: string, storeLocation: string, activityId: string, qty: string) => void;
   /** Record consumption against a §E MaterialIssue. */
   consumeMaterial: (issueId: string, qty: string) => void;
+  /** Phase 4 Task 6 (§J) — fetch the pilot LABOUR bundle (readiness + demand + workforce + catalog +
+   *  commercial chain + capacity + today's presence + productivity) together, ONLY when the active
+   *  project has the `labour` capability. Scope-guarded + honest load states; a no-op off-pilot. */
+  loadLabour: () => void;
+  /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
+   *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
+   *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
+  allocateWorker: (activityId: string, requirementId: string, civilDate: string, workerId: string) => void;
+  musterWorker: (workerId: string, civilDate: string, shift: 'day' | 'night', manualReason: string) => void;
+  recordWorkedMinutes: (allocationId: string, workedMinutes: number) => void;
+  raiseLabourRequisition: (title: string, lines: ReadonlyArray<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number }>) => void;
+  /** The §J roster commands (Team-screen onboarding; direct, pmc-authored, low-frequency). */
+  onboardLabourWorker: (name: string, tradeCode: string, skillCodes: string[], activeFrom: string) => void;
+  bindLabourDevice: (deviceId: string, workerId: string) => void;
   /** Atomically re-scope to another project. Empties project data BEFORE the auth
    *  request; adopts the SERVER-returned project on success. Resolves true only when
    *  the switch was authenticated. `targetScreen` survives the switch when the new
@@ -635,6 +657,9 @@ export function getInitialState(): AppState {
     materialsLoad: 'idle',
     reservationPlans: {},
     materialsPending: [],
+    labourView: null,
+    labourLoad: 'idle',
+    labourPending: [],
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
@@ -700,6 +725,9 @@ export const useStore = create<Store>()(
      *  state — an older success/failure that resolves later is dropped, so a slow refresh can never
      *  overwrite a newer result. */
     let materialsLoadSeq = 0;
+    // Phase 4 Task 6 (§J) — the labour twin of materialsLoadSeq: only the NEWEST in-scope labour
+    // bundle request may write labourView (an older success or failure resolving late is dropped).
+    let labourLoadSeq = 0;
     /** Per-activity latest-request ownership for the reservation plan (correction 3, finding 2). Each
      *  `loadReservationPlan(activityId)` claims the next generation for that activity; only the newest
      *  request in the current project scope may write `reservationPlans[activityId]`, so a slow older
@@ -1391,6 +1419,20 @@ export const useStore = create<Store>()(
       const queued = get().outbox.some((o) => coalesceKeyOf(o) === ck);
       if (queued || get().materialsPending.includes(ck)) return;
       set((s) => { s.materialsPending.push(ck); });
+      runWriteAhead(op, label, okMsg);
+    };
+
+    // ── Phase 4 Task 6 (§J) — the pilot LABOUR single-command dispatch: the labour twin of
+    //    `dispatchMaterials` with the SAME two-key lifecycle (fresh per-action `idempotencyKey`
+    //    reused on retry; deterministic `coalesceKey` deduping an equivalent action while pending,
+    //    tracked in `labourPending` for disable-while-pending). No-op off the labour pilot. ──
+    const isLabourOp = (op: OutboxOp): boolean => isLabourOpType(op.t);
+    const dispatchLabour = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
+      if (!gateway || !get().capabilities.includes('labour')) return;
+      const ck = op.coalesceKey;
+      const queued = get().outbox.some((o) => coalesceKeyOf(o) === ck);
+      if (queued || get().labourPending.includes(ck)) return;
+      set((s) => { s.labourPending.push(ck); });
       runWriteAhead(op, label, okMsg);
     };
 
@@ -2290,6 +2332,10 @@ export const useStore = create<Store>()(
         if (isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope) && shell.capabilities.includes('materials')) {
           get().loadMaterials();
         }
+        // Phase 4 Task 6 (§J) — same discipline for the Labour bundle on a labour-pilot project.
+        if (isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope) && shell.capabilities.includes('labour')) {
+          get().loadLabour();
+        }
       }).catch(() => {});
     },
     loadMaterials: () => {
@@ -2377,6 +2423,107 @@ export const useStore = create<Store>()(
         { t: 'consumeStock', input: { issueId, qty }, idempotencyKey: newIdempotencyKey(), coalesceKey: consumeCoalesceKey(issueId, qty) },
         'Record consumption',
         'Consumption recorded.',
+      );
+    },
+    // ── Phase 4 Task 6 (§J) — the pilot LABOUR bundle + field ops, cloning the materials
+    //    discipline exactly: greenfield module-query reads with honest load states + latest-request
+    //    ownership, and ONE write-ahead server command per user action. All inert off-pilot. ──
+    loadLabour: () => {
+      if (!gateway) return;
+      if (!get().capabilities.includes('labour')) return; // inert off-pilot
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      // latest-request ownership (the materials finding-2 discipline): claim the next token; a stale
+      // reply (older token) is dropped even when the project scope is unchanged.
+      const seq = ++labourLoadSeq;
+      const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
+        seq === labourLoadSeq && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
+      if (get().labourLoad !== 'ready') set((s) => { s.labourLoad = 'loading'; }); // stale-while-revalidate
+      // Today's presence read uses the BROWSER's civil date — a display-only convenience for the
+      // field surface (the server validates every WRITE against the project timezone clock).
+      const now = new Date();
+      const p2 = (n: number) => String(n).padStart(2, '0');
+      const todayCivil = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`;
+      Promise.all([
+        gateway.labourReadiness(),
+        gateway.materialRequirements(), // the SHARED type-neutral list; the hub filters to labour rows
+        gateway.labourWorkforce(),
+        gateway.labourCatalog(),
+        gateway.labourRequisitions(),
+        gateway.labourPurchaseOrders(),
+        gateway.labourCommitments(),
+        gateway.labourCapacity(),
+        gateway.labourPresence(todayCivil),
+        gateway.labourProductivity(),
+      ]).then(([readiness, requirements, workforce, catalog, requisitions, purchaseOrders, commitments, capacity, presence, productivity]) => set((s) => {
+        if (!owns(s)) return; // dropped after a switch/re-auth OR superseded by a newer load
+        // castDraft: the labour read DTOs are `readonly` server snapshots stored as-is, never mutated.
+        s.labourView = castDraft<LabourView>({
+          readiness,
+          requirements: requirements.requirements,
+          workforce,
+          catalog,
+          requisitions: requisitions.requisitions,
+          purchaseOrders: purchaseOrders.purchaseOrders,
+          commitments: commitments.commitments,
+          capacity,
+          presence,
+          productivity,
+        });
+        s.labourLoad = 'ready';
+      })).catch(() => set((s) => {
+        // keep the last-good bundle; expose a Retry boundary. An OLDER failure never
+        // overwrites a NEWER result's load state.
+        if (owns(s)) s.labourLoad = 'error';
+      }));
+    },
+    allocateWorker: (activityId, requirementId, civilDate, workerId) => {
+      // fresh idempotency key per deliberate action; coalesced while pending on the exact
+      // (activity, requirement, date, worker) target — one live allocation per worker/slice.
+      dispatchLabour(
+        { t: 'allocateLabour', input: { activityId, requirementId, civilDate, workerId }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, civilDate, workerId) },
+        'Allocate the worker to the activity',
+        'Worker allocated to the activity.',
+      );
+    },
+    musterWorker: (workerId, civilDate, shift, manualReason) => {
+      // The store's muster path is the pmc-attributable MANUAL exception (a dead battery is site
+      // reality); device-evidenced musters arrive from the worker's own bound device, not this hub.
+      dispatchLabour(
+        { t: 'recordAttendance', input: { workerId, civilDate, shift, manualReason }, idempotencyKey: newIdempotencyKey(), coalesceKey: musterCoalesceKey(workerId, civilDate, shift) },
+        'Record the worker’s attendance',
+        'Attendance recorded.',
+      );
+    },
+    recordWorkedMinutes: (allocationId, workedMinutes) => {
+      dispatchLabour(
+        { t: 'recordLabourWork', input: { allocationId, workedMinutes }, idempotencyKey: newIdempotencyKey(), coalesceKey: workCoalesceKey(allocationId, workedMinutes) },
+        'Record worked minutes',
+        'Worked minutes recorded.',
+      );
+    },
+    raiseLabourRequisition: (title, lines) => {
+      // one labour requisition per action: a double-click coalesces on the slice content; a later,
+      // DIFFERENT slice set is a distinct command. Never a fan-out.
+      dispatchLabour(
+        { t: 'createLabourRequisition', input: { title, lines: lines.map((l) => ({ requirementId: l.requirementId, revision: l.revision, civilDate: l.civilDate, personShiftQty: l.personShiftQty })) }, idempotencyKey: newIdempotencyKey(), coalesceKey: labourRequisitionCoalesceKey(lines) },
+        'Raise a labour requisition',
+        'Labour requisition raised.',
+      );
+    },
+    onboardLabourWorker: (name, tradeCode, skillCodes, activeFrom) => {
+      // Roster commands are pmc-authored, low-frequency Team-screen actions: direct calls with a
+      // fresh idempotency key, reconciled by reloading the labour bundle (no outbox lifecycle).
+      if (!gateway || !get().capabilities.includes('labour')) return;
+      runRemote(
+        () => gateway!.onboardWorker({ name, tradeCode, skillCodes, activeFrom }, newIdempotencyKey()).then(() => { get().loadLabour(); return gateway!.snapshot(); }),
+        'Worker onboarded to the project roster.',
+      );
+    },
+    bindLabourDevice: (deviceId, workerId) => {
+      if (!gateway || !get().capabilities.includes('labour')) return;
+      runRemote(
+        () => gateway!.bindWorkerDevice(deviceId, workerId, newIdempotencyKey()).then(() => { get().loadLabour(); return gateway!.snapshot(); }),
+        'Device bound to the worker.',
       );
     },
     switchProject: (projectId, targetScreen) => {
@@ -3104,6 +3251,10 @@ export const useStore = create<Store>()(
       // reconcile below never carries the new stock).
       const resolvedMaterialsCoalesceKeys: string[] = [];
       let materialsAttempted = false;
+      // Phase 4 Task 6 (§J) — the labour twin: resolved labour coalesce keys unblock their buttons;
+      // ANY attempted labour op (succeeded, dropped, or transient) re-derives the labour truth.
+      const resolvedLabourCoalesceKeys: string[] = [];
+      let labourAttempted = false;
       let lastSnap: ApiSnapshot | null = null;
       let synced = 0;
       let dropped = 0;
@@ -3119,20 +3270,24 @@ export const useStore = create<Store>()(
           break;
         }
         const mat = isMaterialsOp(ops[i]);
+        const lab = isLabourOp(ops[i]);
         try {
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
           if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
+          if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
         } catch (err) {
           if (isTerminalOutboxError(err)) {
             dropped += 1; // server will never accept this one — discard and keep going
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
+            if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
             continue;
           }
           stoppedAt = i; // transient — retry this op and the rest on the next reconnect
           if (mat) materialsAttempted = true; // correction 3 finding 3: still refresh truth, keep the op + its coalesceKey
+          if (lab) labourAttempted = true; // same for labour: refresh truth, keep the op + its coalesceKey
           break;
         }
       }
@@ -3210,6 +3365,17 @@ export const useStore = create<Store>()(
           for (const activityId of Object.keys(get().reservationPlans)) get().loadReservationPlan(activityId);
         }
       }
+      // Phase 4 Task 6 (§J) — the LABOUR reconcile hook, same lifecycle: resolved coalesce keys
+      // unblock buttons; a transient-failed op keeps its key (stays disabled while it retries); ANY
+      // attempted labour op reloads the labour bundle (the server may have committed despite a lost
+      // response), scope-guarded so a switch mid-flush touches nothing here.
+      if (labourAttempted) {
+        const resolved = new Set(resolvedLabourCoalesceKeys);
+        if (resolved.size > 0) set((s) => { s.labourPending = s.labourPending.filter((k) => !resolved.has(k)); });
+        if (scopeStillCurrent(flushScope) && get().capabilities.includes('labour')) {
+          get().loadLabour();
+        }
+      }
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };
       } finally {
         outboxFlushing = false;
@@ -3241,7 +3407,12 @@ export const useStore = create<Store>()(
           // a legacy queued op would not coalesce and could execute a SECOND time (double reserve). Derive
           // `coalesceKey` from the legacy `idempotencyKey` (same business-coordinate format), preserve the
           // `idempotencyKey` byte-for-byte (replay stays exactly-once), and drop malformed materials ops.
-          const { ops, changed } = normalizeMaterialsOutbox(Array.isArray(parsed) ? (parsed as OutboxOp[]) : []);
+          const materialsNorm = normalizeMaterialsOutbox(Array.isArray(parsed) ? (parsed as OutboxOp[]) : []);
+          // Phase 4 Task 6 (§J) — labour ops were born two-keyed, so this only DROPS malformed rows
+          // (a labour op missing either key must never replay or leak `undefined` into labourPending).
+          const labourNorm = normalizeLabourOutbox(materialsNorm.ops);
+          const ops = labourNorm.ops;
+          const changed = materialsNorm.changed || labourNorm.changed;
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable
           if (changed) storage.setItem(outboxKey(), JSON.stringify(ops));
           set((s) => {
@@ -3257,6 +3428,12 @@ export const useStore = create<Store>()(
             s.materialsPending = s.outbox.flatMap((o) => {
               const ck = coalesceKeyOf(o);
               return isMaterialsOp(o) && typeof ck === 'string' ? [ck] : [];
+            });
+            // Phase 4 Task 6 (§J) — same reconstruction for the labour pending coalesce keys, so a
+            // reload keeps an equivalent still-queued labour action coalesced (button disabled).
+            s.labourPending = s.outbox.flatMap((o) => {
+              const ck = coalesceKeyOf(o);
+              return isLabourOp(o) && typeof ck === 'string' ? [ck] : [];
             });
           });
         }

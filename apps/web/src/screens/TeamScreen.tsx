@@ -152,6 +152,8 @@ export function TeamScreen() {
 
       <CompaniesSection canManage={canEditProject} />
 
+      <LabourRosterSection canManage={canManage} />
+
       {canViewOrgRoster && activeOrgId && (
         <OrgRoster orgId={activeOrgId} canManageRoles={canManageOrgRoster} canCorrectEmails />
       )}
@@ -439,6 +441,103 @@ function CompaniesSection({ canManage }: { canManage: boolean }) {
 
       {canManage && (adding || editing) && (
         <CompanyModal company={editing} onClose={() => { setAdding(false); setEditing(null); }} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Phase 4 Task 6 (§J) — the LABOUR ROSTER on the Team screen: the project's trusted workforce
+ * register (workers + crews from the labour-owned `labour.workforce` read), pmc onboarding of a
+ * worker against the project's trade/skill catalog, and binding a site device to its worker (the
+ * trusted attendance identity). This is the §J "TeamAccess onboarding" surface: TeamAccess itself
+ * is the AUTH step machine (anonymous QR/tap onboarding stays byte-identical there); the pmc
+ * ROSTER authority lives here, next to the human team it manages. Absent off-pilot (null bundle).
+ */
+function LabourRosterSection({ canManage }: { canManage: boolean }) {
+  const labour = useStore(useShallow((s) => s.labourView));
+  const onboardLabourWorker = useStore((s) => s.onboardLabourWorker);
+  const bindLabourDevice = useStore((s) => s.bindLabourDevice);
+  const [name, setName] = useState('');
+  const [tradeCode, setTradeCode] = useState('');
+  const [skillCode, setSkillCode] = useState('');
+  const [bindDeviceId, setBindDeviceId] = useState('');
+  const [bindWorkerId, setBindWorkerId] = useState('');
+  if (!labour) return null;
+  const workers = labour.workforce.workers;
+  const crews = labour.workforce.crews;
+  const trades = labour.catalog.trades;
+  const skills = labour.catalog.skills;
+  const today = new Date().toISOString().slice(0, 10);
+  const ready = name.trim().length > 0 && tradeCode !== '';
+  const submit = () => {
+    if (!ready) return;
+    onboardLabourWorker(name.trim(), tradeCode, skillCode ? [skillCode] : [], today);
+    setName('');
+    setSkillCode('');
+  };
+  const bindReady = bindDeviceId.trim().length > 0 && bindWorkerId !== '';
+
+  return (
+    <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }} data-testid="labour-roster">
+      <Eyebrow>LABOUR ROSTER · PILOT</Eyebrow>
+      <div style={{ fontSize: 13, color: 'var(--muted)', margin: '6px 0 16px', maxWidth: 560 }}>
+        The project&apos;s trusted workforce — named workers and crews the Team gate counts. A worker has no login: their phone taps in through the anonymous device flow on Team Access, and binding that device here makes their muster trusted evidence.
+      </div>
+
+      {canManage && trades.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14, padding: 14, background: 'var(--panel)', border: '1px solid var(--hairline)', borderRadius: 13 }}>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Worker name" style={{ ...fld, flex: '1 1 140px' }} data-testid="labour-worker-name" />
+          <select value={tradeCode} onChange={(e) => setTradeCode(e.target.value)} style={{ ...fld, flex: '0 0 140px' }} data-testid="labour-worker-trade" aria-label="Trade">
+            <option value="">Trade…</option>
+            {trades.map((t) => <option key={t.code} value={t.code}>{t.name}</option>)}
+          </select>
+          <select value={skillCode} onChange={(e) => setSkillCode(e.target.value)} style={{ ...fld, flex: '0 0 140px' }} data-testid="labour-worker-skill" aria-label="Skill (optional)">
+            <option value="">Skill (optional)</option>
+            {skills.map((sk) => <option key={sk.code} value={sk.code}>{sk.name}</option>)}
+          </select>
+          <Button variant="ink" onClick={submit} disabled={!ready} data-testid="labour-onboard-worker" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '11px 15px', fontSize: 13 }}>
+            <Plus size={15} /> Onboard
+          </Button>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+        {workers.length === 0 && <div style={{ color: 'var(--muted)', fontSize: 13.5 }}>No workers onboarded yet{canManage ? ' — onboard the site workforce to allocate and muster them.' : '.'}</div>}
+        {workers.map((w) => (
+          <div key={w.id} style={cardStyle} data-testid={`labour-roster-worker-${w.id}`}>
+            <div style={{ width: 40, height: 40, flex: 'none', borderRadius: '50%', background: 'var(--ink)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 16 }}>{w.name[0]}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 15 }}>{w.name}</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>{[w.tradeCode, ...w.skillCodes].join(' · ')} · from {w.activeFrom}</div>
+            </div>
+            <span style={{ ...roleChip, color: w.revokedAt ? 'var(--red-solid)' : 'var(--muted)' }}>{w.revokedAt ? 'Revoked' : 'Worker'}</span>
+          </div>
+        ))}
+        {crews.map((c) => (
+          <div key={c.id} style={cardStyle} data-testid={`labour-roster-crew-${c.id}`}>
+            <div style={{ width: 40, height: 40, flex: 'none', borderRadius: '50%', background: 'var(--accent)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 16 }}>{c.name[0]}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 15 }}>{c.name}</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)' }}>{c.members.filter((m) => m.removedAt === null).length} active member{c.members.filter((m) => m.removedAt === null).length === 1 ? '' : 's'}</div>
+            </div>
+            <span style={roleChip}>{c.revokedAt ? 'Revoked' : 'Crew'}</span>
+          </div>
+        ))}
+      </div>
+
+      {canManage && workers.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 14, padding: 14, background: 'var(--panel)', border: '1px dashed var(--hairline)', borderRadius: 13 }}>
+          <div style={{ flex: '1 1 100%', fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.14em', color: 'var(--faint)' }}>BIND A SITE DEVICE TO ITS WORKER (trusted attendance)</div>
+          <input value={bindDeviceId} onChange={(e) => setBindDeviceId(e.target.value)} placeholder="Device id (from the phone's QR onboarding)" style={{ ...fld, flex: '1 1 220px' }} data-testid="labour-bind-device-id" />
+          <select value={bindWorkerId} onChange={(e) => setBindWorkerId(e.target.value)} style={{ ...fld, flex: '0 0 170px' }} data-testid="labour-bind-worker" aria-label="Worker to bind">
+            <option value="">Worker…</option>
+            {workers.filter((w) => w.revokedAt === null).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+          <Button variant="outline" onClick={() => { if (bindReady) { bindLabourDevice(bindDeviceId.trim(), bindWorkerId); setBindDeviceId(''); setBindWorkerId(''); } }} disabled={!bindReady} data-testid="labour-do-bind" style={{ fontSize: 13, padding: '10px 14px' }}>
+            Bind device
+          </Button>
+        </div>
       )}
     </div>
   );
