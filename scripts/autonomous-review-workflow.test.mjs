@@ -1016,6 +1016,32 @@ test('one polled Codex invocation owns terminal success and merge completion', a
   assert.doesNotMatch(clearBranch, /handleCodexEvidence/);
 });
 
+test('the clean verdict is published while the PR is still open', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const clearBranch = gate.slice(
+    gate.indexOf("if (result.state === 'clear')"),
+    gate.indexOf('if (attempt < MAX_REVIEW_ATTEMPTS)'),
+  );
+  // Sessions subscribed to the PR receive comment updates only while it is
+  // open; success statuses are never forwarded, and the required status
+  // flipping green lets GitHub auto-merge close the PR at any moment after.
+  // The `review_clean` sticky update must therefore land BEFORE the success
+  // status and BEFORE merge completion — it is the success path's only
+  // guaranteed-delivery wake event for watching sessions.
+  const publishedClean = clearBranch.indexOf("state: 'review_clean'");
+  const publishedSuccess = clearBranch.lastIndexOf("'success'");
+  const mergeCompletion = clearBranch.lastIndexOf('completeReviewedPullRequest');
+  assert.ok(publishedClean >= 0);
+  assert.ok(publishedSuccess > publishedClean);
+  assert.ok(mergeCompletion > publishedClean);
+  // and the pre-merge update must precede the post-merge 'clear' update
+  const clearUpdate = clearBranch.lastIndexOf("state: 'clear'");
+  assert.ok(clearUpdate > publishedClean);
+});
+
 test('a clean reviewed head is squash-merged directly with exact SHA', async () => {
   assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
   const expectedHead = 'a'.repeat(40);
