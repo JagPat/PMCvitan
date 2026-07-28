@@ -1163,3 +1163,74 @@ test('CI runs once per pull-request head', async () => {
   assert.match(ci, /pull_request:/);
   assert.doesNotMatch(ci, /push:/);
 });
+
+test('clean-status auto-merge refusal falls back to an exact-head merge', async () => {
+  const makeClient = () => {
+    const client = new reviewGate.GitHubClient({
+      repository: 'JagPat/PMCvitan',
+      token: 'test-token',
+    });
+    client.mergeCalls = [];
+    client.request = async (path, options) => {
+      client.mergeCalls.push({ path, options });
+      return {};
+    };
+    return client;
+  };
+  const pullRequest = {
+    number: 237,
+    node_id: 'PR_test',
+    auto_merge: null,
+    head: { sha: 'feedc0de' },
+  };
+
+  // GitHub refuses to ARM auto-merge on a PR with nothing left to wait for,
+  // which is exactly the state after this run posts the clean review status.
+  // The gate must merge the exact reviewed head directly instead of crashing.
+  const cleanRefusal = makeClient();
+  cleanRefusal.graphql = async () => {
+    throw new Error(
+      'GitHub GraphQL failed: [{"type":"UNPROCESSABLE","path":["enablePullRequestAutoMerge"],"locations":[{"line":2,"column":9}],"message":"Pull request is in clean status"}]',
+    );
+  };
+  await cleanRefusal.enableAutoMerge(pullRequest);
+  assert.deepEqual(cleanRefusal.mergeCalls, [
+    {
+      path: '/repos/JagPat/PMCvitan/pulls/237/merge',
+      options: {
+        method: 'PUT',
+        body: { merge_method: 'squash', sha: 'feedc0de' },
+      },
+    },
+  ]);
+
+  // Any other refusal still fails the run and never merges.
+  const otherRefusal = makeClient();
+  otherRefusal.graphql = async () => {
+    throw new Error(
+      'GitHub GraphQL failed: [{"type":"FORBIDDEN","message":"Resource not accessible by integration"}]',
+    );
+  };
+  await assert.rejects(
+    () => otherRefusal.enableAutoMerge(pullRequest),
+    /FORBIDDEN/,
+  );
+  assert.deepEqual(otherRefusal.mergeCalls, []);
+
+  // Already-armed auto-merge stays a no-op.
+  const armed = makeClient();
+  armed.graphql = async () => {
+    throw new Error('graphql must not be called for an armed pull request');
+  };
+  await armed.enableAutoMerge({
+    ...pullRequest,
+    auto_merge: { merge_method: 'squash' },
+  });
+  assert.deepEqual(armed.mergeCalls, []);
+
+  // A successful arm performs no direct merge.
+  const armedNow = makeClient();
+  armedNow.graphql = async () => ({});
+  await armedNow.enableAutoMerge(pullRequest);
+  assert.deepEqual(armedNow.mergeCalls, []);
+});

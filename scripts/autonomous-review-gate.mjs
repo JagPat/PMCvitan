@@ -261,7 +261,7 @@ function requiredEnvironment(name) {
   return value;
 }
 
-class GitHubClient {
+export class GitHubClient {
   constructor({ repository, token }) {
     this.repository = repository;
     this.token = token;
@@ -378,16 +378,33 @@ class GitHubClient {
 
   async enableAutoMerge(pullRequest) {
     if (pullRequest.auto_merge) return;
-    await this.graphql(
-      `mutation($id: ID!) {
-        enablePullRequestAutoMerge(
-          input: { pullRequestId: $id, mergeMethod: SQUASH }
-        ) {
-          pullRequest { id autoMergeRequest { enabledAt } }
-        }
-      }`,
-      { id: pullRequest.node_id },
-    );
+    try {
+      await this.graphql(
+        `mutation($id: ID!) {
+          enablePullRequestAutoMerge(
+            input: { pullRequestId: $id, mergeMethod: SQUASH }
+          ) {
+            pullRequest { id autoMergeRequest { enabledAt } }
+          }
+        }`,
+        { id: pullRequest.node_id },
+      );
+    } catch (error) {
+      // GitHub refuses to ARM auto-merge on a PR with nothing left to wait
+      // for ("Pull request is in clean status"), which is exactly the state
+      // after this run posts the clean review status while required CI is
+      // already green. The PR is mergeable NOW: merge it directly, pinned to
+      // the exact reviewed head so a superseding push fails the merge instead
+      // of merging unreviewed code. Any other refusal still fails the run.
+      if (!/clean status/i.test(String(error?.message ?? error))) throw error;
+      await this.request(
+        `/repos/${this.repository}/pulls/${pullRequest.number}/merge`,
+        {
+          method: 'PUT',
+          body: { merge_method: 'squash', sha: pullRequest.head.sha },
+        },
+      );
+    }
   }
 
   async reviewThreads(number) {
