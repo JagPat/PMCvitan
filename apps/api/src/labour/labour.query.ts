@@ -120,4 +120,48 @@ export class LabourRequirementQuery {
     }
     return out;
   }
+  /** Phase 4 Task 5 (§I) — Labour's EFFORT exposed to the composing Activities side (the
+   *  `activities → labour` read edge). Worked-minutes summed per `(activityId, civilDate, shift)`;
+   *  Labour never reads the Activities-owned `ActivityWorkOutput` it is joined with (§G). */
+  async effortFor(
+    projectId: string,
+    scope: { activityIds?: readonly string[] },
+    tx?: Prisma.TransactionClient,
+  ): Promise<Array<{ activityId: string; civilDate: string; shift: string; workedMinutes: number }>> {
+    const db = tx ?? this.prisma;
+    if (scope.activityIds && scope.activityIds.length === 0) return [];
+    const grouped = await db.labourWorkFact.groupBy({
+      by: ['activityId', 'civilDate', 'shift'],
+      where: { projectId, ...(scope.activityIds ? { activityId: { in: [...scope.activityIds] } } : {}) },
+      _sum: { workedMinutes: true },
+    });
+    return grouped
+      .map((g) => ({
+        activityId: g.activityId,
+        civilDate: toIsoCivilDate(g.civilDate) ?? '',
+        shift: g.shift,
+        workedMinutes: g._sum.workedMinutes ?? 0,
+      }))
+      .sort((a, b) => (a.activityId + a.civilDate + a.shift < b.activityId + b.civilDate + b.shift ? -1 : 1));
+  }
+
+  /** Phase 4 Task 5 (§E) — the activities whose Team gate an UNRESOLVED mismatch observation
+   *  currently fails (§A first-match). Labour-owned truth, served to the deriving reader. */
+  async unresolvedMismatchActivityIds(
+    projectId: string,
+    activityIds?: readonly string[],
+    tx?: Prisma.TransactionClient,
+  ): Promise<Set<string>> {
+    const db = tx ?? this.prisma;
+    if (activityIds && activityIds.length === 0) return new Set();
+    const rows = await db.labourMismatch.findMany({
+      where: {
+        projectId,
+        ...(activityIds ? { activityId: { in: [...activityIds] } } : {}),
+        resolution: { is: null },
+      },
+      select: { activityId: true },
+    });
+    return new Set(rows.map((r) => r.activityId));
+  }
 }

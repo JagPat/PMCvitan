@@ -117,6 +117,9 @@ model Project {
   workerAllocations         WorkerAllocation[]
   labourAttendance          LabourAttendance[]
   labourWorkFacts           LabourWorkFact[]
+  labourMismatches          LabourMismatch[]
+  labourMismatchResolutions LabourMismatchResolution[]
+  activityWorkOutputs       ActivityWorkOutput[]
   approvedSkillSubstitutions ApprovedSkillSubstitution[]
 }
 
@@ -649,6 +652,7 @@ model Media {
   id         String   @id @default(cuid())
   // Phase 4 Task 3 correction (F2) — the musters citing this photo as presence evidence
   labourAttendance LabourAttendance[] @relation("labourAttendanceEvidence")
+  activityWorkOutputEvidence ActivityWorkOutput[]
   project    Project  @relation(fields: [projectId], references: [id])
   projectId  String
   kind       String // progress | inspection | decision | attendance | material
@@ -873,6 +877,9 @@ model User {
   attendanceRecorded         LabourAttendance[] @relation("attendanceRecorded")
   attendanceRevoked          LabourAttendance[] @relation("attendanceRevoked")
   labourWorkRecorded         LabourWorkFact[]   @relation("labourWorkRecorded")
+  labourMismatchesRecorded   LabourMismatch[]   @relation("labourMismatchesRecorded")
+  labourMismatchesResolved   LabourMismatchResolution[] @relation("labourMismatchesResolved")
+  activityOutputsRecorded    ActivityWorkOutput[] @relation("activityOutputsRecorded")
   skillSubstitutionsApproved ApprovedSkillSubstitution[] @relation("skillSubstitutionsApproved")
   skillSubstitutionsRevoked  ApprovedSkillSubstitution[] @relation("skillSubstitutionsRevoked")
 }
@@ -1828,6 +1835,8 @@ model Activity {
   @@unique([projectId, id])
   @@index([nodeId])
   requirements ActivityRequirement[]
+  labourMismatches LabourMismatch[]
+  workOutputs      ActivityWorkOutput[]
 }
 
 // A manual readiness exception (Phase 1 Task 6): the PMC overrides ONE gate's
@@ -2133,6 +2142,7 @@ model Worker {
   allocations     WorkerAllocation[]
   attendance      LabourAttendance[]
   workFacts       LabourWorkFact[]
+  mismatches      LabourMismatch[]
 
   // composite identity for same-project (projectId, workerId) FKs (WorkerDevice, Crew, membership)
   @@unique([projectId, id])
@@ -2708,4 +2718,80 @@ model ApprovedSkillSubstitution {
   @@unique([projectId, id])
   @@index([projectId, requirementId])
   @@index([projectId, toFingerprint])
+}
+
+// ── Phase 4 Task 5 — §E labour mismatch: the observation FACT + its append-only resolution ────
+// register (the material `SiteMaterial.matched` + `MismatchResolution` discipline re-homed onto
+// labour). A mismatch is an OBSERVATION (crew present ≠ crew allocated — wrong trade, or a
+// shortfall recorded on site), never a stored flag: the derived Team gate reads UNRESOLVED rows
+// directly (§A first-match `fail`). Resolution is pmc authority, append-only, UNIQUE per
+// observation — the observation row is never edited. Both tables are labour-owned and sealed
+// append-only in raw SQL (migration 20270305000000).
+model LabourMismatch {
+  id        String   @id @default(cuid())
+  project   Project  @relation(fields: [projectId], references: [id])
+  projectId String
+  // the activity whose Team gate this observation blocks (same-project composite FK)
+  activity   Activity @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId String
+  civilDate  DateTime @db.Date
+  shift      String
+  kind       String // 'wrong_trade' | 'shortfall' (raw-SQL CHECK)
+  // the observed worker (wrong-trade case); a shortfall observation names no worker
+  worker   Worker? @relation(fields: [projectId, workerId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  workerId String?
+  note     String
+  recordedAt      DateTime @default(now())
+  recordedBy      User     @relation("labourMismatchesRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById    String
+  sourceCommandId String
+
+  resolution LabourMismatchResolution?
+
+  @@unique([projectId, id])
+  @@index([projectId, activityId])
+}
+
+model LabourMismatchResolution {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id])
+  projectId String
+  mismatch   LabourMismatch @relation(fields: [projectId, mismatchId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  mismatchId String
+  resolution String // the disposition, e.g. 'reassigned-correct-trade'
+  reason     String
+  resolvedAt      DateTime @default(now())
+  resolvedBy      User     @relation("labourMismatchesResolved", fields: [resolvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  resolvedById    String
+  sourceCommandId String
+
+  @@unique([projectId, mismatchId]) // ONE resolution per observation (§E)
+  @@unique([projectId, id])
+}
+
+// ── Phase 4 Task 5 — §I the ACTIVITIES-owned measured-output fact. Immutable and
+// evidence-bearing; the generic construction output any activity produces (quantity + UOM),
+// NEVER the Daily-Log photo/progress counter and NEVER a labour row. Productivity = this
+// quantity ÷ Labour's `LabourWorkFact` worked-minutes — a DERIVED read composed on the
+// Activities side (Labour never reads this table), no stored column.
+model ActivityWorkOutput {
+  id        String   @id @default(cuid())
+  project   Project  @relation(fields: [projectId], references: [id])
+  projectId String
+  activity   Activity @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId String
+  civilDate  DateTime @db.Date
+  shift      String
+  quantity   Decimal  @db.Decimal(18, 6) // raw-SQL CHECK > 0
+  uom        String
+  evidence        Media?  @relation(fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  evidenceMediaId String?
+  note            String?
+  recordedAt      DateTime @default(now())
+  recordedBy      User     @relation("activityOutputsRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById    String
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@index([projectId, activityId, civilDate, shift])
 }

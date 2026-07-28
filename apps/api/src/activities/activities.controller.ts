@@ -4,7 +4,7 @@ import { ActivitiesQueryService } from './activities.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
-import { createActivitySchema, overrideGateSchema, updateActivitySchema, type CreateActivityInput, type OverrideGateInput, type UpdateActivityInput } from '../contracts';
+import { createActivitySchema, overrideGateSchema, recordActivityOutputSchema, updateActivitySchema, type CreateActivityInput, type OverrideGateInput, type RecordActivityOutputInput, type UpdateActivityInput } from '../contracts';
 
 @Controller('projects/:projectId/activities')
 @UseGuards(JwtGuard, RolesGuard)
@@ -126,5 +126,23 @@ export class ActivitiesController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.activities.revokeOverride(projectId, activityId, overrideId, user, idempotencyKey);
+  }
+  // Phase 4 Task 5 — §I measured output (immutable, evidence-bearing; pilot-gated 404 off-pilot)
+  // and the planned-vs-actual + productivity read composed on the Activities side.
+  @Post('outputs')
+  @RolesFor('activity.output.record')
+  recordOutput(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(recordActivityOutputSchema)) body: RecordActivityOutputInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.activities.recordOutput(projectId, body, user, idempotencyKey);
+  }
+
+  @Get('labour-productivity')
+  @RolesFor('labour.read')
+  labourProductivity(@Param('projectId') projectId: string) {
+    return this.activitiesQuery.labourProductivity(projectId);
   }
 }

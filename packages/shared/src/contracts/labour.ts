@@ -60,6 +60,11 @@ export const LABOUR_COMMANDS = [
   'labour.work.record',
   'labour.skillSubstitution.approve',
   'labour.skillSubstitution.revoke',
+  // Phase 4 Task 5 — §E reconciliation. A mismatch is an append-only OBSERVATION (crew present ≠
+  // crew allocated); its resolution is a pmc-authored append-only register row, UNIQUE per
+  // observation — the observation itself is never edited.
+  'labour.mismatch.record',
+  'labour.mismatch.resolve',
 ] as const;
 // Note: the WorkerDevice->Worker binding is a Task-1 STRUCTURAL foundation (the composite
 // (projectId, workerId) FK + containment; proven by the cross-project forgery probe). The
@@ -84,6 +89,11 @@ export const LABOUR_QUERIES = [
   // derived from the labour-owned requirement read-model + the §C facts. Feeds UI/Inbox/Dashboard
   // ONLY; `activities.start` never reads it (execution truth is evaluated in-tx under the lock).
   'labour.readiness',
+  // Phase 4 Task 5 — the §E Daily-Log read: per-worker musters + unresolved mismatches for a
+  // civil date, identity joined from labour-owned facts (NOTHING copied into daily-log rows; the
+  // non-pilot daily-log response stays byte-identical because this is a SEPARATE, pilot-gated
+  // labour read the browser only requests when the capability is on).
+  'labour.presence',
 ] as const;
 export type LabourQuery = (typeof LABOUR_QUERIES)[number];
 
@@ -424,6 +434,52 @@ export interface LabourCapacityDto {
   readonly attendance: readonly LabourAttendanceDto[];
   readonly workFacts: readonly LabourWorkFactDto[];
   readonly skillSubstitutions: readonly ApprovedSkillSubstitutionDto[];
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 Task 5 — §E labour mismatch + the per-worker Daily-Log presence read.
+// ---------------------------------------------------------------------------
+
+/** A crew-vs-allocation mismatch OBSERVATION (§E): a present worker of the wrong trade, or a
+ *  shortfall recorded on site. Append-only; the derived Team gate reads UNRESOLVED rows directly
+ *  (§A first-match `fail`). Resolution is pmc authority, append-only, UNIQUE per observation. */
+export interface LabourMismatchDto {
+  readonly id: string;
+  readonly activityId: string;
+  readonly civilDate: string;
+  readonly shift: string;
+  readonly kind: 'wrong_trade' | 'shortfall';
+  readonly workerId: string | null;
+  readonly note: string;
+  readonly recordedAt: string;
+  readonly recordedById: string;
+  readonly resolution: {
+    readonly resolution: string;
+    readonly reason: string;
+    readonly resolvedAt: string;
+    readonly resolvedById: string;
+  } | null;
+}
+
+/** One per-worker muster row in the §E Daily-Log read — worker identity joined from the
+ *  labour-owned register, never copied into daily-log rows. */
+export interface LabourPresenceMusterDto {
+  readonly workerId: string;
+  readonly workerName: string;
+  readonly tradeCode: string;
+  readonly shift: string;
+  readonly deviceId: string | null;
+  readonly manualReason: string | null;
+  readonly recordedAt: string;
+}
+
+/** The `labour.presence` query result: canonical per-worker presence + mismatch state for ONE
+ *  civil date. On a pilot project the Daily-Log SCREEN composes this alongside its own aggregate
+ *  `CrewRow` steppers — which stay display-only and never drive the Team gate (§E). */
+export interface LabourPresenceDto {
+  readonly civilDate: string;
+  readonly musters: readonly LabourPresenceMusterDto[];
+  readonly mismatches: readonly LabourMismatchDto[];
 }
 
 // ---------------------------------------------------------------------------

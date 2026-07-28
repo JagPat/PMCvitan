@@ -6,9 +6,11 @@ import { RolesFor, RolesGuard } from '../common/roles';
 import {
   allocateLabourSchema, releaseLabourAllocationSchema, recordAttendanceSchema, revokeAttendanceSchema,
   recordLabourWorkSchema, approveSkillSubstitutionSchema, revokeSkillSubstitutionSchema,
+  recordLabourMismatchSchema, resolveLabourMismatchSchema,
   type AllocateLabourInput, type ReleaseLabourAllocationInput, type RecordAttendanceInput,
   type RevokeAttendanceInput, type RecordLabourWorkInput, type ApproveSkillSubstitutionInput,
   type RevokeSkillSubstitutionInput,
+  type RecordLabourMismatchInput, type ResolveLabourMismatchInput,
 } from '../contracts';
 
 /**
@@ -122,5 +124,40 @@ export class LabourCapacityController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.capacity.readiness(projectId, user);
+  }
+
+  // Phase 4 Task 5 — §E reconciliation: observe (pmc/engineer), resolve (pmc), and the per-worker
+  // Daily-Log presence read (labour.read). All pilot-gated (404 off-pilot).
+  @Post('labour/mismatches')
+  @RolesFor('labour.mismatch.record')
+  recordMismatch(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(recordLabourMismatchSchema)) body: RecordLabourMismatchInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.capacity.recordMismatch(projectId, body, user, idempotencyKey);
+  }
+
+  @Post('labour/mismatches/:mismatchId/resolve')
+  @RolesFor('labour.mismatch.resolve')
+  resolveMismatch(
+    @Param('projectId') projectId: string,
+    @Param('mismatchId') mismatchId: string,
+    @Body(new ZodPipe(resolveLabourMismatchSchema)) body: ResolveLabourMismatchInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.capacity.resolveMismatch(projectId, mismatchId, body, user, idempotencyKey);
+  }
+
+  @Get('labour/presence')
+  @RolesFor('labour.read')
+  presence(
+    @Param('projectId') projectId: string,
+    @Query('civilDate') civilDate: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.capacity.presence(projectId, civilDate, user);
   }
 }

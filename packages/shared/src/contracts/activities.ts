@@ -36,6 +36,10 @@ export const ACTIVITIES_COMMANDS = [
   'requirements.create',
   'requirements.revise',
   'requirements.cancel',
+  // Phase 4 Task 5 — the §I ACTIVITIES-owned measured-output fact (immutable, evidence-bearing;
+  // the generic construction output any activity produces — quantity + UOM — never the Daily-Log
+  // photo/progress counter and never a labour row). Pilot-gated on the labour capability.
+  'activities.recordOutput',
 ] as const;
 export type ActivitiesCommand = (typeof ACTIVITIES_COMMANDS)[number];
 
@@ -55,6 +59,11 @@ export const ACTIVITIES_QUERIES = [
   // Phase 3 Task 7 — the pilot material-readiness view (per-requirement coverage + shortage
   // forecast). Activities-owned canonical read (§A/§G/§25); capability-gated (404 on non-pilot).
   'materialReadiness.get',
+  // Phase 4 Task 5 — the §I planned-vs-actual + productivity read, composed on the ACTIVITIES
+  // side: planned person-shifts + presence from the labour coverage authority, effort via
+  // `LabourQuery.effortFor` (the activities → labour read edge), measured output from the
+  // Activities-owned `ActivityWorkOutput`. Labour never reads `ActivityWorkOutput` (§G).
+  'labourProductivity.get',
 ] as const;
 export type ActivitiesQuery = (typeof ACTIVITIES_QUERIES)[number];
 
