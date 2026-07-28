@@ -1243,6 +1243,23 @@ export async function run() {
         );
         throw new Error(detail);
       }
+      // Publish the clean verdict while the pull request is still OPEN. This
+      // sticky update is the last guaranteed-delivery event on the success
+      // path: sessions subscribed to the PR receive comment updates only while
+      // it is open, success statuses are never forwarded to them, and the
+      // moment the required status flips green below GitHub auto-merge may
+      // close the PR. Without this event the success path is silent and a
+      // watching session cannot know to continue the loop.
+      await client.updateStickyComment(
+        pullRequest.number,
+        statusBody({
+          state: 'review_clean',
+          head: expectedHead,
+          detail: result.detail,
+          attempt,
+          next: 'GitHub sets the required status and completes this exact reviewed head.',
+        }),
+      );
       // One run polls one Codex invocation to its mutually exclusive terminal
       // result: finding-bearing evidence or the clean reaction. Review webhooks
       // never enter this orchestrator, so no second writer can race admission.
