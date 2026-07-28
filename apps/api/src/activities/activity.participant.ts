@@ -248,29 +248,33 @@ export class ActivityParticipant {
    * edge). Unlike the material pair this NEVER touches the stored `gateTeam`: on a labour-pilot
    * project the Team gate is DERIVED, and the first-match `fail` comes from the unresolved
    * `LabourMismatch` facts themselves. What the participant owns is the activity's OPERATIONAL
-   * state — status `blocked` + the block banner — so the site sees the dispute. No event is
-   * appended here: the labour-owned `labour_mismatch.recorded` signal in the same transaction
-   * is the announcement (the plan's §G event family has no `activity.labour_blocked`).
+   * state — status `blocked` + the block banner — so the site sees the dispute. Appends ONE
+   * activities-owned `activity.labour_blocked` signal when the status changed, so the activities
+   * projection observes the block (the labour-owned `labour_mismatch.recorded` in the same
+   * transaction announces the FACT; this signal announces the activity-state consequence).
    */
   async blockForLabourMismatch(
     tx: Prisma.TransactionClient,
     params: { projectId: string; activityId: string; actor: Actor },
   ): Promise<EmittedEventMeta | null> {
     const { projectId, activityId, actor } = params;
-    const a = await tx.activity.findFirst({ where: { projectId, id: activityId } });
     // Only a running-or-pending activity is operationally blocked: `done` is history,
     // `awaiting_signoff` keeps its pending completion claim (the derived Team gate still fails —
     // the mismatch fact is the truth), and an ALREADY-blocked activity keeps its current banner
     // (a material block that clears later re-asserts the labour block, see
     // clearMaterialMismatchBlock — the labour dispute is never silently dropped).
-    if (!a || (a.status !== 'not_started' && a.status !== 'in_progress')) return null;
-    await tx.activity.update({
-      where: { id: a.id },
+    // The transition is a CAS, not read-then-write: `activities.complete` does NOT take the
+    // readiness lock, so a concurrent completion can commit `awaiting_signoff` between a plain
+    // read and an id-only update. The status predicate re-evaluates under the row lock, so the
+    // later writer observes the committed transition and this block simply does not happen.
+    const { count } = await tx.activity.updateMany({
+      where: { projectId, id: activityId, status: { in: ['not_started', 'in_progress'] } },
       data: { status: 'blocked', block: LABOUR_MISMATCH_BLOCK },
     });
+    if (count === 0) return null;
     // The activities projection refreshes on ACTIVITY-owned signals only — without this event a
     // servable schedule projection would keep serving the pre-block status.
-    return emitEvent(tx, { projectId, actor, eventType: 'activity.labour_blocked', entityType: 'Activity', entityId: a.id, payload: { activityId: a.id }, effectKey: 'activity.labour_blocked', dispatch: {} });
+    return emitEvent(tx, { projectId, actor, eventType: 'activity.labour_blocked', entityType: 'Activity', entityId: activityId, payload: { activityId }, effectKey: 'activity.labour_blocked', dispatch: {} });
   }
 
   /**
@@ -288,17 +292,21 @@ export class ActivityParticipant {
     const blocked = await tx.activity.findMany({
       where: { projectId, id: activityId, status: 'blocked', block: LABOUR_MISMATCH_BLOCK },
     });
+    let changed = 0;
     for (const a of blocked) {
-      await tx.activity.update({
-        where: { id: a.id },
+      // CAS on the same selector (the F-A rule): only a row STILL carrying the labour banner is
+      // restored, so a transition that landed between the read and this write is never overwritten.
+      const { count } = await tx.activity.updateMany({
+        where: { projectId, id: a.id, status: 'blocked', block: LABOUR_MISMATCH_BLOCK },
         data: {
           status: a.actualStart != null || a.actualStartDate != null ? 'in_progress' : 'not_started',
           block: null,
         },
       });
+      changed += count;
     }
-    if (blocked.length === 0) return null;
-    return emitEvent(tx, { projectId, actor, eventType: 'activity.labour_unblocked', entityType: 'Activity', entityId: blocked[0].id, payload: { activityId, unblocked: blocked.length }, effectKey: 'activity.labour_unblocked', dispatch: {} });
+    if (changed === 0) return null;
+    return emitEvent(tx, { projectId, actor, eventType: 'activity.labour_unblocked', entityType: 'Activity', entityId: activityId, payload: { activityId, unblocked: changed }, effectKey: 'activity.labour_unblocked', dispatch: {} });
   }
 
   /**

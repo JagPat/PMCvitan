@@ -529,11 +529,14 @@ export class ActivitiesQueryService {
     for (const rows of byActivity.values()) {
       for (const row of rows.values()) {
         if (row.workedMinutes > 0 && row.outputs.length > 0) {
-          const perUom = new Map<string, number>();
-          for (const o of row.outputs) perUom.set(o.uom, (perUom.get(o.uom) ?? 0) + Number(o.quantity));
+          // Decimal end-to-end (the stored quantity is Decimal(18,6)): a float64 round-trip loses
+          // exact scale at large magnitudes, so the sum and the ÷hours stay in Prisma.Decimal and
+          // only the FINAL value is formatted to the 6-decimal wire shape.
+          const perUom = new Map<string, Prisma.Decimal>();
+          for (const o of row.outputs) perUom.set(o.uom, (perUom.get(o.uom) ?? new Prisma.Decimal(0)).plus(o.quantity));
           row.productivityPerHour = [...perUom.entries()]
             .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-            .map(([uom, qty]) => ({ uom, quantityPerHour: (qty / (row.workedMinutes / 60)).toFixed(6) }));
+            .map(([uom, qty]) => ({ uom, quantityPerHour: qty.mul(60).div(row.workedMinutes).toFixed(6) }));
         }
       }
     }

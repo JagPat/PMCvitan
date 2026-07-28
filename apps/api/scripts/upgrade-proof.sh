@@ -1214,6 +1214,77 @@ assert "the Phase-4 Task-4 LabourReadinessProjection table exists and is ROW-FRE
   "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'LabourReadinessProjection')::text || '|' || (SELECT COUNT(*) FROM \"LabourReadinessProjection\")::text;" \
   "1|0"
 
+# ── Phase 4 Task 5 — the §E mismatch register + §I measured-output facts. The 3 additive tables
+#    upgrade ROW-FREE over the legacy DB, and the DB seals (append-only triggers, the ONE-resolution
+#    register unique, the kind/quantity/non-blank CHECKs, and the activity/worker/media/command
+#    provenance composite FKs) reject forgeries on the MIGRATED database. Anchored on the coherent
+#    Task-3 chain above (p1 / ACT-1 / UPL-T3W / UPL-CMD1).
+assert "the 3 Phase-4 Task-5 reconciliation tables exist and are ROW-FREE over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('LabourMismatch','LabourMismatchResolution','ActivityWorkOutput'))::text || '|' || (SELECT COUNT(*) FROM \"LabourMismatch\")::text || '|' || (SELECT COUNT(*) FROM \"LabourMismatchResolution\")::text || '|' || (SELECT COUNT(*) FROM \"ActivityWorkOutput\")::text;" \
+  "3|0|0|0"
+assert "the Task-5 append-only triggers + register unique + integrity CHECKs are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('LabourMismatch_append_only','LabourMismatchResolution_append_only','ActivityWorkOutput_append_only') AND NOT tgisinternal)::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname = 'LabourMismatchResolution_projectId_mismatchId_key')::text || '|' || (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('LabourMismatch_kind_check','ActivityWorkOutput_quantity_check','LabourMismatch_note_nonblank','LabourMismatchResolution_text_nonblank','ActivityWorkOutput_text_nonblank','LabourMismatch_shift_check','ActivityWorkOutput_shift_check','LabourMismatch_kind_worker_check'))::text;" \
+  "3|1|8"
+
+# a coherent §E/§I chain: observation -> ONE resolution + a measured output. Proves the seals are
+# PRECISE (they accept legitimate reconciliation truth).
+$PSQL >/dev/null <<SQL && printf 'ok      %s\n' "labour T5: a coherent mismatch->resolution + output chain is accepted (seals are precise)" || { printf 'FAILED  %s\n' "labour T5 coherent chain rejected"; FAIL=1; }
+BEGIN;
+INSERT INTO "LabourMismatch"("id","projectId","activityId","civilDate","shift","kind","workerId","note","recordedById","sourceCommandId")
+  VALUES('UPL-T5M','p1','ACT-1','2026-08-12','day','wrong_trade','UPL-T3W','carpenter sent for mason work','USER-1','UPL-CMD1');
+INSERT INTO "LabourMismatchResolution"("id","projectId","mismatchId","resolution","reason","resolvedById","sourceCommandId")
+  VALUES('UPL-T5R','p1','UPL-T5M','crew corrected on site','verified by pmc','USER-1','UPL-CMD1');
+INSERT INTO "ActivityWorkOutput"("id","projectId","activityId","civilDate","shift","quantity","uom","recordedById","sourceCommandId")
+  VALUES('UPL-T5O','p1','ACT-1','2026-08-12','day',12.5,'m3','USER-1','UPL-CMD1');
+COMMIT;
+SQL
+
+# §E — the register: exactly ONE resolution per observation; a resolution needs a REAL observation
+assert_rejects "labour T5 §E: a SECOND resolution for one observation (register unique)" \
+  "INSERT INTO \"LabourMismatchResolution\"(\"id\",\"projectId\",\"mismatchId\",\"resolution\",\"reason\",\"resolvedById\",\"sourceCommandId\") VALUES('UPL-T5R2','p1','UPL-T5M','another story','forged','USER-1','UPL-CMD1')"
+assert_rejects "labour T5 §E: a resolution citing a NONEXISTENT observation (composite FK)" \
+  "INSERT INTO \"LabourMismatchResolution\"(\"id\",\"projectId\",\"mismatchId\",\"resolution\",\"reason\",\"resolvedById\",\"sourceCommandId\") VALUES('UPL-T5R3','p1','UPL-NOPE','x','y','USER-1','UPL-CMD1')"
+# §E/§I — history is append-only, whoever writes
+assert_rejects "labour T5 §E: editing a mismatch observation (append-only trigger)" \
+  "UPDATE \"LabourMismatch\" SET \"note\"='forged' WHERE \"id\"='UPL-T5M'"
+assert_rejects "labour T5 §E: deleting a mismatch observation (append-only trigger)" \
+  "DELETE FROM \"LabourMismatch\" WHERE \"id\"='UPL-T5M'"
+assert_rejects "labour T5 §E: editing a resolution register row (append-only trigger)" \
+  "UPDATE \"LabourMismatchResolution\" SET \"reason\"='forged' WHERE \"id\"='UPL-T5R'"
+assert_rejects "labour T5 §I: editing a measured output (append-only trigger)" \
+  "UPDATE \"ActivityWorkOutput\" SET \"quantity\"=999 WHERE \"id\"='UPL-T5O'"
+assert_rejects "labour T5 §I: deleting a measured output (append-only trigger)" \
+  "DELETE FROM \"ActivityWorkOutput\" WHERE \"id\"='UPL-T5O'"
+# integrity CHECKs — blank text, alien kind, non-positive quantity are unrepresentable
+assert_rejects "labour T5 §E: a whitespace-only mismatch note (non-blank CHECK)" \
+  "INSERT INTO \"LabourMismatch\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"kind\",\"note\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5MB','p1','ACT-1','2026-08-12','day','shortfall',E' \t\n','USER-1','UPL-CMD1')"
+assert_rejects "labour T5 §E: an alien mismatch kind (kind CHECK)" \
+  "INSERT INTO \"LabourMismatch\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"kind\",\"note\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5MK','p1','ACT-1','2026-08-12','day','vibes','n','USER-1','UPL-CMD1')"
+assert_rejects "labour T5 §I: a zero-quantity output (quantity CHECK)" \
+  "INSERT INTO \"ActivityWorkOutput\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"quantity\",\"uom\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5OZ','p1','ACT-1','2026-08-12','day',0,'m3','USER-1','UPL-CMD1')"
+assert_rejects "labour T5 §I: a whitespace-only uom (non-blank CHECK)" \
+  "INSERT INTO \"ActivityWorkOutput\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"quantity\",\"uom\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5OU','p1','ACT-1','2026-08-12','day',1,E'\t','USER-1','UPL-CMD1')"
+# provenance — activity/worker/media/command references must be THIS project's real rows
+assert_rejects "labour T5: a mismatch naming a nonexistent activity (composite FK)" \
+  "INSERT INTO \"LabourMismatch\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"kind\",\"note\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5MA','p1','ACT-NOPE','2026-08-12','day','shortfall','n','USER-1','UPL-CMD1')"
+assert_rejects "labour T5: a mismatch naming a foreign/nonexistent worker (composite FK)" \
+  "INSERT INTO \"LabourMismatch\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"kind\",\"workerId\",\"note\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5MW','p1','ACT-1','2026-08-12','day','wrong_trade','W-NOPE','carpenter','USER-1','UPL-CMD1')"
+assert_rejects "labour T5 §I: an output citing a nonexistent evidence photo (composite FK)" \
+  "INSERT INTO \"ActivityWorkOutput\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"quantity\",\"uom\",\"evidenceMediaId\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5OE','p1','ACT-1','2026-08-12','day',1,'m3','MEDIA-NOPE','USER-1','UPL-CMD1')"
+assert_rejects "labour T5: a forged sourceCommandId (provenance composite FK)" \
+  "INSERT INTO \"LabourMismatch\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"kind\",\"note\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5MC','p1','ACT-1','2026-08-12','day','shortfall','n','USER-1','UPL-NOCMD')"
+# Codex round 2 — the §E invariants hold even OUTSIDE the HTTP zod schemas (raw import,
+# maintenance): the shift vocabulary is the same closed set as the Task-3 fact tables, and the
+# kind<->worker correspondence is sealed at the database
+assert_rejects "labour T5 round-2: an alien shift on a mismatch observation (shift CHECK)" \
+  "INSERT INTO \"LabourMismatch\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"kind\",\"note\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5MS','p1','ACT-1','2026-08-12','swing','shortfall','n','USER-1','UPL-CMD1')"
+assert_rejects "labour T5 round-2: an alien shift on a measured output (shift CHECK)" \
+  "INSERT INTO \"ActivityWorkOutput\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"quantity\",\"uom\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5OS','p1','ACT-1','2026-08-12','swing',1,'m3','USER-1','UPL-CMD1')"
+assert_rejects "labour T5 round-2: a shortfall NAMING a worker (kind<->worker CHECK)" \
+  "INSERT INTO \"LabourMismatch\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"kind\",\"workerId\",\"note\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5MSW','p1','ACT-1','2026-08-13','day','shortfall','UPL-T3W','n','USER-1','UPL-CMD1')"
+assert_rejects "labour T5 round-2: a wrong_trade naming NO worker (kind<->worker CHECK)" \
+  "INSERT INTO \"LabourMismatch\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"kind\",\"note\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5MWT','p1','ACT-1','2026-08-13','day','wrong_trade','n','USER-1','UPL-CMD1')"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

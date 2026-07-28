@@ -73,6 +73,13 @@ export const activitiesManifest: ModuleManifest = {
     // projection consumes them to recompute coverage (still NO material.readiness_changed event).
     'substitution.approved',
     'substitution.revoked',
+    // Phase 4 Task 5 (§E) — the labour-dispute operational signals, appended by the labour
+    // mismatch commands through ActivityParticipant (the material_blocked owner-aligned rule):
+    // the activities projection refreshes on ACTIVITY-owned signals only. Signal-only (no push).
+    'activity.labour_blocked',
+    'activity.labour_unblocked',
+    // Phase 4 Task 5 (§I) — the activities-owned measured-output fact.
+    'activity_output.recorded',
   ],
   consumesEvents: [],
   commands: [...ACTIVITIES_COMMANDS],

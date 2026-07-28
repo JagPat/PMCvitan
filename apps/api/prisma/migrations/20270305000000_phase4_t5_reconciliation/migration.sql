@@ -130,6 +130,19 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityWorkOutput_text_nonblank') THEN
     ALTER TABLE "ActivityWorkOutput" ADD CONSTRAINT "ActivityWorkOutput_text_nonblank" CHECK (btrim("uom", E' \t\n\x0B\f\r') <> '' AND ("note" IS NULL OR btrim("note", E' \t\n\x0B\f\r') <> ''));
   END IF;
+  -- The shift vocabulary is the SAME closed set the Task-3 fact tables enforce, and the
+  -- kind<->worker correspondence the zod contract states is sealed HERE too: rows written
+  -- outside the HTTP schemas (raw import, maintenance) must satisfy the same §E invariants,
+  -- because the append-only triggers below make bad evidence unrepairable once committed.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'LabourMismatch_shift_check') THEN
+    ALTER TABLE "LabourMismatch" ADD CONSTRAINT "LabourMismatch_shift_check" CHECK ("shift" IN ('day', 'night'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityWorkOutput_shift_check') THEN
+    ALTER TABLE "ActivityWorkOutput" ADD CONSTRAINT "ActivityWorkOutput_shift_check" CHECK ("shift" IN ('day', 'night'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'LabourMismatch_kind_worker_check') THEN
+    ALTER TABLE "LabourMismatch" ADD CONSTRAINT "LabourMismatch_kind_worker_check" CHECK (("kind" = 'wrong_trade' AND "workerId" IS NOT NULL) OR ("kind" = 'shortfall' AND "workerId" IS NULL));
+  END IF;
 END $$;
 
 -- Append-only seals: an observation, its resolution and a measured-output fact are history —
