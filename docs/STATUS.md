@@ -13,13 +13,13 @@ narrative and may lag behind reality.
 phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
 task: 3
-task_state: in_review
-work_item: correction_round_3
-reviewed_merge: 2a6112b
-open_pr: 230
+task_state: merged
+work_item: none
+reviewed_merge: 33d37a3
+open_pr: none
 next_task: 4
-blocking_directive: docs/reviews/phase-4-t3-correction3-directive.md
-updated: 2026-07-27
+blocking_directive: none
+updated: 2026-07-28
 ```
 
 ## Phase 4 — labour readiness
@@ -31,7 +31,7 @@ Review Stops" section of the phase plan.
 |---|---|---|
 | 1 | Labour capability + type-routed demand + trusted workforce identity (§B/§D/§H) | merged |
 | 2 | Supplier reuse + labour commitment documents (§F) | merged |
-| 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | in_review — correction round 3 is open as PR #230; directive `docs/reviews/phase-4-t3-correction3-directive.md`, evidence `docs/reviews/phase-4-t3-correction3-packet.md` |
+| 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | merged — correction round 3 merged as PR #230 (`main` `33d37a3`) through the exact-head `codex-current-head` gate; evidence `docs/reviews/phase-4-t3-correction3-packet.md` |
 | 4 | Canonical labour coverage + Team gate + combined readiness + seventh projection + LEAF module graph (§A/§G) | not_started |
 | 5 | Daily-Log reconciliation (§E) + planned-vs-actual + productivity (§I) | not_started |
 | 6 | Frontend surfaces + pilot acceptance chain + consolidated Phase-4 packet (§J) | not_started |
