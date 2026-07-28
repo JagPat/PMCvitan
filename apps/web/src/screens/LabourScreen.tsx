@@ -7,7 +7,7 @@ import type { LabourForecastVerdict, WorkerDto } from '@vitan/shared';
 import { decAdd } from '@/lib/decimal';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines } from '@/lib/labourSelection';
+import { compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, SHIFT_MINUTES } from '@/lib/labourSelection';
 import styles from './responsive.module.css';
 
 /**
@@ -56,6 +56,7 @@ export function LabourScreen() {
   const labour = useStore(useShallow((s) => s.labourView));
   const labourLoad = useStore((s) => s.labourLoad);
   const labourPending = useStore(useShallow((s) => s.labourPending));
+  const outbox = useStore(useShallow((s) => s.outbox));
   const activities = useStore(useShallow((s) => s.activities));
   const role = useStore((s) => s.role);
   const timeZone = useStore((s) => s.timeZone);
@@ -82,6 +83,16 @@ export function LabourScreen() {
   const pending = (key: string): boolean => labourPending.includes(key);
 
   const activityName = (id: string): string => activities.find((a) => a.id === id)?.name ?? id;
+  // Codex round 6 — supplier draws still IN FLIGHT: a queued allocate op carrying a commitment id
+  // must reserve that capacity in the picker, or a second worker chosen before the labour reload
+  // lands re-picks a fully-drawn commitment and the flush 409s the second command under §F
+  // bound 3 (own-workforce would have covered the remaining demand).
+  const pendingDraws: Record<string, number> = {};
+  for (const op of outbox) {
+    if (op.t === 'allocateLabour' && typeof op.input.capacityCommitmentId === 'string') {
+      pendingDraws[op.input.capacityCommitmentId] = (pendingDraws[op.input.capacityCommitmentId] ?? 0) + 1;
+    }
+  }
   const forecastEntries = labour ? Object.entries(labour.readiness.forecast) : [];
   const readyCount = forecastEntries.filter(([, f]) => f.verdict === 'ready').length;
   const atRiskCount = forecastEntries.filter(([, f]) => f.verdict === 'at-risk').length;
@@ -275,15 +286,18 @@ export function LabourScreen() {
                         // satisfied. The stop counts SOURCED person-shifts (active ∪ worked, the
                         // server's coverage rule): a worked-then-released slice stays fulfilled.
                         const sourced = sourcedCountFor(labour.capacity.allocations, labour.capacity.workFacts, r.requirementId, r.activityId, sl.civilDate, spec, substitutions);
-                        // Codex round 5 — count IN-FLIGHT allocations for this slice (ANY worker,
-                        // any revision): the per-worker pending guard alone would let a SECOND
-                        // worker be queued against a 1-person slice while the first command is
-                        // still in flight — a 2/1 own-workforce over-allocation the server accepts.
-                        const slicePending = labourPending.filter((k) => isAllocatePendingForSlice(k, r.activityId, r.requirementId, sl.civilDate)).length;
+                        // Codex round 5 — count IN-FLIGHT allocations for this slice (ANY worker):
+                        // the per-worker pending guard alone would let a SECOND worker be queued
+                        // against a 1-person slice while the first command is still in flight — a
+                        // 2/1 own-workforce over-allocation the server accepts. Codex round 6 —
+                        // scoped to THIS head revision: a stale-revision op will replay, 409 and
+                        // drop; it must not fill current demand and suppress the valid allocation.
+                        const slicePending = labourPending.filter((k) => isAllocatePendingForSlice(k, r.activityId, r.requirementId, r.revision, sl.civilDate)).length;
                         const full = sourced + slicePending >= sl.personShiftQty;
                         // Codex F2 — a commitment-covered slice draws DOWN the matching drawable
-                        // commitment (§F bound 3): pass its id so the server consumes the capacity.
-                        const commitmentId = pickCommitmentFor(labour.commitments, labour.capacity.allocations, labour.capacity.workFacts, spec, sl.civilDate);
+                        // commitment (§F bound 3): pass its id so the server consumes the capacity
+                        // (round 6 — queued draws reserved via `pendingDraws`).
+                        const commitmentId = pickCommitmentFor(labour.commitments, labour.capacity.allocations, labour.capacity.workFacts, spec, sl.civilDate, pendingDraws);
                         return (
                           <div key={sl.civilDate} data-testid={`labour-alloc-slice-${r.requirementId}-${sl.civilDate}`} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 7 }}>
                             <span style={{ fontSize: 12.5, minWidth: 190 }}>{sl.civilDate} · {sl.shift} · allocated {done}/{sl.personShiftQty}{sourced > done ? ` · ${sourced}/${sl.personShiftQty} sourced incl. delivered work` : ''}{slicePending > 0 ? ` · ${slicePending} allocating…` : ''}{!full && commitmentId ? ' · supplier capacity available' : ''}</span>
@@ -304,12 +318,17 @@ export function LabourScreen() {
                   <div style={{ ...mono, margin: '14px 0 2px' }}>ALLOCATIONS</div>
                 )}
                 {labour.capacity.allocations.map((a) => {
-                  const minutes = workMinutes[a.id] ?? '480';
+                  // Codex round 6 — the server's guardrail is CUMULATIVE: Σ workedMinutes per
+                  // (worker, civilDate, shift) across ALL allocations ≤ SHIFT_MINUTES, re-derived
+                  // under the worker lock — an entry over the REMAINING minutes is a terminal 409
+                  // the outbox drops. Cap the entry at the remainder; a full shift disables it.
+                  const remaining = remainingShiftMinutes(labour.capacity.workFacts, a.workerId, a.civilDate, a.shift);
+                  const minutes = workMinutes[a.id] ?? String(Math.min(480, Math.max(remaining, 1)));
                   // Codex round 4 — parse the FULL numeric string: `parseInt` silently truncates
                   // '1e2'→1 and '7.5'→7, so an intended 100 minutes could be recorded as 1.
                   // `Number` evaluates the whole value; a fractional entry is simply invalid.
                   const minutesNum = minutes.trim() === '' ? Number.NaN : Number(minutes);
-                  const valid = Number.isInteger(minutesNum) && minutesNum >= 1 && minutesNum <= 720;
+                  const valid = Number.isInteger(minutesNum) && minutesNum >= 1 && minutesNum <= remaining;
                   const wKey = valid ? workCoalesceKey(a.id, minutesNum) : '';
                   // Codex round 3 — no ACTUAL work before the shift's civil day: a future-dated
                   // booking must not mint delivered-work evidence (productivity + Team coverage
@@ -324,10 +343,10 @@ export function LabourScreen() {
                       <div style={{ ...muted, marginTop: 4 }}>{a.civilDate} · {a.shift}{a.capacityCommitmentId ? ' · supplier capacity' : ' · own workforce'}</div>
                       {a.status === 'active' && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                          <input type="number" min={1} max={720} value={minutes} disabled={future} data-testid={`labour-work-minutes-${a.id}`} onChange={(e) => setWorkMinutes((m) => ({ ...m, [a.id]: e.target.value }))} style={{ ...selectStyle, width: 76 }} />
-                          <span style={muted}>min</span>
-                          <Button variant="outline" disabled={future || !valid || pending(wKey)} data-testid={`labour-do-work-${a.id}`} onClick={() => !future && valid && recordWorkedMinutes(a.id, minutesNum)} style={{ fontSize: 11.5, flex: 'none' }}>
-                            {future ? 'Future shift' : valid && pending(wKey) ? 'Recording…' : 'Record work'}
+                          <input type="number" min={1} max={remaining} value={minutes} disabled={future || remaining <= 0} data-testid={`labour-work-minutes-${a.id}`} onChange={(e) => setWorkMinutes((m) => ({ ...m, [a.id]: e.target.value }))} style={{ ...selectStyle, width: 76 }} />
+                          <span style={muted}>min{remaining < SHIFT_MINUTES ? ` · ${remaining} left this shift` : ''}</span>
+                          <Button variant="outline" disabled={future || remaining <= 0 || !valid || pending(wKey)} data-testid={`labour-do-work-${a.id}`} onClick={() => !future && remaining > 0 && valid && recordWorkedMinutes(a.id, minutesNum)} style={{ fontSize: 11.5, flex: 'none' }}>
+                            {future ? 'Future shift' : remaining <= 0 ? 'Shift full' : valid && pending(wKey) ? 'Recording…' : 'Record work'}
                           </Button>
                         </div>
                       )}
@@ -346,22 +365,29 @@ export function LabourScreen() {
                 <div style={rowCard}>
                   <div style={{ ...mono, marginBottom: 6 }}>MARK PRESENT — {today} (manual exception; workers normally tap their own bound device)</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <select value={musterWorkerId} data-testid="labour-muster-worker-select" onChange={(e) => setMusterWorkerId(e.target.value)} style={selectStyle}>
-                      <option value="">Choose worker…</option>
-                      {musterable.map((w) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}
-                    </select>
-                    <select value={musterShift} data-testid="labour-muster-shift" onChange={(e) => setMusterShift(e.target.value === 'night' ? 'night' : 'day')} style={selectStyle}>
-                      <option value="day">day</option>
-                      <option value="night">night</option>
-                    </select>
-                    <input value={musterReason} placeholder="Reason (e.g. device battery dead)" data-testid="labour-muster-reason" onChange={(e) => setMusterReason(e.target.value)} style={{ ...selectStyle, flex: '1 1 180px' }} />
                     {(() => {
-                      const ready = musterable.some((w) => w.id === musterWorkerId) && musterReason.trim().length > 0;
+                      // Codex round 6 — a worker with an ACTIVE muster for this (day, shift) is not
+                      // offered again: the second muster is the server's deterministic 409
+                      // ("already recorded — revoke it to correct it") the outbox drops as terminal.
+                      const alreadyMustered = musteredWorkerIds(labour.presence.musters, musterShift);
+                      const musterOfferable = musterable.filter((w) => !alreadyMustered.has(w.id));
+                      const ready = musterOfferable.some((w) => w.id === musterWorkerId) && musterReason.trim().length > 0;
                       const mKey = ready ? musterCoalesceKey(musterWorkerId, today, musterShift) : '';
                       return (
-                        <Button variant="outline" disabled={!ready || pending(mKey)} data-testid="labour-do-muster" onClick={() => ready && musterWorker(musterWorkerId, today, musterShift, musterReason.trim())} style={{ fontSize: 11.5, flex: 'none' }}>
-                          {ready && pending(mKey) ? 'Recording…' : 'Mark present'}
-                        </Button>
+                        <>
+                          <select value={musterOfferable.some((w) => w.id === musterWorkerId) ? musterWorkerId : ''} data-testid="labour-muster-worker-select" onChange={(e) => setMusterWorkerId(e.target.value)} style={selectStyle}>
+                            <option value="">{musterOfferable.length ? 'Choose worker…' : 'All active workers already mustered'}</option>
+                            {musterOfferable.map((w) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}
+                          </select>
+                          <select value={musterShift} data-testid="labour-muster-shift" onChange={(e) => setMusterShift(e.target.value === 'night' ? 'night' : 'day')} style={selectStyle}>
+                            <option value="day">day</option>
+                            <option value="night">night</option>
+                          </select>
+                          <input value={musterReason} placeholder="Reason (e.g. device battery dead)" data-testid="labour-muster-reason" onChange={(e) => setMusterReason(e.target.value)} style={{ ...selectStyle, flex: '1 1 180px' }} />
+                          <Button variant="outline" disabled={!ready || pending(mKey)} data-testid="labour-do-muster" onClick={() => ready && musterWorker(musterWorkerId, today, musterShift, musterReason.trim())} style={{ fontSize: 11.5, flex: 'none' }}>
+                            {ready && pending(mKey) ? 'Recording…' : 'Mark present'}
+                          </Button>
+                        </>
                       );
                     })()}
                   </div>

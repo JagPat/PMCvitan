@@ -341,6 +341,137 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     expect(btn().disabled).toBe(true);
   });
 
+  it('R6-1: a STALE-revision pending op does NOT fill current demand (the rev-2 slice stays allocatable)', async () => {
+    const m1 = worker('W-MASON', 'mason');
+    const m2 = worker('W-MASON-2', 'mason');
+    await primeLabour({
+      workforce: { workers: [m1, m2], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([m1, m2]),
+    });
+    // the queued op targets revision 99 — it will replay, 409 on head drift and drop; counting it
+    // against the CURRENT (rev-1) slice would suppress the legitimate current-head allocation
+    const { allocateCoalesceKey } = await import('@/lib/labourKeys');
+    useStore.setState({ role: 'pmc', labourPending: [allocateCoalesceKey('ACT-1', 'REQ-1', 99, day, 'W-MASON')] });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const text = r.getByTestId(`labour-alloc-slice-REQ-1-${day}`).textContent!;
+    expect(text).not.toContain('allocating…');
+    expect((r.getByTestId(`labour-worker-select-REQ-1-${day}`) as HTMLSelectElement).disabled).toBe(false);
+    fireEvent.change(r.getByTestId(`labour-worker-select-REQ-1-${day}`), { target: { value: 'W-MASON-2' } });
+    expect((r.getByTestId(`labour-do-allocate-REQ-1-${day}`) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R6-2: the manual muster picker excludes workers ALREADY mustered for the selected shift (a repeat is a certain 409)', async () => {
+    await primeLabour({
+      presence: {
+        civilDate: day,
+        musters: [{ workerId: 'W-MASON', workerName: 'W-MASON', tradeCode: 'mason', shift: 'day', deviceId: null, manualReason: 'battery dead', recordedAt: '2026-08-01T02:00:00Z' }],
+        mismatches: [],
+      },
+    });
+    useStore.setState({ role: 'pmc' });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-attendance'));
+    const options = () => Array.from(r.getByTestId('labour-muster-worker-select').querySelectorAll('option')).map((o) => o.getAttribute('value'));
+    // day shift — W-MASON already holds an active day muster and is NOT offered again
+    expect(options()).not.toContain('W-MASON');
+    expect(options()).toContain('W-ELEC');
+    // the NIGHT shift is a different attendance fact — W-MASON is offered there
+    fireEvent.change(r.getByTestId('labour-muster-shift'), { target: { value: 'night' } });
+    expect(options()).toContain('W-MASON');
+  });
+
+  it('R6-3: a QUEUED supplier draw RESERVES the commitment — the next allocate goes own-workforce instead of a certain 409', async () => {
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const m1 = worker('W-MASON', 'mason');
+    const m2 = worker('W-MASON-2', 'mason');
+    const twoQty = { ...requirement(fp), labourSpec: labourSpec(fp, { demandSlices: [{ civilDate: day, shift: 'day', personShiftQty: 2 }] }) };
+    const spy = vi.fn();
+    const { allocateCoalesceKey } = await import('@/lib/labourKeys');
+    const pendingOp = {
+      t: 'allocateLabour' as const,
+      input: { activityId: 'ACT-1', requirementId: 'REQ-1', originRevision: 1, civilDate: day, workerId: 'W-MASON', capacityCommitmentId: 'CC-1' },
+      idempotencyKey: 'idem-1',
+      coalesceKey: allocateCoalesceKey('ACT-1', 'REQ-1', 1, day, 'W-MASON'),
+    };
+    await primeLabour({
+      requirements: [twoQty],
+      commitments: [commitment(fp)], // ONE person-shift, already claimed by the queued op
+      workforce: { workers: [m1, m2], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([m1, m2]),
+    });
+    useStore.setState({ role: 'pmc', allocateWorker: spy, outbox: [pendingOp] as never, labourPending: [pendingOp.coalesceKey] });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    // the queued draw consumed the 1-person commitment: no supplier hint, and the SECOND
+    // allocation is sent OWN-WORKFORCE (null commitment) instead of a §F bound-3 409
+    expect(r.getByTestId(`labour-alloc-slice-REQ-1-${day}`).textContent!).not.toContain('supplier capacity available');
+    fireEvent.change(r.getByTestId(`labour-worker-select-REQ-1-${day}`), { target: { value: 'W-MASON-2' } });
+    fireEvent.click(r.getByTestId(`labour-do-allocate-REQ-1-${day}`));
+    expect(spy).toHaveBeenCalledWith('ACT-1', 'REQ-1', 1, day, 'W-MASON-2', null);
+    cleanup();
+    // control — with NOTHING queued the same slice passes the commitment id through
+    await primeLabour({
+      requirements: [twoQty],
+      commitments: [commitment(fp)],
+      workforce: { workers: [m1, m2], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([m1, m2]),
+    });
+    const spy2 = vi.fn();
+    useStore.setState({ role: 'pmc', allocateWorker: spy2, outbox: [], labourPending: [] });
+    const r2 = render(<LabourScreen />);
+    fireEvent.click(r2.getByTestId('labour-tab-allocation'));
+    fireEvent.change(r2.getByTestId(`labour-worker-select-REQ-1-${day}`), { target: { value: 'W-MASON-2' } });
+    fireEvent.click(r2.getByTestId(`labour-do-allocate-REQ-1-${day}`));
+    expect(spy2).toHaveBeenCalledWith('ACT-1', 'REQ-1', 1, day, 'W-MASON-2', 'CC-1');
+  });
+
+  it('R6-5: Record work caps at the REMAINING shift minutes (cumulative Σ ≤ 720 per worker/date/shift), and a full shift disables it', async () => {
+    const today = todayCivil(null);
+    // 480 already recorded for the worker/date/shift (under ANOTHER allocation of the same
+    // worker) — the default entry becomes the 240-minute remainder and 241 is refused
+    await primeLabour({
+      capacity: {
+        allocations: [alloc({ id: 'AL-NOW', civilDate: today })],
+        attendance: [],
+        workFacts: [workFact({ id: 'WF-PRIOR', allocationId: 'AL-EARLIER', workerId: 'W-MASON', civilDate: today, workedMinutes: 480 })],
+        skillSubstitutions: [],
+      },
+    });
+    const spy = vi.fn();
+    useStore.setState({ role: 'pmc', recordWorkedMinutes: spy });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const row = r.getByTestId('labour-allocation-AL-NOW');
+    expect(row.textContent).toContain('240 left this shift');
+    const input = r.getByTestId('labour-work-minutes-AL-NOW') as HTMLInputElement;
+    const btn = () => r.getByTestId('labour-do-work-AL-NOW') as HTMLButtonElement;
+    expect(input.value).toBe('240'); // the default is the remainder, not a doomed 480
+    fireEvent.change(input, { target: { value: '241' } });
+    expect(btn().disabled).toBe(true); // over the cumulative cap — the server would 409
+    fireEvent.change(input, { target: { value: '240' } });
+    expect(btn().disabled).toBe(false);
+    fireEvent.click(btn());
+    expect(spy).toHaveBeenCalledWith('AL-NOW', 240);
+    cleanup();
+    // a FULL shift (720 recorded) shows 'Shift full' with input + button disabled
+    await primeLabour({
+      capacity: {
+        allocations: [alloc({ id: 'AL-NOW', civilDate: today })],
+        attendance: [],
+        workFacts: [workFact({ id: 'WF-FULL', allocationId: 'AL-EARLIER', workerId: 'W-MASON', civilDate: today, workedMinutes: 720 })],
+        skillSubstitutions: [],
+      },
+    });
+    useStore.setState({ role: 'pmc' });
+    const r2 = render(<LabourScreen />);
+    fireEvent.click(r2.getByTestId('labour-tab-allocation'));
+    const btn2 = r2.getByTestId('labour-do-work-AL-NOW') as HTMLButtonElement;
+    expect(btn2.textContent).toContain('Shift full');
+    expect(btn2.disabled).toBe(true);
+    expect((r2.getByTestId('labour-work-minutes-AL-NOW') as HTMLInputElement).disabled).toBe(true);
+  });
+
   it('R3-5: Team onboarding stamps activeFrom with the PROJECT civil day, not the browser/UTC date', async () => {
     await primeLabour({ catalog: { trades: [{ code: 'mason', name: 'Mason' }], skills: [] } });
     const spy = vi.fn();

@@ -103,6 +103,12 @@ export function pickCommitmentFor(
   workFacts: readonly LabourWorkFactDto[],
   spec: Pick<LabourSpecRef, 'labourSpecFingerprint' | 'shift'>,
   civilDate: string,
+  // Codex round 6 — draws still IN FLIGHT (queued allocate ops carrying a commitment id, counted
+  // per commitment from the durable outbox): the picker must reserve them, or a second worker
+  // chosen before the labour reload lands re-picks a fully-drawn commitment and the flush 409s
+  // the second command under §F bound 3 — when omitting the id would have allocated the
+  // remaining demand from own workforce.
+  pendingDraws?: Readonly<Record<string, number>>,
 ): string | null {
   const worked = new Set(workFacts.map((f) => f.allocationId));
   const draws = new Map<string, number>();
@@ -122,7 +128,7 @@ export function pickCommitmentFor(
         // `latestPromise <= civilDate`, own civil date when no promise exists): drawing capacity
         // whose supplier arrives AFTER the slice would let a blocked activity read as sourced.
         (c.latestPromise?.promisedDate ?? c.civilDate) <= civilDate &&
-        c.personShiftQty - (draws.get(c.id) ?? 0) > 0,
+        c.personShiftQty - (draws.get(c.id) ?? 0) - (pendingDraws?.[c.id] ?? 0) > 0,
     )
     .sort((a, b) => (a.id < b.id ? -1 : 1)); // deterministic pick
   return live[0]?.id ?? null;
@@ -187,6 +193,34 @@ export function sourcedCountFor(
     }
   }
   return sourced.size;
+}
+
+/** Codex round 6 — workers already carrying an ACTIVE muster for a shift (the `labour.presence`
+ *  read returns non-revoked musters only). The manual-muster picker must not offer them again:
+ *  a second muster for the same (worker, civil day, shift) is the server's deterministic 409
+ *  ("already recorded — revoke it to correct it") the outbox drops as terminal. */
+export function musteredWorkerIds(
+  musters: ReadonlyArray<{ workerId: string; shift: string }>,
+  shift: string,
+): Set<string> {
+  return new Set(musters.filter((m) => m.shift === shift).map((m) => m.workerId));
+}
+
+/** Codex round 6 — the worker's REMAINING recordable minutes for a (civilDate, shift), mirroring
+ *  the server's cumulative guardrail (`labour-capacity.service.ts` `SHIFT_MINUTES = 720`:
+ *  Σ workedMinutes per worker/date/shift re-derived under the worker lock; an entry that would
+ *  exceed it is a terminal 409). The work facts span ALL of the worker's allocations. */
+export const SHIFT_MINUTES = 720;
+export function remainingShiftMinutes(
+  workFacts: readonly LabourWorkFactDto[],
+  workerId: string,
+  civilDate: string,
+  shift: string,
+): number {
+  const recorded = workFacts
+    .filter((f) => f.workerId === workerId && f.civilDate === civilDate && f.shift === shift)
+    .reduce((sum, f) => sum + f.workedMinutes, 0);
+  return Math.max(0, SHIFT_MINUTES - recorded);
 }
 
 /** Codex round 3 — the UNREQUISITIONED residual of a requirement's demand slices. The server's

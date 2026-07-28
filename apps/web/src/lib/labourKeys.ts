@@ -24,20 +24,22 @@ export const allocateCoalesceKey = (
 ): string => `lab:alloc:${activityId}:${requirementId}@${originRevision}:${civilDate}:${subject}`;
 
 /** Codex round 5 — whether a pending coalesce key is an ALLOCATE op for the given demand slice,
- *  ANY worker and ANY revision. The allocate stop must count every in-flight allocation against
- *  the slice, not only the currently-chosen worker's own key — otherwise picking a second worker
- *  while the first command is still in flight queues a 2/1 own-workforce over-allocation. */
+ *  ANY worker: the allocate stop must count every in-flight allocation against the slice, not
+ *  only the currently-chosen worker's own key — otherwise picking a second worker while the
+ *  first command is still in flight queues a 2/1 own-workforce over-allocation.
+ *
+ *  Codex round 6 — scoped to the SELECTED revision: a stale rev-N op still queued offline will
+ *  replay, 409 on head drift and be dropped — it must NOT make the rev-N+1 slice read as full
+ *  and suppress the legitimate current-head allocation (the very action the revision-keyed
+ *  coalesce identity of round 4 exists to preserve). Prefix-matched so a `crew:<id>` subject
+ *  (which itself contains ':') also matches. */
 export const isAllocatePendingForSlice = (
   key: string,
   activityId: string,
   requirementId: string,
+  originRevision: number,
   civilDate: string,
-): boolean => {
-  const prefix = `lab:alloc:${activityId}:${requirementId}@`;
-  if (!key.startsWith(prefix)) return false;
-  const parts = key.slice(prefix.length).split(':'); // `${revision}:${civilDate}:${subject}`
-  return parts.length === 3 && parts[1] === civilDate;
-};
+): boolean => key.startsWith(`lab:alloc:${activityId}:${requirementId}@${originRevision}:${civilDate}:`);
 
 export const musterCoalesceKey = (workerId: string, civilDate: string, shift: string): string =>
   `lab:must:${workerId}:${civilDate}:${shift}`;

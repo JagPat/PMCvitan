@@ -232,6 +232,7 @@ export interface AppState {
   labourLoad: 'idle' | 'loading' | 'ready' | 'error';
   labourPending: string[];
   labourOnboardPending: { sig: string; key: string } | null;
+  labourBindPending: { sig: string; key: string } | null;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
@@ -676,6 +677,7 @@ export function getInitialState(): AppState {
     labourLoad: 'idle',
     labourPending: [],
     labourOnboardPending: null,
+    labourBindPending: null,
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
@@ -2581,11 +2583,30 @@ export const useStore = create<Store>()(
         });
     },
     bindLabourDevice: (deviceId, workerId) => {
+      // Codex round 6 — the same held-key discipline as `onboardLabourWorker`: the bind CAS
+      // succeeds ONCE (a re-bind of the same pair is the server's "already bound" 409), so a
+      // committed-but-lost response retried with a FRESH key would report failure for a binding
+      // that succeeded. The key for the submitted (device, worker) pair is minted once and
+      // reused verbatim until a CONFIRMED success — the ledger replays the original result.
       if (!gateway || !get().capabilities.includes('labour')) return;
-      runRemote(
-        () => gateway!.bindWorkerDevice(deviceId, workerId, newIdempotencyKey()).then(() => { get().loadLabour(); return gateway!.snapshot(); }),
-        'Device bound to the worker.',
-      );
+      const sig = JSON.stringify([deviceId, workerId]);
+      const held = get().labourBindPending;
+      const key = held && held.sig === sig ? held.key : newIdempotencyKey();
+      set((s) => { s.labourBindPending = { sig, key }; });
+      const lease = beginSnapshotLease(currentScope());
+      gateway!.bindWorkerDevice(deviceId, workerId, key)
+        .then(() => {
+          if (scopeStillCurrent(lease.scope)) {
+            set((s) => { if (s.labourBindPending?.key === key) s.labourBindPending = null; });
+          }
+          get().loadLabour();
+          return gateway!.snapshot();
+        })
+        .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), 'Device bound to the worker.', lease.scope))
+        .catch(() => {
+          // failure (including a LOST committed response) RETAINS the key for the retry
+          if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
+        });
     },
     switchProject: (projectId, targetScreen) => {
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);

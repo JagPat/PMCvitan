@@ -79,6 +79,11 @@ export interface ProjectDataState {
    *  uniqueness, so the ledger key is what stops a duplicate Worker), cleared only by a
    *  CONFIRMED success or a scope teardown. */
   labourOnboardPending: { sig: string; key: string } | null;
+  /** Codex round 6 — the same held-key discipline for the device-bind command: a committed-but-
+   *  lost bind retried with a FRESH key is the server's "already bound to this worker" 409
+   *  (the CAS is on the still-unbound row), reported as failure for a binding that succeeded.
+   *  Holding the key lets the command ledger replay the original success. */
+  labourBindPending: { sig: string; key: string } | null;
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */
@@ -108,6 +113,7 @@ export function emptyProjectData(): ProjectDataState {
     labourView: null,
     labourPending: [],
     labourOnboardPending: null,
+    labourBindPending: null,
   };
 }
 

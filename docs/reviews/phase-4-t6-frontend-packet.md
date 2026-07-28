@@ -562,3 +562,74 @@ carve-out restated.
   pillar chain passed (34/35 — isolating the residual to the documented
   `inspections-module-query` project-switcher timeout, no labour surface), and the deciding
   re-run was clean **35/35**. labour-pilot 4/4. Fresh-runner CI is the deciding gate evidence.
+
+## §10 — Codex correction round 6 (five findings on `8a4b3ef`)
+
+Each finding verified against the cited server code BEFORE the fix, and all five reproduced
+RED at `8a4b3ef` (pre-fix `apps/web/src` restored: **9 failed | 68 passed** across the two
+labour suites) → GREEN with the fixes: **77/77**.
+
+### R6-1 — a STALE-revision pending op must not fill current demand
+
+Round 5's slice-wide pending stop counted queued allocate keys for ANY revision, so a rev-1 op
+still in the durable outbox made a one-person rev-2 slice read as full — suppressing exactly
+the current-head allocation the revision-keyed coalesce identity (round 4) exists to preserve.
+`isAllocatePendingForSlice` now takes the SELECTED revision and prefix-matches
+`lab:alloc:<act>:<req>@<rev>:<date>:` (a `crew:<id>` subject, which contains ':', now also
+matches — a latent parser gap closed). The stale op still replays, 409s on head drift and
+drops. Probes: key-matcher table (stale-rev false · current-rev true · crew subject) +
+rendered (a rev-99 pending key leaves the rev-1 slice fully allocatable, no "allocating…").
+
+### R6-2 — already-mustered workers leave the manual attendance picker
+
+A second muster for the same (worker, project day, shift) is the server's deterministic 409
+("already recorded — revoke it to correct it", `labour-capacity.service.ts:466`) the outbox
+drops as terminal. `musteredWorkerIds` filters the `labour.presence` musters (active only —
+the read excludes revoked rows) by the SELECTED shift, and the picker offers only workers
+without one; the night shift re-offers a day-mustered worker. Probes: helper table + rendered
+shift-switch.
+
+### R6-3 — the commitment picker RESERVES pending supplier draws
+
+A queued allocate op carrying a `capacityCommitmentId` was invisible to `pickCommitmentFor`,
+so a second worker chosen before the labour reload re-picked the same fully-drawn commitment —
+the flush then 409s the second command under §F bound 3 when own-workforce would have covered
+the remaining demand. The screen folds the durable outbox's allocate ops into a per-commitment
+`pendingDraws` map the picker subtracts alongside committed draws. Probes: picker table
+(1-qty reserved → null; 2-qty with one pending → offered; active+pending combine) + rendered
+(queued draw → the next allocate goes own-workforce with NO supplier hint; control passes the
+id through).
+
+### R6-4 — the device-bind holds ONE idempotency key until CONFIRMED success
+
+The bind CAS succeeds once (`worker-devices.service.ts:47` — a same-pair re-bind is "already
+bound to this worker" 409), so a committed-but-lost response retried with a FRESH key reported
+failure for a binding that succeeded. `bindLabourDevice` now mirrors the round-5 onboarding
+discipline: ONE key per submitted `(deviceId, workerId)` pair (project-scoped
+`labourBindPending`, torn down on scope change), reused verbatim on retry so the command
+ledger replays the original success; only a CONFIRMED success clears it. Probe: reject-once →
+same key on retry → confirmed → a different pair mints a fresh key.
+
+### R6-5 — Record work caps at the REMAINING shift minutes
+
+The entry validated only `1..720` while the server's guardrail is CUMULATIVE
+(`SHIFT_MINUTES = 720`, Σ workedMinutes per worker/date/shift across ALL allocations,
+re-derived under the worker lock — `labour-capacity.service.ts:548-551`): after a recorded
+480, the default 480 was a certain terminal 409. `remainingShiftMinutes` mirrors the
+cumulative rule; the input defaults to `min(480, remainder)`, shows "`N` left this shift",
+refuses an over-remainder entry, and a full shift disables the row as "Shift full". Probes:
+helper table (multi-allocation sum · other worker/day excluded · floors at 0) + rendered
+(240-remainder default + 241 refused + 240 recorded; 720 recorded → Shift full).
+
+### Round-6 gate battery (this head)
+
+- **Reproduce-first**: pre-fix `apps/web/src` restored at `8a4b3ef` → **9 failed | 68 passed**
+  across the two labour suites; fixes restored → **77/77** GREEN.
+- `pnpm check` **EXIT 0** — web **514/514** (42 files), API **680/680** (55 files), builds clean.
+- Full API integration on a pristine migrated DB (psql drop/create + `prisma migrate deploy`):
+  **72 files / 695 tests** passing.
+- `upgrade-proof.sh` **PASSED** (no migration in this round; every prior seal survives).
+- `test:e2e:api:allmodules` (legacy): **35/35** CLEAN first run; labour-pilot 4/4.
+- `test:e2e:api:allmodules:outbox`: first run 34/35 (the documented timing-sensitive
+  `cross-cutting-surfaces` response-capture step — no labour surface), clean re-run **35/35**;
+  labour-pilot 4/4.

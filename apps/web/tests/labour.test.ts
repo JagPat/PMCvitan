@@ -6,7 +6,7 @@ import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { LabourView } from '@/store/labour';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines } from '@/lib/labourSelection';
+import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes } from '@/lib/labourSelection';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { LabourReadinessDto, LabourActivityForecastDto, WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto, LabourWorkFactDto, LabourRequisitionDto } from '@vitan/shared';
 
@@ -683,15 +683,112 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     expect(bookedWorkerIds(rows, [workFact({ allocationId: 'A9' })], '2026-08-02', 'day').has('W-DELIVERED')).toBe(false);
   });
 
-  it('CODEX R5 — isAllocatePendingForSlice matches ANY worker/revision for the slice, and nothing else', () => {
+  it('CODEX R5+R6 — isAllocatePendingForSlice matches ANY worker for the slice at the SELECTED revision, and nothing else', () => {
     const k1 = allocateCoalesceKey('ACT-1', 'REQ-1', 1, '2026-08-01', 'W-1');
     const k2 = allocateCoalesceKey('ACT-1', 'REQ-1', 2, '2026-08-01', 'W-2');
-    expect(isAllocatePendingForSlice(k1, 'ACT-1', 'REQ-1', '2026-08-01')).toBe(true);
-    expect(isAllocatePendingForSlice(k2, 'ACT-1', 'REQ-1', '2026-08-01')).toBe(true);  // different worker AND revision
-    expect(isAllocatePendingForSlice(k1, 'ACT-1', 'REQ-1', '2026-08-02')).toBe(false); // other date
-    expect(isAllocatePendingForSlice(k1, 'ACT-1', 'REQ-2', '2026-08-01')).toBe(false); // other requirement
-    expect(isAllocatePendingForSlice(k1, 'ACT-2', 'REQ-1', '2026-08-01')).toBe(false); // other activity
-    expect(isAllocatePendingForSlice(musterCoalesceKey('W-1', '2026-08-01', 'day'), 'ACT-1', 'REQ-1', '2026-08-01')).toBe(false);
+    expect(isAllocatePendingForSlice(k1, 'ACT-1', 'REQ-1', 1, '2026-08-01')).toBe(true);  // ANY worker, same revision
+    // Codex round 6 — a STALE-revision pending op must NOT fill current demand: it will replay,
+    // 409 on head drift and drop; counting it would suppress the legitimate current-head action.
+    expect(isAllocatePendingForSlice(k1, 'ACT-1', 'REQ-1', 2, '2026-08-01')).toBe(false); // stale rev-1 op vs rev-2 demand
+    expect(isAllocatePendingForSlice(k2, 'ACT-1', 'REQ-1', 2, '2026-08-01')).toBe(true);  // current-revision op counts
+    expect(isAllocatePendingForSlice(k1, 'ACT-1', 'REQ-1', 1, '2026-08-02')).toBe(false); // other date
+    expect(isAllocatePendingForSlice(k1, 'ACT-1', 'REQ-2', 1, '2026-08-01')).toBe(false); // other requirement
+    expect(isAllocatePendingForSlice(k1, 'ACT-2', 'REQ-1', 1, '2026-08-01')).toBe(false); // other activity
+    // a crew subject (which itself contains ':') still matches its own slice/revision
+    expect(isAllocatePendingForSlice(allocateCoalesceKey('ACT-1', 'REQ-1', 1, '2026-08-01', 'crew:CR-1'), 'ACT-1', 'REQ-1', 1, '2026-08-01')).toBe(true);
+    expect(isAllocatePendingForSlice(musterCoalesceKey('W-1', '2026-08-01', 'day'), 'ACT-1', 'REQ-1', 1, '2026-08-01')).toBe(false);
+  });
+
+  it('CODEX R6 — pickCommitmentFor RESERVES pending supplier draws (a queued op consumes the commitment before the reload lands)', () => {
+    const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
+    const oneQty = commitment({ id: 'CC-1', personShiftQty: 1 });
+    // no pending draw → the commitment is offered
+    expect(pickCommitmentFor([oneQty], [], [], spec, '2026-08-01')).toBe('CC-1');
+    // a QUEUED allocate op already carries CC-1 → the second pick must NOT re-offer it (the flush
+    // would 409 the second command under §F bound 3; own-workforce covers the remaining demand)
+    expect(pickCommitmentFor([oneQty], [], [], spec, '2026-08-01', { 'CC-1': 1 })).toBeNull();
+    // a 2-person commitment with ONE pending draw still has headroom
+    expect(pickCommitmentFor([commitment({ id: 'CC-2', personShiftQty: 2 })], [], [], spec, '2026-08-01', { 'CC-2': 1 })).toBe('CC-2');
+    // pending draws COMBINE with committed (active) draws: 2-person, 1 active + 1 pending → none
+    expect(pickCommitmentFor(
+      [commitment({ id: 'CC-3', personShiftQty: 2 })],
+      [alloc({ id: 'AL-P', workerId: 'W-P', capacityCommitmentId: 'CC-3' })],
+      [], spec, '2026-08-01', { 'CC-3': 1 },
+    )).toBeNull();
+  });
+
+  it('CODEX R6 — musteredWorkerIds excludes only the SELECTED shift\'s active musters', () => {
+    const musters = [
+      { workerId: 'W-DAY', shift: 'day' },
+      { workerId: 'W-NIGHT', shift: 'night' },
+    ];
+    const day = musteredWorkerIds(musters, 'day');
+    expect(day.has('W-DAY')).toBe(true);   // a second day muster is the server's deterministic 409
+    expect(day.has('W-NIGHT')).toBe(false); // the night muster does not block the day shift
+    const night = musteredWorkerIds(musters, 'night');
+    expect(night.has('W-NIGHT')).toBe(true);
+    expect(night.has('W-DAY')).toBe(false);
+  });
+
+  it('CODEX R6 — remainingShiftMinutes mirrors the server\'s CUMULATIVE Σ ≤ 720 per (worker, civilDate, shift) across ALL allocations', () => {
+    const facts = [
+      workFact({ id: 'WF-A', allocationId: 'AL-1', workerId: 'W-1', workedMinutes: 480 }),
+      // a SECOND allocation's fact for the same worker/date/shift still counts against the cap
+      workFact({ id: 'WF-B', allocationId: 'AL-2', workerId: 'W-1', workedMinutes: 200 }),
+      // another worker / another day never counts
+      workFact({ id: 'WF-C', allocationId: 'AL-3', workerId: 'W-2', workedMinutes: 700 }),
+      workFact({ id: 'WF-D', allocationId: 'AL-4', workerId: 'W-1', civilDate: '2026-08-02', workedMinutes: 700 }),
+    ];
+    expect(remainingShiftMinutes(facts, 'W-1', '2026-08-01', 'day')).toBe(40); // 720 − 480 − 200
+    expect(remainingShiftMinutes(facts, 'W-1', '2026-08-02', 'day')).toBe(20);
+    expect(remainingShiftMinutes(facts, 'W-3', '2026-08-01', 'day')).toBe(720); // nothing recorded
+    // a full shift bottoms out at 0, never negative
+    expect(remainingShiftMinutes([workFact({ workedMinutes: 720 })], 'W-1', '2026-08-01', 'day')).toBe(0);
+  });
+
+  it('CODEX R6 — bindLabourDevice holds ONE idempotency key per (device, worker) pair until a CONFIRMED success', async () => {
+    // The bind CAS succeeds once (a re-bind of the same pair is the server's "already bound"
+    // 409): a committed-but-lost response retried with a FRESH key would report failure for a
+    // binding that succeeded. The held key lets the command ledger replay the original result.
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; st.activeProjectId = 'ambli'; st.capabilities = ['labour']; });
+    const g = {
+      bindWorkerDevice: vi.fn()
+        .mockRejectedValueOnce(new TypeError('network aborted')) // attempt 1 — response LOST
+        .mockResolvedValue({ deviceId: 'DEV-1', workerId: 'W-1' }),
+      snapshot: vi.fn().mockResolvedValue({
+        project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+        decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+        drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+      }),
+      labourReadiness: vi.fn().mockResolvedValue(readiness({})),
+      materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
+      labourWorkforce: vi.fn().mockResolvedValue({ workers: [], crews: [] }),
+      labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
+      labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
+      labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
+      labourCommitments: vi.fn().mockResolvedValue({ commitments: [] }),
+      labourCapacity: vi.fn().mockResolvedValue({ allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] }),
+      labourPresence: vi.fn().mockResolvedValue({ civilDate: '2026-07-28', musters: [], mismatches: [] }),
+      labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
+    };
+    s()._setGateway(g as unknown as ApiGateway);
+    s().bindLabourDevice('DEV-1', 'W-1');
+    await vi.waitFor(() => { if (g.bindWorkerDevice.mock.calls.length !== 1) throw new Error('pending'); });
+    await flush();
+    // the RETRY of the SAME pair reuses the SAME key — the ledger replays the committed success
+    s().bindLabourDevice('DEV-1', 'W-1');
+    await vi.waitFor(() => { if (g.bindWorkerDevice.mock.calls.length !== 2) throw new Error('pending'); });
+    await flush(); await flush();
+    const [, , key1] = g.bindWorkerDevice.mock.calls[0]!;
+    const [, , key2] = g.bindWorkerDevice.mock.calls[1]!;
+    expect(key2).toBe(key1);
+    // after the CONFIRMED success the key is spent — binding ANOTHER device mints a fresh key
+    s().bindLabourDevice('DEV-2', 'W-1');
+    await vi.waitFor(() => { if (g.bindWorkerDevice.mock.calls.length !== 3) throw new Error('pending'); });
+    const [, , key3] = g.bindWorkerDevice.mock.calls[2]!;
+    expect(key3).not.toBe(key1);
   });
 
   it('CODEX R5 — onboardLabourWorker holds ONE idempotency key per submitted form until a CONFIRMED success', async () => {
