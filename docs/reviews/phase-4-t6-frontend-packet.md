@@ -686,3 +686,85 @@ pins the minutes-agnostic key match. Probes: helper tables + rendered (pending 4
 - `upgrade-proof.sh` **PASSED** (no migration in this round; every prior seal survives).
 - `test:e2e:api:allmodules` (legacy): **35/35** CLEAN first run; labour-pilot 4/4.
 - `test:e2e:api:allmodules:outbox`: **35/35** CLEAN first run; labour-pilot 4/4.
+
+## §12 — Codex correction round 8 (four findings on `0a35642`)
+
+One SERVER-side verification gap (the allocate contract accepted no statement of WHICH spec
+identity the picker satisfied, so a substitution revoked between render and flush was silently
+re-based onto the head) and three outbox/staleness gaps in the hub. Reproduce-first: pre-fix
+`apps/api/src` + `apps/web/src` restored at `0a35642` → API pin suite **1 failed | 3 passed**,
+web labour suites **5 failed | 79 passed**; fixes restored → API **4/4**, web **84/84** GREEN.
+
+### R8-1 — one held roster key PER pending form signature (web)
+
+The rounds-5/6 held-key discipline stored ONE `{sig, key}` slot per roster command, so
+submitting worker B while worker A's onboard was still unresolved OVERWROTE A's held key — a
+retry of A then drew a FRESH key and the ledger executed it a second time (duplicate Worker;
+for bind, the false "already bound" 409). `labourOnboardPending`/`labourBindPending` are now
+`Record<signature, key>` maps: each distinct form signature holds its OWN key (reused verbatim
+on its retry, deleted only by ITS confirmed success or scope teardown), and interleaved forms
+never disturb each other. Probe: submit A (lost response) → submit B → retry A: B's key differs
+from A's, A's retry reuses A's original key byte-for-byte.
+
+### R8-2 — field-op buttons stay held until the fresh bundle APPLIES (web)
+
+The flush hook cleared resolved labour coalesce keys as soon as the command settled, but the
+hub's rows still rendered the PRE-command bundle until `loadLabour` returned — a re-enabled
+button over stale truth invited the same action again (a second allocate = the server's
+one-live-allocation 409; a second muster = the duplicate-muster 409). The flush no longer
+filters `labourPending` at settle time; it only triggers the scope-guarded reload, and
+`loadLabour`'s APPLY step rebuilds `labourPending` from the live outbox (a settled op is gone
+from the outbox, so its key drops exactly when the fresh truth lands; a still-queued op keeps
+its key). Probe: flush with the reload response HELD → op resolved from the outbox but the
+coalesce key still pending (button disabled) → release the reload → pending empty.
+
+### R8-3 — stale-revision pending bookings never book (web)
+
+`pendingBookedWorkerIds` folded EVERY queued allocate op into the per-slice booking set, but an
+op pinned to `originRevision` N is a deterministic head-drift 409 once the requirement is
+revised to N+1 — the worker it names was reserved for a command that can only be dropped.
+The fold now skips an op whose `originRevision` no longer matches the CURRENT revision of its
+requirement in view (the flush will shed it); an op whose requirement has LEFT the view still
+books conservatively (no revision to compare — never free a worker on missing evidence).
+Probe rows: stale-revision op NOT booked; unpinned/unknown-requirement ops still booked.
+
+### R8-4 — the allocation basis is VERIFIED, the frozen identity stays the HEAD (server + web)
+
+Finding: the hub offered a worker via an ACTIVE `ApprovedSkillSubstitution` but the allocate
+command carried no fingerprint at all — the server allocated on the head spec regardless, so a
+substitution revoked between render and flush produced an allocation whose §B authorization no
+longer existed, indistinguishable from a directly-qualified one. The correction is
+**verify-the-basis**, NOT freeze-the-substitute: `labour.allocate` gains an optional
+`labourSpecFingerprint` (the UI now states the basis it rendered — the head fingerprint when
+the worker satisfies it directly, else the substitution target that qualified them), and the
+server 409s unless that basis IS the head identity or an ACTIVE (unrevoked) approved
+substitution from it, re-checked in-tx under the readiness lock. The PERSISTED
+`WorkerAllocation.labourSpecFingerprint` remains the HEAD identity: the merged Task-3
+migration `20270210000000` seals `WorkerAllocation_spec_fkey (projectId, requirementId,
+originRevision, labourSpecFingerprint) → LabourRequirementSpec(projectId, requirementId,
+revision, labourSpecFingerprint)` — allocation identity == head spec identity is a
+PG-enforced, independently-cleared §C invariant, verified on every deploy by the T3C seal
+registry (`t3c-diagnostics.ts` `T3C_PREREQUISITE_FK_SEALS`), and a Task-6 UI round does not
+reverse a cleared Task-3 seal. Substitution provenance already lives first-class in the
+`ApprovedSkillSubstitution` register (who approved, what widening, when revoked); an
+allocation made under an authority the pmc later regrets is undone by the existing
+`allocation.release` lever. Probes: allocate via an ACTIVE substitution basis → accepted AND
+the persisted fingerprint IS the head (FK truth); revoke the substitution → same basis 409;
+unknown 64-hex basis → 409; explicit head basis → accepted. Rendered: a carpenter offered
+through a substitution dispatches WITH the substitution-target basis; a directly-qualified
+worker dispatches the head basis and keeps its commitment draw.
+
+### Round-8 gate battery (this head)
+
+- **Reproduce-first**: pre-fix src restored at `0a35642` → API pin suite **1 failed | 3
+  passed**, web labour suites **5 failed | 79 passed**; fixes restored → API **4/4**, web
+  **84/84**, typecheck clean.
+- `pnpm check` **EXIT 0** — web **521/521** (42 files, +3 round-8 probes), API **680/680**
+  (55 files), builds clean.
+- Full API integration on a pristine migrated DB (psql drop/create + `prisma migrate deploy`):
+  **72 files / 697 tests** passing (+1 — the R8-4 basis-verification probe).
+- `upgrade-proof.sh` **PASSED** (no migration in this round; every prior seal survives).
+- `test:e2e:api:allmodules` (legacy): **35/35**; labour-pilot 4/4. One first run failed on the
+  documented `inspections-module-query` switcher timeout plus a `daily-log-module-query`
+  visibility miss — neither a labour surface, both clean on the single deciding re-run.
+- `test:e2e:api:allmodules:outbox`: **35/35** CLEAN first run; labour-pilot 4/4.

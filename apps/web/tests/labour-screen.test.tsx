@@ -408,7 +408,8 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     expect(r.getByTestId(`labour-alloc-slice-REQ-1-${day}`).textContent!).not.toContain('supplier capacity available');
     fireEvent.change(r.getByTestId(`labour-worker-select-REQ-1-${day}`), { target: { value: 'W-MASON-2' } });
     fireEvent.click(r.getByTestId(`labour-do-allocate-REQ-1-${day}`));
-    expect(spy).toHaveBeenCalledWith('ACT-1', 'REQ-1', 1, day, 'W-MASON-2', null);
+    // round 8 — the call also carries the SATISFYING identity (the head fingerprint here)
+    expect(spy).toHaveBeenCalledWith('ACT-1', 'REQ-1', 1, day, 'W-MASON-2', null, fp);
     cleanup();
     // control — with NOTHING queued the same slice passes the commitment id through
     await primeLabour({
@@ -423,7 +424,7 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     fireEvent.click(r2.getByTestId('labour-tab-allocation'));
     fireEvent.change(r2.getByTestId(`labour-worker-select-REQ-1-${day}`), { target: { value: 'W-MASON-2' } });
     fireEvent.click(r2.getByTestId(`labour-do-allocate-REQ-1-${day}`));
-    expect(spy2).toHaveBeenCalledWith('ACT-1', 'REQ-1', 1, day, 'W-MASON-2', 'CC-1');
+    expect(spy2).toHaveBeenCalledWith('ACT-1', 'REQ-1', 1, day, 'W-MASON-2', 'CC-1', fp);
   });
 
   it('R6-5: Record work caps at the REMAINING shift minutes (cumulative Σ ≤ 720 per worker/date/shift), and a full shift disables it', async () => {
@@ -524,6 +525,32 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     expect(btn().disabled).toBe(true);
     fireEvent.click(btn());
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('R8-4: a substitution-eligible worker\'s allocate carries the SUBSTITUTE basis and never a supplier draw', async () => {
+    const headFp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const carpFp = await computeLabourSpecFingerprint({ tradeCode: 'carpenter', skillCode: null, shift: 'day' });
+    const carp = worker('W-CARP', 'carpenter');
+    const substitution = {
+      id: 'SUB-1', requirementId: 'REQ-1', fromFingerprint: headFp, toFingerprint: carpFp,
+      reason: 'carpenters may stand in', approvedById: 'u', at: '2026-07-01T00:00:00Z',
+      revokedAt: null, revokedById: null, revokeReason: null,
+    };
+    const spy = vi.fn();
+    await primeLabour({
+      workforce: { workers: [carp], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([carp]),
+      commitments: [commitment(headFp)], // head-identity supplier capacity IS available
+      capacity: { allocations: [], attendance: [], workFacts: [], skillSubstitutions: [substitution] as never },
+    });
+    useStore.setState({ role: 'pmc', allocateWorker: spy });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    fireEvent.change(r.getByTestId(`labour-worker-select-REQ-1-${day}`), { target: { value: 'W-CARP' } });
+    fireEvent.click(r.getByTestId(`labour-do-allocate-REQ-1-${day}`));
+    // the SUBSTITUTE basis rides the command (the server verifies it is still active), and the
+    // supplier commitment — committed for the HEAD identity — is not drawn for a substitute
+    expect(spy).toHaveBeenCalledWith('ACT-1', 'REQ-1', 1, day, 'W-CARP', null, carpFp);
   });
 
   it('R3-5: Team onboarding stamps activeFrom with the PROJECT civil day, not the browser/UTC date', async () => {

@@ -272,6 +272,30 @@ export class LabourCapacityService {
             `Requirement ${input.requirementId} is at revision ${spec.revision}, not the selected revision ${input.originRevision} — the demand changed since this allocation was chosen; reload and re-allocate against the current head`,
           );
         }
+        // Task 6 review round 8 — VERIFY the eligibility basis the worker was offered under.
+        // A queued command whose worker was eligible only through a §B substitution must not
+        // land after that substitution's REVOCATION as if the authority were still live: the
+        // caller states the basis and the server refuses a dead or unknown one with a terminal
+        // 409 the outbox drops. The FROZEN identity stays the HEAD identity — the cleared §C
+        // seal (`WorkerAllocation_spec_fkey` pins the spec's WHOLE frozen identity, fingerprint
+        // included, and the T3C deploy seals verify that four-column FK) makes a substitute
+        // identity on the allocation deliberately unrepresentable; undoing a substitution-backed
+        // assignment is the pmc's `allocation.release`, never a silent identity rewrite.
+        if (input.labourSpecFingerprint != null && input.labourSpecFingerprint !== spec.labourSpecFingerprint) {
+          const sub = await tx.approvedSkillSubstitution.findFirst({
+            where: {
+              projectId, requirementId: input.requirementId,
+              fromFingerprint: spec.labourSpecFingerprint, toFingerprint: input.labourSpecFingerprint,
+              revokedAt: null,
+            },
+            select: { id: true },
+          });
+          if (!sub) {
+            throw new ConflictException(
+              'labourSpecFingerprint is neither the requirement head identity nor an ACTIVE approved substitution target for it — the authorization may have been revoked; reload and re-allocate',
+            );
+          }
+        }
 
         // the demanded slice must exist on the HEAD revision — allocating onto a date the current
         // demand does not ask for is a category error, not a shortfall

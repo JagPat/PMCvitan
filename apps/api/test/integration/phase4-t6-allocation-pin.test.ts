@@ -118,6 +118,33 @@ describe('Phase 4 Task 6 round 3 — allocation pinned to the selected requireme
     expect(fact.workedMinutes).toBe(480);
   });
 
+  it('CODEX R8-4 — the stated eligibility BASIS is verified: a revoked or unknown substitution authority is a deterministic 409', async () => {
+    const { projectId, activityId, requirementId, revision, workers } = await fixture();
+    const carp1 = await labour.onboardWorker(projectId, { name: 'Carp1', tradeCode: 'carpenter', skillCodes: [], activeFrom: '2026-01-01', activeTo: null }, pmc(projectId));
+    const carp2 = await labour.onboardWorker(projectId, { name: 'Carp2', tradeCode: 'carpenter', skillCodes: [], activeFrom: '2026-01-01', activeTo: null }, pmc(projectId));
+    const sub = await capacity.approveSkillSubstitution(projectId, { requirementId, tradeCode: 'carpenter', skillCode: null, shift: 'day', reason: 'carpenters may stand in' } as Parameters<typeof capacity.approveSkillSubstitution>[1], pmc(projectId));
+    const carpFp = sub.toFingerprint;
+    const headFp = (await t.prisma.labourRequirementSpec.findFirstOrThrow({ where: { projectId, requirementId, revision }, select: { labourSpecFingerprint: true } })).labourSpecFingerprint;
+    // an ACTIVE substitution basis is accepted; the FROZEN identity stays the HEAD identity —
+    // the cleared §C seal (`WorkerAllocation_spec_fkey` pins the spec's WHOLE frozen identity,
+    // verified by the T3C deploy seals) makes a substitute identity on the row unrepresentable;
+    // undoing a substitution-backed assignment is the pmc's `allocation.release`.
+    const res = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: carp1.id, originRevision: revision, labourSpecFingerprint: carpFp }, pmc(projectId));
+    expect(res.allocations[0]!.labourSpecFingerprint).toBe(headFp);
+    // once REVOKED, the basis no longer verifies — a queued replay cannot land on dead authority
+    await capacity.revokeSkillSubstitution(projectId, sub.id, { reason: 'withdrawn' }, pmc(projectId));
+    await expect(
+      capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: carp2.id, originRevision: revision, labourSpecFingerprint: carpFp }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    // an arbitrary (never-approved) fingerprint is refused outright
+    await expect(
+      capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: carp2.id, originRevision: revision, labourSpecFingerprint: 'a'.repeat(64) }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    // the HEAD identity stated explicitly stays byte-identical to an unstated basis
+    const head = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: workers[0], originRevision: revision, labourSpecFingerprint: headFp }, pmc(projectId));
+    expect(head.allocations[0]!.labourSpecFingerprint).toBe(headFp);
+  });
+
   it('a STALE originRevision — the offline replay landing after a revision — is a deterministic 409 that allocates NOTHING', async () => {
     const { projectId, activityId, requirementId, revision, workers } = await fixture();
     // the head moves: the demand becomes CARPENTER (same activity, same civil date, same qty), so a

@@ -205,15 +205,21 @@ export function sourcedCountFor(
  *  longer in view books the worker CONSERVATIVELY (hiding a worker for one render beats
  *  offering a doomed action). */
 export function pendingBookedWorkerIds(
-  pendingAllocations: ReadonlyArray<{ requirementId: string; civilDate: string; workerId?: string }>,
-  requirements: ReadonlyArray<{ requirementId: string; labourSpec: { shift: string } | null }>,
+  pendingAllocations: ReadonlyArray<{ requirementId: string; civilDate: string; workerId?: string; originRevision?: number }>,
+  requirements: ReadonlyArray<{ requirementId: string; revision: number; labourSpec: { shift: string } | null }>,
   civilDate: string,
   shift: string,
 ): Set<string> {
   const ids = new Set<string>();
   for (const op of pendingAllocations) {
     if (!op.workerId || op.civilDate !== civilDate) continue;
-    const opShift = requirements.find((r) => r.requirementId === op.requirementId)?.labourSpec?.shift;
+    const req = requirements.find((r) => r.requirementId === op.requirementId);
+    // Codex round 8 — a STALE-revision op never books: its requirement's head has moved past
+    // the op's pin, so the replay is a guaranteed head-drift 409 and drop (round 3). Booking
+    // its worker would lock the only compatible worker OUT of the valid current-head
+    // allocation — the exact fullness mistake round 6 fixed, mirrored onto bookings.
+    if (req && op.originRevision != null && op.originRevision !== req.revision) continue;
+    const opShift = req?.labourSpec?.shift;
     if (opShift === undefined || opShift === shift) ids.add(op.workerId);
   }
   return ids;

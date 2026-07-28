@@ -7,7 +7,7 @@ import type { LabourForecastVerdict, WorkerDto } from '@vitan/shared';
 import { decAdd } from '@/lib/decimal';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, SHIFT_MINUTES, pendingBookedWorkerIds, hasPendingWorkFor } from '@/lib/labourSelection';
+import { compatibleWorkerIds, satisfyingFingerprints, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, SHIFT_MINUTES, pendingBookedWorkerIds, hasPendingWorkFor } from '@/lib/labourSelection';
 import styles from './responsive.module.css';
 
 /**
@@ -307,6 +307,18 @@ export function LabourScreen() {
                         // commitment (§F bound 3): pass its id so the server consumes the capacity
                         // (round 6 — queued draws reserved via `pendingDraws`).
                         const commitmentId = pickCommitmentFor(labour.commitments, labour.capacity.allocations, labour.capacity.workFacts, spec, sl.civilDate, pendingDraws);
+                        // Codex round 8 — the SATISFYING identity the chosen worker was offered
+                        // under: a worker eligible only through an ACTIVE substitution sends the
+                        // SUBSTITUTE fingerprint (the server verifies + freezes it, so a later
+                        // revocation disqualifies the row from coverage) and never draws supplier
+                        // capacity (committed for the requirement's OWN head identity).
+                        const chosenFps = chosen ? (labour.workerFingerprints[chosen] ?? []) : [];
+                        const basis = chosen
+                          ? (chosenFps.includes(spec.labourSpecFingerprint)
+                            ? spec.labourSpecFingerprint
+                            : satisfyingFingerprints(spec, r.requirementId, substitutions).find((fp) => chosenFps.includes(fp)) ?? null)
+                          : null;
+                        const commitmentForChosen = basis === spec.labourSpecFingerprint ? commitmentId : null;
                         return (
                           <div key={sl.civilDate} data-testid={`labour-alloc-slice-${r.requirementId}-${sl.civilDate}`} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 7 }}>
                             <span style={{ fontSize: 12.5, minWidth: 190 }}>{sl.civilDate} · {sl.shift} · allocated {done}/{sl.personShiftQty}{sourced > done ? ` · ${sourced}/${sl.personShiftQty} sourced incl. delivered work` : ''}{slicePending > 0 ? ` · ${slicePending} allocating…` : ''}{!full && commitmentId ? ' · supplier capacity available' : ''}</span>
@@ -314,7 +326,7 @@ export function LabourScreen() {
                               <option value="">{full ? 'Fully allocated' : offerable.length ? 'Choose worker…' : 'No available workers'}</option>
                               {!full && offerable.map((w: WorkerDto) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}
                             </select>
-                            <Button variant="outline" disabled={full || !chosen || pending(aKey)} data-testid={`labour-do-allocate-${r.requirementId}-${sl.civilDate}`} onClick={() => !full && chosen && allocateWorker(r.activityId, r.requirementId, r.revision, sl.civilDate, chosen, commitmentId)} style={{ fontSize: 11.5, flex: 'none' }}>
+                            <Button variant="outline" disabled={full || !chosen || pending(aKey)} data-testid={`labour-do-allocate-${r.requirementId}-${sl.civilDate}`} onClick={() => !full && chosen && allocateWorker(r.activityId, r.requirementId, r.revision, sl.civilDate, chosen, commitmentForChosen, basis)} style={{ fontSize: 11.5, flex: 'none' }}>
                               {full ? 'Fully allocated' : chosen && pending(aKey) ? 'Allocating…' : 'Allocate'}
                             </Button>
                           </div>

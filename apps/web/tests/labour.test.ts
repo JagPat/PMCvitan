@@ -388,6 +388,22 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     expect(g.labourReadiness).toHaveBeenCalled(); // truth refreshed
   });
 
+  it('CODEX R8 — a resolved op\'s coalesce key stays PENDING until the fresh labour bundle APPLIES (no stale-view gap)', async () => {
+    let release: (v: LabourReadinessDto) => void = () => {};
+    const held = new Promise<LabourReadinessDto>((res) => { release = res; });
+    const g = gw({ labourReadiness: vi.fn().mockReturnValue(held) });
+    s()._setGateway(g as unknown as ApiGateway);
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
+    await settles(() => g.allocateLabour.mock.calls.length === 1);
+    await flush();
+    // the command RESOLVED (op gone), but the OLD bundle is still on screen — the key must keep
+    // the slice's buttons disabled, or a second worker can be queued against filled demand
+    expect(s().outbox).toHaveLength(0);
+    expect(s().labourPending).toHaveLength(1);
+    release(readiness({}));
+    await vi.waitFor(() => { if (s().labourPending.length !== 0) throw new Error('pending'); });
+  });
+
   it('PROBE 7: a scope switch during the command never mutates or toasts the new scope', async () => {
     let release: () => void = () => {};
     const held = new Promise<unknown>((res) => { release = () => res({}); });
@@ -717,23 +733,31 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     )).toBeNull();
   });
 
-  it('CODEX R7 — pendingBookedWorkerIds reserves a worker with an allocate op still in flight for the (date, shift)', () => {
+  it('CODEX R7+R8 — pendingBookedWorkerIds reserves in-flight workers for the (date, shift), but a STALE-revision op never books', () => {
     const reqs = [
-      { requirementId: 'REQ-DAY', labourSpec: { shift: 'day' } },
-      { requirementId: 'REQ-NIGHT', labourSpec: { shift: 'night' } },
+      { requirementId: 'REQ-DAY', revision: 2, labourSpec: { shift: 'day' } },
+      { requirementId: 'REQ-NIGHT', revision: 1, labourSpec: { shift: 'night' } },
     ];
     const ops = [
-      { requirementId: 'REQ-DAY', civilDate: '2026-08-01', workerId: 'W-1' },
-      { requirementId: 'REQ-NIGHT', civilDate: '2026-08-01', workerId: 'W-2' },
+      { requirementId: 'REQ-DAY', civilDate: '2026-08-01', workerId: 'W-1', originRevision: 2 },
+      { requirementId: 'REQ-NIGHT', civilDate: '2026-08-01', workerId: 'W-2', originRevision: 1 },
       { requirementId: 'REQ-GONE', civilDate: '2026-08-01', workerId: 'W-3' }, // requirement no longer in view
-      { requirementId: 'REQ-DAY', civilDate: '2026-08-02', workerId: 'W-4' },
+      { requirementId: 'REQ-DAY', civilDate: '2026-08-02', workerId: 'W-4', originRevision: 2 },
       { requirementId: 'REQ-DAY', civilDate: '2026-08-01' }, // crew op — no workerId
+      // Codex round 8 — a STALE pin (rev 1 vs the live rev-2 head): the replay is a guaranteed
+      // 409 + drop, so booking its worker would lock the only compatible worker out of the
+      // VALID current-head allocation
+      { requirementId: 'REQ-DAY', civilDate: '2026-08-01', workerId: 'W-STALE', originRevision: 1 },
+      // an UNPINNED op for a requirement in view books normally (pre-round-3 queue entry)
+      { requirementId: 'REQ-DAY', civilDate: '2026-08-01', workerId: 'W-UNPINNED' },
     ];
     const day = pendingBookedWorkerIds(ops, reqs, '2026-08-01', 'day');
-    expect(day.has('W-1')).toBe(true);   // pending for THIS (date, shift) — a second slice would 409
-    expect(day.has('W-2')).toBe(false);  // the night op does not book the day shift
-    expect(day.has('W-3')).toBe(true);   // unknown requirement → CONSERVATIVE booking
-    expect(day.has('W-4')).toBe(false);  // another date never books
+    expect(day.has('W-1')).toBe(true);        // pending for THIS (date, shift) — a second slice would 409
+    expect(day.has('W-2')).toBe(false);       // the night op does not book the day shift
+    expect(day.has('W-3')).toBe(true);        // unknown requirement → CONSERVATIVE booking
+    expect(day.has('W-4')).toBe(false);       // another date never books
+    expect(day.has('W-STALE')).toBe(false);   // stale revision — will 409 and drop, never books
+    expect(day.has('W-UNPINNED')).toBe(true); // unpinned op behaves as current
     expect(pendingBookedWorkerIds(ops, reqs, '2026-08-01', 'night').has('W-2')).toBe(true);
   });
 
@@ -873,6 +897,46 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     await vi.waitFor(() => { if (g.onboardWorker.mock.calls.length !== 3) throw new Error('pending'); });
     const [, key3] = g.onboardWorker.mock.calls[2]!;
     expect(key3).not.toBe(key1);
+  });
+
+  it('CODEX R8 — a SECOND onboarding form never evicts the FIRST form\'s held key (signature-keyed, not a single slot)', async () => {
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; st.activeProjectId = 'ambli'; st.capabilities = ['labour']; });
+    const g = {
+      onboardWorker: vi.fn()
+        .mockRejectedValueOnce(new TypeError('network aborted')) // form A attempt 1 — response LOST
+        .mockResolvedValue({}),                                   // form B + A's retry — confirmed
+      snapshot: vi.fn().mockResolvedValue({
+        project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+        decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+        drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+      }),
+      labourReadiness: vi.fn().mockResolvedValue(readiness({})),
+      materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
+      labourWorkforce: vi.fn().mockResolvedValue({ workers: [], crews: [] }),
+      labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
+      labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
+      labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
+      labourCommitments: vi.fn().mockResolvedValue({ commitments: [] }),
+      labourCapacity: vi.fn().mockResolvedValue({ allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] }),
+      labourPresence: vi.fn().mockResolvedValue({ civilDate: '2026-07-28', musters: [], mismatches: [] }),
+      labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
+    };
+    s()._setGateway(g as unknown as ApiGateway);
+    s().onboardLabourWorker('Ramesh', 'mason', [], '2026-07-28');   // form A — commits server-side, response LOST
+    await vi.waitFor(() => { if (g.onboardWorker.mock.calls.length !== 1) throw new Error('pending'); });
+    await flush();
+    s().onboardLabourWorker('Suresh', 'carpenter', [], '2026-07-28'); // form B while A is unresolved
+    await vi.waitFor(() => { if (g.onboardWorker.mock.calls.length !== 2) throw new Error('pending'); });
+    await flush(); await flush();
+    s().onboardLabourWorker('Ramesh', 'mason', [], '2026-07-28');   // A's retry — MUST replay A's key
+    await vi.waitFor(() => { if (g.onboardWorker.mock.calls.length !== 3) throw new Error('pending'); });
+    const [, keyA1] = g.onboardWorker.mock.calls[0]!;
+    const [, keyB] = g.onboardWorker.mock.calls[1]!;
+    const [, keyA2] = g.onboardWorker.mock.calls[2]!;
+    expect(keyB).not.toBe(keyA1); // a different form is a different command
+    expect(keyA2).toBe(keyA1);    // the single-slot bug minted a FRESH key here — a duplicate Worker
   });
 
   it('CODEX R3 — sourcedCountFor mirrors the server\'s coveredSourced = |allocated ∪ worked| (distinct workers; work survives release)', () => {

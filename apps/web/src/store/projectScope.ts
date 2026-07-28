@@ -74,16 +74,18 @@ export interface ProjectDataState {
   // labour bundle / pending key never leaks into another project's Labour hub.
   labourView: LabourView | null;
   labourPending: string[];
-  /** Codex round 5 — the ONE idempotency key held for the currently-submitted roster onboarding
-   *  form: reused verbatim on a retry after a lost response (the roster has no natural
-   *  uniqueness, so the ledger key is what stops a duplicate Worker), cleared only by a
+  /** Codex rounds 5+8 — the idempotency keys held for submitted roster onboarding forms, keyed
+   *  BY FORM SIGNATURE (round 8: a single slot lost form A's key the moment form B was submitted
+   *  while A was unresolved — A's retry then minted a fresh key and could duplicate the Worker).
+   *  Each entry is reused verbatim on a retry of the SAME form and cleared only by that form's
    *  CONFIRMED success or a scope teardown. */
-  labourOnboardPending: { sig: string; key: string } | null;
-  /** Codex round 6 — the same held-key discipline for the device-bind command: a committed-but-
-   *  lost bind retried with a FRESH key is the server's "already bound to this worker" 409
-   *  (the CAS is on the still-unbound row), reported as failure for a binding that succeeded.
-   *  Holding the key lets the command ledger replay the original success. */
-  labourBindPending: { sig: string; key: string } | null;
+  labourOnboardPending: Record<string, string>;
+  /** Codex rounds 6+8 — the same signature-keyed held-key discipline for the device-bind
+   *  command: a committed-but-lost bind retried with a FRESH key is the server's "already bound
+   *  to this worker" 409 (the CAS is on the still-unbound row), reported as failure for a
+   *  binding that succeeded. Holding the key lets the command ledger replay the original
+   *  success; keying by (device, worker) signature keeps concurrent forms independent. */
+  labourBindPending: Record<string, string>;
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */
@@ -112,8 +114,8 @@ export function emptyProjectData(): ProjectDataState {
     materialsPending: [],
     labourView: null,
     labourPending: [],
-    labourOnboardPending: null,
-    labourBindPending: null,
+    labourOnboardPending: {},
+    labourBindPending: {},
   };
 }
 

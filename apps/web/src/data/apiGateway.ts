@@ -1161,6 +1161,9 @@ export interface AllocateLabourInput {
   /** Codex T6 round 3 (P1) — the head revision the caller selected against; the server refuses
    *  head drift with a terminal 409 (an offline replay after a revision never lands silently). */
   originRevision?: number;
+  /** Codex T6 round 8 — the SATISFYING identity the worker was offered under (the head
+   *  fingerprint, or an ACTIVE substitution target the server verifies + freezes). */
+  labourSpecFingerprint?: string;
 }
 export interface RecordLabourAttendanceInput {
   workerId: string;

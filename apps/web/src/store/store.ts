@@ -231,8 +231,8 @@ export interface AppState {
   labourView: LabourView | null;
   labourLoad: 'idle' | 'loading' | 'ready' | 'error';
   labourPending: string[];
-  labourOnboardPending: { sig: string; key: string } | null;
-  labourBindPending: { sig: string; key: string } | null;
+  labourOnboardPending: Record<string, string>;
+  labourBindPending: Record<string, string>;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
@@ -395,7 +395,7 @@ export interface AppActions {
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
-  allocateWorker: (activityId: string, requirementId: string, originRevision: number, civilDate: string, workerId: string, capacityCommitmentId?: string | null) => void;
+  allocateWorker: (activityId: string, requirementId: string, originRevision: number, civilDate: string, workerId: string, capacityCommitmentId?: string | null, labourSpecFingerprint?: string | null) => void;
   musterWorker: (workerId: string, civilDate: string, shift: 'day' | 'night', manualReason: string) => void;
   recordWorkedMinutes: (allocationId: string, workedMinutes: number) => void;
   raiseLabourRequisition: (title: string, lines: ReadonlyArray<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number }>) => void;
@@ -676,8 +676,8 @@ export function getInitialState(): AppState {
     labourView: null,
     labourLoad: 'idle',
     labourPending: [],
-    labourOnboardPending: null,
-    labourBindPending: null,
+    labourOnboardPending: {},
+    labourBindPending: {},
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
@@ -2507,6 +2507,15 @@ export const useStore = create<Store>()(
             workerFingerprints,
           });
           s.labourLoad = 'ready';
+          // Codex round 8 — the fresh bundle IS on screen now: rebuild `labourPending` from the
+          // live outbox (pending == still-queued ops). A key resolved by the flush clears HERE —
+          // never in the gap where the old bundle still rendered — and a transient-failed op's
+          // key survives because its op is still queued.
+          s.labourPending = s.outbox.flatMap((o) =>
+            isLabourOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
+              ? [(o as { coalesceKey: string }).coalesceKey]
+              : [],
+          );
         });
       }).catch(() => set((s) => {
         // keep the last-good bundle; expose a Retry boundary. An OLDER failure never
@@ -2514,7 +2523,7 @@ export const useStore = create<Store>()(
         if (owns(s)) s.labourLoad = 'error';
       }));
     },
-    allocateWorker: (activityId, requirementId, originRevision, civilDate, workerId, capacityCommitmentId) => {
+    allocateWorker: (activityId, requirementId, originRevision, civilDate, workerId, capacityCommitmentId, labourSpecFingerprint) => {
       // fresh idempotency key per deliberate action; coalesced while pending on the exact
       // (activity, requirement, date, worker) target — one live allocation per worker/slice.
       // F2 (drawdown) — a commitment-covered slice passes the matching commitment id so the
@@ -2523,7 +2532,11 @@ export const useStore = create<Store>()(
       // an offline-queued replay landing after a requirement revision is a terminal 409 the flush
       // reconciles, never a silent allocation onto a different trade/skill/shift demand.
       dispatchLabour(
-        { t: 'allocateLabour', input: { activityId, requirementId, originRevision, civilDate, workerId, ...(capacityCommitmentId ? { capacityCommitmentId } : {}) }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, originRevision, civilDate, workerId) },
+        // Codex round 8 — the SATISFYING identity the worker was offered under rides the command:
+        // a substitution-backed worker freezes the SUBSTITUTE fingerprint server-side, so a later
+        // revocation disqualifies the row from coverage instead of it counting as head-trade
+        // coverage forever. Absent (a head-identity worker) keeps pre-round-8 bytes.
+        { t: 'allocateLabour', input: { activityId, requirementId, originRevision, civilDate, workerId, ...(capacityCommitmentId ? { capacityCommitmentId } : {}), ...(labourSpecFingerprint ? { labourSpecFingerprint } : {}) }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, originRevision, civilDate, workerId) },
         'Allocate the worker to the activity',
         'Worker allocated to the activity.',
       );
@@ -2562,16 +2575,18 @@ export const useStore = create<Store>()(
       // deliberate identical onboarding (after confirmation) mints a fresh key, and a CHANGED
       // form is a different command with its own fresh key.
       if (!gateway || !get().capabilities.includes('labour')) return;
+      // Codex round 8 — held keys are keyed BY FORM SIGNATURE: a second form submitted while
+      // the first is unresolved must not evict the first form's key (a single slot did — the
+      // first form's retry then minted a fresh key and could duplicate the Worker).
       const sig = JSON.stringify([name, tradeCode, skillCodes, activeFrom]);
-      const held = get().labourOnboardPending;
-      const key = held && held.sig === sig ? held.key : newIdempotencyKey();
-      set((s) => { s.labourOnboardPending = { sig, key }; });
+      const key = get().labourOnboardPending[sig] ?? newIdempotencyKey();
+      set((s) => { s.labourOnboardPending[sig] = key; });
       const lease = beginSnapshotLease(currentScope());
       gateway!.onboardWorker({ name, tradeCode, skillCodes, activeFrom }, key)
         .then(() => {
           // CONFIRMED success — the key is spent; the next deliberate submit gets a fresh one
           if (scopeStillCurrent(lease.scope)) {
-            set((s) => { if (s.labourOnboardPending?.key === key) s.labourOnboardPending = null; });
+            set((s) => { if (s.labourOnboardPending[sig] === key) delete s.labourOnboardPending[sig]; });
           }
           get().loadLabour();
           return gateway!.snapshot();
@@ -2590,14 +2605,13 @@ export const useStore = create<Store>()(
       // reused verbatim until a CONFIRMED success — the ledger replays the original result.
       if (!gateway || !get().capabilities.includes('labour')) return;
       const sig = JSON.stringify([deviceId, workerId]);
-      const held = get().labourBindPending;
-      const key = held && held.sig === sig ? held.key : newIdempotencyKey();
-      set((s) => { s.labourBindPending = { sig, key }; });
+      const key = get().labourBindPending[sig] ?? newIdempotencyKey();
+      set((s) => { s.labourBindPending[sig] = key; });
       const lease = beginSnapshotLease(currentScope());
       gateway!.bindWorkerDevice(deviceId, workerId, key)
         .then(() => {
           if (scopeStillCurrent(lease.scope)) {
-            set((s) => { if (s.labourBindPending?.key === key) s.labourBindPending = null; });
+            set((s) => { if (s.labourBindPending[sig] === key) delete s.labourBindPending[sig]; });
           }
           get().loadLabour();
           return gateway!.snapshot();
@@ -3448,13 +3462,15 @@ export const useStore = create<Store>()(
           for (const activityId of Object.keys(get().reservationPlans)) get().loadReservationPlan(activityId);
         }
       }
-      // Phase 4 Task 6 (§J) — the LABOUR reconcile hook, same lifecycle: resolved coalesce keys
-      // unblock buttons; a transient-failed op keeps its key (stays disabled while it retries); ANY
-      // attempted labour op reloads the labour bundle (the server may have committed despite a lost
-      // response), scope-guarded so a switch mid-flush touches nothing here.
+      // Phase 4 Task 6 (§J) — the LABOUR reconcile hook. Codex round 8: a RESOLVED op's coalesce
+      // key is NOT cleared here — between this flush and the labour reload the screen still
+      // renders the OLD bundle (no committed allocation visible), so clearing the key in that
+      // gap re-enables the action and a second worker can be queued against demand the first
+      // command already filled. The keys stay in `labourPending` (buttons disabled, honest
+      // "…ing" labels) until `loadLabour()` APPLIES the fresh bundle, which rebuilds
+      // `labourPending` from the live outbox (a transient-failed op is still queued → its key
+      // survives; a resolved/dropped op is gone → its key clears WITH the new truth on screen).
       if (labourAttempted) {
-        const resolved = new Set(resolvedLabourCoalesceKeys);
-        if (resolved.size > 0) set((s) => { s.labourPending = s.labourPending.filter((k) => !resolved.has(k)); });
         if (scopeStillCurrent(flushScope) && get().capabilities.includes('labour')) {
           get().loadLabour();
         }

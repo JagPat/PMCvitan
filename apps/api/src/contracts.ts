@@ -1104,6 +1104,13 @@ export const allocateLabourSchema = z
     // REFUSE head drift: an offline-queued command replaying after a revision is a 409, never a
     // silent coercion of a worker chosen for the old trade/skill/shift onto the new head.
     originRevision: z.number().int().min(1).nullish(),
+    // Task 6 review round 8 — the SATISFYING identity the worker was offered under. A worker
+    // eligible only through an ACTIVE §B skill substitution freezes the SUBSTITUTE fingerprint
+    // (so revoking the substitution disqualifies the row from coverage, like every other
+    // substitution-backed qualification); the server VERIFIES the value is the live head
+    // identity or an active substitution target and refuses anything else. Absent = the head
+    // identity (pre-round-8 clients unchanged).
+    labourSpecFingerprint: z.string().regex(/^[0-9a-f]{64}$/).nullish(),
   })
   .strict()
   .refine((v) => (v.workerId ? 1 : 0) + (v.crewId ? 1 : 0) === 1, {
