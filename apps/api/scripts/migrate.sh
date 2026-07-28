@@ -137,9 +137,29 @@ if echo "$out" | grep -q "P3005"; then
         # ONLY 20270225 pending while 20270220's CHECK was missing resolved that migration as
         # applied over a database without its constraint — a raw write could then store a blank
         # manualReason forever on a database Prisma swears is corrected.
+        #
+        # `pendingMigrations` is parsed PRECISELY, never grepped out of the whole output: the JSON
+        # also carries per-layer labels like `phase4_t3_attendance_append_only@20270220…` in
+        # `correction2Missing`, and in the body-only-stale case `correctionSeals()` deliberately
+        # attributes the heal to 20270225 ALONE (rerunning 20270220 over its existing CHECK fails
+        # the whole deploy). A whole-output grep saw the label, left 20270220 pending anyway, and
+        # the retry aborted on the already-existing constraint instead of letting 20270225 heal.
         echo "[migrate] T3C correction seals MISSING on this pre-baseline database — leaving the reported migrations pending so they really apply"
-        if echo "$SEALS_OUT" | grep -q "$T3C_CORRECTION"; then SKIP_T3C_CORRECTION=1; fi
-        if echo "$SEALS_OUT" | grep -q "$T3C_CORRECTION2"; then SKIP_T3C_CORRECTION2=1; fi
+        PENDING_MIGRATIONS=$(echo "$SEALS_OUT" | node -e '
+          let t = "";
+          process.stdin.on("data", (d) => (t += d));
+          process.stdin.on("end", () => {
+            const start = t.indexOf("{");
+            const end = t.lastIndexOf("}");
+            if (start < 0 || end <= start) return;
+            try {
+              const j = JSON.parse(t.slice(start, end + 1));
+              for (const m of j.pendingMigrations || []) console.log(m);
+            } catch {}
+          });
+        ')
+        if printf '%s\n' "$PENDING_MIGRATIONS" | grep -qx "$T3C_CORRECTION"; then SKIP_T3C_CORRECTION=1; fi
+        if printf '%s\n' "$PENDING_MIGRATIONS" | grep -qx "$T3C_CORRECTION2"; then SKIP_T3C_CORRECTION2=1; fi
         if [ "$SKIP_T3C_CORRECTION" -eq 0 ] && [ "$SKIP_T3C_CORRECTION2" -eq 0 ]; then
           echo "[migrate] ERROR: t3c seals exited 3 but named no pending migration — refusing to baseline on an unreadable answer."
           exit 1

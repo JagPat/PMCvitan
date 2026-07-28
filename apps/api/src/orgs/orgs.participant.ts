@@ -26,11 +26,13 @@ export interface OrgsParticipantClient {
 export class OrgsParticipant {
   /**
    * Does `userId` have ROLE-QUALIFIED standing on `projectId` — an ACTIVE project membership whose
-   * role is one of `roles`, or (when `roles` admits `pmc`) owner/admin of the project's org? Same
-   * rule, same order as `ProjectAccessService.authorize`, with the SAME role semantics the app's
-   * policy gate applies on top of it: the org owner/admin super-admin path operates a project AS
-   * PMC (see `authorize` — it grants that path only to a pmc-role token), so it satisfies this
-   * check only when `roles` includes `'pmc'`.
+   * role is one of `roles`, or (when `roles` admits `pmc` AND the user holds NO active membership
+   * on this project) owner/admin of the project's org? Same rule, same PRECEDENCE as
+   * `ProjectAccessService.authorize`: an active membership decides — `authorize` returns on it and
+   * never reaches the org arm — so an org admin who is also an active contractor on the site
+   * operates AS contractor and is refused here when `roles` does not admit that role. The
+   * super-admin path operates a project AS PMC (see `authorize` — it grants that path only to a
+   * pmc-role token), so it satisfies this check only when `roles` includes `'pmc'`.
    *
    * The caller supplies `roles` from the policy it is enforcing (e.g.
    * `ROLE_POLICY['attendance.revoke']`) — the POLICY stays with its shared owner, the MEMBERSHIP
@@ -52,12 +54,21 @@ export class OrgsParticipant {
     // placeholders are derived from the ARITY of `roles` only — every value still binds as a
     // parameter, nothing user-controlled is interpolated into the SQL text
     const rolePlaceholders = roles.map((_, i) => `$${i + 3}`).join(', ');
+    // An ACTIVE project membership DECIDES, exactly as `authorize` does: it returns on the active
+    // membership (role and all) and never reaches the org arm. So the super-admin fallback applies
+    // ONLY when the user holds NO active membership on this project — an org admin who is also an
+    // active contractor on the site operates AS contractor, and if `roles` does not admit that
+    // role the answer is NO, never silently upgraded to pmc through the org.
     const orgArm = roles.includes('pmc')
-      ? `OR EXISTS (
+      ? `OR (NOT EXISTS (
+                SELECT 1 FROM "Membership" m
+                 WHERE m."projectId" = $1 AND m."userId" = $2 AND m."status" = 'active'
+              )
+              AND EXISTS (
                 SELECT 1 FROM "Project" p
                   JOIN "OrgMembership" om ON om."orgId" = p."orgId" AND om."userId" = $2
                  WHERE p."id" = $1 AND om."role" IN ('owner', 'admin')
-              )`
+              ))`
       : '';
     const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ entitled: boolean }>>(
       `SELECT EXISTS (

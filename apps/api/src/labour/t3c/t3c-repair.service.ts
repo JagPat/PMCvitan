@@ -32,6 +32,7 @@ import {
   T3C_PREREQUISITE_FK_SEALS,
   T3C_PREREQUISITE_TRIGGER_SEALS,
   T3C_PREREQUISITE_UNIQUE_SEALS,
+  T3C_REVOKED_BY_FK_SEAL,
   T3C_REFERENCED_TABLES,
   T3C_REPAIR_GUC,
   T3C_TRIGGER_SEAL_SQL,
@@ -915,6 +916,24 @@ export class T3CRepairService {
         if (!(await this.checkSealed(tx, revocationSeal))) {
           throw new RepairAbortedError(
             'LabourAttendance_revoke_attribution_check is not the canonical validated revocation rule — a repair will not write new history into a table whose revocation attribution is unenforced; reconcile the schema first (docs/RUNBOOK.md §P4T3C3)',
+          );
+        }
+
+        // 0d. The revoked-by FK must stand too, for the same reason. The PRESERVED-revocation path
+        //     in `applyAction` trusts the triple already ON the row — including its `revokedById` —
+        //     precisely because `LabourAttendance_revokedBy_fkey` makes a nonexistent revoker
+        //     unrepresentable. On a restored or partially managed database where that FK is missing
+        //     or unvalidated, a "revoked" blank row can name a ghost, and preserving it would seal
+        //     an immutable revocation attributed to NO REAL USER (the in-transaction diagnostics
+        //     cannot catch it: they see a coherent non-null triple plus matching evidence). Verified
+        //     by full FK identity — columns, referenced table, validated — the same discipline as
+        //     every other seal, never by reading the orgs-owned User table from labour.
+        const fkOk = await tx.$queryRawUnsafe<Array<{ ok: boolean }>>(
+          t3cForeignKeyIdentitySql(T3C_REVOKED_BY_FK_SEAL),
+        );
+        if (fkOk[0]?.ok !== true) {
+          throw new RepairAbortedError(
+            'LabourAttendance_revokedBy_fkey is not the canonical validated revoked-by reference — a preserved revocation would trust a revokedById the database no longer guarantees names a real user; reconcile the schema first (docs/RUNBOOK.md §P4T3C3)',
           );
         }
 

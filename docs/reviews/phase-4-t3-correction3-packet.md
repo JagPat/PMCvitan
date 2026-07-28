@@ -599,6 +599,34 @@ daily-log, snapshot or seed surface. After many hours of battery runs the contai
 measurably slower and the documented flakes fire at an elevated rate (one per run); CI's fresh
 runner on the pushed head is the authoritative arbiter for this gate.
 
+## Round 3m — the current-head Codex review of `0f4d334` (3 findings, all P2)
+
+Three findings, each reproduced RED at `0f4d334` before the fix. All three are SERVICE/SCRIPT
+corrections — the `20270225` migration is byte-for-byte unchanged this round, and no deployed
+migration is touched.
+
+| # | finding (P) | fix |
+|---|---|---|
+| 1 | the PRESERVED-revocation path trusted the triple already on the row — including its `revokedById` — with NO verification that `LabourAttendance_revokedBy_fkey` still stands. On a restored or partially managed database where that FK was missing/bypassed, a blank muster "revoked" by a ghost id was repaired: the in-transaction diagnostics cleared (they see a coherent non-null triple plus matching evidence) and an immutable revocation attributed to NO REAL USER was sealed (P2) | a new step **0d** in `repair()`, beside the 0c revocation-CHECK verification: the FK is verified by FULL identity (`t3cForeignKeyIdentitySql` over the new exported `T3C_REVOKED_BY_FK_SEAL` — name, columns `revokedById`→`User(id)`, `contype='f'`, `convalidated`) before any action applies; a missing/unvalidated FK is a named `RepairAbortedError`, never a preserved ghost. Same discipline as every seal — never a read of the orgs-owned `User` table from labour (`R3m-A`: FK dropped + ghost-revoked blank muster → the repair REFUSED naming the FK and NOTHING written, row untouched, no evidence — at `0f4d334` the same repair COMMITTED; precision arm: with the FK canonical a genuinely-revoked row still repairs on the preserved path) |
+| 2 | the participant's org-admin OR-arm granted pmc authority even when the SAME user held an ACTIVE non-pmc membership on the project. `ProjectAccessService.authorize` STOPS at the active membership — such a user operates AS contractor/client/engineer and the app's `attendance.revoke` role guard denies them — so the repair could attribute an immutable revocation to someone the application itself would refuse (P2) | `hasProjectRoleStanding` now mirrors `authorize`'s PRECEDENCE exactly: an active membership DECIDES (role ∈ `roles` or refused), and the org owner/admin arm applies ONLY when NO active membership exists on the project (`R3m-B`: an org ADMIN with an active contractor membership on the very project is refused with the attendance-revoke message; with that membership REMOVED the documented super-admin path applies again and the repair commits — tightened exactly to the app's authority, not past it) |
+| 3 | on the P3005 baseline path, `migrate.sh` grepped the WHOLE `t3c seals` output for the two correction names. In the body-only-stale case `correctionSeals()` deliberately attributes the heal to 20270225 ALONE (`pendingMigrations`), but its JSON also carries the layer label `phase4_t3_attendance_append_only@20270220…` in `correction2Missing` — the grep matched the LABEL, left 20270220 pending, and the retried deploy aborted on 20270220's already-existing constraint instead of letting 20270225 heal (P2) | the exit-3 branch now PARSES the seals JSON and reads `pendingMigrations` precisely (a node stdin one-liner over the brace-delimited JSON; exact-line `grep -qx` against each migration name); the unreadable-answer guard is unchanged (`R3m-C` = runner-proof **Case 10**: a fully-migrated clone minus its ledger with the append-only body regressed to the 20270210 layer — the OLD runner failed rc=1 leaving 20270220 pending off the label and the body STILL STALE (`e40c8d80…` ≠ canonical), all nine prior cases passing, which isolates the regression to exactly this branch; the FIXED runner resolves 20270220 as applied, executes ONLY 20270225, and the deployed body md5 equals the canonical correction-2 text) |
+
+**Honest note.** The `R3m-C` RED evidence was produced by running the FULL production-runner proof
+with the unfixed `migrate.sh` restored from the prior head: Cases 1–9 all passed and only the new
+Case 10 failed, with the exact reviewer-predicted shape.
+
+**Gates (round 3m):** reproduce-first — `R3m-A` and `R3m-B` RED at `0f4d334` (both repairs
+COMMITTED, `promise resolved` instead of rejecting), `R3m-C` RED per the Case-10 old-runner run —
+all GREEN after. The focused `phase4-t3-correction3.test.ts` **64/64**. `pnpm check` EXIT 0 (web
+432/432, API **671/671**, `check:automation` included). Full integration suite on a pristine
+migrated DB: **69 files / 654 tests**, EXIT 0 (+2 over round 3l — the R3m probes).
+`upgrade-proof.sh` PASSED, EXIT 0. `phase4-t3-correction3-production-runner-proof.sh` PASSED —
+**81 assertions**, EXIT 0 (Cases 1–9 plus the new Case 10; its RED counterpart ran the FULL proof
+with the unfixed `migrate.sh`: Cases 1–9 all passed and ONLY Case 10 failed, in the exact
+reviewer-predicted shape — see finding 3). `test:e2e:api:allmodules` **31/31**, EXIT 0, first run;
+`test:e2e:api:outbox` **25 passed / 6 sender-mode-skipped**, EXIT 0, first run — no flaky re-kick
+was needed this round.
+
 The PR is held per the directive: pushed normally, threads left for Codex, no self-promotion of
 draft state, no self-merge. On merge, `docs/STATUS.md` moves Task 3 to `merged`; only then may the
 runner start Task 4. **Task 4 remains blocked.**

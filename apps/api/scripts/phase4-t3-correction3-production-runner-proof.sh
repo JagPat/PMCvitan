@@ -431,9 +431,50 @@ run_migrate_sh "$DB"
 [ "$RUN_RC" = "0" ] && ok "with the canonical body restored the SAME runner deploys cleanly (precision, not just strictness)" \
   || bad "migrate.sh still refuses after the canonical body was restored"
 
+# ── Case 10 — P3005 body-only-stale: `pendingMigrations` is PARSED, the label grep is dead ───────
+# A really-migrated dump/restore can carry 20270220's CHECK while `phase4_t3_attendance_append_only`
+# is still bound to the 20270210 body. `correctionSeals()` deliberately attributes that heal to
+# 20270225 ALONE (`pendingMigrations`), because re-running 20270220 over its own existing CHECK
+# fails the whole deploy — but its JSON also names the stale layer as
+# `phase4_t3_attendance_append_only@20270220…` in `correction2Missing`, and the runner's old
+# whole-output grep saw that label, left 20270220 pending anyway, and the retry aborted on the
+# already-existing constraint. The runner must resolve 20270220 as applied, execute ONLY 20270225,
+# and the in-block heal then makes the body canonical.
+note "Case 10 — P3005 body-only-stale: only the ATTRIBUTED migration is left pending"
+DB=pmcvitan_t3cpr_stale
+build_db "$DB"
+psql -X -q -d "$DB" -c 'DROP TABLE "_prisma_migrations";' >/dev/null 2>&1
+node -e "
+const { T3C_CANONICAL_FN_BODIES } = require('./dist/labour/t3c/t3c-canonical-fn-bodies.generated.js');
+const layers = T3C_CANONICAL_FN_BODIES.phase4_t3_attendance_append_only;
+const base = layers.find((l) => l.layer.startsWith('20270210'));
+process.stdout.write('CREATE OR REPLACE FUNCTION phase4_t3_attendance_append_only() RETURNS trigger AS \$stale\$' + base.body + '\$stale\$ LANGUAGE plpgsql;');
+" > /tmp/t3cpr-stale-attendance-fn.sql || bad "could not extract the 20270210 body from the compiled module"
+psql -X -q -v ON_ERROR_STOP=1 -d "$DB" -f /tmp/t3cpr-stale-attendance-fn.sql >/dev/null \
+  || bad "could not regress the attendance append-only body"
+run_migrate_sh "$DB"
+[ "$RUN_RC" = "0" ] && ok "migrate.sh completes the P3005 body-only-stale baseline (rc=0)" \
+  || { bad "migrate.sh failed on the body-only-stale P3005 database (rc=$RUN_RC)"; echo "$RUN_OUT" | tail -20; }
+echo "$RUN_OUT" | grep -q "skipping resolve --applied for $CORR3" \
+  && ok "20270225 was left pending (the attributed healing layer really executes)" \
+  || bad "20270225 was not left pending"
+echo "$RUN_OUT" | grep -q "skipping resolve --applied for $CORR2" \
+  && bad "20270220 was left pending off a correction2Missing LABEL — the retry would abort on its existing constraint" \
+  || ok "20270220 was resolved as applied — the label in correction2Missing no longer fools the runner"
+STALE_MD5=$(q "$DB" "SELECT md5(p.prosrc) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE t.tgname = 'LabourAttendance_append_only' AND t.tgrelid = '\"LabourAttendance\"'::regclass AND NOT t.tgisinternal")
+CANON_MD5=$(node -e "
+const { createHash } = require('crypto');
+const { T3C_CANONICAL_FN_BODIES } = require('./dist/labour/t3c/t3c-canonical-fn-bodies.generated.js');
+const l = T3C_CANONICAL_FN_BODIES.phase4_t3_attendance_append_only.find((x) => x.layer.startsWith('20270220'));
+process.stdout.write(createHash('md5').update(l.body).digest('hex'));
+")
+[ "$STALE_MD5" = "$CANON_MD5" ] \
+  && ok "the executed 20270225 healed the body to the canonical correction-2 text (md5 verified)" \
+  || bad "the attendance append-only body is still stale after the baseline deploy ($STALE_MD5 != $CANON_MD5)"
+
 # ── cleanup ──────────────────────────────────────────────────────────────────────────────────────
 note "cleanup"
-for db in pmcvitan_t3cpr_fresh pmcvitan_t3cpr_pretask3 pmcvitan_t3cpr_base pmcvitan_t3cpr_clean pmcvitan_t3cpr_dirty pmcvitan_t3cpr_corrected pmcvitan_t3cpr_dbpush pmcvitan_t3cpr_restored pmcvitan_t3cpr_forged pmcvitan_t3cpr_hollow; do
+for db in pmcvitan_t3cpr_fresh pmcvitan_t3cpr_pretask3 pmcvitan_t3cpr_base pmcvitan_t3cpr_clean pmcvitan_t3cpr_dirty pmcvitan_t3cpr_corrected pmcvitan_t3cpr_dbpush pmcvitan_t3cpr_restored pmcvitan_t3cpr_forged pmcvitan_t3cpr_hollow pmcvitan_t3cpr_stale; do
   kill_conns "$db"; $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $db;" >/dev/null 2>&1 || true
 done
 

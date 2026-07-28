@@ -1072,6 +1072,23 @@ export const T3C_PREREQUISITE_FK_SEALS: readonly T3CForeignKeySeal[] = [
   },
 ];
 
+/**
+ * The Prisma-modelled revoked-by reference, verified by the SAME full identity as every raw-SQL FK
+ * seal. It is not in the prerequisite set above (a `db push` reproduces it), but the repair's
+ * PRESERVED-revocation path trusts a row's existing `revokedById` PRECISELY because this FK makes a
+ * nonexistent revoker unrepresentable — so on a restored or partially managed database where it was
+ * dropped or left unvalidated, that trust is unfounded and a ghost id could be sealed into
+ * append-only evidence. The repair verifies this identity before preserving any triple.
+ */
+export const T3C_REVOKED_BY_FK_SEAL: T3CForeignKeySeal = {
+  name: 'LabourAttendance_revokedBy_fkey',
+  table: 'LabourAttendance',
+  columns: ['revokedById'],
+  refTable: 'User',
+  refColumns: ['id'],
+  what: 'a preserved revocation names a user the database guarantees exists',
+};
+
 /** The session-local probe table for one real table (created `LIKE` it, so column types match). */
 export function t3cProbeTableName(table: string): string {
   return `t3c_seal_probe_${table.toLowerCase()}`;

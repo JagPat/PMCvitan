@@ -2833,4 +2833,99 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
       await t.prisma.user.deleteMany({ where: { id: { in: [contractor.id, admin.id] } } });
     }
   });
+
+  // ── ROUND 3m — the three Codex findings on `0f4d334` ────────────────────────────────────────────
+
+  it('R3m-A: a preserved revocation is trusted only under the revoked-by FK seal — a ghost revoker is refused, never sealed', async () => {
+    // RED at 0f4d334: the preserved-revocation path trusted the triple already ON the row —
+    // including its `revokedById` — precisely because `LabourAttendance_revokedBy_fkey` makes a
+    // nonexistent revoker unrepresentable. But nothing VERIFIED that FK still stands: on a
+    // restored or partially managed database where it was missing, a blank muster "revoked" by a
+    // ghost id was repaired, the in-transaction diagnostics cleared (they see a coherent non-null
+    // triple plus evidence), and an immutable revocation attributed to NO REAL USER was sealed.
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const fkDef = (await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+        WHERE conname = 'LabourAttendance_revokedBy_fkey' AND conrelid = '"LabourAttendance"'::regclass`,
+    ))[0]!.def;
+    try {
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" DROP CONSTRAINT "LabourAttendance_revokedBy_fkey"`);
+      const ghost = `ghost-${Date.now() % 1e6}-${seq++}`;
+      const row = await legacyBlankMuster(projectId, workerId, '2027-02-03', {
+        at: '2026-06-01T09:00:00Z', byId: ghost, reason: 'raised on the wrong worker',
+      });
+      await expect(
+        repairs.repair({
+          operator: 'ops@vitan.in', reason: 'ghost-revoker probe',
+          actions: [{ op: 'f1-mark-invalid-legacy', id: row, revokedById: ghost, revokeReason: 'retired; original revocation intact' }],
+        }),
+      ).rejects.toThrow(/LabourAttendance_revokedBy_fkey is not the canonical validated revoked-by reference/);
+      // …and NOTHING was written: no marker, no evidence
+      const after = await t.prisma.$queryRawUnsafe<Array<{ reason: string }>>(
+        `SELECT "manualReason" AS reason FROM "LabourAttendance" WHERE "id" = $1`, row,
+      );
+      expect(after[0]!.reason).toBe('   ');
+    } finally {
+      // the ghost row would block re-validating the FK — the suite's own TRUNCATE teardown first
+      await t.prisma.$executeRawUnsafe(TRUNCATE);
+      await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" ADD CONSTRAINT "LabourAttendance_revokedBy_fkey" ${fkDef}`);
+    }
+    // precision: with the FK canonical again, a genuinely-revoked row still repairs on the
+    // preserved path (the R3i probe covers the full shape; this pins that 0d did not over-tighten)
+    const p2 = await freshProject();
+    await enableLabour(p2);
+    const w2 = await onboardWorker(p2);
+    const genuine = await legacyBlankMuster(p2, w2, '2027-02-05', {
+      at: '2026-06-01T09:00:00Z', byId: f.memberUser.id, reason: 'raised on the wrong worker',
+    });
+    await repairs.repair({
+      operator: 'ops@vitan.in', reason: 'ghost probe precision arm',
+      actions: [{ op: 'f1-mark-invalid-legacy', id: genuine, revokedById: f.memberUser.id, revokeReason: 'retired; original revocation intact' }],
+    });
+    expect((await t.prisma.$queryRawUnsafe<Array<{ r: string | null }>>(
+      `SELECT "revokedById" AS r FROM "LabourAttendance" WHERE "id" = $1`, genuine,
+    ))[0]!.r).toBe(f.memberUser.id);
+  });
+
+  it("R3m-B: an ACTIVE non-pmc membership decides — the org-admin arm never overrides the project role the app itself enforces", async () => {
+    // RED at 0f4d334: the participant's org-admin OR-arm granted pmc authority even when the SAME
+    // user held an ACTIVE contractor membership on the project. `ProjectAccessService.authorize`
+    // stops at the active membership — such a user operates AS contractor, and the app's
+    // `attendance.revoke` role guard denies them — so the repair could attribute an immutable
+    // revocation to someone the application itself would refuse.
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    const dual = await t.prisma.user.create({
+      data: { id: `u-r3m-${Date.now() % 1e6}-${seq++}`, projectId, role: 'contractor', name: 'Org Admin On Site As Contractor', email: `r3m-${Date.now() % 1e6}-${seq++}@probe.test` },
+    });
+    try {
+      await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: dual.id, role: 'admin' } });
+      await t.prisma.membership.create({ data: { projectId, userId: dual.id, role: 'contractor', status: 'active' } });
+      const blank = await legacyBlankMuster(projectId, workerId, '2027-02-04');
+      await expect(
+        repairs.repair({
+          operator: 'ops@vitan.in', reason: 'precedence probe',
+          actions: [{ op: 'f1-mark-invalid-legacy', id: blank, revokedById: dual.id, revokeReason: 'r' }],
+        }),
+      ).rejects.toThrow(/has no attendance-revoke standing on project/);
+      // …with the conflicting membership GONE, the documented super-admin path applies again —
+      // exactly `authorize`'s precedence, tightened to the app's authority, not past it
+      await t.prisma.membership.deleteMany({ where: { projectId, userId: dual.id } });
+      await repairs.repair({
+        operator: 'ops@vitan.in', reason: 'precedence probe — no explicit membership',
+        actions: [{ op: 'f1-mark-invalid-legacy', id: blank, revokedById: dual.id, revokeReason: 'retired legacy blank' }],
+      });
+      expect((await t.prisma.$queryRawUnsafe<Array<{ r: string | null }>>(
+        `SELECT "revokedById" AS r FROM "LabourAttendance" WHERE "id" = $1`, blank,
+      ))[0]!.r).toBe(dual.id);
+    } finally {
+      await t.prisma.$executeRawUnsafe(TRUNCATE);
+      await t.prisma.orgMembership.deleteMany({ where: { userId: dual.id } });
+      await t.prisma.membership.deleteMany({ where: { userId: dual.id } });
+      await t.prisma.user.deleteMany({ where: { id: dual.id } });
+    }
+  });
 });
