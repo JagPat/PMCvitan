@@ -26,7 +26,7 @@ This repository is designed to progress without the owner's laptop or technical 
 
 1. The runner selects only the work item in `docs/STATUS.md`.
 2. Claude starts from latest `origin/main`, records the base SHA, opens a draft PR, enables web Auto-fix, and remains subscribed.
-3. GitHub requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. When all five pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
+3. GitHub requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. A first pre-review CI failure receives one GitHub-native failed-job retry; a second failure remains draft and blocked for a real correction. When all five pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
 4. Marking the PR ready triggers Codex. The same exact-head workflow run polls that one invocation to its terminal result and accepts only evidence from `chatgpt-codex-connector[bot]` for the current SHA and review cycle. Review and review-comment webhooks never start or mutate the merge workflow.
 5. A current-head finding fails `codex-current-head` and returns the PR to draft. Claude Auto-fix reproduces the finding, fixes forward, and pushes a new head; that push invalidates every prior clearance.
 6. A fresh current-head clean Codex signal succeeds `codex-current-head`. GitHub then squash-merges that exact reviewed SHA immediately when the PR is clean. If GitHub still reports a waiting state, the controller queues squash auto-merge with the same expected head OID; a clean-state race retries the exact-SHA merge once. Missing CI, stale evidence, timeout, or inactive authoring all fail closed.
