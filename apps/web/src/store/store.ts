@@ -231,6 +231,7 @@ export interface AppState {
   labourView: LabourView | null;
   labourLoad: 'idle' | 'loading' | 'ready' | 'error';
   labourPending: string[];
+  labourOnboardPending: { sig: string; key: string } | null;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
@@ -674,6 +675,7 @@ export function getInitialState(): AppState {
     labourView: null,
     labourLoad: 'idle',
     labourPending: [],
+    labourOnboardPending: null,
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
@@ -2550,13 +2552,33 @@ export const useStore = create<Store>()(
       );
     },
     onboardLabourWorker: (name, tradeCode, skillCodes, activeFrom) => {
-      // Roster commands are pmc-authored, low-frequency Team-screen actions: direct calls with a
-      // fresh idempotency key, reconciled by reloading the labour bundle (no outbox lifecycle).
+      // Roster commands are pmc-authored, low-frequency Team-screen actions reconciled by
+      // reloading the labour bundle (no outbox lifecycle). Codex round 5 — a committed-but-lost
+      // response must NOT duplicate the worker on retry: the roster has no natural uniqueness on
+      // (name, trade), so the ledger's idempotency key IS the identity. The key for the submitted
+      // form is minted ONCE and reused verbatim until a CONFIRMED success clears it; a later
+      // deliberate identical onboarding (after confirmation) mints a fresh key, and a CHANGED
+      // form is a different command with its own fresh key.
       if (!gateway || !get().capabilities.includes('labour')) return;
-      runRemote(
-        () => gateway!.onboardWorker({ name, tradeCode, skillCodes, activeFrom }, newIdempotencyKey()).then(() => { get().loadLabour(); return gateway!.snapshot(); }),
-        'Worker onboarded to the project roster.',
-      );
+      const sig = JSON.stringify([name, tradeCode, skillCodes, activeFrom]);
+      const held = get().labourOnboardPending;
+      const key = held && held.sig === sig ? held.key : newIdempotencyKey();
+      set((s) => { s.labourOnboardPending = { sig, key }; });
+      const lease = beginSnapshotLease(currentScope());
+      gateway!.onboardWorker({ name, tradeCode, skillCodes, activeFrom }, key)
+        .then(() => {
+          // CONFIRMED success — the key is spent; the next deliberate submit gets a fresh one
+          if (scopeStillCurrent(lease.scope)) {
+            set((s) => { if (s.labourOnboardPending?.key === key) s.labourOnboardPending = null; });
+          }
+          get().loadLabour();
+          return gateway!.snapshot();
+        })
+        .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), 'Worker onboarded to the project roster.', lease.scope))
+        .catch(() => {
+          // failure (including a LOST committed response) RETAINS the key for the retry
+          if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
+        });
     },
     bindLabourDevice: (deviceId, workerId) => {
       if (!gateway || !get().capabilities.includes('labour')) return;

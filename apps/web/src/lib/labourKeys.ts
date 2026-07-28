@@ -23,6 +23,22 @@ export const allocateCoalesceKey = (
   subject: string, // workerId or crew:<crewId> — one live allocation per worker/slice either way
 ): string => `lab:alloc:${activityId}:${requirementId}@${originRevision}:${civilDate}:${subject}`;
 
+/** Codex round 5 — whether a pending coalesce key is an ALLOCATE op for the given demand slice,
+ *  ANY worker and ANY revision. The allocate stop must count every in-flight allocation against
+ *  the slice, not only the currently-chosen worker's own key — otherwise picking a second worker
+ *  while the first command is still in flight queues a 2/1 own-workforce over-allocation. */
+export const isAllocatePendingForSlice = (
+  key: string,
+  activityId: string,
+  requirementId: string,
+  civilDate: string,
+): boolean => {
+  const prefix = `lab:alloc:${activityId}:${requirementId}@`;
+  if (!key.startsWith(prefix)) return false;
+  const parts = key.slice(prefix.length).split(':'); // `${revision}:${civilDate}:${subject}`
+  return parts.length === 3 && parts[1] === civilDate;
+};
+
 export const musterCoalesceKey = (workerId: string, civilDate: string, shift: string): string =>
   `lab:must:${workerId}:${civilDate}:${shift}`;
 

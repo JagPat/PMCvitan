@@ -139,17 +139,22 @@ export function workerActiveOn(
   return w.revokedAt === null && w.activeFrom <= civilDate && (w.activeTo === null || civilDate <= w.activeTo);
 }
 
-/** Codex round 2 — workers already holding an ACTIVE allocation on a `(civilDate, shift)`.
- *  Worker-level conservation (§C) admits ONE live allocation per worker/date/shift project-wide;
- *  offering a booked worker for a second slice is a guaranteed terminal 409. */
+/** Codex round 2 + round 5 — workers already CONSUMED on a `(civilDate, shift)`: an ACTIVE
+ *  allocation (worker-level conservation §C — one live allocation per worker/date/shift
+ *  project-wide; a second pick is a guaranteed terminal 409), OR a released allocation that
+ *  already carries a WORK FACT (the worker delivered that shift — coverage still counts their
+ *  work for the original slice, so re-offering them would let ONE worker satisfy TWO same-shift
+ *  person-shifts). Only a no-work release frees the worker for the shift. */
 export function bookedWorkerIds(
   allocations: readonly WorkerAllocationDto[],
+  workFacts: readonly LabourWorkFactDto[],
   civilDate: string,
   shift: string,
 ): Set<string> {
+  const worked = new Set(workFacts.map((f) => f.allocationId));
   const ids = new Set<string>();
   for (const a of allocations) {
-    if (a.civilDate === civilDate && a.shift === shift && a.status === 'active') ids.add(a.workerId);
+    if (a.civilDate === civilDate && a.shift === shift && (a.status === 'active' || worked.has(a.id))) ids.add(a.workerId);
   }
   return ids;
 }

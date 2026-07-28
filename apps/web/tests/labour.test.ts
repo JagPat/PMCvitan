@@ -4,7 +4,7 @@ import { enabledScreensFor } from '@/lib/screens';
 import { selectActionItems } from '@/store/selectors';
 import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { LabourView } from '@/store/labour';
-import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
+import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines } from '@/lib/labourSelection';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
@@ -658,18 +658,85 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     expect(workerActiveOn(worker('W-3', 'mason', [], { revokedAt: '2026-07-01T00:00:00Z' }), '2026-08-01')).toBe(false); // revoked never active
   });
 
-  it('CODEX R2 — bookedWorkerIds names workers with an ACTIVE allocation on the (civilDate, shift) — §C one-live-allocation', () => {
+  it('CODEX R2+R5 — bookedWorkerIds: ACTIVE allocations book the shift; a NO-WORK release frees it — §C one-live-allocation', () => {
     const rows = [
       alloc({ id: 'A1', workerId: 'W-BOOKED' }),                                              // active on (08-01, day)
-      alloc({ id: 'A2', workerId: 'W-RELEASED', status: 'released' }),                        // released — free again
+      alloc({ id: 'A2', workerId: 'W-RELEASED', status: 'released' }),                        // released, no work — free again
       alloc({ id: 'A3', workerId: 'W-OTHER-DAY', civilDate: '2026-08-02' }),                  // other date
       alloc({ id: 'A4', workerId: 'W-NIGHT', shift: 'night' }),                               // other shift
     ];
-    const booked = bookedWorkerIds(rows, '2026-08-01', 'day');
+    const booked = bookedWorkerIds(rows, [], '2026-08-01', 'day');
     expect(booked.has('W-BOOKED')).toBe(true);
     expect(booked.has('W-RELEASED')).toBe(false);
     expect(booked.has('W-OTHER-DAY')).toBe(false);
     expect(booked.has('W-NIGHT')).toBe(false);
+  });
+
+  it('CODEX R5 — a WORKED-then-released allocation keeps the worker booked for the shift (one worker never satisfies two same-shift person-shifts)', () => {
+    // Coverage still counts the delivered work for the ORIGINAL slice; re-offering the worker for
+    // a second same-(civilDate, shift) slice would double-count one person.
+    const rows = [alloc({ id: 'A9', workerId: 'W-DELIVERED', status: 'released' })];
+    expect(bookedWorkerIds(rows, [workFact({ allocationId: 'A9', workerId: 'W-DELIVERED' })], '2026-08-01', 'day').has('W-DELIVERED')).toBe(true);
+    // an UNRELATED work fact does not book the worker
+    expect(bookedWorkerIds(rows, [workFact({ allocationId: 'A-OTHER' })], '2026-08-01', 'day').has('W-DELIVERED')).toBe(false);
+    // the booking is per (civilDate, shift): the worked release does not block ANOTHER day
+    expect(bookedWorkerIds(rows, [workFact({ allocationId: 'A9' })], '2026-08-02', 'day').has('W-DELIVERED')).toBe(false);
+  });
+
+  it('CODEX R5 — isAllocatePendingForSlice matches ANY worker/revision for the slice, and nothing else', () => {
+    const k1 = allocateCoalesceKey('ACT-1', 'REQ-1', 1, '2026-08-01', 'W-1');
+    const k2 = allocateCoalesceKey('ACT-1', 'REQ-1', 2, '2026-08-01', 'W-2');
+    expect(isAllocatePendingForSlice(k1, 'ACT-1', 'REQ-1', '2026-08-01')).toBe(true);
+    expect(isAllocatePendingForSlice(k2, 'ACT-1', 'REQ-1', '2026-08-01')).toBe(true);  // different worker AND revision
+    expect(isAllocatePendingForSlice(k1, 'ACT-1', 'REQ-1', '2026-08-02')).toBe(false); // other date
+    expect(isAllocatePendingForSlice(k1, 'ACT-1', 'REQ-2', '2026-08-01')).toBe(false); // other requirement
+    expect(isAllocatePendingForSlice(k1, 'ACT-2', 'REQ-1', '2026-08-01')).toBe(false); // other activity
+    expect(isAllocatePendingForSlice(musterCoalesceKey('W-1', '2026-08-01', 'day'), 'ACT-1', 'REQ-1', '2026-08-01')).toBe(false);
+  });
+
+  it('CODEX R5 — onboardLabourWorker holds ONE idempotency key per submitted form until a CONFIRMED success', async () => {
+    // A committed-but-lost response reported as failure must NOT mint a duplicate Worker on
+    // retry: the roster has no natural uniqueness, so the ledger key is the identity.
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; st.activeProjectId = 'ambli'; st.capabilities = ['labour']; });
+    const g = {
+      onboardWorker: vi.fn()
+        .mockRejectedValueOnce(new TypeError('network aborted')) // attempt 1 — response LOST
+        .mockResolvedValue({}),                                   // attempt 2 onward — confirmed
+      snapshot: vi.fn().mockResolvedValue({
+        project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+        decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+        drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+      }),
+      labourReadiness: vi.fn().mockResolvedValue(readiness({})),
+      materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
+      labourWorkforce: vi.fn().mockResolvedValue({ workers: [], crews: [] }),
+      labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
+      labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
+      labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
+      labourCommitments: vi.fn().mockResolvedValue({ commitments: [] }),
+      labourCapacity: vi.fn().mockResolvedValue({ allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] }),
+      labourPresence: vi.fn().mockResolvedValue({ civilDate: '2026-07-28', musters: [], mismatches: [] }),
+      labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
+    };
+    s()._setGateway(g as unknown as ApiGateway);
+    s().onboardLabourWorker('Ramesh', 'mason', [], '2026-07-28');
+    await vi.waitFor(() => { if (g.onboardWorker.mock.calls.length !== 1) throw new Error('pending'); });
+    await flush();
+    // the RETRY of the SAME form reuses the SAME key — the ledger replays, never a second Worker
+    s().onboardLabourWorker('Ramesh', 'mason', [], '2026-07-28');
+    await vi.waitFor(() => { if (g.onboardWorker.mock.calls.length !== 2) throw new Error('pending'); });
+    await flush(); await flush();
+    const [, key1] = g.onboardWorker.mock.calls[0]!;
+    const [, key2] = g.onboardWorker.mock.calls[1]!;
+    expect(key2).toBe(key1);
+    // after the CONFIRMED success the key is spent — a THIRD deliberate identical onboarding
+    // (a genuinely distinct same-name worker) mints a FRESH key
+    s().onboardLabourWorker('Ramesh', 'mason', [], '2026-07-28');
+    await vi.waitFor(() => { if (g.onboardWorker.mock.calls.length !== 3) throw new Error('pending'); });
+    const [, key3] = g.onboardWorker.mock.calls[2]!;
+    expect(key3).not.toBe(key1);
   });
 
   it('CODEX R3 — sourcedCountFor mirrors the server\'s coveredSourced = |allocated ∪ worked| (distinct workers; work survives release)', () => {

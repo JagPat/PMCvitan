@@ -5,7 +5,7 @@ import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
 import type { LabourForecastVerdict, WorkerDto } from '@vitan/shared';
 import { decAdd } from '@/lib/decimal';
-import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
+import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines } from '@/lib/labourSelection';
 import styles from './responsive.module.css';
@@ -261,7 +261,7 @@ export function LabourScreen() {
                         // Codex round 2 — the offer is PER SLICE: compatible AND active on the slice's
                         // civil date (the server 400s outside the window) AND not already booked on
                         // that (civilDate, shift) anywhere (§C one-live-allocation → a certain 409).
-                        const booked = bookedWorkerIds(labour.capacity.allocations, sl.civilDate, sl.shift);
+                        const booked = bookedWorkerIds(labour.capacity.allocations, labour.capacity.workFacts, sl.civilDate, sl.shift);
                         const offerable = workers.filter((w: WorkerDto) => compat.has(w.id) && workerActiveOn(w, sl.civilDate) && !booked.has(w.id));
                         const chosenRaw = allocWorker[sliceKey] ?? '';
                         const chosen = offerable.some((w) => w.id === chosenRaw) ? chosenRaw : ''; // a stale pick never survives an eligibility change
@@ -275,13 +275,18 @@ export function LabourScreen() {
                         // satisfied. The stop counts SOURCED person-shifts (active ∪ worked, the
                         // server's coverage rule): a worked-then-released slice stays fulfilled.
                         const sourced = sourcedCountFor(labour.capacity.allocations, labour.capacity.workFacts, r.requirementId, r.activityId, sl.civilDate, spec, substitutions);
-                        const full = sourced >= sl.personShiftQty;
+                        // Codex round 5 — count IN-FLIGHT allocations for this slice (ANY worker,
+                        // any revision): the per-worker pending guard alone would let a SECOND
+                        // worker be queued against a 1-person slice while the first command is
+                        // still in flight — a 2/1 own-workforce over-allocation the server accepts.
+                        const slicePending = labourPending.filter((k) => isAllocatePendingForSlice(k, r.activityId, r.requirementId, sl.civilDate)).length;
+                        const full = sourced + slicePending >= sl.personShiftQty;
                         // Codex F2 — a commitment-covered slice draws DOWN the matching drawable
                         // commitment (§F bound 3): pass its id so the server consumes the capacity.
                         const commitmentId = pickCommitmentFor(labour.commitments, labour.capacity.allocations, labour.capacity.workFacts, spec, sl.civilDate);
                         return (
                           <div key={sl.civilDate} data-testid={`labour-alloc-slice-${r.requirementId}-${sl.civilDate}`} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 7 }}>
-                            <span style={{ fontSize: 12.5, minWidth: 190 }}>{sl.civilDate} · {sl.shift} · allocated {done}/{sl.personShiftQty}{sourced > done ? ` · ${sourced}/${sl.personShiftQty} sourced incl. delivered work` : ''}{!full && commitmentId ? ' · supplier capacity available' : ''}</span>
+                            <span style={{ fontSize: 12.5, minWidth: 190 }}>{sl.civilDate} · {sl.shift} · allocated {done}/{sl.personShiftQty}{sourced > done ? ` · ${sourced}/${sl.personShiftQty} sourced incl. delivered work` : ''}{slicePending > 0 ? ` · ${slicePending} allocating…` : ''}{!full && commitmentId ? ' · supplier capacity available' : ''}</span>
                             <select value={chosen} disabled={full} data-testid={`labour-worker-select-${r.requirementId}-${sl.civilDate}`} onChange={(e) => setAllocWorker((m) => ({ ...m, [sliceKey]: e.target.value }))} style={selectStyle}>
                               <option value="">{full ? 'Fully allocated' : offerable.length ? 'Choose worker…' : 'No available workers'}</option>
                               {!full && offerable.map((w: WorkerDto) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}

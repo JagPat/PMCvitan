@@ -506,3 +506,59 @@ duplicate still coalesces.
 - e2e: `test:e2e:api:allmodules` (legacy) **35/35** CLEAN first run; `:outbox` **35/35** CLEAN
   first run — the **labour-pilot suite 4/4 in BOTH modes**, exercising the revision-keyed
   allocate and the residual requisition raise this round touched.
+
+## 9. Codex correction round 5 (the three current-head findings on `8ef0c52`)
+
+Codex's round-5 review reached `8ef0c52` late (after the gate's second double-timeout + the
+documented recovery dispatch; the orchestrator republished the late-arriving findings as the
+required failure). Three P2 findings, all reproduced RED first (source stashed at `8ef0c52`:
+5 probes failed), then fixed:
+
+### R5-1 — in-flight allocations close the slice for EVERY worker
+
+The allocate guard was keyed to the SELECTED worker (`pending(aKey)`), so while W1's command
+was in flight the user could pick W2 (a different key) and queue a second own-workforce
+allocation against a 1-person slice — a 2/1 over-allocation the server accepts (it caps only
+supplier drawdown). New `isAllocatePendingForSlice` (`lib/labourKeys.ts`, which owns the key
+format) matches ANY worker/revision for the `(activityId, requirementId, civilDate)` slice;
+the stop is now `sourced + slicePending >= personShiftQty`, with an honest `N allocating…`
+hint on the slice line. Probes: key-matcher table + rendered (in-flight W1 disables the picker
+and button for W2).
+
+### R5-2 — the roster onboarding key is held until CONFIRMED success
+
+`onboardLabourWorker` minted a fresh idempotency key inside each submit; a committed-but-lost
+`/labour/workers` response was reported as failure, and the retry's NEW key minted a SECOND
+`Worker` identity (the roster has no natural uniqueness on name/trade). The store now holds
+ONE key per submitted form (`labourOnboardPending` — project-scoped, torn down on scope
+change): a retry of the SAME form reuses the key verbatim (the ledger replays — no duplicate),
+a CONFIRMED success clears it (a later deliberate identical onboarding — a genuinely distinct
+same-name worker — mints a fresh key), and a CHANGED form is a different command. Probe: lost
+response → retry same key; after confirmation → third submit gets a new key.
+
+### R5-3 — a WORKED-then-released allocation keeps the worker booked for the shift
+
+`bookedWorkerIds` counted ACTIVE allocations only, so after allocate→work→release the worker
+was re-offered for a second same-`(civilDate, shift)` slice — coverage still counts their
+delivered work for the ORIGINAL slice, so one person could satisfy two same-shift
+person-shifts. The helper now takes the work facts: a released allocation with a work fact
+stays booked; only a NO-WORK release frees the worker (per shift — another day is unaffected).
+Probes: worked release booked · unrelated fact not · other-day free · the R2 no-work-release
+carve-out restated.
+
+### Round-5 gate battery (this head)
+
+- **Reproduce-first**: the five R5 probes RED at `8ef0c52` (`5 failed | 64 passed` with the
+  web fixes stashed) → GREEN restored: `labour.test.ts` + `labour-screen.test.tsx` **69/69**.
+- `pnpm check` **EXIT 0** — web **506/506** (42 files), API **680/680** (55 files), builds clean.
+- Full API integration on a pristine migrated DB (psql drop/create + `prisma migrate deploy`):
+  **72 files / 695 tests** passing.
+- `upgrade-proof.sh` **PASSED** (no migration in this round; every prior seal survives).
+- `test:e2e:api:allmodules` (legacy): first run 34/35 (the documented `project-scope`
+  history flake — no labour surface), clean re-run **35/35**. labour-pilot 4/4.
+- `test:e2e:api:allmodules:outbox`: two runs on the container's five-suite-old accumulated DB
+  failed in the documented timing families (`pillar-chain` inspection chain ×3 +
+  `inspections-module-query`/`drawings-module-query`); on a FRESHLY recreated DB the entire
+  pillar chain passed (34/35 — isolating the residual to the documented
+  `inspections-module-query` project-switcher timeout, no labour surface), and the deciding
+  re-run was clean **35/35**. labour-pilot 4/4. Fresh-runner CI is the deciding gate evidence.

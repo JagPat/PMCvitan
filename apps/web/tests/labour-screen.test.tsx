@@ -298,6 +298,25 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     expect(r2.queryByTestId('labour-raise-req-REQ-1')).toBeNull();
   });
 
+  it('R5-1: an IN-FLIGHT allocation for the slice closes the offer for EVERY worker (no 2/1 while the first command is pending)', async () => {
+    const m1 = worker('W-MASON', 'mason');
+    const m2 = worker('W-MASON-2', 'mason');
+    await primeLabour({
+      workforce: { workers: [m1, m2], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([m1, m2]),
+    });
+    // W-MASON's allocate command is still in flight for the 1-person slice — a DIFFERENT worker's
+    // key would previously slip past the per-worker pending guard and queue a second allocation
+    const { allocateCoalesceKey } = await import('@/lib/labourKeys');
+    useStore.setState({ role: 'pmc', labourPending: [allocateCoalesceKey('ACT-1', 'REQ-1', 1, day, 'W-MASON')] });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const text = r.getByTestId(`labour-alloc-slice-REQ-1-${day}`).textContent!;
+    expect(text).toContain('1 allocating…');
+    expect((r.getByTestId(`labour-worker-select-REQ-1-${day}`) as HTMLSelectElement).disabled).toBe(true);
+    expect((r.getByTestId(`labour-do-allocate-REQ-1-${day}`) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('R4-3: Record work parses the FULL numeric string — a fractional entry is invalid, scientific notation records the real value', async () => {
     const today = todayCivil(null);
     await primeLabour({

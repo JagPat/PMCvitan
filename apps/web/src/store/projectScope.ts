@@ -74,6 +74,11 @@ export interface ProjectDataState {
   // labour bundle / pending key never leaks into another project's Labour hub.
   labourView: LabourView | null;
   labourPending: string[];
+  /** Codex round 5 — the ONE idempotency key held for the currently-submitted roster onboarding
+   *  form: reused verbatim on a retry after a lost response (the roster has no natural
+   *  uniqueness, so the ledger key is what stops a duplicate Worker), cleared only by a
+   *  CONFIRMED success or a scope teardown. */
+  labourOnboardPending: { sig: string; key: string } | null;
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */
@@ -102,6 +107,7 @@ export function emptyProjectData(): ProjectDataState {
     materialsPending: [],
     labourView: null,
     labourPending: [],
+    labourOnboardPending: null,
   };
 }
 
