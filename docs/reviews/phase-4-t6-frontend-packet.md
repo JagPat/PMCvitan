@@ -633,3 +633,56 @@ helper table (multi-allocation sum · other worker/day excluded · floors at 0) 
 - `test:e2e:api:allmodules:outbox`: first run 34/35 (the documented timing-sensitive
   `cross-cutting-surfaces` response-capture step — no labour surface), clean re-run **35/35**;
   labour-pilot 4/4.
+
+## §11 — Codex correction round 7 (three findings on `b2beb4c`)
+
+One SERVER-side gap (verified in `labour-capacity.service.ts` before coding — `recordWork`
+selected the allocation's `status` and never checked it) and two outbox-visibility gaps in the
+hub. Reproduce-first: the API probe run LIVE against the unmodified service (the released-
+allocation work fact was ACCEPTED → 409 after the fix), and the web probes RED at `b2beb4c`
+(pre-fix `apps/web/src` restored: **4 failed | 77 passed**) → GREEN with the fixes: **81/81**.
+
+### R7-1 — effort against a RELEASED allocation is refused (server)
+
+A work op queued while the allocation was active and flushed AFTER a no-work release still
+appended a `LabourWorkFact` — resurrecting delivered-effort evidence (§A worked-counts-as-
+coverage + §I productivity) that the release was meant to remove. `recordWork` now refuses any
+non-active allocation with a deterministic 409 (terminal — the outbox drops it), evaluated
+under the readiness lock the release command also holds, so the two can never interleave. A
+keyed replay of an op that COMMITTED while active is untouched (the ledger returns the
+recorded result without re-running the check). Probe (`phase4-t6-allocation-pin.test.ts`):
+allocate → release(no work) → record 409 + zero facts; control — an active allocation records.
+
+### R7-2 — pending worker bookings reserved across slices (web)
+
+`bookedWorkerIds` sees only committed state, so a worker with an allocate op still in flight
+stayed offerable for a SECOND same-(date, shift) slice — a different requirement means a
+different coalesce key, both queue, and the flush's second command is the server's
+one-live-allocation 409, dropped. `pendingBookedWorkerIds` folds the durable outbox's allocate
+ops into the per-slice booking set (the op carries no shift — it is resolved through the op's
+requirement in the CURRENT view; an op whose requirement left the view books conservatively).
+Probes: helper table (this-shift booked · other-shift free · unknown-requirement conservative ·
+other-date free · crew op ignored) + rendered (two same-day mason slices; the in-flight worker
+is absent from the second picker, the second mason offered).
+
+### R7-3 — the work row stays disabled while ANY record is pending (web)
+
+The work coalesce key carries the MINUTES, so editing the input while the first record was in
+flight re-enabled the button and queued a SECOND distinct command (two facts, or a
+cumulative-cap 409, for a user trying to correct the pending entry). `hasPendingWorkFor`
+disables the row while any queued work op targets this allocation OR another allocation of the
+same `(worker, civilDate, shift)` (the server's cumulative frame); `isWorkPendingForAllocation`
+pins the minutes-agnostic key match. Probes: helper tables + rendered (pending 480 → edit to
+240 → still disabled, no second dispatch).
+
+### Round-7 gate battery (this head) — ALL CLEAN, single pass
+
+- **Reproduce-first**: the API probe run LIVE against the unmodified service (the released-
+  allocation work fact ACCEPTED → 409 after the fix); the web probes at `b2beb4c` with the
+  pre-fix src restored → **4 failed | 77 passed**; fixes restored → **81/81** GREEN.
+- `pnpm check` **EXIT 0** — web **518/518** (42 files), API **680/680** (55 files), builds clean.
+- Full API integration on a pristine migrated DB (psql drop/create + `prisma migrate deploy`):
+  **72 files / 696 tests** passing (+1 — the R7-1 released-allocation refusal probe).
+- `upgrade-proof.sh` **PASSED** (no migration in this round; every prior seal survives).
+- `test:e2e:api:allmodules` (legacy): **35/35** CLEAN first run; labour-pilot 4/4.
+- `test:e2e:api:allmodules:outbox`: **35/35** CLEAN first run; labour-pilot 4/4.

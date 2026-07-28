@@ -538,6 +538,16 @@ export class LabourCapacityService {
           select: { id: true, workerId: true, activityId: true, civilDate: true, shift: true, status: true },
         });
         if (!allocation) throw new NotFoundException('Allocation not found in this project');
+        // Codex T6 round 7 — effort can only be recorded under an ACTIVE allocation: a released
+        // row freed the worker AND the slice's coverage (§C), so a stale queued work op replaying
+        // after a no-work release must not resurrect delivered-effort evidence. Deterministic 409
+        // (terminal — the client outbox drops it); evaluated under the readiness lock, which the
+        // release command also holds, so the two can never interleave. A keyed replay of an op
+        // that COMMITTED while the allocation was still active is untouched (the ledger returns
+        // the recorded result without re-running this check).
+        if (allocation.status !== 'active') {
+          throw new ConflictException(`Allocation is ${allocation.status} — effort can only be recorded under an active allocation`);
+        }
 
         // serialize every effort record for this worker (round-3 guardrail 2)
         await this.lockWorkersInOrder(tx, projectId, [allocation.workerId]);

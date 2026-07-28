@@ -47,6 +47,12 @@ export const musterCoalesceKey = (workerId: string, civilDate: string, shift: st
 export const workCoalesceKey = (allocationId: string, workedMinutes: number): string =>
   `lab:work:${allocationId}:${workedMinutes}`;
 
+/** Codex round 7 — whether a pending coalesce key is a WORK op for the given allocation at ANY
+ *  minutes value: the key carries the minutes, so the per-key pending check alone re-enables the
+ *  button the moment the user edits the input while the first record is still in flight. */
+export const isWorkPendingForAllocation = (key: string, allocationId: string): boolean =>
+  key.startsWith(`lab:work:${allocationId}:`);
+
 export const labourRequisitionCoalesceKey = (
   lines: ReadonlyArray<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number }>,
 ): string => {

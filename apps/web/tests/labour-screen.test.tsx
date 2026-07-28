@@ -472,6 +472,60 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     expect((r2.getByTestId('labour-work-minutes-AL-NOW') as HTMLInputElement).disabled).toBe(true);
   });
 
+  it('R7-2: a worker with an allocate op IN FLIGHT is not offered for a SECOND same-date/shift slice (the flush would 409 it)', async () => {
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const m1 = worker('W-MASON', 'mason');
+    const m2 = worker('W-MASON-2', 'mason');
+    const reqB = { ...requirement(fp), id: 'rev-2x', requirementId: 'REQ-2' };
+    const { allocateCoalesceKey } = await import('@/lib/labourKeys');
+    const pendingOp = {
+      t: 'allocateLabour' as const,
+      input: { activityId: 'ACT-1', requirementId: 'REQ-1', originRevision: 1, civilDate: day, workerId: 'W-MASON' },
+      idempotencyKey: 'idem-1',
+      coalesceKey: allocateCoalesceKey('ACT-1', 'REQ-1', 1, day, 'W-MASON'),
+    };
+    await primeLabour({
+      requirements: [requirement(fp), reqB],
+      workforce: { workers: [m1, m2], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([m1, m2]),
+    });
+    useStore.setState({ role: 'pmc', outbox: [pendingOp] as never, labourPending: [pendingOp.coalesceKey] });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    // slice B (same date, same shift): the in-flight worker is SPOKEN FOR — only the second mason
+    const values = Array.from(r.getByTestId(`labour-worker-select-REQ-2-${day}`).querySelectorAll('option')).map((o) => o.getAttribute('value'));
+    expect(values).not.toContain('W-MASON');
+    expect(values).toContain('W-MASON-2');
+  });
+
+  it('R7-3: the work row stays DISABLED while a record is pending, even after editing the minutes (no second distinct command)', async () => {
+    const today = todayCivil(null);
+    await primeLabour({
+      capacity: { allocations: [alloc({ id: 'AL-NOW', civilDate: today })], attendance: [], workFacts: [], skillSubstitutions: [] },
+    });
+    const spy = vi.fn();
+    const { workCoalesceKey } = await import('@/lib/labourKeys');
+    const pendingOp = {
+      t: 'recordLabourWork' as const,
+      input: { allocationId: 'AL-NOW', workedMinutes: 480 },
+      idempotencyKey: 'idem-w1',
+      coalesceKey: workCoalesceKey('AL-NOW', 480),
+    };
+    useStore.setState({ role: 'pmc', recordWorkedMinutes: spy, outbox: [pendingOp] as never, labourPending: [pendingOp.coalesceKey] });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const btn = () => r.getByTestId('labour-do-work-AL-NOW') as HTMLButtonElement;
+    expect(btn().textContent).toContain('Recording…');
+    expect(btn().disabled).toBe(true);
+    expect((r.getByTestId('labour-work-minutes-AL-NOW') as HTMLInputElement).disabled).toBe(true);
+    // the pre-fix gap: editing 480 → 240 changed the coalesce key and re-enabled the button,
+    // queueing a SECOND distinct command for the same allocation
+    fireEvent.change(r.getByTestId('labour-work-minutes-AL-NOW'), { target: { value: '240' } });
+    expect(btn().disabled).toBe(true);
+    fireEvent.click(btn());
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it('R3-5: Team onboarding stamps activeFrom with the PROJECT civil day, not the browser/UTC date', async () => {
     await primeLabour({ catalog: { trades: [{ code: 'mason', name: 'Mason' }], skills: [] } });
     const spy = vi.fn();

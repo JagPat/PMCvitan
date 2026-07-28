@@ -4,9 +4,9 @@ import { enabledScreensFor } from '@/lib/screens';
 import { selectActionItems } from '@/store/selectors';
 import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { LabourView } from '@/store/labour';
-import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
+import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, isWorkPendingForAllocation, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes } from '@/lib/labourSelection';
+import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, pendingBookedWorkerIds, hasPendingWorkFor } from '@/lib/labourSelection';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { LabourReadinessDto, LabourActivityForecastDto, WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto, LabourWorkFactDto, LabourRequisitionDto } from '@vitan/shared';
 
@@ -715,6 +715,45 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
       [alloc({ id: 'AL-P', workerId: 'W-P', capacityCommitmentId: 'CC-3' })],
       [], spec, '2026-08-01', { 'CC-3': 1 },
     )).toBeNull();
+  });
+
+  it('CODEX R7 — pendingBookedWorkerIds reserves a worker with an allocate op still in flight for the (date, shift)', () => {
+    const reqs = [
+      { requirementId: 'REQ-DAY', labourSpec: { shift: 'day' } },
+      { requirementId: 'REQ-NIGHT', labourSpec: { shift: 'night' } },
+    ];
+    const ops = [
+      { requirementId: 'REQ-DAY', civilDate: '2026-08-01', workerId: 'W-1' },
+      { requirementId: 'REQ-NIGHT', civilDate: '2026-08-01', workerId: 'W-2' },
+      { requirementId: 'REQ-GONE', civilDate: '2026-08-01', workerId: 'W-3' }, // requirement no longer in view
+      { requirementId: 'REQ-DAY', civilDate: '2026-08-02', workerId: 'W-4' },
+      { requirementId: 'REQ-DAY', civilDate: '2026-08-01' }, // crew op — no workerId
+    ];
+    const day = pendingBookedWorkerIds(ops, reqs, '2026-08-01', 'day');
+    expect(day.has('W-1')).toBe(true);   // pending for THIS (date, shift) — a second slice would 409
+    expect(day.has('W-2')).toBe(false);  // the night op does not book the day shift
+    expect(day.has('W-3')).toBe(true);   // unknown requirement → CONSERVATIVE booking
+    expect(day.has('W-4')).toBe(false);  // another date never books
+    expect(pendingBookedWorkerIds(ops, reqs, '2026-08-01', 'night').has('W-2')).toBe(true);
+  });
+
+  it('CODEX R7 — hasPendingWorkFor covers the allocation AND its worker-shift siblings; isWorkPendingForAllocation matches ANY minutes', () => {
+    const rows = [
+      alloc({ id: 'AL-1', workerId: 'W-1' }),
+      alloc({ id: 'AL-2', workerId: 'W-1' }), // SAME worker/date/shift — the cumulative frame
+      alloc({ id: 'AL-3', workerId: 'W-2' }),
+    ];
+    // direct hit
+    expect(hasPendingWorkFor(new Set(['AL-1']), rows, rows[0]!)).toBe(true);
+    // a pending op on the SIBLING allocation of the same (worker, date, shift) also disables
+    expect(hasPendingWorkFor(new Set(['AL-1']), rows, rows[1]!)).toBe(true);
+    // a different worker's pending op never disables
+    expect(hasPendingWorkFor(new Set(['AL-1']), rows, rows[2]!)).toBe(false);
+    expect(hasPendingWorkFor(new Set(), rows, rows[0]!)).toBe(false);
+    // the key matcher is minutes-agnostic: editing the input must not re-enable the button
+    expect(isWorkPendingForAllocation(workCoalesceKey('AL-1', 480), 'AL-1')).toBe(true);
+    expect(isWorkPendingForAllocation(workCoalesceKey('AL-1', 240), 'AL-1')).toBe(true);
+    expect(isWorkPendingForAllocation(workCoalesceKey('AL-2', 480), 'AL-1')).toBe(false);
   });
 
   it('CODEX R6 — musteredWorkerIds excludes only the SELECTED shift\'s active musters', () => {

@@ -195,6 +195,48 @@ export function sourcedCountFor(
   return sourced.size;
 }
 
+/** Codex round 7 — workers with an allocate op still IN FLIGHT for a `(civilDate, shift)`:
+ *  the committed `bookedWorkerIds` cannot see them, so the same worker stayed offerable for a
+ *  SECOND same-date/shift slice (a different requirement → a different coalesce key → both
+ *  queue; on flush the first creates the live booking and the second is the server's
+ *  one-live-allocation 409, dropped — leaving that slice unallocated despite the UI offering
+ *  it). The op carries no shift (the server derives it from the requirement head), so it is
+ *  resolved through the op's requirement in the CURRENT view; an op whose requirement is no
+ *  longer in view books the worker CONSERVATIVELY (hiding a worker for one render beats
+ *  offering a doomed action). */
+export function pendingBookedWorkerIds(
+  pendingAllocations: ReadonlyArray<{ requirementId: string; civilDate: string; workerId?: string }>,
+  requirements: ReadonlyArray<{ requirementId: string; labourSpec: { shift: string } | null }>,
+  civilDate: string,
+  shift: string,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const op of pendingAllocations) {
+    if (!op.workerId || op.civilDate !== civilDate) continue;
+    const opShift = requirements.find((r) => r.requirementId === op.requirementId)?.labourSpec?.shift;
+    if (opShift === undefined || opShift === shift) ids.add(op.workerId);
+  }
+  return ids;
+}
+
+/** Codex round 7 — whether ANY work op still in flight targets this allocation row OR another
+ *  allocation of the same `(workerId, civilDate, shift)` (the server's cumulative frame). The
+ *  work coalesce key carries the MINUTES, so editing the input while a record is pending would
+ *  otherwise re-enable the button and queue a SECOND distinct command — two facts (or a
+ *  cumulative-cap 409) for a user trying to correct the pending entry. */
+export function hasPendingWorkFor(
+  pendingWorkAllocationIds: ReadonlySet<string>,
+  allocations: readonly WorkerAllocationDto[],
+  row: Pick<WorkerAllocationDto, 'id' | 'workerId' | 'civilDate' | 'shift'>,
+): boolean {
+  if (pendingWorkAllocationIds.has(row.id)) return true;
+  for (const id of pendingWorkAllocationIds) {
+    const other = allocations.find((a) => a.id === id);
+    if (other && other.workerId === row.workerId && other.civilDate === row.civilDate && other.shift === row.shift) return true;
+  }
+  return false;
+}
+
 /** Codex round 6 — workers already carrying an ACTIVE muster for a shift (the `labour.presence`
  *  read returns non-revoked musters only). The manual-muster picker must not offer them again:
  *  a second muster for the same (worker, civil day, shift) is the server's deterministic 409

@@ -7,7 +7,7 @@ import type { LabourForecastVerdict, WorkerDto } from '@vitan/shared';
 import { decAdd } from '@/lib/decimal';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, SHIFT_MINUTES } from '@/lib/labourSelection';
+import { compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, SHIFT_MINUTES, pendingBookedWorkerIds, hasPendingWorkFor } from '@/lib/labourSelection';
 import styles from './responsive.module.css';
 
 /**
@@ -93,6 +93,11 @@ export function LabourScreen() {
       pendingDraws[op.input.capacityCommitmentId] = (pendingDraws[op.input.capacityCommitmentId] ?? 0) + 1;
     }
   }
+  // Codex round 7 — the queued allocate ops also RESERVE their worker for the (date, shift)
+  // (`pendingBookedWorkerIds`), and the queued work ops disable further entry for their
+  // allocation/worker-shift (`hasPendingWorkFor`) — both folded from the durable outbox.
+  const pendingAllocInputs = outbox.flatMap((op) => (op.t === 'allocateLabour' ? [op.input] : []));
+  const pendingWorkIds = new Set(outbox.flatMap((op) => (op.t === 'recordLabourWork' ? [op.input.allocationId] : [])));
   const forecastEntries = labour ? Object.entries(labour.readiness.forecast) : [];
   const readyCount = forecastEntries.filter(([, f]) => f.verdict === 'ready').length;
   const atRiskCount = forecastEntries.filter(([, f]) => f.verdict === 'at-risk').length;
@@ -273,7 +278,11 @@ export function LabourScreen() {
                         // civil date (the server 400s outside the window) AND not already booked on
                         // that (civilDate, shift) anywhere (§C one-live-allocation → a certain 409).
                         const booked = bookedWorkerIds(labour.capacity.allocations, labour.capacity.workFacts, sl.civilDate, sl.shift);
-                        const offerable = workers.filter((w: WorkerDto) => compat.has(w.id) && workerActiveOn(w, sl.civilDate) && !booked.has(w.id));
+                        // Codex round 7 — a worker with an allocate op still IN FLIGHT for this
+                        // (date, shift) is already spoken for: offering them for a second slice
+                        // queues a command the server's one-live-allocation guard will 409.
+                        const pendingBooked = pendingBookedWorkerIds(pendingAllocInputs, labourReqs, sl.civilDate, sl.shift);
+                        const offerable = workers.filter((w: WorkerDto) => compat.has(w.id) && workerActiveOn(w, sl.civilDate) && !booked.has(w.id) && !pendingBooked.has(w.id));
                         const chosenRaw = allocWorker[sliceKey] ?? '';
                         const chosen = offerable.some((w) => w.id === chosenRaw) ? chosenRaw : ''; // a stale pick never survives an eligibility change
                         const aKey = chosen ? allocateCoalesceKey(r.activityId, r.requirementId, r.revision, sl.civilDate, chosen) : '';
@@ -330,6 +339,11 @@ export function LabourScreen() {
                   const minutesNum = minutes.trim() === '' ? Number.NaN : Number(minutes);
                   const valid = Number.isInteger(minutesNum) && minutesNum >= 1 && minutesNum <= remaining;
                   const wKey = valid ? workCoalesceKey(a.id, minutesNum) : '';
+                  // Codex round 7 — the coalesce key carries the MINUTES, so editing the input
+                  // while a record is pending would re-enable the button and queue a SECOND
+                  // distinct command; the row stays disabled while ANY work op for this
+                  // allocation/worker-shift is in flight.
+                  const workPending = hasPendingWorkFor(pendingWorkIds, labour.capacity.allocations, a);
                   // Codex round 3 — no ACTUAL work before the shift's civil day: a future-dated
                   // booking must not mint delivered-work evidence (productivity + Team coverage
                   // would read a shift as worked before it occurs).
@@ -343,10 +357,10 @@ export function LabourScreen() {
                       <div style={{ ...muted, marginTop: 4 }}>{a.civilDate} · {a.shift}{a.capacityCommitmentId ? ' · supplier capacity' : ' · own workforce'}</div>
                       {a.status === 'active' && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                          <input type="number" min={1} max={remaining} value={minutes} disabled={future || remaining <= 0} data-testid={`labour-work-minutes-${a.id}`} onChange={(e) => setWorkMinutes((m) => ({ ...m, [a.id]: e.target.value }))} style={{ ...selectStyle, width: 76 }} />
+                          <input type="number" min={1} max={remaining} value={minutes} disabled={future || remaining <= 0 || workPending} data-testid={`labour-work-minutes-${a.id}`} onChange={(e) => setWorkMinutes((m) => ({ ...m, [a.id]: e.target.value }))} style={{ ...selectStyle, width: 76 }} />
                           <span style={muted}>min{remaining < SHIFT_MINUTES ? ` · ${remaining} left this shift` : ''}</span>
-                          <Button variant="outline" disabled={future || remaining <= 0 || !valid || pending(wKey)} data-testid={`labour-do-work-${a.id}`} onClick={() => !future && remaining > 0 && valid && recordWorkedMinutes(a.id, minutesNum)} style={{ fontSize: 11.5, flex: 'none' }}>
-                            {future ? 'Future shift' : remaining <= 0 ? 'Shift full' : valid && pending(wKey) ? 'Recording…' : 'Record work'}
+                          <Button variant="outline" disabled={future || remaining <= 0 || workPending || !valid || pending(wKey)} data-testid={`labour-do-work-${a.id}`} onClick={() => !future && remaining > 0 && !workPending && valid && recordWorkedMinutes(a.id, minutesNum)} style={{ fontSize: 11.5, flex: 'none' }}>
+                            {future ? 'Future shift' : remaining <= 0 ? 'Shift full' : workPending ? 'Recording…' : 'Record work'}
                           </Button>
                         </div>
                       )}

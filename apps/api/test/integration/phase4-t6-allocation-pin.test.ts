@@ -100,6 +100,24 @@ describe('Phase 4 Task 6 round 3 — allocation pinned to the selected requireme
     expect(unpinned.allocations[0]!.originRevision).toBe(revision);
   });
 
+  it('CODEX R7-1 — effort against a RELEASED allocation is a deterministic 409 that records NOTHING (the stale queued replay cannot undo a no-work release)', async () => {
+    const { projectId, activityId, requirementId, revision, workers } = await fixture();
+    const a = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: workers[0], originRevision: revision }, pmc(projectId));
+    const allocationId = a.allocations[0]!.id;
+    // the pmc releases the worker WITHOUT any work — §C frees the worker and the slice's coverage
+    await capacity.release(projectId, allocationId, { reason: 'reassigned' }, pmc(projectId));
+    // the browser's queued work op now flushes — accepting it would mint delivered-effort
+    // evidence (coverage + productivity) that the release was meant to remove
+    await expect(
+      capacity.recordWork(projectId, { allocationId, workedMinutes: 480 }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await t.prisma.labourWorkFact.count({ where: { projectId } })).toBe(0);
+    // control — the refusal is the RELEASED state, not the command: an ACTIVE allocation records
+    const b = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: workers[1], originRevision: revision }, pmc(projectId));
+    const fact = await capacity.recordWork(projectId, { allocationId: b.allocations[0]!.id, workedMinutes: 480 }, pmc(projectId));
+    expect(fact.workedMinutes).toBe(480);
+  });
+
   it('a STALE originRevision — the offline replay landing after a revision — is a deterministic 409 that allocates NOTHING', async () => {
     const { projectId, activityId, requirementId, revision, workers } = await fixture();
     // the head moves: the demand becomes CARPENTER (same activity, same civil date, same qty), so a
