@@ -15,9 +15,13 @@
 export const allocateCoalesceKey = (
   activityId: string,
   requirementId: string,
+  // Codex round 4 — the coalesce identity carries the SELECTED head revision: a stale rev-N op
+  // still queued offline must not swallow a legitimate rev-N+1 action for the same worker/slice
+  // (the stale op replays, 409s on head drift and is dropped; the new op must still be queued).
+  originRevision: number,
   civilDate: string,
   subject: string, // workerId or crew:<crewId> — one live allocation per worker/slice either way
-): string => `lab:alloc:${activityId}:${requirementId}:${civilDate}:${subject}`;
+): string => `lab:alloc:${activityId}:${requirementId}@${originRevision}:${civilDate}:${subject}`;
 
 export const musterCoalesceKey = (workerId: string, civilDate: string, shift: string): string =>
   `lab:must:${workerId}:${civilDate}:${shift}`;

@@ -439,7 +439,7 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
 
   it('hydrateOutbox rebuilds labourPending from persisted two-key labour ops and keeps them coalesced', async () => {
     globalThis.localStorage.clear();
-    const ck = allocateCoalesceKey('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1');
+    const ck = allocateCoalesceKey('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
     globalThis.localStorage.setItem(OUTBOX_KEY, JSON.stringify([
       { t: 'allocateLabour', input: { activityId: 'ACT-1', requirementId: 'REQ-1', civilDate: '2026-08-01', workerId: 'WKR-1' }, idempotencyKey: 'idem-1', coalesceKey: ck },
     ]));
@@ -729,6 +729,91 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
       ], { id: 'LRQ-B' }),
     ];
     expect(unrequisitionedLines('REQ-1', 1, slices, full)).toEqual([]);
+  });
+
+  it('CODEX R4 — a REJECTED or CLOSED requisition\'s lines do NOT hold the residual (the server\'s bound-1 parent-status rule)', () => {
+    // Verified against labour-procurement.service.ts: the bound-1 count filters
+    // `requisition.status NOT IN ('rejected','closed')` — a rejected requisition's lines can stay
+    // `open` in the DTO, but its demand is re-sourceable, so the raise button must come back.
+    const slices = [{ civilDate: '2026-08-01', personShiftQty: 3 }];
+    const line = { requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 3 };
+    for (const status of ['rejected', 'closed']) {
+      expect(unrequisitionedLines('REQ-1', 1, slices, [requisition([line], { status })])).toEqual([
+        { requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 3 },
+      ]);
+    }
+    // live parents (draft / submitted / approved) still hold the ceiling
+    for (const status of ['draft', 'submitted', 'approved']) {
+      expect(unrequisitionedLines('REQ-1', 1, slices, [requisition([line], { status })])).toEqual([]);
+    }
+    // mixed: a rejected full-slice requisition + a live 1-person one → residual 2
+    expect(unrequisitionedLines('REQ-1', 1, slices, [
+      requisition([line], { id: 'LRQ-DEAD', status: 'rejected' }),
+      requisition([{ ...line, personShiftQty: 1 }], { id: 'LRQ-LIVE', status: 'submitted' }),
+    ])).toEqual([{ requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 2 }]);
+  });
+
+  it('CODEX R4 — a commitment whose latest arrival promise is AFTER the slice date is never offered (the forecast\'s eligibility rule)', () => {
+    // Verified against labour-coverage.service.ts: supply is eligible only while
+    // `latestPromise <= civilDate` (falling back to the commitment's own civil date when no
+    // promise exists) — drawing late capacity would let a blocked activity read as sourced.
+    const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
+    const promise = (promisedDate: string) => ({ seq: 1, promisedDate, reason: null, recordedAt: '2026-07-01T00:00:00Z', recordedById: 'u' });
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', latestPromise: promise('2026-08-02') })], [], [], spec, '2026-08-01')).toBeNull();
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', latestPromise: promise('2026-08-01') })], [], [], spec, '2026-08-01')).toBe('CC-A');
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', latestPromise: promise('2026-07-30') })], [], [], spec, '2026-08-01')).toBe('CC-A');
+    // no promise recorded → the commitment's own civil date is the arrival bound (still eligible)
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', latestPromise: null })], [], [], spec, '2026-08-01')).toBe('CC-A');
+    // an on-time sibling is picked over the late one
+    expect(pickCommitmentFor(
+      [commitment({ id: 'CC-A', latestPromise: promise('2026-08-02') }), commitment({ id: 'CC-B', latestPromise: promise('2026-08-01') })],
+      [], [], spec, '2026-08-01',
+    )).toBe('CC-B');
+  });
+
+  it('CODEX R4 — the allocate coalesce identity carries the SELECTED revision (a stale queued op never swallows a post-revision action)', async () => {
+    expect(allocateCoalesceKey('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1')).not.toBe(allocateCoalesceKey('ACT-1', 'REQ-1', 2, '2026-08-01', 'WKR-1'));
+    // store lifecycle: a rev-1 op held in flight does NOT coalesce away the rev-2 action…
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; st.activeProjectId = 'ambli'; st.capabilities = ['labour']; });
+    let release: () => void = () => {};
+    const held = new Promise<unknown>((res) => { release = () => res({}); }); // held until the probe ends
+    const g = {
+      allocateLabour: vi.fn().mockReturnValue(held),
+      snapshot: vi.fn().mockResolvedValue({
+        project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+        decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+        drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+      }),
+      // the unwind's reconcile is scope-guarded, but loadLabour still needs callable reads
+      labourReadiness: vi.fn().mockResolvedValue(readiness({})),
+      materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
+      labourWorkforce: vi.fn().mockResolvedValue({ workers: [], crews: [] }),
+      labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
+      labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
+      labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
+      labourCommitments: vi.fn().mockResolvedValue({ commitments: [] }),
+      labourCapacity: vi.fn().mockResolvedValue({ allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] }),
+      labourPresence: vi.fn().mockResolvedValue({ civilDate: '2026-07-28', musters: [], mismatches: [] }),
+      labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
+    };
+    s()._setGateway(g as unknown as ApiGateway);
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
+    s().allocateWorker('ACT-1', 'REQ-1', 2, '2026-08-01', 'WKR-1'); // the head moved — a NEW command
+    await flush();
+    expect(s().outbox).toHaveLength(2);
+    const keys = s().outbox.map((o) => ('coalesceKey' in o ? o.coalesceKey : undefined));
+    expect(new Set(keys).size).toBe(2);
+    // …while a SAME-revision duplicate still coalesces
+    s().allocateWorker('ACT-1', 'REQ-1', 2, '2026-08-01', 'WKR-1');
+    await flush();
+    expect(s().outbox).toHaveLength(2);
+    // unwind the held flusher OUT OF SCOPE (the PROBE-7 pattern) so it cannot starve later tests
+    useStore.setState((st) => { st.projectScopeGeneration = 2; st.toast = null; st.labourPending = []; });
+    release();
+    await flush();
+    await flush();
   });
 
   it('allocateWorker FORWARDS the commitment id so the server\'s drawdown actually runs (omits it for own workforce)', async () => {

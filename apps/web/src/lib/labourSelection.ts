@@ -118,6 +118,10 @@ export function pickCommitmentFor(
         c.civilDate === civilDate &&
         c.shift === spec.shift &&
         c.status === 'committed' &&
+        // Codex round 4 — a LATE promise never covers (`labour-coverage.service.ts` eligibility:
+        // `latestPromise <= civilDate`, own civil date when no promise exists): drawing capacity
+        // whose supplier arrives AFTER the slice would let a blocked activity read as sourced.
+        (c.latestPromise?.promisedDate ?? c.civilDate) <= civilDate &&
         c.personShiftQty - (draws.get(c.id) ?? 0) > 0,
     )
     .sort((a, b) => (a.id < b.id ? -1 : 1)); // deterministic pick
@@ -194,6 +198,11 @@ export function unrequisitionedLines(
 ): Array<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number }> {
   const already = new Map<string, number>();
   for (const rq of requisitions) {
+    // Codex round 4 — the server's bound-1 count EXCLUDES lines whose parent requisition is
+    // rejected or closed (`requisition.status NOT IN ('rejected','closed')`): a rejected
+    // requisition's lines can stay `open` in the DTO, but its demand is re-sourceable and the
+    // raise button must come back for it.
+    if (rq.status === 'rejected' || rq.status === 'closed') continue;
     for (const l of rq.lines) {
       if (l.requirementId !== requirementId || l.revision !== revision) continue;
       if (l.status !== 'open' && l.status !== 'ordered') continue;

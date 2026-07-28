@@ -452,3 +452,57 @@ allocation disabled/`Future shift`, today's enabled.
   **35/35**; `:outbox` **35/35** CLEAN first run. The **labour-pilot suite passed 4/4 in BOTH
   modes** — including the browser allocate (now revision-pinned), the residual-only
   requisition raise, and the roster onboarding this round changed.
+
+## 8. Codex correction round 4 (the four current-head findings on `c1f4c40`)
+
+Codex reviewed head `c1f4c40` (after the gate's double-timeout + the documented recovery
+dispatch) and returned four P2 findings, all in the round-3 additions. Each reproduced RED
+first (source stashed at `c1f4c40`: the four probes + two signature-updated probes failed),
+then fixed — both server-rule mirrors verified against the cited service code before coding:
+
+### R4-1 — a REJECTED/CLOSED requisition no longer holds the residual
+
+`unrequisitionedLines` counted every `open`/`ordered` line, but the server's §F bound-1 count
+filters `requisition.status NOT IN ('rejected','closed')`
+(`labour-procurement.service.ts:258-262`) — a rejected requisition's lines stay `open` in the
+DTO while its demand is re-sourceable, so the helper computed zero residual and the raise
+button never came back. The helper now skips dead parents. Probes: rejected/closed release the
+full residual; draft/submitted/approved still hold it; mixed dead+live sums correctly.
+
+### R4-2 — a LATE arrival promise is never offered for drawdown
+
+`pickCommitmentFor` admitted any committed same-slice commitment, but forecast eligibility
+requires `latestPromise <= civilDate` (own civil date when no promise exists —
+`labour-coverage.service.ts:292-304`): drawing capacity whose supplier arrives after the slice
+would let a blocked activity read as sourced. The picker now applies the same bound. Probes:
+promise after the slice → null; on/before → offered; no promise → own-date fallback offered;
+an on-time sibling beats the late one.
+
+### R4-3 — Record work parses the FULL numeric string
+
+`Number.parseInt` truncated `'1e2'`→1 and `'7.5'`→7 with `valid` still true, so an intended
+100 minutes could be recorded as 1 — a corrupted `LabourWorkFact` feeding §I productivity.
+The input now parses with `Number` over the whole string (empty → invalid): `'7.5'` disables
+the action, `'1e2'` records the real 100. Rendered probe covers all three shapes.
+
+### R4-4 — the allocate coalesce identity carries the SELECTED revision
+
+`allocateCoalesceKey` omitted the revision, so a stale rev-N op queued offline swallowed a
+legitimate rev-N+1 action for the same worker/slice (the stale op replays, 409s on head drift
+and drops — leaving NOTHING queued for the new head). The key now includes `originRevision`
+(store + hub pass it; persisted ops keep their stored keys byte-for-byte — the normalizer never
+recomputes, so hydration is unchanged). Probes: rev-1 vs rev-2 keys differ; with a rev-1 op
+held in flight the rev-2 action queues as a SECOND op with a distinct key; a same-revision
+duplicate still coalesces.
+
+### Round-4 gate battery (this head)
+
+- Reproduce-first: the four R4 probes + two signature-updated probes **RED** with the pre-fix
+  source stashed at `c1f4c40` → all GREEN on this head (focused labour suites 65/65).
+- `pnpm check` EXIT 0 — web **502/502** (498 + the round-4 probes), API unit 680/680.
+- Full integration on a pristine migrated DB — **72 files / 695 tests** (API untouched this
+  round; web-only changes).
+- `upgrade-proof.sh` PASSED (no migration; regression only).
+- e2e: `test:e2e:api:allmodules` (legacy) **35/35** CLEAN first run; `:outbox` **35/35** CLEAN
+  first run — the **labour-pilot suite 4/4 in BOTH modes**, exercising the revision-keyed
+  allocate and the residual requisition raise this round touched.

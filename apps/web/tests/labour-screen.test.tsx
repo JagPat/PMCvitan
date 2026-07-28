@@ -298,6 +298,30 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     expect(r2.queryByTestId('labour-raise-req-REQ-1')).toBeNull();
   });
 
+  it('R4-3: Record work parses the FULL numeric string — a fractional entry is invalid, scientific notation records the real value', async () => {
+    const today = todayCivil(null);
+    await primeLabour({
+      capacity: { allocations: [alloc({ id: 'AL-NOW', civilDate: today })], attendance: [], workFacts: [], skillSubstitutions: [] },
+    });
+    const spy = vi.fn();
+    useStore.setState({ role: 'pmc', recordWorkedMinutes: spy });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const input = r.getByTestId('labour-work-minutes-AL-NOW');
+    const btn = () => r.getByTestId('labour-do-work-AL-NOW') as HTMLButtonElement;
+    // '7.5' — parseInt would truncate to 7 and submit a wrong fact; the full parse rejects it
+    fireEvent.change(input, { target: { value: '7.5' } });
+    expect(btn().disabled).toBe(true);
+    // '1e2' — parseInt would record 1 minute; the full parse records the intended 100
+    fireEvent.change(input, { target: { value: '1e2' } });
+    expect(btn().disabled).toBe(false);
+    fireEvent.click(btn());
+    expect(spy).toHaveBeenCalledWith('AL-NOW', 100);
+    // an emptied field is invalid, never a NaN submit
+    fireEvent.change(input, { target: { value: '' } });
+    expect(btn().disabled).toBe(true);
+  });
+
   it('R3-5: Team onboarding stamps activeFrom with the PROJECT civil day, not the browser/UTC date', async () => {
     await primeLabour({ catalog: { trades: [{ code: 'mason', name: 'Mason' }], skills: [] } });
     const spy = vi.fn();

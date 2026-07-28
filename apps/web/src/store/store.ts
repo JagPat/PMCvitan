@@ -2519,7 +2519,7 @@ export const useStore = create<Store>()(
       // an offline-queued replay landing after a requirement revision is a terminal 409 the flush
       // reconciles, never a silent allocation onto a different trade/skill/shift demand.
       dispatchLabour(
-        { t: 'allocateLabour', input: { activityId, requirementId, originRevision, civilDate, workerId, ...(capacityCommitmentId ? { capacityCommitmentId } : {}) }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, civilDate, workerId) },
+        { t: 'allocateLabour', input: { activityId, requirementId, originRevision, civilDate, workerId, ...(capacityCommitmentId ? { capacityCommitmentId } : {}) }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, originRevision, civilDate, workerId) },
         'Allocate the worker to the activity',
         'Worker allocated to the activity.',
       );

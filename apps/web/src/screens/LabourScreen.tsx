@@ -265,7 +265,7 @@ export function LabourScreen() {
                         const offerable = workers.filter((w: WorkerDto) => compat.has(w.id) && workerActiveOn(w, sl.civilDate) && !booked.has(w.id));
                         const chosenRaw = allocWorker[sliceKey] ?? '';
                         const chosen = offerable.some((w) => w.id === chosenRaw) ? chosenRaw : ''; // a stale pick never survives an eligibility change
-                        const aKey = chosen ? allocateCoalesceKey(r.activityId, r.requirementId, sl.civilDate, chosen) : '';
+                        const aKey = chosen ? allocateCoalesceKey(r.activityId, r.requirementId, r.revision, sl.civilDate, chosen) : '';
                         // Codex F6 — count only allocations the server's coverage would count: ACTIVE,
                         // bound to the requirement's CURRENT activity AND a currently-satisfying
                         // fingerprint (a row stranded by a revision is not "allocated").
@@ -300,7 +300,10 @@ export function LabourScreen() {
                 )}
                 {labour.capacity.allocations.map((a) => {
                   const minutes = workMinutes[a.id] ?? '480';
-                  const minutesNum = Number.parseInt(minutes, 10);
+                  // Codex round 4 — parse the FULL numeric string: `parseInt` silently truncates
+                  // '1e2'→1 and '7.5'→7, so an intended 100 minutes could be recorded as 1.
+                  // `Number` evaluates the whole value; a fractional entry is simply invalid.
+                  const minutesNum = minutes.trim() === '' ? Number.NaN : Number(minutes);
                   const valid = Number.isInteger(minutesNum) && minutesNum >= 1 && minutesNum <= 720;
                   const wKey = valid ? workCoalesceKey(a.id, minutesNum) : '';
                   // Codex round 3 — no ACTUAL work before the shift's civil day: a future-dated
