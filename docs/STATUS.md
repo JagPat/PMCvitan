@@ -16,7 +16,7 @@ task: 4
 task_state: in_review
 work_item: phase-4-task-4-labour-readiness
 reviewed_merge: 33d37a3
-open_pr: TBD
+open_pr: 242
 next_task: 5
 blocking_directive: none
 updated: 2026-07-28
