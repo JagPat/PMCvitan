@@ -5,6 +5,7 @@ import { Eyebrow, Button, Modal } from '@/components';
 import { Plus, X, Trash2, Pencil } from '@/lib/icons';
 import { CONSULTANT_DISCIPLINES, type OrgRole, type Role, type CompanyKind, type ProjectCompany } from '@vitan/shared';
 import type { AddMemberInput, NewProjectInput, CompanyInput } from '@/data/apiGateway';
+import { todayCivil } from '@/lib/civilDate';
 import styles from './responsive.module.css';
 
 const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor', 'consultant'];
@@ -456,6 +457,7 @@ function CompaniesSection({ canManage }: { canManage: boolean }) {
  */
 function LabourRosterSection({ canManage }: { canManage: boolean }) {
   const labour = useStore(useShallow((s) => s.labourView));
+  const timeZone = useStore((s) => s.timeZone);
   const onboardLabourWorker = useStore((s) => s.onboardLabourWorker);
   const bindLabourDevice = useStore((s) => s.bindLabourDevice);
   const [name, setName] = useState('');
@@ -468,7 +470,10 @@ function LabourRosterSection({ canManage }: { canManage: boolean }) {
   const crews = labour.workforce.crews;
   const trades = labour.catalog.trades;
   const skills = labour.catalog.skills;
-  const today = new Date().toISOString().slice(0, 10);
+  // Codex round 3 — `activeFrom` is stamped with the PROJECT's civil day, not the browser/UTC
+  // date: a site ahead of the viewer would otherwise mint a worker active only from TOMORROW,
+  // failing today's allocation/attendance active-window checks right after onboarding.
+  const today = todayCivil(timeZone);
   const ready = name.trim().length > 0 && tradeCode !== '';
   const submit = () => {
     if (!ready) return;

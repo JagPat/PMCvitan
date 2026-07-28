@@ -6,9 +6,9 @@ import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { LabourView } from '@/store/labour';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds } from '@/lib/labourSelection';
+import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines } from '@/lib/labourSelection';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
-import type { LabourReadinessDto, LabourActivityForecastDto, WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto } from '@vitan/shared';
+import type { LabourReadinessDto, LabourActivityForecastDto, WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto, LabourWorkFactDto, LabourRequisitionDto } from '@vitan/shared';
 
 /**
  * Phase 4 Task 6 (§J) — the pilot LABOUR frontend: the capability-gated nav entry, the
@@ -47,6 +47,17 @@ const commitment = (over: Partial<CapacityCommitmentDto> = {}): CapacityCommitme
 const substitution = (over: Partial<ApprovedSkillSubstitutionDto> = {}): ApprovedSkillSubstitutionDto => ({
   id: 'SUB-1', requirementId: 'REQ-1', fromFingerprint: 'from', toFingerprint: 'to', reason: 'r',
   approvedById: 'u', at: '2026-07-01T00:00:00Z', revokedAt: null, revokedById: null, revokeReason: null, ...over,
+});
+
+const workFact = (over: Partial<LabourWorkFactDto> = {}): LabourWorkFactDto => ({
+  id: 'WF-1', workerId: 'W-1', allocationId: 'AL-1', activityId: 'ACT-1', civilDate: '2026-08-01',
+  shift: 'day', workedMinutes: 480, note: null, recordedAt: '2026-08-01T12:00:00Z', recordedById: 'u', ...over,
+});
+
+const requisition = (lines: Array<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number; status?: string }>, over: Partial<LabourRequisitionDto> = {}): LabourRequisitionDto => ({
+  id: 'LRQ-1', title: 'Source masons', notes: null, status: 'submitted', createdAt: '2026-07-01T00:00:00Z', createdById: 'u',
+  lines: lines.map((l, i) => ({ id: `LRQL-${i}`, requirementId: l.requirementId, revision: l.revision, civilDate: l.civilDate, shift: 'day', labourSpecFingerprint: 'fp', personShiftQty: l.personShiftQty, status: l.status ?? 'open' })),
+  ...over,
 });
 
 const bundle = (r: LabourReadinessDto, over: Partial<LabourView> = {}): LabourView => ({
@@ -289,14 +300,16 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     ...over,
   });
 
-  it('allocateWorker passes the EXACT (activity, requirement, date, worker), reconciles, and clears pending', async () => {
+  it('allocateWorker passes the EXACT (activity, requirement, revision, date, worker), reconciles, and clears pending', async () => {
     const g = gw();
     s()._setGateway(g as unknown as ApiGateway);
-    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1');
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
     await settles(() => g.allocateLabour.mock.calls.length === 1);
     await flush();
     const [input, key] = g.allocateLabour.mock.calls[0]!;
-    expect(input).toEqual({ activityId: 'ACT-1', requirementId: 'REQ-1', civilDate: '2026-08-01', workerId: 'WKR-1' });
+    // Codex R3 (P1) — the command PINS the head revision the worker was chosen against, so an
+    // offline replay landing after a requirement revision is a server 409, never silent coverage.
+    expect(input).toEqual({ activityId: 'ACT-1', requirementId: 'REQ-1', originRevision: 1, civilDate: '2026-08-01', workerId: 'WKR-1' });
     expect(typeof key).toBe('string');
     expect(g.labourReadiness).toHaveBeenCalled(); // labour truth reconciled after the flush
     expect(s().labourPending).toHaveLength(0);    // the coalesce key cleared once resolved
@@ -344,8 +357,8 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
   it('PROBE 5a: a double-click of the same allocation dispatches exactly ONE command', async () => {
     const g = gw();
     s()._setGateway(g as unknown as ApiGateway);
-    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1');
-    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1'); // the duplicate coalesces
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1'); // the duplicate coalesces
     await settles(() => g.allocateLabour.mock.calls.length >= 1);
     await flush();
     expect(g.allocateLabour).toHaveBeenCalledTimes(1);
@@ -354,7 +367,7 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
   it('PROBE 5b: a lost (transient) response replays the SAME idempotency key on the next flush', async () => {
     const g = gw({ allocateLabour: vi.fn().mockRejectedValueOnce(new TypeError('network aborted')).mockResolvedValue({}) });
     s()._setGateway(g as unknown as ApiGateway);
-    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1');
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
     await settles(() => g.allocateLabour.mock.calls.length === 1); // first attempt aborts (op kept)
     await s().flushOutbox();                                       // the retry (reconnect / reload)
     await settles(() => g.allocateLabour.mock.calls.length === 2);
@@ -367,7 +380,7 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     const rejected = Object.assign(new Error('/labour/allocations 409'), { status: 409 });
     const g = gw({ allocateLabour: vi.fn().mockRejectedValue(rejected) });
     s()._setGateway(g as unknown as ApiGateway);
-    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1');
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
     await settles(() => g.allocateLabour.mock.calls.length === 1);
     await flush();
     expect(s().outbox).toHaveLength(0);           // dropped — no hidden committed state
@@ -380,7 +393,7 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     const held = new Promise<unknown>((res) => { release = () => res({}); });
     const g = gw({ allocateLabour: vi.fn().mockReturnValue(held) });
     s()._setGateway(g as unknown as ApiGateway);
-    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1'); // command in flight
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1'); // command in flight
     await settles(() => g.allocateLabour.mock.calls.length === 1);
     useStore.setState((st) => { st.projectScopeGeneration = 2; st.toast = null; st.labourPending = []; });
     const readsBefore = g.labourReadiness.mock.calls.length;
@@ -395,13 +408,13 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
   it('DIRECTIVE #1: two legitimate identical allocations separated by a confirmed completion use DIFFERENT keys', async () => {
     const g = gw();
     s()._setGateway(g as unknown as ApiGateway);
-    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1');
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
     await settles(() => g.allocateLabour.mock.calls.length === 1);
     await flush();
     expect(s().outbox).toHaveLength(0);
     expect(s().labourPending).toHaveLength(0);
     // a SECOND legitimate identical action — e.g. re-allocating after a release
-    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1');
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
     await settles(() => g.allocateLabour.mock.calls.length === 2);
     const [, key1] = g.allocateLabour.mock.calls[0]!;
     const [, key2] = g.allocateLabour.mock.calls[1]!;
@@ -436,7 +449,7 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     expect(s().outbox).toHaveLength(1);
     expect(s().labourPending).toEqual([ck]);
     // an equivalent action while the persisted op is pending produces NO second op (coalesced)
-    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1');
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
     await flush();
     expect(s().outbox).toHaveLength(1);
     // replay retains the ORIGINAL idempotency key
@@ -595,30 +608,44 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
   it('pickCommitmentFor picks the live SAME-SLICE commitment with undrawn quantity — exact fingerprint + date + shift', () => {
     const cs = [commitment({ id: 'CC-A', civilDate: '2026-08-01' }), commitment({ id: 'CC-B', civilDate: '2026-08-02' })];
     const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
-    expect(pickCommitmentFor(cs, [], spec, '2026-08-01')).toBe('CC-A'); // its OWN slice only
-    expect(pickCommitmentFor(cs, [], spec, '2026-08-03')).toBeNull();
-    expect(pickCommitmentFor(cs, [], { labourSpecFingerprint: 'other', shift: 'day' }, '2026-08-01')).toBeNull();
-    expect(pickCommitmentFor(cs, [], { labourSpecFingerprint: 'fp', shift: 'night' }, '2026-08-01')).toBeNull();
-    expect(pickCommitmentFor([commitment({ status: 'defaulted' })], [], spec, '2026-08-01')).toBeNull(); // the source reneged
+    expect(pickCommitmentFor(cs, [], [], spec, '2026-08-01')).toBe('CC-A'); // its OWN slice only
+    expect(pickCommitmentFor(cs, [], [], spec, '2026-08-03')).toBeNull();
+    expect(pickCommitmentFor(cs, [], [], { labourSpecFingerprint: 'other', shift: 'day' }, '2026-08-01')).toBeNull();
+    expect(pickCommitmentFor(cs, [], [], { labourSpecFingerprint: 'fp', shift: 'night' }, '2026-08-01')).toBeNull();
+    expect(pickCommitmentFor([commitment({ status: 'defaulted' })], [], [], spec, '2026-08-01')).toBeNull(); // the source reneged
   });
 
-  it('CODEX R2 — a fully-drawn commitment is exhausted by ACTIVE draws only; a RELEASED draw frees it (the server\'s bound-3 rule)', () => {
-    // Verified against labour-capacity.service.ts: drawdown counts `status: 'active'` rows under
-    // the commitment FOR UPDATE — a released allocation frees the commitment for a replacement.
-    // (The delivered-stays-consumed rule is the FORECAST's coverage concern, not allocation's.)
+  it('CODEX R2+R3 — an ACTIVE draw exhausts the commitment; a NO-WORK release frees it for a replacement', () => {
+    // Verified against labour-capacity.service.ts: the allocation route's drawdown counts
+    // `status: 'active'` rows under the commitment FOR UPDATE, and the server re-advertises a
+    // no-work release as available — so ONLY a release with no recorded work frees the pick.
     const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
     const one = commitment({ id: 'CC-A', personShiftQty: 1 });
-    expect(pickCommitmentFor([one], [alloc({ capacityCommitmentId: 'CC-A' })], spec, '2026-08-01')).toBeNull();
-    expect(pickCommitmentFor([one], [alloc({ capacityCommitmentId: 'CC-A', status: 'released' })], spec, '2026-08-01')).toBe('CC-A');
+    expect(pickCommitmentFor([one], [alloc({ capacityCommitmentId: 'CC-A' })], [], spec, '2026-08-01')).toBeNull();
+    expect(pickCommitmentFor([one], [alloc({ capacityCommitmentId: 'CC-A', status: 'released' })], [], spec, '2026-08-01')).toBe('CC-A');
     // quantity 2 with 1 active draw still offers the remainder
-    expect(pickCommitmentFor([commitment({ id: 'CC-A', personShiftQty: 2 })], [alloc({ capacityCommitmentId: 'CC-A' })], spec, '2026-08-01')).toBe('CC-A');
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', personShiftQty: 2 })], [alloc({ capacityCommitmentId: 'CC-A' })], [], spec, '2026-08-01')).toBe('CC-A');
+  });
+
+  it('CODEX R3 — a WORKED release stays DRAWN (delivered capacity is spent; re-offering the id would overdraw the supplier)', () => {
+    // The forecast keeps a commitment consumed once ANY work fact was recorded under its draw —
+    // allocate → record work → release → allocate a replacement must NOT redraw the same
+    // one-person commitment, even though the allocation route alone would accept it.
+    const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
+    const one = commitment({ id: 'CC-A', personShiftQty: 1 });
+    const released = alloc({ id: 'AL-9', capacityCommitmentId: 'CC-A', status: 'released' });
+    expect(pickCommitmentFor([one], [released], [workFact({ allocationId: 'AL-9' })], spec, '2026-08-01')).toBeNull();
+    // an UNRELATED work fact does not consume this commitment
+    expect(pickCommitmentFor([one], [released], [workFact({ allocationId: 'AL-OTHER' })], spec, '2026-08-01')).toBe('CC-A');
+    // qty 2: one worked release + nothing else still offers the remaining person-shift
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', personShiftQty: 2 })], [released], [workFact({ allocationId: 'AL-9' })], spec, '2026-08-01')).toBe('CC-A');
   });
 
   it('CODEX R2 — a REVISED commitment is never offered (the server accepts only status=committed; a pick would 409 terminally)', () => {
     const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
-    expect(pickCommitmentFor([commitment({ id: 'CC-A', status: 'revised' })], [], spec, '2026-08-01')).toBeNull();
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', status: 'revised' })], [], [], spec, '2026-08-01')).toBeNull();
     // a committed sibling is still picked over the revised one
-    expect(pickCommitmentFor([commitment({ id: 'CC-A', status: 'revised' }), commitment({ id: 'CC-B' })], [], spec, '2026-08-01')).toBe('CC-B');
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', status: 'revised' }), commitment({ id: 'CC-B' })], [], [], spec, '2026-08-01')).toBe('CC-B');
   });
 
   it('CODEX R2 — workerActiveOn admits only the worker\'s active window (the server 400s outside it, a terminal drop)', () => {
@@ -645,6 +672,65 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     expect(booked.has('W-NIGHT')).toBe(false);
   });
 
+  it('CODEX R3 — sourcedCountFor mirrors the server\'s coveredSourced = |allocated ∪ worked| (distinct workers; work survives release)', () => {
+    const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
+    // a worked-then-released one-person slice is STILL sourced — the demand was delivered
+    const released = alloc({ id: 'AL-9', workerId: 'W-1', status: 'released' });
+    expect(sourcedCountFor([released], [workFact({ allocationId: 'AL-9', workerId: 'W-1' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(1);
+    // ...while active-only counting says 0 — exactly the gap the R3 finding names
+    expect(allocatedCountFor([released], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(0);
+    // DISTINCT workers: the same worker active AND worked is ONE person-shift, never two
+    const active = alloc({ id: 'AL-1', workerId: 'W-1' });
+    expect(sourcedCountFor([active], [workFact({ allocationId: 'AL-1', workerId: 'W-1' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(1);
+    // a released row with NO work fact contributes nothing
+    expect(sourcedCountFor([released], [], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(0);
+    // a row stranded on the OLD activity (or a non-satisfying fingerprint) never counts, worked or not
+    const stranded = alloc({ id: 'AL-2', workerId: 'W-2', activityId: 'ACT-OLD' });
+    expect(sourcedCountFor([stranded], [workFact({ allocationId: 'AL-2', workerId: 'W-2' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(0);
+    const wrongFp = alloc({ id: 'AL-3', workerId: 'W-3', labourSpecFingerprint: 'other' });
+    expect(sourcedCountFor([wrongFp], [workFact({ allocationId: 'AL-3', workerId: 'W-3' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(0);
+    // two DIFFERENT workers — one active, one delivered — are TWO sourced person-shifts
+    expect(sourcedCountFor(
+      [active, alloc({ id: 'AL-4', workerId: 'W-4', status: 'released' })],
+      [workFact({ id: 'WF-4', allocationId: 'AL-4', workerId: 'W-4' })],
+      'REQ-1', 'ACT-1', '2026-08-01', spec, [],
+    )).toBe(2);
+  });
+
+  it('CODEX R3 — unrequisitionedLines sends only the residual the §F bound-1 ceiling still admits', () => {
+    const slices = [{ civilDate: '2026-08-01', personShiftQty: 3 }, { civilDate: '2026-08-02', personShiftQty: 2 }];
+    // no existing requisitions → the full demand
+    expect(unrequisitionedLines('REQ-1', 1, slices, [])).toEqual([
+      { requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 3 },
+      { requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-02', personShiftQty: 2 },
+    ]);
+    // an existing OPEN 1-person line on 08-01 → residual 2 there, 08-02 untouched (the full
+    // re-send the server would 409 with `1 + 3 > 3` is never built)
+    const partial = [requisition([{ requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 1 }])];
+    expect(unrequisitionedLines('REQ-1', 1, slices, partial)).toEqual([
+      { requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 2 },
+      { requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-02', personShiftQty: 2 },
+    ]);
+    // ORDERED lines still count against the ceiling; CANCELLED lines do not (the server's rule:
+    // status IN (open, ordered)); another revision's lines never count
+    const mixed = [requisition([
+      { requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 1, status: 'ordered' },
+      { requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 1, status: 'cancelled' },
+      { requirementId: 'REQ-1', revision: 2, civilDate: '2026-08-01', personShiftQty: 9 },
+      { requirementId: 'REQ-OTHER', revision: 1, civilDate: '2026-08-01', personShiftQty: 9 },
+    ])];
+    expect(unrequisitionedLines('REQ-1', 1, slices, mixed)[0]).toEqual({ requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 2 });
+    // fully requisitioned (across TWO requisitions) → the slice disappears; all covered → []
+    const full = [
+      requisition([{ requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 2 }], { id: 'LRQ-A' }),
+      requisition([
+        { requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-01', personShiftQty: 1 },
+        { requirementId: 'REQ-1', revision: 1, civilDate: '2026-08-02', personShiftQty: 2 },
+      ], { id: 'LRQ-B' }),
+    ];
+    expect(unrequisitionedLines('REQ-1', 1, slices, full)).toEqual([]);
+  });
+
   it('allocateWorker FORWARDS the commitment id so the server\'s drawdown actually runs (omits it for own workforce)', async () => {
     useStore.setState(getInitialState());
     s()._setGateway(null);
@@ -668,13 +754,13 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
       labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
     };
     s()._setGateway(g as unknown as ApiGateway);
-    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1', 'CC-9');
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1', 'CC-9');
     await vi.waitFor(() => { if (g.allocateLabour.mock.calls.length !== 1) throw new Error('pending'); });
-    expect(g.allocateLabour.mock.calls[0]![0]).toEqual({ activityId: 'ACT-1', requirementId: 'REQ-1', civilDate: '2026-08-01', workerId: 'WKR-1', capacityCommitmentId: 'CC-9' });
-    // own-workforce: NO commitment id in the payload
-    s().allocateWorker('ACT-1', 'REQ-2', '2026-08-01', 'WKR-1', null);
+    expect(g.allocateLabour.mock.calls[0]![0]).toEqual({ activityId: 'ACT-1', requirementId: 'REQ-1', originRevision: 1, civilDate: '2026-08-01', workerId: 'WKR-1', capacityCommitmentId: 'CC-9' });
+    // own-workforce: NO commitment id in the payload — the revision pin is ALWAYS present (R3)
+    s().allocateWorker('ACT-1', 'REQ-2', 2, '2026-08-01', 'WKR-1', null);
     await vi.waitFor(() => { if (g.allocateLabour.mock.calls.length !== 2) throw new Error('pending'); });
-    expect(g.allocateLabour.mock.calls[1]![0]).toEqual({ activityId: 'ACT-1', requirementId: 'REQ-2', civilDate: '2026-08-01', workerId: 'WKR-1' });
+    expect(g.allocateLabour.mock.calls[1]![0]).toEqual({ activityId: 'ACT-1', requirementId: 'REQ-2', originRevision: 2, civilDate: '2026-08-01', workerId: 'WKR-1' });
   });
 });
 

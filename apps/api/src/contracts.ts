@@ -1099,6 +1099,11 @@ export const allocateLabourSchema = z
     crewId: z.string().min(1).nullish(),
     // §F bound 3 — draw this person-shift from committed supplier capacity (omit for own workforce)
     capacityCommitmentId: z.string().min(1).nullish(),
+    // Task 6 review round 3 (P1) — the head revision the CALLER selected against. The allocation's
+    // shift/fingerprint stay SERVER-derived from the live head; this pin only lets the server
+    // REFUSE head drift: an offline-queued command replaying after a revision is a 409, never a
+    // silent coercion of a worker chosen for the old trade/skill/shift onto the new head.
+    originRevision: z.number().int().min(1).nullish(),
   })
   .strict()
   .refine((v) => (v.workerId ? 1 : 0) + (v.crewId ? 1 : 0) === 1, {

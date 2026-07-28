@@ -358,3 +358,97 @@ on unchanged tz) + the off-pilot no-op.
   outbox runs and was base-proven environmental (that trio passed this run). The container's
   outbox-mode timing degradation is established by the round-1 base proof; fresh-runner CI on
   the pushed head is the deciding evidence the exact-head gate requires green regardless.
+
+## 7. Codex correction round 3 (the six current-head findings on `0172dc2`)
+
+Codex reviewed head `0172dc2` and returned six findings — one P1 on command identity under
+offline replay, five P2 on demand/commercial-chain truth mirroring. Each was reproduced RED
+first (source stashed at `0172dc2`, probes run: **13 web probes failed + the API stale-pin
+probe allocated silently instead of refusing** — reproducing the exact P1 harm), then fixed:
+
+### R3-1 (P1) — allocation commands PIN the selected requirement head
+
+The allocate command carried only `(activityId, requirementId, civilDate, workerId)`; the
+server derived `originRevision`/`labourSpecFingerprint` from the CURRENT head at execution
+time. An allocation queued offline and replayed after a revision would therefore insert the
+stale worker as coverage for the NEW trade/skill/shift whenever activity + date still matched.
+Fix, both sides of the contract:
+
+- `allocateLabourSchema` gains an optional `originRevision` (`apps/api/src/contracts.ts`), and
+  `LabourCapacityService.allocate` — after resolving the head through
+  `ActivityParticipant.labourRequirementHead` inside the readiness-locked transaction — refuses
+  a pinned revision that is not the live head with a deterministic **409** (terminal: the
+  client outbox drops it and the flush reconciles). An UNPINNED command (a pre-round-3
+  persisted queue entry) keeps byte-identical semantics; the allocation's shift/fingerprint
+  stay SERVER-derived.
+- The store's `allocateWorker` now takes and ALWAYS sends the head revision the UI displayed
+  (`store.ts`, `apiGateway.ts` `AllocateLabourInput.originRevision`), and the hub passes
+  `r.revision` (`LabourScreen.tsx`).
+- Probes: live-PG `phase4-t6-allocation-pin.test.ts` — matching pin allocates; omitted pin
+  unchanged; **stale pin after a mason→carpenter revision is a 409 with ZERO rows** and the
+  same command re-pinned to the live head succeeds (the refusal is head drift, not the
+  worker). Web: the dispatched input carries `originRevision` (store probe + drawdown probe).
+
+### R3-2 (P2) — worked slices are already FULL
+
+The allocate-stop (`full`) used `allocatedCountFor` (ACTIVE rows only), while canonical
+coverage counts `sourced = |allocated ∪ worked|` — so a worked-then-released one-person slice
+showed `allocated 0/1` and offered ANOTHER allocation against demand readiness already
+considers delivered. New `sourcedCountFor` (`lib/labourSelection.ts`) mirrors
+`labour-coverage.service.ts` exactly: DISTINCT workers, active-compatible allocations ∪ work
+facts recorded under compatible allocations of the slice (work survives release; stranded
+rows never count). The slice line stays honest — `allocated 0/1 · 1/1 sourced incl. delivered
+work` — and the picker/button close. Probes: unit (union/distinct/stranded table) + rendered.
+
+### R3-3 (P2) — a WORKED release stays DRAWN
+
+`pickCommitmentFor` freed a commitment on ANY release, but the forecast keeps a commitment
+consumed once ANY work fact was recorded under its draw — re-offering the id after
+allocate→work→release would overdraw delivered supplier capacity. The helper now takes the
+work facts and counts a draw while its allocation is ACTIVE **or worked**; only a NO-WORK
+release frees the commitment (the round-2 probe now states that carve-out explicitly).
+Probes: worked release → null on a qty-1 commitment; unrelated work fact → still offered;
+qty-2 with one worked release → remainder offered.
+
+### R3-4 (P2) — raise only the UNREQUISITIONED residual
+
+The demand tab always sent the FULL demand slices; with a 1-person open line already in the
+chain, re-raising a 3-person slice is the server's §F bound-1 `1 + 3 > 3` terminal 409. New
+`unrequisitionedLines` mirrors the bound-1 counting rule exactly — existing `open`/`ordered`
+lines on the SAME `(requirementId, revision, civilDate)` count against the ceiling, cancelled
+lines and other revisions do not — and the button sends only the positive residuals,
+disappearing entirely once the chain holds the full demand. Probes: unit (residual /
+ordered-counts / cancelled-ignored / other-revision-ignored / two-requisitions-sum → []) +
+rendered (partial → residual 2 dispatched; full → button gone).
+
+### R3-5 (P2) — onboarding stamps the PROJECT civil day
+
+`TeamScreen`'s roster onboarding stamped `activeFrom` with the browser/UTC date; a viewer
+behind the site's timezone minted a worker active only from TOMORROW who then failed the
+active-window check for the site's today. Now `todayCivil(timeZone)` (the F-TZ helper).
+Probe: fake clock at `2026-07-28T20:00:00Z` + `Asia/Kolkata` → onboard dispatches
+`activeFrom: '2026-07-29'` (the browser/UTC stamp would be `2026-07-28`).
+
+### R3-6 (P2) — no ACTUAL work before the shift
+
+Record work was enabled for every active allocation, including future-dated bookings — a
+click minted delivered-work evidence (work facts drive productivity §I and Team coverage)
+before the shift occurred. The input + button are disabled when the allocation's civil date
+is after the project's today, labelled `Future shift`. Probe: rendered — tomorrow's
+allocation disabled/`Future shift`, today's enabled.
+
+### Round-3 gate battery (this head)
+
+- Reproduce-first: **13 web probes + the API stale-pin probe RED** with the pre-fix source
+  stashed at `0172dc2` (the stale allocation landed SILENTLY — the exact P1 harm) → all GREEN
+  on this head (focused web labour suites 61/61; `phase4-t6-allocation-pin` 2/2).
+- `pnpm check` EXIT 0 — web **498/498** (491 + the round-3 probes), API unit 680/680.
+- Full integration on a pristine migrated DB (psql-recreated + `migrate deploy`) — **72 files
+  / 695 tests** (+1 file / +2 tests for the live-PG allocation-pin probes).
+- `upgrade-proof.sh` PASSED (no migration in this PR; regression only).
+- e2e: `test:e2e:api:allmodules` (legacy) — first run 33/35 with the two failures being the
+  long-documented `inspections-module-query` and `project-scope` history timing flakes
+  (NEITHER a labour surface; both in the honest flake record since `d538c15`), clean re-run
+  **35/35**; `:outbox` **35/35** CLEAN first run. The **labour-pilot suite passed 4/4 in BOTH
+  modes** — including the browser allocate (now revision-pinned), the residual-only
+  requisition raise, and the roster onboarding this round changed.

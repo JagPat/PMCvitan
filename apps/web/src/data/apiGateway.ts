@@ -1158,6 +1158,9 @@ export interface AllocateLabourInput {
   workerId?: string;
   crewId?: string;
   capacityCommitmentId?: string;
+  /** Codex T6 round 3 (P1) — the head revision the caller selected against; the server refuses
+   *  head drift with a terminal 409 (an offline replay after a revision never lands silently). */
+  originRevision?: number;
 }
 export interface RecordLabourAttendanceInput {
   workerId: string;

@@ -1,10 +1,12 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import { LabourScreen } from '@/screens/LabourScreen';
+import { TeamScreen } from '@/screens/TeamScreen';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
+import { todayCivil } from '@/lib/civilDate';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
-import type { WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, RequirementListItem, LabourSpecRef } from '@vitan/shared';
+import type { WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, RequirementListItem, LabourSpecRef, LabourWorkFactDto, LabourRequisitionDto } from '@vitan/shared';
 import type { LabourView } from '@/store/labour';
 
 /**
@@ -52,6 +54,16 @@ const alloc = (over: Partial<WorkerAllocationDto>): WorkerAllocationDto => ({
 const commitment = (fp: string): CapacityCommitmentDto => ({
   id: 'CC-1', poLineId: 'POL-1', labourSpecFingerprint: fp, civilDate: day, shift: 'day',
   personShiftQty: 1, status: 'committed', latestPromise: null, promises: [],
+});
+
+const workFact = (over: Partial<LabourWorkFactDto> = {}): LabourWorkFactDto => ({
+  id: 'WF-1', workerId: 'W-MASON', allocationId: 'AL-1', activityId: 'ACT-1', civilDate: day,
+  shift: 'day', workedMinutes: 480, note: null, recordedAt: '2026-08-01T12:00:00Z', recordedById: 'u', ...over,
+});
+
+const requisitionOf = (lines: Array<{ civilDate: string; personShiftQty: number; status?: string }>): LabourRequisitionDto => ({
+  id: 'LRQ-1', title: 'Source mason', notes: null, status: 'submitted', createdAt: '2026-07-01T00:00:00Z', createdById: 'u',
+  lines: lines.map((l, i) => ({ id: `LRQL-${i}`, requirementId: 'REQ-1', revision: 1, civilDate: l.civilDate, shift: 'day', labourSpecFingerprint: 'fp', personShiftQty: l.personShiftQty, status: l.status ?? 'open' })),
 });
 
 async function primeLabour(over: Partial<LabourView> = {}): Promise<LabourView> {
@@ -220,5 +232,90 @@ describe('CODEX R2 — the pickers respect worker windows and existing bookings'
     const values = Array.from(r.getByTestId(`labour-worker-select-REQ-1-${day}`).querySelectorAll('option')).map((o) => o.getAttribute('value'));
     expect(values).toContain('W-MASON-2');
     expect(values).not.toContain('W-MASON'); // §C one-live-allocation — a second pick is a certain 409
+  });
+});
+
+describe('CODEX R3 — worked demand, future work, and requisition residuals on the rendered hub', () => {
+  it('R3-2: a WORKED-then-RELEASED one-person slice is treated as full — no further allocation is offered', async () => {
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    await primeLabour({
+      capacity: {
+        allocations: [alloc({ id: 'AL-9', workerId: 'W-MASON', labourSpecFingerprint: fp, status: 'released' })],
+        attendance: [], workFacts: [workFact({ allocationId: 'AL-9' })], skillSubstitutions: [],
+      },
+    });
+    useStore.setState({ role: 'pmc' });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const text = r.getByTestId(`labour-alloc-slice-REQ-1-${day}`).textContent!;
+    expect(text).toContain('allocated 0/1'); // honest: no ACTIVE allocation…
+    expect(text).toContain('1/1 sourced incl. delivered work'); // …but the demand was delivered
+    expect(text).toContain('Fully allocated');
+    expect((r.getByTestId(`labour-worker-select-REQ-1-${day}`) as HTMLSelectElement).disabled).toBe(true);
+    expect((r.getByTestId(`labour-do-allocate-REQ-1-${day}`) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('R3-6: Record work is DISABLED for an allocation dated after the project civil day, enabled on the day', async () => {
+    const today = todayCivil(null); // store timeZone is null in this jsdom suite → browser civil day
+    const t = new Date(`${today}T00:00:00Z`);
+    t.setUTCDate(t.getUTCDate() + 1);
+    const tomorrow = t.toISOString().slice(0, 10);
+    await primeLabour({
+      capacity: {
+        allocations: [alloc({ id: 'AL-TODAY', civilDate: today }), alloc({ id: 'AL-FUTURE', civilDate: tomorrow })],
+        attendance: [], workFacts: [], skillSubstitutions: [],
+      },
+    });
+    useStore.setState({ role: 'pmc' });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const futureBtn = r.getByTestId('labour-do-work-AL-FUTURE') as HTMLButtonElement;
+    expect(futureBtn.disabled).toBe(true); // no actual-work evidence before the shift occurs
+    expect(futureBtn.textContent).toContain('Future shift');
+    const todayBtn = r.getByTestId('labour-do-work-AL-TODAY') as HTMLButtonElement;
+    expect(todayBtn.disabled).toBe(false);
+    expect(todayBtn.textContent).toContain('Record work');
+  });
+
+  it('R3-4: the raise action sends only the UNREQUISITIONED residual, and disappears once the chain holds it all', async () => {
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const threeQty = { ...requirement(fp), labourSpec: labourSpec(fp, { demandSlices: [{ civilDate: day, shift: 'day', personShiftQty: 3 }] }) };
+    const spy = vi.fn();
+    // a 1-person OPEN line already in the commercial chain → only 2 remain raisable
+    await primeLabour({ requirements: [threeQty], requisitions: [requisitionOf([{ civilDate: day, personShiftQty: 1 }])] });
+    useStore.setState({ role: 'pmc', raiseLabourRequisition: spy });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-demand'));
+    fireEvent.click(r.getByTestId('labour-raise-req-REQ-1'));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]![1]).toEqual([{ requirementId: 'REQ-1', revision: 1, civilDate: day, personShiftQty: 2 }]);
+    cleanup();
+    // fully requisitioned → the button is GONE (nothing left the §F bound-1 ceiling admits)
+    await primeLabour({ requirements: [threeQty], requisitions: [requisitionOf([{ civilDate: day, personShiftQty: 3 }])] });
+    useStore.setState({ role: 'pmc', raiseLabourRequisition: spy });
+    const r2 = render(<LabourScreen />);
+    fireEvent.click(r2.getByTestId('labour-tab-demand'));
+    expect(r2.queryByTestId('labour-raise-req-REQ-1')).toBeNull();
+  });
+
+  it('R3-5: Team onboarding stamps activeFrom with the PROJECT civil day, not the browser/UTC date', async () => {
+    await primeLabour({ catalog: { trades: [{ code: 'mason', name: 'Mason' }], skills: [] } });
+    const spy = vi.fn();
+    useStore.setState({ role: 'pmc', timeZone: 'Asia/Kolkata', onboardLabourWorker: spy, loadTeam: vi.fn(async () => {}) });
+    // 20:00Z is already the NEXT civil day in Asia/Kolkata (+05:30) — a UTC/browser stamp is a
+    // worker who cannot be allocated or mustered for the site's TODAY right after onboarding
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-28T20:00:00Z'));
+    try {
+      const expected = todayCivil('Asia/Kolkata'); // '2026-07-29'
+      expect(expected).toBe('2026-07-29');
+      const r = render(<TeamScreen />);
+      fireEvent.change(r.getByTestId('labour-worker-name'), { target: { value: 'Ramesh' } });
+      fireEvent.change(r.getByTestId('labour-worker-trade'), { target: { value: 'mason' } });
+      fireEvent.click(r.getByTestId('labour-onboard-worker'));
+      expect(spy).toHaveBeenCalledWith('Ramesh', 'mason', [], expected);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

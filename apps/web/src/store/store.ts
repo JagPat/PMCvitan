@@ -393,7 +393,7 @@ export interface AppActions {
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
-  allocateWorker: (activityId: string, requirementId: string, civilDate: string, workerId: string, capacityCommitmentId?: string | null) => void;
+  allocateWorker: (activityId: string, requirementId: string, originRevision: number, civilDate: string, workerId: string, capacityCommitmentId?: string | null) => void;
   musterWorker: (workerId: string, civilDate: string, shift: 'day' | 'night', manualReason: string) => void;
   recordWorkedMinutes: (allocationId: string, workedMinutes: number) => void;
   raiseLabourRequisition: (title: string, lines: ReadonlyArray<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number }>) => void;
@@ -2510,13 +2510,16 @@ export const useStore = create<Store>()(
         if (owns(s)) s.labourLoad = 'error';
       }));
     },
-    allocateWorker: (activityId, requirementId, civilDate, workerId, capacityCommitmentId) => {
+    allocateWorker: (activityId, requirementId, originRevision, civilDate, workerId, capacityCommitmentId) => {
       // fresh idempotency key per deliberate action; coalesced while pending on the exact
       // (activity, requirement, date, worker) target — one live allocation per worker/slice.
       // F2 (drawdown) — a commitment-covered slice passes the matching commitment id so the
       // server's §F bound-3 drawdown consumes the supplier capacity; null = own workforce.
+      // Codex round 3 (P1) — the command PINS the head revision the worker was selected against:
+      // an offline-queued replay landing after a requirement revision is a terminal 409 the flush
+      // reconciles, never a silent allocation onto a different trade/skill/shift demand.
       dispatchLabour(
-        { t: 'allocateLabour', input: { activityId, requirementId, civilDate, workerId, ...(capacityCommitmentId ? { capacityCommitmentId } : {}) }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, civilDate, workerId) },
+        { t: 'allocateLabour', input: { activityId, requirementId, originRevision, civilDate, workerId, ...(capacityCommitmentId ? { capacityCommitmentId } : {}) }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, civilDate, workerId) },
         'Allocate the worker to the activity',
         'Worker allocated to the activity.',
       );

@@ -262,6 +262,16 @@ export class LabourCapacityService {
             `Requirement ${input.requirementId} belongs to activity ${spec.activityId}, not ${input.activityId} — an allocation must name the activity whose demand it serves`,
           );
         }
+        // Task 6 review round 3 (P1) — refuse HEAD DRIFT. The client pins the revision it selected
+        // the worker against; if the requirement was revised before this command lands (an
+        // offline-queued replay), the worker was chosen for a DIFFERENT trade/skill/shift demand,
+        // so the stale allocation is refused as a terminal conflict instead of being silently
+        // stamped with the NEW head's fingerprint. An unpinned command keeps today's semantics.
+        if (input.originRevision != null && input.originRevision !== spec.revision) {
+          throw new ConflictException(
+            `Requirement ${input.requirementId} is at revision ${spec.revision}, not the selected revision ${input.originRevision} — the demand changed since this allocation was chosen; reload and re-allocate against the current head`,
+          );
+        }
 
         // the demanded slice must exist on the HEAD revision — allocating onto a date the current
         // demand does not ask for is a category error, not a shortfall

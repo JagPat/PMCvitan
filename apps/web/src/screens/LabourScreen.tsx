@@ -3,11 +3,11 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import type { LabourForecastVerdict, RequirementListItem, WorkerDto } from '@vitan/shared';
+import type { LabourForecastVerdict, WorkerDto } from '@vitan/shared';
 import { decAdd } from '@/lib/decimal';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { compatibleWorkerIds, allocatedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds } from '@/lib/labourSelection';
+import { compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines } from '@/lib/labourSelection';
 import styles from './responsive.module.css';
 
 /**
@@ -49,9 +49,8 @@ const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11, colo
 const muted: CSSProperties = { fontSize: 12.5, color: 'var(--muted)' };
 const selectStyle: CSSProperties = { border: '1px solid var(--hairline)', borderRadius: 7, padding: '6px 8px', fontSize: 12, background: 'var(--canvas)', color: 'var(--ink)' };
 
-/** A requirement's demand slices mapped to the requisition-line shape (one line per slice). */
-const requisitionLinesOf = (r: RequirementListItem) =>
-  (r.labourSpec?.demandSlices ?? []).map((sl) => ({ requirementId: r.requirementId, revision: r.revision, civilDate: sl.civilDate, personShiftQty: sl.personShiftQty }));
+// The raise action's lines are the UNREQUISITIONED residual per demand slice (Codex round 3) —
+// see `unrequisitionedLines`; a fully-requisitioned requirement yields [] and shows no button.
 
 export function LabourScreen() {
   const labour = useStore(useShallow((s) => s.labourView));
@@ -178,7 +177,10 @@ export function LabourScreen() {
               <Panel empty={!labourReqs.length} emptyKey="demand" emptyText="No labour demand planned.">
                 {labourReqs.map((r) => {
                   const spec = r.labourSpec!;
-                  const lines = requisitionLinesOf(r);
+                  // Codex round 3 — send only what the commercial chain does NOT already carry:
+                  // the server's §F bound-1 counts existing open/ordered lines per slice, so a
+                  // full re-send after a partial requisition is a certain terminal 409.
+                  const lines = unrequisitionedLines(r.requirementId, r.revision, spec.demandSlices, labour.requisitions);
                   const reqKey = labourRequisitionCoalesceKey(lines);
                   return (
                     <div key={r.requirementId} data-testid={`labour-requirement-${r.requirementId}`} style={rowCard}>
@@ -268,21 +270,23 @@ export function LabourScreen() {
                         // bound to the requirement's CURRENT activity AND a currently-satisfying
                         // fingerprint (a row stranded by a revision is not "allocated").
                         const done = allocatedCountFor(labour.capacity.allocations, r.requirementId, r.activityId, sl.civilDate, spec, substitutions);
-                        // Codex round 2 — the server caps only supplier drawdown; an own-workforce
+                        // Codex rounds 2–3 — the server caps only supplier drawdown; an own-workforce
                         // allocation past the demand would strand a worker on a slice that is already
-                        // ready, so the UI stops offering once the demand is satisfied.
-                        const full = done >= sl.personShiftQty;
+                        // satisfied. The stop counts SOURCED person-shifts (active ∪ worked, the
+                        // server's coverage rule): a worked-then-released slice stays fulfilled.
+                        const sourced = sourcedCountFor(labour.capacity.allocations, labour.capacity.workFacts, r.requirementId, r.activityId, sl.civilDate, spec, substitutions);
+                        const full = sourced >= sl.personShiftQty;
                         // Codex F2 — a commitment-covered slice draws DOWN the matching drawable
                         // commitment (§F bound 3): pass its id so the server consumes the capacity.
-                        const commitmentId = pickCommitmentFor(labour.commitments, labour.capacity.allocations, spec, sl.civilDate);
+                        const commitmentId = pickCommitmentFor(labour.commitments, labour.capacity.allocations, labour.capacity.workFacts, spec, sl.civilDate);
                         return (
                           <div key={sl.civilDate} data-testid={`labour-alloc-slice-${r.requirementId}-${sl.civilDate}`} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 7 }}>
-                            <span style={{ fontSize: 12.5, minWidth: 190 }}>{sl.civilDate} · {sl.shift} · allocated {done}/{sl.personShiftQty}{!full && commitmentId ? ' · supplier capacity available' : ''}</span>
+                            <span style={{ fontSize: 12.5, minWidth: 190 }}>{sl.civilDate} · {sl.shift} · allocated {done}/{sl.personShiftQty}{sourced > done ? ` · ${sourced}/${sl.personShiftQty} sourced incl. delivered work` : ''}{!full && commitmentId ? ' · supplier capacity available' : ''}</span>
                             <select value={chosen} disabled={full} data-testid={`labour-worker-select-${r.requirementId}-${sl.civilDate}`} onChange={(e) => setAllocWorker((m) => ({ ...m, [sliceKey]: e.target.value }))} style={selectStyle}>
                               <option value="">{full ? 'Fully allocated' : offerable.length ? 'Choose worker…' : 'No available workers'}</option>
                               {!full && offerable.map((w: WorkerDto) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}
                             </select>
-                            <Button variant="outline" disabled={full || !chosen || pending(aKey)} data-testid={`labour-do-allocate-${r.requirementId}-${sl.civilDate}`} onClick={() => !full && chosen && allocateWorker(r.activityId, r.requirementId, sl.civilDate, chosen, commitmentId)} style={{ fontSize: 11.5, flex: 'none' }}>
+                            <Button variant="outline" disabled={full || !chosen || pending(aKey)} data-testid={`labour-do-allocate-${r.requirementId}-${sl.civilDate}`} onClick={() => !full && chosen && allocateWorker(r.activityId, r.requirementId, r.revision, sl.civilDate, chosen, commitmentId)} style={{ fontSize: 11.5, flex: 'none' }}>
                               {full ? 'Fully allocated' : chosen && pending(aKey) ? 'Allocating…' : 'Allocate'}
                             </Button>
                           </div>
@@ -299,6 +303,10 @@ export function LabourScreen() {
                   const minutesNum = Number.parseInt(minutes, 10);
                   const valid = Number.isInteger(minutesNum) && minutesNum >= 1 && minutesNum <= 720;
                   const wKey = valid ? workCoalesceKey(a.id, minutesNum) : '';
+                  // Codex round 3 — no ACTUAL work before the shift's civil day: a future-dated
+                  // booking must not mint delivered-work evidence (productivity + Team coverage
+                  // would read a shift as worked before it occurs).
+                  const future = a.civilDate > today;
                   return (
                     <div key={a.id} data-testid={`labour-allocation-${a.id}`} style={rowCard}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
@@ -308,10 +316,10 @@ export function LabourScreen() {
                       <div style={{ ...muted, marginTop: 4 }}>{a.civilDate} · {a.shift}{a.capacityCommitmentId ? ' · supplier capacity' : ' · own workforce'}</div>
                       {a.status === 'active' && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                          <input type="number" min={1} max={720} value={minutes} data-testid={`labour-work-minutes-${a.id}`} onChange={(e) => setWorkMinutes((m) => ({ ...m, [a.id]: e.target.value }))} style={{ ...selectStyle, width: 76 }} />
+                          <input type="number" min={1} max={720} value={minutes} disabled={future} data-testid={`labour-work-minutes-${a.id}`} onChange={(e) => setWorkMinutes((m) => ({ ...m, [a.id]: e.target.value }))} style={{ ...selectStyle, width: 76 }} />
                           <span style={muted}>min</span>
-                          <Button variant="outline" disabled={!valid || pending(wKey)} data-testid={`labour-do-work-${a.id}`} onClick={() => valid && recordWorkedMinutes(a.id, minutesNum)} style={{ fontSize: 11.5, flex: 'none' }}>
-                            {valid && pending(wKey) ? 'Recording…' : 'Record work'}
+                          <Button variant="outline" disabled={future || !valid || pending(wKey)} data-testid={`labour-do-work-${a.id}`} onClick={() => !future && valid && recordWorkedMinutes(a.id, minutesNum)} style={{ fontSize: 11.5, flex: 'none' }}>
+                            {future ? 'Future shift' : valid && pending(wKey) ? 'Recording…' : 'Record work'}
                           </Button>
                         </div>
                       )}
