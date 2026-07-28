@@ -55,11 +55,13 @@ test('handoff workflow is event-driven and runs trusted default-branch code', as
 
   assert.match(workflow, /pull_request_target:/);
   assert.match(workflow, /push:/);
+  assert.match(workflow, /wait_for_pr:/);
   assert.match(workflow, /branches:\s*\[main\]/);
   assert.match(workflow, /ref:\s*\$\{\{ github\.event\.repository\.default_branch \}\}/);
   assert.match(workflow, /persist-credentials:\s*false/);
   assert.match(workflow, /scripts\/autonomous-handoff\.mjs/);
-  assert.doesNotMatch(workflow, /schedule:/);
+  assert.match(workflow, /schedule:/);
+  assert.match(workflow, /cron:\s*'17 \* \* \* \*'/);
   assert.match(workflow, /group:\s*autonomous-handoff/);
   assert.match(workflow, /cancel-in-progress:\s*false/);
 });
@@ -80,9 +82,35 @@ test('handoff implementation covers both conflicts and behind-base states', asyn
   assert.match(implementation, /liveMergedPullRequest/);
   assert.match(implementation, /STATE_ISSUE_NUMBER/);
   assert.match(implementation, /dispatchRetry/);
+  assert.match(implementation, /waitForTerminalPullRequest/);
+  assert.match(implementation, /event\.inputs\?\.wait_for_pr/);
   assert.match(implementation, /ACTIONS_BOT_LOGIN/);
   assert.match(implementation, /combinedStatus/);
   assert.match(implementation, /codex-current-head/);
   assert.match(implementation, /comments\?per_page=100&page=\$\{page\}/);
   assert.doesNotMatch(implementation, /if \(eventName === 'pull_request_target'\)/);
+});
+
+test('an open queued-merge wait drains durable work before it reschedules', async () => {
+  const implementation = await readFile(
+    new URL('./autonomous-handoff.mjs', import.meta.url),
+    'utf8',
+  );
+  const waitStart = implementation.indexOf(
+    'const waitForPullRequest = Number',
+  );
+  const backlogStart = implementation.indexOf(
+    'const cursor = await client.runnerCursor()',
+  );
+  const retryStart = implementation.indexOf(
+    'if (retryWaitForPullRequest || retryNeeded)',
+  );
+
+  assert.ok(waitStart >= 0);
+  assert.ok(backlogStart > waitStart);
+  assert.ok(retryStart > backlogStart);
+  assert.doesNotMatch(
+    implementation.slice(waitStart, backlogStart),
+    /dispatchRetry|\breturn;/,
+  );
 });
