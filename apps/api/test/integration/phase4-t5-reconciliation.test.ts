@@ -584,12 +584,16 @@ describe('Phase 4 Task 5 — §E labour reconciliation + §I productivity (live 
     expect(await t.prisma.media.count({ where: { id: cited } }), 'the cited photo survives').toBe(1);
     expect(await media.remove(loose, pmc(p.id))).toBe(true);
 
-    // cross-project evidence is refused before the composite FK backstop
+    // cross-project AND nonexistent evidence are refused by the same-project composite FK — the
+    // validation AUTHORITY (no Activities→Media read exists; the FK violation surfaces as a 400)
     const other = await freshProject();
     await enableLabour(other.id);
     const otherAct = await freshActivity(other.id);
     await expect(
       activities.recordOutput(other.id, { activityId: otherAct, civilDate: today, shift: 'day', quantity: '1', uom: 'm3', evidenceMediaId: cited }, pmc(other.id)),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      activities.recordOutput(other.id, { activityId: otherAct, civilDate: today, shift: 'day', quantity: '1', uom: 'm3', evidenceMediaId: 'MEDIA-DOES-NOT-EXIST' }, pmc(other.id)),
     ).rejects.toMatchObject({ status: 400 });
   });
 });

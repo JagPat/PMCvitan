@@ -214,10 +214,31 @@ race probe, with the F-E case folded into the §I productivity probe). Focused p
 `activities.contract` / `module-registry` / `cross-module-graph` / `boundary` / `media.service`
 149/149; `upgrade-proof.sh` PASSED (19 Task-5 hostile statements now rejected).
 
+Battery for that head (`5f1e316`): `pnpm check` EXIT 0 (web 432/432, api 680/680); full
+integration **71 files / 693 tests** on a pristine migrated DB; `upgrade-proof.sh` PASSED (incl.
+the four round-2 hostile inserts); `test:e2e:api:allmodules` **31/31** (the earlier
+`drawings-module-query` flake clean on this run); `test:e2e:api:outbox` **25/25**.
+
+## 9. Codex attempt-3 finding (head `5f1e316`) — fixed in this branch
+
+One P2: `activities.recordOutput` validated `evidenceMediaId` by READING the Media-owned table
+(`resolveProjectRef(prisma, 'media', …)`) from the Activities service, while
+`activitiesManifest.dependsOn` declares no Media read edge — a hidden Activities→Media boundary
+dependency on every measured-output photo.
+
+FIX — the read is REMOVED, not re-routed: the same-project composite
+`(projectId, evidenceMediaId) → Media(projectId, id)` FK is the validation AUTHORITY (exactly the
+cleared attendance-evidence and activity-reference precedent, where a query-based validation
+would create an undeclared or cyclic edge), and the new `rethrowMediaRefViolation` translates its
+P2003 into the same human-readable 400 the query-based validation raised. No module boundary is
+crossed at all for a measured-output photo. The §I evidence probe now exercises BOTH FK rejection
+paths (cross-project photo AND nonexistent photo → 400) plus the delete-seal, and the suite stays
+**15/15**. The pre-existing `activities.override` media reference on `main` is untouched (outside
+this PR's diff).
+
 Battery results for the FINAL head:
 
 - `pnpm check` EXIT 0 — automation suite, web 432/432, api 680/680, both builds clean.
 - Full integration: **71 files / 693 tests, all passing** on a pristine migrated DB.
-- `upgrade-proof.sh` PASSED (incl. the four round-2 hostile inserts).
-- `test:e2e:api:allmodules` **31/31** (the earlier `drawings-module-query` flake clean on this
-  run) and `test:e2e:api:outbox` **25/25**.
+- `upgrade-proof.sh` PASSED.
+- `test:e2e:api:allmodules` **31/31** and `test:e2e:api:outbox` **25/25**.
