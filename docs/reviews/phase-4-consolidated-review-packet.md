@@ -190,6 +190,12 @@ migrated DB (API untouched); `upgrade-proof.sh` PASSED (no migration; all prior 
 including the labour-pilot acceptance chain; the labour-pilot spec additionally ran 4/4 twice
 consecutively against the same DB.
 
+**Codex correction round 1** (the six findings on head `d538c15` — project-timezone civil dates;
+compatible-worker pickers; commitment drawdown wired through allocation; coverage-true allocated
+counts; pmc-only manual muster; capability-bounced deep links) is folded in-branch, each finding
+reproduced RED at `d538c15` first — evidence, the RED/GREEN record, and the re-run battery in
+`docs/reviews/phase-4-t6-frontend-packet.md` §5.
+
 ## 6. Residuals and forward pointers
 
 - The hub's manual muster ships without inline photo capture (`evidenceMediaId` is server-ready);

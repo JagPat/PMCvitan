@@ -158,3 +158,115 @@ Frontend + shared + tests + docs only. `packages/shared`: `domain/types.ts` (`Sc
 `apps/web/tests`: `labour.test.ts` (NEW), `e2e-api/labour-pilot.spec.ts` (NEW). Docs:
 `docs/STATUS.md`, `docs/AUTONOMOUS_LOOP.md`, `CLAUDE.md`, this packet, and
 `docs/reviews/phase-4-consolidated-review-packet.md`. **No `apps/api` change; no migration.**
+
+## 5. Codex correction round 1 (the six current-head findings on `d538c15`)
+
+The independent Codex review of head `d538c15` returned six findings — two P1 (incompatible
+workers offerable; commitment drawdown never wired) and four P2 (browser-local muster dates;
+engineer manual muster 403s; labour deep links accepted on non-pilot projects; stale allocation
+counts). All six are corrected on this head, each reproduced RED at `d538c15` first (12 behaviour
+probes failed against the stashed pre-fix source; all green after). The correction is frontend +
+tests + docs ONLY — no `apps/api` change, no migration, no shared-contract change.
+
+### F-TZ (P2) — muster/presence dates use the PROJECT timezone
+
+`apps/web/src/lib/civilDate.ts` (NEW): `todayCivil(timeZone, now)` resolves the civil date in the
+project's IANA zone via `Intl.DateTimeFormat('en-CA', { timeZone })`, falling back to the
+browser-local date only when the zone is unknown (local demo / pre-snapshot). The store gains
+`timeZone` (project-owned identity, `null` until known) adopted from `snap.project.timeZone` in
+`applySnapshot`; `loadLabour`'s presence read and the hub's "MARK PRESENT — {today}" + muster
+command now derive today from it. A US browser at 20:30 on the 28th musters against the site's
+29th. Probes: fixed-instant table (Kolkata crossing midnight before UTC; LA a day behind;
+unknown-zone fallback) + a store probe asserting `labourPresence` receives `todayCivil(tz)` for a
+zone chosen at runtime to DIFFER from the browser-local date (the UTC-12/UTC+14 26-hour spread
+guarantees one always differs).
+
+### F1 (P1) — only compatible workers may satisfy a demand slice
+
+`apps/web/src/lib/labourSelection.ts` (NEW, pure): `buildWorkerFingerprints` computes every
+fingerprint a worker's own (trade, skills) identity can satisfy — per shift, the bare-trade
+identity plus one per declared skill — with the SAME shared `computeLabourSpecFingerprint` the
+server pins; `loadLabour` computes it once per bundle into `LabourView.workerFingerprints`.
+`compatibleWorkerIds` admits a worker iff one of their fingerprints equals the requirement's HEAD
+fingerprint or the target of an ACTIVE approved substitution whose source IS the current head
+(the Phase-3 T6-F2 rule; revoked or foreign-requirement substitutions never apply; revoked
+workers never offered). The hub's allocate picker offers ONLY those workers ("No compatible
+workers" otherwise), and a previously-picked worker who becomes incompatible is dropped, never
+submitted. Probes: mason/electrician exclusion, skilled-vs-bare identity, substitution
+admit/revoke/head-moved/foreign-requirement, store fingerprint identity, rendered picker
+inclusion/exclusion + the empty-picker state, and the e2e roster now onboards an
+incompatible-trade worker and asserts the real browser select omits them.
+
+### F2 (P1) — allocation draws down the covering commitment
+
+`pickCommitmentFor` selects the live same-slice commitment (exact fingerprint + civil date +
+shift, `committed|revised`) with undrawn quantity — draws counted over ALL allocations naming the
+commitment regardless of status, so a delivered-then-released draw stays consumed (the Task-4
+round-2 rule) — deterministically (lowest id). The hub passes its id through
+`allocateWorker(..., capacityCommitmentId)` into the outbox op, so the server's §F bound-3
+drawdown actually runs; own-workforce allocation passes none. The slice line surfaces
+"supplier capacity available". Probes: picker unit table (same-slice only, exhausted, released-
+stays-consumed, defaulted, remainder), store payload with/without the id, and the e2e now asserts
+the REAL allocation row is supplier-capacity-backed (`capacityCommitmentId` set server-side +
+"supplier capacity" rendered) after the browser allocate.
+
+### F6 (P2) — the allocated count matches the server's coverage rule
+
+`allocatedCountFor` counts ONLY active allocations bound to the requirement's CURRENT activity
+AND a currently-satisfying fingerprint (head or active substitution target) on that civil date —
+a row stranded by a revision (old activity or old trade/skill/shift) is not "allocated", so the
+hub can no longer show 1/1 for a slice readiness reports blocked. Probes: unit table (stranded
+activity, stranded fingerprint, released, wrong slice/requirement, substitution target counted,
+revoked substitution not) + rendered `allocated 0/1` for a stranded row and `1/1` for a current
+one.
+
+### F-PMC (P2) — manual muster is pmc-only
+
+The MARK PRESENT form renders only for `role === 'pmc'` — the server treats a manual muster as a
+`labour.override` exception (pmc-only), so an engineer's click was a guaranteed terminal 403 the
+outbox discards. Probes: rendered hub with role engineer has NO muster form/testids; pmc keeps
+it.
+
+### F-deeplink (P2) — capability-gated screens bounce by capability in RouteBridge
+
+The store gains `capabilitiesKnown` (project-owned, reset on every scope change; set when the
+shell reports). `RouteBridge`'s screen guard now filters `screensFor(role)` by
+`SCREEN_CAPABILITY` once capabilities are KNOWN: a direct `/projects/<non-pilot>/labour` (or
+`/materials`) URL is redirected to the role default instead of landing on a permanently-loading
+hub; while capabilities are UNKNOWN (cold load, shell in flight or failed) nothing is bounced, so
+a pilot deep link survives shell latency — and the moment the shell reports no capability, the
+provisionally-accepted screen is ejected. Probes: routeBridge render tests for all four states
+(known-absent bounce; pilot lands; unknown-not-bounced-then-ejected; materials covered too) + the
+e2e INERT test now drives a real `/labour` deep link on the non-pilot project through the
+sign-in gate (the project-scope cold-deep-link pattern — a full reload drops the in-memory
+token) and sees the route leave `/labour` for a `/for-you` role home with the hub never
+rendered. Two probe-authoring iterations were caught by the battery itself and are recorded
+honestly: the first navigated without re-authenticating (the page sat on the sign-in gate — no
+shell, no bounce expected while capabilities are unknown), and the second over-claimed
+SAME-project scoping (a fresh login scopes to the account's SERVER-designated home project —
+the pre-existing "authentication lands on the server project" behaviour — so a cross-home
+deep link ejects onto the home project's role default; the finding's claim is only that the
+dead hub is never served, and the same-project eject IS pinned by the jsdom probes where the
+session already holds the project).
+
+### Round-1 gate battery (this head)
+
+- Reproduce-first: **12 behaviour probes RED** with the pre-fix source stashed at `d538c15`
+  (4 routeBridge, 3 store, 5 rendered-hub) → all GREEN on this head; the pure-helper tables are
+  new files and green by construction.
+- `pnpm check` EXIT 0 — web **481/481** (458 + the 23 correction probes), API unit 680/680.
+- Full integration on a pristine migrated DB — **71 files / 693 tests** (API untouched).
+- `upgrade-proof.sh` PASSED (no migration; unchanged).
+- `test:e2e:api:allmodules` (legacy) **35/35** CLEAN, `labour-pilot.spec.ts` carrying the three
+  new in-browser assertions (F1 roster exclusion, F2 supplier-backed allocation, F-deeplink
+  bounce).
+- `test:e2e:api:allmodules:outbox` — the **labour-pilot suite passed 4/4 in BOTH outbox
+  attempts** (incl. the corrected deep-link probe), but each attempt failed the SAME three
+  pre-existing `pillar-chain` inspection tests (22/23/25 — the checklist submit button never
+  left `idle`; the long-documented timing-sensitive family, no labour surface). Non-attribution
+  was PROVEN, not assumed: the UNCHANGED base `d538c15` — whose full outbox suite ran 35/35
+  clean earlier the same day — was re-run with this correction stashed and failed the IDENTICAL
+  trio with the identical signature, demonstrating container timing drift, not a diff effect.
+  The required GitHub CI on a fresh runner executes the same suites on the pushed head and the
+  exact-head gate demands it green regardless — that run is the deciding evidence for this
+  suite.

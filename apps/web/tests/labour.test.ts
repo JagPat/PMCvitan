@@ -5,7 +5,10 @@ import { selectActionItems } from '@/store/selectors';
 import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { LabourView } from '@/store/labour';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
-import type { LabourReadinessDto, LabourActivityForecastDto } from '@vitan/shared';
+import { todayCivil } from '@/lib/civilDate';
+import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, pickCommitmentFor } from '@/lib/labourSelection';
+import { computeLabourSpecFingerprint } from '@vitan/shared';
+import type { LabourReadinessDto, LabourActivityForecastDto, WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto } from '@vitan/shared';
 
 /**
  * Phase 4 Task 6 (§J) — the pilot LABOUR frontend: the capability-gated nav entry, the
@@ -24,6 +27,28 @@ const forecast = (over: Partial<LabourActivityForecastDto> = {}): LabourActivity
 
 const readiness = (entries: Record<string, LabourActivityForecastDto>): LabourReadinessDto => ({ forecast: entries });
 
+const worker = (id: string, tradeCode: string, skillCodes: string[] = [], over: Partial<WorkerDto> = {}): WorkerDto => ({
+  id, name: id, tradeCode, skillCodes, activeFrom: '2026-01-01', activeTo: null,
+  revokedAt: null, revokedById: null, createdAt: '2026-01-01T00:00:00Z', createdById: 'u', ...over,
+});
+
+const alloc = (over: Partial<WorkerAllocationDto> = {}): WorkerAllocationDto => ({
+  id: 'AL-1', workerId: 'W-1', civilDate: '2026-08-01', shift: 'day', activityId: 'ACT-1',
+  requirementId: 'REQ-1', originRevision: 1, labourSpecFingerprint: 'fp', crewId: null,
+  capacityCommitmentId: null, status: 'active', allocatedAt: '2026-08-01T02:00:00Z', allocatedById: 'u',
+  releasedAt: null, releasedById: null, releaseReason: null, ...over,
+});
+
+const commitment = (over: Partial<CapacityCommitmentDto> = {}): CapacityCommitmentDto => ({
+  id: 'CC-1', poLineId: 'POL-1', labourSpecFingerprint: 'fp', civilDate: '2026-08-01', shift: 'day',
+  personShiftQty: 1, status: 'committed', latestPromise: null, promises: [], ...over,
+});
+
+const substitution = (over: Partial<ApprovedSkillSubstitutionDto> = {}): ApprovedSkillSubstitutionDto => ({
+  id: 'SUB-1', requirementId: 'REQ-1', fromFingerprint: 'from', toFingerprint: 'to', reason: 'r',
+  approvedById: 'u', at: '2026-07-01T00:00:00Z', revokedAt: null, revokedById: null, revokeReason: null, ...over,
+});
+
 const bundle = (r: LabourReadinessDto, over: Partial<LabourView> = {}): LabourView => ({
   readiness: r,
   requirements: [],
@@ -35,6 +60,7 @@ const bundle = (r: LabourReadinessDto, over: Partial<LabourView> = {}): LabourVi
   capacity: { allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] },
   presence: { civilDate: '2026-07-28', musters: [], mismatches: [] },
   productivity: { activities: [] },
+  workerFingerprints: {},
   ...over,
 });
 
@@ -450,5 +476,193 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     const l1 = [{ requirementId: 'R', revision: 1, civilDate: '2026-08-01', personShiftQty: 2 }, { requirementId: 'R', revision: 1, civilDate: '2026-08-02', personShiftQty: 3 }];
     const l2 = [l1[1]!, l1[0]!];
     expect(labourRequisitionCoalesceKey(l1)).toBe(labourRequisitionCoalesceKey(l2));
+  });
+});
+
+// ── Codex correction round 1 (PR #246, head d538c15) — the six current-head findings ──
+
+describe('CODEX F-TZ — civil "today" is the PROJECT timezone, never the browser\'s', () => {
+  it('todayCivil resolves fixed instants in the project zone (Asia/Kolkata crosses midnight before UTC)', () => {
+    // 2026-07-28T20:00Z is already 01:30 IST on the 29th — the site\'s civil day has turned
+    expect(todayCivil('Asia/Kolkata', new Date('2026-07-28T20:00:00Z'))).toBe('2026-07-29');
+    expect(todayCivil('Asia/Kolkata', new Date('2026-07-28T12:00:00Z'))).toBe('2026-07-28');
+    // a US-evening viewer is a day BEHIND UTC
+    expect(todayCivil('America/Los_Angeles', new Date('2026-07-29T03:30:00Z'))).toBe('2026-07-28');
+    // unknown zone or no zone → the browser-local date (the documented fallback), still a civil date
+    expect(todayCivil('Not/AZone')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(todayCivil(null)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('loadLabour reads today\'s presence for the PROJECT\'s civil date, not the browser-local date', async () => {
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    // pick a zone whose civil date DIFFERS from the browser-local date RIGHT NOW: the 26-hour
+    // spread between UTC-12 and UTC+14 guarantees at least one of the two always differs.
+    const p = (n: number) => String(n).padStart(2, '0');
+    const d = new Date();
+    const local = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    const tz = ['Etc/GMT+12', 'Etc/GMT-14'].find((z) => todayCivil(z) !== local)!;
+    expect(tz).toBeDefined();
+    const g = {
+      labourReadiness: vi.fn().mockResolvedValue(readiness({})),
+      materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
+      labourWorkforce: vi.fn().mockResolvedValue({ workers: [], crews: [] }),
+      labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
+      labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
+      labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
+      labourCommitments: vi.fn().mockResolvedValue({ commitments: [] }),
+      labourCapacity: vi.fn().mockResolvedValue({ allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] }),
+      labourPresence: vi.fn().mockResolvedValue({ civilDate: '2026-07-28', musters: [], mismatches: [] }),
+      labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
+    };
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: ['labour'], timeZone: tz });
+    s().loadLabour();
+    await flush();
+    const sent = g.labourPresence.mock.calls[0]![0] as string;
+    expect(sent).toBe(todayCivil(tz));
+    expect(sent).not.toBe(local); // the browser-local date would land on the WRONG civil day on site
+  });
+
+  it('applySnapshot adopts the project timeZone; getInitialState leaves it unknown (null)', () => {
+    useStore.setState(getInitialState());
+    expect(s().timeZone).toBeNull();
+    useStore.setState({ timeZone: 'Asia/Kolkata' });
+    expect(s().timeZone).toBe('Asia/Kolkata');
+  });
+});
+
+describe('CODEX F1 — only COMPATIBLE workers may satisfy a demand slice', () => {
+  it('an electrician is never offered for a mason slice; a revoked worker never offered at all', async () => {
+    const masonFp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const workers = [worker('W-MASON', 'mason'), worker('W-ELEC', 'electrician'), worker('W-GONE', 'mason', [], { revokedAt: '2026-07-01T00:00:00Z' })];
+    const fps = await buildWorkerFingerprints(workers);
+    const ids = compatibleWorkerIds(workers, fps, { labourSpecFingerprint: masonFp }, 'REQ-1', []);
+    expect(ids.has('W-MASON')).toBe(true);
+    expect(ids.has('W-ELEC')).toBe(false);
+    expect(ids.has('W-GONE')).toBe(false);
+  });
+
+  it('a skilled identity satisfies its skilled demand; the bare trade does NOT satisfy a skilled slice', async () => {
+    const chiefFp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: 'chief-mason', shift: 'day' });
+    const workers = [worker('W-CHIEF', 'mason', ['chief-mason']), worker('W-PLAIN', 'mason')];
+    const fps = await buildWorkerFingerprints(workers);
+    const ids = compatibleWorkerIds(workers, fps, { labourSpecFingerprint: chiefFp }, 'REQ-1', []);
+    expect(ids.has('W-CHIEF')).toBe(true);
+    expect(ids.has('W-PLAIN')).toBe(false);
+  });
+
+  it('an ACTIVE approved substitution admits the substitute identity — and stops when revoked, when the head moves, or on another requirement', async () => {
+    const masonFp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const carpFp = await computeLabourSpecFingerprint({ tradeCode: 'carpenter', skillCode: null, shift: 'day' });
+    const otherHeadFp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: 'chief-mason', shift: 'day' });
+    const workers = [worker('W-CARP', 'carpenter')];
+    const fps = await buildWorkerFingerprints(workers);
+    const sub = substitution({ requirementId: 'REQ-1', fromFingerprint: masonFp, toFingerprint: carpFp });
+    expect(compatibleWorkerIds(workers, fps, { labourSpecFingerprint: masonFp }, 'REQ-1', [sub]).has('W-CARP')).toBe(true);
+    expect(compatibleWorkerIds(workers, fps, { labourSpecFingerprint: masonFp }, 'REQ-1', [{ ...sub, revokedAt: '2026-07-20T00:00:00Z' }]).has('W-CARP')).toBe(false);
+    // the head moved (A→C): the A→B approval no longer applies (the Phase-3 T6-F2 rule)
+    expect(compatibleWorkerIds(workers, fps, { labourSpecFingerprint: otherHeadFp }, 'REQ-1', [sub]).has('W-CARP')).toBe(false);
+    // a substitution approved on ANOTHER requirement never leaks
+    expect(compatibleWorkerIds(workers, fps, { labourSpecFingerprint: masonFp }, 'REQ-2', [sub]).has('W-CARP')).toBe(false);
+  });
+
+  it('loadLabour computes the worker fingerprints with the SHARED canonical fingerprint function', async () => {
+    useStore.setState(getInitialState());
+    const g = {
+      labourReadiness: vi.fn().mockResolvedValue(readiness({})),
+      materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
+      labourWorkforce: vi.fn().mockResolvedValue({ workers: [worker('W-MASON', 'mason', ['chief-mason'])], crews: [] }),
+      labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
+      labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
+      labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
+      labourCommitments: vi.fn().mockResolvedValue({ commitments: [] }),
+      labourCapacity: vi.fn().mockResolvedValue({ allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] }),
+      labourPresence: vi.fn().mockResolvedValue({ civilDate: '2026-07-28', musters: [], mismatches: [] }),
+      labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
+    };
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: ['labour'] });
+    s().loadLabour();
+    await vi.waitFor(() => { if (s().labourLoad !== 'ready') throw new Error('not loaded'); });
+    const fps = s().labourView!.workerFingerprints['W-MASON']!;
+    expect(fps).toContain(await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' }));
+    expect(fps).toContain(await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: 'chief-mason', shift: 'night' }));
+  });
+});
+
+describe('CODEX F2 — allocation draws down the covering supplier commitment (§F bound 3)', () => {
+  it('pickCommitmentFor picks the live SAME-SLICE commitment with undrawn quantity — exact fingerprint + date + shift', () => {
+    const cs = [commitment({ id: 'CC-A', civilDate: '2026-08-01' }), commitment({ id: 'CC-B', civilDate: '2026-08-02' })];
+    const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
+    expect(pickCommitmentFor(cs, [], spec, '2026-08-01')).toBe('CC-A'); // its OWN slice only
+    expect(pickCommitmentFor(cs, [], spec, '2026-08-03')).toBeNull();
+    expect(pickCommitmentFor(cs, [], { labourSpecFingerprint: 'other', shift: 'day' }, '2026-08-01')).toBeNull();
+    expect(pickCommitmentFor(cs, [], { labourSpecFingerprint: 'fp', shift: 'night' }, '2026-08-01')).toBeNull();
+    expect(pickCommitmentFor([commitment({ status: 'defaulted' })], [], spec, '2026-08-01')).toBeNull(); // the source reneged
+  });
+
+  it('a fully-drawn commitment is exhausted — and a delivered-then-released draw STAYS consumed (Task-4 round-2 rule)', () => {
+    const spec = { labourSpecFingerprint: 'fp', shift: 'day' };
+    const one = commitment({ id: 'CC-A', personShiftQty: 1 });
+    expect(pickCommitmentFor([one], [alloc({ capacityCommitmentId: 'CC-A' })], spec, '2026-08-01')).toBeNull();
+    expect(pickCommitmentFor([one], [alloc({ capacityCommitmentId: 'CC-A', status: 'released' })], spec, '2026-08-01')).toBeNull();
+    // quantity 2 with 1 drawn still offers the remainder
+    expect(pickCommitmentFor([commitment({ id: 'CC-A', personShiftQty: 2 })], [alloc({ capacityCommitmentId: 'CC-A' })], spec, '2026-08-01')).toBe('CC-A');
+  });
+
+  it('allocateWorker FORWARDS the commitment id so the server\'s drawdown actually runs (omits it for own workforce)', async () => {
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; st.activeProjectId = 'ambli'; st.capabilities = ['labour']; });
+    const g = {
+      allocateLabour: vi.fn().mockResolvedValue({}),
+      snapshot: vi.fn().mockResolvedValue({
+        project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+        decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+        drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+      }),
+      labourReadiness: vi.fn().mockResolvedValue(readiness({})),
+      materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
+      labourWorkforce: vi.fn().mockResolvedValue({ workers: [], crews: [] }),
+      labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
+      labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
+      labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
+      labourCommitments: vi.fn().mockResolvedValue({ commitments: [] }),
+      labourCapacity: vi.fn().mockResolvedValue({ allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] }),
+      labourPresence: vi.fn().mockResolvedValue({ civilDate: '2026-07-28', musters: [], mismatches: [] }),
+      labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
+    };
+    s()._setGateway(g as unknown as ApiGateway);
+    s().allocateWorker('ACT-1', 'REQ-1', '2026-08-01', 'WKR-1', 'CC-9');
+    await vi.waitFor(() => { if (g.allocateLabour.mock.calls.length !== 1) throw new Error('pending'); });
+    expect(g.allocateLabour.mock.calls[0]![0]).toEqual({ activityId: 'ACT-1', requirementId: 'REQ-1', civilDate: '2026-08-01', workerId: 'WKR-1', capacityCommitmentId: 'CC-9' });
+    // own-workforce: NO commitment id in the payload
+    s().allocateWorker('ACT-1', 'REQ-2', '2026-08-01', 'WKR-1', null);
+    await vi.waitFor(() => { if (g.allocateLabour.mock.calls.length !== 2) throw new Error('pending'); });
+    expect(g.allocateLabour.mock.calls[1]![0]).toEqual({ activityId: 'ACT-1', requirementId: 'REQ-2', civilDate: '2026-08-01', workerId: 'WKR-1' });
+  });
+});
+
+describe('CODEX F6 — the allocated count matches the server\'s coverage rule', () => {
+  const spec = { labourSpecFingerprint: 'fp-head' };
+
+  it('counts an ACTIVE allocation on the current activity with the head fingerprint', () => {
+    expect(allocatedCountFor([alloc({ labourSpecFingerprint: 'fp-head' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(1);
+  });
+
+  it('a row stranded by a revision (old activity OR old trade/skill fingerprint) does NOT count', () => {
+    expect(allocatedCountFor([alloc({ activityId: 'ACT-OLD', labourSpecFingerprint: 'fp-head' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(0);
+    expect(allocatedCountFor([alloc({ labourSpecFingerprint: 'fp-old' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(0);
+  });
+
+  it('released rows, other slices and other requirements never count; an ACTIVE substitution target DOES', () => {
+    expect(allocatedCountFor([alloc({ status: 'released', labourSpecFingerprint: 'fp-head' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(0);
+    expect(allocatedCountFor([alloc({ civilDate: '2026-08-02', labourSpecFingerprint: 'fp-head' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(0);
+    expect(allocatedCountFor([alloc({ requirementId: 'REQ-2', labourSpecFingerprint: 'fp-head' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [])).toBe(0);
+    const sub = substitution({ requirementId: 'REQ-1', fromFingerprint: 'fp-head', toFingerprint: 'fp-sub' });
+    expect(allocatedCountFor([alloc({ labourSpecFingerprint: 'fp-sub' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [sub])).toBe(1);
+    // the same substitution REVOKED no longer counts the substitute row
+    expect(allocatedCountFor([alloc({ labourSpecFingerprint: 'fp-sub' })], 'REQ-1', 'ACT-1', '2026-08-01', spec, [{ ...sub, revokedAt: 'x' }])).toBe(0);
   });
 });

@@ -28,4 +28,8 @@ export interface LabourView {
   capacity: LabourCapacityDto;
   presence: LabourPresenceDto;
   productivity: LabourProductivityResult;
+  /** Codex F1 — every fingerprint each worker's own (trade, skills) identity can satisfy,
+   *  computed once per load with the shared `computeLabourSpecFingerprint` so the allocate
+   *  picker offers only workers the server's coverage rule would actually count. */
+  workerFingerprints: Readonly<Record<string, readonly string[]>>;
 }

@@ -13,10 +13,11 @@ import { execSync } from 'node:child_process';
  * the INERT non-pilot state (no Labour nav, the labour read 404s).
  *
  * Determinism: execution coverage is evaluated at TODAY in the PROJECT timezone, and the hub's
- * muster form uses the BROWSER's civil date — so the pilot project is created with timeZone 'UTC'
- * and the browser context is pinned to UTC, making spec/server/browser agree on "today" at any
- * wall-clock moment. Every test provisions its OWN tagged activity/worker/trade, so the suite is
- * self-contained and re-runnable consecutively in legacy AND outbox modes.
+ * muster form now derives "today" from the SNAPSHOT's `project.timeZone` (Codex F-TZ) — the pilot
+ * project is created with timeZone 'UTC' and the browser context is pinned to UTC, so spec/server/
+ * browser agree on "today" at any wall-clock moment. Every test provisions its OWN tagged
+ * activity/worker/trade, so the suite is self-contained and re-runnable consecutively in legacy
+ * AND outbox modes.
  */
 
 test.use({ timezoneId: 'UTC' });
@@ -160,6 +161,10 @@ test('PILOT §J acceptance chain: commitment → browser ALLOCATE (AT-RISK → R
   const today = todayUtc();
   const activityId = await createActivity(request, pmcPilot, pilotId, `Brickwork ${tag}`, today);
   const { requirementId, workerId } = await labourFixture(request, pmcPilot, pilotId, activityId, tag, { commit: true });
+  // Codex F1 — an INCOMPATIBLE-trade worker on the same roster must never be offered for this slice.
+  const elecTrade = `elec-${tag}`;
+  await post(request, pmcPilot, `/projects/${pilotId}/labour/trades`, { code: elecTrade, name: `Electrician ${tag}` });
+  const wrongWorker = await post(request, pmcPilot, `/projects/${pilotId}/labour/workers`, { name: `Wrong ${tag}`, tradeCode: elecTrade, skillCodes: [], activeFrom: today });
 
   await signInToProject(page, PMC, PILOT_NAME);
   await openLabour(page);
@@ -171,7 +176,10 @@ test('PILOT §J acceptance chain: commitment → browser ALLOCATE (AT-RISK → R
   await expect(verdict).toHaveText('AT-RISK');
 
   await page.getByTestId('labour-tab-allocation').click();
-  await page.getByTestId(`labour-worker-select-${requirementId}-${today}`).selectOption(workerId);
+  const workerSelect = page.getByTestId(`labour-worker-select-${requirementId}-${today}`);
+  await expect(workerSelect.locator(`option[value="${workerId}"]`)).toHaveCount(1); // the compatible mason
+  await expect(workerSelect.locator(`option[value="${wrongWorker.id}"]`)).toHaveCount(0); // F1 — the electrician is NOT an option
+  await workerSelect.selectOption(workerId);
   await page.getByTestId(`labour-do-allocate-${requirementId}-${today}`).click();
   await page.getByTestId('labour-tab-readiness').click();
   await expect(verdict).toHaveText('READY'); // the forecast transition, proven in the browser
@@ -189,8 +197,12 @@ test('PILOT §J acceptance chain: commitment → browser ALLOCATE (AT-RISK → R
 
   // Work — the browser records worked minutes against THIS run's active allocation (default 480).
   const capacity = await get(request, pmcPilot, `/projects/${pilotId}/labour/capacity`);
-  const allocation = (capacity.allocations as Array<{ id: string; activityId: string; status: string }>).find((a) => a.activityId === activityId && a.status === 'active')!;
+  const allocation = (capacity.allocations as Array<{ id: string; activityId: string; status: string; capacityCommitmentId: string | null }>).find((a) => a.activityId === activityId && a.status === 'active')!;
+  // Codex F2 — the browser allocate CARRIED the covering commitment id, so the server recorded the
+  // §F bound-3 drawdown: the allocation is supplier-capacity-backed, and the hub says so.
+  expect(allocation.capacityCommitmentId).toBeTruthy();
   await page.getByTestId('labour-tab-allocation').click();
+  await expect(page.getByTestId(`labour-allocation-${allocation.id}`)).toContainText('supplier capacity');
   const workBtn = page.getByTestId(`labour-do-work-${allocation.id}`);
   await expect(workBtn).toBeVisible();
   await workBtn.click();
@@ -244,9 +256,25 @@ test('PILOT: the Team roster section onboards a worker against the catalog', asy
   expect((wf.workers as Array<{ name: string }>).some((w) => w.name === `Roster ${tag}`)).toBe(true);
 });
 
-test('INERT: a non-pilot project has NO Labour nav and the labour read 404s', async ({ page, request }) => {
+test('INERT: a non-pilot project has NO Labour nav, a direct /labour deep link is BOUNCED, and the labour read 404s', async ({ page, request }) => {
   await signInToProject(page, PMC, PLAIN_NAME);
   await expect(page.getByRole('navigation').getByRole('button', { name: /Labour/ })).toHaveCount(0);
+  // Codex F-deeplink — a bookmarked /labour URL must never land on a permanently-loading hub. A
+  // full reload drops the in-memory token (the project-scope deep-link pattern): sign in THROUGH
+  // the gate with the deep link's URL standing. Once the shell reports no `labour` capability the
+  // screen is ejected to the role default — the URL leaves /labour and the hub never renders.
+  // (A fresh login scopes to the account's SERVER-designated home project — the pre-existing
+  // "authentication lands on the server project" behaviour — so the eject may land on the home
+  // project's role default; the finding's claim is only that the dead hub is never served.)
+  await page.goto(`/projects/${plainId}/labour`);
+  await page.getByRole('button', { name: /team member/i }).click();
+  await page.getByTestId('go-login').click();
+  await page.getByTestId('login-email').fill(PMC);
+  await page.getByTestId('login-password').fill(PASSWORD);
+  await page.getByTestId('login-submit').click();
+  await expect(page).not.toHaveURL(/\/labour$/, { timeout: 15_000 });
+  await expect(page).toHaveURL(/\/for-you$/, { timeout: 15_000 });
+  await expect(page.getByTestId('labour-summary')).toHaveCount(0);
   const res = await request.get(`${API}/projects/${plainId}/labour/readiness`, { headers: bearer(pmcPlain) });
   expect(res.status()).toBe(404);
 });

@@ -6,6 +6,8 @@ import { RefreshCw, WifiOff } from '@/lib/icons';
 import type { LabourForecastVerdict, RequirementListItem, WorkerDto } from '@vitan/shared';
 import { decAdd } from '@/lib/decimal';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
+import { todayCivil } from '@/lib/civilDate';
+import { compatibleWorkerIds, allocatedCountFor, pickCommitmentFor } from '@/lib/labourSelection';
 import styles from './responsive.module.css';
 
 /**
@@ -47,14 +49,6 @@ const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11, colo
 const muted: CSSProperties = { fontSize: 12.5, color: 'var(--muted)' };
 const selectStyle: CSSProperties = { border: '1px solid var(--hairline)', borderRadius: 7, padding: '6px 8px', fontSize: 12, background: 'var(--canvas)', color: 'var(--ink)' };
 
-/** The browser's civil date — the hub's "today" for the muster form + presence display (the
- *  server validates every write against the project timezone clock). */
-const todayCivil = (): string => {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-};
-
 /** A requirement's demand slices mapped to the requisition-line shape (one line per slice). */
 const requisitionLinesOf = (r: RequirementListItem) =>
   (r.labourSpec?.demandSlices ?? []).map((sl) => ({ requirementId: r.requirementId, revision: r.revision, civilDate: sl.civilDate, personShiftQty: sl.personShiftQty }));
@@ -64,6 +58,8 @@ export function LabourScreen() {
   const labourLoad = useStore((s) => s.labourLoad);
   const labourPending = useStore(useShallow((s) => s.labourPending));
   const activities = useStore(useShallow((s) => s.activities));
+  const role = useStore((s) => s.role);
+  const timeZone = useStore((s) => s.timeZone);
   const loadLabour = useStore((s) => s.loadLabour);
   const allocateWorker = useStore((s) => s.allocateWorker);
   const musterWorker = useStore((s) => s.musterWorker);
@@ -94,11 +90,10 @@ export function LabourScreen() {
   const labourReqs = labour ? labour.requirements.filter((r) => r.labourSpec !== null) : [];
   const workers = labour ? labour.workforce.workers.filter((w) => w.revokedAt === null) : [];
   const workerName = (id: string): string => labour?.workforce.workers.find((w) => w.id === id)?.name ?? id;
-  const today = todayCivil();
-
-  /** Active allocated person-shifts for one requirement slice (§C: 1 active row = 1 person-shift). */
-  const allocatedFor = (requirementId: string, civilDate: string): number =>
-    labour ? labour.capacity.allocations.filter((a) => a.requirementId === requirementId && a.civilDate === civilDate && a.status === 'active').length : 0;
+  // Codex F-TZ — the hub's "today" is the PROJECT's civil date, matching the server's
+  // `clock.today(project.timeZone)` truth (a viewer abroad must muster against the site's day).
+  const today = todayCivil(timeZone);
+  const substitutions = labour ? labour.capacity.skillSubstitutions : [];
 
   return (
     <div className={`${styles.screen} ${styles.mid}`}>
@@ -249,22 +244,34 @@ export function LabourScreen() {
               <Panel empty={!labourReqs.length && !labour.capacity.allocations.length} emptyKey="allocation" emptyText="No labour demand to allocate.">
                 {labourReqs.filter((r) => r.status === 'open').map((r) => {
                   const spec = r.labourSpec!;
+                  // Codex F1 — offer ONLY workers whose own (trade, skill, shift) identity hashes to
+                  // the requirement's head fingerprint or to an ACTIVE approved substitution target;
+                  // an electrician is never offered for a mason slice.
+                  const compat = compatibleWorkerIds(workers, labour.workerFingerprints, spec, r.requirementId, substitutions);
+                  const offerable = workers.filter((w: WorkerDto) => compat.has(w.id));
                   return (
                     <div key={r.requirementId} data-testid={`labour-alloc-req-${r.requirementId}`} style={rowCard}>
                       <div style={{ fontWeight: 600, fontSize: 13.5 }}>{[spec.tradeCode, spec.skillCode, spec.shift].filter(Boolean).join(' · ')} · {activityName(r.activityId)}</div>
                       {spec.demandSlices.map((sl) => {
                         const sliceKey = `${r.requirementId}:${sl.civilDate}`;
-                        const chosen = allocWorker[sliceKey] ?? '';
+                        const chosenRaw = allocWorker[sliceKey] ?? '';
+                        const chosen = compat.has(chosenRaw) ? chosenRaw : ''; // a stale pick never survives a compat change
                         const aKey = chosen ? allocateCoalesceKey(r.activityId, r.requirementId, sl.civilDate, chosen) : '';
-                        const done = allocatedFor(r.requirementId, sl.civilDate);
+                        // Codex F6 — count only allocations the server's coverage would count: ACTIVE,
+                        // bound to the requirement's CURRENT activity AND a currently-satisfying
+                        // fingerprint (a row stranded by a revision is not "allocated").
+                        const done = allocatedCountFor(labour.capacity.allocations, r.requirementId, r.activityId, sl.civilDate, spec, substitutions);
+                        // Codex F2 — a commitment-covered slice draws DOWN the matching live commitment
+                        // (§F bound 3): pass its id so the server consumes the supplier capacity.
+                        const commitmentId = pickCommitmentFor(labour.commitments, labour.capacity.allocations, spec, sl.civilDate);
                         return (
                           <div key={sl.civilDate} data-testid={`labour-alloc-slice-${r.requirementId}-${sl.civilDate}`} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 7 }}>
-                            <span style={{ fontSize: 12.5, minWidth: 190 }}>{sl.civilDate} · {sl.shift} · allocated {done}/{sl.personShiftQty}</span>
+                            <span style={{ fontSize: 12.5, minWidth: 190 }}>{sl.civilDate} · {sl.shift} · allocated {done}/{sl.personShiftQty}{commitmentId ? ' · supplier capacity available' : ''}</span>
                             <select value={chosen} data-testid={`labour-worker-select-${r.requirementId}-${sl.civilDate}`} onChange={(e) => setAllocWorker((m) => ({ ...m, [sliceKey]: e.target.value }))} style={selectStyle}>
-                              <option value="">Choose worker…</option>
-                              {workers.map((w: WorkerDto) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}
+                              <option value="">{offerable.length ? 'Choose worker…' : 'No compatible workers'}</option>
+                              {offerable.map((w: WorkerDto) => <option key={w.id} value={w.id}>{w.name} ({w.tradeCode})</option>)}
                             </select>
-                            <Button variant="outline" disabled={!chosen || pending(aKey)} data-testid={`labour-do-allocate-${r.requirementId}-${sl.civilDate}`} onClick={() => chosen && allocateWorker(r.activityId, r.requirementId, sl.civilDate, chosen)} style={{ fontSize: 11.5, flex: 'none' }}>
+                            <Button variant="outline" disabled={!chosen || pending(aKey)} data-testid={`labour-do-allocate-${r.requirementId}-${sl.civilDate}`} onClick={() => chosen && allocateWorker(r.activityId, r.requirementId, sl.civilDate, chosen, commitmentId)} style={{ fontSize: 11.5, flex: 'none' }}>
                               {chosen && pending(aKey) ? 'Allocating…' : 'Allocate'}
                             </Button>
                           </div>
@@ -305,6 +312,10 @@ export function LabourScreen() {
 
             {tab === 'attendance' && (
               <>
+                {/* Codex F-PMC — the manual muster is a `labour.override` exception the server allows
+                    ONLY to pmc; for any other role the form is absent (an engineer's click would be a
+                    guaranteed 403 the outbox discards). Workers normally tap their own bound device. */}
+                {role === 'pmc' && (
                 <div style={rowCard}>
                   <div style={{ ...mono, marginBottom: 6 }}>MARK PRESENT — {today} (manual exception; workers normally tap their own bound device)</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -328,6 +339,7 @@ export function LabourScreen() {
                     })()}
                   </div>
                 </div>
+                )}
                 <Panel empty={!labour.presence.musters.length && !labour.presence.mismatches.length} emptyKey="attendance" emptyText="No attendance recorded today.">
                   {labour.presence.musters.map((mu) => (
                     <div key={`${mu.workerId}-${mu.shift}`} data-testid={`labour-muster-${mu.workerId}`} style={rowCard}>

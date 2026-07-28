@@ -70,6 +70,8 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, isLabourOpType, normalizeLabourOutbox } from '@/lib/labourKeys';
+import { todayCivil } from '@/lib/civilDate';
+import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -208,6 +210,12 @@ export interface AppState {
   // project, `[]` otherwise). The Materials nav/screens gate on `'materials'`, so a non-pilot project
   // shows none. Project-owned → torn down on scope change (never leaks a pilot flag across a switch).
   capabilities: string[];
+  // Phase 4 Task 6 correction (Codex F-deeplink) — whether the ACTIVE project's shell has reported
+  // its capabilities yet. `false` (unknown) means RouteBridge must NOT bounce a capability-gated
+  // deep link — a cold `/projects/<pilot>/labour` load would otherwise be ejected before the shell
+  // lands. Once `true`, a capability-gated screen the project lacks is redirected like any
+  // forbidden screen. Project-owned → reset on every scope change with `capabilities`.
+  capabilitiesKnown: boolean;
   // Phase 3 Task 7 — the pilot Materials bundle + its module-query load status (greenfield, no snapshot
   // fallback → no `source`). `null`/'idle' on a non-pilot project; the pilot's shell load triggers it.
   materialsView: MaterialsView | null;
@@ -280,6 +288,11 @@ export interface AppState {
   stage: string;
   siteCode: string;
   location: string;
+  /** Phase 4 Task 6 correction (Codex F-TZ) — the project's IANA timezone from the snapshot
+   *  (`null` until known / in the local demo). The server evaluates execution readiness against
+   *  `clock.today(project.timeZone)`, so field surfaces stamping a civil "today" (the manual
+   *  muster, the presence read) MUST derive it from this — never the browser's local date. */
+  timeZone: string | null;
   projStart: string;
   projEnd: string;
   /** Task 6: the schedule anchor (the civil day offset 0 refers to) + real window end */
@@ -380,7 +393,7 @@ export interface AppActions {
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
-  allocateWorker: (activityId: string, requirementId: string, civilDate: string, workerId: string) => void;
+  allocateWorker: (activityId: string, requirementId: string, civilDate: string, workerId: string, capacityCommitmentId?: string | null) => void;
   musterWorker: (workerId: string, civilDate: string, shift: 'day' | 'night', manualReason: string) => void;
   recordWorkedMinutes: (allocationId: string, workedMinutes: number) => void;
   raiseLabourRequisition: (title: string, lines: ReadonlyArray<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number }>) => void;
@@ -653,6 +666,7 @@ export function getInitialState(): AppState {
     activitiesSource: null,
     enabledModules: [],
     capabilities: [],
+    capabilitiesKnown: false,
     materialsView: null,
     materialsLoad: 'idle',
     reservationPlans: {},
@@ -697,6 +711,7 @@ export function getInitialState(): AppState {
     stage: PROJECT.stage,
     siteCode: PROJECT.siteCode,
     location: '',
+    timeZone: null,
     projStart: PROJECT.projStart,
     projEnd: PROJECT.projEnd,
     scheduleStartDate: PROJECT.scheduleStartDate,
@@ -994,6 +1009,7 @@ export const useStore = create<Store>()(
         s.stage = snap.project.stage;
         s.siteCode = snap.project.siteCode;
         s.location = snap.project.location ?? '';
+        s.timeZone = snap.project.timeZone ?? null;
         s.projStart = snap.project.projStart;
         s.projEnd = snap.project.projEnd;
         s.scheduleStartDate = snap.project.scheduleStartDate ?? null;
@@ -2326,6 +2342,9 @@ export const useStore = create<Store>()(
           if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) {
             s.enabledModules = shell.enabledModules;
             s.capabilities = shell.capabilities;
+            // F-deeplink — the shell has now REPORTED this project's capabilities, so RouteBridge
+            // may enforce the capability gate on deep links (it never bounces while unknown).
+            s.capabilitiesKnown = true;
           }
         });
         // Phase 3 Task 7 — on a PILOT project, pull the Materials bundle once the capability is known.
@@ -2438,11 +2457,10 @@ export const useStore = create<Store>()(
       const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
         seq === labourLoadSeq && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
       if (get().labourLoad !== 'ready') set((s) => { s.labourLoad = 'loading'; }); // stale-while-revalidate
-      // Today's presence read uses the BROWSER's civil date — a display-only convenience for the
-      // field surface (the server validates every WRITE against the project timezone clock).
-      const now = new Date();
-      const p2 = (n: number) => String(n).padStart(2, '0');
-      const todayCivil = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`;
+      // Today's presence read uses the PROJECT-timezone civil date (Codex F-TZ): the server
+      // evaluates readiness against `clock.today(project.timeZone)`, so a viewer in another
+      // timezone must still read (and muster against) the SITE's "today", never the browser's.
+      const today = todayCivil(get().timeZone);
       Promise.all([
         gateway.labourReadiness(),
         gateway.materialRequirements(), // the SHARED type-neutral list; the hub filters to labour rows
@@ -2452,35 +2470,44 @@ export const useStore = create<Store>()(
         gateway.labourPurchaseOrders(),
         gateway.labourCommitments(),
         gateway.labourCapacity(),
-        gateway.labourPresence(todayCivil),
+        gateway.labourPresence(today),
         gateway.labourProductivity(),
-      ]).then(([readiness, requirements, workforce, catalog, requisitions, purchaseOrders, commitments, capacity, presence, productivity]) => set((s) => {
-        if (!owns(s)) return; // dropped after a switch/re-auth OR superseded by a newer load
-        // castDraft: the labour read DTOs are `readonly` server snapshots stored as-is, never mutated.
-        s.labourView = castDraft<LabourView>({
-          readiness,
-          requirements: requirements.requirements,
-          workforce,
-          catalog,
-          requisitions: requisitions.requisitions,
-          purchaseOrders: purchaseOrders.purchaseOrders,
-          commitments: commitments.commitments,
-          capacity,
-          presence,
-          productivity,
+      ]).then(async ([readiness, requirements, workforce, catalog, requisitions, purchaseOrders, commitments, capacity, presence, productivity]) => {
+        // F1 (compatible pickers) — every fingerprint each worker's own (trade, skills) identity
+        // can satisfy, computed ONCE per load with the SAME shared WebCrypto fingerprint the
+        // server pins, so the allocate UI can offer only workers the coverage rule would count.
+        const workerFingerprints = await buildWorkerFingerprints(workforce.workers);
+        set((s) => {
+          if (!owns(s)) return; // dropped after a switch/re-auth OR superseded by a newer load
+          // castDraft: the labour read DTOs are `readonly` server snapshots stored as-is, never mutated.
+          s.labourView = castDraft<LabourView>({
+            readiness,
+            requirements: requirements.requirements,
+            workforce,
+            catalog,
+            requisitions: requisitions.requisitions,
+            purchaseOrders: purchaseOrders.purchaseOrders,
+            commitments: commitments.commitments,
+            capacity,
+            presence,
+            productivity,
+            workerFingerprints,
+          });
+          s.labourLoad = 'ready';
         });
-        s.labourLoad = 'ready';
-      })).catch(() => set((s) => {
+      }).catch(() => set((s) => {
         // keep the last-good bundle; expose a Retry boundary. An OLDER failure never
         // overwrites a NEWER result's load state.
         if (owns(s)) s.labourLoad = 'error';
       }));
     },
-    allocateWorker: (activityId, requirementId, civilDate, workerId) => {
+    allocateWorker: (activityId, requirementId, civilDate, workerId, capacityCommitmentId) => {
       // fresh idempotency key per deliberate action; coalesced while pending on the exact
       // (activity, requirement, date, worker) target — one live allocation per worker/slice.
+      // F2 (drawdown) — a commitment-covered slice passes the matching commitment id so the
+      // server's §F bound-3 drawdown consumes the supplier capacity; null = own workforce.
       dispatchLabour(
-        { t: 'allocateLabour', input: { activityId, requirementId, civilDate, workerId }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, civilDate, workerId) },
+        { t: 'allocateLabour', input: { activityId, requirementId, civilDate, workerId, ...(capacityCommitmentId ? { capacityCommitmentId } : {}) }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, civilDate, workerId) },
         'Allocate the worker to the activity',
         'Worker allocated to the activity.',
       );

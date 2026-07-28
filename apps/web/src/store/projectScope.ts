@@ -57,6 +57,11 @@ export interface ProjectDataState {
   // Materials bundle. Project-owned, so they tear down on every scope change: a non-pilot / freshly
   // switched project shows NO Materials nav until its shell reloads the capability (never stale).
   capabilities: string[];
+  // Phase 4 Task 6 correction (Codex F-deeplink) — whether the shell has REPORTED the active
+  // project's capabilities yet. Reset with `capabilities` on every scope change so RouteBridge
+  // treats the next project's capability set as unknown (no premature deep-link bounce) until its
+  // own shell lands.
+  capabilitiesKnown: boolean;
   materialsView: MaterialsView | null;
   // Phase 3 Task 7 (correction 2) — the SERVER-computed reservation plan per activity whose cover UI is
   // open (canonical reserve candidates + the residual to requisition), and the in-flight materials
@@ -91,6 +96,7 @@ export function emptyProjectData(): ProjectDataState {
     notifications: [],
     companies: [],
     capabilities: [],
+    capabilitiesKnown: false,
     materialsView: null,
     reservationPlans: {},
     materialsPending: [],
