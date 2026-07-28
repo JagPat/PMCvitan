@@ -390,6 +390,39 @@ class GitHubClient {
     );
   }
 
+  async mergeExactHead(number, expectedHead) {
+    const response = await fetch(
+      `${API_ROOT}/repos/${this.repository}/pulls/${number}/merge`,
+      {
+        method: 'PUT',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${this.token}`,
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        body: JSON.stringify({
+          merge_method: 'squash',
+          sha: expectedHead,
+        }),
+      },
+    );
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : null;
+    if (response.status === 405) {
+      return {
+        merged: false,
+        message: payload?.message ?? 'Pull request is not ready to merge',
+      };
+    }
+    if (!response.ok) {
+      throw new Error(
+        `GitHub PUT exact-head merge failed (${response.status}): ${text}`,
+      );
+    }
+    return payload;
+  }
+
   async reviewThreads(number) {
     const [owner, name] = this.repository.split('/');
     const threads = [];
@@ -529,6 +562,39 @@ async function setDraftForCurrentHead(
     : null;
 }
 
+export async function completeReviewedPullRequest(
+  client,
+  pullRequest,
+  expectedHead,
+) {
+  const direct = await client.mergeExactHead(
+    pullRequest.number,
+    expectedHead,
+  );
+  if (direct?.merged) return 'merged';
+
+  try {
+    await client.enableAutoMerge(pullRequest);
+    return 'queued';
+  } catch (error) {
+    if (
+      !(error instanceof Error)
+      || !error.message.includes('is in clean status')
+    ) {
+      throw error;
+    }
+    const raced = await client.mergeExactHead(
+      pullRequest.number,
+      expectedHead,
+    );
+    if (raced?.merged) return 'merged';
+    throw new Error(
+      `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
+      { cause: error },
+    );
+  }
+}
+
 export async function ensureTerminalReviewState(
   client,
   pullRequest,
@@ -571,7 +637,7 @@ export async function ensureTerminalReviewState(
         pullRequest.html_url,
       );
     }
-    await client.enableAutoMerge(live);
+    await completeReviewedPullRequest(client, live, expectedHead);
   } else {
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
@@ -1126,7 +1192,11 @@ export async function run() {
         expectedHead,
       );
       if (!pullRequest) return;
-      await client.enableAutoMerge(pullRequest);
+      const completion = await completeReviewedPullRequest(
+        client,
+        pullRequest,
+        expectedHead,
+      );
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
@@ -1134,7 +1204,9 @@ export async function run() {
           head: expectedHead,
           detail: `${result.detail}; resolved ${resolvedThreadCount} verified Codex thread${resolvedThreadCount === 1 ? '' : 's'}`,
           attempt,
-          next: 'GitHub auto-merge is queued behind branch protection.',
+          next: completion === 'merged'
+            ? 'GitHub squash-merged this exact reviewed head.'
+            : 'GitHub auto-merge is queued behind branch protection.',
         }),
       );
       return;

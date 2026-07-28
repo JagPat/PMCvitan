@@ -29,7 +29,7 @@ This repository is designed to progress without the owner's laptop or technical 
 3. GitHub requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. When all five pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
 4. Marking the PR ready triggers Codex. The same exact-head workflow run polls that one invocation to its terminal result and accepts only evidence from `chatgpt-codex-connector[bot]` for the current SHA and review cycle. Review and review-comment webhooks never start or mutate the merge workflow.
 5. A current-head finding fails `codex-current-head` and returns the PR to draft. Claude Auto-fix reproduces the finding, fixes forward, and pushes a new head; that push invalidates every prior clearance.
-6. A fresh current-head clean Codex signal succeeds `codex-current-head` and queues squash auto-merge. Missing CI, stale evidence, timeout, or inactive authoring all fail closed.
+6. A fresh current-head clean Codex signal succeeds `codex-current-head`. GitHub then squash-merges that exact reviewed SHA immediately when the PR is clean. If GitHub still reports a waiting state, the controller queues squash auto-merge; a clean-state race retries the exact-SHA merge once. Missing CI, stale evidence, timeout, or inactive authoring all fail closed.
 7. Coolify deploys `main`. The runner updates `docs/STATUS.md` and begins the next work item only after merge.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
@@ -103,7 +103,7 @@ Ordinary CI recovery searches the complete paginated status history, including
 terminal review results hidden below legacy `pending` or `ci:` statuses. Review
 success can be reused without another trigger only while the PR is already ready.
 If legacy CI left the PR draft, the owner enters the normal ready-and-poll path and
-requires a fresh exact-head result before enabling auto-merge. Review
+requires a fresh exact-head result before completing the merge. Review
 and review-comment webhooks are intentionally not orchestrator triggers. The Codex
 App's finding comments still wake the subscription-backed Claude Auto-fix session
 directly; GitHub Actions does not need an AI key or a second result writer.
@@ -117,7 +117,7 @@ settings:
   `codex-current-head`.
 - Require branches to be up to date before merging (`strict: true`).
 - Enforce the protection for administrators.
-- Keep squash auto-merge enabled.
+- Keep squash auto-merge enabled for the waiting-state fallback.
 
 Do not add `codex-current-head` before the workflow is present on the default
 branch; doing so would intentionally block every PR, including the bootstrap PR.

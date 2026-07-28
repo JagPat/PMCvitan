@@ -276,6 +276,9 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async setStatus(head, state, description) {
       statusWrites.push({ head, state, description });
     },
+    async mergeExactHead() {
+      return { merged: false, message: 'Not ready to merge' };
+    },
     async enableAutoMerge(current) {
       autoMergeDraft = current.draft;
     },
@@ -938,7 +941,7 @@ test('workflow gives one exact-head run sole ownership of review and merge', asy
   assert.doesNotMatch(workflow, /pull_request_target:/);
 });
 
-test('one polled Codex invocation owns terminal success and auto-merge', async () => {
+test('one polled Codex invocation owns terminal success and merge completion', async () => {
   const gate = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
     'utf8',
@@ -952,13 +955,117 @@ test('one polled Codex invocation owns terminal success and auto-merge', async (
     'reclassifyCurrentCodexEvidence',
   );
   const publishedSuccess = clearBranch.lastIndexOf("'success'");
-  const autoMerge = clearBranch.lastIndexOf('enableAutoMerge');
+  const mergeCompletion = clearBranch.lastIndexOf(
+    'completeReviewedPullRequest',
+  );
   assert.ok(finalEvidence >= 0);
   assert.ok(publishedSuccess > finalEvidence);
-  assert.ok(autoMerge > publishedSuccess);
+  assert.ok(mergeCompletion > publishedSuccess);
   assert.doesNotMatch(clearBranch, /TERMINAL_SETTLE_MS/);
   assert.doesNotMatch(clearBranch, /admitAutoMerge/);
   assert.doesNotMatch(clearBranch, /handleCodexEvidence/);
+});
+
+test('a clean reviewed head is squash-merged directly with exact SHA', async () => {
+  assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
+  const expectedHead = 'a'.repeat(40);
+  const pullRequest = {
+    number: 230,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+  };
+  const calls = [];
+  const client = {
+    async mergeExactHead(number, head) {
+      calls.push(['merge', number, head]);
+      return { merged: true, sha: 'b'.repeat(40) };
+    },
+    async enableAutoMerge() {
+      calls.push(['auto-merge']);
+    },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(
+      client,
+      pullRequest,
+      expectedHead,
+    ),
+    'merged',
+  );
+  assert.deepEqual(calls, [['merge', 230, expectedHead]]);
+});
+
+test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
+  assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
+  const expectedHead = 'a'.repeat(40);
+  const pullRequest = {
+    number: 230,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+  };
+  const calls = [];
+  const client = {
+    async mergeExactHead(number, head) {
+      calls.push(['merge', number, head]);
+      return { merged: false, message: 'Not ready to merge' };
+    },
+    async enableAutoMerge(current) {
+      calls.push(['auto-merge', current.number]);
+    },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(
+      client,
+      pullRequest,
+      expectedHead,
+    ),
+    'queued',
+  );
+  assert.deepEqual(calls, [
+    ['merge', 230, expectedHead],
+    ['auto-merge', 230],
+  ]);
+});
+
+test('a clean-state auto-merge race retries the exact-SHA merge once', async () => {
+  assert.equal(typeof reviewGate.completeReviewedPullRequest, 'function');
+  const expectedHead = 'a'.repeat(40);
+  const pullRequest = {
+    number: 230,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+  };
+  let mergeAttempts = 0;
+  const client = {
+    async mergeExactHead(number, head) {
+      assert.equal(number, 230);
+      assert.equal(head, expectedHead);
+      mergeAttempts += 1;
+      return mergeAttempts === 1
+        ? { merged: false, message: 'Not ready to merge' }
+        : { merged: true, sha: 'b'.repeat(40) };
+    },
+    async enableAutoMerge() {
+      throw new Error(
+        'GitHub GraphQL failed: Pull request Pull request is in clean status',
+      );
+    },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(
+      client,
+      pullRequest,
+      expectedHead,
+    ),
+    'merged',
+  );
+  assert.equal(mergeAttempts, 2);
 });
 
 test('review cycles are serialized by pull request and exact head', async () => {
@@ -1008,11 +1115,11 @@ test('terminal failures restore draft and CI failures run before recovery', asyn
   assert.match(terminalHelper, /persistentReviewFailure/);
   assert.ok(
     terminalHelper.indexOf('persistentReviewFailure')
-      < terminalHelper.indexOf('enableAutoMerge'),
+      < terminalHelper.indexOf('completeReviewedPullRequest'),
   );
   assert.ok(
     terminalHelper.indexOf('recovered prior clean Codex result')
-      < terminalHelper.indexOf('enableAutoMerge'),
+      < terminalHelper.indexOf('completeReviewedPullRequest'),
   );
   assert.match(terminalHelper, /setDraftForCurrentHead[\s\S]*true/);
 
@@ -1143,7 +1250,7 @@ test('rechecks the live head before terminal PR mutations', async () => {
   );
 
   assert.match(gate, /async function refreshCurrentHead\(/);
-  assert.match(gate, /enableAutoMerge\(pullRequest\)/);
+  assert.match(gate, /completeReviewedPullRequest\([\s\S]*expectedHead/);
   assert.match(gate, /if \(!pullRequest\) return;/);
   assert.match(gate, /resolveCodexThreads/);
 });

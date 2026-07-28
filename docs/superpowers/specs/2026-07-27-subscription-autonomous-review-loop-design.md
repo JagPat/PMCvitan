@@ -34,7 +34,7 @@ laptop and without Anthropic or OpenAI API keys in GitHub Actions.
 | `draft` | Claude opens or updates a PR | CI runs; `codex-current-head` is absent or pending | all required CI checks succeed |
 | `review_pending` | trusted orchestrator promotes the exact head to ready | set `codex-current-head=pending`; poll Codex | fresh clean reaction, current-head findings, or timeout |
 | `changes_required` | Codex posts any current-head inline finding or review | set gate failure; return PR to draft | Claude Auto-fix pushes a new head |
-| `clear` | Codex posts a fresh `+1` after this head's ready transition and no current-head finding exists | set gate success; queue squash auto-merge | GitHub merges after every required check is green |
+| `clear` | Codex posts a fresh `+1` after this head's ready transition and no current-head finding exists | set gate success; squash-merge the exact SHA if clean, otherwise queue auto-merge | GitHub merges only the reviewed SHA after every required check is green |
 | `blocked` | CI fails or Codex misses two bounded review attempts | set gate failure; return PR to draft; explain recovery in sticky comment | Claude or an operator pushes a correction or dispatches recovery |
 
 Every push creates a new SHA with no successful `codex-current-head` status.
@@ -92,8 +92,12 @@ Strict up-to-date checks and administrator enforcement are enabled. No review
 approval count is used because Codex reports through comments/reactions rather
 than GitHub's approval state.
 
-The orchestrator is the only repository automation that queues auto-merge. The
-old existence-only Codex review check is removed.
+The orchestrator is the only repository automation that completes a reviewed PR.
+It sends the exact reviewed SHA to GitHub's squash-merge endpoint when the PR is
+already clean. If GitHub still reports a waiting state, it queues auto-merge; if
+that mutation races with the PR becoming clean, it retries the exact-SHA merge
+once. Branch protection remains authoritative in every path. The old
+existence-only Codex review check is removed.
 
 ## Claude Subscription Contract
 
@@ -116,4 +120,3 @@ worker because doing that from Actions would require Anthropic API credentials.
 - `pnpm check` includes the automation tests.
 - Bootstrap is proven on PR #230 through `workflow_dispatch` after the workflow is
   merged and branch protection is updated.
-
