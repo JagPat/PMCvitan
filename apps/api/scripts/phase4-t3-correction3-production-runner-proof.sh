@@ -204,7 +204,7 @@ cat > "$PLANDIR/badusr.json" <<JSON
 JSON
 DATABASE_URL="$URL_BASE/$DB?schema=public" node "$T3C_ARTIFACT" repair --plan "$PLANDIR/badusr.json" --operator ops@vitan.in --reason "bogus" >/tmp/t3cpr-refuse2.log 2>&1
 [ $? -ne 0 ] && ok "a plan naming an unknown accountable user is REFUSED (never fabricated)" || bad "an unknown revokedById was accepted"
-grep -q 'has no standing on project' /tmp/t3cpr-refuse2.log && ok "the refusal names the reason explicitly" || bad "the refusal message is not explicit"
+grep -q 'has no attendance-revoke standing on project' /tmp/t3cpr-refuse2.log && ok "the refusal names the reason explicitly" || bad "the refusal message is not explicit"
 [ "$(q "$DB" "SELECT \"manualReason\" FROM \"LabourAttendance\" WHERE \"id\"='ATT-BLANK'")" = "   " ] \
   && ok "the refused repairs left the row byte-for-byte unchanged" || bad "a refused repair modified the row"
 [ "$(q "$DB" "SELECT to_regclass('\"T3CRepairAction\"') IS NOT NULL")" = "f" ] \

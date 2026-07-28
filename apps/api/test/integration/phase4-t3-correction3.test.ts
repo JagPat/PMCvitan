@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PrismaClient } from '@prisma/client';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -360,7 +361,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     await expect(repairs.repair(plan({ id: real.id }))).rejects.toThrow(/does not carry a blank manualReason/);
     // the accountable human must have STANDING — round 7 scoped this to the row's project explicitly rather than letting the
     // revocation FK fail opaquely, and never fabricates one
-    await expect(repairs.repair(plan({ revokedById: 'no-such-user' }))).rejects.toThrow(/has no standing on project/);
+    await expect(repairs.repair(plan({ revokedById: 'no-such-user' }))).rejects.toThrow(/has no attendance-revoke standing on project/);
     // a revocation with no stated reason is not a correction
     await expect(repairs.repair(plan({ revokeReason: '   ' }))).rejects.toThrow(/revokeReason is required/);
 
@@ -1442,7 +1443,7 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
         reason: 'attempted repair',
         actions: [{ finding: 'F1.blank', op: 'f1-mark-invalid-legacy', id: blankId, revokedById: 'no-such-user', revokeReason: 'r' }],
       }),
-    ).rejects.toThrow(/has no standing on project/);
+    ).rejects.toThrow(/has no attendance-revoke standing on project/);
     const untouched = await t.prisma.labourAttendance.findUniqueOrThrow({ where: { id: blankId } });
     expect(untouched.manualReason).toBe('   ');
     expect(untouched.revokedAt).toBeNull();
@@ -2043,13 +2044,13 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     await expect(repairs.repair({
       operator: 'ops@vitan.in', reason: 'retire a legacy blank muster',
       actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: f.otherUser.id, revokeReason: 'retired' }],
-    })).rejects.toThrow(/has no standing on project/);
+    })).rejects.toThrow(/has no attendance-revoke standing on project/);
 
     // a user that does not exist at all is refused by the same check, before any FK is reached
     await expect(repairs.repair({
       operator: 'ops@vitan.in', reason: 'retire a legacy blank muster',
       actions: [{ op: 'f1-mark-invalid-legacy', id: seed, revokedById: 'no-such-user', revokeReason: 'retired' }],
-    })).rejects.toThrow(/has no standing on project/);
+    })).rejects.toThrow(/has no attendance-revoke standing on project/);
 
     // the org OWNER has standing without an explicit membership — the documented super-admin path,
     // exactly as `ProjectAccessService.authorize` allows — and the repair commits
@@ -2678,5 +2679,158 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
     }
     await t.prisma.$executeRawUnsafe(`ALTER TABLE "LabourAttendance" VALIDATE CONSTRAINT "LabourAttendance_manual_reason_non_blank"`);
     expect((await repairs.correctionSeals()).installed).toBe(true);
+  });
+
+  // ── ROUND 3l — the two Codex findings on `4ed5eab` ──────────────────────────────────────────────
+
+  it('R3l-A: the append-only BODY heals INSIDE the locked seal transaction — the marker CHECK is never exposed over the stale 20270210 body', async () => {
+    // RED at 4ed5eab: the migration healed `phase4_t3_attendance_append_only` in a LATER statement
+    // than the locked DIAGNOSE-AND-SEAL block. Prisma commits per statement, so on a database being
+    // healed (the 20270210 body, which never froze `manualReason`) there was a real window after
+    // the marker trigger + CHECK committed and the ACCESS EXCLUSIVE lock released in which a direct
+    // writer could UPDATE a live row into the reserved marker with the revocation triple pre-set:
+    // the reserved-marker trigger fires only on INSERT, the marker CHECK passes because `revokedAt`
+    // is set, the stale body permits the `manualReason` rewrite, and no diagnostic ever runs again
+    // — a forged marker with NO repair evidence, on a deploy that then reports success.
+    //
+    // The probe replays that window deterministically: regress the body to the 20270210 layer,
+    // apply EXACTLY the statement prefix Prisma would have committed through the locked block, and
+    // attempt the forge. The fix asserts the canonical body INSIDE the locked block, so the prefix
+    // that exposes the marker CHECK has ALREADY healed the freeze and the UPDATE is refused; at
+    // 4ed5eab the same prefix leaves the stale body live and the forge lands.
+    const L210 = '20270210000000_phase4_t3_time_capacity';
+    const L225 = '20270225000000_phase4_t3_correction3';
+    const appendOnly = 'phase4_t3_attendance_append_only';
+    const CANONICAL_MD5 = '6119798541f2e2f6c5237778d43f0261'; // md5(prosrc) of 20270220's body
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    // a LIVE muster with a real reason — the row the forger retro-marks as "repaired legacy"
+    const commandId = await rawCommand(projectId, 'labour.attendance.record');
+    const live = `att-r3l-${Date.now() % 1e6}-${seq++}`;
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "LabourAttendance" ("id","projectId","workerId","civilDate","shift","manualReason","recordedAt","recordedById","sourceCommandId")
+       VALUES ($1,$2,$3,'2027-02-01'::date,'day','genuine manual reason', now(), $4, $5)`,
+      live, projectId, workerId, f.memberUser.id, commandId,
+    );
+    const sql = readFileSync(join(__dirname, '..', '..', 'prisma', 'migrations', L225, 'migration.sql'), 'utf8');
+    // the statement prefix through the locked block: everything before the FINDING-3 banner
+    const cut = sql.indexOf('-- ══ FINDING 3');
+    expect(cut).toBeGreaterThan(0);
+    const prefixFile = join(tmpdir(), `t3l-prefix-${Date.now()}-${seq++}.sql`);
+    writeFileSync(prefixFile, sql.slice(0, cut));
+    try {
+      await installFnBody(appendOnly, migrationFnBody(L210, appendOnly));
+      const prefix = spawnSync('psql', [psqlUrl(), '-v', 'ON_ERROR_STOP=1', '-f', prefixFile], { encoding: 'utf8', env: psqlEnv() });
+      expect(prefix.status).toBe(0);
+      // the forge — retro-marking a live row via UPDATE with the triple pre-set — is REFUSED,
+      // because the very prefix that exposed the marker CHECK already healed the freeze. RED at
+      // 4ed5eab: this UPDATE succeeds and a marked, revoked row with NO evidence survives.
+      await expect(
+        t.prisma.$executeRawUnsafe(
+          `UPDATE "LabourAttendance"
+              SET "manualReason" = $1, "revokedAt" = now(), "revokedById" = $2, "revokeReason" = 'forged in the heal gap'
+            WHERE "id" = $3`,
+          `${T3C_INVALID_LEGACY_PREFIX} repair=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa forged`, f.memberUser.id, live,
+        ),
+      ).rejects.toThrow(/APPEND-ONLY observation/);
+      // …because the body the prefix leaves bound IS the canonical correction-2 freeze. RED at
+      // 4ed5eab: still the stale 20270210 md5 (e40c8d80…).
+      const bound = await t.prisma.$queryRawUnsafe<Array<{ h: string }>>(
+        `SELECT md5(p.prosrc) AS h FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
+          WHERE t.tgname = 'LabourAttendance_append_only' AND t.tgrelid = '"LabourAttendance"'::regclass AND NOT t.tgisinternal`,
+      );
+      expect(bound[0]!.h).toBe(CANONICAL_MD5);
+      // precision: the remainder replays clean and the seals answer recovers
+      expect(runMigration().code).toBe(0);
+      expect((await repairs.correctionSeals()).installed).toBe(true);
+    } finally {
+      rmSync(prefixFile, { force: true });
+      runMigration(); // whatever happened above, leave the database healed for the next probe
+    }
+  });
+
+  it('R3l-A2: the healed-body md5 the migration pins IS the canonical correction-2 body (no drift)', () => {
+    // The POST-CONDITIONS block refuses to record the migration applied unless the body bound to
+    // `LabourAttendance_append_only` is byte-canonical. That md5 literal must be the SAME truth the
+    // service seals pin (the machine-extracted 20270220 layer body) — otherwise one site heals to a
+    // body the other refuses.
+    const sql = readFileSync(
+      join(__dirname, '..', '..', 'prisma', 'migrations', '20270225000000_phase4_t3_correction3', 'migration.sql'),
+      'utf8',
+    );
+    const md5 = (s: string) => createHash('md5').update(s).digest('hex');
+    const canonical = md5(migrationFnBody('20270220000000_phase4_t3_correction2', 'phase4_t3_attendance_append_only'));
+    // the post-condition pins exactly this md5 (the prerequisite VALUES row also lists it as one of
+    // the two accepted pre-heal layers, so it appears at least twice)
+    const occurrences = sql.split(canonical).length - 1;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+    // and the healed body the locked block asserts is byte-for-byte 20270220's text
+    expect(md5(migrationFnBody('20270225000000_phase4_t3_correction3', 'phase4_t3_attendance_append_only'))).toBe(canonical);
+  });
+
+  it("R3l-B: a repair revocation is attributed only to someone with the app's OWN attendance-revoke authority — project standing is not enough", async () => {
+    // RED at 4ed5eab: `assertRevokerEntitled` accepted ANY active project membership, so a plan
+    // could name an active contractor as `revokedById` — writing an immutable revocation + evidence
+    // record attributing a correction to someone the application itself would refuse
+    // (`ROLE_POLICY['attendance.revoke']` is pmc-only, and the org owner/admin super-admin path
+    // operates AS pmc). The participant now answers the ROLE-qualified question.
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const workerId = await onboardWorker(projectId);
+    // an active CONTRACTOR on this very project — real standing, no revoke authority. The probe
+    // users reference the fresh project via `User.projectId`, so they are removed HERE (before
+    // afterEach deletes the project) rather than leaked.
+    const contractor = await t.prisma.user.create({
+      data: { id: `u-r3l-${Date.now() % 1e6}-${seq++}`, projectId, role: 'contractor', name: 'Site Contractor', email: `r3l-${Date.now() % 1e6}-${seq++}@probe.test` },
+    });
+    const admin = await t.prisma.user.create({
+      data: { id: `u-r3l-adm-${Date.now() % 1e6}-${seq++}`, projectId, role: 'pmc', name: 'Org Admin', email: `r3l-adm-${Date.now() % 1e6}-${seq++}@probe.test` },
+    });
+    try {
+      await t.prisma.membership.create({ data: { projectId, userId: contractor.id, role: 'contractor', status: 'active' } });
+      const blank = await legacyBlankMuster(projectId, workerId, '2027-02-02');
+      await expect(
+        repairs.repair({
+          operator: 'ops@vitan.in', reason: 'attribution probe',
+          actions: [{ finding: 'F1.blank', op: 'f1-mark-invalid-legacy', id: blank, revokedById: contractor.id, revokeReason: 'r' }],
+        }),
+      ).rejects.toThrow(/has no attendance-revoke standing on project/);
+      // …and NOTHING was written: the row is untouched and no evidence exists
+      const row = await t.prisma.$queryRawUnsafe<Array<{ reason: string; revokedAt: Date | null }>>(
+        `SELECT "manualReason" AS reason, "revokedAt" FROM "LabourAttendance" WHERE "id" = $1`, blank,
+      );
+      expect(row[0]!.reason).toBe('   ');
+      expect(row[0]!.revokedAt).toBeNull();
+      // the refusal fired BEFORE the evidence register was even provisioned (the repair creates it
+      // inside its transaction), so either the table does not exist or it holds nothing for this row
+      const evTable = await t.prisma.$queryRawUnsafe<Array<{ t: string | null }>>(
+        `SELECT to_regclass('"T3CRepairAction"')::text AS t`,
+      );
+      if (evTable[0]!.t !== null) {
+        expect(Number((await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT count(*) AS n FROM "T3CRepairAction" WHERE "rowId" = $1`, blank,
+        ))[0]!.n)).toBe(0);
+      }
+      // an org ADMIN with NO explicit membership IS the documented super-admin path (operates as
+      // pmc) and is accepted — the rule tightened to the app's authority, not past it
+      await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: admin.id, role: 'admin' } });
+      await repairs.repair({
+        operator: 'ops@vitan.in', reason: 'attribution probe — org admin',
+        actions: [{ finding: 'F1.blank', op: 'f1-mark-invalid-legacy', id: blank, revokedById: admin.id, revokeReason: 'retired legacy blank' }],
+      });
+      const after = await t.prisma.$queryRawUnsafe<Array<{ revokedById: string | null }>>(
+        `SELECT "revokedById" FROM "LabourAttendance" WHERE "id" = $1`, blank,
+      );
+      expect(after[0]!.revokedById).toBe(admin.id);
+    } finally {
+      // the (legitimate) repair leaves an attendance row referencing a probe user via
+      // `LabourAttendance_revokedBy_fkey`, and attendance is append-only — TRUNCATE (the suite's
+      // own teardown shape) before the probe users can be removed
+      await t.prisma.$executeRawUnsafe(TRUNCATE);
+      await t.prisma.orgMembership.deleteMany({ where: { userId: { in: [contractor.id, admin.id] } } });
+      await t.prisma.membership.deleteMany({ where: { userId: { in: [contractor.id, admin.id] } } });
+      await t.prisma.user.deleteMany({ where: { id: { in: [contractor.id, admin.id] } } });
+    }
   });
 });

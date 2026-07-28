@@ -405,7 +405,11 @@ pnpm --filter api t3c:migration-state
 
 Write an explicit plan naming every row and the accountable human who authorizes retiring it. The
 repair never guesses: `revokedById` must resolve to a real `User` (enforced by
-`LabourAttendance_revokedBy_fkey` — an unknown id is refused, never invented), and `revokeReason` is
+`LabourAttendance_revokedBy_fkey` — an unknown id is refused, never invented) who holds the
+application's own attendance-revoke authority on the row's project — an ACTIVE membership whose
+role `ROLE_POLICY['attendance.revoke']` names (pmc), or owner/admin of the project's org (the
+super-admin path, which operates as pmc); mere project standing (an active contractor, client or
+engineer) is refused. `revokeReason` is
 your own words about the RETIREMENT (not about why the worker was present, which you do not know).
 
 `finding` is documentary and optional: the classification written to the evidence comes from the
@@ -552,10 +556,13 @@ rewritten to a quarantine marker embedding THIS repair id, so the row finally po
 genuinely exists. That is the one thing the original marker falsely claimed. The forgery is not
 erased; it is filed, and its text stays readable in `beforeImage`.
 
-`revokedById` must have **standing on the row's project** — an active membership, or owner/admin of
-its org (the same rule live authorization applies). An id that merely names some user in some other
-tenant is refused, never written: a repair's attribution is append-only, so a misattribution would be
-permanent. `revokeReason` is your own words about **what you found**, not about why the worker was
+`revokedById` must hold the **application's own attendance-revoke authority on the row's project** —
+an ACTIVE membership whose role `ROLE_POLICY['attendance.revoke']` names (pmc), or owner/admin of
+its org (the documented super-admin path, which operates as pmc). Mere project standing is not
+enough: an active contractor/client/engineer, or an id that merely names some user in some other
+tenant, is refused, never written — a repair's attribution is append-only, so attributing an
+immutable revocation to someone the application itself would refuse would be permanent.
+`revokeReason` is your own words about **what you found**, not about why the worker was
 present, which the forged row gives you no basis to state.
 
 If the row is **already revoked** — the typical case, since a forged marker is usually written with

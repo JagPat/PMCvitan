@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ROLE_POLICY } from '@vitan/shared';
 import type { PrismaService } from '../../prisma.service';
 import { OrgsParticipant } from '../../orgs/orgs.participant';
 import {
@@ -1204,22 +1205,27 @@ export class T3CRepairService {
   }
 
   /**
-   * The named revoker must be entitled ON THE ATTENDANCE ROW'S PROJECT.
+   * The named revoker must hold the app's OWN attendance-revoke authority ON THE ROW'S PROJECT.
    *
    * `LabourAttendance_revokedBy_fkey` proves the id names SOME user, and that is all it proves.
-   * Every normal revoke path is scoped because the request was authorized for that project before it
-   * reached a service; this maintenance path has no request, so a plan naming any existing user from
-   * any other tenant committed — and permanently attributed one project's revocation to a person
-   * with no standing there. An immutable, append-only misattribution is exactly the kind of record
-   * this engine exists to prevent.
+   * Every normal revoke path is scoped AND role-gated: the request was authorized for that project
+   * before it reached a service, and `labour.attendance.revoke` then applies
+   * `ROLE_POLICY['attendance.revoke']` (pmc-only). This maintenance path has no request, so an
+   * earlier revision that asked only for PROJECT STANDING let a plan name an active contractor,
+   * client or engineer — writing an immutable revocation + evidence record attributing the
+   * correction to someone who could not have performed it through the application. Mere standing
+   * is not authority: the plan's `revokedById` is now checked against the SAME policy roles the
+   * application enforces — an ACTIVE membership whose role the policy names, or owner/admin of the
+   * project's org (the documented super-admin path, which operates as pmc).
    *
    * The QUESTION is answered by its OWNER. `Membership`/`OrgMembership`/`Project` are orgs-owned;
    * an earlier draft queried them directly from here on the reasoning that they are not
    * read-encapsulated, and that reasoning was rejected on review — not being read-encapsulated
-   * makes the read representable, not legitimate. So the rule lives in
-   * {@link OrgsParticipant.hasProjectStanding} (the same cycle-exempt participant channel every
+   * makes the read representable, not legitimate. So the membership rule lives in
+   * {@link OrgsParticipant.hasProjectRoleStanding} (the same cycle-exempt participant channel every
    * other cross-module interaction uses; `labour.workflowParticipants` lists `orgs`), evaluated
-   * against THIS transaction so the answer is consistent with what the repair sees.
+   * against THIS transaction so the answer is consistent with what the repair sees — while the
+   * POLICY (which roles may revoke) stays with its shared owner, `ROLE_POLICY`.
    */
   private async assertRevokerEntitled(
     tx: T3CTxClient,
@@ -1227,10 +1233,11 @@ export class T3CRepairService {
     revokedById: string,
     op: string,
   ): Promise<void> {
-    const entitled = await this.orgs.hasProjectStanding(tx, projectId, revokedById);
+    const roles = ROLE_POLICY['attendance.revoke'];
+    const entitled = await this.orgs.hasProjectRoleStanding(tx, projectId, revokedById, roles);
     if (!entitled) {
       throw new RepairAbortedError(
-        `${op}: revokedById ${JSON.stringify(revokedById)} has no standing on project ${JSON.stringify(projectId)} — a revocation is attributed to someone accountable FOR THAT PROJECT (an active membership, or owner/admin of its org), not merely to a user that exists`,
+        `${op}: revokedById ${JSON.stringify(revokedById)} has no attendance-revoke standing on project ${JSON.stringify(projectId)} — the repair writes an immutable revocation, so it is attributed only to someone the application itself would allow to revoke attendance (ROLE_POLICY['attendance.revoke']: an ACTIVE ${roles.join('/')} membership, or owner/admin of the project's org operating as pmc), never merely to a user with project standing`,
       );
     }
   }

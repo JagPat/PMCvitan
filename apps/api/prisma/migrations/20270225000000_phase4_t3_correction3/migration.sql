@@ -203,6 +203,47 @@ BEGIN
     LOCK TABLE "T3CRepairAction" IN ACCESS EXCLUSIVE MODE;
   END IF;
 
+  -- ── the append-only BODY heals FIRST, inside this same locked transaction ─────────────────────
+  -- The prerequisite block above deliberately ACCEPTS `phase4_t3_attendance_append_only` still
+  -- carrying the 20270210 body — the restored-database layer this migration exists to heal — and
+  -- that body never froze `manualReason`. `20270220000000` cannot re-run to heal it (its
+  -- unconditional ADD CONSTRAINT fails over the existing constraint), so THIS re-runnable
+  -- migration re-asserts the canonical body, byte-for-byte `20270220000000`'s text.
+  --
+  -- It is asserted HERE — not in a later statement — because this file has no transaction wrapper:
+  -- healing after this block had already committed left a real window in which the marker trigger
+  -- and CHECK below were live while the stale body still permitted a `manualReason` rewrite. In
+  -- that gap a direct writer could UPDATE a live row into the reserved marker with the revocation
+  -- triple pre-set — the reserved-marker trigger fires only on INSERT, the CHECK is satisfied
+  -- because `revokedAt` is set, and no diagnostic ever runs again: a forged marker with NO repair
+  -- evidence, on a deploy that then reports success. Healed in the SAME transaction that installs
+  -- the seals, the freeze and the marker rules become visible in ONE commit and the window does
+  -- not exist. Placed BEFORE the evidence-table early-return so a database that never ran a repair
+  -- is healed too; the POST-CONDITIONS block refuses to record this migration applied unless the
+  -- bound body is byte-canonical. (`t3c seals` still attributes body-only correction-2 staleness
+  -- to THIS migration's pending set.) The body lines stay at column 0 so `pg_proc.prosrc` is
+  -- byte-identical to `20270220000000`'s — the layer identity the seals pin.
+  CREATE OR REPLACE FUNCTION phase4_t3_attendance_append_only() RETURNS trigger AS $fn$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'LabourAttendance rows are never deleted (revoke the attendance instead, %)', OLD."id";
+  END IF;
+  IF NEW."id" <> OLD."id" OR NEW."projectId" <> OLD."projectId" OR NEW."workerId" <> OLD."workerId"
+     OR NEW."civilDate" <> OLD."civilDate" OR NEW."shift" <> OLD."shift"
+     OR NEW."deviceId" IS DISTINCT FROM OLD."deviceId"
+     OR NEW."manualReason" IS DISTINCT FROM OLD."manualReason"
+     OR NEW."evidenceMediaId" IS DISTINCT FROM OLD."evidenceMediaId"
+     OR NEW."recordedAt" <> OLD."recordedAt" OR NEW."recordedById" <> OLD."recordedById"
+     OR NEW."sourceCommandId" <> OLD."sourceCommandId" THEN
+    RAISE EXCEPTION 'LabourAttendance is an APPEND-ONLY observation — only the revocation stamp may change (%)', OLD."id";
+  END IF;
+  IF OLD."revokedAt" IS NOT NULL THEN
+    RAISE EXCEPTION 'a revoked LabourAttendance is terminal (%)', OLD."id";
+  END IF;
+  RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql;
+
   -- Finding 1 — every pre-existing row carrying the RESERVED invalid-legacy marker must be a REAL
   -- audited repair: revoked, AND backed by a matching `T3CRepairAction` before-image.
   --
@@ -737,34 +778,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ══ 20270220000000's append-only BODY, re-asserted HERE because that migration cannot re-run ══
--- `CREATE OR REPLACE FUNCTION` preserves a function's identity, so a restored database can hold
--- `20270220000000`'s CHECK while `phase4_t3_attendance_append_only` still carries the 20270210
--- body that never froze `manualReason`. That migration cannot be left pending to heal the body:
--- its `ALTER TABLE … ADD CONSTRAINT` is unconditional (and deployed, so it cannot be rewritten),
--- and re-running it over the existing constraint fails the whole deploy. THIS migration is the
--- re-runnable layer, so it re-asserts the canonical body — byte-for-byte `20270220000000`'s text
--- — and `t3c seals` attributes body-only correction-2 staleness to THIS migration's pending set.
-CREATE OR REPLACE FUNCTION phase4_t3_attendance_append_only() RETURNS trigger AS $$
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'LabourAttendance rows are never deleted (revoke the attendance instead, %)', OLD."id";
-  END IF;
-  IF NEW."id" <> OLD."id" OR NEW."projectId" <> OLD."projectId" OR NEW."workerId" <> OLD."workerId"
-     OR NEW."civilDate" <> OLD."civilDate" OR NEW."shift" <> OLD."shift"
-     OR NEW."deviceId" IS DISTINCT FROM OLD."deviceId"
-     OR NEW."manualReason" IS DISTINCT FROM OLD."manualReason"
-     OR NEW."evidenceMediaId" IS DISTINCT FROM OLD."evidenceMediaId"
-     OR NEW."recordedAt" <> OLD."recordedAt" OR NEW."recordedById" <> OLD."recordedById"
-     OR NEW."sourceCommandId" <> OLD."sourceCommandId" THEN
-    RAISE EXCEPTION 'LabourAttendance is an APPEND-ONLY observation — only the revocation stamp may change (%)', OLD."id";
-  END IF;
-  IF OLD."revokedAt" IS NOT NULL THEN
-    RAISE EXCEPTION 'a revoked LabourAttendance is terminal (%)', OLD."id";
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+-- ══ 20270220000000's append-only BODY — re-asserted INSIDE the locked block above ═════════════
+-- Earlier revisions of this file re-asserted the body HERE, after the sealed block had already
+-- committed. On a database being healed that ordering left the marker CHECK exposed while the
+-- stale 20270210 body (no `manualReason` freeze) was still live — the forging window the locked
+-- block's banner describes. The heal now lives inside the DIAGNOSE-AND-SEAL block, committing
+-- atomically with the marker seals, and the POST-CONDITIONS below verify it happened.
 
 -- ══ POST-CONDITIONS ═══════════════════════════════════════════════════════════════════════════
 -- Every seal this migration is responsible for must be present AND ENFORCING before Prisma is
@@ -798,6 +817,22 @@ BEGIN
      AND c.conrelid = '"LabourAttendance"'::regclass AND c.contype = 'c' AND c.convalidated;
   IF n <> 1 THEN
     RAISE EXCEPTION 'P4T3C3 ABORT: the marker-is-revoked CHECK is not installed and validated on LabourAttendance';
+  END IF;
+
+  -- The HEALED append-only body is part of what "applied" means. The locked block asserts the
+  -- canonical correction-2 body in the SAME transaction as the marker seals; if the body bound to
+  -- the trigger is not byte-canonical here, that heal did not happen and the `manualReason` freeze
+  -- is not enforced — refuse to record this migration applied over it. The md5 literal is pinned
+  -- to the machine-extracted 20270220 layer body by `phase4-t3-correction3.test.ts` R3l-A2 (the
+  -- same one truth the service seals and the prerequisite VALUES row use), so the two enforcement
+  -- sites cannot drift.
+  SELECT count(*) INTO n FROM pg_trigger t
+   WHERE t.tgname = 'LabourAttendance_append_only' AND NOT t.tgisinternal
+     AND t.tgrelid = '"LabourAttendance"'::regclass
+     AND t.tgenabled = 'O' AND t.tgfoid::regproc::text = 'phase4_t3_attendance_append_only'
+     AND md5((SELECT p.prosrc FROM pg_proc p WHERE p.oid = t.tgfoid)) = '6119798541f2e2f6c5237778d43f0261';
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'P4T3C3 ABORT: phase4_t3_attendance_append_only is not bound with the canonical correction-2 body after the locked heal — the manualReason freeze is not enforced';
   END IF;
 END $$;
 

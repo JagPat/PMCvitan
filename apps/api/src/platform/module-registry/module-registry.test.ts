@@ -127,8 +127,10 @@ describe('Phase 2 Task 7 — module registry', () => {
       // through ActivityParticipant.labourTarget — also cycle-exempt (§G's READ edge runs
       // activities → labour, so a labour → activities READ would close a cycle).
       // Task 3 correction 3 (round 3h) adds `orgs`: the t3c repair engine validates a revoker's
-      // PROJECT STANDING through OrgsParticipant.hasProjectStanding — the owner answers the
-      // question; Membership/Project/OrgMembership are never queried from labour. Cycle-exempt for
+      // ROLE-QUALIFIED standing through OrgsParticipant.hasProjectRoleStanding (round 3l: mere
+      // project standing was not authority — the roles come from ROLE_POLICY['attendance.revoke'])
+      // — the owner answers the membership question; Membership/Project/OrgMembership are never
+      // queried from labour. Cycle-exempt for
       // the same reason (orgs.dependsOn includes labour, so a labour → orgs READ would close a
       // cycle; the participant channel does not).
       labour: ['procurement', 'activities', 'orgs'],

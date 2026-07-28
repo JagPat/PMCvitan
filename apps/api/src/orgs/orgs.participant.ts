@@ -25,31 +25,50 @@ export interface OrgsParticipantClient {
 @Injectable()
 export class OrgsParticipant {
   /**
-   * Does `userId` have STANDING on `projectId` — an ACTIVE project membership, or owner/admin of
-   * the project's org (the documented super-admin path: an owner legitimately operates every
-   * project in their org without an explicit membership)? Same rule, same order as
-   * `ProjectAccessService.authorize`.
+   * Does `userId` have ROLE-QUALIFIED standing on `projectId` — an ACTIVE project membership whose
+   * role is one of `roles`, or (when `roles` admits `pmc`) owner/admin of the project's org? Same
+   * rule, same order as `ProjectAccessService.authorize`, with the SAME role semantics the app's
+   * policy gate applies on top of it: the org owner/admin super-admin path operates a project AS
+   * PMC (see `authorize` — it grants that path only to a pmc-role token), so it satisfies this
+   * check only when `roles` includes `'pmc'`.
+   *
+   * The caller supplies `roles` from the policy it is enforcing (e.g.
+   * `ROLE_POLICY['attendance.revoke']`) — the POLICY stays with its shared owner, the MEMBERSHIP
+   * facts stay here. Bare project standing is deliberately not offered: an earlier revision
+   * exposed exactly that, and a repair could then attribute an immutable attendance revocation to
+   * an active contractor — someone the application itself would refuse. Mere standing is not
+   * authority.
    *
    * A boolean, deliberately: orgs owns the RULE; what refusing means (an HTTP 403, an aborted
    * repair transaction) belongs to the caller.
    */
-  async hasProjectStanding(
+  async hasProjectRoleStanding(
     tx: OrgsParticipantClient | Prisma.TransactionClient,
     projectId: string,
     userId: string,
+    roles: readonly string[],
   ): Promise<boolean> {
+    if (roles.length === 0) return false;
+    // placeholders are derived from the ARITY of `roles` only — every value still binds as a
+    // parameter, nothing user-controlled is interpolated into the SQL text
+    const rolePlaceholders = roles.map((_, i) => `$${i + 3}`).join(', ');
+    const orgArm = roles.includes('pmc')
+      ? `OR EXISTS (
+                SELECT 1 FROM "Project" p
+                  JOIN "OrgMembership" om ON om."orgId" = p."orgId" AND om."userId" = $2
+                 WHERE p."id" = $1 AND om."role" IN ('owner', 'admin')
+              )`
+      : '';
     const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ entitled: boolean }>>(
       `SELECT EXISTS (
                 SELECT 1 FROM "Membership" m
                  WHERE m."projectId" = $1 AND m."userId" = $2 AND m."status" = 'active'
+                   AND m."role" IN (${rolePlaceholders})
               )
-           OR EXISTS (
-                SELECT 1 FROM "Project" p
-                  JOIN "OrgMembership" om ON om."orgId" = p."orgId" AND om."userId" = $2
-                 WHERE p."id" = $1 AND om."role" IN ('owner', 'admin')
-              ) AS entitled`,
+           ${orgArm} AS entitled`,
       projectId,
       userId,
+      ...roles,
     );
     return rows[0]?.entitled === true;
   }
