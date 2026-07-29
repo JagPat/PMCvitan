@@ -15,31 +15,50 @@ import { pathToFileURL } from 'node:url';
 
 export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
 
-// A check run counts as coverage when it is actually executing or has executed:
-// still queued/in_progress is coverage IN PROGRESS (an earlier battery for this
-// same SHA is mid-flight — starting a second one duplicates the work and lets a
-// later duplicate failure supersede the first run's success), and a completed
-// run counts unless it was skipped (gated off by `needs`/`if`) or cancelled
-// (never finished). A completed FAILURE is real coverage: red products are
-// fixed by a new SHA with its own battery, never by a metadata edit.
-function coversHead(run) {
-  if (!run || typeof run.status !== 'string') return false;
-  if (run.status !== 'completed') return run.conclusion !== 'skipped';
-  return typeof run.conclusion === 'string'
-    && run.conclusion !== 'skipped'
-    && run.conclusion !== 'cancelled';
+function isSkipped(run) {
+  return run?.status === 'completed' && run?.conclusion === 'skipped';
 }
 
-// The newest COMPLETED run of a check, by start time (id breaks ties).
+// Recency key, newest-first. GitHub's own `latest` filter is defined by
+// completed_at, so that is the primary key (started_at and id only break ties
+// or fill gaps). A run that has not completed is the most recent activity for
+// its name and sorts ahead of every completed one.
+function recency(run) {
+  if (run?.status !== 'completed') return '￿';
+  return (typeof run?.completed_at === 'string' && run.completed_at)
+    || (typeof run?.started_at === 'string' && run.started_at)
+    || '';
+}
+
+function newestFirst(a, b) {
+  const aKey = recency(a);
+  const bKey = recency(b);
+  if (aKey !== bKey) return aKey > bKey ? -1 : 1;
+  return (Number(b?.id) || 0) - (Number(a?.id) || 0);
+}
+
+// Coverage is decided by the NEWEST non-skipped run of that name, never by
+// "some run once succeeded": a newer CANCELLED run means the current attempt
+// did not finish, and the gate resolves that same cancelled run as a failure —
+// so treating an older success as coverage would deadlock the head (gate red,
+// plan refusing to re-run). Skipped runs are ignored entirely (gated off by
+// `needs`/`if`), an unfinished run IS coverage in progress (an earlier battery
+// for this SHA is mid-flight), and a completed FAILURE is real coverage: red
+// products are fixed by a new SHA with its own battery, not by a metadata edit.
+function coveredBy(checkRuns, name) {
+  const decider = checkRuns
+    .filter((run) => run?.name === name && !isSkipped(run))
+    .sort(newestFirst)[0];
+  if (!decider || typeof decider.status !== 'string') return false;
+  if (decider.status !== 'completed') return true;
+  return decider.conclusion !== 'cancelled';
+}
+
+// The newest COMPLETED run of a check.
 function newestCompleted(checkRuns, name) {
   return checkRuns
     .filter((run) => run?.name === name && run.status === 'completed')
-    .sort((a, b) => {
-      const aStarted = typeof a.started_at === 'string' ? a.started_at : '';
-      const bStarted = typeof b.started_at === 'string' ? b.started_at : '';
-      if (aStarted !== bStarted) return aStarted > bStarted ? -1 : 1;
-      return (Number(b.id) || 0) - (Number(a.id) || 0);
-    })[0] ?? null;
+    .sort(newestFirst)[0] ?? null;
 }
 
 export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
@@ -71,7 +90,7 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   }
 
   for (const name of PRODUCT_CHECKS) {
-    if (!checkRuns.some((run) => run?.name === name && coversHead(run))) {
+    if (!coveredBy(checkRuns, name)) {
       return {
         runProducts: true,
         reason: `product check ${name} has no run covering this head`,
@@ -101,18 +120,30 @@ export async function run({
 
     let checkRuns;
     if (action === 'edited' && !baseChanged && headSha && repository && token) {
-      const response = await fetchImpl(
-        `https://api.github.com/repos/${repository}/commits/${headSha}/check-runs?per_page=100`,
-        {
-          headers: {
-            authorization: `Bearer ${token}`,
-            accept: 'application/vnd.github+json',
-            'user-agent': 'pmcvitan-ci-battery-plan',
+      // filter=all (paginated). The default is filter=latest, which returns
+      // only the newest run per name — after one metadata edit the products
+      // are recorded as newer SKIPPED runs, so a latest-only read would see no
+      // coverage and launch a duplicate battery, defeating this job's purpose.
+      const runs = [];
+      let page = 1;
+      while (true) {
+        const response = await fetchImpl(
+          `https://api.github.com/repos/${repository}/commits/${headSha}`
+            + `/check-runs?filter=all&per_page=100&page=${page}`,
+          {
+            headers: {
+              authorization: `Bearer ${token}`,
+              accept: 'application/vnd.github+json',
+              'user-agent': 'pmcvitan-ci-battery-plan',
+            },
           },
-        },
-      );
-      if (response.ok) {
-        checkRuns = (await response.json()).check_runs;
+        );
+        if (!response.ok) break;
+        const batch = (await response.json()).check_runs ?? [];
+        runs.push(...batch);
+        checkRuns = runs;
+        if (batch.length < 100) break;
+        page += 1;
       }
     }
     plan = assessBatteryPlan({ action, baseChanged, checkRuns });

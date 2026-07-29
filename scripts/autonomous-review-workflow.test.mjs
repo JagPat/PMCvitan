@@ -137,6 +137,31 @@ test('duplicate check runs resolve by the newest real evidence per name', () => 
     ['review-scope'],
   );
 
+  // Recency is completion time, matching GitHub's own `latest` filter: a run
+  // that started FIRST but finished LAST decides. Ordering by started_at would
+  // let the 10:05→10:20 success mask the 10:00→10:30 failure and publish a
+  // clean review status over a red latest check.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      ...others,
+      {
+        name: 'review-scope',
+        status: 'completed',
+        conclusion: 'failure',
+        started_at: '2026-07-29T10:00:00Z',
+        completed_at: '2026-07-29T10:30:00Z',
+      },
+      {
+        name: 'review-scope',
+        status: 'completed',
+        conclusion: 'success',
+        started_at: '2026-07-29T10:05:00Z',
+        completed_at: '2026-07-29T10:20:00Z',
+      },
+    ]).failed,
+    ['review-scope'],
+  );
+
   // Any in-progress run keeps the name pending regardless of older evidence.
   assert.equal(
     summarizeRequiredChecks([

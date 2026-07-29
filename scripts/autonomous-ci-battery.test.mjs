@@ -74,6 +74,18 @@ test('ci.yml handles every PR event and gates the battery on the plan', async ()
   assert.doesNotMatch(planJob, /pnpm install|setup-node|postgres/u);
 });
 
+test('the plan reads the whole check history, not just the latest run', async () => {
+  const plan = await readFile(
+    new URL('./ci-battery-plan.mjs', import.meta.url),
+    'utf8',
+  );
+  // GitHub's default is filter=latest, which after one metadata edit shows only
+  // the newer SKIPPED product runs — the plan would then launch a duplicate
+  // battery for an already-covered SHA.
+  assert.match(plan, /check-runs\?filter=all&per_page=100&page=\$\{page\}/u);
+  assert.doesNotMatch(plan, /check-runs\?per_page=100(?!&)/u);
+});
+
 test('the battery plan launches products exactly when they are needed', () => {
   assert.deepEqual(PRODUCT_CHECKS, PRODUCT_JOBS);
   const realRuns = (conclusion) => PRODUCT_CHECKS.map((name) => ({
@@ -217,6 +229,80 @@ test('the battery plan launches products exactly when they are needed', () => {
       ],
     }).runProducts,
     false,
+  );
+
+  // a NEWER cancelled run means the current attempt never finished: an older
+  // success must not mask it, or the head deadlocks (the gate resolves the
+  // cancelled run as red while the plan refuses to re-run)
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: [
+        ...PRODUCT_CHECKS.map((name) => ({
+          name,
+          status: 'completed',
+          conclusion: 'success',
+          completed_at: '2026-07-29T07:10:00Z',
+        })),
+        {
+          name: PRODUCT_CHECKS[0],
+          status: 'completed',
+          conclusion: 'cancelled',
+          completed_at: '2026-07-29T07:40:00Z',
+        },
+      ],
+    }).runProducts,
+    true,
+  );
+
+  // …and an OLDER cancelled run below a newer success is correctly ignored
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: [
+        ...PRODUCT_CHECKS.map((name) => ({
+          name,
+          status: 'completed',
+          conclusion: 'success',
+          completed_at: '2026-07-29T07:40:00Z',
+        })),
+        {
+          name: PRODUCT_CHECKS[0],
+          status: 'completed',
+          conclusion: 'cancelled',
+          completed_at: '2026-07-29T07:10:00Z',
+        },
+      ],
+    }).runProducts,
+    false,
+  );
+
+  // recency is decided by completion, not by start: a run that started first
+  // but finished LAST is the decider
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: [
+        ...PRODUCT_CHECKS.map((name) => ({
+          name,
+          status: 'completed',
+          conclusion: 'success',
+          started_at: '2026-07-29T07:05:00Z',
+          completed_at: '2026-07-29T07:20:00Z',
+        })),
+        {
+          name: PRODUCT_CHECKS[0],
+          status: 'completed',
+          conclusion: 'cancelled',
+          started_at: '2026-07-29T07:00:00Z',
+          completed_at: '2026-07-29T07:30:00Z',
+        },
+      ],
+    }).runProducts,
+    true,
   );
 
   // one product check missing entirely, or history unavailable: fail toward

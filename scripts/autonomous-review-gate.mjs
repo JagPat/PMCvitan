@@ -41,10 +41,17 @@ export function requiredChecksForPullRequest(pullRequestNumber) {
   return REQUIRED_CHECKS;
 }
 
+// GitHub defines its own `latest` check-run filter by completed_at, so that is
+// the primary key here too. Ordering by started_at instead would let a run that
+// started earlier but finished LATER (10:00→10:30 failure) be masked by a rerun
+// that started later and finished sooner (10:05→10:20 success), publishing a
+// clean review status over a red latest check.
 function newerRunFirst(a, b) {
-  const aStarted = typeof a.started_at === 'string' ? a.started_at : '';
-  const bStarted = typeof b.started_at === 'string' ? b.started_at : '';
-  if (aStarted !== bStarted) return aStarted > bStarted ? -1 : 1;
+  const aKey = (typeof a.completed_at === 'string' && a.completed_at)
+    || (typeof a.started_at === 'string' && a.started_at) || '';
+  const bKey = (typeof b.completed_at === 'string' && b.completed_at)
+    || (typeof b.started_at === 'string' && b.started_at) || '';
+  if (aKey !== bKey) return aKey > bKey ? -1 : 1;
   return (Number(b.id) || 0) - (Number(a.id) || 0);
 }
 
