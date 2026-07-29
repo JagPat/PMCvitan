@@ -42,7 +42,21 @@ phase-approval directive, so the rules and the Now block can never disagree on `
 Blocking directives section states the totality invariant explicitly: a directive gates only
 `next_task`, never the queue.
 
-## Scope Boundary — why the owner gate is not removed
+## Owner Resolution (round 3 — supersedes the Scope Boundary below)
+
+After the round-2 convergence head (`dde61c2`), the project owner audited the loop directly and
+resolved the dispute in the reviewer's favour, instructing explicitly: remove the
+`phase-5-planning-approval` directive and the human-approval blocking-directive section, keep
+`next_task: phase-5-planning`, set `blocking_directive: none`, and restore automatic next-phase
+planning after Phase-4 completion. The round-3 head implements exactly that instruction. This is
+precisely the channel the Scope Boundary section reserved — `docs/AUTONOMOUS_LOOP.md`'s "the
+owner may interrupt or redirect the loop": automation declined to revoke an owner directive on a
+reviewer's demand, and the owner then revoked it in person. The Scope Boundary analysis below is
+retained as the record of WHY the gate's removal required the owner and not the review. The
+maintenance queue introduced in round 2 is retained as the standing between-work source; the
+Phase-4 completion facts are unchanged throughout.
+
+## Scope Boundary — why automation alone did not remove the owner gate (rounds 1–2 record)
 
 The round-2 finding's title asks the review to remove the owner's phase-approval gate. That is
 outside a review's writ, and the project's own control documents say so:
@@ -70,15 +84,16 @@ delete the owner's authority is declined with this documented rationale.
 
 ## Remaining Risk
 
-None open. If the owner never clears the directive, the runner works the maintenance queue —
-bounded but genuinely useful (security updates, determinism debt) and always gate-reviewed. If
-the owner clears it, `next_task` starts immediately. There is no reachable idle state and no
-path by which automation begins unapproved phase scope.
+None open. Phase-5 planning begins automatically on the first runner pass after this merge, per
+the owner's explicit round-3 instruction; the maintenance queue keeps the loop live between work
+items. There is no reachable idle state, and the phase-progression rule and the Now block can no
+longer disagree on `main`.
 
 ## Verification
 
-- Docs-only head: `docs/STATUS.md` + this packet. No code, no schema, no migration.
-- `pnpm check` EXIT 0 on the head.
+- Docs-only PR: `docs/STATUS.md` + this packet. No code, no schema, no migration.
+- `pnpm check` EXIT 0 on every head, exit code captured directly.
 - Convergence gate pre-validated against the live `assessConvergence` (two Codex finding heads
-  `8c8f423`, `1d1de47` → `required: true`; this head's trailer + this changed packet →
-  `allowed: true`; removing either → `allowed: false`).
+  `8c8f423`, `1d1de47` → `required: true`; the head trailer + this changed packet →
+  `allowed: true`; removing either → `allowed: false`). The round-3 head retains the trailer
+  and changes this packet, so the requirement holds for it identically.

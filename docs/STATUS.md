@@ -14,11 +14,11 @@ phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
 task: 6
 task_state: merged
-work_item: maintenance-queue
+work_item: none
 reviewed_merge: 67e7a00
 open_pr: none
 next_task: phase-5-planning
-blocking_directive: phase-5-planning-approval
+blocking_directive: none
 updated: 2026-07-29
 ```
 
@@ -30,14 +30,13 @@ rounds (46 findings, every one fixed forward with a reproduce-first RED→GREEN
 probe and a full gate battery) and the PR-#247-protocol convergence audit
 `docs/reviews/pr-246-convergence.md`. Capability-enabled internal (pilot)
 projects may use the Labour workflow end to end; non-pilot projects are
-unaffected (§D). Phase 5 has NOT begun. Its planning is the recorded
-`next_task`, gated by the named `blocking_directive:
-phase-5-planning-approval` (defined under **Blocking directives** below) —
-the machine-actionable form of the project owner's standing phase gate. The
-runner's concrete work item meanwhile is the **Maintenance queue**
-(`work_item: maintenance-queue`): already-authorized upkeep of delivered
-scope that no phase directive blocks. The directive clears only on the
-owner's explicit approval.
+unaffected (§D). Phase 5 planning is the recorded `next_task` and begins
+automatically on the first runner pass after this merge, per the runner
+rules below — the project owner resolved the PR #248 review dispute by
+explicitly instructing automatic next-phase progression (recorded in
+`docs/reviews/pr-248-convergence.md`). The **Maintenance queue** below
+remains the standing work source whenever no phase task, no correction, and
+no open PR is active.
 
 ## Phase 4 — labour readiness
 
@@ -64,40 +63,13 @@ Review Stops" section of the phase plan.
 - `ready` — PR marked ready for review; the merge is queued behind CI
 - `merged` — squash-merged to `main` and deployed
 
-## Blocking directives
-
-A `blocking_directive` names the one thing that gates `next_task`. It is
-machine-actionable by definition: the runner never idles or polls on a
-directive — it continues the standing duties (shepherd every open PR through
-the exact-head `codex-current-head` gate, answer post-merge review findings
-with focused fix-forward corrections, keep CI and the gate battery green) and
-starts `next_task` the moment the directive clears. When no PR is open and no
-correction is active, the concrete work item is the **Maintenance queue**
-below — a directive gates only `next_task`, never the queue, so no reachable
-state leaves the runner without a machine-actionable item.
-
-- `phase-5-planning-approval` — the project owner's standing phase gate:
-  Phase-5 planning starts only on JagPat's explicit GO, the same gate every
-  prior phase rode (Phase-4 planning began only after the explicit Phase-4
-  approval, and Task-1 implementation only after the explicit implementation
-  GO). This is a **scope-authorization** gate, not a review gate: no open PR
-  waits on it, and it never substitutes for — or adds to — the exact-head
-  review evidence (`AGENTS.md` §Autonomy still holds for every PR). It gates
-  only which NEW work the runner may begin. `docs/AUTONOMOUS_LOOP.md` places
-  the owner as able to "interrupt or redirect the loop" without being a
-  technical gate: this directive is exactly such a recorded redirection — it
-  gates new-phase scope only and never blocks a PR, a merge, or the
-  Maintenance queue. Cleared by: an explicit Phase-5 approval from the
-  project owner recorded in the session or repository.
-
 ## Maintenance queue
 
-The concrete work source whenever no PR is open and no correction directive
-is active — the runner is never without a machine-actionable item, regardless
-of any phase gate. Queue items are already-authorized upkeep of delivered
-scope (never new product scope), and each rides the same draft → CI →
-exact-head Codex gate as feature work. Work them top-down, one focused PR per
-item:
+The standing work source whenever no phase task, no correction directive,
+and no open PR is active — the runner is never without a machine-actionable
+item. Queue items are already-authorized upkeep of delivered scope (never
+new product scope), and each rides the same draft → CI → exact-head Codex
+gate as feature work. Work them top-down, one focused PR per item:
 
 1. `dependabot-security-updates` — GitHub reports open vulnerability alerts
    on the default branch (5 as of 2026-07-29: 3 high, 1 moderate, 1 low).
@@ -120,12 +92,9 @@ item:
 - After a clean-reviewed merge: set that task to `merged`, set the next task to
   `in_progress`, update `open_pr` and `updated`. If post-merge review finds a
   defect, return the parent task to `in_progress` and name its blocking directive.
-- When every task in a phase is `merged`, set `next_task` to the next phase's
-  planning item and record that phase's approval gate as the named
-  `blocking_directive` (see **Blocking directives**). Move to the next phase's
-  plan and start at its task 1 only once that directive is cleared; until then
-  the loop stays live on the standing duties and the **Maintenance queue**
-  (`work_item: maintenance-queue`) — it never idles, and it never starts
-  unapproved phase work.
+- When every task in a phase is `merged`, move to the next phase's plan and
+  start at its task 1 — beginning with the phase's planning item
+  (`next_task`) when that plan does not yet exist. Between work items the
+  **Maintenance queue** keeps the loop live; it never idles.
 - Update this file in the same PR as the work it describes, so state and code
   never disagree on `main`.
