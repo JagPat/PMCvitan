@@ -624,3 +624,55 @@ test('the current-run exclusion reads both URLs', () => {
   assert.equal(belongsToRun({}, runId), false);
   assert.equal(belongsToRun({ html_url: `https://github.com/o/r/actions/runs/${runId}/job/1` }, null), false);
 });
+
+// FINDING (round 11) — DELIBERATELY NOT FIXED, and pinned here so the choice is
+// visible rather than an oversight.
+//
+// When an attempt's gates have completed but none of its product check runs
+// exist yet, that observation is identical whether the plan chose to skip (its
+// skipped runs are about to appear) or the base changed (its real runs are). The
+// finding asks the plan to assume "skip" so a second metadata edit does not
+// relaunch. It cannot: assuming "skip" after a retarget accepts the previous
+// base's products as coverage for a merge result they never tested, which is the
+// exact defect rounds 4-9 were spent closing.
+//
+// A consumer-split was tried and rejected — the plan needs opposite answers in
+// two states it cannot distinguish, so there is no sound rule to write. The
+// window therefore resolves toward RUNNING: it costs one redundant battery in a
+// window measured in seconds, and it cannot promote untested code.
+test('the undecidable gates-only window resolves toward running, not toward trust', () => {
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  const gatesOnly = [
+    job('review-scope', 'success', '600', '2026-07-29T10:00:00Z'),
+    job('battery-plan', 'success', '600', '2026-07-29T10:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, 'success', '600', '2026-07-29T10:05:00Z')),
+    job('review-scope', 'success', '700', '2026-07-29T11:00:00Z'),
+    job('battery-plan', 'success', '700', '2026-07-29T11:00:30Z'),
+  ];
+
+  assert.equal(
+    assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: gatesOnly }).runProducts,
+    true,
+    'the redundant battery is the accepted cost; trusting the older base is not',
+  );
+  assert.equal(summarizeRequiredChecks(gatesOnly).state, 'pending');
+  assert.deepEqual(summarizeRequiredChecks(gatesOnly).failed, []);
+
+  // The window is genuinely transient: once attempt 700's skipped runs appear it
+  // is recognised as skipping, and attempt 600's evidence stands again.
+  const resolved = [
+    ...gatesOnly,
+    ...PRODUCT_CHECKS.map((n) => job(n, 'skipped', '700', '2026-07-29T11:01:00Z')),
+  ];
+  assert.equal(
+    assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: resolved }).runProducts,
+    false,
+  );
+  assert.equal(summarizeRequiredChecks(resolved).state, 'success');
+});

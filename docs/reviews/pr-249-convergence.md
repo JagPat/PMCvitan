@@ -282,3 +282,46 @@ object in this repository and is not `refs/pull/249/head`. The reviewed head `0f
 git-parsed `Review-Convergence: complete`. Twenty-second such citation across PRs #246–#249;
 recorded, not acted on. PR #250 addresses the class at the source.
 
+## Round 11 (head `278c44f`) — where this converges, and where it stops
+
+R11's one real finding is the same ambiguity for the third time, and this round answers it by
+declining to add a fourth rule rather than by adding one.
+
+The finding: when an attempt's gates have completed but none of its product check runs exist
+yet, `attemptCharacters` has nothing to classify, the attempt reads as the retarget window, the
+watermark rises, and a second metadata edit relaunches the battery.
+
+That observation is real. It is also **undecidable from check-run data**, because it is exactly
+the same observation in two cases that require opposite responses:
+
+| Actual case | What the plan should do | What the gate should do |
+| --- | --- | --- |
+| the plan chose to skip; skipped runs are seconds away | reuse the older evidence | reuse the older evidence |
+| the base changed; real runs are seconds away | run the battery | withhold promotion |
+
+A consumer-split was implemented and then withdrawn: it looked like the plan could always take
+the optimising side, but it cannot. Assuming "skip" after a retarget accepts the previous base's
+products as coverage for a merge result they never tested — the exact defect rounds 4–9 closed.
+The plan needs opposite answers in two states it cannot tell apart, so there is no sound rule to
+write, and writing an unsound one is how this ambiguity reached round 11 in the first place.
+
+The window therefore resolves toward RUNNING, and that choice is now pinned by a test rather
+than left as an oversight (`the undecidable gates-only window resolves toward running, not
+toward trust`). The cost is one redundant battery inside a window measured in seconds — the
+attempt's five product check runs are created together the moment its gating job completes. The
+cost of the alternative is promoting untested code. The same test asserts the window is
+transient: once the skipped runs appear the attempt is recognised as skipping and the older
+evidence stands again.
+
+This is stated as a deliberate limit of the design, not a defect left unfixed. Every remaining
+uncertainty in this PR resolves toward running or toward pending; none resolves toward trusting
+evidence that may be superseded.
+
+### Invalid reviewer evidence (round 11)
+
+Two of the round's three findings are the same phantom-SHA trailer claim, citing
+`335c20294b159a6fba0bc1b9382ba2f814011519` — posted twice, once with the AGENTS.md permalink and
+once without. That object is not in this repository and is not `refs/pull/249/head`; the reviewed
+head `278c44f` carries a git-parsed `Review-Convergence: complete`. Twenty-third such citation
+across PRs #246–#249. PR #250 addresses the class at the source.
+
