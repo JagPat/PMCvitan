@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 
-import { assessBatteryPlan, PRODUCT_CHECKS } from './ci-battery-plan.mjs';
+import { assessBatteryPlan, belongsToRun, PRODUCT_CHECKS } from './ci-battery-plan.mjs';
 
 const workflowsDir = new URL('../.github/workflows/', import.meta.url);
 const PRODUCT_JOBS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
@@ -84,6 +84,26 @@ test('the plan reads the whole check history, not just the latest run', async ()
   // battery for an already-covered SHA.
   assert.match(plan, /check-runs\?filter=all&per_page=100&page=\$\{page\}/u);
   assert.doesNotMatch(plan, /check-runs\?per_page=100(?!&)/u);
+  // a page that fails mid-read must not leave a partial prefix in play: only a
+  // COMPLETE read may become checkRuns, otherwise the decision falls through to
+  // "history unavailable" and the battery runs
+  assert.match(plan, /if \(complete\) checkRuns =/u);
+});
+
+test('the current run\'s own checks are excluded from the history it reads', () => {
+  const own = {
+    name: 'review-scope',
+    html_url: 'https://github.com/o/r/actions/runs/4242/job/99',
+  };
+  const other = {
+    name: 'review-scope',
+    details_url: 'https://github.com/o/r/actions/runs/4243/job/98',
+  };
+  assert.equal(belongsToRun(own, '4242'), true);
+  assert.equal(belongsToRun(other, '4242'), false);
+  // no run id, or an unparseable url, is never "mine" — the guard stays on
+  assert.equal(belongsToRun(own, undefined), false);
+  assert.equal(belongsToRun({ name: 'x' }, '4242'), false);
 });
 
 test('the battery plan launches products exactly when they are needed', () => {
@@ -300,6 +320,27 @@ test('the battery plan launches products exactly when they are needed', () => {
           started_at: '2026-07-29T07:00:00Z',
           completed_at: '2026-07-29T07:30:00Z',
         },
+      ],
+    }).runProducts,
+    true,
+  );
+
+  // a scope run from ANOTHER attempt is still running: its verdict is unknown
+  // and its products are not created yet, so the visible product runs are all
+  // pre-retarget — do not skip on them
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: [
+        ...realRuns('success'),
+        {
+          name: 'review-scope',
+          status: 'completed',
+          conclusion: 'success',
+          completed_at: '2026-07-29T07:00:00Z',
+        },
+        { name: 'review-scope', status: 'in_progress', conclusion: null },
       ],
     }).runProducts,
     true,

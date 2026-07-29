@@ -41,6 +41,8 @@ invariant rather than a special case:
    skipped run defers to the evidence it deliberately kept, a stale failure never outlives a
    newer pass, and a name with only skipped runs is missing (fail closed).
 
+| `ecbc4d7` | R4 — 2 real (2×P2) + 1 invalid | The same "incomplete view" cause in its last two hiding places: the retarget guard read only the newest COMPLETED scope run, so a scope still RUNNING from another attempt left old-base products looking like coverage; and a `filter=all` page that failed mid-read left a partial prefix in play, which can look clean while the unread page holds the cancelled product → an unfinished scope run from another attempt forces the battery, and only a COMPLETE pagination may become the history (a partial read falls through to "unavailable" and runs) |
+
 ## Evidence
 
 Reproduce-first at each round, both probes RED at the prior head and GREEN here:
@@ -55,6 +57,8 @@ Reproduce-first at each round, both probes RED at the prior head and GREEN here:
 | R2 pre-retarget products | `d894a56` | probe pair differing ONLY in the newest completed `review-scope` verdict — failure runs the battery, success keeps the skip | Proves the fix does not defeat the PR's own purpose |
 | R3 plan's own `filter=latest` | `0698ae8` | a source test asserts the plan's paged `filter=all` URL and that a bare `?per_page=100` fetch is ABSENT | Both fetch sites are now pinned, not just the gate's |
 | R3 cancelled masked by older success | `0698ae8` | probe pair: a NEWER cancelled run runs the battery, an OLDER one below a newer success does not | Removes the gate/plan deadlock (gate red, plan refusing to re-run) |
+| R4 in-flight scope from another attempt | `ecbc4d7` | probe with a completed old-base success PLUS an in-progress scope run; the old logic returns `runProducts: false` and the new one `true` (demonstrated by importing both modules side by side) | The current run's own checks are excluded by `belongsToRun`, pinned by its own unit test, so this can never fire merely because THIS edit's scope is queued |
+| R4 partial pagination | `ecbc4d7` | source test asserts `if (complete) checkRuns =` — a prefix never becomes the decision input | Failing toward a full battery is the only outcome of an incomplete read |
 | R3 `started_at` vs `completed_at` | `0698ae8` | plan probe (started-first/finished-last cancelled decides) + gate probe (10:00→10:30 failure outranks 10:05→10:20 success) | Both orderings share the same rule as GitHub's own `latest` filter |
 
 The R3 round is itself evidence for the convergence claim: two of its three findings are the R2

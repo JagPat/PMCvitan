@@ -19,6 +19,15 @@ function isSkipped(run) {
   return run?.status === 'completed' && run?.conclusion === 'skipped';
 }
 
+// A check run's URLs carry the workflow run that produced it:
+// .../actions/runs/<runId>/job/<jobId>
+export function belongsToRun(checkRun, runId) {
+  if (!runId) return false;
+  const url = checkRun?.html_url ?? checkRun?.details_url;
+  const match = /\/actions\/runs\/(\d+)\//u.exec(typeof url === 'string' ? url : '');
+  return Boolean(match) && match[1] === String(runId);
+}
+
 // Recency key, newest-first. GitHub's own `latest` filter is defined by
 // completed_at, so that is the primary key (started_at and id only break ties
 // or fill gaps). A run that has not completed is the most recent activity for
@@ -80,6 +89,21 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   // rule unsticks a large PR whose first attempt failed review-scope. The
   // scope run for THIS event is still queued at plan time, so this reads the
   // previous attempt's verdict, which is the one that gated those products.
+  // A scope verdict from ANOTHER attempt is still running (a retarget's scope
+  // that has not finished, say). Its product jobs are gated on it and have not
+  // been created yet, so every product run visible here predates that attempt
+  // — and if it fails, those products get skipped and the only evidence left
+  // is from the OLD base. Waiting for a verdict we cannot see means guessing;
+  // run the battery instead. The current event's own scope run is excluded by
+  // the caller, so this never fires merely because this edit's scope is queued.
+  if (checkRuns.some((run) => run?.name === 'review-scope' && run.status !== 'completed')) {
+    return {
+      runProducts: true,
+      reason: 'a review-scope run from another attempt has not finished, so any '
+        + 'product coverage on this head predates an unknown scope verdict',
+    };
+  }
+
   const scope = newestCompleted(checkRuns, 'review-scope');
   if (scope && scope.conclusion !== 'success') {
     return {
@@ -108,6 +132,7 @@ export async function run({
   repository = process.env.GITHUB_REPOSITORY,
   token = process.env.GH_TOKEN,
   outputPath = process.env.GITHUB_OUTPUT,
+  ownRunId = process.env.GITHUB_RUN_ID,
   fetchImpl = fetch,
 } = {}) {
   let plan;
@@ -126,6 +151,7 @@ export async function run({
       // coverage and launch a duplicate battery, defeating this job's purpose.
       const runs = [];
       let page = 1;
+      let complete = false;
       while (true) {
         const response = await fetchImpl(
           `https://api.github.com/repos/${repository}/commits/${headSha}`
@@ -138,13 +164,23 @@ export async function run({
             },
           },
         );
+        // A page that fails mid-read leaves a PREFIX of the history, and a
+        // prefix can look clean while the unread page holds the cancelled
+        // product or failed scope run that would have forced a rerun. Partial
+        // history is no history: leave checkRuns undefined and fail toward
+        // running the battery.
         if (!response.ok) break;
         const batch = (await response.json()).check_runs ?? [];
         runs.push(...batch);
-        checkRuns = runs;
-        if (batch.length < 100) break;
+        if (batch.length < 100) {
+          complete = true;
+          break;
+        }
         page += 1;
       }
+      // exclude THIS workflow run's own checks: its review-scope is queued by
+      // construction and must not be read as another attempt's pending verdict
+      if (complete) checkRuns = runs.filter((run) => !belongsToRun(run, ownRunId));
     }
     plan = assessBatteryPlan({ action, baseChanged, checkRuns });
   } catch (error) {
