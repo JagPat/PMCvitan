@@ -26,11 +26,33 @@ This repository is designed to progress without the owner's laptop or technical 
 
 1. The runner selects only the work item in `docs/STATUS.md`.
 2. Claude starts from latest `origin/main`, records the base SHA, opens a draft PR, enables web Auto-fix, and remains subscribed.
-3. GitHub requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. A first pre-review CI failure receives one GitHub-native failed-job retry; a second failure remains draft and blocked for a real correction. When all five pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
+3. GitHub first runs dependency-free `review-scope`, then requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. An unjustified broad review unit stops before the expensive jobs. A first product-CI failure receives one GitHub-native failed-job retry; deterministic `review-scope` failures do not. A second product failure remains draft and blocked for a real correction. When all six pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
 4. Marking the PR ready triggers Codex. The same exact-head workflow run polls that one invocation to its terminal result and accepts only evidence from `chatgpt-codex-connector[bot]` for the current SHA and review cycle. Review and review-comment webhooks never start or mutate the merge workflow.
 5. A current-head finding fails `codex-current-head` and returns the PR to draft. Claude Auto-fix reproduces the finding, fixes forward, and pushes a new head; that push invalidates every prior clearance.
 6. A fresh current-head clean Codex signal succeeds `codex-current-head`. GitHub then squash-merges that exact reviewed SHA immediately when the PR is clean. If GitHub still reports a waiting state, the controller queues squash auto-merge with the same expected head OID; a clean-state race retries the exact-SHA merge once. Missing CI, stale evidence, timeout, or inactive authoring all fail closed.
 7. The merge controller explicitly dispatches the trusted handoff workflow because GitHub suppresses ordinary workflow events produced by `GITHUB_TOKEN`. The dispatch is retried three times, and an hourly GitHub-side watchdog drains the durable cursor if the immediate dispatch is interrupted. The handoff waits for a queued merge when necessary, always drains merged work and conflict state before rescheduling an open wait target, and posts one marked `@claude` continuation. Coolify deploys `main`; the runner updates `docs/STATUS.md` and begins the next work item only after merge.
+
+## Review Units And Convergence
+
+- A standard PR is one user workflow or one architectural concern, at most 20
+  files and 1,500 changed lines. PR #247 and later are enforced; earlier PRs are
+  grandfathered and retain the original five required checks so an older branch
+  cannot be stranded by a job it does not contain.
+- A justified large PR uses the PR template's marker and completes all six risk
+  rows: authorization/tenancy, civil time/lifecycle, concurrency/idempotency,
+  data integrity/conservation, offline/reconciliation, and UI/server parity.
+- The PR-side scope check is fast feedback. The trusted default-branch owner
+  re-evaluates the PR metadata and every evidence cell before review promotion,
+  so editing the PR's policy script cannot bypass the merge boundary.
+- Claude self-audits those rows before the first review. Codex performs one
+  comprehensive first pass and batches all findings. Correction reviews cover
+  the delta, prior findings, and affected adjacent invariants.
+- After two distinct Codex finding heads, the next head must carry
+  `Review-Convergence: complete` and include a changed
+  `docs/reviews/*convergence*.md` packet. The trusted gate checks both before
+  promoting the head. Missing evidence leaves the PR draft and fail-closed.
+- Convergence does not waive a defect. CI and Codex still run in full, and any
+  remaining correctness finding still blocks the exact head.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
 
@@ -110,10 +132,12 @@ directly; GitHub Actions does not need an AI key or a second result writer.
 
 ## GitHub Enforcement
 
-After the autonomous workflow itself is merged, protect `main` with these exact
-settings:
+After the autonomous workflow is merged **and PR #246 has merged or closed**, add
+the new check to `main` protection. Waiting for that terminal state prevents
+GitHub branch protection from requiring a job the legacy branch cannot emit. The
+resulting exact settings are:
 
-- Require status checks: `web`, `api`, `e2e`, `api-e2e`, `upgrade-proof`, and
+- Require status checks: `review-scope`, `web`, `api`, `e2e`, `api-e2e`, `upgrade-proof`, and
   `codex-current-head`.
 - Require branches to be up to date before merging (`strict: true`).
 - Enforce the protection for administrators.
