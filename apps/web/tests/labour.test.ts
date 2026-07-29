@@ -1055,7 +1055,13 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
       }),
       labourReadiness: vi.fn().mockResolvedValue(readiness({})),
       materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
-      labourWorkforce: vi.fn().mockResolvedValue({ workers: [worker('W-NEW', 'mason')], crews: [] }), // round 10 — the bundle CONFIRMS the row, spending the key
+      // round 10 — the bundle CONFIRMS the row, spending the key. It resolves a macrotask LATE
+      // on purpose: a real read is a network round trip, and that deferral is what proves the
+      // wait below is condition-based. Against a fixed-tick wait this fixture fails outright.
+      labourWorkforce: vi.fn().mockImplementation(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+        return { workers: [worker('W-NEW', 'mason')], crews: [] };
+      }),
       labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
       labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
       labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
@@ -1076,7 +1082,16 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     const [, key2] = g.onboardWorker.mock.calls[1]!;
     expect(key2).toBe(key1);
     // after the CONFIRMED success the key is spent — a THIRD deliberate identical onboarding
-    // (a genuinely distinct same-name worker) mints a FRESH key
+    // (a genuinely distinct same-name worker) mints a FRESH key.
+    // Wait on the SPENDING ITSELF, not on a fixed number of ticks: round 10 made confirmation
+    // the bundle reload, so the chain is resolve → loadLabour() (ten awaited reads) → the state
+    // write, and two flushes only cover it when the machine is unloaded. This is the wait the
+    // sibling R8 probe already uses.
+    await vi.waitFor(() => {
+      if (s().labourOnboardPending[JSON.stringify(['Ramesh', 'mason', [], '2026-07-28'])] !== undefined) {
+        throw new Error('still held');
+      }
+    });
     s().onboardLabourWorker('Ramesh', 'mason', [], '2026-07-28');
     await vi.waitFor(() => { if (g.onboardWorker.mock.calls.length !== 3) throw new Error('pending'); });
     const [, key3] = g.onboardWorker.mock.calls[2]!;
