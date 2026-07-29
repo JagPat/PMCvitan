@@ -1068,7 +1068,8 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   assert.ok(convergence > checks);
   assert.ok(review > convergence);
   assert.match(gate, /client\.commit\(expectedHead\)/u);
-  assert.match(gate, /client\.pullRequestFiles\(pullRequest\.number\)/u);
+  assert.match(gate, /changedFiles: commit\.files/u);
+  assert.doesNotMatch(gate, /client\.pullRequestFiles\(pullRequest\.number\)/u);
   assert.match(gate, /state: 'convergence_required'/u);
   assert.match(gate, /Review-Convergence: complete/u);
   assert.match(gate, /assessReviewScope\(pullRequest\)/u);
@@ -1153,7 +1154,12 @@ test('convergence enforcement fails closed until the batched packet and trailer 
   const client = {
     async reviewComments() { return comments; },
     async reviews() { return []; },
-    async commit() { return { commit: { message: 'fix: isolated patch' } }; },
+    async commit() {
+      return {
+        commit: { message: 'fix: isolated patch' },
+        files: [{ filename: 'apps/web/src/store/store.ts' }],
+      };
+    },
     async pullRequestFiles() { return [{ filename: 'apps/web/src/store/store.ts' }]; },
     async pullRequest() { return pullRequest; },
     async setDraft(live, draft) { return { ...live, draft }; },
@@ -1173,11 +1179,26 @@ test('convergence enforcement fails closed until the batched packet and trailer 
   assert.match(sticky[0][1], /convergence_required/u);
 
   client.commit = async () => ({
-    commit: { message: 'fix: batched audit\n\nReview-Convergence: complete' },
+    commit: { message: 'fix: trailer only\n\nReview-Convergence: complete' },
+    files: [{ filename: 'apps/web/src/store/store.ts' }],
   });
   client.pullRequestFiles = async () => ([
     { filename: 'docs/reviews/pr-247-convergence.md' },
   ]);
+  statuses.length = 0;
+  sticky.length = 0;
+  const stalePacket = await reviewGate.enforceReviewConvergence(
+    client,
+    pullRequest,
+    head,
+  );
+  assert.equal(stalePacket.allowed, false);
+  assert.deepEqual(stalePacket.missing, ['packet']);
+
+  client.commit = async () => ({
+    commit: { message: 'fix: batched audit\n\nReview-Convergence: complete' },
+    files: [{ filename: 'docs/reviews/pr-247-convergence.md' }],
+  });
   statuses.length = 0;
   sticky.length = 0;
   const allowed = await reviewGate.enforceReviewConvergence(

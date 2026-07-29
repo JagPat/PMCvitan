@@ -335,19 +335,6 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/commits/${head}`);
   }
 
-  async pullRequestFiles(number) {
-    const files = [];
-    let page = 1;
-    while (true) {
-      const batch = await this.request(
-        `/repos/${this.repository}/pulls/${number}/files?per_page=100&page=${page}`,
-      );
-      files.push(...batch);
-      if (batch.length < 100) return files;
-      page += 1;
-    }
-  }
-
   async checkRuns(head) {
     const payload = await this.request(
       `/repos/${this.repository}/commits/${head}/check-runs?filter=latest&per_page=100`,
@@ -792,15 +779,12 @@ export async function enforceReviewConvergence(
   });
   if (!preliminary.required) return preliminary;
 
-  const [commit, changedFiles] = await Promise.all([
-    client.commit(expectedHead),
-    client.pullRequestFiles(pullRequest.number),
-  ]);
+  const commit = await client.commit(expectedHead);
   const result = assessConvergence({
     comments,
     reviews,
     headMessage: commit.commit?.message,
-    changedFiles,
+    changedFiles: commit.files ?? [],
   });
   if (result.allowed) return result;
 

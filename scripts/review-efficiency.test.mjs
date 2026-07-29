@@ -94,6 +94,22 @@ test('invariant labels without risk and evidence do not satisfy a large review u
   assert.deepEqual(result.missingInvariants, REQUIRED_INVARIANTS);
 });
 
+test('instructional marker text cannot replace the leading size declaration', () => {
+  const body = [
+    '<!-- review-size: standard -->',
+    '',
+    'For a large PR use `<!-- review-size: justified-large -->`.',
+    justifiedLargeBody().split('\n').slice(2).join('\n'),
+  ].join('\n');
+  const result = assessReviewScope(pullRequest({
+    additions: 2_000,
+    changed_files: 24,
+    body,
+  }));
+  assert.equal(result.allowed, false);
+  assert.match(result.detail, /justified-large marker/u);
+});
+
 test('a justified large review unit passes only with the complete invariant matrix', () => {
   const result = assessReviewScope(pullRequest({
     additions: 2_000,

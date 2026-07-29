@@ -30,10 +30,12 @@ success may merge it. No AI API key or human approval is introduced.
 
 A standard review unit is at most 20 changed files and 1,500 changed lines
 (`additions + deletions`). A larger PR is not automatically unsafe, but it must be
-deliberate. It must carry `<!-- review-size: justified-large -->` and an invariant
-matrix covering authorization/tenancy, civil time and lifecycle, concurrency and
-idempotency, data integrity/conservation, offline/reconciliation, and UI/server
-parity. Missing evidence fails before expensive CI jobs start.
+deliberate. Its first non-whitespace line must declare
+`<!-- review-size: justified-large -->`, and every invariant row must contain both
+risk and verification evidence for authorization/tenancy, civil time and
+lifecycle, concurrency and idempotency, data integrity/conservation,
+offline/reconciliation, and UI/server parity. Missing evidence fails before
+expensive CI jobs start.
 
 The policy begins after PR #246 so the in-flight Phase-4 final task is not
 retroactively stranded. PR #247 and later are enforced.
@@ -54,7 +56,7 @@ distinct heads have findings, the next CI-green head is accepted for Codex revie
 only when:
 
 - its head commit carries `Review-Convergence: complete`; and
-- the PR contains a changed `docs/reviews/*convergence*.md` packet.
+- the same head commit changes a `docs/reviews/*convergence*.md` packet.
 
 That packet must map all prior findings, the complete invariant matrix, the
 architectural cause, batched remedies, reproduce-first probes, and remaining

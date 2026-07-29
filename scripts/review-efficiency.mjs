@@ -56,7 +56,9 @@ export function assessReviewScope(
   }
 
   const body = String(pullRequest?.body ?? '');
-  const justified = body.includes(LARGE_MARKER);
+  const sizeDeclaration = /^<!--\s*review-size:\s*(standard|justified-large)\s*-->/iu
+    .exec(body.trimStart());
+  const justified = sizeDeclaration?.[1]?.toLowerCase() === 'justified-large';
   const tableRows = body
     .split(/\r?\n/u)
     .filter((line) => line.trimStart().startsWith('|'))
