@@ -82,7 +82,7 @@ The machine-actionable substance of both findings — the runner must never be l
 concrete next step — is real and is fixed by the totality remedy above. The part that asks to
 delete the owner's authority is declined with this documented rationale.
 
-## Invalid Reviewer Evidence (round 4)
+## Invalid Reviewer Evidence (rounds 4–5)
 
 The round-4 P1 "Add the missing convergence trailer" cited head
 `bbe402a48e43d605721c80d19aa27d49824bb6ea` — a SHA that is not an object in this repository and
@@ -96,6 +96,19 @@ returns `allowed: true`. This repeats the PR #246 round-15 pattern the `AGENTS.m
 resolution rule addresses (inspect `refs/pull/248/head`, never the synthetic merge SHA). No
 resolution content changes for this finding; this head re-presents the same owner-instructed
 state with this record added.
+
+Round 5 repeated the identical finding against head `09c98ec`, this time citing
+`eacd6cceb698ff7f0b45ef23e43e47bff112f1fc` and asserting it is "the authoritative head …, not a
+synthetic merge". It is neither: `eacd6cce` is not an object in this repository, and after the
+`09c98ec` push the regenerating merge ref resolved to `7a7055b` — parents (`67e7a00`,
+`09c98ec`), subject "Merge 09c98ec… into 67e7a00…". The authoritative head `09c98ec` carries the
+trailer (`git show -s --format='%(trailers)' 09c98ec` prints `Review-Convergence: complete`),
+and the TRUSTED convergence gate has admitted and promoted every trailered head of this PR
+(`dde61c2`, `52d3f71`, `09c98ec`) — the enforcement the finding predicts would "fail closed"
+has in fact passed on each of them. To end this loop at the instruction layer, this head also
+co-locates the head-resolution recipe inside `AGENTS.md`'s convergence rule itself: verify the
+trailer on `HEAD^2` of a merge checkout (or `refs/pull/<n>/head`); the merge commit's
+auto-generated message never carries trailers; a SHA that is not the PR head is not evidence.
 
 ## Remaining Risk
 
