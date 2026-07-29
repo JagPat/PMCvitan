@@ -9,12 +9,14 @@ const {
   hasTerminalReviewFailureAfterPending,
   MAX_REVIEW_ATTEMPTS,
   REQUIRED_CHECKS,
+  requiredChecksForPullRequest,
   summarizeRequiredChecks,
 } = reviewGate;
 
 const workflowPath = new URL('../.github/workflows/auto-merge.yml', import.meta.url);
 const ciPath = new URL('../.github/workflows/ci.yml', import.meta.url);
 const autonomousLoopPath = new URL('../docs/AUTONOMOUS_LOOP.md', import.meta.url);
+const packagePath = new URL('../package.json', import.meta.url);
 
 function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
@@ -56,12 +58,15 @@ test('requires every named CI check to have a successful latest run', () => {
     failed: [],
   });
 
-  assert.deepEqual(summarizeRequiredChecks(success.slice(1)), {
+  assert.deepEqual(
+    summarizeRequiredChecks(success.filter((run) => run.name !== 'web')),
+    {
     state: 'pending',
     missing: ['web'],
     pending: [],
     failed: [],
-  });
+    },
+  );
 
   assert.deepEqual(
     summarizeRequiredChecks([
@@ -75,6 +80,51 @@ test('requires every named CI check to have a successful latest run', () => {
       failed: ['api'],
     },
   );
+});
+
+test('rollout cannot require the new scope check from pre-policy PR branches', () => {
+  const legacyChecks = requiredChecksForPullRequest(246);
+  assert.deepEqual(
+    legacyChecks,
+    REQUIRED_CHECKS.filter((name) => name !== 'review-scope'),
+  );
+  assert.equal(
+    summarizeRequiredChecks(
+      legacyChecks.map((name) => checkRun(name)),
+      legacyChecks,
+    ).state,
+    'success',
+  );
+  assert.deepEqual(requiredChecksForPullRequest(247), REQUIRED_CHECKS);
+});
+
+test('review scope runs before every expensive product gate', async () => {
+  assert.deepEqual(REQUIRED_CHECKS, [
+    'review-scope',
+    'web',
+    'api',
+    'e2e',
+    'api-e2e',
+    'upgrade-proof',
+  ]);
+
+  const workflow = await readFile(ciPath, 'utf8');
+  assert.match(
+    workflow,
+    /pull_request:\s*\n\s+types:\s*\[opened, synchronize, reopened, edited\]/u,
+  );
+  const scopeStart = workflow.indexOf('  review-scope:');
+  const webStart = workflow.indexOf('  web:');
+  assert.ok(scopeStart >= 0);
+  assert.ok(webStart > scopeStart);
+  const scopeJob = workflow.slice(scopeStart, webStart);
+  assert.match(scopeJob, /node scripts\/review-scope\.mjs/u);
+  assert.doesNotMatch(scopeJob, /pnpm install|setup-node|postgres/u);
+
+  for (const job of ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof']) {
+    const pattern = new RegExp(`  ${job}:[\\s\\S]*?needs: review-scope`, 'u');
+    assert.match(workflow, pattern);
+  }
 });
 
 test('keeps the Codex trigger retry bounded', () => {
@@ -196,6 +246,15 @@ test('a first pre-review CI failure gets one GitHub-native retry', () => {
     }),
     false,
   );
+  assert.equal(
+    reviewGate.shouldRetryCiFailure({
+      trigger: 'ci',
+      ciConclusion: 'failure',
+      ciRunId: 30329510227,
+      ciRunAttempt: 1,
+    }, null, ['review-scope']),
+    false,
+  );
 });
 
 test('the bounded CI retry has only the permission and endpoint it needs', async () => {
@@ -315,6 +374,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
   const draftTransitions = [];
   const statusWrites = [];
   let autoMergeDraft = null;
+  let reviewComments = [];
   const client = {
     async pullRequest() {
       return pullRequest;
@@ -327,6 +387,12 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async setStatus(head, state, description) {
       statusWrites.push({ head, state, description });
     },
+    async reviewComments() { return reviewComments; },
+    async reviews() { return []; },
+    async commit() {
+      return { commit: { message: 'fix: ordinary head' }, files: [] };
+    },
+    async updateStickyComment() {},
     async mergeExactHead() {
       return { merged: false, message: 'Not ready to merge' };
     },
@@ -368,6 +434,26 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
   assert.equal(autoMergeDraft, false);
   assert.equal(statusWrites[0].state, 'success');
   assert.match(statusWrites[0].description, /recovered prior clean/u);
+
+  pullRequest.draft = false;
+  autoMergeDraft = null;
+  reviewComments = [
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'c'.repeat(40) },
+  ];
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(
+      client,
+      pullRequest,
+      expectedHead,
+      cleanStatus,
+      statuses,
+    ),
+    true,
+  );
+  assert.equal(autoMergeDraft, null);
+  assert.equal(pullRequest.draft, true);
+  assert.match(statusWrites.at(-1).description, /convergence evidence/u);
 });
 
 test('a review failure remains latched after a later success write', () => {
@@ -996,6 +1082,249 @@ test('workflow gives one exact-head run sole ownership of review and merge', asy
   assert.doesNotMatch(workflow, /pull_request_target:/);
 });
 
+test('the trusted owner enforces convergence after CI and before Codex promotion', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const checks = gate.indexOf('await waitForRequiredChecks');
+  const convergence = gate.indexOf('await enforceReviewConvergence', checks);
+  const review = gate.indexOf('await reviewAttempt', convergence);
+
+  assert.ok(checks >= 0);
+  assert.ok(convergence > checks);
+  assert.ok(review > convergence);
+  assert.match(gate, /client\.commit\(expectedHead\)/u);
+  assert.match(gate, /changedFiles: commit\.files/u);
+  assert.doesNotMatch(gate, /client\.pullRequestFiles\(pullRequest\.number\)/u);
+  assert.match(gate, /state: 'convergence_required'/u);
+  assert.match(gate, /Review-Convergence: complete/u);
+  assert.match(gate, /assessReviewScope\(pullRequest\)/u);
+  assert.match(gate, /state: 'scope_required'/u);
+  assert.match(
+    gate,
+    /async paginated\(path\)[\s\S]*?page \+= 1/u,
+  );
+  assert.match(gate, /reviewComments\(number\)[\s\S]*?this\.paginated/u);
+});
+
+test('trusted scope enforcement rejects a spoofed green preflight', async () => {
+  const head = 'd'.repeat(40);
+  const pullRequest = {
+    number: 247,
+    additions: 2_000,
+    deletions: 0,
+    changed_files: 24,
+    body: '<!-- review-size: justified-large -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
+    head: { sha: head },
+  };
+  const statuses = [];
+  const sticky = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus(...args) { statuses.push(args); },
+    async updateStickyComment(...args) { sticky.push(args); },
+  };
+
+  const result = await reviewGate.enforceReviewScope(
+    client,
+    pullRequest,
+    head,
+  );
+  assert.equal(result.allowed, false);
+  assert.equal(statuses[0][1], 'failure');
+  assert.match(sticky[0][1], /scope_required/u);
+});
+
+test('final admission revalidates live scope and late convergence evidence', async () => {
+  const head = 'e'.repeat(40);
+  const pullRequest = {
+    number: 247,
+    additions: 2_000,
+    deletions: 0,
+    changed_files: 24,
+    body: '<!-- review-size: standard -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
+    head: { sha: head },
+  };
+  const statuses = [];
+  const sticky = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus(...args) { statuses.push(args); },
+    async updateStickyComment(...args) { sticky.push(args); },
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async commit() { return { commit: { message: 'fix: no convergence' }, files: [] }; },
+  };
+
+  const invalidScope = await reviewGate.revalidateFinalReviewPolicy(
+    client,
+    pullRequest.number,
+    head,
+  );
+  assert.equal(invalidScope.allowed, false);
+  assert.equal(invalidScope.state, 'scope_required');
+
+  pullRequest.additions = 1;
+  pullRequest.changed_files = 1;
+  pullRequest.body = '<!-- review-size: standard -->';
+  client.reviewComments = async () => ([
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
+  ]);
+  statuses.length = 0;
+  sticky.length = 0;
+  const lateConvergence = await reviewGate.revalidateFinalReviewPolicy(
+    client,
+    pullRequest.number,
+    head,
+  );
+  assert.equal(lateConvergence.allowed, false);
+  assert.equal(lateConvergence.state, 'convergence_required');
+
+  let commentCalls = 0;
+  client.commit = async () => ({
+    commit: { message: 'fix: final admission\n\nReview-Convergence: complete' },
+    files: [{ filename: 'docs/reviews/pr-247-convergence.md', status: 'modified' }],
+  });
+  client.reviewComments = async () => ([
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: commentCalls++ === 0 ? 'b'.repeat(40) : head },
+  ]);
+  const lateFinding = await reviewGate.revalidateFinalReviewPolicy(
+    client, pullRequest.number, head,
+  );
+  assert.equal(lateFinding.allowed, false);
+  assert.equal(lateFinding.state, 'changes_required');
+});
+
+test('Codex review records and inline comments are fully paginated', async () => {
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  let transientFailure = 2;
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    if (transientFailure === 2) {
+      transientFailure -= 1;
+      throw new TypeError('temporary network failure');
+    }
+    if (transientFailure === 1) {
+      transientFailure -= 1;
+      return new Response('', { status: 500 });
+    }
+    const parsed = new URL(url);
+    const page = parsed.searchParams.get('page');
+    const count = page === '1' ? 100 : 1;
+    if (/\/commits\//u.test(parsed.pathname)) {
+      return new Response(JSON.stringify({
+        commit: { message: 'fix: paginated head' },
+        files: Array.from({ length: count }, (_, index) => ({
+          filename: `file-${page}-${index}.txt`,
+          status: 'modified',
+        })),
+      }));
+    }
+    return new Response(JSON.stringify(Array.from({ length: count }, (_, index) => ({ index }))));
+  };
+  try {
+    const client = new reviewGate.GitHubClient({
+      repository: 'JagPat/PMCvitan',
+      token: 'test-token',
+    });
+    assert.equal((await client.reviewComments(247)).length, 101);
+    assert.equal((await client.reviews(247)).length, 101);
+    assert.equal((await client.commit('a'.repeat(40))).files.length, 101);
+    assert.ok(urls.some((url) => url.includes('/comments?per_page=100&page=2')));
+    assert.ok(urls.some((url) => url.includes('/reviews?per_page=100&page=2')));
+    assert.ok(urls.some((url) => url.includes(`/commits/${'a'.repeat(40)}?per_page=100&page=2`)));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('convergence enforcement fails closed until the batched packet and trailer exist', async () => {
+  const head = 'c'.repeat(40);
+  const pullRequest = {
+    number: 247,
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
+    head: { sha: head },
+  };
+  const comments = [
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
+  ];
+  const statuses = [];
+  const sticky = [];
+  const client = {
+    async reviewComments() { return comments; },
+    async reviews() { return []; },
+    async commit() {
+      return {
+        commit: { message: 'fix: isolated patch' },
+        files: [{ filename: 'apps/web/src/store/store.ts' }],
+      };
+    },
+    async pullRequestFiles() { return [{ filename: 'apps/web/src/store/store.ts' }]; },
+    async pullRequest() { return pullRequest; },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus(...args) { statuses.push(args); },
+    async updateStickyComment(...args) { sticky.push(args); },
+  };
+
+  const blocked = await reviewGate.enforceReviewConvergence(
+    client,
+    pullRequest,
+    head,
+  );
+  assert.equal(blocked.allowed, false);
+  assert.deepEqual(blocked.missing, ['trailer', 'packet']);
+  assert.equal(statuses[0][1], 'failure');
+  assert.match(statuses[0][2], /convergence evidence/u);
+  assert.match(sticky[0][1], /convergence_required/u);
+
+  client.commit = async () => ({
+    commit: { message: 'fix: trailer only\n\nReview-Convergence: complete' },
+    files: [{ filename: 'apps/web/src/store/store.ts' }],
+  });
+  client.pullRequestFiles = async () => ([
+    { filename: 'docs/reviews/pr-247-convergence.md' },
+  ]);
+  statuses.length = 0;
+  sticky.length = 0;
+  const stalePacket = await reviewGate.enforceReviewConvergence(
+    client,
+    pullRequest,
+    head,
+  );
+  assert.equal(stalePacket.allowed, false);
+  assert.deepEqual(stalePacket.missing, ['packet']);
+
+  client.commit = async () => ({
+    commit: { message: 'fix: batched audit\n\nReview-Convergence: complete' },
+    files: [{ filename: 'docs/reviews/pr-247-convergence.md' }],
+  });
+  statuses.length = 0;
+  sticky.length = 0;
+  const allowed = await reviewGate.enforceReviewConvergence(
+    client,
+    pullRequest,
+    head,
+  );
+  assert.equal(allowed.allowed, true);
+  assert.deepEqual(statuses, []);
+  assert.deepEqual(sticky, []);
+});
+
 test('one polled Codex invocation owns terminal success and merge completion', async () => {
   const gate = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
@@ -1344,14 +1673,16 @@ test('documented recovery jq selects an authorized review status id', async () =
 });
 
 test('workflow invokes the exact-head gate and CI executes its tests', async () => {
-  const [workflow, ci] = await Promise.all([
+  const [workflow, ci, packageJson] = await Promise.all([
     readFile(workflowPath, 'utf8'),
     readFile(ciPath, 'utf8'),
+    readFile(packagePath, 'utf8').then(JSON.parse),
   ]);
 
   assert.match(workflow, /scripts\/autonomous-review-gate\.mjs/);
   assert.match(workflow, /codex-current-head/);
   assert.match(ci, /pnpm test:automation/);
+  assert.match(packageJson.scripts['test:automation'], /review-efficiency\.test\.mjs/u);
 });
 
 test('rechecks the live head before terminal PR mutations', async () => {
@@ -1373,6 +1704,19 @@ test('reclassifies Codex evidence immediately before publishing success', async 
   );
   assert.match(implementation, /reclassifyCurrentCodexEvidence/);
   assert.match(implementation, /verifiedResult\.state !== 'clear'/);
+});
+
+test('revalidates live policy after polling and immediately before clean success', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const evidence = gate.indexOf('await reclassifyCurrentCodexEvidence');
+  const finalPolicy = gate.indexOf('await revalidateFinalReviewPolicy', evidence);
+  const success = gate.indexOf("'review: Codex found no blocking issue on this exact head'", finalPolicy);
+  assert.ok(evidence >= 0);
+  assert.ok(finalPolicy > evidence);
+  assert.ok(success > finalPolicy);
 });
 
 test('CI runs once per pull-request head', async () => {

@@ -2,10 +2,19 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
 jobs:
+  review-scope:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Review-unit scope and invariant preflight
+        run: node scripts/review-scope.mjs
+
   web:
+    needs: review-scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -29,6 +38,7 @@ jobs:
         run: pnpm --filter web build
 
   e2e:
+    needs: review-scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -50,6 +60,7 @@ jobs:
   # complete only when this job is green — unit tests or the seeded demo alone
   # are insufficient evidence (docs/ROADMAP.md).
   api-e2e:
+    needs: review-scope
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -104,6 +115,7 @@ jobs:
   # upgraded through ALL Phase 1 migrations the way Prisma applies them, and
   # asserted to keep every legacy meaning intact. Pure psql — no build needed.
   upgrade-proof:
+    needs: review-scope
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -125,6 +137,7 @@ jobs:
         run: bash apps/api/scripts/upgrade-proof.sh
 
   api:
+    needs: review-scope
     runs-on: ubuntu-latest
     services:
       postgres:

@@ -6,8 +6,14 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
+import {
+  assessConvergence,
+  assessReviewScope,
+  REVIEW_SCOPE_ENFORCE_AFTER_PR,
+} from './review-efficiency.mjs';
 
 export const REQUIRED_CHECKS = [
+  'review-scope',
   'web',
   'api',
   'e2e',
@@ -24,12 +30,23 @@ const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 10 * 60_000);
 const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 15 * 60_000);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
 
-export function summarizeRequiredChecks(checkRuns) {
+export function requiredChecksForPullRequest(pullRequestNumber) {
+  if (
+    Number.isInteger(pullRequestNumber)
+    && pullRequestNumber > 0
+    && pullRequestNumber <= REVIEW_SCOPE_ENFORCE_AFTER_PR
+  ) {
+    return REQUIRED_CHECKS.filter((name) => name !== 'review-scope');
+  }
+  return REQUIRED_CHECKS;
+}
+
+export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
   const missing = [];
   const pending = [];
   const failed = [];
 
-  for (const name of REQUIRED_CHECKS) {
+  for (const name of requiredChecks) {
     const runs = checkRuns.filter((run) => run.name === name);
     if (runs.length === 0) {
       missing.push(name);
@@ -77,13 +94,14 @@ export function shouldDraftForCiFailure(status) {
   );
 }
 
-export function shouldRetryCiFailure(context, existingStatus) {
+export function shouldRetryCiFailure(context, existingStatus, failedChecks = []) {
   return context?.trigger === 'ci'
     && context.ciConclusion
     && context.ciConclusion !== 'success'
     && Number.isInteger(context.ciRunId)
     && context.ciRunId > 0
     && context.ciRunAttempt === 1
+    && !failedChecks.includes('review-scope')
     && !isTerminalReviewStatus(existingStatus);
 }
 
@@ -271,31 +289,45 @@ function requiredEnvironment(name) {
   return value;
 }
 
-class GitHubClient {
+export class GitHubClient {
   constructor({ repository, token }) {
     this.repository = repository;
     this.token = token;
   }
 
   async request(path, { method = 'GET', body } = {}) {
-    const response = await fetch(`${API_ROOT}${path}`, {
-      method,
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${this.token}`,
-        'Content-Type': 'application/json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await response.text();
-    const payload = text ? JSON.parse(text) : null;
-    if (!response.ok) {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      let response;
+      let text;
+      let payload;
+      try {
+        response = await fetch(`${API_ROOT}${path}`, {
+          method,
+          headers: {
+            Accept: 'application/vnd.github+json',
+            Authorization: `Bearer ${this.token}`,
+            'Content-Type': 'application/json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        text = await response.text();
+        payload = text ? JSON.parse(text) : null;
+      } catch (error) {
+        if (method !== 'GET' || attempt === 3) throw error;
+        await sleep(attempt * 250);
+        continue;
+      }
+      if (response.ok) return payload;
+      if (method === 'GET' && response.status >= 500 && attempt < 3) {
+        await sleep(attempt * 250);
+        continue;
+      }
       throw new Error(
         `GitHub ${method} ${path} failed (${response.status}): ${text}`,
       );
     }
-    return payload;
+    throw new Error(`GitHub ${method} ${path} retry loop exhausted`);
   }
 
   async graphql(query, variables) {
@@ -311,6 +343,22 @@ class GitHubClient {
 
   pullRequest(number) {
     return this.request(`/repos/${this.repository}/pulls/${number}`);
+  }
+
+  async commit(head) {
+    let commit;
+    const files = [];
+    let page = 1;
+    while (true) {
+      const batch = await this.request(
+        `/repos/${this.repository}/commits/${head}?per_page=100&page=${page}`,
+      );
+      commit ??= batch;
+      const pageFiles = batch.files ?? [];
+      files.push(...pageFiles);
+      if (pageFiles.length < 100) return { ...commit, files };
+      page += 1;
+    }
   }
 
   async checkRuns(head) {
@@ -362,15 +410,29 @@ class GitHubClient {
     }
   }
 
+  async paginated(path) {
+    const items = [];
+    let page = 1;
+    while (true) {
+      const separator = path.includes('?') ? '&' : '?';
+      const batch = await this.request(
+        `${path}${separator}per_page=100&page=${page}`,
+      );
+      items.push(...batch);
+      if (batch.length < 100) return items;
+      page += 1;
+    }
+  }
+
   reviews(number) {
-    return this.request(
-      `/repos/${this.repository}/pulls/${number}/reviews?per_page=100`,
+    return this.paginated(
+      `/repos/${this.repository}/pulls/${number}/reviews`,
     );
   }
 
   reviewComments(number) {
-    return this.request(
-      `/repos/${this.repository}/pulls/${number}/comments?per_page=100`,
+    return this.paginated(
+      `/repos/${this.repository}/pulls/${number}/comments`,
     );
   }
 
@@ -676,6 +738,12 @@ export async function ensureTerminalReviewState(
     );
     if (!live) return true;
     if (live.draft) return false;
+    const finalPolicy = await revalidateFinalReviewPolicy(
+      client,
+      pullRequest.number,
+      expectedHead,
+    );
+    if (finalPolicy.superseded || !finalPolicy.allowed) return true;
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -687,7 +755,11 @@ export async function ensureTerminalReviewState(
         pullRequest.html_url,
       );
     }
-    await completeReviewedPullRequest(client, live, expectedHead);
+    await completeReviewedPullRequest(
+      client,
+      finalPolicy.pullRequest,
+      expectedHead,
+    );
   } else {
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
@@ -712,14 +784,137 @@ export async function ensureTerminalReviewState(
 
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
+  const requiredChecks = requiredChecksForPullRequest(pullRequest.number);
   while (true) {
     const live = await client.pullRequest(pullRequest.number);
     if (live.head.sha !== expectedHead) return { state: 'superseded' };
 
-    const summary = summarizeRequiredChecks(await client.checkRuns(expectedHead));
+    const summary = summarizeRequiredChecks(
+      await client.checkRuns(expectedHead),
+      requiredChecks,
+    );
     if (summary.state !== 'pending' || Date.now() > deadline) return summary;
     await sleep(POLL_INTERVAL_MS);
   }
+}
+
+export async function enforceReviewConvergence(
+  client,
+  pullRequest,
+  expectedHead,
+) {
+  const [comments, reviews] = await Promise.all([
+    client.reviewComments(pullRequest.number),
+    client.reviews(pullRequest.number),
+  ]);
+  const preliminary = assessConvergence({
+    comments,
+    reviews,
+    headMessage: '',
+    changedFiles: [],
+  });
+  if (!preliminary.required) return preliminary;
+
+  const commit = await client.commit(expectedHead);
+  const result = assessConvergence({
+    comments,
+    reviews,
+    headMessage: commit.commit?.message,
+    changedFiles: commit.files ?? [],
+  });
+  if (result.allowed) return result;
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return { ...result, superseded: true };
+  const detail = `${result.findingHeadCount} finding heads require convergence evidence; missing ${result.missing.join(' and ')}`;
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `review: ${detail}`,
+    pullRequest.html_url,
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'convergence_required',
+      head: expectedHead,
+      detail,
+      attempt: 0,
+      next: `Claude must batch every open finding into one architectural audit, add docs/reviews/pr-${pullRequest.number}-convergence.md, and push a head whose commit includes Review-Convergence: complete.`,
+    }),
+  );
+  return result;
+}
+
+export async function enforceReviewScope(client, pullRequest, expectedHead) {
+  const result = assessReviewScope(pullRequest);
+  if (result.allowed) return result;
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return { ...result, superseded: true };
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `scope: ${result.detail}`,
+    pullRequest.html_url,
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'scope_required',
+      head: expectedHead,
+      detail: result.detail,
+      attempt: 0,
+      next: 'Claude splits the review unit or completes every justified-large invariant row with concrete risk and verification evidence.',
+    }),
+  );
+  return result;
+}
+
+export async function revalidateFinalReviewPolicy(
+  client,
+  number,
+  expectedHead,
+) {
+  const pullRequest = await refreshCurrentHead(client, number, expectedHead);
+  if (!pullRequest) {
+    return { state: 'superseded', allowed: false, superseded: true };
+  }
+
+  const scope = await enforceReviewScope(client, pullRequest, expectedHead);
+  if (scope.superseded) return { ...scope, state: 'superseded' };
+  if (!scope.allowed) return { ...scope, state: 'scope_required' };
+
+  const convergence = await enforceReviewConvergence(
+    client,
+    pullRequest,
+    expectedHead,
+  );
+  if (convergence.superseded) {
+    return { ...convergence, state: 'superseded' };
+  }
+  if (!convergence.allowed) {
+    return { ...convergence, state: 'convergence_required' };
+  }
+
+  const finding = await guardAgainstCurrentHeadFinding(
+    client, pullRequest, expectedHead, null,
+  );
+  if (finding) {
+    return { state: 'changes_required', allowed: false, detail: finding };
+  }
+
+  return { state: 'allowed', allowed: true, pullRequest };
 }
 
 async function reviewAttempt(
@@ -962,8 +1157,16 @@ export async function run() {
     return;
   }
 
+  const scope = await enforceReviewScope(client, pullRequest, expectedHead);
+  if (scope.superseded) return;
+  if (!scope.allowed) throw new Error(scope.detail);
+
   if (context.ciConclusion && context.ciConclusion !== 'success') {
-    if (shouldRetryCiFailure(context, existingStatus)) {
+    const ciSummary = summarizeRequiredChecks(
+      await client.checkRuns(expectedHead),
+      requiredChecksForPullRequest(pullRequest.number),
+    );
+    if (shouldRetryCiFailure(context, existingStatus, ciSummary.failed)) {
       try {
         await client.rerunFailedJobs(context.ciRunId);
         await client.updateStickyComment(
@@ -997,11 +1200,14 @@ export async function run() {
           expectedHead,
         );
     if (!pullRequest) return;
+    const ciDetail = ciSummary.failed.length > 0
+      ? `Failed checks: ${ciSummary.failed.join(', ')}`
+      : `CI workflow concluded ${context.ciConclusion}`;
     if (!isTerminalReviewStatus(existingStatus)) {
       await client.setStatus(
         expectedHead,
         'failure',
-        `ci: workflow concluded ${context.ciConclusion}`,
+        `ci: ${ciDetail}`,
         pullRequest.html_url,
       );
     }
@@ -1010,12 +1216,14 @@ export async function run() {
       statusBody({
         state: 'blocked',
         head: expectedHead,
-        detail: `CI workflow concluded ${context.ciConclusion}`,
+        detail: ciDetail,
         attempt: 0,
-        next: 'Claude Auto-fix addresses CI before review begins.',
+        next: ciSummary.failed.includes('review-scope')
+          ? 'Claude splits the review unit or completes the justified-large invariant matrix; editing the PR body reruns the scope gate.'
+          : 'Claude Auto-fix addresses CI before review begins.',
       }),
     );
-    throw new Error(`CI workflow concluded ${context.ciConclusion}`);
+    throw new Error(ciDetail);
   }
 
   const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
@@ -1102,6 +1310,18 @@ export async function run() {
       }),
     );
     throw new Error(detail);
+  }
+
+  const convergence = await enforceReviewConvergence(
+    client,
+    pullRequest,
+    expectedHead,
+  );
+  if (convergence.superseded) return;
+  if (!convergence.allowed) {
+    throw new Error(
+      `${convergence.findingHeadCount} finding heads require a consolidated convergence audit`,
+    );
   }
 
   const reviewNotBefore = new Date(Date.now() - 1_000).toISOString();
@@ -1205,6 +1425,7 @@ export async function run() {
       const finalStatuses = await client.statuses(expectedHead);
       const finalCheckSummary = summarizeRequiredChecks(
         await client.checkRuns(expectedHead),
+        requiredChecksForPullRequest(pullRequest.number),
       );
       if (
         finalCheckSummary.state !== 'success'
@@ -1260,6 +1481,16 @@ export async function run() {
           next: 'GitHub sets the required status and completes this exact reviewed head.',
         }),
       );
+      const finalPolicy = await revalidateFinalReviewPolicy(
+        client,
+        pullRequest.number,
+        expectedHead,
+      );
+      if (finalPolicy.superseded) return;
+      if (!finalPolicy.allowed) {
+        throw new Error(`Final review policy changed: ${finalPolicy.state}`);
+      }
+      pullRequest = finalPolicy.pullRequest;
       // One run polls one Codex invocation to its mutually exclusive terminal
       // result: finding-bearing evidence or the clean reaction. Review webhooks
       // never enter this orchestrator, so no second writer can race admission.

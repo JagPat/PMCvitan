@@ -14,6 +14,16 @@ the required `codex-current-head` status and queues auto-merge. Never start the
 next task while STATUS keeps the current task open. No human technical approval
 is required, but the exact-head GitHub gate is mandatory and fails closed.
 
+Review efficiency is also mandatory. Keep one PR to one user workflow or one
+architectural concern; the standard budget is 20 files and 1,500 changed lines.
+Complete the PR template's six-row invariant matrix before the first review. Read
+and batch every Codex finding before pushing a correction. After two distinct
+finding-bearing heads, do not make another isolated patch: produce the required
+`docs/reviews/*convergence*.md` architectural audit and add
+`Review-Convergence: complete` to the correction commit. The `review-scope` check
+and trusted exact-head gate enforce this protocol without replacing any product
+test or independent review.
+
 Before architecture or implementation work, read:
 
 1. `docs/superpowers/specs/2026-07-12-modular-construction-control-platform-design.md`
@@ -22,4 +32,4 @@ Before architecture or implementation work, read:
 
 Git is the project memory. Revalidate findings against current `main`; do not rely on chat history. One project represents one site. Project operational records never become global. One fact has one canonical owner. Preserve attributable human approvals. Use additive migrations and prove tenant isolation against PostgreSQL.
 
-Before every PR, include the vision-alignment statement and review packet required by the active plan. A task is not complete until its focused tests and `pnpm check` pass.
+Before every PR, include the vision-alignment statement, invariant matrix, and review packet required by the active plan. A task is not complete until its focused tests and `pnpm check` pass.
