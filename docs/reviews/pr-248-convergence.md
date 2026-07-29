@@ -23,24 +23,29 @@ which every reachable configuration of `docs/STATUS.md` yields a concrete, machi
 work item. Both P1s are symptoms of that gap; neither is an isolated wording defect, which is
 why the remedy is batched here rather than patched a third time.
 
-## Batched Remedy (this head)
+## Batched Remedy (as it stands on this head)
 
-The runner state machine is now TOTAL:
+The runner state machine is TOTAL — every reachable configuration of `docs/STATUS.md` yields a
+concrete next action. Round 2 introduced the maintenance queue; the owner's round-3 instruction
+then removed the approval gate and restored automatic phase progression, which is what the Now
+block on this head actually encodes (`work_item: none`, `next_task: phase-5-planning`,
+`blocking_directive: none`):
 
-1. **Open PR** → shepherd it through the exact-head `codex-current-head` gate (unchanged).
-2. **Correction directive active** → work it (unchanged).
-3. **Otherwise** → `work_item: maintenance-queue`, a new first-class STATUS section holding
-   real, already-authorized upkeep of delivered scope: the open Dependabot vulnerability
+1. **Open PR** → shepherd it through the exact-head `codex-current-head` gate.
+2. **Correction directive active** (`blocking_directive` names one) → work it.
+3. **`next_task` set** → start it on the first runner pass after merge, automatically and with
+   no human gate. On this head that is `phase-5-planning`, per the restored runner rule "when
+   every task in a phase is `merged`, move to the next phase's plan and start at its task 1".
+4. **Nothing in flight** (no open PR, no directive, no `next_task`) → the **Maintenance queue**
+   section: already-authorized upkeep of delivered scope — the open Dependabot vulnerability
    alerts on the default branch (5 as of 2026-07-29: 3 high, 1 moderate, 1 low) and the
    documented e2e flake-family burn-down (`daily-log-lost-response`, `pillar-chain`,
    `inspections-module-query`, `project-scope`). Each item rides the same draft → CI →
-   exact-head Codex gate as feature work. No phase directive blocks the queue.
-4. **Phase gate cleared by the owner** → start `next_task` (`phase-5-planning`).
+   exact-head Codex gate as feature work.
 
-The "every task merged → move to the next phase" runner rule routes through the named
-phase-approval directive, so the rules and the Now block can never disagree on `main`, and the
-Blocking directives section states the totality invariant explicitly: a directive gates only
-`next_task`, never the queue.
+`work_item: none` records that no work item is currently IN FLIGHT — not that the runner has
+nothing to do; rows 3 and 4 supply the next action in that state. The phase-progression rule
+and the Now block therefore cannot disagree on `main`.
 
 ## Owner Resolution (round 3 — supersedes the Scope Boundary below)
 
@@ -82,7 +87,7 @@ The machine-actionable substance of both findings — the runner must never be l
 concrete next step — is real and is fixed by the totality remedy above. The part that asks to
 delete the owner's authority is declined with this documented rationale.
 
-## Invalid Reviewer Evidence (rounds 4–5)
+## Invalid Reviewer Evidence (rounds 4–6)
 
 The round-4 P1 "Add the missing convergence trailer" cited head
 `bbe402a48e43d605721c80d19aa27d49824bb6ea` — a SHA that is not an object in this repository and
@@ -110,12 +115,30 @@ co-locates the head-resolution recipe inside `AGENTS.md`'s convergence rule itse
 trailer on `HEAD^2` of a merge checkout (or `refs/pull/<n>/head`); the merge commit's
 auto-generated message never carries trailers; a SHA that is not the PR head is not evidence.
 
+Round 6 repeated it a third time against head `a74143d`, citing
+`e2f7ba0a292be00804cf847b107a43a6ff6472f9` as "the requested single-parent head" — again not an
+object in this repository (`git cat-file -t e2f7ba0a…` → "could not get object info"). The
+AGENTS.md co-location added in round 5 did not change the outcome, and each round cites a
+DIFFERENT nonexistent SHA (`bbe402a`, `eacd6cce`, `9efdb273`, `e2f7ba0`), so the reviewer is
+inspecting commits materialized inside its own environment rather than
+`refs/pull/248/head`. That is an integration-level defect on the reviewing side; no further
+in-repository instruction change can correct it, and none is attempted. The head trailer is
+verifiable at any time with
+`git show -s --format='%(trailers:key=Review-Convergence,valueonly)' <head>`.
+
 ## Remaining Risk
 
-None open. Phase-5 planning begins automatically on the first runner pass after this merge, per
-the owner's explicit round-3 instruction; the maintenance queue keeps the loop live between work
-items. There is no reachable idle state, and the phase-progression rule and the Now block can no
-longer disagree on `main`.
+None open in the change itself. Phase-5 planning begins automatically on the first runner pass
+after this merge, per the owner's explicit round-3 instruction; the maintenance queue keeps the
+loop live between work items. There is no reachable idle state, and the phase-progression rule,
+this packet's remedy table, and the Now block now state the same thing.
+
+The one open RISK is procedural, not in the diff: the required `codex-current-head` status
+cannot go green while the reviewer keeps filing the phantom-SHA trailer finding, and a
+finding-bearing status is deliberately non-retryable. Clearing it needs an owner action outside
+the repository — temporarily removing that required check to merge, then restoring it (together
+with `review-scope`, whose rollout is also pending) per `docs/AUTONOMOUS_LOOP.md`
+§GitHub Enforcement.
 
 ## Verification
 
