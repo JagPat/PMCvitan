@@ -14,6 +14,24 @@ findings is out of a review's writ and why.
 | --- | --- | --- |
 | `8c8f423` | P1 "Keep Phase 5 unblockable by automation" | With `next_task: none` + `blocking_directive: none`, the runner had NO machine-actionable state after the flip — and the runner rule "move to the next phase's plan and start at its task 1" contradicted the prose wait. The finding's own text names two acceptable resolutions: "advancing **or recording an actionable blocker**". |
 | `1d1de47` | P1 "Remove the owner-approval gate from Phase 5 progression" | The named directive (`phase-5-planning-approval`) fixed the empty state, but the "standing duties" prose still created no CONCRETE work item in the no-open-PR case — the runner would shepherd nothing and wait. The finding again asks for the gate itself to be removed. |
+| `52d3f71` | (owner instruction, not a Codex finding) | The project owner resolved the dispute directly: remove the directive, keep `next_task: phase-5-planning`, restore automatic progression. |
+| `a74143d` | P1 "Make the convergence remedy match STATUS" | The packet's remedy section still described round 2's design after round 3 had changed STATUS. Real defect — packet/state drift. |
+
+### Evidence and regression surface
+
+This PR changes exactly two files — `docs/STATUS.md` and this packet — and no executable code,
+so there is no test that can be RED-then-GREEN for these findings, and inventing one would be
+dishonest. The evidence for each is stated plainly instead, together with what keeps it from
+recurring:
+
+| Finding | Failing observation (the "RED") | Fix | Regression surface |
+| --- | --- | --- | --- |
+| `8c8f423` empty state | Reading the merged Now block yields no next action: `work_item`, `next_task` and `blocking_directive` all `none`, while the runner rule says to advance — a contradiction the state machine cannot execute | `next_task: phase-5-planning` named; the runner rules reconciled | The **Rules for the runner** section is the executable spec; the Now block and the rules are edited together in one PR (the file's own last rule), so a future flip that empties both again contradicts a rule in the same file |
+| `1d1de47` no concrete work item | The no-open-PR, no-directive state still resolves to nothing to do | The **Maintenance queue** section, kept as the standing between-work source | The queue is a first-class STATUS section with named items; emptying it is a visible diff in the authoritative state file |
+| `a74143d` packet ≠ STATUS | The packet's remedy table said `work_item: maintenance-queue` while the same head's Now block said `none` | Remedy table rewritten to the shipped state machine | Both live in this one PR's diff; the reviewer's own check (comparing the packet's claims against `docs/STATUS.md`) is the check that caught it and is repeatable by inspection |
+
+No product code, schema, migration, projection, event or lock is touched, so no product
+invariant has a regression surface to protect here.
 
 ## Architectural Cause
 
@@ -134,11 +152,20 @@ loop live between work items. There is no reachable idle state, and the phase-pr
 this packet's remedy table, and the Now block now state the same thing.
 
 The one open RISK is procedural, not in the diff: the required `codex-current-head` status
-cannot go green while the reviewer keeps filing the phantom-SHA trailer finding, and a
-finding-bearing status is deliberately non-retryable. Clearing it needs an owner action outside
-the repository — temporarily removing that required check to merge, then restoring it (together
-with `review-scope`, whose rollout is also pending) per `docs/AUTONOMOUS_LOOP.md`
-§GitHub Enforcement.
+cannot go green while the reviewer keeps filing the phantom-SHA trailer finding on every head,
+and a finding-bearing status is deliberately non-retryable — correctly so. **This packet
+prescribes no way around that check.** An earlier revision of this section suggested removing
+the required check to merge; that was wrong to record here, because turning failed review
+evidence into a manual bypass is exactly what the fail-closed rule exists to prevent
+(`AGENTS.md` §Autonomy: "Missing, stale, or timed-out review evidence fails closed"), and a
+review packet is the last place such a workaround should be normalized. It is withdrawn.
+
+The correct fix is at the integration: the reviewer must inspect `refs/pull/248/head` rather
+than commits materialized in its own environment, at which point it will read the trailer that
+is demonstrably present and the check can pass on its own evidence. Until that is fixed, the
+honest state of this PR is: change complete and verified, review evidence unobtainable through
+no fault of the diff. Any decision to override a required check is the repository owner's
+alone, is made outside this packet, and is not recommended by it.
 
 ## Verification
 
