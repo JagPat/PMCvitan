@@ -72,11 +72,26 @@ Reproduce-first at each round, both probes RED at the prior head and GREEN here:
 | R3 `started_at` vs `completed_at` | `0698ae8` | plan probe (started-first/finished-last cancelled decides) + gate probe (10:00→10:30 failure outranks 10:05→10:20 success) | Both orderings share the same rule as GitHub's own `latest` filter |
 | R6 `battery-plan` not required | `8b2f2de` | gate probes: an aborted attempt (`battery-plan` failure + five product skips over older successes) now reports `battery-plan` AND all five products failed; the `REQUIRED_CHECKS` pin and the legacy-PR filter both list it | A failing planner can no longer be invisible to the gate |
 | R6 `battery-plan` verdict not consulted | `8b2f2de` | `assessBatteryPlan` iterates both gates in the in-flight guard and the newest-completed-verdict loop | The R5 rule is now stated over the gate SET, not one member of it |
+| R7 unactionable gate message | `88ea653` | three `assessConvergence` probes: a marker demoted by a blank line, a marker in a final block spoiled by a prose line, and a genuinely absent one — the first two now name the parsing rule, the third still reads plainly `trailer` | The gate's refusal is unchanged; only the reason improves, so no head can pass that could not pass before |
 
 The R3 round is itself evidence for the convergence claim: two of its three findings are the R2
 remedy applied at sites the R2 pass missed (the second fetch, the second ordering). R6 is the same
 shape once more — the R5 rule was written about both gates but wired for one — which is why
 invariant 7 above is stated over the gate SET rather than at each call site.
+
+### R7: the gate refused this PR's own head, correctly, and the message was not actionable
+
+The R6 head `88ea653` failed its own convergence gate with `missing trailer`. The line was in the
+commit message — but with a blank line above it, which demotes it to body text, because git reads
+trailers from the last paragraph only. The gate was right and I was wrong; the head was amended.
+
+`missing trailer` is accurate and still reads as "you forgot it" when the line is visibly there.
+`convergenceTrailerHint` now distinguishes absent from present-but-unparsed and states the rule
+(final block; every line a `Key: value` trailer) rather than guessing which of the two mistakes it
+is — an earlier draft asserted "remove the blank line above it", which is wrong for the
+prose-line-in-the-final-block case and was caught by an existing test. The gate decision is
+untouched: `hasTrailer`, `allowed` and the refusal itself are identical, so nothing that was
+blocked can now pass.
 
 ### One R6 premise was disproved, and the code still changed
 

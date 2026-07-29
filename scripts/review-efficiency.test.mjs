@@ -183,6 +183,46 @@ test('two finding heads require both the convergence trailer and packet', () => 
   assert.equal(missingBoth.allowed, false);
   assert.deepEqual(missingBoth.missing, ['trailer', 'packet']);
 
+  // A trailer demoted to body text by a blank line above the final block is
+  // the common authoring mistake. It is still a refusal, but the reason names
+  // the actual cause instead of reading as "you forgot it".
+  const misplaced = assessConvergence({
+    comments,
+    headMessage: [
+      'fix: batched correction',
+      '',
+      'Review-Convergence: complete',
+      '',
+      'Co-Authored-By: Someone <someone@example.com>',
+    ].join('\n'),
+    changedFiles: ['docs/reviews/pr-247-convergence.md'],
+  });
+  assert.equal(misplaced.allowed, false);
+  assert.equal(misplaced.hasTrailer, false);
+  assert.equal(misplaced.missing.length, 1);
+  assert.match(misplaced.missing[0], /git does not parse it as a trailer/u);
+
+  // The same three lines with no blank line above the trailer DO parse.
+  const wellFormed = assessConvergence({
+    comments,
+    headMessage: [
+      'fix: batched correction',
+      '',
+      'Review-Convergence: complete',
+      'Co-Authored-By: Someone <someone@example.com>',
+    ].join('\n'),
+    changedFiles: ['docs/reviews/pr-247-convergence.md'],
+  });
+  assert.equal(wellFormed.allowed, true);
+
+  // A genuinely absent trailer keeps the plain word, with no misleading hint.
+  const absent = assessConvergence({
+    comments,
+    headMessage: 'fix: batched correction\n\nCo-Authored-By: Someone <someone@example.com>',
+    changedFiles: ['docs/reviews/pr-247-convergence.md'],
+  });
+  assert.deepEqual(absent.missing, ['trailer']);
+
   const missingPacket = assessConvergence({
     comments,
     headMessage: 'fix: batched correction\n\nReview-Convergence: complete',
@@ -229,7 +269,8 @@ test('a removed packet or narrative marker cannot satisfy convergence', () => {
     changedFiles: [{ ...packet, status: 'modified' }],
   });
   assert.equal(narrative.allowed, false);
-  assert.deepEqual(narrative.missing, ['trailer']);
+  assert.equal(narrative.missing.length, 1);
+  assert.match(narrative.missing[0], /git does not parse it as a trailer/u);
 
   const finalTrailerBlock = assessConvergence({
     comments,
@@ -249,7 +290,8 @@ test('a removed packet or narrative marker cannot satisfy convergence', () => {
     changedFiles: [{ ...packet, status: 'modified' }],
   });
   assert.equal(continuedMarker.allowed, false);
-  assert.deepEqual(continuedMarker.missing, ['trailer']);
+  assert.equal(continuedMarker.missing.length, 1);
+  assert.match(continuedMarker.missing[0], /git does not parse it as a trailer/u);
 });
 
 test('agent guidance and the PR template share the executable policy vocabulary', async () => {

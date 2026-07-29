@@ -112,6 +112,8 @@ function changedFilename(file) {
   return typeof file === 'string' ? file : file?.filename;
 }
 
+const CONVERGENCE_MARKER = /^[\t ]*review-convergence:[\t ]+complete[\t ]*$/imu;
+
 function hasConvergenceTrailer(message) {
   const blocks = String(message ?? '').trimEnd().split(/\n[\t ]*\n/u);
   if (blocks.length < 2) return false;
@@ -130,6 +132,23 @@ function hasConvergenceTrailer(message) {
   return trailers.some(
     ([key, value]) => key === 'review-convergence' && value === 'complete',
   );
+}
+
+// Git reads trailers from the LAST paragraph only, and only when every line in
+// it is a `Key: value` trailer. So the marker can be present and still not be a
+// trailer — a blank line above it demotes it to body text, and a prose line
+// anywhere in that final block invalidates the whole block. Both are ordinary
+// authoring mistakes, and "missing trailer" alone reads as "you forgot it" when
+// the line is right there. Naming the real cause turns a wasted round into a
+// one-line fix. The hint states the rule rather than guessing which of the two
+// it is, so it is never wrong about the cause.
+export function convergenceTrailerHint(message) {
+  if (hasConvergenceTrailer(message)) return null;
+  return CONVERGENCE_MARKER.test(String(message ?? ''))
+    ? 'trailer (the line is present but git does not parse it as a trailer: it '
+      + 'must be in the final block of the message, and every line in that '
+      + 'block must be a "Key: value" trailer)'
+    : 'trailer';
 }
 
 export function assessConvergence({ comments, reviews, headMessage, changedFiles }) {
@@ -154,7 +173,7 @@ export function assessConvergence({ comments, reviews, headMessage, changedFiles
         && CONVERGENCE_PACKET.test(filename);
     });
   const missing = [
-    ...(!hasTrailer ? ['trailer'] : []),
+    ...(!hasTrailer ? [convergenceTrailerHint(headMessage)] : []),
     ...(!hasPacket ? ['packet'] : []),
   ];
   return {
