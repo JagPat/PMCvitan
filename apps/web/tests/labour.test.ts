@@ -264,6 +264,37 @@ describe('Task 6 — loadLabour (module-query bundle, honest states, capability-
     expect(g.labourReadiness).toHaveBeenCalled();
     expect(s().labourLoad).toBe('ready');
   });
+
+  it('CODEX R12 — a FAILED shell read while capabilities are UNKNOWN surfaces idle→error on both capability-gated loads; known/stale scopes are untouched', async () => {
+    // RED at 19106d7: `loadShell().catch(() => {})` swallowed the failure, `capabilitiesKnown`
+    // stayed false forever, and a bookmarked pilot deep link sat on a PERMANENT loading screen
+    // (loadLabour/loadMaterials are capability-gated no-ops with no capabilities loaded).
+    const g = gw({ shell: vi.fn().mockRejectedValue(new Error('network down')) });
+    s()._setGateway(g as unknown as ApiGateway);
+    expect(s().capabilitiesKnown).toBe(false);
+    s().loadShell();
+    await flush();
+    expect(s().capabilitiesKnown).toBe(false);     // still honestly UNKNOWN (no fabricated report)
+    expect(s().labourLoad).toBe('error');          // the hub now shows unavailable + Retry
+    expect(s().materialsLoad).toBe('error');
+    // control — once a shell HAS reported, a background shell failure flips nothing
+    useStore.setState({ capabilitiesKnown: true, labourLoad: 'idle', materialsLoad: 'idle' });
+    s().loadShell();
+    await flush();
+    expect(s().labourLoad).toBe('idle');
+    expect(s().materialsLoad).toBe('idle');
+    // scope guard — a failure landing AFTER a project switch never marks the NEW scope
+    useStore.setState({ capabilitiesKnown: false, labourLoad: 'idle', materialsLoad: 'idle' });
+    let rejectLate: (e: Error) => void = () => {};
+    const slow = gw({ shell: vi.fn(() => new Promise((_res, rej) => { rejectLate = rej; })) });
+    s()._setGateway(slow as unknown as ApiGateway);
+    s().loadShell();
+    useStore.setState((st) => { st.projectScopeGeneration += 1; });
+    rejectLate(new Error('late failure'));
+    await flush();
+    expect(s().labourLoad).toBe('idle');
+    expect(s().materialsLoad).toBe('idle');
+  });
 });
 
 describe('Task 6 — labour single-command field ops through the write-ahead outbox (§J)', () => {

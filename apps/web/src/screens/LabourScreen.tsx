@@ -61,6 +61,8 @@ export function LabourScreen() {
   const role = useStore((s) => s.role);
   const timeZone = useStore((s) => s.timeZone);
   const loadLabour = useStore((s) => s.loadLabour);
+  const loadShell = useStore((s) => s.loadShell);
+  const capabilitiesKnown = useStore((s) => s.capabilitiesKnown);
   const allocateWorker = useStore((s) => s.allocateWorker);
   const musterWorker = useStore((s) => s.musterWorker);
   const recordWorkedMinutes = useStore((s) => s.recordWorkedMinutes);
@@ -81,6 +83,10 @@ export function LabourScreen() {
   const reading = (labourLoad === 'idle' || labourLoad === 'loading') && !labour;
   const unavailable = labourLoad === 'error' && !labour;
   const stale = labourLoad === 'error' && !!labour;
+  // Codex round 12 — while the shell/capability read has FAILED (capabilities unknown),
+  // `loadLabour()` is a capability-gated no-op, so Retry must re-drive the shell read itself
+  // (which reloads the bundle on a pilot, or lets RouteBridge bounce a non-pilot deep link).
+  const retryLabour = (): void => { if (capabilitiesKnown) { void loadLabour(); } else { loadShell(); } };
   const pending = (key: string): boolean => labourPending.includes(key);
 
   const activityName = (id: string): string => activities.find((a) => a.id === id)?.name ?? id;
@@ -139,7 +145,7 @@ export function LabourScreen() {
         <div data-testid="labour-stale-warning" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px', marginTop: 14 }}>
           <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
           <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>Showing the last-known labour picture — the latest couldn't load.</span>
-          <button onClick={() => loadLabour()} data-testid="labour-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <button onClick={() => retryLabour()} data-testid="labour-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
             <RefreshCw size={12} /> Retry
           </button>
         </div>
@@ -153,7 +159,7 @@ export function LabourScreen() {
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><WifiOff size={18} /> Labour unavailable.</div>
           <div style={{ fontSize: 12.5, marginTop: 6 }}>Check your connection and access, then retry.</div>
           <div style={{ marginTop: 14 }}>
-            <Button variant="ink" onClick={() => loadLabour()} data-testid="labour-retry-empty" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Button variant="ink" onClick={() => retryLabour()} data-testid="labour-retry-empty" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <RefreshCw size={15} /> Retry
             </Button>
           </div>

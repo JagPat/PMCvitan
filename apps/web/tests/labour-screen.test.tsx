@@ -780,3 +780,47 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     }
   });
 });
+
+describe('CODEX R12 — the unavailable hub Retry re-drives the SHELL read while capabilities are unknown', () => {
+  it('with capabilities UNKNOWN (failed shell), Retry calls gateway.shell — not the inert capability-gated loadLabour', async () => {
+    // the R12-3 deep-link state: shell failed, no capabilities, loadShell's catch marked the
+    // load 'error' so the hub renders unavailable + Retry instead of a permanent spinner
+    const g = {
+      shell: vi.fn(() => new Promise(() => {})), // observable: the retry dispatches the shell read
+      labourReadiness: vi.fn().mockResolvedValue({ forecast: {} }),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    useStore.getState()._setGateway(g as any);
+    useStore.setState({ role: 'pmc', capabilities: [], capabilitiesKnown: false, labourView: null, labourLoad: 'error' });
+    const r = render(<LabourScreen />);
+    expect(r.getByTestId('labour-unavailable')).toBeTruthy();
+    fireEvent.click(r.getByTestId('labour-retry-empty'));
+    // RED at 19106d7: the button called loadLabour(), a capability-gated NO-OP off-list — no
+    // request left the app and the dead screen had no recovery path
+    expect(g.shell).toHaveBeenCalledTimes(1);
+    expect(g.labourReadiness).not.toHaveBeenCalled();
+  });
+
+  it('with capabilities KNOWN, Retry keeps its existing behaviour — the labour bundle reload', async () => {
+    const g = {
+      shell: vi.fn(() => new Promise(() => {})),
+      labourReadiness: vi.fn(() => new Promise(() => {})),
+      labourWorkforce: vi.fn(() => new Promise(() => {})),
+      labourCatalog: vi.fn(() => new Promise(() => {})),
+      labourRequisitions: vi.fn(() => new Promise(() => {})),
+      labourPurchaseOrders: vi.fn(() => new Promise(() => {})),
+      labourCommitments: vi.fn(() => new Promise(() => {})),
+      labourCapacity: vi.fn(() => new Promise(() => {})),
+      labourPresence: vi.fn(() => new Promise(() => {})),
+      labourProductivity: vi.fn(() => new Promise(() => {})),
+      materialRequirements: vi.fn(() => new Promise(() => {})),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    useStore.getState()._setGateway(g as any);
+    useStore.setState({ role: 'pmc', capabilities: ['labour'], capabilitiesKnown: true, labourView: null, labourLoad: 'error' });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-retry-empty'));
+    expect(g.labourReadiness).toHaveBeenCalledTimes(1);
+    expect(g.shell).not.toHaveBeenCalled();
+  });
+});

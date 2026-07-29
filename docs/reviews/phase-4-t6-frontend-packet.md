@@ -972,3 +972,62 @@ dispatch (one command, fresh key, coalesced double-click, reconciled + key clear
 - `upgrade-proof.sh` **PASSED** (no migration in this round; every prior seal survives).
 - `test:e2e:api:allmodules` (legacy): **35/35** CLEAN first run; labour-pilot 4/4.
 - `test:e2e:api:allmodules:outbox`: **35/35** CLEAN first run; labour-pilot 4/4.
+
+## §16 — Codex correction round 12 (three findings on `19106d7`)
+
+Two SERVER seals on the round-11 allocate/work checks and one web capability-load lifecycle gap.
+Reproduce-first: pre-fix `apps/api/src` + `apps/web/src` restored at `19106d7` → API suites
+(pin + t4) **2 failed | 31 passed**, web labour suites **2 failed | 98 passed**; fixes restored →
+API **33/33**, web **100/100** GREEN.
+
+### R12-1 — supplier drawdown requires a HEAD-NATIVE worker (server)
+
+The round-11 worker-identity check accepted any worker in `acceptable` = {head} ∪ active
+substitution targets — even when the command ALSO carried `capacityCommitmentId`. The commitment
+validation only proves the commitment matches the requirement head, so a direct or stale client
+could consume supplier capacity committed FOR the head trade while substitute labour actually
+arrived (Task 2 commits capacity per head fingerprint; the §F residual would then under-supply a
+later native allocation). `allocate` now refuses the draw with a terminal 400 unless the worker's
+OWN fingerprints include `spec.labourSpecFingerprint`; the same substitute remains allocatable as
+own workforce (no commitment id), and a native worker draws exactly as before. Probe (t4 suite,
+`ROUND-12`): carpenter eligible only via substitution + a 1-person-shift commitment for the mason
+head → draw refused 400 naming the head identity; own-workforce carpenter allocation succeeds;
+native mason then draws the commitment.
+
+### R12-2 — transient live-demand lookups stay retryable (server)
+
+The round-11 `recordWork` recheck wrapped BOTH the `requirementHead` call and the slice read in a
+blanket try/catch, so an unexpected transient Prisma/DB error became `live = false` → 409
+Conflict — a status the web outbox treats as TERMINAL, permanently dropping legitimate
+worked-minutes evidence over an infrastructure blip. The catch now covers ONLY the head lookup
+and rethrows anything that is not a Nest `HttpException` (the expected revised/cancelled/vanished
+demand signals); the slice read runs outside it. Probe (pin suite, `CODEX R12-2`):
+`requirementHead` stubbed to reject once with a raw `Error('connection reset')` → `recordWork`
+rejects with THAT error (not 409) and records nothing; the unstubbed replay records 480 minutes;
+a genuine revision afterwards is still the deterministic 409.
+
+### R12-3 — a failed shell/capability read surfaces instead of a dead loading screen (web)
+
+`loadShell().catch(() => {})` swallowed a failed shell read, leaving `capabilitiesKnown` false
+forever. RouteBridge deliberately never bounces while capabilities are unknown (a pilot deep link
+must survive shell latency), but `loadLabour`/`loadMaterials` are capability-gated no-ops in that
+state — so a bookmarked `/projects/:id/labour` sat on a PERMANENT "Loading the labour pipeline…"
+with no retry. The catch now (scope-guarded, and only while capabilities are UNKNOWN) flips each
+still-`idle` capability-gated load to `error`, so the hubs render their honest unavailable+Retry
+state; the Labour and Materials Retry buttons fall back to `loadShell()` while
+`capabilitiesKnown` is false (on success a pilot reloads its bundle; a non-pilot deep link is
+then bounced by RouteBridge as usual). A background shell failure AFTER capabilities are known
+flips nothing, and a failure landing after a project switch never marks the new scope. Probes:
+store table (failure → `labourLoad`/`materialsLoad` `error` with `capabilitiesKnown` still
+false; known-capabilities control untouched; stale-scope failure untouched) + rendered hub
+(`labour-retry-empty` with capabilities unknown dispatches `gateway.shell`, never the inert
+bundle load; with capabilities known it keeps today's bundle reload).
+
+### Gates (round 12)
+
+- API pin suite 8/8 + t4 readiness suite 25/25 (RED 2 at `19106d7` → GREEN 33/33)
+- Web labour suites 100/100 (RED 2 at `19106d7` → GREEN; 3 consecutive stable runs)
+- `pnpm check` EXIT 0 (web 537/537 across 42 files, API unit 680/680 across 55 files, builds clean)
+- Full integration on a pristine recreated+migrated DB: **72 files / 702 tests** passing
+- `upgrade-proof.sh` PASSED (every legacy meaning + all prior forgery rejections survive; no migration in this round)
+- `test:e2e:api:allmodules` **35/35** and `:outbox` **35/35**, single pass each (labour-pilot suite included; no flake rerun needed)

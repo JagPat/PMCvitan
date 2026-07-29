@@ -55,6 +55,8 @@ export function MaterialsScreen() {
   const reservationPlans = useStore(useShallow((s) => s.reservationPlans));
   const materialsPending = useStore(useShallow((s) => s.materialsPending));
   const loadMaterials = useStore((s) => s.loadMaterials);
+  const loadShell = useStore((s) => s.loadShell);
+  const capabilitiesKnown = useStore((s) => s.capabilitiesKnown);
   const loadReservationPlan = useStore((s) => s.loadReservationPlan);
   const reserveCandidate = useStore((s) => s.reserveCandidate);
   const raiseRequisition = useStore((s) => s.raiseRequisition);
@@ -68,6 +70,10 @@ export function MaterialsScreen() {
   const reading = (materialsLoad === 'idle' || materialsLoad === 'loading') && !materials;
   const unavailable = materialsLoad === 'error' && !materials;
   const stale = materialsLoad === 'error' && !!materials;
+  // Codex round 12 — while the shell/capability read has FAILED (capabilities unknown),
+  // `loadMaterials()` is a capability-gated no-op, so Retry must re-drive the shell read itself
+  // (which reloads the bundle on a pilot, or lets RouteBridge bounce a non-pilot deep link).
+  const retryMaterials = (): void => { if (capabilitiesKnown) { loadMaterials(); } else { loadShell(); } };
   const pending = (key: string): boolean => materialsPending.includes(key);
 
   // Reservations: each activity's ACTIVE reserved pool per store location, folded from the §C ledger's
@@ -102,7 +108,7 @@ export function MaterialsScreen() {
         <div data-testid="materials-stale-warning" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px', marginTop: 14 }}>
           <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
           <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>Showing the last-known materials — the latest couldn't load.</span>
-          <button onClick={() => loadMaterials()} data-testid="materials-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <button onClick={() => retryMaterials()} data-testid="materials-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
             <RefreshCw size={12} /> Retry
           </button>
         </div>
@@ -116,7 +122,7 @@ export function MaterialsScreen() {
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><WifiOff size={18} /> Materials unavailable.</div>
           <div style={{ fontSize: 12.5, marginTop: 6 }}>Check your connection and access, then retry.</div>
           <div style={{ marginTop: 14 }}>
-            <Button variant="ink" onClick={() => loadMaterials()} data-testid="materials-retry-empty" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Button variant="ink" onClick={() => retryMaterials()} data-testid="materials-retry-empty" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <RefreshCw size={15} /> Retry
             </Button>
           </div>

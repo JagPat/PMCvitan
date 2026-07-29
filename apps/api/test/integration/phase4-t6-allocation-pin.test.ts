@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
@@ -244,5 +244,37 @@ describe('Phase 4 Task 6 round 3 — allocation pinned to the selected requireme
     const ok = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: carp.id, originRevision: head.revision }, pmc(projectId));
     expect(ok.allocations).toHaveLength(1);
     expect(ok.allocations[0]!.labourSpecFingerprint).toBe(head.labourSpecFingerprint);
+  });
+
+  it('CODEX R12-2 — a TRANSIENT failure inside the live-demand recheck propagates raw (retryable), never the terminal 409 that drops queued effort', async () => {
+    const { projectId, activityId, requirementId, revision, workers } = await fixture();
+    const a = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: workers[0], originRevision: revision }, pmc(projectId));
+    const allocationId = a.allocations[0]!.id;
+    // RED at 19106d7: the R11-3 recheck wrapped BOTH lookups in a blanket try/catch, so this
+    // infrastructure blip became `live = false` → ConflictException — a 409 the web outbox
+    // treats as TERMINAL, permanently discarding legitimate worked-minutes evidence.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const spy = vi.spyOn(capacity as any, 'requirementHead').mockRejectedValueOnce(new Error('connection reset'));
+    try {
+      await expect(
+        capacity.recordWork(projectId, { allocationId, workedMinutes: 480 }, pmc(projectId)),
+      ).rejects.toThrow('connection reset'); // the raw error, NOT the revised/cancelled 409
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await t.prisma.labourWorkFact.count({ where: { projectId } })).toBe(0);
+    // control — the same replay against healthy infrastructure records exactly once
+    const fact = await capacity.recordWork(projectId, { allocationId, workedMinutes: 480 }, pmc(projectId));
+    expect(fact.workedMinutes).toBe(480);
+    // and the EXPECTED demand-gone signal is still the deterministic 409 (R11-3 unchanged)
+    await requirements.revise(
+      projectId, requirementId,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { type: 'labour', activityId, tradeCode: 'carpenter', skillCode: null, shift: 'day', demandSlices: [{ civilDate: '2026-08-10', personShiftQty: 2 }], decisionId: null, responsibleId: null, criticality: 'normal', tolerance: null, expectedRevision: revision } as any,
+      pmc(projectId),
+    );
+    await expect(
+      capacity.recordWork(projectId, { allocationId, workedMinutes: 120 }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
   });
 });

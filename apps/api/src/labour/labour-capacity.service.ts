@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   ROLE_POLICY, computeLabourSpecFingerprint, isLabourShift,
@@ -385,6 +385,17 @@ export class LabourCapacityService {
                 `worker "${id}" does not satisfy the requirement's trade/skill identity (nor any ACTIVE approved substitution for it) — approve a skill substitution first (§B)`,
               );
             }
+            // Round 12 — a supplier DRAWDOWN is committed for the HEAD identity (the commitment's
+            // own fingerprint is FK-bound to the head slice): a worker eligible only through a
+            // substitution may be allocated as OWN workforce, but letting them consume the
+            // head-trade committed capacity would conflate §B-widened labour with the §F supply
+            // the supplier is paid to deliver. The hub already draws commitments only for
+            // head-basis workers; this makes the same rule true for DIRECT commands.
+            if (input.capacityCommitmentId && !own.has(spec.labourSpecFingerprint)) {
+              throw new BadRequestException(
+                `worker "${id}" satisfies the demand only through a skill substitution — supplier capacity committed for the head identity cannot be drawn for them; allocate them as own workforce (omit capacityCommitmentId)`,
+              );
+            }
           }
         }
 
@@ -629,20 +640,25 @@ export class LabourCapacityService {
         // onto a superseded slice. Re-derived HERE under the same readiness lock the revision
         // path holds; the refusal is a terminal 409 the outbox drops. The pmc's corrective is
         // `allocation.release` — history already recorded stays recorded.
-        let live = false;
+        let head: Awaited<ReturnType<LabourCapacityService['requirementHead']>> | null = null;
         try {
-          const head = await this.requirementHead(tx, projectId, allocation.requirementId);
-          live =
-            head.activityId === allocation.activityId &&
-            head.labourSpecFingerprint === allocation.labourSpecFingerprint &&
-            head.shift === allocation.shift &&
-            !!(await tx.labourDemandSlice.findFirst({
-              where: { projectId, requirementId: allocation.requirementId, revision: head.revision, civilDate: allocation.civilDate },
-              select: { revision: true },
-            }));
-        } catch {
-          live = false; // a cancelled/vanished head refuses exactly like a moved one
+          head = await this.requirementHead(tx, projectId, allocation.requirementId);
+        } catch (e) {
+          // Round 12 — only the EXPECTED demand-gone signals mean not-live: `requirementHead`
+          // reports a cancelled/vanished/non-labour head as a Nest HttpException. Anything else
+          // (a transient DB failure) must PROPAGATE as retryable — a blanket 409 here would make
+          // the outbox drop a legitimate work op forever over a momentary read error.
+          if (!(e instanceof HttpException)) throw e;
         }
+        const live =
+          !!head &&
+          head.activityId === allocation.activityId &&
+          head.labourSpecFingerprint === allocation.labourSpecFingerprint &&
+          head.shift === allocation.shift &&
+          !!(await tx.labourDemandSlice.findFirst({
+            where: { projectId, requirementId: allocation.requirementId, revision: head.revision, civilDate: allocation.civilDate },
+            select: { revision: true },
+          }));
         if (!live) {
           throw new ConflictException(
             'Allocation no longer matches live demand — the requirement was revised or cancelled since this effort was queued; release the allocation to correct the roster',

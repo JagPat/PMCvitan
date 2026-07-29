@@ -2369,7 +2369,21 @@ export const useStore = create<Store>()(
         if (isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope) && shell.capabilities.includes('labour')) {
           get().loadLabour();
         }
-      }).catch(() => {});
+      }).catch(() => {
+        // Codex round 12 — a swallowed shell failure left `capabilitiesKnown` false FOREVER while
+        // the capability-gated `loadMaterials`/`loadLabour` stayed inert no-ops: a bookmarked pilot
+        // URL rendered a permanent "loading" screen with no retry. Surface the failure through the
+        // module load states (the hubs' honest unavailable+Retry path — their Retry falls back to
+        // `loadShell()` while capabilities are unknown). Scope-guarded like the success arm, and
+        // only while capabilities are UNKNOWN: once a shell has reported, the hubs' own loads are
+        // live and a later background shell failure must not flip their states.
+        set((s) => {
+          if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope) && !s.capabilitiesKnown) {
+            if (s.materialsLoad === 'idle') s.materialsLoad = 'error';
+            if (s.labourLoad === 'idle') s.labourLoad = 'error';
+          }
+        });
+      });
     },
     loadMaterials: () => {
       if (!gateway) return;
