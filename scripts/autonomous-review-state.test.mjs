@@ -430,24 +430,55 @@ test('bare hex data is not a commit citation and never permits a dismissal', () 
 // FINDING (#250 P2) — discounting inline comments must not silently clear a
 // review record that explicitly requested changes.
 test('a CHANGES_REQUESTED review outlives the dismissal of its comments', () => {
+  const CONTAINER = 987;
   const blocked = classifyCodexState(input({
-    comments: [codexComment(PHANTOM_WITH_PERMALINK)],
-    reviews: [{ user: { login: CODEX_LOGIN }, commit_id: HEAD, state: 'CHANGES_REQUESTED' }],
+    comments: [codexComment(PHANTOM_WITH_PERMALINK, { pull_request_review_id: CONTAINER })],
+    reviews: [{
+      user: { login: CODEX_LOGIN }, commit_id: HEAD, id: CONTAINER, state: 'CHANGES_REQUESTED',
+    }],
     missingCommits: new Set([ABSENT]),
   }));
   assert.equal(blocked.state, 'changes_required');
   assert.match(blocked.detail, /requested changes on this exact head/u);
   assert.equal(blocked.dismissedCount, 1, 'the dismissal is still reported honestly');
 
-  // A COMMENTED record is the container Codex posts alongside inline comments;
-  // it carries nothing beyond them, so it does not survive their dismissal.
+  // The COMMENTED record that CARRIED the dismissed comments is discounted with
+  // them — matched by id, not inferred from the head merely having comments.
   const cleared = classifyCodexState(input({
-    comments: [codexComment(PHANTOM_WITH_PERMALINK)],
-    reviews: [{ user: { login: CODEX_LOGIN }, commit_id: HEAD, state: 'COMMENTED' }],
+    comments: [codexComment(PHANTOM_WITH_PERMALINK, { pull_request_review_id: CONTAINER })],
+    reviews: [{ user: { login: CODEX_LOGIN }, commit_id: HEAD, id: CONTAINER, state: 'COMMENTED' }],
     missingCommits: new Set([ABSENT]),
   }));
   assert.equal(cleared.state, 'clear');
   assert.equal(cleared.dismissedCount, 1);
+});
+
+// FINDING (#250 round 3) — a standalone COMMENTED review is its own statement.
+// Suppressing every COMMENTED record whenever the head had any dismissed comment
+// discarded review bodies that cited no absent SHA at all.
+test('a COMMENTED review that carried nothing dismissed still blocks', () => {
+  const CONTAINER = 987;
+  const STANDALONE = 654;
+  const result = classifyCodexState(input({
+    comments: [codexComment(PHANTOM_WITH_PERMALINK, { pull_request_review_id: CONTAINER })],
+    reviews: [
+      { user: { login: CODEX_LOGIN }, commit_id: HEAD, id: CONTAINER, state: 'COMMENTED' },
+      { user: { login: CODEX_LOGIN }, commit_id: HEAD, id: STANDALONE, state: 'COMMENTED' },
+    ],
+    missingCommits: new Set([ABSENT]),
+  }));
+  assert.equal(result.state, 'changes_required', 'the unmatched review is its own evidence');
+  assert.equal(result.findingCount, 1);
+  assert.equal(result.dismissedCount, 1);
+
+  // And when the container link is absent entirely, nothing can be matched, so
+  // the record survives — fail closed rather than guess.
+  const unlinked = classifyCodexState(input({
+    comments: [codexComment(PHANTOM_WITH_PERMALINK)],
+    reviews: [{ user: { login: CODEX_LOGIN }, commit_id: HEAD, state: 'COMMENTED' }],
+    missingCommits: new Set([ABSENT]),
+  }));
+  assert.equal(unlinked.state, 'changes_required');
 });
 
 // REPRODUCTION: at PR #248 head baf31b9 this was the ONLY finding, and it cost
@@ -515,3 +546,20 @@ test('a commit named in markdown link text is still a citation', () => {
   assert.deepEqual(citedCommits(permalinked), [ABSENT]);
 });
 
+
+// FINDING (#250 round 3) — a commit word introduced only the SHA that followed
+// it, but the window scanned the whole preceding text, so "on commit <a>, the
+// object key <b>" marked <b> as a commit citation too.
+test('a commit word binds only to the SHA it introduces', () => {
+  const COMMIT = 'd'.repeat(40);
+  const KEY = 'f'.repeat(40);
+  const body = `On commit ${COMMIT}, the object key ${KEY} was deleted before the `
+    + 'authorizing transaction committed.';
+  assert.deepEqual(citedCommits(body), [COMMIT], 'only the introduced SHA is a citation');
+  assert.equal(citesBareHex(body), true, 'the key is data the finding reasons about');
+  assert.equal(
+    isUnfoundedFinding(codexComment(body), new Set([COMMIT, KEY])),
+    false,
+    'a real finding about the key survives even when both lookups 404',
+  );
+});

@@ -17,6 +17,8 @@ remedy, and records the reproduce-first proof for each.
 | `a8333e0` | P1 `object` in the commit-context list | (a) again — the round-1 fix reintroduced it |
 | `a8333e0` | P2 markdown link text stripped with the URL | (a) in the opposite direction: a real citation lost |
 | `a8333e0` | P2 paired `COMMENTED` record restored a discounted head | (c)+(d) composed |
+| `2c51301` | P1 commit context bled onto later hex on the same line | (a) again — the word was not BOUND to the SHA it introduces |
+| `2c51301` | P2 standalone `COMMENTED` review suppressed with the container | (c) — suppression was inferred from the head, not matched to the record |
 
 ## Architectural Cause
 
@@ -98,3 +100,34 @@ finding would be discounted. This is accepted deliberately: the loop records the
 status and in the sticky comment, so the case is visible and recoverable by re-review, whereas
 the failure it replaces — twenty-two fabricated citations across four PRs, each costing a full
 product CI battery and a draft round-trip — was neither visible nor bounded.
+
+## Round 3 (head `2c51301`) — precondition (a) again, and (c) made exact
+
+Both findings are correct, and both are the same two preconditions the packet already names —
+which is itself the evidence that the cause was correctly identified rather than the symptoms.
+
+**(a) the word must bind to the SHA it introduces.** Removing `object` from the context
+vocabulary in round 2 was necessary but not sufficient: the check still scanned the whole
+preceding window, so "on commit `<a>`, the object key `<b>` was deleted" reused the earlier
+`commit` for `<b>`. Both tokens read as citations, `citesBareHex` saw none, and a real finding
+about the key could be discounted. Each token's context window now starts at the END of the
+previous token, so a commit word reaches forward only to the SHA that follows it. This is the
+general fix; round 2's vocabulary edit was the instance.
+
+**(c) suppression must be matched, not inferred.** A `COMMENTED` record was discounted whenever
+its head had any dismissed comment, which discarded a standalone review note whose body cited no
+absent SHA at all. GitHub links a review comment to the record that carried it via
+`pull_request_review_id`, so the container is now identified by id: only the record that actually
+carried the dismissed comments is discounted with them. Any other record on the head — a second
+`COMMENTED` note, or one whose link is absent so nothing can be matched — survives and blocks.
+The unlinked case fails closed rather than guessing.
+
+Reproduce-first: `a commit word binds only to the SHA it introduces` and `a COMMENTED review that
+carried nothing dismissed still blocks` (which also pins the unlinked fail-closed case).
+`pnpm test:automation` 88/88; `pnpm check` exit 0.
+
+The round-2 fixture for the container case had to be corrected too: it asserted a `COMMENTED`
+record was discounted while carrying no `pull_request_review_id`, which the exact rule now
+refuses. That was a fixture modelling GitHub's payload incompletely, and the stricter rule caught
+it — recorded here rather than quietly amended.
+

@@ -69,9 +69,15 @@ function scanFullHex(body) {
     .replace(BARE_URL, ' ');
   const inCommitContext = new Set();
   const bare = new Set();
+  // The window for each token starts at the END of the previous one, so a
+  // commit word introduces only the SHA that follows it. Without that bound,
+  // "on commit <a>, the object key <b> was deleted" reuses "commit" for <b> and
+  // a real finding about the key could be discounted.
+  let windowStart = 0;
   for (const match of prose.matchAll(FULL_SHA)) {
-    const preceding = prose.slice(0, match.index);
+    const preceding = prose.slice(windowStart, match.index);
     (COMMIT_CONTEXT.test(preceding) ? inCommitContext : bare).add(match[0]);
+    windowStart = match.index + match[0].length;
   }
   return { inCommitContext: [...inCommitContext], bare: [...bare] };
 }
@@ -202,19 +208,32 @@ export function classifyCodexState({
     (review) => isCodexActor(review) && review.commit_id === expectedHead,
   );
 
-  // A review record that REQUESTS CHANGES is evidence in its own right, not a
-  // container for its inline comments. It must be checked before any dismissal,
-  // or discounting the comments would silently clear a review that explicitly
-  // blocked the head. Only the reviewer withdrawing it clears this.
-  const blockingReviews = currentHeadReviews.filter(
-    (review) => String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED',
+  // Only the record that CARRIED the dismissed comments is discounted with
+  // them, and it is identified by id rather than inferred from the head having
+  // comments at all. A record that requests changes is evidence in its own
+  // right; so is a standalone COMMENTED note whose body says something the
+  // dismissed comments did not. Everything else survives the dismissal.
+  const dismissedContainerIds = new Set(
+    postedOnHead
+      .filter((comment) => isUnfoundedFinding(comment, missingCommits))
+      .map((comment) => comment?.pull_request_review_id)
+      .filter((id) => id !== undefined && id !== null),
   );
-  if (blockingReviews.length > 0) {
+  const survivingReviews = currentHeadReviews.filter((review) => {
+    if (String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED') return true;
+    return !dismissedContainerIds.has(review?.id);
+  });
+  if (survivingReviews.length > 0) {
+    const blocking = survivingReviews.some(
+      (review) => String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED',
+    );
     return {
       state: 'changes_required',
-      findingCount: blockingReviews.length,
+      findingCount: survivingReviews.length,
       dismissedCount: dismissed,
-      detail: 'Codex requested changes on this exact head',
+      detail: blocking
+        ? 'Codex requested changes on this exact head'
+        : 'Codex submitted a current-head review',
     };
   }
 
