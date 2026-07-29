@@ -374,6 +374,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
   const draftTransitions = [];
   const statusWrites = [];
   let autoMergeDraft = null;
+  let reviewComments = [];
   const client = {
     async pullRequest() {
       return pullRequest;
@@ -386,6 +387,12 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async setStatus(head, state, description) {
       statusWrites.push({ head, state, description });
     },
+    async reviewComments() { return reviewComments; },
+    async reviews() { return []; },
+    async commit() {
+      return { commit: { message: 'fix: ordinary head' }, files: [] };
+    },
+    async updateStickyComment() {},
     async mergeExactHead() {
       return { merged: false, message: 'Not ready to merge' };
     },
@@ -427,6 +434,26 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
   assert.equal(autoMergeDraft, false);
   assert.equal(statusWrites[0].state, 'success');
   assert.match(statusWrites[0].description, /recovered prior clean/u);
+
+  pullRequest.draft = false;
+  autoMergeDraft = null;
+  reviewComments = [
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'c'.repeat(40) },
+  ];
+  assert.equal(
+    await reviewGate.ensureTerminalReviewState(
+      client,
+      pullRequest,
+      expectedHead,
+      cleanStatus,
+      statuses,
+    ),
+    true,
+  );
+  assert.equal(autoMergeDraft, null);
+  assert.equal(pullRequest.draft, true);
+  assert.match(statusWrites.at(-1).description, /convergence evidence/u);
 });
 
 test('a review failure remains latched after a later success write', () => {

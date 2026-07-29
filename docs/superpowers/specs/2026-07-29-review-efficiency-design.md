@@ -23,10 +23,10 @@ The five existing product checks remain mandatory. A new, cheap `review-scope`
 check runs first for fast feedback. Because pull-request code is author-controlled,
 the trusted default-branch orchestrator independently re-evaluates the same scope
 policy before Codex promotion and re-reads the live PR body and complete finding
-history immediately before publishing a clean result; a spoofed green preflight,
-same-head body edit, or late review record cannot merge. Codex still reviews only
-a CI-green exact head, and only the exact-SHA `codex-current-head` success may
-merge it. No AI API key or human approval is introduced.
+history immediately before publishing or reusing a clean result; a spoofed green
+preflight, same-head body edit, or late review record cannot merge. Codex still
+reviews only a CI-green exact head, and only the exact-SHA `codex-current-head`
+success may merge it. No AI API key or human approval is introduced.
 
 ### 2. Review-unit preflight
 

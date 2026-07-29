@@ -724,6 +724,12 @@ export async function ensureTerminalReviewState(
     );
     if (!live) return true;
     if (live.draft) return false;
+    const finalPolicy = await revalidateFinalReviewPolicy(
+      client,
+      pullRequest.number,
+      expectedHead,
+    );
+    if (finalPolicy.superseded || !finalPolicy.allowed) return true;
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
     );
@@ -735,7 +741,11 @@ export async function ensureTerminalReviewState(
         pullRequest.html_url,
       );
     }
-    await completeReviewedPullRequest(client, live, expectedHead);
+    await completeReviewedPullRequest(
+      client,
+      finalPolicy.pullRequest,
+      expectedHead,
+    );
   } else {
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
