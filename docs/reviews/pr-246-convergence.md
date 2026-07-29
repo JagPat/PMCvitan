@@ -23,6 +23,7 @@ is bounded. Full per-finding detail (probes, exact code paths, battery numbers) 
 | `19106d7` | R12 — 3 | Substitution vs supplier identity + swallowed failures → head-native drawdown seal (server 400), retryable live-demand recheck (HttpException-only catch), surfaced shell failure (unavailable+Retry via `loadShell` fallback) |
 | `6853ac5` | R13 — 1 | Retained keys lost command metadata → `labourPendingInputs` retains the FULL allocate input per retained key (commitment draw stays reserved through the gap); parser fallback pinned |
 | `635899d` | R14 — 1 | Held bind keys never distinguished refusal from loss → a TERMINAL bind rejection (404/409, via `isTerminalOutboxError`) clears the device reservation; transient + post-commit reconcile failures still retain the key; probe RED→GREEN |
+| `077b3f0` | R15 — 4 | Release/work op ordering + scope-record honesty → work entry blocked while the allocation's RELEASE is pending (probe RED→GREEN); the packet's stale "no API change" claims corrected to name the accrued server delta; the `justified-large` size marker added to the PR body; one trailer finding was invalid evidence (below) |
 
 ## Architectural Convergence
 The 46 findings across 14 heads reduce to five systemic causes, each now closed by an invariant
@@ -44,6 +45,18 @@ rather than a point patch:
    presence read all use the project timezone (R1, R3, R11), matching the server clock.
 5. **Honest load states** — capability/shell failures surface as unavailable+Retry instead of
    dead loading screens (R1, R12); stale results never overwrite newer ones.
+
+## Invalid Reviewer Evidence
+The round-15 P1 "Add the convergence trailer to the reviewed head" cited commit `7544aca` — a SHA
+that is not an object in this repository (the synthetic merge checkout, not the PR head). The
+authoritative head `077b3f0` (and every convergence head after it) carries the required trailer:
+`git show -s --format='%(trailers:key=Review-Convergence,valueonly)' 077b3f0` prints `complete`,
+and the trusted gate's own `assessConvergence` admitted the head (it promoted the PR). Per
+`AGENTS.md` (PR-head resolution — inspect `refs/pull/246/head`, never the synthetic merge SHA)
+no gate-relevant behaviour is changed for this finding. The round-15 "justified-large" P1 is
+honoured by adding the leading `<!-- review-size: justified-large -->` marker + the six-row
+invariant matrix to the PR body, noting PR #246 is grandfathered by
+`REVIEW_SCOPE_ENFORCE_AFTER_PR = 246` (the size gate enforces PR #247 and later).
 
 ## Remaining Risk
 No open finding. The residual corner — a retained reservation whose input record is lost by a

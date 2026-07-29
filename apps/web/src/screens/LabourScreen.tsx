@@ -394,7 +394,12 @@ export function LabourScreen() {
                   // still accept the fact and §I productivity would roll it in. The row shows
                   // an honest "demand revised" state; `allocation.release` is the corrective.
                   const live = allocationMatchesLiveDemand(a, labourReqs);
-                  const workBlocked = future || !live || remaining <= 0 || workPending;
+                  // Codex round 15 — a PENDING RELEASE for this allocation blocks work entry:
+                  // the outbox replays the release FIRST, so a work fact queued behind it is a
+                  // deterministic released-allocation 409 the flush drops — the user's intended
+                  // evidence would be silently lost with no in-hub way to record it afterwards.
+                  const releasePending = pending(releaseCoalesceKey(a.id));
+                  const workBlocked = future || !live || remaining <= 0 || workPending || releasePending;
                   return (
                     <div key={a.id} data-testid={`labour-allocation-${a.id}`} style={rowCard}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
@@ -407,7 +412,7 @@ export function LabourScreen() {
                           <input type="number" min={1} max={remaining} value={minutes} disabled={workBlocked} data-testid={`labour-work-minutes-${a.id}`} onChange={(e) => setWorkMinutes((m) => ({ ...m, [a.id]: e.target.value }))} style={{ ...selectStyle, width: 76 }} />
                           <span style={muted}>min{remaining < SHIFT_MINUTES ? ` · ${remaining} left this shift` : ''}</span>
                           <Button variant="outline" disabled={workBlocked || !valid || pending(wKey)} data-testid={`labour-do-work-${a.id}`} onClick={() => !workBlocked && valid && recordWorkedMinutes(a.id, minutesNum)} style={{ fontSize: 11.5, flex: 'none' }}>
-                            {!live ? 'Demand revised — release to correct' : future ? 'Future shift' : remaining <= 0 ? 'Shift full' : workPending ? 'Recording…' : 'Record work'}
+                            {!live ? 'Demand revised — release to correct' : future ? 'Future shift' : remaining <= 0 ? 'Shift full' : releasePending ? 'Release pending' : workPending ? 'Recording…' : 'Record work'}
                           </Button>
                           {/* Round 11 — the corrective the stranded state points at lives HERE: one
                               release command frees the worker's slice (§C) through the same outbox

@@ -5,7 +5,14 @@ lock-protected discipline Phase 3 gave the "Material" gate. Task 6 is the §J FR
 the ONE capability-gated Labour hub plus the extended Schedule/DailyLog/Team/Inbox surfaces and the
 offline/idempotent field ops, proven by a real-browser live-PG acceptance chain in BOTH capability
 states. It is read + UI over the already-cleared Tasks 1–5 facts — **no domain schema, no
-migration, no API change**. One project = one site; project records never become global; one fact
+migration** — plus the NARROW server-authority seals the correction rounds added (Codex round 15
+scope correction: this packet originally said "no API change", which stopped being true at round
+3): `originRevision` head pinning (round 3), the released-allocation work refusal (round 7), the
+`labourSpecFingerprint` basis verification (round 8), the substitution-revocation disposition
+(round 10), the live-demand work-replay + worker-identity allocate seals (round 11), and the
+head-native supplier-drawdown + retryable live-demand-recheck seals (round 12) — all in
+`apps/api/src/labour/labour-capacity.service.ts` + `apps/api/src/contracts.ts`, each with live-PG
+integration probes. One project = one site; project records never become global; one fact
 has one canonical owner (every number this UI shows is a server read; no verdict is derived in the
 browser); attributable approvals preserved (every command carries the session identity + an
 Idempotency-Key); tenant isolation unchanged (the store's project-scope teardown covers the new
@@ -157,7 +164,16 @@ Frontend + shared + tests + docs only. `packages/shared`: `domain/types.ts` (`Sc
 `screens/LabourScreen.tsx` (NEW), `screens/DailyLogScreen.tsx`, `screens/TeamScreen.tsx`.
 `apps/web/tests`: `labour.test.ts` (NEW), `e2e-api/labour-pilot.spec.ts` (NEW). Docs:
 `docs/STATUS.md`, `docs/AUTONOMOUS_LOOP.md`, `CLAUDE.md`, this packet, and
-`docs/reviews/phase-4-consolidated-review-packet.md`. **No `apps/api` change; no migration.**
+`docs/reviews/phase-4-consolidated-review-packet.md`. **No migration.** The ORIGINAL Task-6 head
+was frontend-only; the correction rounds then added the narrow server delta (Codex round 15 scope
+correction — the earlier "No `apps/api` change" claim here was stale): `apps/api/src/contracts.ts`
+(optional `originRevision` + `labourSpecFingerprint` on the allocate contract),
+`apps/api/src/labour/labour-capacity.service.ts` (the round-3/7/8/10/11/12 authority seals listed
+in the header), `apps/web/src/screens/MaterialsScreen.tsx` + `apps/web/src/layout/RouteBridge.tsx`
+(rounds 1/12 capability-gate surfaces), and the API integration suites
+`apps/api/test/integration/phase4-t6-allocation-pin.test.ts` (NEW) +
+`phase4-t4-labour-readiness.test.ts` (extended) — so API validation IS required for this head and
+every gate battery in §§7–18 ran it (full integration on a pristine migrated DB + both e2e modes).
 
 ## 5. Codex correction round 1 (the six current-head findings on `d538c15`)
 
@@ -1113,3 +1129,45 @@ response) and round-10 (held key through a failed reconcile) probes pass unchang
 - Full integration on a pristine recreated+migrated DB: **72 files / 702 tests** passing (unchanged — this round is web-only)
 - `upgrade-proof.sh` PASSED (regression only; no migration, no server change)
 - `test:e2e:api:allmodules` **35/35** and `:outbox` **35/35** — the first `allmodules` run failed on the documented `daily-log-lost-response` visibility flake (no labour surface; the add-material button never rendered within its timeout), clean on the single deciding re-run
+
+## §19 — Codex correction round 15 (four findings on `077b3f0`)
+
+### R15-1 — a PENDING RELEASE blocks work entry on its allocation (web)
+
+The work-row predicate ignored `pending(releaseCoalesceKey(a.id))`: after clicking Release, the
+still-rendered row accepted a work entry, the outbox replayed the release FIRST, and the work
+fact was a deterministic released-allocation 409 the flush drops — the user's intended evidence
+silently lost. `workBlocked` now includes the pending release (honest "Release pending" label;
+input disabled). Probe RED at `077b3f0` (1 failed | 34 passed) → GREEN 35/35 (full web labour
+suites 106/106); the control row with no pending release records normally.
+
+### R15-2 — the scope record names the server delta (docs)
+
+The packet header and §4 still claimed "no API change"/"No `apps/api` change" — stale since
+round 3. Both now name the accrued server delta (`contracts.ts` + `labour-capacity.service.ts`
+seals from rounds 3/7/8/10/11/12, the new/extended API integration suites) and state that API
+validation IS required and ran in every round's battery.
+
+### R15-3 — invalid reviewer evidence (no repo change)
+
+The P1 "Add the convergence trailer to the reviewed head" cited `7544aca`, which is not an
+object in this repository (the synthetic merge checkout). The authoritative head `077b3f0`
+carries `Review-Convergence: complete` (verified with `git show -s
+--format='%(trailers:key=Review-Convergence,valueonly)'`), and the trusted gate itself admitted
+the head. Documented in the convergence packet's Invalid Reviewer Evidence section per the
+AGENTS.md PR-head-resolution rule; every subsequent correction head keeps the trailer.
+
+### R15-4 — the justified-large marker (PR body)
+
+The leading `<!-- review-size: justified-large -->` declaration is added to the PR body above
+the existing six-row invariant matrix. PR #246 itself is grandfathered by
+`REVIEW_SCOPE_ENFORCE_AFTER_PR = 246` (the size gate enforces PR #247 and later), so this is
+documentation of intent, not a gate unlock.
+
+### Gates (round 15)
+
+- Web labour suites 106/106 (R15-1 RED 1 at `077b3f0` → GREEN)
+- `pnpm check` EXIT 0 (web 543/543 across 42 files, API unit 680/680 across 55 files, builds clean)
+- Full integration on a pristine recreated+migrated DB: **72 files / 702 tests** passing (unchanged — this round is web + docs)
+- `upgrade-proof.sh` PASSED (regression only; no migration, no server change)
+- `test:e2e:api:allmodules` **35/35** and `:outbox` **35/35**, single pass each (labour-pilot 4/4; no flake rerun needed)

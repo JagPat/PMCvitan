@@ -880,3 +880,37 @@ describe('CODEX R13 — a RESOLVED supplier draw stays reserved until the labour
     expect(options).toContain('W-MASON-2');
   });
 });
+
+describe('CODEX R15 — a PENDING RELEASE blocks work entry on its allocation', () => {
+  it('while the release op is unresolved the work row is disabled ("Release pending"); without it the row records', async () => {
+    // RED at 077b3f0: the work predicate ignored the release coalesce key, so a user could
+    // queue work behind their own release — the outbox replays the release FIRST and the
+    // work fact is a deterministic released-allocation 409 the flush silently drops.
+    const today = todayCivil(null);
+    const live = await liveDemand([today]);
+    const { releaseCoalesceKey } = await import('@/lib/labourKeys');
+    await primeLabour({
+      requirements: live.requirements,
+      capacity: { allocations: [alloc({ id: 'AL-REL', civilDate: today, labourSpecFingerprint: live.fp })], attendance: [], workFacts: [], skillSubstitutions: [] },
+    });
+    useStore.setState({ role: 'pmc', labourPending: [releaseCoalesceKey('AL-REL')] });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const work = r.getByTestId('labour-do-work-AL-REL') as HTMLButtonElement;
+    expect(work.disabled).toBe(true);
+    expect(work.textContent).toContain('Release pending');
+    expect((r.getByTestId('labour-work-minutes-AL-REL') as HTMLInputElement).disabled).toBe(true);
+    cleanup();
+    // control — the SAME row with no pending release records normally
+    await primeLabour({
+      requirements: live.requirements,
+      capacity: { allocations: [alloc({ id: 'AL-REL', civilDate: today, labourSpecFingerprint: live.fp })], attendance: [], workFacts: [], skillSubstitutions: [] },
+    });
+    useStore.setState({ role: 'pmc', labourPending: [] });
+    const r2 = render(<LabourScreen />);
+    fireEvent.click(r2.getByTestId('labour-tab-allocation'));
+    const work2 = r2.getByTestId('labour-do-work-AL-REL') as HTMLButtonElement;
+    expect(work2.disabled).toBe(false);
+    expect(work2.textContent).toContain('Record work');
+  });
+});
