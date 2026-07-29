@@ -44,11 +44,16 @@ This repository is designed to progress without the owner's laptop or technical 
 - The PR-side scope check is fast feedback. The trusted default-branch owner
   re-evaluates the PR metadata and every evidence cell before review promotion,
   so editing the PR's policy script cannot bypass the merge boundary.
-- Product CI runs once per SHA. A PR body/title edit changes review-unit
-  evidence, never code, so the `edited` event re-runs only the dependency-free
-  `review-scope` check (`pr-edit-scope.yml`) against the fresh metadata; the
-  five product jobs are keyed to code events (opened/synchronize/reopened) in
-  `ci.yml`. `scripts/autonomous-ci-battery.test.mjs` pins the split.
+- Product CI runs once per SHA, in ONE workflow. Every PR event (including
+  `edited`) runs through `ci.yml`, so a completed CI run always wakes the
+  trusted owner; the cheap `battery-plan` job gates the five product jobs — a
+  metadata-only body/title edit whose head already has real product runs skips
+  them, while a base retarget (`changes.base`) or a head whose product jobs
+  never really ran (a large PR whose first run failed `review-scope`) gets the
+  full battery. The required-check summary reads the newest REAL run per check
+  name: a skipped run defers to the evidence it kept, and a stale failure
+  never outlives a newer passing run. `scripts/autonomous-ci-battery.test.mjs`
+  and the gate tests pin all of this.
 - Claude self-audits those rows before the first review. Codex performs one
   comprehensive first pass and batches all findings. Correction reviews cover
   the delta, prior findings, and affected adjacent invariants.

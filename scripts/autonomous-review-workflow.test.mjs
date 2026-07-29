@@ -82,6 +82,72 @@ test('requires every named CI check to have a successful latest run', () => {
   );
 });
 
+test('duplicate check runs resolve by the newest real evidence per name', () => {
+  const others = REQUIRED_CHECKS.filter((name) => name !== 'review-scope')
+    .map((name) => checkRun(name));
+  const at = (name, conclusion, startedAt, status = 'completed') => ({
+    name,
+    conclusion,
+    status,
+    started_at: startedAt,
+  });
+
+  // An edit that fixes a failing PR body: the newer passing scope run decides;
+  // the stale failure from the first workflow run must not block forever.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      ...others,
+      at('review-scope', 'failure', '2026-07-29T07:00:00Z'),
+      at('review-scope', 'success', '2026-07-29T07:10:00Z'),
+    ]),
+    { state: 'success', missing: [], pending: [], failed: [] },
+  );
+
+  // A newer failure is never masked by an older success.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      ...others,
+      at('review-scope', 'success', '2026-07-29T07:00:00Z'),
+      at('review-scope', 'failure', '2026-07-29T07:10:00Z'),
+    ]).failed,
+    ['review-scope'],
+  );
+
+  // A metadata-only edit skips the product jobs; the skipped runs defer to the
+  // older real executions instead of erasing them.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      checkRun('review-scope'),
+      ...REQUIRED_CHECKS.filter((name) => name !== 'review-scope').flatMap(
+        (name) => [
+          at(name, 'success', '2026-07-29T07:00:00Z'),
+          at(name, 'skipped', '2026-07-29T07:10:00Z'),
+        ],
+      ),
+    ]),
+    { state: 'success', missing: [], pending: [], failed: [] },
+  );
+
+  // Only skipped runs means the check never really ran: fail closed as missing.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      ...others,
+      at('review-scope', 'skipped', '2026-07-29T07:10:00Z'),
+    ]).missing,
+    ['review-scope'],
+  );
+
+  // Any in-progress run keeps the name pending regardless of older evidence.
+  assert.equal(
+    summarizeRequiredChecks([
+      ...others,
+      at('review-scope', 'success', '2026-07-29T07:00:00Z'),
+      at('review-scope', null, '2026-07-29T07:10:00Z', 'in_progress'),
+    ]).state,
+    'pending',
+  );
+});
+
 test('rollout cannot require the new scope check from pre-policy PR branches', () => {
   const legacyChecks = requiredChecksForPullRequest(246);
   assert.deepEqual(
@@ -111,7 +177,7 @@ test('review scope runs before every expensive product gate', async () => {
   const workflow = await readFile(ciPath, 'utf8');
   assert.match(
     workflow,
-    /pull_request:\s*\n\s+types:\s*\[opened, synchronize, reopened\]/u,
+    /pull_request:\s*\n\s+types:\s*\[opened, synchronize, reopened, edited\]/u,
   );
   const scopeStart = workflow.indexOf('  review-scope:');
   const webStart = workflow.indexOf('  web:');
@@ -122,7 +188,10 @@ test('review scope runs before every expensive product gate', async () => {
   assert.doesNotMatch(scopeJob, /pnpm install|setup-node|postgres/u);
 
   for (const job of ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof']) {
-    const pattern = new RegExp(`  ${job}:[\\s\\S]*?needs: review-scope`, 'u');
+    const pattern = new RegExp(
+      `  ${job}:[\\s\\S]*?needs: \\[review-scope, battery-plan\\]`,
+      'u',
+    );
     assert.match(workflow, pattern);
   }
 });

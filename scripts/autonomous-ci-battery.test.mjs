@@ -1,16 +1,24 @@
-// One product-CI battery per SHA.
+// One product-CI battery per SHA, in ONE workflow.
 //
-// The five product jobs (web, api, e2e, api-e2e, upgrade-proof) are expensive.
-// A PR body/title edit (`edited` event) changes review-unit EVIDENCE, never
-// code, so it must re-run only the dependency-free review-scope check — it must
-// never launch a second product battery for a SHA the code events already
-// covered. These tests pin that split structurally across EVERY workflow file:
-// if someone re-adds `edited` to ci.yml, adds a product job to the edit
-// workflow, or defines a second launcher for a product job anywhere, this file
-// goes red.
+// Every PR event runs through ci.yml, so a completed CI run always wakes the
+// trusted default-branch owner (a second workflow would complete unseen). The
+// five expensive product jobs are gated by the cheap battery-plan job:
+//   - code events (opened/synchronize/reopened) always run them;
+//   - a metadata-only body/title edit whose head already has REAL product runs
+//     skips them (the skipped runs defer to the kept evidence — see the gate's
+//     summarizeRequiredChecks semantics);
+//   - a base retarget (`changes.base`) re-runs them, because the merge result
+//     under test changed even though the head SHA did not;
+//   - an edit on a head whose product jobs never really ran (a large PR whose
+//     first run failed review-scope) finally launches them, so a body edit
+//     that fixes the scope evidence unsticks the loop autonomously.
+// If someone re-splits `edited` into a second workflow, drops the plan gate,
+// or defines a second launcher for a product job, this file goes red.
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
+
+import { assessBatteryPlan, PRODUCT_CHECKS } from './ci-battery-plan.mjs';
 
 const workflowsDir = new URL('../.github/workflows/', import.meta.url);
 const PRODUCT_JOBS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
@@ -34,41 +42,114 @@ function jobNames(workflow) {
   const jobsBlock = workflow.slice(jobsStart);
   return [...jobsBlock.matchAll(/\n {2}([A-Za-z0-9_-]+):/gu)]
     .map((match) => match[1])
-    // step-level keys are indented deeper and never match the two-space level;
-    // filter well-known non-job keys defensively anyway
     .filter((name) => !['with', 'env', 'ports', 'options'].includes(name));
 }
 
-test('ci.yml launches the product battery only on code events', async () => {
+test('ci.yml handles every PR event and gates the battery on the plan', async () => {
   const workflow = await readFile(new URL('ci.yml', workflowsDir), 'utf8');
-  const types = pullRequestTypes(workflow);
   assert.deepEqual(
-    types,
-    ['opened', 'synchronize', 'reopened'],
-    'product CI must be keyed to the events that introduce or restore code; a '
-      + 'body edit must never launch it',
+    pullRequestTypes(workflow),
+    ['opened', 'synchronize', 'reopened', 'edited'],
+    'edited must stay in the ONE workflow so its completion wakes the owner',
   );
   const jobs = jobNames(workflow);
+  assert.ok(jobs.includes('review-scope'), 'ci.yml runs the scope check');
+  assert.ok(jobs.includes('battery-plan'), 'ci.yml plans the battery');
   for (const job of PRODUCT_JOBS) {
     assert.ok(jobs.includes(job), `ci.yml defines the product job ${job}`);
+    const gated = new RegExp(
+      `\\n {2}${job}:\\n {4}needs: \\[review-scope, battery-plan\\]`
+        + `\\n {4}if: needs\\.battery-plan\\.outputs\\.run_products == 'true'`,
+      'u',
+    );
+    assert.match(workflow, gated, `${job} must be gated on the battery plan`);
   }
-  assert.ok(jobs.includes('review-scope'), 'ci.yml runs the scope check first');
+
+  // the plan job itself stays cheap: no dependency install, no database
+  const planStart = workflow.indexOf('  battery-plan:');
+  const webStart = workflow.indexOf('  web:');
+  assert.ok(planStart >= 0 && webStart > planStart);
+  const planJob = workflow.slice(planStart, webStart);
+  assert.match(planJob, /node scripts\/ci-battery-plan\.mjs/u);
+  assert.doesNotMatch(planJob, /pnpm install|setup-node|postgres/u);
 });
 
-test('a PR body edit runs only the dependency-free scope check', async () => {
-  const workflow = await readFile(
-    new URL('pr-edit-scope.yml', workflowsDir),
-    'utf8',
+test('the battery plan launches products exactly when they are needed', () => {
+  assert.deepEqual(PRODUCT_CHECKS, PRODUCT_JOBS);
+  const realRuns = (conclusion) => PRODUCT_CHECKS.map((name) => ({
+    name,
+    status: 'completed',
+    conclusion,
+  }));
+
+  // code events always run the battery
+  for (const action of ['opened', 'synchronize', 'reopened', undefined]) {
+    assert.equal(
+      assessBatteryPlan({ action, baseChanged: false, checkRuns: realRuns('success') })
+        .runProducts,
+      true,
+    );
+  }
+
+  // metadata-only edit with real product runs recorded: skip (one battery/SHA)
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: realRuns('success'),
+    }).runProducts,
+    false,
   );
-  assert.deepEqual(pullRequestTypes(workflow), ['edited']);
-  assert.deepEqual(
-    jobNames(workflow),
-    ['review-scope'],
-    'the edited-event workflow must contain exactly the review-scope job',
+
+  // failed runs are still REAL runs — a body edit re-runs nothing; the fix for
+  // red products is a new SHA (with its own battery), not a metadata edit
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: realRuns('failure'),
+    }).runProducts,
+    false,
   );
-  assert.match(workflow, /node scripts\/review-scope\.mjs/u);
-  // cheap by construction: no dependency install, no database service
-  assert.doesNotMatch(workflow, /pnpm install|setup-node|postgres/u);
+
+  // a base retarget re-runs the battery even on a green head: the merge result
+  // under test changed although the head SHA did not
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: true,
+      checkRuns: realRuns('success'),
+    }).runProducts,
+    true,
+  );
+
+  // the stuck-large-PR path: products only ever SKIPPED (first run failed
+  // review-scope) — the body edit that fixes the scope evidence must finally
+  // launch the battery instead of leaving the SHA untested forever
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: realRuns('skipped'),
+    }).runProducts,
+    true,
+  );
+
+  // one product check missing entirely, or history unavailable: fail toward
+  // running the battery
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: realRuns('success').slice(1),
+    }).runProducts,
+    true,
+  );
+  assert.equal(
+    assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: undefined })
+      .runProducts,
+    true,
+  );
 });
 
 test('exactly one workflow can launch each product job', async () => {
@@ -95,5 +176,5 @@ test('the edited event reaches exactly one workflow', async () => {
     const types = pullRequestTypes(workflow);
     if (types?.includes('edited')) editedHandlers.push(file);
   }
-  assert.deepEqual(editedHandlers, ['pr-edit-scope.yml']);
+  assert.deepEqual(editedHandlers, ['ci.yml']);
 });

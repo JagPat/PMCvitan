@@ -41,6 +41,13 @@ export function requiredChecksForPullRequest(pullRequestNumber) {
   return REQUIRED_CHECKS;
 }
 
+function newerRunFirst(a, b) {
+  const aStarted = typeof a.started_at === 'string' ? a.started_at : '';
+  const bStarted = typeof b.started_at === 'string' ? b.started_at : '';
+  if (aStarted !== bStarted) return aStarted > bStarted ? -1 : 1;
+  return (Number(b.id) || 0) - (Number(a.id) || 0);
+}
+
 export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
   const missing = [];
   const pending = [];
@@ -56,7 +63,18 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
       pending.push(name);
       continue;
     }
-    if (runs.some((run) => run.conclusion !== 'success')) {
+    // One SHA can carry several completed runs of the same check: an `edited`
+    // re-run of the scope check, or product jobs the battery plan skipped.
+    // The newest REAL execution decides; a skipped run defers to the evidence
+    // it deliberately kept, and a name with only skipped runs never really ran.
+    const decider = [...runs]
+      .sort(newerRunFirst)
+      .find((run) => run.conclusion !== 'skipped');
+    if (!decider) {
+      missing.push(name);
+      continue;
+    }
+    if (decider.conclusion !== 'success') {
       failed.push(name);
     }
   }

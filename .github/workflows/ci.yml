@@ -1,13 +1,16 @@
 name: CI
 
-# A PR body/title edit must never launch the product battery: the `edited`
-# event is handled by pr-edit-scope.yml, which re-runs only the dependency-free
-# review-scope check against the fresh PR metadata. Product CI runs once per
-# SHA, on the events that introduce or restore code (opened/synchronize/
-# reopened). scripts/autonomous-ci-battery.test.mjs pins this split.
+# One workflow handles every PR event, so a completed CI run always wakes the
+# trusted default-branch owner. The five product jobs run once per SHA: the
+# battery-plan job skips them for a metadata-only body/title edit whose head
+# already has real product runs, and launches them when the merge result under
+# test changed (a base retarget) or when this head's product jobs never really
+# ran (a large PR whose first run failed review-scope — the body edit that
+# fixes the scope evidence is exactly when the battery must finally launch).
+# scripts/autonomous-ci-battery.test.mjs pins this design.
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
 jobs:
@@ -18,8 +21,26 @@ jobs:
       - name: Review-unit scope and invariant preflight
         run: node scripts/review-scope.mjs
 
+  # Cheap by construction: one checkout + one script (a single check-runs API
+  # read); no dependency install, no database. Fails toward running products.
+  battery-plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      run_products: ${{ steps.plan.outputs.run_products }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Decide whether this event needs the product battery
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci-battery-plan.mjs
+
   web:
-    needs: review-scope
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -43,7 +64,8 @@ jobs:
         run: pnpm --filter web build
 
   e2e:
-    needs: review-scope
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -65,7 +87,8 @@ jobs:
   # complete only when this job is green — unit tests or the seeded demo alone
   # are insufficient evidence (docs/ROADMAP.md).
   api-e2e:
-    needs: review-scope
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -120,7 +143,8 @@ jobs:
   # upgraded through ALL Phase 1 migrations the way Prisma applies them, and
   # asserted to keep every legacy meaning intact. Pure psql — no build needed.
   upgrade-proof:
-    needs: review-scope
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -142,7 +166,8 @@ jobs:
         run: bash apps/api/scripts/upgrade-proof.sh
 
   api:
-    needs: review-scope
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
