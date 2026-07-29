@@ -13,14 +13,25 @@ narrative and may lag behind reality.
 phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
 task: 6
-task_state: in_review
-work_item: phase-4-task-6-frontend
-reviewed_merge: d8a9c50
-open_pr: 246
+task_state: merged
+work_item: none
+reviewed_merge: 67e7a00
+open_pr: none
 next_task: none
 blocking_directive: none
-updated: 2026-07-28
+updated: 2026-07-29
 ```
+
+**PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
+`codex-current-head` gate with independent Codex clearance. Task 6 — the FINAL
+Phase-4 review stop — merged as PR #246 at `main` `67e7a00` with a fresh clean
+Codex +1 on the exact head `f098be7`, after fifteen exact-head correction
+rounds (46 findings, every one fixed forward with a reproduce-first RED→GREEN
+probe and a full gate battery) and the PR-#247-protocol convergence audit
+`docs/reviews/pr-246-convergence.md`. Capability-enabled internal (pilot)
+projects may use the Labour workflow end to end; non-pilot projects are
+unaffected (§D). Phase 5 has NOT begun and does not begin until JagPat
+explicitly approves Phase 5 planning.
 
 ## Phase 4 — labour readiness
 
@@ -34,7 +45,7 @@ Review Stops" section of the phase plan.
 | 3 | Time-capacity conservation — commitment, allocation, attendance, actual-work facts (§C) | merged — correction round 3 merged as PR #230 (`main` `33d37a3`) through the exact-head `codex-current-head` gate; evidence `docs/reviews/phase-4-t3-correction3-packet.md` |
 | 4 | Canonical labour coverage + Team gate + combined readiness + seventh projection + LEAF module graph (§A/§G) | merged — PR #242 merged at `main` `861b622` after two Codex correction rounds and a fresh clean +1 through the exact-head `codex-current-head` gate; evidence `docs/reviews/phase-4-t4-readiness-packet.md` |
 | 5 | Daily-Log reconciliation (§E) + planned-vs-actual + productivity (§I) | merged — PR #245 merged at `main` `d8a9c50` with a fresh clean Codex +1 on the exact head `119816b` through the `codex-current-head` gate (twelve findings across three in-branch Codex rounds all fixed with reproduce-first probes); evidence `docs/reviews/phase-4-t5-reconciliation-packet.md` |
-| 6 | Frontend surfaces + pilot acceptance chain + consolidated Phase-4 packet (§J) | in_review — draft PR #246 (branch `claude/phase4-task6` from `main` `d8a9c50`) on the exact-head `codex-current-head` gate; FINAL Phase-4 review stop |
+| 6 | Frontend surfaces + pilot acceptance chain + consolidated Phase-4 packet (§J) | merged — PR #246 merged at `main` `67e7a00` with a fresh clean Codex +1 on the exact head `f098be7` through the `codex-current-head` gate (fifteen correction rounds, 46 findings, all reproduce-first; convergence audit `docs/reviews/pr-246-convergence.md`); evidence `docs/reviews/phase-4-t6-frontend-packet.md` + `docs/reviews/phase-4-consolidated-review-packet.md`. **Phase 4 complete.** |
 
 ## State values
 
