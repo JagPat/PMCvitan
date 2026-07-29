@@ -343,3 +343,11 @@ That is the "Remaining Risk" section of `pr-250-convergence.md` materialising on
 request, at the first opportunity. It is recorded here as evidence for the decision on whether
 that rule should ship at all — the AGENTS.md scope exclusion prevents the phantom claim from
 being written, and carries no such risk.
+
+### Base merge after PR #250
+
+`origin/main` merged again after PR #250 landed (`e416d7d`), at the conflict bot's request.
+Conflict-free; the incoming change is the `AGENTS.md` review-scope instruction and its packet.
+No correction content. As before, the trailer on this commit asserts only that this PR's
+batched architectural audit is complete and is this document — not that a base merge is that
+audit.

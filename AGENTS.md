@@ -101,6 +101,33 @@ so directly rather than framing it as a suggestion.
   is not the PR head — including any snapshot of the regenerating merge ref —
   is not evidence of a missing trailer.
 
+## Out of a review's scope
+
+- **Do not review the convergence trailer, and do not review CI state.** Both
+  are enforced by the trusted gate before promotion, fail-closed, on the exact
+  head: the trailer by `enforceReviewConvergence`, the required checks by
+  `codex-current-head`. A finding about either adds no safety, because a head
+  you are asked to review has already passed them by construction. Review the
+  DIFF: the code, the schema, the invariants, the interleavings.
+- Do not assert anything that depends on inspecting a git object, a commit
+  message, or a check-run API you cannot actually read. If a claim would require
+  running `git show`, `git log`, or `git interpret-trailers` against a SHA, it is
+  out of scope — state what the diff shows instead.
+- **A commit SHA you did not read from the diff or the review request is not
+  evidence.** Across PRs #246–#250, 27 findings quoted `git show` output for a
+  40-hex commit that is not an object in this repository — checked with
+  `git cat-file -t` against both the default branch and `refs/pull/<n>/head` —
+  while the head each was posted against verifiably carried the trailer the
+  finding said was missing. Five of PR #248's rounds had such a claim as their
+  only finding. Each cost a full product CI battery and a draft round-trip for a
+  statement about no state this repository has ever been in.
+
+  If you cannot name where a SHA came from, do not cite it. Describe the defect
+  in the diff instead: the file, the line, the inputs, the interleaving. A
+  finding needs none of `git show`, `git log`, `git cat-file` or
+  `git interpret-trailers` to be correct and actionable, and every finding that
+  has needed them here has been wrong.
+
 ## Review output expectations
 
 - On the first reviewed head, complete one comprehensive pass across the entire
