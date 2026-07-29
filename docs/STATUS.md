@@ -57,9 +57,9 @@ planning task is complete when this PR merges, so the merged state says so.
 | 1 | `commercial` capability + module skeleton + cost heads + versioned budget + SINK manifest | not_started — next |
 | 2 | Commitment attribution over the EXISTING frozen committed amounts (§C) | not_started |
 | 3 | Measurement (§D) — immutable, delta corrections, sign-off gate | not_started — **review stop** |
-| 4 | Vendor bills + immutable versions + lifecycle through `verified` + bounds 1–2 (§F/§G) | not_started |
-| 5 | Three-way verification + certification + deduction ledger (§E/§H) | not_started — **review stop** |
-| 6 | Payment approval + payment records + SoD and approval limits (§I) | not_started |
+| 4 | Vendor bills + immutable versions + lifecycle **up to `under-verification`** + bounds 1–2 (§F/§G) | not_started |
+| 5 | Three-way verification, the `verified` transition itself, certification + deduction ledger + the measurer/acceptor-vs-certifier SoD rule (§E/§H/§I) | not_started — **review stop** |
+| 6 | Payment approval + payment records + certifier-vs-approver SoD + approval limits (§I) | not_started |
 | 7 | Cash-forecast projection + frontend hub + pilot acceptance + packet (§J/§M) | not_started — **final stop** |
 
 ## Phase 4 — labour readiness (complete)

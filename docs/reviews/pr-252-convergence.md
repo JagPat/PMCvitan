@@ -110,3 +110,56 @@ Second: `EFFORT(poLine)` requires effort to be consumable exactly once across PO
 which is a conservation problem of the same shape as Phase-3's stock allocator and Phase-4's
 commitment matcher. The plan names it; it does not yet specify the matcher. Task 3 must, and
 its review stop is where that gets checked.
+
+---
+
+## Round 2 — `cbbd60c`
+
+Seven findings on the convergence head. All correct, and three of them (H3, H6, H7) are
+gaps in that head itself. That is worth stating plainly rather than filing as routine.
+
+| Finding | Was the §0 method wrong, or applied incompletely? |
+|---|---|
+| H7 `BILLED` used as both quantity and money | applied incompletely — a set that carries two units is not a set |
+| H3 output-priced cap not consumable once | applied incompletely — the cap referenced a raw `Σ ActivityWorkOutput`, i.e. a fold that was never given a name |
+| H1 STATUS still says Task 4 delivers `verified` | the plan was corrected and the authoritative file was not |
+| H2 approval capped at gross certificate | a bound that never referenced the §H ledger at all |
+| H4 manifest declares no participant edge §E requires | two sections of one document disagreeing |
+| H5 rejection reachable from certified | a lifecycle arrow that outran the §0 live rule |
+| H6 SoD ships one task after certification | same shape as the Task 4/5 split, missed in the same pass |
+
+**H3 and H7 are the method working as designed and me not finishing the job.** §0 states
+that "a fold that cannot be expressed with one of these names means a set is missing" — H3
+is exactly that case, and I left `Σ ActivityWorkOutput.quantity` inline instead of naming
+it. §0 also implies one unit per set; I wrote a single `BILLED` and then used it as both.
+The remedy is not a new rule, it is completing the one already stated: `OUTPUT(poLine)` is
+now a named consumable set, and `BILLED` is split into `BILLED_QTY` and `BILLED_AMOUNT`.
+
+The other four are a different and simpler failure: **corrections applied to the plan and
+not to every place that repeats them.** H1 (STATUS), H4 (§K manifest vs §E), H5 (lifecycle
+arrow vs §0), H6 (task table vs §I) are all one document contradicting itself after an
+edit. The structural answer is the same as §0's: state a thing once. Where that is not
+possible — STATUS must restate the task table for the runner — the correction has to be
+applied to both in the same commit, which is what this head does.
+
+### Also fixed
+
+- **Bound 4 is now NET of deductions.** Capping approval at the gross certificate made the
+  §H retention ledger decorative: a ₹100 certification with ₹10 retention could approve and
+  pay ₹100, recording a withholding that withheld nothing.
+- **Rejection stops at `verified`.** Past certification the correction path is a superseding
+  certificate and, where money moved, a reversing payment record — never a status flip that
+  orphans append-only payable facts while freeing their accepted quantity for a second bill.
+- **`commercial.workflowParticipants: ['inventory']`.** §E requires
+  `InventoryParticipant.lockAcceptedEvidence`; a manifest declaring no participant edge would
+  have had Task 1 ship a contract saying that call cannot happen.
+
+### Convergence status
+
+The §0 method is not being abandoned — round 2 produced no finding that contradicts it, and
+two findings were instances of it not being carried through. Three rounds of findings on a
+document with no executable surface is, however, itself a signal: these are exactly the
+defects the plan's own probes are written to catch, and after this head the cheapest place
+to find the next one is Task 1's code, not another prose round.
+
+Gates: `pnpm test:automation` 111/111.
