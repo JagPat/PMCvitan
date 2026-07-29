@@ -5,7 +5,7 @@ import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
 import type { LabourForecastVerdict, WorkerDto } from '@vitan/shared';
 import { decAdd } from '@/lib/decimal';
-import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
+import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, pendingAllocationsFromKeys, pendingWorkAllocationIdsFromKeys } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { compatibleWorkerIds, satisfyingFingerprints, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, SHIFT_MINUTES, pendingBookedWorkerIds, hasPendingWorkFor, pendingCommitmentDraws, allocationMatchesLiveDemand } from '@/lib/labourSelection';
 import styles from './responsive.module.css';
@@ -65,6 +65,7 @@ export function LabourScreen() {
   const musterWorker = useStore((s) => s.musterWorker);
   const recordWorkedMinutes = useStore((s) => s.recordWorkedMinutes);
   const raiseLabourRequisition = useStore((s) => s.raiseLabourRequisition);
+  const releaseAllocation = useStore((s) => s.releaseAllocation);
   const setScreen = useStore((s) => s.setScreen);
   const [tab, setTab] = useState<Tab>('readiness');
   // per-slice worker choice for the Allocate action, keyed `${requirementId}:${civilDate}`
@@ -86,8 +87,18 @@ export function LabourScreen() {
   // Codex round 7 — the queued allocate ops RESERVE their worker for the (date, shift)
   // (`pendingBookedWorkerIds`), and the queued work ops disable further entry for their
   // allocation/worker-shift (`hasPendingWorkFor`) — both folded from the durable outbox.
-  const pendingAllocInputs = outbox.flatMap((op) => (op.t === 'allocateLabour' ? [op.input] : []));
-  const pendingWorkIds = new Set(outbox.flatMap((op) => (op.t === 'recordLabourWork' ? [op.input.allocationId] : [])));
+  // Round 11 — the RETAINED `labourPending` keys join both folds: a resolved op leaves the
+  // outbox before `loadLabour` applies the fresh bundle, so in that gap the outbox alone went
+  // blind while the screen still rendered PRE-command truth (a just-allocated worker offerable
+  // for a second slice; an edited minutes entry queueing a second work fact).
+  const pendingAllocInputs = [
+    ...outbox.flatMap((op) => (op.t === 'allocateLabour' ? [op.input] : [])),
+    ...pendingAllocationsFromKeys(labourPending),
+  ];
+  const pendingWorkIds = new Set([
+    ...outbox.flatMap((op) => (op.t === 'recordLabourWork' ? [op.input.allocationId] : [])),
+    ...pendingWorkAllocationIdsFromKeys(labourPending),
+  ]);
   const forecastEntries = labour ? Object.entries(labour.readiness.forecast) : [];
   const readyCount = forecastEntries.filter(([, f]) => f.verdict === 'ready').length;
   const atRiskCount = forecastEntries.filter(([, f]) => f.verdict === 'at-risk').length;
@@ -372,11 +383,17 @@ export function LabourScreen() {
                       </div>
                       <div style={{ ...muted, marginTop: 4 }}>{a.civilDate} · {a.shift}{a.capacityCommitmentId ? ' · supplier capacity' : ' · own workforce'}</div>
                       {a.status === 'active' && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                           <input type="number" min={1} max={remaining} value={minutes} disabled={workBlocked} data-testid={`labour-work-minutes-${a.id}`} onChange={(e) => setWorkMinutes((m) => ({ ...m, [a.id]: e.target.value }))} style={{ ...selectStyle, width: 76 }} />
                           <span style={muted}>min{remaining < SHIFT_MINUTES ? ` · ${remaining} left this shift` : ''}</span>
                           <Button variant="outline" disabled={workBlocked || !valid || pending(wKey)} data-testid={`labour-do-work-${a.id}`} onClick={() => !workBlocked && valid && recordWorkedMinutes(a.id, minutesNum)} style={{ fontSize: 11.5, flex: 'none' }}>
                             {!live ? 'Demand revised — release to correct' : future ? 'Future shift' : remaining <= 0 ? 'Shift full' : workPending ? 'Recording…' : 'Record work'}
+                          </Button>
+                          {/* Round 11 — the corrective the stranded state points at lives HERE: one
+                              release command frees the worker's slice (§C) through the same outbox
+                              lifecycle. Server authority: allocation.manage (pmc/engineer). */}
+                          <Button variant="ghost" disabled={pending(releaseCoalesceKey(a.id))} data-testid={`labour-do-release-${a.id}`} onClick={() => !pending(releaseCoalesceKey(a.id)) && releaseAllocation(a.id, live ? 'released from the Labour hub' : 'demand revised — stranded allocation released')} style={{ fontSize: 11.5, flex: 'none' }}>
+                            {pending(releaseCoalesceKey(a.id)) ? 'Releasing…' : 'Release'}
                           </Button>
                         </div>
                       )}
@@ -399,7 +416,13 @@ export function LabourScreen() {
                       // Codex round 6 — a worker with an ACTIVE muster for this (day, shift) is not
                       // offered again: the second muster is the server's deterministic 409
                       // ("already recorded — revoke it to correct it") the outbox drops as terminal.
-                      const alreadyMustered = musteredWorkerIds(labour.presence.musters, musterShift);
+                      // Round 11 — but only when the loaded presence read IS today's: across the
+                      // project civil midnight the last-loaded musters describe YESTERDAY, and
+                      // de-duping against them would hide workers from the NEW day's form until
+                      // a manual refresh.
+                      const alreadyMustered = labour.presence.civilDate === today
+                        ? musteredWorkerIds(labour.presence.musters, musterShift)
+                        : new Set<string>();
                       const musterOfferable = musterable.filter((w) => !alreadyMustered.has(w.id));
                       const ready = musterOfferable.some((w) => w.id === musterWorkerId) && musterReason.trim().length > 0;
                       const mKey = ready ? musterCoalesceKey(musterWorkerId, today, musterShift) : '';

@@ -69,7 +69,7 @@ import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyK
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
-import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
+import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -400,6 +400,7 @@ export interface AppActions {
   recordWorkedMinutes: (allocationId: string, workedMinutes: number) => void;
   raiseLabourRequisition: (title: string, lines: ReadonlyArray<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number }>) => void;
   /** The §J roster commands (Team-screen onboarding; direct, pmc-authored, low-frequency). */
+  releaseAllocation: (allocationId: string, reason: string) => void;
   onboardLabourWorker: (name: string, tradeCode: string, skillCodes: string[], activeFrom: string) => void;
   bindLabourDevice: (deviceId: string, workerId: string) => void;
   /** Atomically re-scope to another project. Empties project data BEFORE the auth
@@ -2558,6 +2559,15 @@ export const useStore = create<Store>()(
         { t: 'recordLabourWork', input: { allocationId, workedMinutes }, idempotencyKey: newIdempotencyKey(), coalesceKey: workCoalesceKey(allocationId, workedMinutes) },
         'Record worked minutes',
         'Worked minutes recorded.',
+      );
+    },
+    releaseAllocation: (allocationId, reason) => {
+      // Codex round 11 — the corrective the hub's stranded states point at, exposed IN the hub:
+      // one release command per allocation through the same durable outbox lifecycle.
+      dispatchLabour(
+        { t: 'releaseLabourAllocation', allocationId, reason, idempotencyKey: newIdempotencyKey(), coalesceKey: releaseCoalesceKey(allocationId) },
+        'Release the allocation',
+        'Allocation released.',
       );
     },
     raiseLabourRequisition: (title, lines) => {

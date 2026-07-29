@@ -41,6 +41,37 @@ export const isAllocatePendingForSlice = (
   civilDate: string,
 ): boolean => key.startsWith(`lab:alloc:${activityId}:${requirementId}@${originRevision}:${civilDate}:`);
 
+/** Codex round 11 — the allocations still PENDING by coalesce key. `labourPending` (round 8)
+ *  retains a resolved op's key until the fresh labour bundle APPLIES, but the durable outbox
+ *  drops the op the moment it succeeds — so in the success→reload gap the outbox-derived folds
+ *  (worker bookings, work-row disable) went blind while the screen still rendered PRE-command
+ *  truth. These parsers recover the reservation from the retained keys themselves (the key IS
+ *  the op's identity), so the guards hold until the truth is actually on screen. */
+export function pendingAllocationsFromKeys(
+  keys: readonly string[],
+): Array<{ activityId: string; requirementId: string; originRevision: number; civilDate: string; workerId?: string }> {
+  const out: Array<{ activityId: string; requirementId: string; originRevision: number; civilDate: string; workerId?: string }> = [];
+  for (const key of keys) {
+    if (!key.startsWith('lab:alloc:')) continue;
+    const parts = key.split(':');
+    if (parts.length < 6) continue;
+    const at = parts[3]!.lastIndexOf('@');
+    if (at < 0) continue;
+    const originRevision = Number(parts[3]!.slice(at + 1));
+    if (!Number.isInteger(originRevision)) continue;
+    const subject = parts.slice(5).join(':');
+    out.push({
+      activityId: parts[2]!,
+      requirementId: parts[3]!.slice(0, at),
+      originRevision,
+      civilDate: parts[4]!,
+      // a crew subject names no single worker — the committed rows book once the bundle lands
+      ...(subject.startsWith('crew:') ? {} : { workerId: subject }),
+    });
+  }
+  return out;
+}
+
 export const musterCoalesceKey = (workerId: string, civilDate: string, shift: string): string =>
   `lab:must:${workerId}:${civilDate}:${shift}`;
 
@@ -52,6 +83,24 @@ export const workCoalesceKey = (allocationId: string, workedMinutes: number): st
  *  button the moment the user edits the input while the first record is still in flight. */
 export const isWorkPendingForAllocation = (key: string, allocationId: string): boolean =>
   key.startsWith(`lab:work:${allocationId}:`);
+
+/** Codex round 11 — the allocation ids with a work reservation still PENDING by coalesce key
+ *  (see `pendingAllocationsFromKeys` — the same success→reload gap, for the work-row guard). */
+export function pendingWorkAllocationIdsFromKeys(keys: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const key of keys) {
+    if (!key.startsWith('lab:work:')) continue;
+    const cut = key.lastIndexOf(':');
+    if (cut <= 'lab:work:'.length - 1) continue;
+    const id = key.slice('lab:work:'.length, cut);
+    if (id.length > 0) out.push(id);
+  }
+  return out;
+}
+
+/** Codex round 11 — the pmc/engineer corrective the hub's stranded states point at: ONE release
+ *  command per allocation, coalesced on the allocation id while pending. */
+export const releaseCoalesceKey = (allocationId: string): string => `lab:release:${allocationId}`;
 
 export const labourRequisitionCoalesceKey = (
   lines: ReadonlyArray<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number }>,
@@ -84,7 +133,7 @@ export function isDeviceBindPending(pending: Readonly<Record<string, string>>, d
 }
 
 /** The labour outbox op types (the §J offline/idempotent field ops). */
-export const LABOUR_OUTBOX_OP_TYPES = ['allocateLabour', 'recordAttendance', 'recordLabourWork', 'createLabourRequisition'] as const;
+export const LABOUR_OUTBOX_OP_TYPES = ['allocateLabour', 'recordAttendance', 'recordLabourWork', 'createLabourRequisition', 'releaseLabourAllocation'] as const;
 
 export const isLabourOpType = (t: unknown): boolean =>
   typeof t === 'string' && (LABOUR_OUTBOX_OP_TYPES as readonly string[]).includes(t);

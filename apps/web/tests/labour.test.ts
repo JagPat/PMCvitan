@@ -7,6 +7,7 @@ import type { LabourView } from '@/store/labour';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, isWorkPendingForAllocation, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, pendingBookedWorkerIds, hasPendingWorkFor, pendingCommitmentDraws, allocationMatchesLiveDemand } from '@/lib/labourSelection';
+import { pendingAllocationsFromKeys, pendingWorkAllocationIdsFromKeys, releaseCoalesceKey } from '@/lib/labourKeys';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { LabourReadinessDto, LabourActivityForecastDto, WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto, LabourWorkFactDto, LabourRequisitionDto } from '@vitan/shared';
 
@@ -296,6 +297,7 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     recordLabourAttendance: vi.fn().mockResolvedValue({}),
     recordLabourWork: vi.fn().mockResolvedValue({}),
     createLabourRequisition: vi.fn().mockResolvedValue({}),
+    releaseLabourAllocation: vi.fn().mockResolvedValue({}),
     snapshot: vi.fn().mockResolvedValue(makeSnapshot()),
     ...over,
   });
@@ -333,6 +335,24 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     await settles(() => g.recordLabourWork.mock.calls.length === 1);
     expect(g.recordLabourAttendance).toHaveBeenCalledWith({ workerId: 'WKR-1', civilDate: '2026-08-01', shift: 'day', manualReason: 'device battery dead' }, expect.any(String));
     expect(g.recordLabourWork).toHaveBeenCalledWith({ allocationId: 'ALLOC-1', workedMinutes: 480 }, expect.any(String));
+  });
+
+  it('CODEX R11 — releaseAllocation dispatches ONE release command (fresh key + allocation-scoped coalesce) and reconciles', async () => {
+    const g = gw();
+    s()._setGateway(g as unknown as ApiGateway);
+    s().releaseAllocation('AL-1', 'released from the Labour hub');
+    // a second click while pending COALESCES on lab:release:AL-1 — one command only
+    s().releaseAllocation('AL-1', 'released from the Labour hub');
+    await settles(() => (g.releaseLabourAllocation as ReturnType<typeof vi.fn>).mock.calls.length >= 1);
+    await flush();
+    const calls = (g.releaseLabourAllocation as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(1);
+    const [allocationId, reason, key] = calls[0]!;
+    expect(allocationId).toBe('AL-1');
+    expect(reason).toBe('released from the Labour hub');
+    expect(typeof key).toBe('string');
+    expect(g.labourReadiness).toHaveBeenCalled(); // labour truth reconciled after the flush
+    expect(s().labourPending).not.toContain(releaseCoalesceKey('AL-1')); // cleared once the bundle applied
   });
 
   it('raiseLabourRequisition sends ONE requisition carrying the explicit demand slices', async () => {
@@ -785,20 +805,40 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     )).toEqual({ 'CC-1': 2 });
   });
 
-  it('CODEX R10 — allocationMatchesLiveDemand: cancelled/absent/stranded/undemanded rows are NOT live', () => {
-    const a = { requirementId: 'REQ-1', labourSpecFingerprint: 'fp', civilDate: '2026-08-01', shift: 'day' };
+  it('CODEX R10+R11 — allocationMatchesLiveDemand: cancelled/absent/stranded/moved-activity/undemanded rows are NOT live', () => {
+    const a = { requirementId: 'REQ-1', activityId: 'ACT-1', labourSpecFingerprint: 'fp', civilDate: '2026-08-01', shift: 'day' };
     const spec = (over: Record<string, unknown> = {}) => ({ labourSpecFingerprint: 'fp', shift: 'day', demandSlices: [{ civilDate: '2026-08-01', shift: 'day' }], ...over });
     // the head still demands the allocation's slice under the frozen identity → LIVE
-    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'open', labourSpec: spec() }])).toBe(true);
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', activityId: 'ACT-1', status: 'open', labourSpec: spec() }])).toBe(true);
     // requirement gone from view / cancelled / no longer labour demand
     expect(allocationMatchesLiveDemand(a, [])).toBe(false);
-    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'cancelled', labourSpec: spec() }])).toBe(false);
-    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'open', labourSpec: null }])).toBe(false);
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', activityId: 'ACT-1', status: 'cancelled', labourSpec: spec() }])).toBe(false);
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', activityId: 'ACT-1', status: 'open', labourSpec: null }])).toBe(false);
+    // Codex round 11 — the requirement was RE-HOMED to another activity: same fingerprint/date/
+    // shift, but coverage strands the old-activity row, so work under it books productivity onto
+    // the wrong activity
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', activityId: 'ACT-2', status: 'open', labourSpec: spec() }])).toBe(false);
     // STRANDED — the head moved to a different identity or shift (the carry-forward rule)
-    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'open', labourSpec: spec({ labourSpecFingerprint: 'fp-2' }) }])).toBe(false);
-    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'open', labourSpec: spec({ shift: 'night' }) }])).toBe(false);
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', activityId: 'ACT-1', status: 'open', labourSpec: spec({ labourSpecFingerprint: 'fp-2' }) }])).toBe(false);
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', activityId: 'ACT-1', status: 'open', labourSpec: spec({ shift: 'night' }) }])).toBe(false);
     // the current head no longer demands the allocation's civil date
-    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'open', labourSpec: spec({ demandSlices: [{ civilDate: '2026-08-02', shift: 'day' }] }) }])).toBe(false);
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', activityId: 'ACT-1', status: 'open', labourSpec: spec({ demandSlices: [{ civilDate: '2026-08-02', shift: 'day' }] }) }])).toBe(false);
+  });
+
+  it('CODEX R11 — pendingAllocationsFromKeys / pendingWorkAllocationIdsFromKeys recover reservations from RETAINED coalesce keys', () => {
+    // the allocate key format: lab:alloc:<activityId>:<requirementId>@<rev>:<civilDate>:<subject>
+    expect(pendingAllocationsFromKeys(['lab:alloc:ACT-1:REQ-1@2:2026-08-01:W-9'])).toEqual([
+      { activityId: 'ACT-1', requirementId: 'REQ-1', originRevision: 2, civilDate: '2026-08-01', workerId: 'W-9' },
+    ]);
+    // a crew subject names no single worker — parsed WITHOUT workerId (books nothing per-worker)
+    expect(pendingAllocationsFromKeys(['lab:alloc:ACT-1:REQ-1@1:2026-08-01:crew:CR-1'])).toEqual([
+      { activityId: 'ACT-1', requirementId: 'REQ-1', originRevision: 1, civilDate: '2026-08-01' },
+    ]);
+    // non-allocate + malformed keys contribute nothing
+    expect(pendingAllocationsFromKeys(['lab:work:AL-1:480', 'lab:alloc:broken', 'lab:must:W-1:2026-08-01:day'])).toEqual([]);
+    // the work key format: lab:work:<allocationId>:<minutes>
+    expect(pendingWorkAllocationIdsFromKeys(['lab:work:AL-1:480', 'lab:work:AL-2:240'])).toEqual(['AL-1', 'AL-2']);
+    expect(pendingWorkAllocationIdsFromKeys(['lab:alloc:ACT-1:REQ-1@1:2026-08-01:W-9', 'lab:release:AL-1'])).toEqual([]);
   });
 
   it('CODEX R7 — hasPendingWorkFor covers the allocation AND its worker-shift siblings; isWorkPendingForAllocation matches ANY minutes', () => {

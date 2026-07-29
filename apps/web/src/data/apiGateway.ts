@@ -923,6 +923,11 @@ export class ApiGateway {
   createLabourRequisition(input: CreateLabourRequisitionInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/labour/requisitions', input, idempotencyKey);
   }
+  /** Release an ACTIVE allocation (CAS `active → released`) — the pmc/engineer corrective the
+   *  hub's stranded-demand states point at (§C frees the worker's slice for re-allocation). */
+  releaseLabourAllocation(allocationId: string, reason: string, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd(`/labour/allocations/${allocationId}/release`, { reason }, idempotencyKey);
+  }
 
   // ── Phase 4 Task 6 (§J) — labour ROSTER commands (Team-screen onboarding surface). These are
   //    pmc-authored, low-frequency and dispatched DIRECTLY (not via the field outbox) with a fresh
@@ -1250,6 +1255,7 @@ export type OutboxOp =
   | { t: 'recordAttendance'; input: RecordLabourAttendanceInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'recordLabourWork'; input: RecordLabourWorkInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'createLabourRequisition'; input: CreateLabourRequisitionInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'releaseLabourAllocation'; allocationId: string; reason: string; idempotencyKey: string; coalesceKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
@@ -1330,6 +1336,8 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.recordLabourWork(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'createLabourRequisition':
       return gw.createLabourRequisition(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'releaseLabourAllocation':
+      return gw.releaseLabourAllocation(op.allocationId, op.reason, op.idempotencyKey).then(() => gw.snapshot());
     case 'uploadMedia':
       // uploadMedia returns {id,url}, not a snapshot — refetch so the flush
       // reconciles dailyLog.photos (the real, server-stored photo replaces the

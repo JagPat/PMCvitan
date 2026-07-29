@@ -274,15 +274,20 @@ export function hasPendingWorkFor(
  *  it (an active allocation is an active allocation) and §I productivity would roll it in, so
  *  the hub must not invite it; `allocation.release` is the corrective lever. */
 export function allocationMatchesLiveDemand(
-  a: Pick<WorkerAllocationDto, 'requirementId' | 'labourSpecFingerprint' | 'civilDate' | 'shift'>,
+  a: Pick<WorkerAllocationDto, 'requirementId' | 'activityId' | 'labourSpecFingerprint' | 'civilDate' | 'shift'>,
   requirements: ReadonlyArray<{
     requirementId: string;
+    activityId: string;
     status?: string;
     labourSpec: { labourSpecFingerprint: string; shift: string; demandSlices: ReadonlyArray<{ civilDate: string; shift: string }> } | null;
   }>,
 ): boolean {
   const req = requirements.find((r) => r.requirementId === a.requirementId);
   if (!req || req.status === 'cancelled') return false; // demand gone
+  // round 11 — the ACTIVITY is part of live demand too: a requirement re-homed from activity A
+  // to B strands the old A rows in coverage (the allocation activity must equal the current
+  // head's), so work entry under them books productivity onto the wrong activity.
+  if (req.activityId !== a.activityId) return false;
   const spec = req.labourSpec;
   if (!spec) return false;
   if (spec.labourSpecFingerprint !== a.labourSpecFingerprint || spec.shift !== a.shift) return false; // stranded

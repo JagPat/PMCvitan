@@ -377,9 +377,12 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
   });
 
   it('R6-2: the manual muster picker excludes workers ALREADY mustered for the selected shift (a repeat is a certain 409)', async () => {
+    // round 11 — the de-dupe applies only when the loaded presence read IS today's, so this
+    // probe's musters carry TODAY's civil date (the form posts today)
+    const today = todayCivil(null);
     await primeLabour({
       presence: {
-        civilDate: day,
+        civilDate: today,
         musters: [{ workerId: 'W-MASON', workerName: 'W-MASON', tradeCode: 'mason', shift: 'day', deviceId: null, manualReason: 'battery dead', recordedAt: '2026-08-01T02:00:00Z' }],
         mismatches: [],
       },
@@ -653,6 +656,107 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     fireEvent.change(r.getByTestId('labour-bind-device-id'), { target: { value: 'DEV-2' } });
     expect(btn().disabled).toBe(false);
     expect(btn().textContent).toContain('Bind device');
+  });
+
+  it('R11-2: a work op RESOLVED but not yet reloaded (key retained, outbox empty) still disables the row — editing the minutes cannot queue a second fact', async () => {
+    const today = todayCivil(null);
+    const live = await liveDemand([today]);
+    const { workCoalesceKey } = await import('@/lib/labourKeys');
+    await primeLabour({
+      requirements: live.requirements,
+      capacity: { allocations: [alloc({ id: 'AL-NOW', civilDate: today, labourSpecFingerprint: live.fp })], attendance: [], workFacts: [], skillSubstitutions: [] },
+    });
+    const spy = vi.fn();
+    // the 480-minute record SUCCEEDED: the outbox already dropped the op, but the fresh bundle
+    // (with the new work fact) has not applied — only the retained coalesce key knows
+    useStore.setState({ role: 'pmc', recordWorkedMinutes: spy, outbox: [], labourPending: [workCoalesceKey('AL-NOW', 480)] });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const btn = () => r.getByTestId('labour-do-work-AL-NOW') as HTMLButtonElement;
+    expect(btn().disabled).toBe(true);
+    expect(btn().textContent).toContain('Recording…');
+    // pre-fix: editing 480 → 240 changed the per-key check AND the outbox saw nothing pending,
+    // so a SECOND distinct command queued while the screen still showed zero recorded minutes
+    fireEvent.change(r.getByTestId('labour-work-minutes-AL-NOW'), { target: { value: '240' } });
+    expect(btn().disabled).toBe(true);
+    fireEvent.click(btn());
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('R11-4: an allocate op RESOLVED but not yet reloaded (key retained, outbox empty) still BOOKS its worker for the (date, shift)', async () => {
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const m1 = worker('W-MASON', 'mason');
+    const m2 = worker('W-MASON-2', 'mason');
+    const reqB = { ...requirement(fp), id: 'rev-2x', requirementId: 'REQ-2' };
+    const { allocateCoalesceKey } = await import('@/lib/labourKeys');
+    await primeLabour({
+      requirements: [requirement(fp), reqB],
+      workforce: { workers: [m1, m2], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([m1, m2]),
+    });
+    // W-MASON's allocation COMMITTED (outbox empty) but the bundle still renders pre-command
+    // truth — the retained key is the only evidence the worker is spoken for
+    useStore.setState({ role: 'pmc', outbox: [], labourPending: [allocateCoalesceKey('ACT-1', 'REQ-1', 1, day, 'W-MASON')] });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const values = Array.from(r.getByTestId(`labour-worker-select-REQ-2-${day}`).querySelectorAll('option')).map((o) => o.getAttribute('value'));
+    expect(values).not.toContain('W-MASON'); // pre-fix: offerable → the queued command 409s and drops
+    expect(values).toContain('W-MASON-2');
+  });
+
+  it("R11-5: YESTERDAY's loaded musters do not hide workers from TODAY's manual muster form", async () => {
+    // the app sat open across the project civil midnight: presence still describes yesterday
+    await primeLabour({
+      presence: {
+        civilDate: '2020-01-01', // any date ≠ today
+        musters: [{ workerId: 'W-MASON', workerName: 'W-MASON', tradeCode: 'mason', shift: 'day', deviceId: null, manualReason: 'battery dead', recordedAt: '2020-01-01T02:00:00Z' }],
+        mismatches: [],
+      },
+    });
+    useStore.setState({ role: 'pmc' });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-attendance'));
+    const options = Array.from(r.getByTestId('labour-muster-worker-select').querySelectorAll('option')).map((o) => o.getAttribute('value'));
+    // pre-fix: W-MASON was hidden as "already mustered" although the form posts TODAY
+    expect(options).toContain('W-MASON');
+  });
+
+  it('R11-7: every ACTIVE allocation row carries the Release action (the corrective the stranded state points at)', async () => {
+    const today = todayCivil(null);
+    const live = await liveDemand([today]);
+    const spy = vi.fn();
+    await primeLabour({
+      requirements: live.requirements,
+      capacity: {
+        allocations: [
+          alloc({ id: 'AL-LIVE', civilDate: today, labourSpecFingerprint: live.fp }),
+          alloc({ id: 'AL-STALE', workerId: 'W-ELEC', civilDate: today, labourSpecFingerprint: 'fp-old' }),
+        ],
+        attendance: [], workFacts: [], skillSubstitutions: [],
+      },
+    });
+    useStore.setState({ role: 'pmc', releaseAllocation: spy });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    // the live row releases with the generic reason
+    fireEvent.click(r.getByTestId('labour-do-release-AL-LIVE'));
+    expect(spy).toHaveBeenCalledWith('AL-LIVE', 'released from the Labour hub');
+    // the STRANDED row — the exact case whose hint said "release to correct" — releases too
+    fireEvent.click(r.getByTestId('labour-do-release-AL-STALE'));
+    expect(spy).toHaveBeenCalledWith('AL-STALE', 'demand revised — stranded allocation released');
+    cleanup();
+    // while the release is PENDING the button is held
+    const { releaseCoalesceKey } = await import('@/lib/labourKeys');
+    await primeLabour({
+      requirements: live.requirements,
+      capacity: { allocations: [alloc({ id: 'AL-LIVE', civilDate: today, labourSpecFingerprint: live.fp })], attendance: [], workFacts: [], skillSubstitutions: [] },
+    });
+    useStore.setState({ role: 'pmc', releaseAllocation: spy, labourPending: [releaseCoalesceKey('AL-LIVE')] });
+    const r2 = render(<LabourScreen />);
+    fireEvent.click(r2.getByTestId('labour-tab-allocation'));
+    const held = r2.getByTestId('labour-do-release-AL-LIVE') as HTMLButtonElement;
+    expect(held.disabled).toBe(true);
+    expect(held.textContent).toContain('Releasing…');
   });
 
   it('R3-5: Team onboarding stamps activeFrom with the PROJECT civil day, not the browser/UTC date', async () => {

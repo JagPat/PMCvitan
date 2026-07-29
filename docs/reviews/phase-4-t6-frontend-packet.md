@@ -886,3 +886,89 @@ disabled, DEV-2 enabled.
 - `upgrade-proof.sh` **PASSED** (no migration in this round; every prior seal survives).
 - `test:e2e:api:allmodules` (legacy): **35/35** CLEAN first run; labour-pilot 4/4.
 - `test:e2e:api:allmodules:outbox`: **35/35** CLEAN first run; labour-pilot 4/4.
+
+## §15 — Codex correction round 11 (seven findings on `a343fc9`)
+
+Two SERVER demand-integrity gaps, four web staleness/lifecycle gaps, and the missing corrective
+action. Reproduce-first: pre-fix `apps/api/src` + `apps/web/src` restored at `a343fc9` → API pin
+suite **2 failed | 5 passed**, web labour suites **7 failed | 90 passed**; fixes restored → API
+**7/7**, web **97/97** GREEN.
+
+### R11-1 — moved-activity allocations are stale for work too (web)
+
+`allocationMatchesLiveDemand` dropped `activityId`, so a requirement re-homed from activity A to
+B with the same fingerprint/date/shift still read live for the old-A allocation — coverage
+strands such rows (the allocation activity must equal the current head's), but the hub enabled
+Record work and the API booked productivity onto the old activity. The helper now matches the
+requirement's CURRENT `activityId` as well (helper-table row: re-homed → not live).
+
+### R11-2 / R11-4 — resolved ops keep their reservations until the truth renders (web)
+
+`pendingWorkIds` and `pendingAllocInputs` were folded from the durable outbox ONLY; a resolved
+op leaves the outbox before `loadLabour` applies the fresh bundle, so in that gap the guards
+went blind while the screen still rendered PRE-command truth — an edited minutes entry queued a
+SECOND work fact the server accepts cumulatively, and a just-allocated worker was offerable for
+a second same-(date, shift) slice whose queued command 409s and drops. The retained round-8
+`labourPending` keys now JOIN both folds through two pure parsers (`pendingWorkAllocationIdsFromKeys`,
+`pendingAllocationsFromKeys` — the coalesce key IS the op's identity; a crew subject books no
+single worker), so every reservation holds until the bundle actually applies. Probes: parser
+tables + two rendered gap probes (outbox empty, key retained → row disabled / worker booked).
+
+### R11-3 — a work replay must still match LIVE demand (server)
+
+`recordWork` verified only `status === 'active'`, so a work command queued while the allocation
+was valid could replay AFTER the requirement moved (another trade/skill/shift, another activity,
+a dropped date, or a cancel) — coverage had stopped counting the row, but the replay still
+recorded actual effort + §I productivity against the superseded slice. The command now
+re-derives the CURRENT head under the same readiness lock (via the Activities-owned
+`labourRequirementHead` truth) and refuses with a terminal 409 unless the allocation's
+activity, frozen fingerprint, shift AND civil date all still match the head's live demand — the
+same rule the hub's `allocationMatchesLiveDemand` renders, enforced where it binds. Probe:
+allocate → revise to carpenter → work replay 409 + zero facts; control — an allocation matching
+the live head records.
+
+### R11-5 — yesterday's musters never hide today's form (web)
+
+The muster de-dupe consumed `labour.presence.musters` regardless of `presence.civilDate`;
+across the project civil midnight the stale set hid workers as "already mustered" for a NEW day
+the form actually posts. The de-dupe now applies ONLY when `presence.civilDate === today`; the
+R6-2 probe is re-fixtured onto today's presence (the intended behavioural change) and the new
+probe pins the midnight rollover.
+
+### R11-6 — every allocated worker must ACTUALLY satisfy the demand (server)
+
+Round 8 verified a STATED substitution basis, but a direct command with no basis could still
+allocate an electrician onto a mason head — the row froze the mason fingerprint and coverage
+counted it as native mason sourcing. `allocate` now recomputes the LOCKED workers' own
+fingerprints (trade + `WorkerSkill` rows, the shared hash, the spec shift) and refuses with a
+terminal 400 any worker satisfying neither the head identity nor an ACTIVE approved
+substitution target — the §B rule the hub's pickers render, enforced at the authority. The
+stale-pin probe's control step is re-fixtured onto a worker who satisfies the revised head (the
+intended behavioural change); the four labour integration suites pass unchanged (their
+fixtures always onboarded matching trades). Probe: electrician onto mason head → 400 + zero
+rows; after an ACTIVE electrician substitution → accepted; the native mason always accepted.
+
+### R11-7 — the Release corrective lives IN the hub (web)
+
+The stranded-work state said "release to correct" but the hub had no release action — stranded
+capacity needed an out-of-band API call. The full chain now exists: `releaseLabourAllocation`
+gateway command (`POST …/labour/allocations/:id/release`, the Task-3 route), the
+`releaseLabourAllocation` outbox op + replay case, `releaseCoalesceKey`, the store's
+`releaseAllocation` action through `dispatchLabour`, and a Release button on every ACTIVE
+allocation row (reason auto-derived: generic for a live row, "demand revised — stranded
+allocation released" for a stranded one; held "Releasing…" while pending). Probes: store
+dispatch (one command, fresh key, coalesced double-click, reconciled + key cleared) + rendered
+(live and stranded rows dispatch with their reasons; pending row held).
+
+### Round-11 gate battery (this head)
+
+- **Reproduce-first**: pre-fix src at `a343fc9` → API **2 failed | 5 passed**, web **7 failed |
+  90 passed**; fixed → API **7/7**, web **97/97**, typechecks clean; the four labour
+  integration suites (t3/t3-correction/t4/t5) pass unchanged **61/61**.
+- `pnpm check` **EXIT 0** — web **534/534** (42 files, +6 round-11 probes), API **680/680**
+  (55 files), builds clean. ALL CLEAN single pass.
+- Full API integration on a pristine migrated DB (psql drop/create + `prisma migrate deploy`):
+  **72 files / 700 tests** passing (+2 — the R11-3 live-demand replay + R11-6 worker-identity probes).
+- `upgrade-proof.sh` **PASSED** (no migration in this round; every prior seal survives).
+- `test:e2e:api:allmodules` (legacy): **35/35** CLEAN first run; labour-pilot 4/4.
+- `test:e2e:api:allmodules:outbox`: **35/35** CLEAN first run; labour-pilot 4/4.

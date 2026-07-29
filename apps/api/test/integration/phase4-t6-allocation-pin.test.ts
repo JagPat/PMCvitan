@@ -177,6 +177,51 @@ describe('Phase 4 Task 6 round 3 — allocation pinned to the selected requireme
     expect((await t.prisma.workerAllocation.findFirstOrThrow({ where: { projectId, id: native.allocations[0]!.id } })).status).toBe('active');
   });
 
+  it('CODEX R11-3 — a work replay against an allocation whose demand MOVED is a deterministic 409 that records NOTHING', async () => {
+    const { projectId, activityId, requirementId, revision, workers } = await fixture();
+    const a = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: workers[0], originRevision: revision }, pmc(projectId));
+    const allocationId = a.allocations[0]!.id;
+    // the demand becomes CARPENTER — the mason allocation stays ACTIVE but coverage strands it
+    await requirements.revise(
+      projectId, requirementId,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { type: 'labour', activityId, tradeCode: 'carpenter', skillCode: null, shift: 'day', demandSlices: [{ civilDate: '2026-08-10', personShiftQty: 2 }], decisionId: null, responsibleId: null, criticality: 'normal', tolerance: null, expectedRevision: revision } as any,
+      pmc(projectId),
+    );
+    // the queued work op now flushes — accepting it would book actual effort + §I productivity
+    // onto a slice coverage no longer counts (round 7 only checked `status === 'active'`)
+    await expect(
+      capacity.recordWork(projectId, { allocationId, workedMinutes: 480 }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await t.prisma.labourWorkFact.count({ where: { projectId } })).toBe(0);
+    // control — an allocation matching the LIVE head still records (the refusal is the drift)
+    const carp = await labour.onboardWorker(projectId, { name: 'CarpR11', tradeCode: 'carpenter', skillCodes: [], activeFrom: '2026-01-01', activeTo: null }, pmc(projectId));
+    const head = await t.prisma.labourRequirementSpec.findFirstOrThrow({ where: { projectId, requirementId }, orderBy: { revision: 'desc' } });
+    const b = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: carp.id, originRevision: head.revision }, pmc(projectId));
+    const fact = await capacity.recordWork(projectId, { allocationId: b.allocations[0]!.id, workedMinutes: 480 }, pmc(projectId));
+    expect(fact.workedMinutes).toBe(480);
+  });
+
+  it('CODEX R11-6 — a worker who satisfies neither the head identity nor an ACTIVE substitution cannot be allocated at all', async () => {
+    const { projectId, activityId, requirementId, revision, workers } = await fixture();
+    await labour.upsertTrade(projectId, { code: 'electrician', name: 'Electrician' }, pmc(projectId));
+    const elec = await labour.onboardWorker(projectId, { name: 'Elec', tradeCode: 'electrician', skillCodes: [], activeFrom: '2026-01-01', activeTo: null }, pmc(projectId));
+    // a DIRECT command (no stated basis — the UI's compatible picker never offers this) placing an
+    // electrician onto the mason head previously SUCCEEDED, froze the mason fingerprint and made
+    // coverage count the row as native mason sourcing
+    await expect(
+      capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: elec.id, originRevision: revision }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(await t.prisma.workerAllocation.count({ where: { projectId } })).toBe(0);
+    // an ACTIVE substitution widening the demand to electricians makes the same worker legal…
+    await capacity.approveSkillSubstitution(projectId, { requirementId, tradeCode: 'electrician', skillCode: null, shift: 'day', reason: 'electricians may stand in' } as Parameters<typeof capacity.approveSkillSubstitution>[1], pmc(projectId));
+    const ok = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: elec.id, originRevision: revision }, pmc(projectId));
+    expect(ok.allocations).toHaveLength(1);
+    // …and the natively-qualified mason was always legal
+    const mason = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: workers[0], originRevision: revision }, pmc(projectId));
+    expect(mason.allocations).toHaveLength(1);
+  });
+
   it('a STALE originRevision — the offline replay landing after a revision — is a deterministic 409 that allocates NOTHING', async () => {
     const { projectId, activityId, requirementId, revision, workers } = await fixture();
     // the head moves: the demand becomes CARPENTER (same activity, same civil date, same qty), so a
@@ -191,9 +236,12 @@ describe('Phase 4 Task 6 round 3 — allocation pinned to the selected requireme
       capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: workers[2], originRevision: revision }, pmc(projectId)),
     ).rejects.toMatchObject({ status: 409 });
     expect(await t.prisma.workerAllocation.count({ where: { projectId } })).toBe(0);
-    // the SAME command re-pinned to the live head is accepted — the refusal is head drift, not the worker
+    // a command re-pinned to the live head with a worker who SATISFIES it is accepted — the
+    // refusal above is head drift, not the command shape (round 11: the mason workers no longer
+    // qualify for the carpenter head, so the control uses a carpenter)
     const head = await t.prisma.labourRequirementSpec.findFirstOrThrow({ where: { projectId, requirementId }, orderBy: { revision: 'desc' } });
-    const ok = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: workers[2], originRevision: head.revision }, pmc(projectId));
+    const carp = await labour.onboardWorker(projectId, { name: 'CarpPin', tradeCode: 'carpenter', skillCodes: [], activeFrom: '2026-01-01', activeTo: null }, pmc(projectId));
+    const ok = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: carp.id, originRevision: head.revision }, pmc(projectId));
     expect(ok.allocations).toHaveLength(1);
     expect(ok.allocations[0]!.labourSpecFingerprint).toBe(head.labourSpecFingerprint);
   });
