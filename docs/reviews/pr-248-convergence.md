@@ -17,6 +17,27 @@ findings is out of a review's writ and why.
 | `52d3f71` | (owner instruction, not a Codex finding) | The project owner resolved the dispute directly: remove the directive, keep `next_task: phase-5-planning`, restore automatic progression. |
 | `a74143d` | P1 "Make the convergence remedy match STATUS" | The packet's remedy section still described round 2's design after round 3 had changed STATUS. Real defect — packet/state drift. |
 
+### Now block as shipped
+
+The `a74143d` finding was this packet asserting a runner state that `docs/STATUS.md` did not
+implement. That class of drift IS mechanically checkable, so it is checked: the block below is
+compared field-for-field against the live Now block by
+`scripts/autonomous-status-state.test.mjs` on every CI run. A packet that describes a state the
+state file does not ship fails the build.
+
+```yaml
+phase: 4
+phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
+task: 6
+task_state: merged
+work_item: none
+reviewed_merge: 67e7a00
+open_pr: none
+next_task: phase-5-planning
+blocking_directive: none
+updated: 2026-07-29
+```
+
 ### Evidence and regression surface
 
 An earlier revision of this section claimed a docs-only change admits no RED-then-GREEN probe.
@@ -44,7 +65,7 @@ GREEN  52f04d8 (this head)
 | `1d1de47` owner-approval gate | `1d1de47` | `assessRunnerState` rejects a `blocking_directive` recorded against any `task_state` other than `correction_required` | STATUS's own state-value definitions say a directive is what `correction_required` launches; the invariant now enforces that, so parking the loop behind a directive the state machine never scheduled — the shape a human-approval gate takes — is red in CI |
 | `91fc1fb` directive from `in_progress` | `91fc1fb` | `assessRunnerState` schedules the directive named by an `in_progress` task — STATUS's documented post-merge fix-forward state | The next validated defect can record its correction target without failing CI |
 | `91fc1fb` between-work stall | `91fc1fb` | the all-none state resolves to `maintenance:<first item>`; the live-file test also requires the queue to parse non-empty | Both finding heads have no queue section, so their RED verdicts are unaffected — asserted against the real commits |
-| `a74143d` packet ≠ STATUS | `a74143d` | No executable probe: this is a claim in this packet about a sibling file, and mechanically checking prose against state would be a heuristic, not a proof. Stated honestly rather than dressed up | Both files live in this one PR's diff; the reviewer's own comparison is the check, and it is repeatable by inspection |
+| `a74143d` packet ≠ STATUS | `a74143d` | The **Now block as shipped** section above is compared field-for-field against the live `docs/STATUS.md` Now block; a packet claiming a state the file does not implement fails CI | Exact equality, not prose matching — the drift that produced this finding is now impossible to merge |
 
 The invariant is deliberately total: `assessRunnerState` returns a decision and a reason for
 every input, including malformed and unrecognized ones, and every non-actionable branch is

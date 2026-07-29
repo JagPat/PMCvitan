@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 
 import {
   assessRunnerState,
@@ -234,13 +235,23 @@ test('every work source resolves to exactly one next step, in precedence order',
     assessRunnerState({ ...base, task_state: 'merged', open_pr: '248' }).nextStep,
     'pr:248',
   );
-  // A task still being built is its own work item.
-  for (const taskState of ['not_started', 'in_progress', 'in_review', 'ready']) {
+  // A task being built with no PR yet is its own work item.
+  for (const taskState of ['not_started', 'in_progress']) {
     assert.equal(
       assessRunnerState({ ...base, task_state: taskState }).nextStep,
       'task:6',
       `${taskState} must resolve to the task itself`,
     );
+  }
+  // The PR-bearing states resolve to their PR, and fail closed without one
+  // (covered in full by its own test above).
+  for (const taskState of ['in_review', 'ready']) {
+    assert.equal(
+      assessRunnerState({ ...base, task_state: taskState, open_pr: '248' }).nextStep,
+      'pr:248',
+      `${taskState} must resolve to its open PR`,
+    );
+    assert.equal(assessRunnerState({ ...base, task_state: taskState }).actionable, false);
   }
   // The standing queue outranks starting the next phase.
   assert.equal(
@@ -253,6 +264,45 @@ test('every work source resolves to exactly one next step, in precedence order',
     false,
   );
   assert.equal(assessRunnerState(null).actionable, false);
+});
+
+// FINDING (round 8) — `in_review`/`ready` are defined by their open PR, so
+// recording one with `open_pr: none` leaves the runner nothing to shepherd.
+test('a review-only state without an open PR is a broken record, not work', () => {
+  for (const taskState of ['in_review', 'ready']) {
+    const verdict = assessRunnerState({
+      phase: '4',
+      task: '6',
+      task_state: taskState,
+      work_item: 'none',
+      open_pr: 'none',
+      next_task: 'none',
+      blocking_directive: 'none',
+    });
+    assert.equal(verdict.actionable, false, `${taskState} with no PR must fail closed`);
+    assert.match(verdict.reason, /open_pr is none/u);
+  }
+  // …and with the PR present, the PR is the work item.
+  assert.equal(
+    assessRunnerState({
+      phase: '4', task: '6', task_state: 'in_review',
+      work_item: 'none', open_pr: '248', next_task: 'none', blocking_directive: 'none',
+    }).nextStep,
+    'pr:248',
+  );
+});
+
+// FINDING (round 7, `a74143d`) — the packet asserted a runner state STATUS did
+// not implement. The packet now echoes the Now block, and this compares them.
+test('the convergence packet describes the state docs/STATUS.md actually ships', async () => {
+  const packet = await readFile(
+    new URL('../docs/reviews/pr-248-convergence.md', import.meta.url),
+    'utf8',
+  );
+  const claimed = parseStatusNow(packet, '\n### Now block as shipped');
+  assert.ok(claimed, 'the packet must echo the Now block for comparison');
+  const { now } = await loadStatusDocument();
+  assert.deepEqual(claimed, now, 'the packet claims a state docs/STATUS.md does not ship');
 });
 
 // The regression surface: the live state file, on every CI run.

@@ -21,6 +21,10 @@ const OPEN_TASK_STATES = new Set([
   'ready',
 ]);
 
+// STATUS defines these two by their open PR: "PR open as a draft, waiting on a
+// Codex review" and "PR marked ready for review". Without one they are broken.
+const PR_BEARING_STATES = new Set(['in_review', 'ready']);
+
 const NONE = 'none';
 
 function isNone(value) {
@@ -49,9 +53,9 @@ export function parseMaintenanceQueue(markdown) {
 // The Now block is the first fenced yaml block under the `## Now` heading. It is
 // a flat `key: value` map by construction, so this parses exactly that and
 // nothing more — a nested or list value is a malformed Now block, not a state.
-export function parseStatusNow(markdown) {
+export function parseStatusNow(markdown, heading$ = '\n## Now') {
   const source = typeof markdown === 'string' ? markdown : '';
-  const heading = source.indexOf('\n## Now');
+  const heading = source.indexOf(heading$);
   if (heading < 0) return null;
   const fenceStart = source.indexOf('```yaml', heading);
   if (fenceStart < 0) return null;
@@ -133,6 +137,20 @@ export function assessRunnerState(state, maintenanceQueue = []) {
       actionable: true,
       nextStep: `pr:${state.open_pr}`,
       reason: 'an open PR is the current work item until it merges or closes',
+    };
+  }
+
+  // `in_review` and `ready` are defined by STATUS as PR-bearing: the work item
+  // IS the open PR. With `open_pr: none` there is nothing to shepherd, and
+  // returning the task instead would invite duplicate work on a task whose PR
+  // the runner cannot see. The open_pr branch above already handled the
+  // coherent case, so reaching here with one of these states is a broken record.
+  if (PR_BEARING_STATES.has(taskState)) {
+    return {
+      actionable: false,
+      nextStep: null,
+      reason: `task_state is '${taskState}' but open_pr is none; STATUS defines that `
+        + 'state by its open PR, so the runner has no PR to work',
     };
   }
 

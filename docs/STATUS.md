@@ -101,7 +101,13 @@ gate as feature work. Work them top-down, one focused PR per item:
 - The Now block must always leave the runner a move. That is enforced, not
   merely asked for: `scripts/autonomous-status-state.mjs` decides the next step
   from the Now block and `scripts/autonomous-status-state.test.mjs` runs it
-  against this file on every CI run. A state with nothing to start — or a
-  `blocking_directive` recorded from any `task_state` other than
-  `correction_required`, which parks the loop behind work the state machine
-  never scheduled — fails the build.
+  against this file on every CI run. These states fail the build:
+  - nothing to start at all — no directive, no open PR, no task in flight, no
+    `work_item`, no `next_task`, and an empty Maintenance queue;
+  - a `blocking_directive` recorded from a state that does not schedule one.
+    Exactly two do: `correction_required` (which launches it by definition) and
+    `in_progress` (the post-merge fix-forward path in the rule above). From any
+    other state a directive parks the loop behind work nothing scheduled;
+  - `correction_required` with no directive naming the correction;
+  - `in_review` or `ready` while `open_pr` is `none` — both states are defined
+    above as PR-bearing, so there is no PR for the runner to shepherd.
