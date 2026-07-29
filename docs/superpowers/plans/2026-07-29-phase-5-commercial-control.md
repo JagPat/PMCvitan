@@ -1,0 +1,337 @@
+# Phase 5 — Commercial Control
+
+Budget, commitment, measurement, vendor bills, three-way verification, certification,
+payment approval, payment status and cash forecast — every amount traceable to
+operational evidence Phases 1–4 already made canonical.
+
+## Phase Intent (restated per the spec's Phase Intent Map, row 5)
+
+**Why it exists.** Vendor bills and payments cannot be trusted without approved orders,
+accepted delivery, measured work and certification. Today the project has all of the
+operational evidence and none of the commercial conclusion: a PO line knows its frozen
+rate and its `receivedQty`, a stock ledger knows what was physically accepted, a labour
+PO line knows its committed person-shifts and `LabourWorkFact` knows the minutes actually
+worked — and nothing joins them to what a vendor has claimed, what a PMC has certified, or
+what has been paid. That join is currently a spreadsheet, and a spreadsheet cannot be
+audited against the site.
+
+**Operational outcome.** Budget, commitment, measurement, bill verification, certification,
+payment approval, payment status and cash forecast all trace to operational evidence. A
+commercial manager can answer "what is committed, billed, certified, payable and paid?"
+(spec §21) from records, per PO line, with the evidence attached.
+
+**Why this order matters.** External parties must not receive self-service commercial
+access until internal controls and authority are proven. Phase 6 (supplier/contractor
+portals) exposes exactly these records to the counterparty; they must be correct and
+authority-bound first.
+
+**Facts unlocked for Phase 6.** A vendor-scoped commercial record set — the bills that
+vendor submitted, their verification exceptions, their certification status, their payment
+status — plus the SoD and approval-limit machinery that decides what a guest may do.
+
+## Facts consumed from earlier phases (never rebuilt)
+
+Phase 5 owns no operational fact. Every input below is already canonical, already
+independently cleared, and is read through its owner's query contract or participant —
+never by a Prisma read across a module boundary.
+
+| Fact | Owner | What Phase 5 takes from it |
+|---|---|---|
+| `PurchaseOrderLine` — frozen `rate`/`taxAmount`/`freightAmount`/`landedAmount`/`committedAmountBase`/`approvedOverage`, `receivedQty`, four-FK provenance to the approved comparison's selected quote line | procurement | the ORDERED side of three-way verification, and the committed amount (read, never copied into a second ledger) |
+| `LabourPurchaseOrderLine` — frozen `ratePerPersonShift`/`shiftPremium`/`committedAmountBase`, `committedQty` | procurement (labour commercial documents) | the ordered side for labour bills |
+| `StockTransaction` acceptance/rejection rows with evidence; `MaterialIssue`; consumption | inventory | the ACCEPTED side: what physically arrived and passed |
+| `LabourWorkFact` (worked minutes), `LabourAttendance` (headcount) | labour | the effort side of a labour measurement |
+| `ActivityWorkOutput` (`quantity`, `uom`, evidence media) | activities | the OUTPUT side of a measurement |
+| Closing inspection sign-off; `Activity.status = done` | inspections / activities | the gate on measuring work as complete |
+| `CommandExecution` ledger, `DomainEvent` envelope, transactional outbox, rebuildable projections, `ProjectCapability`, `lockProjectReadiness`, module registry + boundary analyzer | platform | the same discipline every phase since 2 has used |
+
+## Current-State Revalidation (against `main` @ `e5b6bd9`)
+
+Verified directly, not from narrative:
+
+1. **No commercial module exists.** `apps/api/src/*/​*.manifest.ts` lists 13 modules; none
+   is `commercial`. There is no budget, bill, certification, or payment model in
+   `prisma/schema.prisma` (100 models).
+2. **Committed amounts already exist and are frozen.** `PurchaseOrderLine.committedAmountBase`
+   and `LabourPurchaseOrderLine.committedAmountBase` are `Decimal(18,2)`, column-freeze
+   triggered, and provenance-bound to the approved comparison's selected quote line
+   (Phase-3 F4 completion, PR #196; Phase-4 Task-2 correction F4, PR #221). **Phase 5 must
+   not create a second committed-amount ledger.**
+3. **Received progress already exists.** `PurchaseOrderLine.receivedQty` is appended by the
+   inventory receipt path through `ProcurementParticipant` under the PO-line lock (Phase-3
+   Task 4). `LabourPurchaseOrderLine.committedQty` is the labour analogue.
+4. **The module graph is a DAG with `inventory`, `labour`, `decisions` as leaves,
+   `activities` depending on them, and `procurement` depending on `activities`.** A
+   `commercial` module that reads procurement, inventory, labour and activities is a SINK —
+   nothing depends on it — so the graph stays acyclic by construction. `module-registry.test.ts`
+   enforces this and must be extended, not weakened.
+5. **Decimal discipline is established, not assumed.** Phase-4 Task 5 finding F-E required
+   `Prisma.Decimal` end-to-end for productivity because float64 corrupts a full-scale
+   `Decimal(18,6)`. Money arithmetic inherits that requirement without argument.
+6. **No drift found.** Every anchor cited above was read at `e5b6bd9`.
+
+## Architecture
+
+### §A. Money identity and arithmetic
+
+- One currency for the pilot (INR). No currency column, because a nullable/defaulted one
+  invites a second currency without the conversion machinery to make it correct. Adding
+  multi-currency is a later phase with its own rate-source and rounding decisions.
+- Every amount is `Decimal(18,2)`. Every quantity keeps its own scale (`Decimal(18,6)` for
+  material base units, `Int` for person-shifts) — the Phase-4 rule that distinct fact
+  families keep distinct units applies to money too.
+- **All arithmetic in `Prisma.Decimal` end to end.** No `Number()` on a money value at any
+  point, including in read projections and the frontend. A full-scale probe that float64
+  demonstrably corrupts is a required plan probe.
+- Rounding is stated once: half-up at 2 decimals, applied only where a value is persisted,
+  never mid-computation.
+
+### §B. Budget (`BudgetLine`)
+
+- A budget line is a project-scoped PLAN with an amount and a scope key. Scope is
+  `(projectId, costHead)` where `costHead` is a project-contained code from a
+  commercial-owned `CostHead` table — NOT the activity id and NOT the location node.
+  Binding budget to an activity would make a schedule edit a budget edit; the two must be
+  able to move independently.
+- Budget lines are **versioned and immutable** (spec §97). A revision APPENDS a new version
+  retaining the prior verbatim, with an attributable reason. There is no in-place edit.
+- A budget line does not gate anything. Exceeding budget produces a flagged exception on the
+  commitment and an Inbox action; it never blocks a PO, because stopping site supply over a
+  planning number is the wrong failure mode. Whether an over-budget commitment requires a
+  stronger authority is a §I approval-limit decision, not a hard block.
+
+### §C. Commitment — consumed, never rebuilt
+
+The committed amount for a PO line already exists, frozen, with provenance. Phase 5 reads
+it through `ProcurementQuery` and attributes it to a cost head through a commercial-owned
+`CommitmentAttribution` row: `(poLineId | labourPoLineId) → costHead`, one active
+attribution per line, revocable with an attributable reason. The attribution is the ONLY
+new fact; the amount is not copied.
+
+This is the Phase-4 §C lesson applied to money: a second ledger holding the same number is
+a second truth, and the two will diverge under amendment.
+
+### §D. Measurement — a billing fact, distinct from the operational work fact
+
+`ActivityWorkOutput` records what was physically produced. `LabourWorkFact` records minutes
+worked. Neither is a measurement for payment: a measurement is a **contractually agreed
+quantity at a contract rate, taken by a named person on a named date, against a named PO
+line**. It has a different unit, a different authority and a different lifecycle.
+
+- `Measurement` is commercial-owned, immutable once taken, and carries: the PO line, the
+  measured quantity in the PO line's UOM, the measurement date, the taker, evidence media,
+  and — for work measured against an activity — the activity reference validated through
+  `ActivityParticipant`.
+- A measurement against an activity requires that activity to be `done` with its closing
+  sign-off (read through the activities query contract). Measuring incomplete work for
+  payment is exactly the failure Phase 1 existed to prevent.
+- A correction is a new measurement carrying a signed delta and a reason, never an edit.
+  The measured total is a fold, with no stored balance — the Phase-3 §C rule.
+- **Material lines are not measured.** For a material PO line the accepted quantity IS the
+  measurement: `Σ accepted` from the inventory ledger, read through `InventoryQuery`. A
+  parallel manual measurement of delivered material would be a second truth about the same
+  physical event.
+
+### §E. Three-way verification — derived, never stored
+
+`verifyBill(tx, billId)` computes, per bill line, the triple:
+
+| Side | Material line | Labour line |
+|---|---|---|
+| ORDERED | PO line frozen `qty` + `approvedOverage`, at frozen `rate`/tax/freight | PO line `personShiftQty` at frozen `ratePerPersonShift` + `shiftPremium` |
+| ACCEPTED / MEASURED | `Σ accepted − Σ rejected` from the inventory ledger (`InventoryQuery`) | `Σ Measurement.quantity` for that PO line |
+| BILLED | this bill line's quantity × rate, plus every earlier non-rejected bill line on the same PO line | same |
+
+The verdict is `matched | exception`, with each exception naming its own kind
+(`qty-over-ordered`, `qty-over-accepted`, `rate-mismatch`, `tax-mismatch`,
+`duplicate-claim`). The triple is **recomputed under the PO-line lock at every state
+transition that depends on it** — submission, verification and certification — never read
+from a stored column. A stored verdict is a stale verdict the moment a receipt is reversed.
+
+An exception does not auto-reject. It moves the bill to `disputed` and requires a
+responsible review with an attributable reason to proceed — spec §16, "Exceptions require
+responsible review."
+
+### §F. Bill lifecycle and immutable versions
+
+```text
+draft → submitted → under-verification → { verified | disputed }
+disputed → under-verification            (after a resolved exception)
+verified → certified → approved-for-payment → { part-paid → paid }
+any non-terminal → rejected              (attributable reason required)
+```
+
+- Every transition is a CAS `updateMany(id, projectId, expectedStatus)` — a deterministic
+  409 on a concurrent second attempt, the Phase-3/4 machine.
+- A `VendorBill` carries immutable versions exactly like `PurchaseOrder`: an amendment
+  issues a NEW version retaining the prior verbatim with `supersedesVersion` lineage.
+  Certificates are immutable versions in the same sense — a certificate is never edited,
+  only superseded with a reason.
+- `certified`, `approved-for-payment` and every payment row are **append-only at PG**, with
+  the same trigger discipline the §C ledger and the promise registers already use.
+- A bill line is FK-bound to its PO line by a composite same-project FK; a bill line naming
+  a foreign project's PO line is unrepresentable, not merely rejected.
+
+### §G. Conservation bounds (the §F-bounds analogue, one per hand-off)
+
+Each is re-derived in-service under `FOR UPDATE` on the constraining row AND sealed by a
+PostgreSQL constraint — the Phase-4 Task-3 F3 lesson: a trigger that counts without
+serializing is not an invariant.
+
+1. `Σ billed qty` per PO line ≤ `qty + approvedOverage` (materials) / `personShiftQty` (labour)
+2. `Σ billed qty` per PO line ≤ accepted (materials) / measured (labour)
+3. `Σ certified amount` per bill ≤ that bill's billed amount
+4. `Σ approved-for-payment` per bill ≤ `Σ certified`
+5. `Σ paid` per bill ≤ `Σ approved-for-payment`
+
+Bound 2 is the one that makes the phase worth building: it is structurally impossible to
+bill for material that never arrived or work never measured.
+
+### §H. Deductions — retention, advance recovery, variations
+
+- A deduction is a **ledger row against a certification**, never a column on it. Types:
+  `retention`, `advance-recovery`, `penalty`, `other` (reason required). Each carries an
+  attributable actor and an amount.
+- Retention release is its own append-only row with its own authority; the retained balance
+  is a FOLD over `retention` minus `retention-release`, with **no stored balance column** —
+  the Phase-3 §C rule that produced a correct stock model.
+- Advance recovery folds against an `advance` row created when the advance is paid, and can
+  never recover more than was advanced (a bound, enforced like §G).
+- A variation is a PO amendment (procurement's existing machine), not a commercial fact.
+  Phase 5 reads the amended PO version; it does not invent a parallel variation document.
+
+### §I. Authority, segregation of duties, approval limits
+
+- New permissions: `commercial.read`, `commercial.measure`, `commercial.verify`,
+  `commercial.certify`, `commercial.approve-payment`, `commercial.record-payment`.
+  Certification and payment approval are deliberately separate.
+- **SoD is a rule, evaluated server-side, with a named exception path** (spec §422). The
+  rule ships as: the actor who took a measurement may not certify the bill that consumes it,
+  and the actor who certified may not approve payment. An exception requires a stronger
+  authority (org admin) AND writes an attributable `SodException` record naming the rule,
+  the actor, the approver and the reason. Silently allowing it is not an option; silently
+  banning it is not either, because a two-person practice must still be able to operate.
+- Approval limits are per-membership amount ceilings. Exceeding one escalates to a higher
+  limit holder; it never silently succeeds.
+- Every route enforces authorization server-side. UI visibility is convenience (spec §18).
+
+### §J. Cash forecast — the EIGHTH rebuildable projection
+
+`commercial.cash-forecast`, recompute-only, deriving NO domain events (a rebuild emits zero
+events and zero notifications — the established projection contract). Buckets, exactly as
+spec §16 names them and distinct by construction:
+
+`budget` · `committed` · `received-not-billed` · `awaiting-certification` ·
+`certified-payable` · `approved` · `paid`
+
+`live == projection == rebuild` through ONE shared compute function, the discipline that
+made the material and labour readiness projections correct.
+
+### §K. Module graph — `commercial` is a SINK, and never gates operations
+
+- `commercial.dependsOn: ['procurement', 'inventory', 'labour', 'activities']`;
+  `workflowParticipants: []`. **Nothing depends on `commercial`**, so the graph is acyclic
+  by construction and the Task-N acyclicity acceptance test extends without a new exemption.
+- **No readiness gate consults commercial.** An unpaid bill, a breached budget and a
+  disputed certification must never stop an activity from starting or a receipt from being
+  accepted. Money follows the site; it does not command it. This is stated as an invariant
+  and pinned by a test: enabling the commercial capability changes no readiness verdict.
+- Foreign reads go through `ProcurementQuery` / `InventoryQuery` / `LabourQuery` /
+  `ActivitiesQuery`; the boundary analyzer's nested-read detection (PR #216 F1) already
+  catches an `include` that reaches a read-encapsulated foreign model.
+
+### §L. Pilot activation
+
+A `commercial` per-project `ProjectCapability`, the same mechanism as `materials` and
+`labour`. Capability-off projects are byte-identical: no nav entry, no routes (404), no
+rows, no events. The two-projects-one-org byte-identity proof is required, as it was for
+both prior pilots.
+
+### §M. Frontend surfaces
+
+ONE capability-gated Commercial hub cloning the cleared Materials/Labour discipline: tabs
+for budget · commitments · measurements · bills · certification · payments · cash forecast;
+honest loading/unavailable/stale states; latest-request ownership; write-ahead durable
+outbox with the two-key lifecycle (`idempotencyKey` for replay identity, `coalesceKey` for
+pending dedupe) from PR #208/#209; per-action disable-while-pending; project-scope teardown.
+
+## Required Execution Order and Review Stops
+
+One PR per task, each within the 20-file / 1,500-line review budget, each riding the
+draft → CI → exact-head Codex gate.
+
+| Task | Scope | Review stop |
+|---|---|---|
+| 1 | `commercial` capability + module skeleton + `CostHead` + versioned immutable `BudgetLine` + SINK manifest + acyclicity test + §D/§L inertness proof | — |
+| 2 | `CommitmentAttribution` over the EXISTING frozen committed amounts (§C) + budget-vs-committed exception + Inbox action | — |
+| 3 | `Measurement` (§D) — immutable, delta corrections, activity sign-off gate, material lines read acceptance instead | **STOP** — narrow review before any bill can consume a measurement |
+| 4 | `VendorBill` + lines + immutable versions + the §F CAS lifecycle through `verified` + §G bounds 1–2 | — |
+| 5 | Three-way verification (§E) + dispute/resolution + certification + §G bound 3 + §H deduction ledger | **STOP** — narrow review before payment authority exists |
+| 6 | Payment approval + payment records + §G bounds 4–5 + §I SoD rules, approval limits and the exception record | — |
+| 7 | Cash-forecast projection (§J) + frontend hub (§M) + pilot acceptance chain + consolidated Phase-5 packet | **FINAL STOP** |
+
+Task 3 and Task 5 stops are mandatory: measurement is the fact every downstream amount
+rests on, and certification is the last point before money becomes payable.
+
+## Required plan probes (reproduce-first, live PG unless noted)
+
+1. §D byte-identity: two projects in one org, commercial off on one — response bytes,
+   nav and routes unchanged; the commercial tables hold zero rows.
+2. §K no-gate: enabling the commercial capability changes NO readiness verdict, in either
+   direction, for material or team.
+3. §A decimal: a full-scale `Decimal(18,2)` money chain that float64 provably corrupts.
+4. §G bound 2: billing 101 units against 100 accepted is refused; reversing an acceptance
+   after a bill is submitted moves that bill to `disputed` rather than silently passing.
+5. §G bound 2 race: two concurrent bill submissions against one PO line with capacity for
+   one — deterministic barrier, exactly one commits.
+6. §E recomputation: a stored verdict cannot authorize certification — a hostile stored
+   `verified` on a bill whose acceptance was reversed still refuses to certify.
+7. §F append-only: PG rejects an UPDATE/DELETE of a certification, a payment row and a
+   superseded bill version.
+8. §H fold: retention withheld then partially released nets correctly with no stored
+   balance; over-release is refused.
+9. §I SoD: the measurer cannot certify; an org admin may override; the override writes an
+   attributable `SodException` naming rule, actor, approver and reason.
+10. §J projection: `live == projection == rebuild`; a rebuild emits zero events and zero
+    notifications; a stale forecast cannot authorize a payment.
+11. Upgrade proof: every new table upgrades ROW-FREE over the legacy fixture; a coherent
+    commercial chain is ACCEPTED (so the seals are precise, not merely strict); each
+    hostile insert is rejected.
+
+## Out of scope (Phase 5)
+
+- Statutory accounting, GST returns, bank reconciliation, the general ledger (spec §65).
+- Multi-currency.
+- Supplier/contractor self-service access to these records — that is Phase 6.
+- Accounting/RedBracket adapters — Phase 7, after their contracts are separately approved.
+- Any change to a readiness gate, a Phase-1–4 migration, or an existing operational flow.
+
+## Verification battery (every PR)
+
+`pnpm check` EXIT 0 · full integration suite on a pristine migrated DB ·
+`boundary.test.ts` + `module-registry.test.ts` + `cross-module-graph.test.ts` ·
+`upgrade-proof.sh` · `test:e2e:api:allmodules` and `:outbox` · the task's reproduce-first
+probes RED at the base commit before the fix.
+
+## Vision alignment
+
+**Real user problem.** A PMC pays vendors from a spreadsheet that no one can check against
+the site. Nobody can answer, per order, what is committed, billed, certified, payable and
+paid — so overbilling is found late or not at all, and honest vendors wait.
+
+**Canonical fact owner.** The commercial module owns budget, attribution, measurement,
+bills, certification, deductions and payment. It owns NO operational fact: ordered amounts
+stay with procurement, accepted quantities with inventory, worked effort with labour,
+produced output with activities.
+
+**Downstream information flow.** Operational evidence → verification triple → certification
+→ payable amount → cash forecast → (Phase 6) the vendor's own view of their claim.
+
+**Human action removed.** The clerical join — copying order rates, receipt quantities and
+measured work into a bill-checking sheet, and re-deriving the payable balance after every
+deduction. Certification and payment approval remain human, and become harder to do
+carelessly.
+
+**Trust invariant protected.** No amount becomes payable without operational evidence that
+it was ordered, delivered or measured, and certified by someone authorized to certify it —
+and adding money to the system can never stop the site from working.

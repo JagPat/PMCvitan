@@ -10,14 +10,14 @@ narrative and may lag behind reality.
 ## Now
 
 ```yaml
-phase: 4
-phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
-task: 6
-task_state: merged
-work_item: none
-reviewed_merge: 67e7a00
+phase: 5
+phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
+task: 0
+task_state: in_progress
+work_item: phase-5-planning
+reviewed_merge: e5b6bd9
 open_pr: none
-next_task: phase-5-planning
+next_task: phase-5-task-1
 blocking_directive: none
 updated: 2026-07-29
 ```
@@ -38,7 +38,24 @@ explicitly instructing automatic next-phase progression (recorded in
 remains the standing work source whenever no phase task, no correction, and
 no open PR is active.
 
-## Phase 4 — labour readiness
+## Phase 5 — commercial control
+
+The plan is `docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md`
+(this PR). Task numbering and the two mandatory mid-phase review stops come from
+its "Required Execution Order and Review Stops" section.
+
+| Task | Summary | State |
+|---|---|---|
+| 0 | Phase-5 planning — revalidate against `main`, write the plan (§A–§M) | in_progress — this PR |
+| 1 | `commercial` capability + module skeleton + cost heads + versioned budget + SINK manifest | not_started |
+| 2 | Commitment attribution over the EXISTING frozen committed amounts (§C) | not_started |
+| 3 | Measurement (§D) — immutable, delta corrections, sign-off gate | not_started — **review stop** |
+| 4 | Vendor bills + immutable versions + lifecycle through `verified` + bounds 1–2 (§F/§G) | not_started |
+| 5 | Three-way verification + certification + deduction ledger (§E/§H) | not_started — **review stop** |
+| 6 | Payment approval + payment records + SoD and approval limits (§I) | not_started |
+| 7 | Cash-forecast projection + frontend hub + pilot acceptance + packet (§J/§M) | not_started — **final stop** |
+
+## Phase 4 — labour readiness (complete)
 
 Task numbering and definitions come from the "Required Execution Order and
 Review Stops" section of the phase plan.
