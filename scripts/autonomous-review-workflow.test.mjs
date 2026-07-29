@@ -111,7 +111,7 @@ test('review scope runs before every expensive product gate', async () => {
   const workflow = await readFile(ciPath, 'utf8');
   assert.match(
     workflow,
-    /pull_request:\s*\n\s+types:\s*\[opened, synchronize, reopened, edited\]/u,
+    /pull_request:\s*\n\s+types:\s*\[opened, synchronize, reopened\]/u,
   );
   const scopeStart = workflow.indexOf('  review-scope:');
   const webStart = workflow.indexOf('  web:');

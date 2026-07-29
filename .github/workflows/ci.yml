@@ -1,8 +1,13 @@
 name: CI
 
+# A PR body/title edit must never launch the product battery: the `edited`
+# event is handled by pr-edit-scope.yml, which re-runs only the dependency-free
+# review-scope check against the fresh PR metadata. Product CI runs once per
+# SHA, on the events that introduce or restore code (opened/synchronize/
+# reopened). scripts/autonomous-ci-battery.test.mjs pins this split.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 jobs:

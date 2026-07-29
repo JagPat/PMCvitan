@@ -44,6 +44,11 @@ This repository is designed to progress without the owner's laptop or technical 
 - The PR-side scope check is fast feedback. The trusted default-branch owner
   re-evaluates the PR metadata and every evidence cell before review promotion,
   so editing the PR's policy script cannot bypass the merge boundary.
+- Product CI runs once per SHA. A PR body/title edit changes review-unit
+  evidence, never code, so the `edited` event re-runs only the dependency-free
+  `review-scope` check (`pr-edit-scope.yml`) against the fresh metadata; the
+  five product jobs are keyed to code events (opened/synchronize/reopened) in
+  `ci.yml`. `scripts/autonomous-ci-battery.test.mjs` pins the split.
 - Claude self-audits those rows before the first review. Codex performs one
   comprehensive first pass and batches all findings. Correction reviews cover
   the delta, prior findings, and affected adjacent invariants.
@@ -134,8 +139,12 @@ directly; GitHub Actions does not need an AI key or a second result writer.
 
 After the autonomous workflow is merged **and PR #246 has merged or closed**, add
 the new check to `main` protection. Waiting for that terminal state prevents
-GitHub branch protection from requiring a job the legacy branch cannot emit. The
-resulting exact settings are:
+GitHub branch protection from requiring a job the legacy branch cannot emit.
+**That precondition is met as of 2026-07-29 — PR #246 merged at `main`
+`67e7a00` — so the settings below should be applied now.** Branch protection is
+a repository admin setting (Settings → Branches → `main`); the autonomous
+tooling has no admin credential and cannot apply it, so this step is the
+owner's. The resulting exact settings are:
 
 - Require status checks: `review-scope`, `web`, `api`, `e2e`, `api-e2e`, `upgrade-proof`, and
   `codex-current-head`.
