@@ -125,10 +125,28 @@ line**. It has a different unit, a different authority and a different lifecycle
 - A measurement against an activity requires that activity to be `done` with its closing
   sign-off (read through the activities query contract). Measuring incomplete work for
   payment is exactly the failure Phase 1 existed to prevent.
+- **A measurement is BOUNDED BY operational evidence, not merely permitted by a status.**
+  Sign-off alone would let a commercial actor author the only quantity evidence in the
+  chain — a 100-unit measurement against an activity with no recorded output — and
+  verification would then certify from commercial input rather than from the Phase-1–4
+  facts this phase exists to consume. So:
+  - a measurement MUST cite at least one `ActivityWorkOutput` for that activity, read
+    through `ActivitiesQuery`, and `Σ Measurement.quantity ≤ Σ ActivityWorkOutput.quantity`
+    in the same UOM (a UOM mismatch is a refusal, never a silent conversion);
+  - where the PO line is priced per person-shift, the measurement is additionally bounded
+    by the labour effort actually recorded — `LabourQuery.effortFor` over that line's
+    `(civilDate, shift)` slices — so a shift nobody attended cannot be measured;
+  - the bound is re-derived under lock at measurement time AND re-checked at certification,
+    because an output can be superseded after a measurement is taken.
 - A correction is a new measurement carrying a signed delta and a reason, never an edit.
   The measured total is a fold, with no stored balance — the Phase-3 §C rule.
 - **Material lines are not measured.** For a material PO line the accepted quantity IS the
-  measurement: `Σ accepted` from the inventory ledger, read through `InventoryQuery`. A
+  measurement: the fold of the `acceptedOnHand` bucket for that line's lots, read through
+  `InventoryQuery`. Note this is a bucket fold, NOT `Σ accepted − Σ rejected`: the §C ledger
+  moves `quarantine → acceptedOnHand` on acceptance and `quarantine → rejected` on
+  rejection, two disjoint arms, so rejected material was never part of accepted stock and
+  subtracting it would understate an 80/20 split as 60. Reversals are already inverse
+  movements in the same bucket, so the fold carries them without special handling. A
   parallel manual measurement of delivered material would be a second truth about the same
   physical event.
 
@@ -138,15 +156,42 @@ line**. It has a different unit, a different authority and a different lifecycle
 
 | Side | Material line | Labour line |
 |---|---|---|
-| ORDERED | PO line frozen `qty` + `approvedOverage`, at frozen `rate`/tax/freight | PO line `personShiftQty` at frozen `ratePerPersonShift` + `shiftPremium` |
-| ACCEPTED / MEASURED | `Σ accepted − Σ rejected` from the inventory ledger (`InventoryQuery`) | `Σ Measurement.quantity` for that PO line |
-| BILLED | this bill line's quantity × rate, plus every earlier non-rejected bill line on the same PO line | same |
+| ORDERED | PO line frozen `qty` + `approvedOverage`, at frozen `rate` / `taxAmount` / `freightAmount` | PO line `personShiftQty` at frozen `ratePerPersonShift` + `shiftPremium` |
+| ACCEPTED / MEASURED | fold of the `acceptedOnHand` bucket for that line's lots (`InventoryQuery`) — see §D on why this is not `accepted − rejected` | `Σ Measurement.quantity` for that PO line |
+| BILLED | this bill line's quantity × rate + its claimed tax and freight, plus every earlier **LIVE** claim line on the same PO line | same |
+
+"Live" is load-bearing on the billed side. A bill amendment issues a new version and
+retains the prior verbatim (§F), and a retained version is not `rejected` — so counting
+"every earlier non-rejected line" would count an amended 100 twice as 200 and raise a false
+over-billed exception against an honest vendor. Only lines belonging to a submitted,
+non-superseded version count.
 
 The verdict is `matched | exception`, with each exception naming its own kind
 (`qty-over-ordered`, `qty-over-accepted`, `rate-mismatch`, `tax-mismatch`,
-`duplicate-claim`). The triple is **recomputed under the PO-line lock at every state
-transition that depends on it** — submission, verification and certification — never read
-from a stored column. A stored verdict is a stale verdict the moment a receipt is reversed.
+`freight-mismatch`, `duplicate-claim`). Freight is compared, not merely carried: the
+ordered side freezes `freightAmount`, so a bill matching on quantity, rate and tax while
+inflating freight would otherwise reach certification unexamined.
+
+The triple is **recomputed at every state transition that depends on it** — submission,
+verification and certification — never read from a stored column. A stored verdict is a
+stale verdict the moment a receipt is reversed.
+
+**Recomputation must lock the evidence it reads, not only the PO line.** The accepted side
+lives in the inventory ledger, and `stock.reverse` locks the stock LOT — it never takes the
+PO-line lock. Locking only the PO line therefore admits: certification reads 100 accepted,
+a concurrent reversal commits the acceptance to 0, certification commits on the stale 100,
+and a bill becomes payable with no accepted material behind it. So certification acquires,
+in this stable order to stay deadlock-free:
+
+1. `lockProjectReadiness(projectId)`
+2. the PO line (`FOR UPDATE`)
+3. every contributing stock lot, ascending by id, through a new
+   `InventoryParticipant.lockAcceptedEvidence(tx, poLineId)` — the SAME rows `stock.reverse`
+   locks, so the two serialize
+4. for labour, the contributing measurements and their cited work outputs
+
+and re-reads every side inside that lock before deciding. A race probe in both orderings is
+required.
 
 An exception does not auto-reject. It moves the bill to `disputed` and requires a
 responsible review with an attributable reason to proceed — spec §16, "Exceptions require
@@ -169,8 +214,11 @@ any non-terminal → rejected              (attributable reason required)
   only superseded with a reason.
 - `certified`, `approved-for-payment` and every payment row are **append-only at PG**, with
   the same trigger discipline the §C ledger and the promise registers already use.
-- A bill line is FK-bound to its PO line by a composite same-project FK; a bill line naming
-  a foreign project's PO line is unrepresentable, not merely rejected.
+- A bill line is FK-bound to its PO line by a composite FK carrying **both `projectId` and
+  `vendorId`**. A same-project FK alone only stops a cross-project line: both PO roots carry
+  their own `vendorId`, so within one project Vendor A's bill could name Vendor B's PO line,
+  pass the ordered and accepted checks, and attribute a payable amount to the wrong
+  counterparty. Binding the vendor makes that unrepresentable rather than merely unlikely.
 
 ### §G. Conservation bounds (the §F-bounds analogue, one per hand-off)
 
@@ -207,7 +255,11 @@ bill for material that never arrived or work never measured.
   Certification and payment approval are deliberately separate.
 - **SoD is a rule, evaluated server-side, with a named exception path** (spec §422). The
   rule ships as: the actor who took a measurement may not certify the bill that consumes it,
-  and the actor who certified may not approve payment. An exception requires a stronger
+  and the actor who certified may not approve payment. **For a material bill there is no
+  `Measurement` row (§D), so the ACCEPTANCE actor is the measurer** — the store user who
+  recorded `receipts.accept` for a delivery may not certify the bill consuming that
+  acceptance. Without this the rule would bind labour bills and silently exempt material
+  ones, which is the larger spend. An exception requires a stronger
   authority (org admin) AND writes an attributable `SodException` record naming the rule,
   the actor, the approver and the reason. Silently allowing it is not an option; silently
   banning it is not either, because a two-person practice must still be able to operate.
@@ -280,18 +332,33 @@ rests on, and certification is the last point before money becomes payable.
 2. §K no-gate: enabling the commercial capability changes NO readiness verdict, in either
    direction, for material or team.
 3. §A decimal: a full-scale `Decimal(18,2)` money chain that float64 provably corrupts.
-4. §G bound 2: billing 101 units against 100 accepted is refused; reversing an acceptance
-   after a bill is submitted moves that bill to `disputed` rather than silently passing.
+4. §G bound 2: billing 101 units against 100 accepted is refused; an 80-accepted /
+   20-rejected receipt supports a legitimate 80-unit bill (the bucket fold, not
+   `accepted − rejected`, which would understate it as 60); reversing an acceptance after a
+   bill is submitted moves that bill to `disputed` rather than silently passing.
 5. §G bound 2 race: two concurrent bill submissions against one PO line with capacity for
    one — deterministic barrier, exactly one commits.
+5b. §E certification vs `stock.reverse`, BOTH orderings under a deterministic barrier: a
+   reversal committing mid-certification can never leave a certified bill with no accepted
+   material behind it, and the stated lock order never deadlocks.
+5c. §D measurement bound: a measurement citing no `ActivityWorkOutput` is refused; one
+   exceeding the recorded output is refused; a UOM mismatch is refused rather than
+   converted; superseding the output after measurement blocks certification.
+5d. §E billed side: an amended bill (v1 100 → v2 100) yields 100 billed, not 200 — a
+   retained version is not a live claim.
+5e. §E freight: a bill matching quantity, rate and tax while inflating freight raises
+   `freight-mismatch`.
+5f. §F vendor pinning: Vendor A's bill line naming Vendor B's PO line in the SAME project
+   is rejected by PostgreSQL, not merely by the service.
 6. §E recomputation: a stored verdict cannot authorize certification — a hostile stored
    `verified` on a bill whose acceptance was reversed still refuses to certify.
 7. §F append-only: PG rejects an UPDATE/DELETE of a certification, a payment row and a
    superseded bill version.
 8. §H fold: retention withheld then partially released nets correctly with no stored
    balance; over-release is refused.
-9. §I SoD: the measurer cannot certify; an org admin may override; the override writes an
-   attributable `SodException` naming rule, actor, approver and reason.
+9. §I SoD: the measurer cannot certify; for a MATERIAL bill the acceptance actor cannot
+   certify either; an org admin may override; the override writes an attributable
+   `SodException` naming rule, actor, approver and reason.
 10. §J projection: `live == projection == rebuild`; a rebuild emits zero events and zero
     notifications; a stale forecast cannot authorize a payment.
 11. Upgrade proof: every new table upgrades ROW-FREE over the legacy fixture; a coherent

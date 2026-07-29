@@ -12,12 +12,12 @@ narrative and may lag behind reality.
 ```yaml
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
-task: 0
-task_state: in_progress
-work_item: phase-5-planning
+task: 1
+task_state: not_started
+work_item: none
 reviewed_merge: e5b6bd9
 open_pr: none
-next_task: phase-5-task-1
+next_task: phase-5-task-2
 blocking_directive: none
 updated: 2026-07-29
 ```
@@ -44,10 +44,17 @@ The plan is `docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md`
 (this PR). Task numbering and the two mandatory mid-phase review stops come from
 its "Required Execution Order and Review Stops" section.
 
+The Now block records `task: 1 / not_started` rather than the planning task, because
+`assessRunnerState` resolves an `in_progress` task BEFORE it ever reads `next_task`
+(`OPEN_TASK_STATES` contains `in_progress`). Recording planning as in-flight in the file
+that lands on `main` would therefore hand the merged runner `task:0` — reopening the
+already-reviewed planning item instead of starting Task 1, and stalling the loop. The
+planning task is complete when this PR merges, so the merged state says so.
+
 | Task | Summary | State |
 |---|---|---|
-| 0 | Phase-5 planning — revalidate against `main`, write the plan (§A–§M) | in_progress — this PR |
-| 1 | `commercial` capability + module skeleton + cost heads + versioned budget + SINK manifest | not_started |
+| 0 | Phase-5 planning — revalidate against `main`, write the plan (§A–§M) | merged with this PR |
+| 1 | `commercial` capability + module skeleton + cost heads + versioned budget + SINK manifest | not_started — next |
 | 2 | Commitment attribution over the EXISTING frozen committed amounts (§C) | not_started |
 | 3 | Measurement (§D) — immutable, delta corrections, sign-off gate | not_started — **review stop** |
 | 4 | Vendor bills + immutable versions + lifecycle through `verified` + bounds 1–2 (§F/§G) | not_started |
