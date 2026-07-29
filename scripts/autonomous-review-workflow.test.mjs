@@ -279,6 +279,58 @@ test('review scope runs before every expensive product gate', async () => {
   }
 });
 
+// The gate side of the retarget window: an older owner polling a previously
+// green SHA must not publish success once a newer attempt's gates have passed
+// with no product jobs of their own yet. Not-yet-run is pending, not failure.
+test('the gate waits for products belonging to the newest gate attempt', () => {
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  const attemptA = [
+    job('review-scope', 'success', '600', '2026-07-29T10:00:00Z'),
+    job('battery-plan', 'success', '600', '2026-07-29T10:00:30Z'),
+    ...PRODUCTS.map((n) => job(n, 'success', '600', '2026-07-29T10:05:00Z')),
+  ];
+  // Attempt A alone is complete and green.
+  assert.equal(summarizeRequiredChecks(attemptA).state, 'success');
+
+  // A newer attempt's gates complete green; its products have not been created.
+  const midRetarget = [
+    ...attemptA,
+    job('review-scope', 'success', '700', '2026-07-29T11:00:00Z'),
+    job('battery-plan', 'success', '700', '2026-07-29T11:00:30Z'),
+  ];
+  const waiting = summarizeRequiredChecks(midRetarget);
+  assert.equal(waiting.state, 'pending', 'stale product evidence must not publish success');
+  assert.deepEqual(waiting.pending.sort(), [...PRODUCTS].sort());
+  assert.deepEqual(waiting.failed, []);
+
+  // Once the new attempt's products pass, the gate is green again.
+  assert.equal(
+    summarizeRequiredChecks([
+      ...midRetarget,
+      ...PRODUCTS.map((n) => job(n, 'success', '700', '2026-07-29T11:05:00Z')),
+    ]).state,
+    'success',
+  );
+
+  // A deliberate metadata-only skip is NOT this case: its attempt has skipped
+  // product runs, so it keeps deferring to the evidence it preserved.
+  assert.equal(
+    summarizeRequiredChecks([
+      ...attemptA,
+      job('review-scope', 'success', '700', '2026-07-29T11:00:00Z'),
+      job('battery-plan', 'success', '700', '2026-07-29T11:00:30Z'),
+      ...PRODUCTS.map((n) => job(n, 'skipped', '700', '2026-07-29T11:01:00Z')),
+    ]).state,
+    'success',
+  );
+});
+
 test('keeps the Codex trigger retry bounded', () => {
   assert.equal(MAX_REVIEW_ATTEMPTS, 2);
 });

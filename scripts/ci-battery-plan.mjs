@@ -13,13 +13,17 @@
 import { readFile, appendFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
-export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
-// The two dependency-free jobs the product jobs are gated on via `needs`.
-const GATE_CHECKS = ['review-scope', 'battery-plan'];
+import {
+  GATE_CHECKS,
+  PRODUCT_CHECKS,
+  attemptOf,
+  gateWatermark,
+  isSkipped,
+  newestFirst,
+  recency,
+} from './check-run-coverage.mjs';
 
-function isSkipped(run) {
-  return run?.status === 'completed' && run?.conclusion === 'skipped';
-}
+export { PRODUCT_CHECKS };
 
 // A check run's URLs carry the workflow run that produced it:
 // .../actions/runs/<runId>/job/<jobId>
@@ -28,24 +32,6 @@ export function belongsToRun(checkRun, runId) {
   const url = checkRun?.html_url ?? checkRun?.details_url;
   const match = /\/actions\/runs\/(\d+)\//u.exec(typeof url === 'string' ? url : '');
   return Boolean(match) && match[1] === String(runId);
-}
-
-// Recency key, newest-first. GitHub's own `latest` filter is defined by
-// completed_at, so that is the primary key (started_at and id only break ties
-// or fill gaps). A run that has not completed is the most recent activity for
-// its name and sorts ahead of every completed one.
-function recency(run) {
-  if (run?.status !== 'completed') return '￿';
-  return (typeof run?.completed_at === 'string' && run.completed_at)
-    || (typeof run?.started_at === 'string' && run.started_at)
-    || '';
-}
-
-function newestFirst(a, b) {
-  const aKey = recency(a);
-  const bKey = recency(b);
-  if (aKey !== bKey) return aKey > bKey ? -1 : 1;
-  return (Number(b?.id) || 0) - (Number(a?.id) || 0);
 }
 
 // Coverage is decided by the NEWEST non-skipped run of that name, never by
@@ -77,16 +63,6 @@ function newestCompleted(checkRuns, name) {
   return checkRuns
     .filter((run) => run?.name === name && run.status === 'completed')
     .sort(newestFirst)[0] ?? null;
-}
-
-// When the newest gate attempt finished. Product evidence must be at least this
-// recent to belong to it rather than to a superseded attempt.
-function newestGateCompletion(checkRuns) {
-  return GATE_CHECKS
-    .map((gate) => newestCompleted(checkRuns, gate))
-    .filter(Boolean)
-    .map((run) => recency(run))
-    .reduce((newest, stamp) => (stamp > newest ? stamp : newest), '');
 }
 
 export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
@@ -140,7 +116,7 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
     }
   }
 
-  const notBefore = newestGateCompletion(checkRuns);
+  const notBefore = gateWatermark(checkRuns);
   for (const name of PRODUCT_CHECKS) {
     if (!coveredBy(checkRuns, name, notBefore)) {
       return {

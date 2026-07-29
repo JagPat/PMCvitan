@@ -20,7 +20,7 @@ invariant rather than a point patch, and state the remaining risk honestly.
 
 ## Architectural Convergence
 
-All eight rounds reduce to ONE cause: the first design decided "has this SHA been tested?" from an
+All nine rounds reduce to ONE cause: the first design decided "has this SHA been tested?" from an
 incomplete, unbounded view of the check history — a second workflow whose completions the owner
 never saw, a partial API result, a notion of "ran" that ignored both time and the base under
 test. Every remedy is the same correction applied at a different layer, and each is now an
@@ -72,6 +72,8 @@ Reproduce-first at each round, both probes RED at the prior head and GREEN here:
 | R3 `started_at` vs `completed_at` | `0698ae8` | plan probe (started-first/finished-last cancelled decides) + gate probe (10:00→10:30 failure outranks 10:05→10:20 success) | Both orderings share the same rule as GitHub's own `latest` filter |
 | R6 `battery-plan` not required | `8b2f2de` | gate probes: an aborted attempt (`battery-plan` failure + five product skips over older successes) now reports `battery-plan` AND all five products failed; the `REQUIRED_CHECKS` pin and the legacy-PR filter both list it | A failing planner can no longer be invisible to the gate |
 | R6 `battery-plan` verdict not consulted | `8b2f2de` | `assessBatteryPlan` iterates both gates in the in-flight guard and the newest-completed-verdict loop | The R5 rule is now stated over the gate SET, not one member of it |
+| R9 watermark broke deliberate skips (regression) | `63e46f5` | probe: attempt 600 real green, attempt 700 a deliberate skip → the SECOND metadata edit still skips; a gates-only attempt 800 still forces the battery | The rule now distinguishes "no products yet" from "products deliberately skipped", so it cannot re-break the invariant it protects |
+| R9 gate had no watermark | `63e46f5` | gate probe: attempt A green, attempt B's gates green with no products → `pending` (not success, not failure); B's products land → success; a deliberate skip stays success. RED with the watermark disabled | The same rule now runs on BOTH sides from ONE shared module, so plan and gate cannot drift |
 | R8 product evidence older than its gates | `9fc815b` | probe triad: base-A gates+products green → skip; a retarget's gates pass with no products yet → run (`from the current attempt`); the new attempt's products land → skip again | Closes the last window in which one attempt's gates could be paired with a superseded attempt's product evidence |
 | R7 unactionable gate message | `88ea653` | three `assessConvergence` probes: a marker demoted by a blank line, a marker in a final block spoiled by a prose line, and a genuinely absent one — the first two now name the parsing rule, the third still reads plainly `trailer` | The gate's refusal is unchanged; only the reason improves, so no head can pass that could not pass before |
 
@@ -79,6 +81,28 @@ The R3 round is itself evidence for the convergence claim: two of its three find
 remedy applied at sites the R2 pass missed (the second fetch, the second ordering). R6 is the same
 shape once more — the R5 rule was written about both gates but wired for one — which is why
 invariant 7 above is stated over the gate SET rather than at each call site.
+
+### R9: the watermark had to distinguish two kinds of gate attempt — and one rule now serves both sides
+
+Round 8's watermark was too blunt, and the review caught a regression I introduced with it. After a
+normal metadata-only edit, the history holds that skip attempt's green gates plus its SKIPPED
+product runs. On the next edit my watermark came from those gates, the skipped runs were ignored,
+and the older real successes were rejected as too old — so **every second metadata edit relaunched
+the full battery**, which is precisely the duplication this PR exists to prevent.
+
+The distinction the rule was missing: a gate attempt that produced NO product runs at all is the
+retarget window and must invalidate older evidence; a gate attempt whose products are SKIPPED
+deliberately chose to keep that evidence and must not. `gateWatermark` now takes the newest
+completion only from attempts with no products of their own.
+
+The second finding was the same hole on the gate side: an older owner polling a green SHA could
+see a newer attempt's green gates with no products yet and publish `codex-current-head` success.
+Rather than write the rule twice — which is how rounds 4–9 kept producing paired findings — the
+shared rules moved into `scripts/check-run-coverage.mjs`, and the plan and the gate both import
+them. Not-yet-run products read as `pending`, never `failure`.
+
+Both probes are reproduce-first: the gate probe is RED with the watermark disabled and GREEN with
+it, and the skip-regression probe fails against round 8's rule.
 
 ### R8: an attempt's gates cannot be paired with an earlier attempt's products
 

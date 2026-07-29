@@ -111,17 +111,21 @@ test('the current run\'s own checks are excluded from the history it reads', () 
 // so they belong to a superseded attempt and cannot be coverage for the new
 // merge result. Fail toward running rather than promote untested code.
 test('product evidence older than the newest passing gate is not coverage', () => {
-  const at = (name, stamp, conclusion = 'success') => ({
+  // Real check runs always belong to a workflow run; attempt identity is what
+  // distinguishes "gates with no products yet" from "gates of a deliberate
+  // skip", so the fixture carries it.
+  const at = (name, runId, stamp, conclusion = 'success') => ({
     name,
     status: 'completed',
     conclusion,
     completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
   });
   // base A: gates then products, all green at 10:0x
   const baseA = [
-    at('review-scope', '2026-07-29T10:00:00Z'),
-    at('battery-plan', '2026-07-29T10:00:30Z'),
-    ...PRODUCT_CHECKS.map((name) => at(name, '2026-07-29T10:05:00Z')),
+    at('review-scope', '600', '2026-07-29T10:00:00Z'),
+    at('battery-plan', '600', '2026-07-29T10:00:30Z'),
+    ...PRODUCT_CHECKS.map((name) => at(name, '600', '2026-07-29T10:05:00Z')),
   ];
   // that alone is coverage: a metadata edit skips the battery
   assert.equal(
@@ -132,8 +136,8 @@ test('product evidence older than the newest passing gate is not coverage', () =
   // now a retarget lands: its gates pass at 11:0x, its products do not exist yet
   const afterRetarget = [
     ...baseA,
-    at('review-scope', '2026-07-29T11:00:00Z'),
-    at('battery-plan', '2026-07-29T11:00:30Z'),
+    at('review-scope', '700', '2026-07-29T11:00:00Z'),
+    at('battery-plan', '700', '2026-07-29T11:00:30Z'),
   ];
   const verdict = assessBatteryPlan({
     action: 'edited',
@@ -146,11 +150,63 @@ test('product evidence older than the newest passing gate is not coverage', () =
   // once the new attempt's products land, coverage is restored
   const complete = [
     ...afterRetarget,
-    ...PRODUCT_CHECKS.map((name) => at(name, '2026-07-29T11:05:00Z')),
+    ...PRODUCT_CHECKS.map((name) => at(name, '700', '2026-07-29T11:05:00Z')),
   ];
   assert.equal(
     assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: complete }).runProducts,
     false,
+  );
+});
+
+// REGRESSION (round 8's watermark, caught in round 9): a DELIBERATE skip
+// attempt's gates must not invalidate the very evidence that skip preserved.
+// Without this, every second metadata-only edit relaunched the full battery —
+// the exact duplication this design exists to prevent.
+test('a deliberate skip attempt does not invalidate the evidence it preserved', () => {
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  // Attempt 600: gates green, real products green. Attempt 700: the first
+  // metadata edit — gates green, products SKIPPED because 600 already covered.
+  const afterOneSkip = [
+    job('review-scope', 'success', '600', '2026-07-29T10:00:00Z'),
+    job('battery-plan', 'success', '600', '2026-07-29T10:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, 'success', '600', '2026-07-29T10:05:00Z')),
+    job('review-scope', 'success', '700', '2026-07-29T11:00:00Z'),
+    job('battery-plan', 'success', '700', '2026-07-29T11:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, 'skipped', '700', '2026-07-29T11:01:00Z')),
+  ];
+  const second = assessBatteryPlan({
+    action: 'edited',
+    baseChanged: false,
+    checkRuns: afterOneSkip,
+  });
+  assert.equal(
+    second.runProducts,
+    false,
+    'the second metadata edit must still skip: attempt 700 deliberately kept 600 as coverage',
+  );
+
+  // The retarget window is unaffected: attempt 800's gates pass and it has NO
+  // product runs at all, so the older evidence is genuinely superseded.
+  const retargetPending = [
+    ...afterOneSkip,
+    job('review-scope', 'success', '800', '2026-07-29T12:00:00Z'),
+    job('battery-plan', 'success', '800', '2026-07-29T12:00:30Z'),
+  ];
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: retargetPending,
+    }).runProducts,
+    true,
+    'gates with no products of their own must still force the battery',
   );
 });
 

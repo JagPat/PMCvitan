@@ -11,6 +11,11 @@ import {
   assessReviewScope,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
+import {
+  PRODUCT_CHECKS,
+  gateWatermark,
+  recency,
+} from './check-run-coverage.mjs';
 
 export const REQUIRED_CHECKS = [
   'review-scope',
@@ -93,6 +98,7 @@ function intentionalSkip(skipped, checkRuns) {
 }
 
 export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
+  const watermark = gateWatermark(checkRuns);
   const missing = [];
   const pending = [];
   const failed = [];
@@ -124,6 +130,17 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     }
     if (decider.conclusion !== 'success') {
       failed.push(name);
+      continue;
+    }
+    // A passing product run must belong to the CURRENT attempt. Product jobs
+    // are created after the gates that launch them, so a product completion
+    // older than a gate attempt that produced no products at all belongs to a
+    // superseded attempt — the retarget window in which the new base's gates
+    // are green, its product jobs do not exist yet, and the old base's
+    // successes would otherwise let this gate publish success for a merge
+    // result they never tested. Not yet run is pending, not failed.
+    if (PRODUCT_CHECKS.includes(name) && recency(decider) < watermark) {
+      pending.push(name);
     }
   }
 
