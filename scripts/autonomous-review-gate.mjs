@@ -907,6 +907,13 @@ export async function revalidateFinalReviewPolicy(
     return { ...convergence, state: 'convergence_required' };
   }
 
+  const finding = await guardAgainstCurrentHeadFinding(
+    client, pullRequest, expectedHead, null,
+  );
+  if (finding) {
+    return { state: 'changes_required', allowed: false, detail: finding };
+  }
+
   return { state: 'allowed', allowed: true, pullRequest };
 }
 

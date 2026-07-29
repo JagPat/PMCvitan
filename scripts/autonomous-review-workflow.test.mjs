@@ -1189,6 +1189,21 @@ test('final admission revalidates live scope and late convergence evidence', asy
   );
   assert.equal(lateConvergence.allowed, false);
   assert.equal(lateConvergence.state, 'convergence_required');
+
+  let commentCalls = 0;
+  client.commit = async () => ({
+    commit: { message: 'fix: final admission\n\nReview-Convergence: complete' },
+    files: [{ filename: 'docs/reviews/pr-247-convergence.md', status: 'modified' }],
+  });
+  client.reviewComments = async () => ([
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: commentCalls++ === 0 ? 'b'.repeat(40) : head },
+  ]);
+  const lateFinding = await reviewGate.revalidateFinalReviewPolicy(
+    client, pullRequest.number, head,
+  );
+  assert.equal(lateFinding.allowed, false);
+  assert.equal(lateFinding.state, 'changes_required');
 });
 
 test('Codex review records and inline comments are fully paginated', async () => {
