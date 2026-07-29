@@ -19,6 +19,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
 
 import { assessBatteryPlan, belongsToRun, PRODUCT_CHECKS } from './ci-battery-plan.mjs';
+import { summarizeRequiredChecks } from './autonomous-review-gate.mjs';
 
 const workflowsDir = new URL('../.github/workflows/', import.meta.url);
 const PRODUCT_JOBS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
@@ -497,4 +498,62 @@ test('the edited event reaches exactly one workflow', async () => {
     if (types?.includes('edited')) editedHandlers.push(file);
   }
   assert.deepEqual(editedHandlers, ['ci.yml']);
+});
+
+// FINDING (round 9, head 36a5377): the watermark was cleared per ATTEMPT, so an
+// attempt that had produced ANY product run was treated as vouching for all
+// five. GitHub creates those five check runs one at a time, so a newer attempt
+// commonly exposes `web` while `api`/`e2e`/`api-e2e`/`upgrade-proof` do not
+// exist yet — and the four missing names fell back to the previous base's
+// successes. The head could then be promoted with four of five product jobs
+// never run against the current merge result.
+test('a partially visible attempt vouches only for the products it produced', () => {
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  const baseA = [
+    job('review-scope', 'success', '600', '2026-07-29T10:00:00Z'),
+    job('battery-plan', 'success', '600', '2026-07-29T10:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, 'success', '600', '2026-07-29T10:05:00Z')),
+  ];
+
+  // Attempt 700 retargets: gates green, and ONLY `web` has appeared so far.
+  const partial = [
+    ...baseA,
+    job('review-scope', 'success', '700', '2026-07-29T11:00:00Z'),
+    job('battery-plan', 'success', '700', '2026-07-29T11:00:30Z'),
+    job('web', 'success', '700', '2026-07-29T11:05:00Z'),
+  ];
+
+  const plan = assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: partial });
+  assert.equal(plan.runProducts, true, 'the four absent product names are not covered');
+  assert.match(plan.reason, /product check (api|e2e|api-e2e|upgrade-proof)/u);
+
+  // And the gate must not publish success on that head either: the four names
+  // whose jobs have not run on attempt 700 are PENDING, not passed.
+  const summary = summarizeRequiredChecks(partial);
+  assert.equal(summary.state, 'pending');
+  assert.deepEqual(
+    [...summary.pending].sort(),
+    ['api', 'api-e2e', 'e2e', 'upgrade-proof'],
+    'web is genuinely covered by attempt 700; the other four are not',
+  );
+  assert.deepEqual(summary.failed, [], 'not-yet-run is pending, never failed');
+
+  // Once attempt 700's remaining products land, the head is covered again.
+  const complete = [
+    ...partial,
+    ...PRODUCT_CHECKS.filter((n) => n !== 'web')
+      .map((n) => job(n, 'success', '700', '2026-07-29T11:06:00Z')),
+  ];
+  assert.equal(
+    assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: complete }).runProducts,
+    false,
+  );
+  assert.equal(summarizeRequiredChecks(complete).state, 'success');
 });

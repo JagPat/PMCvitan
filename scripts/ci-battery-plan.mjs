@@ -17,7 +17,7 @@ import {
   GATE_CHECKS,
   PRODUCT_CHECKS,
   attemptOf,
-  gateWatermark,
+  gateWatermarks,
   isSkipped,
   newestFirst,
   recency,
@@ -116,9 +116,9 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
     }
   }
 
-  const notBefore = gateWatermark(checkRuns);
+  const notBefore = gateWatermarks(checkRuns);
   for (const name of PRODUCT_CHECKS) {
-    if (!coveredBy(checkRuns, name, notBefore)) {
+    if (!coveredBy(checkRuns, name, notBefore.get(name) ?? '')) {
       return {
         runProducts: true,
         reason: `product check ${name} has no run covering this head from the current attempt`,

@@ -63,21 +63,44 @@ export function attemptOf(run) {
 // we cannot tell whether it produced products, and guessing "it did not" would
 // resurrect that duplication. Unattributable evidence is handled where it can be
 // judged soundly — the gate's skip-attribution rule fails closed on it.
-export function gateWatermark(checkRuns) {
+//
+// The watermark is computed PER PRODUCT NAME, because an attempt's product
+// check runs do not all appear at once. GitHub can expose a newer attempt's
+// `web` while `api`, `e2e`, `api-e2e` and `upgrade-proof` have not been created
+// yet. Asking only "did this attempt produce any products?" answers yes and
+// clears the watermark for all five, so the four names with no run of their own
+// fall back to the previous base's successes — and the head is promoted while
+// four of its five product jobs have never run against the current merge
+// result. An attempt vouches only for the names it actually produced.
+export function gateWatermarks(checkRuns) {
   const runs = Array.isArray(checkRuns) ? checkRuns : [];
-  const attemptsWithProducts = new Set(
-    runs
-      .filter((run) => PRODUCT_CHECKS.includes(run?.name))
-      .map((run) => attemptOf(run))
-      .filter(Boolean),
+
+  const attemptsByProduct = new Map(PRODUCT_CHECKS.map((name) => [name, new Set()]));
+  for (const run of runs) {
+    const attempts = attemptsByProduct.get(run?.name);
+    if (!attempts) continue;
+    const attempt = attemptOf(run);
+    if (attempt) attempts.add(attempt);
+  }
+
+  const completedGates = runs.filter(
+    (run) => GATE_CHECKS.includes(run?.name) && run?.status === 'completed',
   );
 
-  return runs
-    .filter((run) => GATE_CHECKS.includes(run?.name) && run?.status === 'completed')
-    .filter((run) => {
-      const attempt = attemptOf(run);
-      return Boolean(attempt) && !attemptsWithProducts.has(attempt);
-    })
-    .map((run) => recency(run))
-    .reduce((newest, stamp) => (stamp > newest ? stamp : newest), '');
+  const watermarks = new Map();
+  for (const name of PRODUCT_CHECKS) {
+    const producedThisName = attemptsByProduct.get(name);
+    watermarks.set(name, completedGates
+      .filter((run) => {
+        const attempt = attemptOf(run);
+        return Boolean(attempt) && !producedThisName.has(attempt);
+      })
+      .map((run) => recency(run))
+      .reduce((newest, stamp) => (stamp > newest ? stamp : newest), ''));
+  }
+  return watermarks;
+}
+
+export function gateWatermarkFor(checkRuns, name) {
+  return gateWatermarks(checkRuns).get(name) ?? '';
 }

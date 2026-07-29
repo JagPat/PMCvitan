@@ -17,6 +17,7 @@ invariant rather than a point patch, and state the remaining risk honestly.
 | `ecbc4d7` | R4 — 2 real (2×P2) + 1 invalid | The same cause in its last two hiding places: the retarget guard read only the newest COMPLETED scope run, so a scope still RUNNING from another attempt left old-base products looking like coverage; and a `filter=all` page that failed mid-read left a partial prefix in play, which can look clean while the unread page holds the cancelled product → an unfinished scope run from another attempt forces the battery, and only a COMPLETE pagination may become the history |
 | `2016f41` | R5 — 2 real (2×P2) + 1 invalid | The two sides of one ambiguity: a SKIPPED product run means either "the plan deliberately found this head covered" or "an upstream gate failed and this attempt aborted", and the gate treated both as deferrable → a skip may now defer to older evidence ONLY when its own workflow run has BOTH `review-scope` and `battery-plan` green (the only state in which the skip can be the plan's `run_products=false` decision); any other skip is a real non-success and fails closed |
 | `8b2f2de` | R6 — 2 real (1×P1, 1×P2) + 1 disproved premise | The R5 rule was stated over the two gates but only HALF-wired: `battery-plan` was not a required check, so its own failure was invisible to the gate and its verdict was not consulted where `review-scope`'s was → `battery-plan` joins `REQUIRED_CHECKS` (and the legacy-PR filter), and both the in-flight guard and the newest-completed-verdict loop iterate `['review-scope','battery-plan']` uniformly. Attempt attribution is hardened to `check_suite.id` with the URL parse as fallback (the P1's stated premise — that `html_url` is `/runs/{check_run_id}` — is false for this repo, see below) |
+| `36a5377` | R9 — 1 real (1×P1) + 2 invalid | The shared rule was written per ATTEMPT when the quantity it governs is per PRODUCT NAME: `gateWatermark` asked "did this attempt produce any products?", so an attempt with `web` visible and its other four check runs not yet created vouched for all five, and those four fell back to the previous base's successes → the watermark is computed PER NAME (`gateWatermarks`), so an attempt vouches only for the names it actually produced; both the plan and the gate index it by name. The two invalid findings are phantom-SHA trailer claims, recorded below |
 
 ## Architectural Convergence
 
@@ -165,3 +166,37 @@ one direction only — it can cause a redundant battery, never a skipped one —
 uncertain input (absent payload, unreachable history, unfinished scope verdict) returns
 `runProducts: true`. The `codex-current-head` gate remains fail-closed throughout; nothing in
 this PR can promote a head whose product jobs did not run.
+
+## Round 9 (head `36a5377`) — the watermark's unit was wrong
+
+R9's real finding is the same architectural cause this packet has tracked throughout, in its
+last place: a rule stated over the wrong unit. The check-run coverage question is always asked
+*per product name* — "has THIS job run on the current attempt?" — but `gateWatermark` answered
+it per attempt. GitHub creates an attempt's five product check runs one at a time, so the
+window in which `web` exists and `api` does not is ordinary, not exotic. In that window the
+per-attempt rule cleared the watermark for all five names, and the four with no run of their
+own resolved to the previous base's successes.
+
+`gateWatermarks` now returns a name-keyed map: for product name N, the watermark is the newest
+completed gate from any attempt that produced no run *named N*. The two properties the earlier
+rounds established are preserved by construction — an attempt whose products are all SKIPPED
+has a run for every name, so it still vouches for all five and cannot invalidate the evidence
+it deliberately kept (the round-8 regression stays fixed); an attempt with no product runs at
+all vouches for none, so the retarget window still forces the battery.
+
+Reproduce-first: `a partially visible attempt vouches only for the products it produced` is RED
+with the per-attempt rule injected and GREEN with the per-name rule — both the plan
+(`runProducts: true`) and the gate (`pending: [api, api-e2e, e2e, upgrade-proof]`, `failed: []`,
+`web` genuinely covered). `pnpm test:automation` 86/86.
+
+### Invalid reviewer evidence (round 9)
+
+Two of R9's three findings were the phantom-SHA trailer claim, citing
+`cdb23e72e758d0eb995f3588066396c10f3e4abe` — twice, once with the AGENTS.md permalink and once
+without. That object does not exist in this repository (`git cat-file -t` fails) and is not
+`refs/pull/249/head`; the reviewed head `36a5377` carries a git-parsed
+`Review-Convergence: complete`. This is the same defect recorded on PR #246, #247 and #248: 21
+such claims across four PRs, none naming a real object, every real head carrying the trailer.
+It is now addressed at the source rather than re-recorded per round — PR #250 puts the trailer
+and CI state out of a review's scope and has the gate discount a finding whose every cited
+commit is absent from the repository.

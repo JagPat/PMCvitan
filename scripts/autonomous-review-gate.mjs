@@ -13,7 +13,7 @@ import {
 } from './review-efficiency.mjs';
 import {
   PRODUCT_CHECKS,
-  gateWatermark,
+  gateWatermarks,
   recency,
 } from './check-run-coverage.mjs';
 
@@ -98,7 +98,7 @@ function intentionalSkip(skipped, checkRuns) {
 }
 
 export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
-  const watermark = gateWatermark(checkRuns);
+  const watermarks = gateWatermarks(checkRuns);
   const missing = [];
   const pending = [];
   const failed = [];
@@ -134,12 +134,14 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     }
     // A passing product run must belong to the CURRENT attempt. Product jobs
     // are created after the gates that launch them, so a product completion
-    // older than a gate attempt that produced no products at all belongs to a
+    // older than a gate attempt that produced no run OF THIS NAME belongs to a
     // superseded attempt — the retarget window in which the new base's gates
-    // are green, its product jobs do not exist yet, and the old base's
-    // successes would otherwise let this gate publish success for a merge
-    // result they never tested. Not yet run is pending, not failed.
-    if (PRODUCT_CHECKS.includes(name) && recency(decider) < watermark) {
+    // are green, this product's job does not exist yet, and the old base's
+    // success would otherwise let this gate publish success for a merge result
+    // it never tested. Per-name, because a newer attempt's five product runs
+    // appear one at a time: `web` being visible says nothing about `api`.
+    // Not yet run is pending, not failed.
+    if (PRODUCT_CHECKS.includes(name) && recency(decider) < (watermarks.get(name) ?? '')) {
       pending.push(name);
     }
   }
