@@ -82,6 +82,21 @@ The machine-actionable substance of both findings — the runner must never be l
 concrete next step — is real and is fixed by the totality remedy above. The part that asks to
 delete the owner's authority is declined with this documented rationale.
 
+## Invalid Reviewer Evidence (round 4)
+
+The round-4 P1 "Add the missing convergence trailer" cited head
+`bbe402a48e43d605721c80d19aa27d49824bb6ea` — a SHA that is not an object in this repository and
+not the PR head. It is a snapshot of the SYNTHETIC merge ref: at verification time
+`refs/pull/248/merge` resolved to `6ed3833` with subject "Merge 52d3f71… into 67e7a00…" and
+parents (`67e7a00`, `52d3f71`) — an auto-generated merge commit whose message carries no trailer
+block by construction. The authoritative head `52d3f71` verifiably carries the required trailer:
+`git show -s --format='%(trailers)' 52d3f71` prints `Review-Convergence: complete` in the final
+trailer block, and `assessConvergence` against that head's real message with this changed packet
+returns `allowed: true`. This repeats the PR #246 round-15 pattern the `AGENTS.md` PR-head
+resolution rule addresses (inspect `refs/pull/248/head`, never the synthetic merge SHA). No
+resolution content changes for this finding; this head re-presents the same owner-instructed
+state with this record added.
+
 ## Remaining Risk
 
 None open. Phase-5 planning begins automatically on the first runner pass after this merge, per
