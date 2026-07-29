@@ -16,6 +16,8 @@ invariant rather than a point patch, and state the remaining risk honestly.
 | `0698ae8` | R3 — 3 real (3×P2) + 1 invalid | The SAME cause surviving in three places the R2 pass did not reach: the battery-plan's OWN fetch still used the default `filter=latest` (R2 fixed only the gate client), coverage was still `some(run ⇒ …)` so a NEWER cancelled run was masked by an older success, and both recency orderings keyed on `started_at` when GitHub's `latest` is defined by `completed_at` → the plan pages `filter=all` too, coverage is decided by the NEWEST non-skipped run (cancelled ⇒ not covered), and both orderings key on `completed_at` |
 | `ecbc4d7` | R4 — 2 real (2×P2) + 1 invalid | The same cause in its last two hiding places: the retarget guard read only the newest COMPLETED scope run, so a scope still RUNNING from another attempt left old-base products looking like coverage; and a `filter=all` page that failed mid-read left a partial prefix in play, which can look clean while the unread page holds the cancelled product → an unfinished scope run from another attempt forces the battery, and only a COMPLETE pagination may become the history |
 
+| `2016f41` | R5 — 2 real (2×P2) + 1 invalid | The two sides of one ambiguity: a SKIPPED product run means either "the plan deliberately found this head covered" or "an upstream gate failed and this attempt aborted", and the gate treated both as deferrable → a skip may now defer to older evidence ONLY when its own workflow run has BOTH `review-scope` and `battery-plan` green (the only state in which the skip can be the plan's `run_products=false` decision); any other skip is a real non-success and fails closed |
+
 ## Architectural Convergence
 
 All four rounds reduce to ONE cause: the first design decided "has this SHA been tested?" from an
@@ -41,7 +43,8 @@ invariant rather than a special case:
    `summarizeRequiredChecks` resolves each required name by its newest non-skipped run — so a
    skipped run defers to the evidence it deliberately kept, a stale failure never outlives a
    newer pass, and a name with only skipped runs is missing (fail closed).
-5. **Only complete, attributable history decides.** A partially-read page is discarded rather
+5. **A skip must prove it was deliberate.** Skipped product runs are ambiguous evidence; only a skip from an attempt whose scope AND plan both succeeded may defer to older runs. An aborted attempt's skips fail closed, so a failed planner can never launder stale coverage.
+6. **Only complete, attributable history decides.** A partially-read page is discarded rather
    than trusted, an unfinished scope verdict from another attempt forces the battery, and the
    current workflow run's own checks are excluded so the guard reads other attempts only.
 

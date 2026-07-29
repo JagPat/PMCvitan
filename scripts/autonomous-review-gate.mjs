@@ -55,6 +55,28 @@ function newerRunFirst(a, b) {
   return (Number(b.id) || 0) - (Number(a.id) || 0);
 }
 
+function workflowRunOf(run) {
+  const url = run?.html_url ?? run?.details_url;
+  const match = /\/actions\/runs\/(\d+)\//u.exec(typeof url === 'string' ? url : '');
+  return match?.[1] ?? null;
+}
+
+// A product job is skipped either because the battery plan decided this head is
+// already covered — both gates of `needs: [review-scope, battery-plan]` green,
+// so the skip was the plan's `run_products=false` — or because one of those
+// gates failed/cancelled, in which case the attempt was aborted and proves
+// nothing. Only the first kind may defer to older evidence.
+function intentionalSkip(skipped, checkRuns) {
+  const runId = workflowRunOf(skipped);
+  if (!runId) return false;
+  return ['review-scope', 'battery-plan'].every((gate) =>
+    checkRuns.some((run) =>
+      run?.name === gate
+      && workflowRunOf(run) === runId
+      && run.status === 'completed'
+      && run.conclusion === 'success'));
+}
+
 export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
   const missing = [];
   const pending = [];
@@ -72,11 +94,15 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     }
     // One SHA can carry several completed runs of the same check: an `edited`
     // re-run of the scope check, or product jobs the battery plan skipped.
-    // The newest REAL execution decides; a skipped run defers to the evidence
-    // it deliberately kept, and a name with only skipped runs never really ran.
+    // A skipped run may defer to older evidence ONLY when the skip was the
+    // plan's deliberate "this head is already covered" decision. A skip caused
+    // by an upstream failure (review-scope red, or battery-plan itself failed
+    // or cancelled) means the products of THAT attempt never ran, and older
+    // evidence may predate the change that attempt was testing — so it counts
+    // as a real non-success and fails closed.
     const decider = [...runs]
       .sort(newerRunFirst)
-      .find((run) => run.conclusion !== 'skipped');
+      .find((run) => run.conclusion !== 'skipped' || !intentionalSkip(run, checkRuns));
     if (!decider) {
       missing.push(name);
       continue;

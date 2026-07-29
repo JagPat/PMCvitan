@@ -113,27 +113,76 @@ test('duplicate check runs resolve by the newest real evidence per name', () => 
     ['review-scope'],
   );
 
-  // A metadata-only edit skips the product jobs; the skipped runs defer to the
-  // older real executions instead of erasing them.
+  // A metadata-only edit skips the product jobs; those skips defer to the older
+  // real executions instead of erasing them — but only because the skipping
+  // attempt COMPLETED (scope + plan both green), which is what makes the skip
+  // the plan's deliberate decision. A skip with no attributable workflow run
+  // cannot be shown to be deliberate and fails closed instead.
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
   assert.deepEqual(
     summarizeRequiredChecks([
-      checkRun('review-scope'),
+      job('review-scope', 'success', '700', '2026-07-29T07:10:00Z'),
+      job('battery-plan', 'success', '700', '2026-07-29T07:10:00Z'),
       ...REQUIRED_CHECKS.filter((name) => name !== 'review-scope').flatMap(
         (name) => [
-          at(name, 'success', '2026-07-29T07:00:00Z'),
-          at(name, 'skipped', '2026-07-29T07:10:00Z'),
+          job(name, 'success', '600', '2026-07-29T07:00:00Z'),
+          job(name, 'skipped', '700', '2026-07-29T07:10:00Z'),
         ],
       ),
     ]),
     { state: 'success', missing: [], pending: [], failed: [] },
   );
 
-  // Only skipped runs means the check never really ran: fail closed as missing.
+  // A skip caused by an ABORTED attempt (its battery-plan failed, so the five
+  // product jobs never ran) must NOT defer to the older evidence: that evidence
+  // may predate the change the aborted attempt was testing.
+  const inRun = (name, conclusion, runId, startedAt) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: startedAt,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      inRun('review-scope', 'success', '900', '2026-07-29T10:30:00Z'),
+      inRun('battery-plan', 'failure', '900', '2026-07-29T10:30:00Z'),
+      ...REQUIRED_CHECKS.filter((n) => n !== 'review-scope').map((n) =>
+        inRun(n, 'success', '800', '2026-07-29T10:00:00Z')),
+      ...REQUIRED_CHECKS.filter((n) => n !== 'review-scope').map((n) =>
+        inRun(n, 'skipped', '900', '2026-07-29T10:30:00Z')),
+    ]).failed.sort(),
+    ['api', 'api-e2e', 'e2e', 'upgrade-proof', 'web'],
+  );
+
+  // …but a skip from a COMPLETE attempt (scope + plan both green, so the plan
+  // chose run_products=false) is the intentional one and defers as designed.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      inRun('review-scope', 'success', '901', '2026-07-29T10:30:00Z'),
+      inRun('battery-plan', 'success', '901', '2026-07-29T10:30:00Z'),
+      ...REQUIRED_CHECKS.filter((n) => n !== 'review-scope').map((n) =>
+        inRun(n, 'success', '800', '2026-07-29T10:00:00Z')),
+      ...REQUIRED_CHECKS.filter((n) => n !== 'review-scope').map((n) =>
+        inRun(n, 'skipped', '901', '2026-07-29T10:30:00Z')),
+    ]),
+    { state: 'success', missing: [], pending: [], failed: [] },
+  );
+
+  // Only skipped runs, and the skip cannot be attributed to a completed
+  // attempt: fail closed. The skip becomes the decider and reads as a real
+  // non-success rather than deferring to evidence that does not exist.
   assert.deepEqual(
     summarizeRequiredChecks([
       ...others,
       at('review-scope', 'skipped', '2026-07-29T07:10:00Z'),
-    ]).missing,
+    ]).failed,
     ['review-scope'],
   );
 
