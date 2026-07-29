@@ -15,6 +15,7 @@ const {
 const workflowPath = new URL('../.github/workflows/auto-merge.yml', import.meta.url);
 const ciPath = new URL('../.github/workflows/ci.yml', import.meta.url);
 const autonomousLoopPath = new URL('../docs/AUTONOMOUS_LOOP.md', import.meta.url);
+const packagePath = new URL('../package.json', import.meta.url);
 
 function checkRun(name, conclusion = 'success', status = 'completed') {
   return { name, conclusion, status };
@@ -56,12 +57,15 @@ test('requires every named CI check to have a successful latest run', () => {
     failed: [],
   });
 
-  assert.deepEqual(summarizeRequiredChecks(success.slice(1)), {
+  assert.deepEqual(
+    summarizeRequiredChecks(success.filter((run) => run.name !== 'web')),
+    {
     state: 'pending',
     missing: ['web'],
     pending: [],
     failed: [],
-  });
+    },
+  );
 
   assert.deepEqual(
     summarizeRequiredChecks([
@@ -75,6 +79,35 @@ test('requires every named CI check to have a successful latest run', () => {
       failed: ['api'],
     },
   );
+});
+
+test('review scope runs before every expensive product gate', async () => {
+  assert.deepEqual(REQUIRED_CHECKS, [
+    'review-scope',
+    'web',
+    'api',
+    'e2e',
+    'api-e2e',
+    'upgrade-proof',
+  ]);
+
+  const workflow = await readFile(ciPath, 'utf8');
+  assert.match(
+    workflow,
+    /pull_request:\s*\n\s+types:\s*\[opened, synchronize, reopened, edited\]/u,
+  );
+  const scopeStart = workflow.indexOf('  review-scope:');
+  const webStart = workflow.indexOf('  web:');
+  assert.ok(scopeStart >= 0);
+  assert.ok(webStart > scopeStart);
+  const scopeJob = workflow.slice(scopeStart, webStart);
+  assert.match(scopeJob, /node scripts\/review-scope\.mjs/u);
+  assert.doesNotMatch(scopeJob, /pnpm install|setup-node|postgres/u);
+
+  for (const job of ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof']) {
+    const pattern = new RegExp(`  ${job}:[\\s\\S]*?needs: review-scope`, 'u');
+    assert.match(workflow, pattern);
+  }
 });
 
 test('keeps the Codex trigger retry bounded', () => {
@@ -194,6 +227,15 @@ test('a first pre-review CI failure gets one GitHub-native retry', () => {
       state: 'success',
       description: 'review: Codex found no blocking issue',
     }),
+    false,
+  );
+  assert.equal(
+    reviewGate.shouldRetryCiFailure({
+      trigger: 'ci',
+      ciConclusion: 'failure',
+      ciRunId: 30329510227,
+      ciRunAttempt: 1,
+    }, null, ['review-scope']),
     false,
   );
 });
@@ -996,6 +1038,78 @@ test('workflow gives one exact-head run sole ownership of review and merge', asy
   assert.doesNotMatch(workflow, /pull_request_target:/);
 });
 
+test('the trusted owner enforces convergence after CI and before Codex promotion', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const checks = gate.indexOf('await waitForRequiredChecks');
+  const convergence = gate.indexOf('await enforceReviewConvergence');
+  const review = gate.indexOf('await reviewAttempt');
+
+  assert.ok(checks >= 0);
+  assert.ok(convergence > checks);
+  assert.ok(review > convergence);
+  assert.match(gate, /client\.commit\(expectedHead\)/u);
+  assert.match(gate, /client\.pullRequestFiles\(pullRequest\.number\)/u);
+  assert.match(gate, /state: 'convergence_required'/u);
+  assert.match(gate, /Review-Convergence: complete/u);
+});
+
+test('convergence enforcement fails closed until the batched packet and trailer exist', async () => {
+  const head = 'c'.repeat(40);
+  const pullRequest = {
+    number: 247,
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
+    head: { sha: head },
+  };
+  const comments = [
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
+  ];
+  const statuses = [];
+  const sticky = [];
+  const client = {
+    async reviewComments() { return comments; },
+    async commit() { return { commit: { message: 'fix: isolated patch' } }; },
+    async pullRequestFiles() { return [{ filename: 'apps/web/src/store/store.ts' }]; },
+    async pullRequest() { return pullRequest; },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus(...args) { statuses.push(args); },
+    async updateStickyComment(...args) { sticky.push(args); },
+  };
+
+  const blocked = await reviewGate.enforceReviewConvergence(
+    client,
+    pullRequest,
+    head,
+  );
+  assert.equal(blocked.allowed, false);
+  assert.deepEqual(blocked.missing, ['trailer', 'packet']);
+  assert.equal(statuses[0][1], 'failure');
+  assert.match(statuses[0][2], /convergence evidence/u);
+  assert.match(sticky[0][1], /convergence_required/u);
+
+  client.commit = async () => ({
+    commit: { message: 'fix: batched audit\n\nReview-Convergence: complete' },
+  });
+  client.pullRequestFiles = async () => ([
+    { filename: 'docs/reviews/pr-247-convergence.md' },
+  ]);
+  statuses.length = 0;
+  sticky.length = 0;
+  const allowed = await reviewGate.enforceReviewConvergence(
+    client,
+    pullRequest,
+    head,
+  );
+  assert.equal(allowed.allowed, true);
+  assert.deepEqual(statuses, []);
+  assert.deepEqual(sticky, []);
+});
+
 test('one polled Codex invocation owns terminal success and merge completion', async () => {
   const gate = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
@@ -1344,14 +1458,16 @@ test('documented recovery jq selects an authorized review status id', async () =
 });
 
 test('workflow invokes the exact-head gate and CI executes its tests', async () => {
-  const [workflow, ci] = await Promise.all([
+  const [workflow, ci, packageJson] = await Promise.all([
     readFile(workflowPath, 'utf8'),
     readFile(ciPath, 'utf8'),
+    readFile(packagePath, 'utf8').then(JSON.parse),
   ]);
 
   assert.match(workflow, /scripts\/autonomous-review-gate\.mjs/);
   assert.match(workflow, /codex-current-head/);
   assert.match(ci, /pnpm test:automation/);
+  assert.match(packageJson.scripts['test:automation'], /review-efficiency\.test\.mjs/u);
 });
 
 test('rechecks the live head before terminal PR mutations', async () => {

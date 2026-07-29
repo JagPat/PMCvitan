@@ -70,8 +70,9 @@ so directly rather than framing it as a suggestion.
 - This project runs as an autonomous loop. Do not block on human sign-off, and do
   not tell the author to wait for approval — no one is standing by to give it.
 - Review still happens BEFORE merge. Every PR starts as a draft with Claude Code
-  web Auto-fix enabled. After the five required CI jobs pass, the trusted GitHub
-  orchestrator marks the PR ready to trigger Codex on the exact current head.
+  web Auto-fix enabled. After `review-scope` and the five product CI jobs pass,
+  the trusted GitHub orchestrator marks the PR ready to trigger Codex on the
+  exact current head.
 - A human approval is not a substitute for the required `codex-current-head`
   commit status. Every push creates a new head and therefore invalidates the old
   status. Missing, stale, or timed-out review evidence fails closed.
@@ -80,9 +81,25 @@ so directly rather than framing it as a suggestion.
 - Scope discipline is reviewable. A PR that mixes an unrelated refactor into a
   focused change should be asked to split, and the scope creep flagged separately
   from the code review.
+- A standard review unit changes at most 20 files and 1,500 changed lines. A larger unit
+  must carry the PR template's `justified-large` marker and complete all six
+  invariant-matrix rows. Missing large-unit evidence is a blocking scope finding,
+  not a reason to spend a full product CI run.
+- After two distinct heads receive Codex findings, ordinary patching stops. The
+  next head must be one batched architectural convergence correction with a
+  changed `docs/reviews/*convergence*.md` packet and the commit trailer
+  `Review-Convergence: complete`. Never evade this by splitting one fix into
+  multiple commits or by resetting review history.
 
 ## Review output expectations
 
+- On the first reviewed head, complete one comprehensive pass across the entire
+  diff and all six invariant-matrix categories before submitting the review.
+  Report the complete set of current findings together.
+- On correction heads, review the correction delta, every prior finding, and the
+  adjacent invariants the correction can affect. Do not reopen a cleared area
+  merely to restate it, but do report any newly exposed correctness or integrity
+  defect. The goal is convergence, not fewer findings at the expense of quality.
 - Rank findings by severity. Lead with anything that is a correctness,
   data-integrity, or ordering bug.
 - For each finding, give the concrete failure: the inputs or interleaving that
@@ -107,7 +124,12 @@ so directly rather than framing it as a suggestion.
   author.
 - A current-head finding makes `codex-current-head` fail and returns the PR to
   draft. Claude Code web Auto-fix, which must remain subscribed until merge or
-  close, reads the finding, reproduces it, fixes forward, and pushes a new head.
+  close, reads every current-head finding before editing, reproduces the complete
+  set, fixes forward as one coherent batch, and pushes a new head.
+- On the second finding-bearing head, Claude stops isolated remediation and
+  performs the required convergence audit. The packet maps every finding to its
+  architectural cause, remedy, reproduce-first proof, regression surface, and
+  remaining risk before another Codex review is requested.
 - A fresh current-head clean signal makes `codex-current-head` succeed and queues
   squash auto-merge. No human tags anyone and no human technical approval is
   involved. The runner continues only after the reviewed PR merges and

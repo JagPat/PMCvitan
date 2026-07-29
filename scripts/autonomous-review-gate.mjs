@@ -6,8 +6,10 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
+import { assessConvergence } from './review-efficiency.mjs';
 
 export const REQUIRED_CHECKS = [
+  'review-scope',
   'web',
   'api',
   'e2e',
@@ -77,13 +79,14 @@ export function shouldDraftForCiFailure(status) {
   );
 }
 
-export function shouldRetryCiFailure(context, existingStatus) {
+export function shouldRetryCiFailure(context, existingStatus, failedChecks = []) {
   return context?.trigger === 'ci'
     && context.ciConclusion
     && context.ciConclusion !== 'success'
     && Number.isInteger(context.ciRunId)
     && context.ciRunId > 0
     && context.ciRunAttempt === 1
+    && !failedChecks.includes('review-scope')
     && !isTerminalReviewStatus(existingStatus);
 }
 
@@ -311,6 +314,23 @@ class GitHubClient {
 
   pullRequest(number) {
     return this.request(`/repos/${this.repository}/pulls/${number}`);
+  }
+
+  commit(head) {
+    return this.request(`/repos/${this.repository}/commits/${head}`);
+  }
+
+  async pullRequestFiles(number) {
+    const files = [];
+    let page = 1;
+    while (true) {
+      const batch = await this.request(
+        `/repos/${this.repository}/pulls/${number}/files?per_page=100&page=${page}`,
+      );
+      files.push(...batch);
+      if (batch.length < 100) return files;
+      page += 1;
+    }
   }
 
   async checkRuns(head) {
@@ -722,6 +742,57 @@ async function waitForRequiredChecks(client, pullRequest, expectedHead) {
   }
 }
 
+export async function enforceReviewConvergence(
+  client,
+  pullRequest,
+  expectedHead,
+) {
+  const comments = await client.reviewComments(pullRequest.number);
+  const preliminary = assessConvergence({
+    comments,
+    headMessage: '',
+    changedFiles: [],
+  });
+  if (!preliminary.required) return preliminary;
+
+  const [commit, changedFiles] = await Promise.all([
+    client.commit(expectedHead),
+    client.pullRequestFiles(pullRequest.number),
+  ]);
+  const result = assessConvergence({
+    comments,
+    headMessage: commit.commit?.message,
+    changedFiles,
+  });
+  if (result.allowed) return result;
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return { ...result, superseded: true };
+  const detail = `${result.findingHeadCount} finding heads require convergence evidence; missing ${result.missing.join(' and ')}`;
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `review: ${detail}`,
+    pullRequest.html_url,
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'convergence_required',
+      head: expectedHead,
+      detail,
+      attempt: 0,
+      next: `Claude must batch every open finding into one architectural audit, add docs/reviews/pr-${pullRequest.number}-convergence.md, and push a head whose commit includes Review-Convergence: complete.`,
+    }),
+  );
+  return result;
+}
+
 async function reviewAttempt(
   client,
   pullRequest,
@@ -963,7 +1034,10 @@ export async function run() {
   }
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
-    if (shouldRetryCiFailure(context, existingStatus)) {
+    const ciSummary = summarizeRequiredChecks(
+      await client.checkRuns(expectedHead),
+    );
+    if (shouldRetryCiFailure(context, existingStatus, ciSummary.failed)) {
       try {
         await client.rerunFailedJobs(context.ciRunId);
         await client.updateStickyComment(
@@ -997,11 +1071,14 @@ export async function run() {
           expectedHead,
         );
     if (!pullRequest) return;
+    const ciDetail = ciSummary.failed.length > 0
+      ? `Failed checks: ${ciSummary.failed.join(', ')}`
+      : `CI workflow concluded ${context.ciConclusion}`;
     if (!isTerminalReviewStatus(existingStatus)) {
       await client.setStatus(
         expectedHead,
         'failure',
-        `ci: workflow concluded ${context.ciConclusion}`,
+        `ci: ${ciDetail}`,
         pullRequest.html_url,
       );
     }
@@ -1010,12 +1087,14 @@ export async function run() {
       statusBody({
         state: 'blocked',
         head: expectedHead,
-        detail: `CI workflow concluded ${context.ciConclusion}`,
+        detail: ciDetail,
         attempt: 0,
-        next: 'Claude Auto-fix addresses CI before review begins.',
+        next: ciSummary.failed.includes('review-scope')
+          ? 'Claude splits the review unit or completes the justified-large invariant matrix; editing the PR body reruns the scope gate.'
+          : 'Claude Auto-fix addresses CI before review begins.',
       }),
     );
-    throw new Error(`CI workflow concluded ${context.ciConclusion}`);
+    throw new Error(ciDetail);
   }
 
   const terminalStatus = recoverableTerminalReviewStatus(existingStatuses);
@@ -1102,6 +1181,18 @@ export async function run() {
       }),
     );
     throw new Error(detail);
+  }
+
+  const convergence = await enforceReviewConvergence(
+    client,
+    pullRequest,
+    expectedHead,
+  );
+  if (convergence.superseded) return;
+  if (!convergence.allowed) {
+    throw new Error(
+      `${convergence.findingHeadCount} finding heads require a consolidated convergence audit`,
+    );
   }
 
   const reviewNotBefore = new Date(Date.now() - 1_000).toISOString();

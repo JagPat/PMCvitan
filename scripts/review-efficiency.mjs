@@ -1,0 +1,132 @@
+export const REVIEW_SCOPE_ENFORCE_AFTER_PR = 246;
+export const STANDARD_MAX_FILES = 20;
+export const STANDARD_MAX_CHANGED_LINES = 1_500;
+export const CONVERGENCE_AFTER_FINDING_HEADS = 2;
+
+export const REQUIRED_INVARIANTS = [
+  'authorization-tenancy',
+  'civil-time-lifecycle',
+  'concurrency-idempotency',
+  'data-integrity-conservation',
+  'offline-reconciliation',
+  'ui-server-parity',
+];
+
+const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
+const LARGE_MARKER = '<!-- review-size: justified-large -->';
+const CONVERGENCE_TRAILER = /^Review-Convergence:\s*complete\s*$/imu;
+const CONVERGENCE_PACKET = /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu;
+
+function finiteCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
+export function assessReviewScope(
+  pullRequest,
+  {
+    enforceAfterPr = REVIEW_SCOPE_ENFORCE_AFTER_PR,
+    maxFiles = STANDARD_MAX_FILES,
+    maxChangedLines = STANDARD_MAX_CHANGED_LINES,
+  } = {},
+) {
+  const additions = finiteCount(pullRequest?.additions);
+  const deletions = finiteCount(pullRequest?.deletions);
+  const changedFiles = finiteCount(pullRequest?.changed_files);
+  const changedLines = additions + deletions;
+  const large = changedFiles > maxFiles || changedLines > maxChangedLines;
+  const common = {
+    changedFiles,
+    changedLines,
+    large,
+    limits: { maxFiles, maxChangedLines },
+  };
+
+  if (!large) {
+    return { ...common, state: 'standard', allowed: true, missingInvariants: [] };
+  }
+
+  if (finiteCount(pullRequest?.number) <= enforceAfterPr) {
+    return {
+      ...common,
+      state: 'grandfathered',
+      allowed: true,
+      missingInvariants: [],
+    };
+  }
+
+  const body = String(pullRequest?.body ?? '');
+  const justified = body.includes(LARGE_MARKER);
+  const normalizedBody = body.toLowerCase();
+  const missingInvariants = REQUIRED_INVARIANTS.filter(
+    (invariant) => !normalizedBody.includes(invariant),
+  );
+  if (!justified || missingInvariants.length > 0) {
+    const missing = [
+      ...(!justified ? [`the ${LARGE_MARKER} marker`] : []),
+      ...(missingInvariants.length > 0
+        ? [`invariant matrix rows: ${missingInvariants.join(', ')}`]
+        : []),
+    ];
+    return {
+      ...common,
+      state: 'blocked',
+      allowed: false,
+      missingInvariants,
+      detail: `Large review unit requires a justified-large marker and complete invariant matrix; missing ${missing.join('; ')}`,
+    };
+  }
+
+  return {
+    ...common,
+    state: 'justified_large',
+    allowed: true,
+    missingInvariants: [],
+  };
+}
+
+export function codexFindingHeads(comments) {
+  const heads = new Set();
+  for (const comment of comments ?? []) {
+    if (comment?.user?.login !== CODEX_LOGIN) continue;
+    const head = comment.original_commit_id ?? comment.commit_id;
+    if (typeof head === 'string' && head.length > 0) heads.add(head);
+  }
+  return [...heads];
+}
+
+function changedFilename(file) {
+  return typeof file === 'string' ? file : file?.filename;
+}
+
+export function assessConvergence({ comments, headMessage, changedFiles }) {
+  const findingHeads = codexFindingHeads(comments);
+  const findingHeadCount = findingHeads.length;
+  if (findingHeadCount < CONVERGENCE_AFTER_FINDING_HEADS) {
+    return {
+      required: false,
+      allowed: true,
+      findingHeadCount,
+      findingHeads,
+      missing: [],
+    };
+  }
+
+  const hasTrailer = CONVERGENCE_TRAILER.test(String(headMessage ?? ''));
+  const hasPacket = (changedFiles ?? [])
+    .map(changedFilename)
+    .some((filename) => typeof filename === 'string' && CONVERGENCE_PACKET.test(filename));
+  const missing = [
+    ...(!hasTrailer ? ['trailer'] : []),
+    ...(!hasPacket ? ['packet'] : []),
+  ];
+  return {
+    required: true,
+    allowed: missing.length === 0,
+    findingHeadCount,
+    findingHeads,
+    hasTrailer,
+    hasPacket,
+    missing,
+  };
+}
