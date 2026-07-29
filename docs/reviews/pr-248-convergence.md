@@ -279,7 +279,18 @@ alone, is made outside this packet, and is not recommended by it.
 
 ## Verification
 
-- Docs-only PR: `docs/STATUS.md` + this packet. No code, no schema, no migration.
+- Changed surface: `docs/STATUS.md`, this packet, `AGENTS.md`, and **two scripts** —
+  `scripts/autonomous-status-state.mjs` (the `assessRunnerState` invariant added in round 1, which
+  makes "STATUS records a state the runner cannot act from" an executable check rather than a
+  documentation convention) and `scripts/autonomous-status-state.test.mjs`, which asserts the LIVE
+  `docs/STATUS.md` always names a next move. The test runs in `pnpm test:automation`
+  (`scripts/autonomous-*.test.mjs`), 12/12.
+- No product code, no schema, no migration.
+
+  An earlier revision of this section said "Docs-only PR … No code". That was **false** from
+  round 1 onward, and Codex was right to flag it: the scripts above are part of the diff and any
+  auditor trusting this packet would have treated a new executable CI invariant as out of scope.
+  Corrected here and left visible rather than silently rewritten.
 - `pnpm check` EXIT 0 on every head, exit code captured directly.
 - Convergence gate pre-validated against the live `assessConvergence` (two Codex finding heads
   `8c8f423`, `1d1de47` → `required: true`; the head trailer + this changed packet →
@@ -305,3 +316,30 @@ raised separately rather than worked around silently.
 
 Validation on the merged tree: `pnpm check` EXIT 0 (web 543/543, API 680/680);
 `pnpm test:automation` green.
+
+## The trailer finding on this head is unfounded — and why that matters
+
+The second finding on `b541768` asserts the trailer is missing, quoting
+`git show -s --format='%(trailers:key=Review-Convergence,valueonly)' 4f5ec0ff…`. Checked directly:
+
+```
+git cat-file -t 4f5ec0ff07334e23dccd17ebf6b049d898298556
+  → fatal: git cat-file: could not get object info      (also absent from refs/pull/248/head)
+
+git log -1 --format='%(trailers:key=Review-Convergence,valueonly)' b541768
+  → complete
+```
+
+The cited commit is not an object in this repository, and the head it was posted against does
+carry the trailer. The finding describes no state this repository has ever been in.
+
+**What makes this round worth recording** is that the OTHER finding — the false "docs-only"
+claim, which is correct and which this head fixes — cites the same absent `4f5ec0f` as its
+evidence. PR #250's dismissal rule discounts a finding when every full SHA it cites is confirmed
+absent. Applied here it would have discounted a **true** finding about a **false** claim in this
+very packet.
+
+That is the "Remaining Risk" section of `pr-250-convergence.md` materialising on a real pull
+request, at the first opportunity. It is recorded here as evidence for the decision on whether
+that rule should ship at all — the AGENTS.md scope exclusion prevents the phantom claim from
+being written, and carries no such risk.
