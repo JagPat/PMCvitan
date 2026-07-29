@@ -393,3 +393,11 @@ measured record is in `docs/reviews/codex-fabricated-citations.md` and the stand
 now lives in `AGENTS.md` (PR #250, merged).
 
 Gates: `pnpm test:automation` 90/90; `pnpm check` EXIT 0.
+
+### Base merge after PR #250
+
+`origin/main` merged again after PR #250 landed (`e416d7d`), at the conflict bot's request.
+Conflict-free; the incoming change is the `AGENTS.md` review-scope instruction and its packet.
+No correction content. As before, the trailer on this commit asserts only that this PR's
+batched architectural audit is complete and is this document — not that a base merge is that
+audit.
