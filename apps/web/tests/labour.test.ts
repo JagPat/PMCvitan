@@ -7,7 +7,7 @@ import type { LabourView } from '@/store/labour';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, isWorkPendingForAllocation, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, pendingBookedWorkerIds, hasPendingWorkFor, pendingCommitmentDraws, allocationMatchesLiveDemand } from '@/lib/labourSelection';
-import { pendingAllocationsFromKeys, pendingWorkAllocationIdsFromKeys, releaseCoalesceKey } from '@/lib/labourKeys';
+import { pendingAllocationsFromKeys, pendingWorkAllocationIdsFromKeys, releaseCoalesceKey, bindSig, isDeviceBindPending } from '@/lib/labourKeys';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { LabourReadinessDto, LabourActivityForecastDto, WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto, LabourWorkFactDto, LabourRequisitionDto } from '@vitan/shared';
 
@@ -1001,6 +1001,41 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     await vi.waitFor(() => { if (g.bindWorkerDevice.mock.calls.length !== 3) throw new Error('pending'); });
     const [, , key3] = g.bindWorkerDevice.mock.calls[2]!;
     expect(key3).not.toBe(key1);
+  });
+
+  it('CODEX R14 — a TERMINAL bind rejection clears the device reservation; a transient failure still retains the key', async () => {
+    // RED at 635899d: EVERY bind failure retained `labourBindPending[sig]`, so a mistyped
+    // device id (404) or a device already bound to ANOTHER worker (409) left
+    // `isDeviceBindPending` reserving the DEVICE against every worker until a reload — the
+    // pmc could not correct the id or choose the proper worker from the Team roster.
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; st.activeProjectId = 'ambli'; st.capabilities = ['labour']; });
+    const g = {
+      bindWorkerDevice: vi.fn()
+        .mockRejectedValueOnce(Object.assign(new Error('device not found'), { status: 404 })) // terminal
+        .mockRejectedValueOnce(new TypeError('network aborted')),                             // transient
+    };
+    s()._setGateway(g as unknown as ApiGateway);
+    const sig = bindSig('DEV-TYPO', 'W-1');
+    s().bindLabourDevice('DEV-TYPO', 'W-1');
+    expect(s().labourBindPending[sig]).toBeDefined(); // held while the request is in flight
+    await vi.waitFor(() => { if (g.bindWorkerDevice.mock.calls.length !== 1) throw new Error('pending'); });
+    await flush();
+    // terminal business refusal → the reservation CLEARS (the device frees for correction)
+    expect(s().labourBindPending[sig]).toBeUndefined();
+    expect(isDeviceBindPending(s().labourBindPending, 'DEV-TYPO')).toBe(false);
+    // the corrected retry mints a FRESH attempt (nothing committed under the old key)
+    s().bindLabourDevice('DEV-TYPO', 'W-1');
+    await vi.waitFor(() => { if (g.bindWorkerDevice.mock.calls.length !== 2) throw new Error('pending'); });
+    await flush();
+    const [, , key1] = g.bindWorkerDevice.mock.calls[0]!;
+    const [, , key2] = g.bindWorkerDevice.mock.calls[1]!;
+    expect(key2).not.toBe(key1);
+    // the SECOND attempt failed TRANSIENTLY (lost response) → the key is RETAINED (round 6):
+    // the next retry must replay the SAME key so a committed-but-lost bind is not re-keyed
+    expect(s().labourBindPending[sig]).toBe(key2);
+    expect(isDeviceBindPending(s().labourBindPending, 'DEV-TYPO')).toBe(true);
   });
 
   it('CODEX R5 — onboardLabourWorker holds ONE idempotency key per submitted form until a CONFIRMED success', async () => {

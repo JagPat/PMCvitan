@@ -1077,3 +1077,39 @@ Probes (RED at `6853ac5` → GREEN):
 - Full integration on a pristine recreated+migrated DB: **72 files / 702 tests** passing (unchanged — this round is web-only)
 - `upgrade-proof.sh` PASSED (regression only; no migration, no server change)
 - `test:e2e:api:allmodules` **35/35** and `:outbox` **35/35**, single pass each (labour-pilot suite included; no flake rerun needed)
+
+## §18 — Codex correction round 14 (one finding on `635899d`) + main merge + convergence audit
+
+`origin/main` moved to `d7758db` (PR #247 — review-orchestration scripts/docs only, no product
+overlap); merged into the branch cleanly with no conflicts. Per the PR-#247 protocol this
+correction head is a CONVERGENCE head: it carries `docs/reviews/pr-246-convergence.md` (the
+cross-round architectural audit of all fourteen finding-bearing heads) and the
+`Review-Convergence: complete` commit trailer.
+
+### R14-1 — a TERMINAL bind rejection clears the device reservation (web)
+
+`bindLabourDevice`'s catch treated EVERY failure as a lost response: a terminal business 4xx —
+a mistyped device id (404) or a device already bound to ANOTHER worker (409) — retained
+`labourBindPending[sig]`, and `isDeviceBindPending` then reserved that DEVICE against every
+worker until a reload/scope reset, so the pmc could not correct the id or pick the right worker.
+
+Fix — the bind promise now separates its two failure classes: the request's OWN rejection is
+classified with the gateway's `isTerminalOutboxError` (no status / 401 / 408 / 429 / 5xx →
+transient), a TERMINAL refusal clears the held key (nothing committed under it — the corrected
+form mints a fresh attempt) with an honest "binding was refused" flash, while a transient
+failure AND a post-commit reconcile failure (now an inner try/catch on the success path) retain
+the key exactly as rounds 6/10 require, so a committed-but-lost response still replays the SAME
+idempotency key.
+
+Probe (RED at `635899d` → GREEN): a 404-rejected bind clears the sig (`isDeviceBindPending`
+false) and the retry mints a DIFFERENT key; the retry's transient network failure then retains
+ITS key (`isDeviceBindPending` true) for same-key replay. The round-6 (held key through a lost
+response) and round-10 (held key through a failed reconcile) probes pass unchanged.
+
+### Gates (round 14)
+
+- Web labour suites 105/105 (RED 1 at `635899d` → GREEN); rounds 6/10 bind probes unchanged
+- `pnpm check` EXIT 0 (web 542/542 across 42 files, API unit 680/680 across 55 files, builds clean)
+- Full integration on a pristine recreated+migrated DB: **72 files / 702 tests** passing (unchanged — this round is web-only)
+- `upgrade-proof.sh` PASSED (regression only; no migration, no server change)
+- `test:e2e:api:allmodules` **35/35** and `:outbox` **35/35** — the first `allmodules` run failed on the documented `daily-log-lost-response` visibility flake (no labour surface; the add-material button never rendered within its timeout), clean on the single deciding re-run

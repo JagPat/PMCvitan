@@ -2658,24 +2658,44 @@ export const useStore = create<Store>()(
       set((s) => { s.labourBindPending[sig] = key; });
       const lease = beginSnapshotLease(currentScope());
       gateway!.bindWorkerDevice(deviceId, workerId, key)
-        .then(async () => {
-          // Codex round 10 — the key is spent only after the post-bind RECONCILE succeeds:
-          // deleting it on the bind's own 2xx meant a failed follow-up snapshot reported
-          // "could not reach the server" with the key already gone, and the retry's FRESH key
-          // hit the CAS's terminal "already bound" 409 for a binding that succeeded. The
-          // reconcile failure path now retains the key, so the retry replays the SAME key and
-          // the ledger returns the original success.
-          await get().loadLabour();
-          const snap = await gateway!.snapshot();
-          consumeSnapshotResult(acceptSnapshot(snap, lease), 'Device bound to the worker.', lease.scope);
-          if (scopeStillCurrent(lease.scope)) {
-            set((s) => { if (s.labourBindPending[sig] === key) delete s.labourBindPending[sig]; });
-          }
-        })
-        .catch(() => {
-          // failure (including a LOST committed response OR a failed reconcile) RETAINS the key
-          if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
-        });
+        .then(
+          async () => {
+            // Codex round 10 — the key is spent only after the post-bind RECONCILE succeeds:
+            // deleting it on the bind's own 2xx meant a failed follow-up snapshot reported
+            // "could not reach the server" with the key already gone, and the retry's FRESH key
+            // hit the CAS's terminal "already bound" 409 for a binding that succeeded. The
+            // reconcile failure path retains the key, so the retry replays the SAME key and
+            // the ledger returns the original success.
+            try {
+              await get().loadLabour();
+              const snap = await gateway!.snapshot();
+              consumeSnapshotResult(acceptSnapshot(snap, lease), 'Device bound to the worker.', lease.scope);
+              if (scopeStillCurrent(lease.scope)) {
+                set((s) => { if (s.labourBindPending[sig] === key) delete s.labourBindPending[sig]; });
+              }
+            } catch {
+              // the bind COMMITTED but the reconcile failed — RETAIN the key (round 10)
+              if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
+            }
+          },
+          (e: unknown) => {
+            // Codex round 14 — the BIND REQUEST itself was answered. A TERMINAL business
+            // rejection (a mistyped device id 404; a device already bound to ANOTHER worker
+            // 409) means NO binding by this key exists to replay — holding the key would leave
+            // `isDeviceBindPending` reserving the DEVICE against every worker until a
+            // reload/scope reset, so the pmc could not correct the id or pick the right
+            // worker. Clear the held key so the corrected form mints a fresh attempt. A
+            // transient/network failure (no status, 401/408/429, 5xx) still RETAINS the key —
+            // a committed-but-LOST response must replay the SAME idempotency key (round 6).
+            if (!scopeStillCurrent(lease.scope)) return;
+            if (isTerminalOutboxError(e)) {
+              set((s) => { if (s.labourBindPending[sig] === key) delete s.labourBindPending[sig]; });
+              get().flash('Device binding was refused — check the device id and worker.');
+            } else {
+              get().flash('Could not reach the server — please try again.');
+            }
+          },
+        );
     },
     switchProject: (projectId, targetScreen) => {
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);
