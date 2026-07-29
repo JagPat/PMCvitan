@@ -12,6 +12,10 @@ The rules below encode decisions already made in this project. A PR that violate
 one of them is wrong even if the code is otherwise clean, and the review should say
 so directly rather than framing it as a suggestion.
 
+- GitHub may check out a synthetic merge commit. For exact-head trailers or commit
+  files, inspect the authoritative PR head (`refs/pull/<number>/head`), never the
+  synthetic merge SHA; do not report a missing trailer from the merge checkout.
+
 ### Database migrations
 
 - Deployed migrations are immutable. Never edit, reorder, or rewrite a migration

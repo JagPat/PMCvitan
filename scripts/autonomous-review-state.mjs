@@ -37,6 +37,12 @@ function postedAgainst(comment) {
   return comment?.original_commit_id ?? comment?.commit_id;
 }
 
+function findingIdentity(comment) {
+  return [comment?.path, comment?.line ?? comment?.original_line, comment?.body]
+    .map((value) => String(value ?? ''))
+    .join('\0');
+}
+
 export function isEligiblePullRequest(pullRequest) {
   const state = String(pullRequest?.state ?? '').toUpperCase();
   const headRepository = pullRequest?.headRepository?.nameWithOwner;
@@ -79,11 +85,13 @@ export function classifyCodexState({
   const deadlineMs = timestamp(deadline, 'deadline');
   const nowMs = timestamp(now, 'now');
 
-  const currentHeadComments = comments.filter(
-    (comment) => isCodexActor(comment) && postedAgainst(comment) === expectedHead,
-  );
-  if (currentHeadComments.length > 0) {
-    const count = currentHeadComments.length;
+  const currentHeadComments = new Map(comments
+    .filter(
+      (comment) => isCodexActor(comment) && postedAgainst(comment) === expectedHead,
+    )
+    .map((comment) => [findingIdentity(comment), comment]));
+  if (currentHeadComments.size > 0) {
+    const count = currentHeadComments.size;
     return {
       state: 'changes_required',
       findingCount: count,

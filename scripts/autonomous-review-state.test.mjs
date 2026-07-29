@@ -107,6 +107,11 @@ test('current-head inline findings block even when a fresh clean reaction exists
           commit_id: HEAD,
           body: '**P1** preserve evidence',
         },
+        {
+          user: { login: CODEX_LOGIN },
+          commit_id: HEAD,
+          body: '**P1** preserve evidence',
+        },
       ],
       reactions: [
         {

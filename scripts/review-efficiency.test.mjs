@@ -259,6 +259,8 @@ test('agent guidance and the PR template share the executable policy vocabulary'
   }
   assert.match(template, /<!-- review-size: standard -->/u);
   assert.match(template, /<!-- review-size: justified-large -->/u);
+  assert.match(agents, /authoritative PR head/u);
+  assert.match(agents, /synthetic merge/u);
   for (const invariant of REQUIRED_INVARIANTS) {
     assert.match(template, new RegExp(invariant, 'u'));
   }

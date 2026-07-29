@@ -19,6 +19,8 @@ Codex found defects on two distinct heads:
   findings after the convergence parser and pagination fixes.
 - `9d0ebcb9a859c3de062e6b5dc25fcf9655d80c0c`: one recovered-status
   convergence race, plus a second merge-ref misread.
+- `6a98a1b0b5e86ee6bcf0e558e90641b9f7dde489`: no code finding; Codex
+  duplicated the same synthetic-merge trailer misread.
 
 The second finding-bearing head activates the repository's convergence rule.
 This packet and its commit contain the complete architectural correction rather
@@ -53,6 +55,9 @@ this packet so the next exact head remains independently compliant.
 The next round repeated the claim using nonexistent SHA `f39451a`. GitHub's
 authoritative `refs/pull/247/head` and REST PR head were `9d0ebcb`, whose final
 trailer was valid. This was again a merge-checkout misread, not a gate defect.
+The following round repeated it twice using nonexistent SHA `255da7d` while the
+authoritative head was `6a98a1b`. Review guidance now requires explicit PR-head
+resolution, and duplicate identical comments count as one finding.
 
 ## Invariant Audit
 
