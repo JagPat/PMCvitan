@@ -82,11 +82,159 @@ test('requires every named CI check to have a successful latest run', () => {
   );
 });
 
+const PRODUCTS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
+
+test('duplicate check runs resolve by the newest real evidence per name', () => {
+  const others = REQUIRED_CHECKS
+    .filter((name) => name !== 'review-scope' && name !== 'battery-plan')
+    .map((name) => checkRun(name))
+    .concat(checkRun('battery-plan'));
+  const at = (name, conclusion, startedAt, status = 'completed') => ({
+    name,
+    conclusion,
+    status,
+    started_at: startedAt,
+  });
+
+  // An edit that fixes a failing PR body: the newer passing scope run decides;
+  // the stale failure from the first workflow run must not block forever.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      ...others,
+      at('review-scope', 'failure', '2026-07-29T07:00:00Z'),
+      at('review-scope', 'success', '2026-07-29T07:10:00Z'),
+    ]),
+    { state: 'success', missing: [], pending: [], failed: [] },
+  );
+
+  // A newer failure is never masked by an older success.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      ...others,
+      at('review-scope', 'success', '2026-07-29T07:00:00Z'),
+      at('review-scope', 'failure', '2026-07-29T07:10:00Z'),
+    ]).failed,
+    ['review-scope'],
+  );
+
+  // A metadata-only edit skips the product jobs; those skips defer to the older
+  // real executions instead of erasing them — but only because the skipping
+  // attempt COMPLETED (scope + plan both green), which is what makes the skip
+  // the plan's deliberate decision. A skip with no attributable workflow run
+  // cannot be shown to be deliberate and fails closed instead.
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      job('review-scope', 'success', '700', '2026-07-29T07:10:00Z'),
+      job('battery-plan', 'success', '700', '2026-07-29T07:10:00Z'),
+      ...PRODUCTS.flatMap(
+        (name) => [
+          job(name, 'success', '600', '2026-07-29T07:00:00Z'),
+          job(name, 'skipped', '700', '2026-07-29T07:10:00Z'),
+        ],
+      ),
+    ]),
+    { state: 'success', missing: [], pending: [], failed: [] },
+  );
+
+  // A skip caused by an ABORTED attempt (its battery-plan failed, so the five
+  // product jobs never ran) must NOT defer to the older evidence: that evidence
+  // may predate the change the aborted attempt was testing.
+  const inRun = (name, conclusion, runId, startedAt) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: startedAt,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      inRun('review-scope', 'success', '900', '2026-07-29T10:30:00Z'),
+      inRun('battery-plan', 'failure', '900', '2026-07-29T10:30:00Z'),
+      ...PRODUCTS.map((n) =>
+        inRun(n, 'success', '800', '2026-07-29T10:00:00Z')),
+      ...PRODUCTS.map((n) =>
+        inRun(n, 'skipped', '900', '2026-07-29T10:30:00Z')),
+    ]).failed.sort(),
+    // battery-plan is itself a required check, so its own failure is reported
+    // alongside the five products whose skips can no longer be shown deliberate.
+    ['api', 'api-e2e', 'battery-plan', 'e2e', 'upgrade-proof', 'web'],
+  );
+
+  // …but a skip from a COMPLETE attempt (scope + plan both green, so the plan
+  // chose run_products=false) is the intentional one and defers as designed.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      inRun('review-scope', 'success', '901', '2026-07-29T10:30:00Z'),
+      inRun('battery-plan', 'success', '901', '2026-07-29T10:30:00Z'),
+      ...PRODUCTS.map((n) =>
+        inRun(n, 'success', '800', '2026-07-29T10:00:00Z')),
+      ...PRODUCTS.map((n) =>
+        inRun(n, 'skipped', '901', '2026-07-29T10:30:00Z')),
+    ]),
+    { state: 'success', missing: [], pending: [], failed: [] },
+  );
+
+  // Only skipped runs, and the skip cannot be attributed to a completed
+  // attempt: fail closed. The skip becomes the decider and reads as a real
+  // non-success rather than deferring to evidence that does not exist.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      ...others,
+      at('review-scope', 'skipped', '2026-07-29T07:10:00Z'),
+    ]).failed,
+    ['review-scope'],
+  );
+
+  // Recency is completion time, matching GitHub's own `latest` filter: a run
+  // that started FIRST but finished LAST decides. Ordering by started_at would
+  // let the 10:05→10:20 success mask the 10:00→10:30 failure and publish a
+  // clean review status over a red latest check.
+  assert.deepEqual(
+    summarizeRequiredChecks([
+      ...others,
+      {
+        name: 'review-scope',
+        status: 'completed',
+        conclusion: 'failure',
+        started_at: '2026-07-29T10:00:00Z',
+        completed_at: '2026-07-29T10:30:00Z',
+      },
+      {
+        name: 'review-scope',
+        status: 'completed',
+        conclusion: 'success',
+        started_at: '2026-07-29T10:05:00Z',
+        completed_at: '2026-07-29T10:20:00Z',
+      },
+    ]).failed,
+    ['review-scope'],
+  );
+
+  // Any in-progress run keeps the name pending regardless of older evidence.
+  assert.equal(
+    summarizeRequiredChecks([
+      ...others,
+      at('review-scope', 'success', '2026-07-29T07:00:00Z'),
+      at('review-scope', null, '2026-07-29T07:10:00Z', 'in_progress'),
+    ]).state,
+    'pending',
+  );
+});
+
 test('rollout cannot require the new scope check from pre-policy PR branches', () => {
   const legacyChecks = requiredChecksForPullRequest(246);
   assert.deepEqual(
     legacyChecks,
-    REQUIRED_CHECKS.filter((name) => name !== 'review-scope'),
+    REQUIRED_CHECKS.filter(
+      (name) => name !== 'review-scope' && name !== 'battery-plan',
+    ),
   );
   assert.equal(
     summarizeRequiredChecks(
@@ -101,6 +249,7 @@ test('rollout cannot require the new scope check from pre-policy PR branches', (
 test('review scope runs before every expensive product gate', async () => {
   assert.deepEqual(REQUIRED_CHECKS, [
     'review-scope',
+    'battery-plan',
     'web',
     'api',
     'e2e',
@@ -122,9 +271,64 @@ test('review scope runs before every expensive product gate', async () => {
   assert.doesNotMatch(scopeJob, /pnpm install|setup-node|postgres/u);
 
   for (const job of ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof']) {
-    const pattern = new RegExp(`  ${job}:[\\s\\S]*?needs: review-scope`, 'u');
+    const pattern = new RegExp(
+      `  ${job}:[\\s\\S]*?needs: \\[review-scope, battery-plan\\]`,
+      'u',
+    );
     assert.match(workflow, pattern);
   }
+});
+
+// The gate side of the retarget window: an older owner polling a previously
+// green SHA must not publish success once a newer attempt's gates have passed
+// with no product jobs of their own yet. Not-yet-run is pending, not failure.
+test('the gate waits for products belonging to the newest gate attempt', () => {
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  const attemptA = [
+    job('review-scope', 'success', '600', '2026-07-29T10:00:00Z'),
+    job('battery-plan', 'success', '600', '2026-07-29T10:00:30Z'),
+    ...PRODUCTS.map((n) => job(n, 'success', '600', '2026-07-29T10:05:00Z')),
+  ];
+  // Attempt A alone is complete and green.
+  assert.equal(summarizeRequiredChecks(attemptA).state, 'success');
+
+  // A newer attempt's gates complete green; its products have not been created.
+  const midRetarget = [
+    ...attemptA,
+    job('review-scope', 'success', '700', '2026-07-29T11:00:00Z'),
+    job('battery-plan', 'success', '700', '2026-07-29T11:00:30Z'),
+  ];
+  const waiting = summarizeRequiredChecks(midRetarget);
+  assert.equal(waiting.state, 'pending', 'stale product evidence must not publish success');
+  assert.deepEqual(waiting.pending.sort(), [...PRODUCTS].sort());
+  assert.deepEqual(waiting.failed, []);
+
+  // Once the new attempt's products pass, the gate is green again.
+  assert.equal(
+    summarizeRequiredChecks([
+      ...midRetarget,
+      ...PRODUCTS.map((n) => job(n, 'success', '700', '2026-07-29T11:05:00Z')),
+    ]).state,
+    'success',
+  );
+
+  // A deliberate metadata-only skip is NOT this case: its attempt has skipped
+  // product runs, so it keeps deferring to the evidence it preserved.
+  assert.equal(
+    summarizeRequiredChecks([
+      ...attemptA,
+      job('review-scope', 'success', '700', '2026-07-29T11:00:00Z'),
+      job('battery-plan', 'success', '700', '2026-07-29T11:00:30Z'),
+      ...PRODUCTS.map((n) => job(n, 'skipped', '700', '2026-07-29T11:01:00Z')),
+    ]).state,
+    'success',
+  );
 });
 
 test('keeps the Codex trigger retry bounded', () => {
@@ -265,6 +469,9 @@ test('the bounded CI retry has only the permission and endpoint it needs', async
   );
   assert.match(workflow, /permissions:[\s\S]*actions:\s*write/);
   assert.match(gate, /actions\/runs\/\$\{runId\}\/rerun-failed-jobs/);
+  // the skipped-run fallback can only see older real runs with filter=all
+  assert.match(gate, /check-runs\?filter=all&per_page=100&page=\$\{page\}/u);
+  assert.doesNotMatch(gate, /check-runs\?filter=latest/u);
   assert.match(gate, /context\.ciRunAttempt === 1/);
   assert.match(gate, /!isTerminalReviewStatus\(existingStatus\)/);
 });

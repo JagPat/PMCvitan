@@ -11,9 +11,20 @@ import {
   assessReviewScope,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
+import {
+  PRODUCT_CHECKS,
+  attemptGateStamps,
+  attemptsWithPassingGates,
+  coverageOrder,
+  coverageStamp,
+  gateWatermarks,
+  newestFirst,
+  recency,
+} from './check-run-coverage.mjs';
 
 export const REQUIRED_CHECKS = [
   'review-scope',
+  'battery-plan',
   'web',
   'api',
   'e2e',
@@ -36,12 +47,50 @@ export function requiredChecksForPullRequest(pullRequestNumber) {
     && pullRequestNumber > 0
     && pullRequestNumber <= REVIEW_SCOPE_ENFORCE_AFTER_PR
   ) {
-    return REQUIRED_CHECKS.filter((name) => name !== 'review-scope');
+    // Neither job exists on pre-policy branches; requiring them would strand
+    // an older PR on a check it cannot emit.
+    return REQUIRED_CHECKS.filter(
+      (name) => name !== 'review-scope' && name !== 'battery-plan',
+    );
   }
   return REQUIRED_CHECKS;
 }
 
+// Identify the CI attempt a check run belongs to. `check_suite.id` is the
+// authoritative grouping key — every job of one workflow run shares a check
+// suite — and it does not depend on URL shape. The URL parse stays as a
+// fallback for payloads without the suite (GitHub Actions check runs carry
+// /actions/runs/<workflow_run_id>/job/<job_id> in BOTH html_url and
+// details_url; this repository's live responses were verified to do so).
+function attemptOf(run) {
+  const suite = run?.check_suite?.id;
+  if (suite !== undefined && suite !== null) return `suite:${suite}`;
+  for (const url of [run?.html_url, run?.details_url]) {
+    const match = /\/actions\/runs\/(\d+)\//u.exec(typeof url === 'string' ? url : '');
+    if (match) return `run:${match[1]}`;
+  }
+  return null;
+}
+
+// A product job is skipped either because the battery plan decided this head is
+// already covered — both gates of `needs: [review-scope, battery-plan]` green,
+// so the skip was the plan's `run_products=false` — or because one of those
+// gates failed/cancelled, in which case the attempt was aborted and proves
+// nothing. Only the first kind may defer to older evidence.
+//
+// Only an attempt whose gates ALL passed skipped deliberately; anything else
+// aborted, and an aborted attempt's skips prove nothing. `attemptsWithPassingGates`
+// is the shared definition — the battery plan's watermark reads the same set,
+// so the two cannot disagree about which skips preserve older evidence.
+function intentionalSkip(skipped, gatesPassed) {
+  const attempt = attemptOf(skipped);
+  return attempt !== null && gatesPassed.has(attempt);
+}
+
 export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
+  const watermarks = gateWatermarks(checkRuns);
+  const attemptStamps = attemptGateStamps(checkRuns);
+  const gatesPassed = attemptsWithPassingGates(checkRuns);
   const missing = [];
   const pending = [];
   const failed = [];
@@ -52,12 +101,71 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
       missing.push(name);
       continue;
     }
-    if (runs.some((run) => run.status !== 'completed')) {
+    // The NEWEST evidence decides, including whether we are still waiting.
+    // Asking "is ANY run of this name unfinished?" over the full `filter=all`
+    // history let a superseded attempt's still-running job hold the head
+    // pending until timeout even though the current attempt had already passed
+    // that check — the job will report on a merge result nobody is asking about.
+    //
+    // A PRODUCT job is ordered by ATTEMPT currency first, not completion time:
+    // one from a superseded attempt can still be running when a retarget lands
+    // and finish after the current attempt's run of the same name has already
+    // failed, and a completion-ordered sort selects that stale success and
+    // publishes green over red exact-head CI. Within one attempt (a
+    // rerun-failed-jobs keeps the suite) completion still decides, so a rerun
+    // continues to mask the failure it repaired.
+    //
+    // A GATE dates ITSELF. Attempt currency is the completion of the gates that
+    // LAUNCHED a run — meaningful for a product, circular for a gate, which
+    // would inherit its sibling's stamp: a `review-scope` that passed at 11:00
+    // in an attempt whose `battery-plan` finished at 11:10 would outrank a
+    // NEWER `review-scope` failure at 11:05 and this gate would publish success
+    // over a red current scope check.
+    const ordered = [...runs].sort(
+      PRODUCT_CHECKS.includes(name) ? coverageOrder(attemptStamps) : newestFirst,
+    );
+    if (ordered[0].status !== 'completed') {
       pending.push(name);
       continue;
     }
-    if (runs.some((run) => run.conclusion !== 'success')) {
+    const completed = ordered.filter((run) => run.status === 'completed');
+    // One SHA can carry several completed runs of the same check: an `edited`
+    // re-run of the scope check, or product jobs the battery plan skipped.
+    // A skipped run may defer to older evidence ONLY when the skip was the
+    // plan's deliberate "this head is already covered" decision. A skip caused
+    // by an upstream failure (review-scope red, or battery-plan itself failed
+    // or cancelled) means the products of THAT attempt never ran, and older
+    // evidence may predate the change that attempt was testing — so it counts
+    // as a real non-success and fails closed.
+    const decider = completed
+      .find((run) => run.conclusion !== 'skipped' || !intentionalSkip(run, gatesPassed));
+    if (!decider) {
+      // A deliberate skip deferring to evidence that is itself still running is
+      // waiting, not absent.
+      (completed.length < runs.length ? pending : missing).push(name);
+      continue;
+    }
+    if (decider.conclusion !== 'success') {
       failed.push(name);
+      continue;
+    }
+    // A passing product run must belong to the CURRENT attempt. Product jobs
+    // are created after the gates that launch them, so a product completion
+    // older than a gate attempt that produced no run OF THIS NAME belongs to a
+    // superseded attempt — the retarget window in which the new base's gates
+    // are green, this product's job does not exist yet, and the old base's
+    // success would otherwise let this gate publish success for a merge result
+    // it never tested. Per-name, because a newer attempt's five product runs
+    // appear one at a time: `web` being visible says nothing about `api`.
+    // Not yet run is pending, not failed.
+    // Dated by the ATTEMPT that launched it, not by when it finished: a
+    // straggler from the superseded base can complete after the new base's
+    // gates and would otherwise pass a timestamp-only comparison.
+    if (
+      PRODUCT_CHECKS.includes(name)
+      && coverageStamp(decider, attemptStamps) < (watermarks.get(name) ?? '')
+    ) {
+      pending.push(name);
     }
   }
 
@@ -362,10 +470,22 @@ export class GitHubClient {
   }
 
   async checkRuns(head) {
-    const payload = await this.request(
-      `/repos/${this.repository}/commits/${head}/check-runs?filter=latest&per_page=100`,
-    );
-    return payload.check_runs;
+    // filter=all (paginated), not filter=latest: one SHA can carry several runs
+    // of the same check name — a re-run scope check after a PR body edit, or
+    // product jobs the battery plan skipped. summarizeRequiredChecks resolves
+    // each name by its newest REAL run, which it can only do if it is given
+    // the older real runs too.
+    const runs = [];
+    let page = 1;
+    while (true) {
+      const payload = await this.request(
+        `/repos/${this.repository}/commits/${head}/check-runs?filter=all&per_page=100&page=${page}`,
+      );
+      const batch = payload.check_runs ?? [];
+      runs.push(...batch);
+      if (batch.length < 100) return runs;
+      page += 1;
+    }
   }
 
   rerunFailedJobs(runId) {

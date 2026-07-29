@@ -26,7 +26,7 @@ This repository is designed to progress without the owner's laptop or technical 
 
 1. The runner selects only the work item in `docs/STATUS.md`.
 2. Claude starts from latest `origin/main`, records the base SHA, opens a draft PR, enables web Auto-fix, and remains subscribed.
-3. GitHub first runs dependency-free `review-scope`, then requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. An unjustified broad review unit stops before the expensive jobs. A first product-CI failure receives one GitHub-native failed-job retry; deterministic `review-scope` failures do not. A second product failure remains draft and blocked for a real correction. When all six pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
+3. GitHub first runs the two dependency-free gates `review-scope` and `battery-plan`, then requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. An unjustified broad review unit stops before the expensive jobs. A first product-CI failure receives one GitHub-native failed-job retry; deterministic `review-scope` failures do not. A second product failure remains draft and blocked for a real correction. When all seven pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
 4. Marking the PR ready triggers Codex. The same exact-head workflow run polls that one invocation to its terminal result and accepts only evidence from `chatgpt-codex-connector[bot]` for the current SHA and review cycle. Review and review-comment webhooks never start or mutate the merge workflow.
 5. A current-head finding fails `codex-current-head` and returns the PR to draft. Claude Auto-fix reproduces the finding, fixes forward, and pushes a new head; that push invalidates every prior clearance.
 6. A fresh current-head clean Codex signal succeeds `codex-current-head`. GitHub then squash-merges that exact reviewed SHA immediately when the PR is clean. If GitHub still reports a waiting state, the controller queues squash auto-merge with the same expected head OID; a clean-state race retries the exact-SHA merge once. Missing CI, stale evidence, timeout, or inactive authoring all fail closed.
@@ -36,7 +36,8 @@ This repository is designed to progress without the owner's laptop or technical 
 
 - A standard PR is one user workflow or one architectural concern, at most 20
   files and 1,500 changed lines. PR #247 and later are enforced; earlier PRs are
-  grandfathered and retain the original five required checks so an older branch
+  grandfathered and retain the original five required checks — neither
+  `review-scope` nor `battery-plan` is required of them — so an older branch
   cannot be stranded by a job it does not contain.
 - A justified large PR uses the PR template's marker and completes all six risk
   rows: authorization/tenancy, civil time/lifecycle, concurrency/idempotency,
@@ -44,6 +45,16 @@ This repository is designed to progress without the owner's laptop or technical 
 - The PR-side scope check is fast feedback. The trusted default-branch owner
   re-evaluates the PR metadata and every evidence cell before review promotion,
   so editing the PR's policy script cannot bypass the merge boundary.
+- Product CI runs once per SHA, in ONE workflow. Every PR event (including
+  `edited`) runs through `ci.yml`, so a completed CI run always wakes the
+  trusted owner; the cheap `battery-plan` job gates the five product jobs — a
+  metadata-only body/title edit whose head already has real product runs skips
+  them, while a base retarget (`changes.base`) or a head whose product jobs
+  never really ran (a large PR whose first run failed `review-scope`) gets the
+  full battery. The required-check summary reads the newest REAL run per check
+  name: a skipped run defers to the evidence it kept, and a stale failure
+  never outlives a newer passing run. `scripts/autonomous-ci-battery.test.mjs`
+  and the gate tests pin all of this.
 - Claude self-audits those rows before the first review. Codex performs one
   comprehensive first pass and batches all findings. Correction reviews cover
   the delta, prior findings, and affected adjacent invariants.
@@ -134,11 +145,17 @@ directly; GitHub Actions does not need an AI key or a second result writer.
 
 After the autonomous workflow is merged **and PR #246 has merged or closed**, add
 the new check to `main` protection. Waiting for that terminal state prevents
-GitHub branch protection from requiring a job the legacy branch cannot emit. The
-resulting exact settings are:
+GitHub branch protection from requiring a job the legacy branch cannot emit.
+**That precondition is met as of 2026-07-29 — PR #246 merged at `main`
+`67e7a00` — so the settings below should be applied now.** Branch protection is
+a repository admin setting (Settings → Branches → `main`); the autonomous
+tooling has no admin credential and cannot apply it, so this step is the
+owner's. The resulting exact settings are:
 
-- Require status checks: `review-scope`, `web`, `api`, `e2e`, `api-e2e`, `upgrade-proof`, and
-  `codex-current-head`.
+- Require status checks: `review-scope`, `battery-plan`, `web`, `api`, `e2e`, `api-e2e`,
+  `upgrade-proof`, and `codex-current-head`. `battery-plan` decides whether the five product
+  jobs run, so requiring it is what makes a failed planner visible instead of leaving five
+  silently skipped products beneath a green summary.
 - Require branches to be up to date before merging (`strict: true`).
 - Enforce the protection for administrators.
 - Keep squash auto-merge enabled for the waiting-state fallback.
