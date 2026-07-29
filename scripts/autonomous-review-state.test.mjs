@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  citedCommits,
   CODEX_GRAPHQL_LOGIN,
   CODEX_LOGIN,
   codexThreadIdsToResolve,
   classifyCodexState,
   isEligiblePullRequest,
+  isUnfoundedFinding,
 } from './autonomous-review-state.mjs';
 
 const HEAD = 'a'.repeat(40);
@@ -62,6 +64,7 @@ test('classifies a fresh Codex thumbs-up as clear', () => {
   assert.deepEqual(result, {
     state: 'clear',
     findingCount: 0,
+    dismissedCount: 0,
     detail: 'fresh Codex +1 for this review attempt',
   });
 });
@@ -126,6 +129,7 @@ test('current-head inline findings block even when a fresh clean reaction exists
   assert.deepEqual(result, {
     state: 'changes_required',
     findingCount: 1,
+    dismissedCount: 0,
     detail: '1 current-head Codex finding',
   });
 });
@@ -146,6 +150,7 @@ test('a current-head Codex review is conservatively blocking without a clean rea
   assert.deepEqual(result, {
     state: 'changes_required',
     findingCount: 1,
+    dismissedCount: 0,
     detail: 'Codex submitted a current-head review',
   });
 });
@@ -215,6 +220,7 @@ test('a finding posted against the current head still blocks when its comment ha
   assert.deepEqual(result, {
     state: 'changes_required',
     findingCount: 1,
+    dismissedCount: 0,
     detail: '1 current-head Codex finding',
   });
 });
@@ -268,6 +274,7 @@ test('remains pending before the deadline when Codex has not responded', () => {
   assert.deepEqual(result, {
     state: 'pending',
     findingCount: 0,
+    dismissedCount: 0,
     detail: 'waiting for a current-head Codex result',
   });
 });
@@ -280,6 +287,139 @@ test('times out after the bounded deadline', () => {
   assert.deepEqual(result, {
     state: 'timed_out',
     findingCount: 0,
+    dismissedCount: 0,
     detail: 'Codex did not respond before the deadline',
   });
+});
+
+// ---------------------------------------------------------------------------
+// Unfounded findings: a review claim argued from a commit that does not exist.
+//
+// The bodies below are the VERBATIM prose of real findings from PR #248 head
+// `baf31b9` and PR #249 head `36a5377`, minus the AGENTS.md permalink where the
+// original omitted it. Every SHA they name was checked with `git cat-file -t`
+// against this repository and against `refs/pull/<n>/head`: none is an object
+// here, while each reviewed head verifiably carried the trailer the finding
+// says is missing. They are fixtures of a real failure, not invented ones.
+// ---------------------------------------------------------------------------
+
+const ABSENT = 'd822f79f1061fbe682d2755db2248bc3acd114c9';
+const ABSENT_TOO = 'cdb23e72e758d0eb995f3588066396c10f3e4abe';
+
+const PHANTOM_TRAILER_BODY = '**P1 Put the convergence trailer on d822f79**\n\n'
+  + 'Fresh evidence on the requested single-parent head '
+  + `\`${ABSENT}\` itself shows this verification is false: `
+  + `\`git show -s --format='%(trailers:key=Review-Convergence,valueonly)' ${ABSENT}\` `
+  + 'outputs nothing, and the repo\'s `assessConvergence` with the two recorded '
+  + "finding heads reports `hasTrailer: false` / `missing: ['trailer']`.";
+
+// The same finding as GitHub actually delivers it: with an AGENTS.md permalink
+// whose URL embeds the REAL reviewed head. The permalink must not make the
+// finding look like it reasons about that head.
+const PHANTOM_WITH_PERMALINK = `${PHANTOM_TRAILER_BODY}\n\n`
+  + `AGENTS.md reference: [AGENTS.md:L92-L95](https://github.com/JagPat/PMCvitan/blob/${HEAD}/AGENTS.md#L92-L95)`;
+
+// A real PR #249 finding: names a file and an interleaving, no commit at all.
+const FOUNDED_BODY = '**P1 Require all product descendants before clearing the watermark**\n\n'
+  + "When GitHub exposes only a subset of a newer attempt's product check runs, "
+  + 'this set treats the attempt as having products at all and removes its gate '
+  + 'watermark for every product name.';
+
+function codexComment(body, overrides = {}) {
+  return {
+    user: { login: CODEX_LOGIN },
+    original_commit_id: HEAD,
+    path: 'docs/reviews/pr-248-convergence.md',
+    line: 286,
+    body,
+    ...overrides,
+  };
+}
+
+test('citedCommits reads the prose, not the permalink', () => {
+  assert.deepEqual(citedCommits(PHANTOM_TRAILER_BODY), [ABSENT]);
+  // The permalink SHA is a location, not a claim: stripping it is what keeps a
+  // fabricated-SHA finding from disguising itself as a finding about the head.
+  assert.deepEqual(citedCommits(PHANTOM_WITH_PERMALINK), [ABSENT]);
+  assert.deepEqual(citedCommits(FOUNDED_BODY), []);
+  assert.deepEqual(citedCommits(undefined), []);
+  // Abbreviated SHAs are not commit citations; they cannot be resolved and are
+  // routinely used in prose, so a finding naming one is always founded.
+  assert.deepEqual(citedCommits('the head d822f79 lacks it'), []);
+});
+
+test('a finding whose every cited commit is absent is not evidence', () => {
+  const missing = new Set([ABSENT]);
+  assert.equal(isUnfoundedFinding(codexComment(PHANTOM_TRAILER_BODY), HEAD, missing), true);
+  assert.equal(isUnfoundedFinding(codexComment(PHANTOM_WITH_PERMALINK), HEAD, missing), true);
+
+  // Every path that is not "definitively absent" keeps the finding.
+  assert.equal(isUnfoundedFinding(codexComment(FOUNDED_BODY), HEAD, missing), false);
+  assert.equal(
+    isUnfoundedFinding(codexComment(PHANTOM_TRAILER_BODY), HEAD, new Set()),
+    false,
+    'an unresolved lookup must never discount a finding',
+  );
+  assert.equal(
+    isUnfoundedFinding(codexComment(PHANTOM_TRAILER_BODY), HEAD, undefined),
+    false,
+  );
+  // Names the real head as well: founded, even alongside an absent SHA.
+  assert.equal(
+    isUnfoundedFinding(
+      codexComment(`${PHANTOM_TRAILER_BODY} compare ${HEAD}`),
+      HEAD,
+      missing,
+    ),
+    false,
+  );
+});
+
+// REPRODUCTION: at PR #248 head baf31b9 this was the ONLY finding, and it cost
+// a full round. With the commit confirmed absent the head carries no finding.
+test('a head whose only findings are unfounded is clear, and says so', () => {
+  const result = classifyCodexState(input({
+    comments: [codexComment(PHANTOM_WITH_PERMALINK)],
+    missingCommits: new Set([ABSENT]),
+  }));
+  assert.equal(result.state, 'clear');
+  assert.equal(result.findingCount, 0);
+  assert.equal(result.dismissedCount, 1);
+  assert.match(result.detail, /absent from this repository/u);
+
+  // Without the confirmed absence the same head blocks — the filter is doing
+  // the work, not the fixture.
+  const unresolved = classifyCodexState(input({
+    comments: [codexComment(PHANTOM_WITH_PERMALINK)],
+  }));
+  assert.equal(unresolved.state, 'changes_required');
+  assert.equal(unresolved.findingCount, 1);
+});
+
+// REPRODUCTION: PR #249 head 36a5377 — "3 current-head Codex findings", of
+// which two were phantom-trailer claims and one was a real watermark defect.
+test('a mixed head keeps its real findings and reports the dismissals', () => {
+  const result = classifyCodexState(input({
+    comments: [
+      codexComment(PHANTOM_TRAILER_BODY, { path: 'docs/reviews/pr-249-convergence.md', line: 6 }),
+      codexComment(PHANTOM_WITH_PERMALINK, { path: 'docs/reviews/pr-249-convergence.md', line: 6 }),
+      codexComment(FOUNDED_BODY, { path: 'scripts/check-run-coverage.mjs', line: 72 }),
+    ],
+    missingCommits: new Set([ABSENT, ABSENT_TOO]),
+  }));
+  assert.equal(result.state, 'changes_required');
+  assert.equal(result.findingCount, 1, 'the real watermark finding must survive');
+  assert.equal(result.dismissedCount, 2);
+  assert.match(result.detail, /1 current-head Codex finding \(2 unfounded/u);
+});
+
+test('a Codex review record still blocks when it carried no inline findings', () => {
+  // The review-record branch is the fallback for a blocking review with no
+  // comments. Dismissing comments must not open a path around it.
+  const result = classifyCodexState(input({
+    reviews: [{ user: { login: CODEX_LOGIN }, commit_id: HEAD }],
+    missingCommits: new Set([ABSENT]),
+  }));
+  assert.equal(result.state, 'changes_required');
+  assert.equal(result.detail, 'Codex submitted a current-head review');
 });

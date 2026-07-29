@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 import {
+  citedCommits,
+  CODEX_LOGIN,
   codexThreadIdsToResolve,
   classifyCodexState,
   isEligiblePullRequest,
@@ -358,6 +360,26 @@ export class GitHubClient {
       files.push(...pageFiles);
       if (pageFiles.length < 100) return { ...commit, files };
       page += 1;
+    }
+  }
+
+  /**
+   * Whether a commit exists in this repository.
+   *
+   * Returns `null` — never `false` — when the answer cannot be established.
+   * The one caller treats only an explicit `false` as grounds to discount a
+   * review finding, so a rate limit, an outage or any unexpected status leaves
+   * the finding standing.
+   */
+  async commitExists(sha) {
+    try {
+      await this.request(`/repos/${this.repository}/commits/${sha}`);
+      return true;
+    } catch (error) {
+      // GitHub answers 404 for an unknown commit and 422 for a well-formed SHA
+      // that resolves to nothing. Both are definitive absences; everything else
+      // (5xx, 403, network) is an unresolved lookup.
+      return /\((404|422)\)/u.test(String(error?.message ?? '')) ? false : null;
     }
   }
 
@@ -976,6 +998,7 @@ async function reviewAttempt(
       readyAt: reviewNotBefore,
       deadline,
       now: new Date().toISOString(),
+      missingCommits: await resolveMissingCommits(client, comments, expectedHead),
       reviews,
       comments,
       reactions,
@@ -1002,10 +1025,47 @@ async function reclassifyCurrentCodexEvidence(
     readyAt: reviewNotBefore,
     deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
     now: now.toISOString(),
+    missingCommits: await resolveMissingCommits(client, comments, expectedHead),
     reviews,
     comments,
     reactions,
   });
+}
+
+// A review naming more distinct commits than this is not the shape the
+// unfounded-finding rule addresses, so its findings simply stand rather than
+// costing a burst of lookups.
+const MAX_CITED_COMMIT_LOOKUPS = 12;
+
+/**
+ * The commits current-head Codex findings argue from that this repository does
+ * not contain.
+ *
+ * Every failure mode returns a SMALLER set, never a larger one: an unresolved
+ * lookup, an over-large citation list, or a thrown request all leave the SHA
+ * out, and a SHA left out keeps its finding. The gate can therefore only ever
+ * discount a finding on a definitive GitHub answer that the commit is absent.
+ */
+export async function resolveMissingCommits(client, comments, expectedHead) {
+  const cited = new Set();
+  for (const comment of comments ?? []) {
+    if (comment?.user?.login !== CODEX_LOGIN) continue;
+    if ((comment.original_commit_id ?? comment.commit_id) !== expectedHead) continue;
+    for (const sha of citedCommits(comment.body)) {
+      if (sha !== expectedHead) cited.add(sha);
+    }
+  }
+
+  const missing = new Set();
+  if (cited.size === 0 || cited.size > MAX_CITED_COMMIT_LOOKUPS) return missing;
+  await Promise.all([...cited].map(async (sha) => {
+    try {
+      if (await client.commitExists(sha) === false) missing.add(sha);
+    } catch {
+      // Unresolved: the finding stands.
+    }
+  }));
+  return missing;
 }
 
 export async function guardAgainstCurrentHeadFinding(
@@ -1024,6 +1084,7 @@ export async function guardAgainstCurrentHeadFinding(
     readyAt: new Date(0).toISOString(),
     deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
     now: now.toISOString(),
+    missingCommits: await resolveMissingCommits(client, comments, expectedHead),
     reviews,
     comments,
     reactions: [],

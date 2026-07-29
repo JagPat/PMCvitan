@@ -95,6 +95,25 @@ so directly rather than framing it as a suggestion.
   `Review-Convergence: complete`. Never evade this by splitting one fix into
   multiple commits or by resetting review history.
 
+## Out of a review's scope
+
+- **Do not review the convergence trailer, and do not review CI state.** Both
+  are enforced by the trusted gate before promotion, fail-closed, on the exact
+  head: the trailer by `enforceReviewConvergence`, the required checks by
+  `codex-current-head`. A finding about either adds no safety, because a head
+  you are asked to review has already passed them by construction. Review the
+  DIFF: the code, the schema, the invariants, the interleavings.
+- Do not assert anything that depends on inspecting a git object, a commit
+  message, or a check-run API you cannot actually read. If a claim would require
+  running `git show`, `git log`, or `git interpret-trailers` against a SHA, it is
+  out of scope — state what the diff shows instead.
+- Findings that name a commit are checked against the repository. A finding
+  whose every cited full SHA is absent here is recorded and discounted by the
+  gate rather than blocking the head, because it describes no state this
+  repository has ever been in. The rule is narrow and one-directional: a finding
+  that cites the reviewed head, cites no SHA, or cites a SHA whose absence
+  cannot be confirmed always counts in full.
+
 ## Review output expectations
 
 - On the first reviewed head, complete one comprehensive pass across the entire
