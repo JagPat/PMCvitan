@@ -14,10 +14,11 @@ invariant rather than a point patch, and state the remaining risk honestly.
 | `86a972b` | R1 — 3 (1×P1, 2×P2) | Splitting `edited` into a second workflow broke the owner's wake path (`auto-merge.yml` listens for `CI` runs only), lost the base-retarget case, and left duplicate `review-scope` runs that the gate misread as failures → the split is reverted: ONE workflow, a plan job gating the products, and a newest-real-run check summary |
 | `d894a56` | R2 — 3 (1×P1, 2×P2) | The skip path trusted evidence it could not actually see or bound: `?filter=latest` hid the older real run the fallback needed, in-flight runs were counted as absence, and "has ever really run" accepted product runs from a pre-retarget base → the client pages `?filter=all`, in-flight non-skipped runs count as coverage, and a failed newest-completed `review-scope` invalidates prior product evidence |
 | `0698ae8` | R3 — 3 real (3×P2) + 1 invalid | The SAME cause surviving in three places the R2 pass did not reach: the battery-plan's OWN fetch still used the default `filter=latest` (R2 fixed only the gate client), coverage was still `some(run ⇒ …)` so a NEWER cancelled run was masked by an older success, and both recency orderings keyed on `started_at` when GitHub's `latest` is defined by `completed_at` → the plan pages `filter=all` too, coverage is decided by the NEWEST non-skipped run (cancelled ⇒ not covered), and both orderings key on `completed_at` |
+| `ecbc4d7` | R4 — 2 real (2×P2) + 1 invalid | The same cause in its last two hiding places: the retarget guard read only the newest COMPLETED scope run, so a scope still RUNNING from another attempt left old-base products looking like coverage; and a `filter=all` page that failed mid-read left a partial prefix in play, which can look clean while the unread page holds the cancelled product → an unfinished scope run from another attempt forces the battery, and only a COMPLETE pagination may become the history |
 
 ## Architectural Convergence
 
-Both rounds reduce to ONE cause: the first design decided "has this SHA been tested?" from an
+All four rounds reduce to ONE cause: the first design decided "has this SHA been tested?" from an
 incomplete, unbounded view of the check history — a second workflow whose completions the owner
 never saw, a partial API result, a notion of "ran" that ignored both time and the base under
 test. Every remedy is the same correction applied at a different layer, and each is now an
@@ -40,8 +41,9 @@ invariant rather than a special case:
    `summarizeRequiredChecks` resolves each required name by its newest non-skipped run — so a
    skipped run defers to the evidence it deliberately kept, a stale failure never outlives a
    newer pass, and a name with only skipped runs is missing (fail closed).
-
-| `ecbc4d7` | R4 — 2 real (2×P2) + 1 invalid | The same "incomplete view" cause in its last two hiding places: the retarget guard read only the newest COMPLETED scope run, so a scope still RUNNING from another attempt left old-base products looking like coverage; and a `filter=all` page that failed mid-read left a partial prefix in play, which can look clean while the unread page holds the cancelled product → an unfinished scope run from another attempt forces the battery, and only a COMPLETE pagination may become the history (a partial read falls through to "unavailable" and runs) |
+5. **Only complete, attributable history decides.** A partially-read page is discarded rather
+   than trusted, an unfinished scope verdict from another attempt forces the battery, and the
+   current workflow run's own checks are excluded so the guard reads other attempts only.
 
 ## Evidence
 
@@ -66,7 +68,7 @@ remedy applied at sites the R2 pass missed (the second fetch, the second orderin
 cost of fixing a systemic cause one call-site at a time, and it is why every remedy above is now
 stated as a rule over ALL sites rather than a patch at one.
 
-`pnpm test:automation` 80/80; `pnpm check` EXIT 0 by exit code on each head. No product code,
+`pnpm test:automation` 82/82; `pnpm check` EXIT 0 by exit code on each head. No product code,
 schema, migration, event or lock is touched by this PR.
 
 ## Remaining Risk
