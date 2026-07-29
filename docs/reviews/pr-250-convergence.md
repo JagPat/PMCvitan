@@ -101,158 +101,69 @@ status and in the sticky comment, so the case is visible and recoverable by re-r
 the failure it replaces — twenty-two fabricated citations across four PRs, each costing a full
 product CI battery and a draft round-trip — was neither visible nor bounded.
 
-## Round 3 (head `2c51301`) — precondition (a) again, and (c) made exact
+---
 
-Both findings are correct, and both are the same two preconditions the packet already names —
-which is itself the evidence that the cause was correctly identified rather than the symptoms.
+# Outcome: the gate-side rule is withdrawn
 
-**(a) the word must bind to the SHA it introduces.** Removing `object` from the context
-vocabulary in round 2 was necessary but not sufficient: the check still scanned the whole
-preceding window, so "on commit `<a>`, the object key `<b>` was deleted" reused the earlier
-`commit` for `<b>`. Both tokens read as citations, `citesBareHex` saw none, and a real finding
-about the key could be discounted. Each token's context window now starts at the END of the
-previous token, so a commit word reaches forward only to the SHA that follows it. This is the
-general fix; round 2's vocabulary edit was the instance.
+Rounds 3, 4, 5 and 6 all landed on precondition (a) — *is this 40-hex token a commit citation?* —
+and round 6 asked to **reverse** what round 5 had asked to tighten:
 
-**(c) suppression must be matched, not inferred.** A `COMMENTED` record was discounted whenever
-its head had any dismissed comment, which discarded a standalone review note whose body cited no
-absent SHA at all. GitHub links a review comment to the record that carried it via
-`pull_request_review_id`, so the container is now identified by id: only the record that actually
-carried the dismissed comments is discounted with them. Any other record on the head — a second
-`COMMENTED` note, or one whose link is absent so nothing can be matched — survives and blocks.
-The unlinked case fails closed rather than guessing.
+| Round | Direction | Asked for |
+| --- | --- | --- |
+| 2 | tighten | remove `object` from the commit vocabulary |
+| 3 | tighten | bind a commit word to the SHA it introduces, not the whole window |
+| 4 | loosen | recognise plural citations (`commits <a> and <b>`) |
+| 5 | tighten | drop bare `git`; a data word must veto; adjacency not proximity |
+| 6 | loosen | allow `id` in "commit id", allow `git cat-file`, allow `Head: <sha>` |
 
-Reproduce-first: `a commit word binds only to the SHA it introduces` and `a COMMENTED review that
-carried nothing dismissed still blocks` (which also pins the unlinked fail-closed case).
-`pnpm test:automation` 88/88; `pnpm check` exit 0.
+Each round's fix created the next round's finding. That is not convergence, and no further
+tightening of a natural-language heuristic was going to end it: deciding from English prose
+whether a hex token denotes a commit is not decidable, and every boundary this rule drew was
+wrong in one direction or the other.
 
-The round-2 fixture for the container case had to be corrected too: it asserted a `COMMENTED`
-record was discounted while carrying no `pull_request_review_id`, which the exact rule now
-refuses. That was a fixture modelling GitHub's payload incompletely, and the stricter rule caught
-it — recorded here rather than quietly amended.
+## The decisive evidence
 
+On PR #248, Codex raised two findings on head `b541768`. One was a phantom trailer claim citing
+`4f5ec0f`. The other was **correct**: the packet's Verification section claimed the PR was
+docs-only when the diff also contains `scripts/autonomous-status-state.mjs`, its test, and
+`AGENTS.md`. That false claim was mine, and it had stood since round 1.
 
-## Round 4 (head `d4ff71f`) — three findings, one shared rule
+The correct finding cites the same absent `4f5ec0f` as its evidence. **This rule would have
+discounted a true finding about a false claim in a review packet** — at the first real
+opportunity it had. That is the "Remaining Risk" this document already named, and it is not
+theoretical.
 
-All three are correct. Two of them are the same precondition (d) the packet already names —
-*one test must govern every counting surface* — arriving through the two places that had not yet
-been made to share it. That is the argument for fixing the cause rather than the instances.
+A rule whose failure mode is "suppresses a correct finding" is not worth six rounds and a
+standing risk to catch a reviewer defect that an instruction can prevent outright.
 
-**(d) the classifier and the convergence counter must ask the same question.** Round 3 matched
-the container by `pull_request_review_id` in `classifyCodexState`, but `codexFindingHeads` still
-suppressed by HEAD: any head with a dismissed comment lost every `COMMENTED` record on it, so a
-standalone review note vanished from convergence history even though the gate itself would have
-counted it. The two surfaces now call the same exported pair — `discountedReviewIds` and
-`reviewSurvivesDismissal` — so they cannot answer differently. This is the structural remedy;
-round 3's fix to one caller was the instance.
+## What ships instead
 
-**(c) a container is discounted for what it carried, not for existing.** Even matched by id, a
-review record was dropped whole without reading `body`. Codex writes findings there directly, and
-those cite no absent SHA at all. `reviewCarriesOwnFinding` strips only the known boilerplate — the
-`<details>` block, the "Codex Review" heading, the standard preamble, the `Reviewed commit:` line
-— and treats anything left as substantive. An unrecognised body is evidence, so the failure mode
-is a finding that blocks when it need not, never one that disappears.
+Only the `AGENTS.md` scope exclusion:
 
-**(a) a plural word introduces a list.** `\bcommit\b` does not match "commits", so
-"the trailer is missing on commits `<a>` and `<b>`" — the natural way to name two — left `<b>`
-bare, and `citesBareHex` then kept the whole finding blocking on a citation nobody could inspect.
-Pluralising the vocabulary alone does not fix it: round 3's window reset starts each token's
-context after the previous token, so `<b>`'s window is just " and ". The rule is therefore about
-the text BETWEEN two tokens — punctuation and a conjunction and nothing else is a list, and the
-classification carries forward. A noun phrase ("on commit `<a>`, the object key `<b>`") is not,
-so round 3's binding survives intact, and the continuation is symmetric: "the digests `<a>` and
-`<b>`" keeps both halves as data.
+- do not review the convergence trailer or CI state — the trusted gate enforces both fail-closed
+  on the exact head, so a finding about either adds no safety;
+- do not assert anything requiring git-object access you do not have;
+- a commit SHA you did not read from the diff or the review request is not evidence, with the
+  measured record of what citing one has cost.
 
-Pluralising also widened the proximity window enough to reach across a sentence break, which the
-existing bare-hex probe caught: "…the two recorded finding heads report X. The digest `<hex>` is
-stale." read the digest as a commit. The window now stops at the last sentence terminator. That
-cut errs the safe way — a token that loses its context becomes bare hex, which BLOCKS a dismissal
-rather than permitting one.
+`scripts/autonomous-review-state.mjs`, `scripts/autonomous-review-gate.mjs`,
+`scripts/review-efficiency.mjs` and their tests are restored to `main` byte-for-byte
+(`git checkout origin/main --`). The gate keeps exactly the powers it had before this PR: it
+counts every current-head Codex finding, and it fails closed. Nothing is discounted, so no
+correct finding can be lost.
 
-### Reproduce-first
+`pnpm test:automation` 75/75 — the pre-PR baseline, since no gate code remains changed.
 
-Each fix was removed in isolation and only its own probe failed:
+## What this does not solve, stated plainly
 
-| Finding | Fix removed | RED probe |
-|---|---|---|
-| P1 container body | `reviewCarriesOwnFinding` arm | `a discounted container keeps the finding its own body carries` |
-| P2 standalone COMMENTED | `reviewSurvivesDismissal` in `codexFindingHeads` | `a paired COMMENTED review does not restore a discounted head` + `finding history includes blocking Codex review records without inline comments` |
-| P2 plural citations | plural vocabulary + list continuation | `plural commit words introduce every SHA they name` |
+The instruction asks the reviewer not to fabricate citations. It cannot make that impossible. If
+phantom trailer findings continue after this merges, the remaining levers are the repository
+owner's: temporarily dropping `codex-current-head` from required checks for a blocked PR, or
+raising the defect with the review provider. Both are recorded as open with the owner; the
+27-citation evidence set is being written up for the second.
 
-`scripts/autonomous-review-state.test.mjs` 24/24 and `scripts/review-efficiency.test.mjs` 17/17
-(41 together); `pnpm test:automation` 90/90, up from 88; `pnpm check` exit 0.
-
-The round-2 convergence fixture needed the same correction round 3 recorded for the classifier
-fixture: it modelled paired review records with no `id` and comments with no
-`pull_request_review_id`, which the id-matched rule refuses. GitHub sends both. Corrected here
-and recorded rather than quietly amended, and a third case pins the behaviour the finding asked
-for — an unlinked record keeps its head.
-
-## Round 5 (head `a68c48f`) — the heuristic was the defect, not its width
-
-Five findings, all correct. Two of them (F1 comma-as-list, F5 nearby-word-binds) are the SAME
-cause as round 3 and round 4: a proximity rule over English prose deciding whether a hex token
-denotes a commit. Rounds 3, 4 and 5 each supplied another sentence shape it got wrong. Widening
-the window admits more of them; narrowing it drops real citations. That oscillation is the
-evidence that the rule's SHAPE was wrong, so this correction replaces it rather than tuning it
-again.
-
-**The rule is now two-sided, and the data side wins.**
-
-1. **A data word adjacent to the token vetoes it outright.** `digest`, `checksum`, `hash`,
-   `object`, `blob`, `tree`, `key`, `fingerprint`, `id`, `value`, `constant`, `string` — the
-   finite, enumerable set of things a 40-hex value actually is when it is not a commit. Checked
-   FIRST, so no positive rule can override it.
-2. **Otherwise the commit word must be ADJACENT**, with only quoting and whitespace between —
-   not "somewhere in the sentence". The 80-character window and the sentence-boundary cut are
-   both gone; neither was doing honest work.
-3. **A list carries only across an actual conjunction.** A bare comma is not list glue, because
-   "on commit `<a>`, `<b>` is the object key" separates a citation from data with exactly that
-   comma.
-4. **Bare `git` no longer introduces anything.** Only a command that TAKES a revision
-   (`show`/`log`/`cat-file`/`rev-parse`/`interpret-trailers`) may, and that arm is the one place
-   bounded proximity stays sound — a git command's argument is a revision by construction.
-
-Everything else is bare hex, and bare hex BLOCKS a dismissal. Every remaining ambiguity therefore
-keeps the finding, which is the direction this rule must fail in.
-
-**F3 — the same test now reaches review bodies.** A review body argues from commits exactly as an
-inline comment does, but `reviewCarriesOwnFinding` returned true for any non-boilerplate text and
-`resolveMissingCommits` scanned only comments. The wrapper therefore kept blocking on the very
-citation its comments had been discounted for, and the body's SHAs were never even looked up. The
-predicate is extracted as `isUnfoundedText(body, ownHead, missingCommits)` and both envelopes call
-it; `resolveMissingCommits` now collects from bodies too.
-
-**F4 — boilerplate is the KNOWN wrapper, not any `<details>`.** The blanket strip removed a
-collapsed finding along with Codex's "About Codex in GitHub" block, so a head could clear on a
-body that cited no SHA at all. The pattern is pinned by its summary text.
-
-### Reproduce-first
-
-Each fix removed in isolation fails its own probe:
-
-| Finding | Fix removed | RED probe |
-|---|---|---|
-| F1 comma-as-list · F5 nearby word binds | adjacency + conjunction-only glue | `a data word adjacent to the token vetoes any commit reading` |
-| F2 bare `git` swallows object ids | narrowed git arm | `a data word adjacent to the token vetoes any commit reading` (the unlisted-subcommand case) |
-| F3 body skips the absent-SHA test | `isUnfoundedText` in `reviewCarriesOwnFinding` | `a review body is subject to the same absent-SHA test` |
-| F4 blanket details strip | summary-pinned wrapper pattern | `only the known Codex wrapper details block is boilerplate` |
-
-**Stated honestly about F2:** restoring the bare-`git` arm alone does NOT fail the three phrases
-the finding named (`git object` / `git blob` / `git tree`) — the data veto defends those, and it
-fires first. Narrowing the arm is still required, and it now has a probe that isolates it: a git
-subcommand the list does not know followed by a noun the veto does not know
-(`git verify-pack summary reported <hex>`) must introduce nothing. Without that probe the
-narrowing would have been unverified code.
-
-`scripts/autonomous-review-state.test.mjs` 28/28, `scripts/review-efficiency.test.mjs` 17/17;
-`pnpm test:automation` 94/94; `pnpm check` exit 0.
-
-### Where this stops
-
-Three rounds of prose-parsing findings is the signal that the gate-side dismissal is the
-expensive half of this change. The AGENTS.md scope exclusion — which stops the finding being
-written at all — costs nothing and carries no risk of discounting a real finding. If a further
-round produces more sentence-shape findings, the correct response is not a sixth tightening: it
-is to ship the instruction alone and drop the dismissal engine. That call belongs to the
-repository owner and is recorded here rather than taken unilaterally.
+The three genuinely orthogonal defects round 6 found in the withdrawn engine — an aggregate
+lookup cap that zeroes the whole missing set, body-only reviews never being dismissed, and a
+repeated occurrence of an already-cited SHA landing in the bare set — are moot: the code they
+describe no longer exists. They are recorded here so the reasoning is not lost if the approach is
+ever revisited.
