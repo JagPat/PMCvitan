@@ -236,6 +236,19 @@ only the finding body carries the corrupted SHA. The other two findings in the s
 real and are fixed. So the corruption is confined to SHAs quoted inside finding text, not to which
 commit is reviewed, which is why round 7 produced actionable work where rounds 4–6 did not.
 
+### Round 9 (head `cd1be7d`): no substantive finding remains
+
+The round-9 review returned exactly one finding: that head `0efb7696854fd27a91b03f6f7226c22dc983563a`
+lacks the convergence trailer. That object does not exist in this repository, and the reviewed head
+`cd1be7d` carries a git-parsed `Review-Convergence: complete`
+(`git show -s --format='%(trailers:key=Review-Convergence,valueonly)' cd1be7d` prints `complete`).
+
+Every code and documentation finding raised against this PR is resolved: the runner-state invariant
+(rounds 1–2), the owner's rework (round 3), the executable RED proof (round 7), the directive-state
+and PR-bearing-state corrections plus the mechanical packet↔STATUS check (round 8). Round 9 found
+nothing else. The convergence audit is therefore complete on the substance, and the sole remaining
+obstacle is a citation that does not correspond to any commit — see below.
+
 ## Remaining Risk
 
 None open in the change itself. Phase-5 planning begins automatically on the first runner pass
