@@ -71,8 +71,9 @@ so compute is not spent on code that is not yet reviewable.
   job. PR #247 onward requires all six checks.
 - Exact-head review, recovery, auto-merge, and Claude handoff semantics remain
   unchanged.
-- Branch protection should add `review-scope`; the internal gate also requires it,
-  so a missing check fails closed even before the setting is updated.
+- Branch protection should add `review-scope` only after legacy PR #246 reaches a
+  terminal state. The internal gate requires it immediately for PR #247 onward,
+  so new work fails closed without stranding the older branch.
 - No product runtime, database schema, migration, or deployment behavior changes.
 
 ## Acceptance Criteria

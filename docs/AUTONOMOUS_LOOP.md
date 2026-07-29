@@ -129,8 +129,10 @@ directly; GitHub Actions does not need an AI key or a second result writer.
 
 ## GitHub Enforcement
 
-After the autonomous workflow itself is merged, protect `main` with these exact
-settings:
+After the autonomous workflow is merged **and PR #246 has merged or closed**, add
+the new check to `main` protection. Waiting for that terminal state prevents
+GitHub branch protection from requiring a job the legacy branch cannot emit. The
+resulting exact settings are:
 
 - Require status checks: `review-scope`, `web`, `api`, `e2e`, `api-e2e`, `upgrade-proof`, and
   `codex-current-head`.
