@@ -13,6 +13,8 @@ Codex found defects on two distinct heads:
   scope and convergence policy.
 - `e7a96e718abc405b017a90d5ea5f8552b1e4ca2d`: two findings in the first
   correction.
+- `c9249688e5d4475e12b1af8155fdf71263d2d667`: three unique follow-up
+  findings in the first convergence head, plus one merge-ref misread.
 
 The second finding-bearing head activates the repository's convergence rule.
 This packet and its commit contain the complete architectural correction rather
@@ -28,6 +30,18 @@ than another isolated patch.
 | `893266a` | Review comments were not paginated | REST helper read only page one | Shared pagination for reviews and comments | Executable 101-record probe RED by source contract, GREEN across both endpoints |
 | `e7a96e7` | A stale cumulative packet satisfied convergence | Gate inspected the cumulative PR file list | Require the convergence packet in `commit.files` for the exact head carrying the trailer | Stale cumulative packet with trailer RED at reviewed head, GREEN only when current commit changes packet |
 | `e7a96e7` | Instruction text satisfied the large marker | Policy used an unanchored substring search | Require the first non-whitespace declaration to be `justified-large` | Standard leading declaration plus instructional marker RED at reviewed head, GREEN after correction |
+| `c924968` | Deleting a packet counted as changing it | Packet check ignored GitHub's file status | Reject `status: removed`; accept only an added, modified, or renamed matching packet | Removed-packet probe RED at reviewed head, GREEN after correction |
+| `c924968` | Narrative marker counted as a trailer | Multiline regex matched any standalone line | Parse only the final Git trailer block and require valid token/value lines | Narrative-marker probe RED at reviewed head; final multi-trailer block GREEN |
+| `c924968` | Commit file list could truncate | Exact-head commit read only the first file page | Paginate `GET /commits/{head}` at 100 files and aggregate every page | Executable 101-file commit probe RED at reviewed head, GREEN after correction |
+
+## Reviewer Merge-Ref Misread
+
+The round also claimed that the convergence head lacked the required trailer,
+citing synthetic merge ref `965f8bb`. The authoritative PR head was `c924968`,
+whose commit message ended with `Review-Convergence: complete`. The trusted gate
+queries the PR head SHA, not GitHub's temporary merge ref. No code change was
+needed for this claim; this correction commit repeats the trailer and changes
+this packet so the next exact head remains independently compliant.
 
 ## Invariant Audit
 
@@ -60,7 +74,7 @@ than another isolated patch.
 
 ## Verification
 
-- `pnpm test:automation`: 72/72 after this convergence correction.
+- `pnpm test:automation`: 73/73 after this convergence correction.
 - `pnpm check`: exit 0.
 - API unit: 680/680.
 - `git diff --check`: clean.

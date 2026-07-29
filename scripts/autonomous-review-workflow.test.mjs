@@ -1118,8 +1118,18 @@ test('Codex review records and inline comments are fully paginated', async () =>
   const urls = [];
   globalThis.fetch = async (url) => {
     urls.push(String(url));
-    const page = new URL(url).searchParams.get('page');
+    const parsed = new URL(url);
+    const page = parsed.searchParams.get('page');
     const count = page === '1' ? 100 : 1;
+    if (/\/commits\//u.test(parsed.pathname)) {
+      return new Response(JSON.stringify({
+        commit: { message: 'fix: paginated head' },
+        files: Array.from({ length: count }, (_, index) => ({
+          filename: `file-${page}-${index}.txt`,
+          status: 'modified',
+        })),
+      }));
+    }
     return new Response(JSON.stringify(Array.from({ length: count }, (_, index) => ({ index }))));
   };
   try {
@@ -1129,8 +1139,10 @@ test('Codex review records and inline comments are fully paginated', async () =>
     });
     assert.equal((await client.reviewComments(247)).length, 101);
     assert.equal((await client.reviews(247)).length, 101);
+    assert.equal((await client.commit('a'.repeat(40))).files.length, 101);
     assert.ok(urls.some((url) => url.includes('/comments?per_page=100&page=2')));
     assert.ok(urls.some((url) => url.includes('/reviews?per_page=100&page=2')));
+    assert.ok(urls.some((url) => url.includes(`/commits/${'a'.repeat(40)}?per_page=100&page=2`)));
   } finally {
     globalThis.fetch = originalFetch;
   }

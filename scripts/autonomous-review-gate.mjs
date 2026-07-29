@@ -331,8 +331,20 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/pulls/${number}`);
   }
 
-  commit(head) {
-    return this.request(`/repos/${this.repository}/commits/${head}`);
+  async commit(head) {
+    let commit;
+    const files = [];
+    let page = 1;
+    while (true) {
+      const batch = await this.request(
+        `/repos/${this.repository}/commits/${head}?per_page=100&page=${page}`,
+      );
+      commit ??= batch;
+      const pageFiles = batch.files ?? [];
+      files.push(...pageFiles);
+      if (pageFiles.length < 100) return { ...commit, files };
+      page += 1;
+    }
   }
 
   async checkRuns(head) {

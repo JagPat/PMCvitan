@@ -14,7 +14,6 @@ export const REQUIRED_INVARIANTS = [
 
 const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
-const CONVERGENCE_TRAILER = /^Review-Convergence:\s*complete\s*$/imu;
 const CONVERGENCE_PACKET = /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu;
 
 function finiteCount(value) {
@@ -113,6 +112,27 @@ function changedFilename(file) {
   return typeof file === 'string' ? file : file?.filename;
 }
 
+function hasConvergenceTrailer(message) {
+  const blocks = String(message ?? '').trimEnd().split(/\n[\t ]*\n/u);
+  if (blocks.length < 2) return false;
+  const lines = blocks.at(-1).split('\n');
+  let hasMarker = false;
+  let hasTrailer = false;
+  for (const line of lines) {
+    if (/^[\t ]+\S/u.test(line) && hasTrailer) continue;
+    const trailer = /^([A-Za-z0-9][A-Za-z0-9-]*):[\t ]+(.+)$/u.exec(line);
+    if (!trailer) return false;
+    hasTrailer = true;
+    if (
+      trailer[1].toLowerCase() === 'review-convergence'
+      && trailer[2].trim().toLowerCase() === 'complete'
+    ) {
+      hasMarker = true;
+    }
+  }
+  return hasMarker;
+}
+
 export function assessConvergence({ comments, reviews, headMessage, changedFiles }) {
   const findingHeads = codexFindingHeads(comments, reviews);
   const findingHeadCount = findingHeads.length;
@@ -126,10 +146,14 @@ export function assessConvergence({ comments, reviews, headMessage, changedFiles
     };
   }
 
-  const hasTrailer = CONVERGENCE_TRAILER.test(String(headMessage ?? ''));
+  const hasTrailer = hasConvergenceTrailer(headMessage);
   const hasPacket = (changedFiles ?? [])
-    .map(changedFilename)
-    .some((filename) => typeof filename === 'string' && CONVERGENCE_PACKET.test(filename));
+    .some((file) => {
+      const filename = changedFilename(file);
+      return file?.status !== 'removed'
+        && typeof filename === 'string'
+        && CONVERGENCE_PACKET.test(filename);
+    });
   const missing = [
     ...(!hasTrailer ? ['trailer'] : []),
     ...(!hasPacket ? ['packet'] : []),

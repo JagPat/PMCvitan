@@ -204,6 +204,46 @@ test('two finding heads require both the convergence trailer and packet', () => 
   assert.deepEqual(complete.missing, []);
 });
 
+test('a removed packet or narrative marker cannot satisfy convergence', () => {
+  const comments = [
+    { user: { login: CODEX }, commit_id: 'a'.repeat(40) },
+    { user: { login: CODEX }, commit_id: 'b'.repeat(40) },
+  ];
+  const packet = { filename: 'docs/reviews/pr-247-convergence.md', status: 'removed' };
+  const removed = assessConvergence({
+    comments,
+    headMessage: 'fix: correction\n\nReview-Convergence: complete',
+    changedFiles: [packet],
+  });
+  assert.equal(removed.allowed, false);
+  assert.deepEqual(removed.missing, ['packet']);
+
+  const narrative = assessConvergence({
+    comments,
+    headMessage: [
+      'fix: correction',
+      '',
+      'Review-Convergence: complete',
+      'This is narrative text, not a trailer.',
+    ].join('\n'),
+    changedFiles: [{ ...packet, status: 'modified' }],
+  });
+  assert.equal(narrative.allowed, false);
+  assert.deepEqual(narrative.missing, ['trailer']);
+
+  const finalTrailerBlock = assessConvergence({
+    comments,
+    headMessage: [
+      'fix: correction',
+      '',
+      'Review-Convergence: complete',
+      'Signed-off-by: Reviewer <reviewer@example.com>',
+    ].join('\n'),
+    changedFiles: [{ ...packet, status: 'modified' }],
+  });
+  assert.equal(finalTrailerBlock.allowed, true);
+});
+
 test('agent guidance and the PR template share the executable policy vocabulary', async () => {
   const [agents, claude, loop, template] = await Promise.all([
     readFile(new URL('../AGENTS.md', import.meta.url), 'utf8'),
