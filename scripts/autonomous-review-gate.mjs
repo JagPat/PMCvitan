@@ -297,18 +297,27 @@ export class GitHubClient {
 
   async request(path, { method = 'GET', body } = {}) {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const response = await fetch(`${API_ROOT}${path}`, {
-      method,
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${this.token}`,
-        'Content-Type': 'application/json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      const text = await response.text();
-      const payload = text ? JSON.parse(text) : null;
+      let response;
+      let text;
+      let payload;
+      try {
+        response = await fetch(`${API_ROOT}${path}`, {
+          method,
+          headers: {
+            Accept: 'application/vnd.github+json',
+            Authorization: `Bearer ${this.token}`,
+            'Content-Type': 'application/json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        text = await response.text();
+        payload = text ? JSON.parse(text) : null;
+      } catch (error) {
+        if (method !== 'GET' || attempt === 3) throw error;
+        await sleep(attempt * 250);
+        continue;
+      }
       if (response.ok) return payload;
       if (method === 'GET' && response.status >= 500 && attempt < 3) {
         await sleep(attempt * 250);

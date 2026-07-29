@@ -1194,11 +1194,15 @@ test('final admission revalidates live scope and late convergence evidence', asy
 test('Codex review records and inline comments are fully paginated', async () => {
   const originalFetch = globalThis.fetch;
   const urls = [];
-  let transientFailure = true;
+  let transientFailure = 2;
   globalThis.fetch = async (url) => {
     urls.push(String(url));
-    if (transientFailure) {
-      transientFailure = false;
+    if (transientFailure === 2) {
+      transientFailure -= 1;
+      throw new TypeError('temporary network failure');
+    }
+    if (transientFailure === 1) {
+      transientFailure -= 1;
       return new Response('', { status: 500 });
     }
     const parsed = new URL(url);

@@ -116,21 +116,20 @@ function hasConvergenceTrailer(message) {
   const blocks = String(message ?? '').trimEnd().split(/\n[\t ]*\n/u);
   if (blocks.length < 2) return false;
   const lines = blocks.at(-1).split('\n');
-  let hasMarker = false;
-  let hasTrailer = false;
+  const trailers = [];
   for (const line of lines) {
-    if (/^[\t ]+\S/u.test(line) && hasTrailer) continue;
+    if (/^[\t ]+\S/u.test(line)) {
+      if (trailers.length === 0) return false;
+      trailers.at(-1)[1] += ` ${line.trim()}`;
+      continue;
+    }
     const trailer = /^([A-Za-z0-9][A-Za-z0-9-]*):[\t ]+(.+)$/u.exec(line);
     if (!trailer) return false;
-    hasTrailer = true;
-    if (
-      trailer[1].toLowerCase() === 'review-convergence'
-      && trailer[2].trim().toLowerCase() === 'complete'
-    ) {
-      hasMarker = true;
-    }
+    trailers.push([trailer[1].toLowerCase(), trailer[2].trim().toLowerCase()]);
   }
-  return hasMarker;
+  return trailers.some(
+    ([key, value]) => key === 'review-convergence' && value === 'complete',
+  );
 }
 
 export function assessConvergence({ comments, reviews, headMessage, changedFiles }) {

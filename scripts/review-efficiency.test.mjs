@@ -242,6 +242,14 @@ test('a removed packet or narrative marker cannot satisfy convergence', () => {
     changedFiles: [{ ...packet, status: 'modified' }],
   });
   assert.equal(finalTrailerBlock.allowed, true);
+
+  const continuedMarker = assessConvergence({
+    comments,
+    headMessage: 'fix: correction\n\nReview-Convergence: complete\n continued',
+    changedFiles: [{ ...packet, status: 'modified' }],
+  });
+  assert.equal(continuedMarker.allowed, false);
+  assert.deepEqual(continuedMarker.missing, ['trailer']);
 });
 
 test('agent guidance and the PR template share the executable policy vocabulary', async () => {
