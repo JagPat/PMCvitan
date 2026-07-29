@@ -72,6 +72,28 @@ Verified directly, not from narrative:
 
 ## Architecture
 
+### §0. Canonical evidence sets — defined once, referenced by name
+
+Every quantity and amount in this phase is a fold over rows, and the review of the first
+two heads found the same defect at six different sites: each fold described *where to look*
+and re-derived *which rows count* locally, so each got it wrong in its own way. The sets
+below are therefore defined once, here, and **every bound in §G and every side of the §E
+triple references them by name. No fold restates a filter inline.**
+
+| Set | Definition | What it must NOT be |
+|---|---|---|
+| `ACCEPTED(poLine)` | Σ qty of `acceptance` movements on that line's lots, MINUS Σ qty of reversals whose target is an acceptance row | NOT `accepted − rejected` (disjoint arms; understates an 80/20 split as 60). NOT the `acceptedOnHand` bucket balance: issuing moves `acceptedOnHand → issuedToActivity`, so accept-100-then-issue-100 reads 0 and fails an honest bill, while a cycle-count `stock.adjust` INTO that bucket would read as billable delivery with no receipt behind it. Acceptance is an EVENT, not a balance. |
+| `MEASURED(poLine)` | Σ quantity of live `Measurement` rows for that line (corrections are signed deltas, so they fold in) | not a stored total |
+| `EFFORT(poLine)` | work facts and allocations whose `labourSpecFingerprint` AND `(civilDate, shift)` slices match THAT line, each unit consumable by at most one PO line | NOT "any effort on the activity/slice" — that lets an electrical crew's attendance support a plumbing line's bill on the same day |
+| `BILLED(poLine)` | Σ over LIVE claim lines: the bill version is not superseded AND the bill status is neither `draft` nor `rejected` | NOT "every earlier non-rejected line" (double-counts a retained amended version as 200). NOT "`submitted` only" — a first claim that advances to `verified` would drop out of the fold and a second claim for the same quantity would pass. Live spans the whole post-submission lifecycle. |
+| `CERTIFIED(bill)` | the LIVE certificate only | not Σ over superseded certificates, which double-counts a corrected certification and either blocks a valid correction or overstates the forecast |
+| `COMMITTED(costHead)` | Σ `committedAmountBase` over attributions whose PO version is LIVE | not "one active attribution per line": an amendment retains v1's line and issues v2's, so both attributions can be active and the forecast reads ₹200 for a ₹100 order. An attribution is superseded atomically with the PO version it describes. |
+
+The shared shape: **an amendment retains history, so "every row" is never the answer; and a
+bucket balance is a current state, so it is never evidence of a past event.** A new fold
+that cannot be expressed with one of these names is a signal that a set is missing, not a
+licence to write a local filter.
+
 ### §A. Money identity and arithmetic
 
 - One currency for the pilot (INR). No currency column, because a nullable/defaulted one
@@ -104,9 +126,14 @@ Verified directly, not from narrative:
 
 The committed amount for a PO line already exists, frozen, with provenance. Phase 5 reads
 it through `ProcurementQuery` and attributes it to a cost head through a commercial-owned
-`CommitmentAttribution` row: `(poLineId | labourPoLineId) → costHead`, one active
-attribution per line, revocable with an attributable reason. The attribution is the ONLY
-new fact; the amount is not copied.
+`CommitmentAttribution` row: `(poLineId | labourPoLineId) → costHead`, revocable with an
+attributable reason. The attribution is the ONLY new fact; the amount is not copied.
+
+One active attribution per LINE is not sufficient, because a PO amendment retains v1's line
+and issues v2's: both attributions stay active and the committed total reads ₹200 for a
+₹100 order. The fold is `COMMITTED(costHead)` (§0) — restricted to attributions whose PO
+version is live — and an amendment supersedes the prior attribution in the SAME transaction
+that issues the new version, so the two can never both be live.
 
 This is the Phase-4 §C lesson applied to money: a second ledger holding the same number is
 a second truth, and the two will diverge under amendment.
@@ -131,24 +158,27 @@ line**. It has a different unit, a different authority and a different lifecycle
   verification would then certify from commercial input rather than from the Phase-1–4
   facts this phase exists to consume. So:
   - a measurement MUST cite at least one `ActivityWorkOutput` for that activity, read
-    through `ActivitiesQuery`, and `Σ Measurement.quantity ≤ Σ ActivityWorkOutput.quantity`
-    in the same UOM (a UOM mismatch is a refusal, never a silent conversion);
-  - where the PO line is priced per person-shift, the measurement is additionally bounded
-    by the labour effort actually recorded — `LabourQuery.effortFor` over that line's
-    `(civilDate, shift)` slices — so a shift nobody attended cannot be measured;
+    through `ActivitiesQuery`. What that citation BOUNDS depends on how the line is priced,
+    because the two contract shapes measure different things:
+    - **priced by output quantity** (a rate per sqm, per rm, per unit): the cited output is
+      a quantity cap — `MEASURED(poLine) ≤ Σ ActivityWorkOutput.quantity` in the SAME UOM,
+      and a UOM mismatch is a refusal, never a silent conversion;
+    - **priced per person-shift**: the billable unit is person-shifts and the output is
+      recorded in a physical unit, so a same-unit cap is not merely wrong but unsatisfiable
+      — it would refuse a valid attended shift whenever progress is recorded in sqm, or
+      push teams to fabricate person-shift outputs to bill. Here the cited output is
+      REQUIRED AS EVIDENCE that work happened, and the QUANTITY cap is
+      `MEASURED(poLine) ≤ EFFORT(poLine)` (§0) — effort matched to that line's own
+      `labourSpecFingerprint` and slices, each unit consumable once, so one trade's
+      attendance can never fund another trade's bill on the same day;
   - the bound is re-derived under lock at measurement time AND re-checked at certification,
     because an output can be superseded after a measurement is taken.
 - A correction is a new measurement carrying a signed delta and a reason, never an edit.
   The measured total is a fold, with no stored balance — the Phase-3 §C rule.
 - **Material lines are not measured.** For a material PO line the accepted quantity IS the
-  measurement: the fold of the `acceptedOnHand` bucket for that line's lots, read through
-  `InventoryQuery`. Note this is a bucket fold, NOT `Σ accepted − Σ rejected`: the §C ledger
-  moves `quarantine → acceptedOnHand` on acceptance and `quarantine → rejected` on
-  rejection, two disjoint arms, so rejected material was never part of accepted stock and
-  subtracting it would understate an 80/20 split as 60. Reversals are already inverse
-  movements in the same bucket, so the fold carries them without special handling. A
-  parallel manual measurement of delivered material would be a second truth about the same
-  physical event.
+  measurement: `ACCEPTED(poLine)` per §0 — acceptance movements net of acceptance reversals,
+  read through `InventoryQuery`. A parallel manual measurement of delivered material would
+  be a second truth about the same physical event.
 
 ### §E. Three-way verification — derived, never stored
 
@@ -157,14 +187,11 @@ line**. It has a different unit, a different authority and a different lifecycle
 | Side | Material line | Labour line |
 |---|---|---|
 | ORDERED | PO line frozen `qty` + `approvedOverage`, at frozen `rate` / `taxAmount` / `freightAmount` | PO line `personShiftQty` at frozen `ratePerPersonShift` + `shiftPremium` |
-| ACCEPTED / MEASURED | fold of the `acceptedOnHand` bucket for that line's lots (`InventoryQuery`) — see §D on why this is not `accepted − rejected` | `Σ Measurement.quantity` for that PO line |
-| BILLED | this bill line's quantity × rate + its claimed tax and freight, plus every earlier **LIVE** claim line on the same PO line | same |
+| ACCEPTED / MEASURED | `ACCEPTED(poLine)` (§0) via `InventoryQuery` | `MEASURED(poLine)` (§0) |
+| BILLED | this bill line's quantity × rate + its claimed tax and freight, plus `BILLED(poLine)` (§0) for the rest | same |
 
-"Live" is load-bearing on the billed side. A bill amendment issues a new version and
-retains the prior verbatim (§F), and a retained version is not `rejected` — so counting
-"every earlier non-rejected line" would count an amended 100 twice as 200 and raise a false
-over-billed exception against an honest vendor. Only lines belonging to a submitted,
-non-superseded version count.
+Each side is the §0 set by name. Restating any of those filters here is exactly the drift
+that produced two rounds of findings.
 
 The verdict is `matched | exception`, with each exception naming its own kind
 (`qty-over-ordered`, `qty-over-accepted`, `rate-mismatch`, `tax-mismatch`,
@@ -184,14 +211,21 @@ and a bill becomes payable with no accepted material behind it. So certification
 in this stable order to stay deadlock-free:
 
 1. `lockProjectReadiness(projectId)`
-2. the PO line (`FOR UPDATE`)
-3. every contributing stock lot, ascending by id, through a new
-   `InventoryParticipant.lockAcceptedEvidence(tx, poLineId)` — the SAME rows `stock.reverse`
-   locks, so the two serialize
+2. every contributing stock lot, ascending by id, through a new
+   `InventoryParticipant.lockAcceptedEvidence(tx, poLineId)`
+3. the PO line (`FOR UPDATE`)
 4. for labour, the contributing measurements and their cited work outputs
 
-and re-reads every side inside that lock before deciding. A race probe in both orderings is
-required.
+and re-reads every side inside that lock before deciding.
+
+**That order is not a free choice — it must match what inventory already does.** Every
+inventory write today runs `lockProjectReadiness → lockLot → applyReceiptProgress`, and
+`applyReceiptProgress` is what takes the PO line; `receipts.reject` and receipt reversals
+included. Locking the PO line first would invert that: certification holds the PO line and
+waits for a lot while a concurrent rejection holds that lot and waits for the PO line, and
+both hang. Commercial adopts the established order rather than asking four cleared modules
+to migrate to a new one. The barrier probe therefore covers rejection and receipt reversal,
+not only acceptance reversal.
 
 An exception does not auto-reject. It moves the bill to `disputed` and requires a
 responsible review with an attributable reason to proceed — spec §16, "Exceptions require
@@ -226,11 +260,16 @@ Each is re-derived in-service under `FOR UPDATE` on the constraining row AND sea
 PostgreSQL constraint — the Phase-4 Task-3 F3 lesson: a trigger that counts without
 serializing is not an invariant.
 
-1. `Σ billed qty` per PO line ≤ `qty + approvedOverage` (materials) / `personShiftQty` (labour)
-2. `Σ billed qty` per PO line ≤ accepted (materials) / measured (labour)
-3. `Σ certified amount` per bill ≤ that bill's billed amount
-4. `Σ approved-for-payment` per bill ≤ `Σ certified`
-5. `Σ paid` per bill ≤ `Σ approved-for-payment`
+1. `BILLED(poLine)` ≤ `qty + approvedOverage` (materials) / `personShiftQty` (labour)
+2. `BILLED(poLine)` ≤ `ACCEPTED(poLine)` (materials) / `MEASURED(poLine)` (labour)
+3. `CERTIFIED(bill)` ≤ that bill's live billed amount
+4. `Σ approved-for-payment` ≤ `CERTIFIED(bill)`
+5. `Σ paid` ≤ `Σ approved-for-payment`
+
+Every left- and right-hand side is a §0 set. Bounds 3–5 use the LIVE certificate for the
+same reason the billed side uses live claim lines: a superseded certificate is retained
+history, and summing it would read a corrected ₹100 certification as ₹200 — blocking the
+correction or overstating the forecast.
 
 Bound 2 is the one that makes the phase worth building: it is structurally impossible to
 bill for material that never arrived or work never measured.
@@ -317,8 +356,14 @@ draft → CI → exact-head Codex gate.
 | 1 | `commercial` capability + module skeleton + `CostHead` + versioned immutable `BudgetLine` + SINK manifest + acyclicity test + §D/§L inertness proof | — |
 | 2 | `CommitmentAttribution` over the EXISTING frozen committed amounts (§C) + budget-vs-committed exception + Inbox action | — |
 | 3 | `Measurement` (§D) — immutable, delta corrections, activity sign-off gate, material lines read acceptance instead | **STOP** — narrow review before any bill can consume a measurement |
-| 4 | `VendorBill` + lines + immutable versions + the §F CAS lifecycle through `verified` + §G bounds 1–2 | — |
-| 5 | Three-way verification (§E) + dispute/resolution + certification + §G bound 3 + §H deduction ledger | **STOP** — narrow review before payment authority exists |
+| 4 | `VendorBill` + lines + immutable versions + the §F CAS lifecycle **up to `under-verification`** + §G bounds 1–2 | — |
+| 5 | Three-way verification (§E) — and therefore the `verified` transition itself — + dispute/resolution + certification + §G bound 3 + §H deduction ledger | **STOP** — narrow review before payment authority exists |
+
+Task 4 deliberately stops SHORT of `verified`. `verified` is the state whose safety is the
+§E verdict, so shipping the transition in Task 4 while §E lands in Task 5 would let a bill
+reach `verified` before the ordered/accepted/billed comparison exists — and pulling §E
+forward into Task 4 would bypass the Task-5 review stop that guards it. The transition
+belongs to the task that produces its evidence.
 | 6 | Payment approval + payment records + §G bounds 4–5 + §I SoD rules, approval limits and the exception record | — |
 | 7 | Cash-forecast projection (§J) + frontend hub (§M) + pilot acceptance chain + consolidated Phase-5 packet | **FINAL STOP** |
 
@@ -341,9 +386,17 @@ rests on, and certification is the last point before money becomes payable.
 5b. §E certification vs `stock.reverse`, BOTH orderings under a deterministic barrier: a
    reversal committing mid-certification can never leave a certified bill with no accepted
    material behind it, and the stated lock order never deadlocks.
-5c. §D measurement bound: a measurement citing no `ActivityWorkOutput` is refused; one
-   exceeding the recorded output is refused; a UOM mismatch is refused rather than
-   converted; superseding the output after measurement blocks certification.
+5c. §D measurement bound, both contract shapes: an output-priced measurement citing no
+   `ActivityWorkOutput` is refused, one exceeding the recorded output is refused, and a UOM
+   mismatch is refused rather than converted; a person-shift-priced measurement is accepted
+   with a physical-unit output cited (no same-unit cap) but refused beyond
+   `EFFORT(poLine)`; effort matched to trade A cannot fund a trade-B line on the same
+   activity/day; the same effort cannot be consumed by two PO lines; and superseding the
+   cited output after measurement blocks certification.
+5g. §0 set identity: for each of the six sets, the "must NOT be" column is a probe — the
+   80/20 acceptance, the accept-then-issue, the adjust-into-bucket, the amended bill, the
+   advanced-lifecycle bill, the superseded certificate and the amended PO commitment each
+   yield the stated correct total.
 5d. §E billed side: an amended bill (v1 100 → v2 100) yields 100 billed, not 200 — a
    retained version is not a live claim.
 5e. §E freight: a bill matching quantity, rate and tax while inflating freight raises
