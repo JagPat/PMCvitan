@@ -42,6 +42,8 @@ GREEN  52f04d8 (this head)
 | --- | --- | --- | --- |
 | `8c8f423` empty state | `8c8f423` | `assessRunnerState` returns `actionable: false` for the merged terminal state with `work_item`, `next_task` and `blocking_directive` all `none` | The live-file test runs on every CI run: any future STATUS edit that leaves the runner stalled fails `pnpm test:automation` |
 | `1d1de47` owner-approval gate | `1d1de47` | `assessRunnerState` rejects a `blocking_directive` recorded against any `task_state` other than `correction_required` | STATUS's own state-value definitions say a directive is what `correction_required` launches; the invariant now enforces that, so parking the loop behind a directive the state machine never scheduled — the shape a human-approval gate takes — is red in CI |
+| `91fc1fb` directive from `in_progress` | `91fc1fb` | `assessRunnerState` schedules the directive named by an `in_progress` task — STATUS's documented post-merge fix-forward state | The next validated defect can record its correction target without failing CI |
+| `91fc1fb` between-work stall | `91fc1fb` | the all-none state resolves to `maintenance:<first item>`; the live-file test also requires the queue to parse non-empty | Both finding heads have no queue section, so their RED verdicts are unaffected — asserted against the real commits |
 | `a74143d` packet ≠ STATUS | `a74143d` | No executable probe: this is a claim in this packet about a sibling file, and mechanically checking prose against state would be a heuristic, not a proof. Stated honestly rather than dressed up | Both files live in this one PR's diff; the reviewer's own comparison is the check, and it is repeatable by inspection |
 
 The invariant is deliberately total: `assessRunnerState` returns a decision and a reason for
@@ -127,14 +129,49 @@ The machine-actionable substance of both findings — the runner must never be l
 concrete next step — is real and is fixed by the totality remedy above. The part that asks to
 delete the owner's authority is declined with this documented rationale.
 
-## Invalid Reviewer Evidence (rounds 4–6)
+## Round 7 (head `91fc1fb`) — two real findings against the new invariant
+
+Making the runner state executable exposed two places where my rule was stricter than the state
+machine STATUS actually documents. Both were raised against the real head and both are fixed here.
+
+**A directive is legitimate from `in_progress`, not only `correction_required`.** STATUS's runner
+rules say a post-merge defect "return[s] the parent task to `in_progress` and name[s] its blocking
+directive" — the documented fix-forward path. My guard rejected exactly that state, so the next
+validated defect would have had to choose between dropping its correction target and failing CI.
+`assessRunnerState` now schedules the directive from either state, and rejects it only from states
+that never schedule one — which is still where an approval gate would appear.
+
+**An all-none state is the maintenance queue's turn, not a stall.** STATUS says the queue "keeps
+the loop live; it never idles", so the between-work configuration resolves to the first queue item.
+`parseMaintenanceQueue` reads the section, and the live-file test additionally asserts the queue
+parses to at least one item — emptying it would otherwise silently remove the loop's fallback.
+
+Neither correction weakens the original reproductions, and that is asserted rather than argued:
+`8c8f423` and `1d1de47` carry **no Maintenance queue section at all** (it arrived later, in round
+2), so both stay RED, and the test that reads the real commits now checks the parsed queue is empty
+at each head before asserting the verdict:
+
+```
+RED    8c8f423  queue=[]  merged, nothing to start
+RED    1d1de47  queue=[]  directive from a state that schedules none
+GREEN  91fc1fb  queue=[dependabot-security-updates, e2e-flake-burndown]  next_task:phase-5-planning
+```
+
+The round's third finding claimed head `41abd1bd5b67d2e9199106aa8f44911f05d1b907` lacks the
+convergence trailer. That object does not exist in this repository (`git cat-file -t` fails), and
+the actual reviewed head `91fc1fb` does carry a git-parsed `Review-Convergence: complete`. It is
+the tenth such citation; it is recorded below, not acted on.
+
+## Invalid Reviewer Evidence (rounds 4–7)
 
 The round-4 P1 "Add the missing convergence trailer" cited head
 `bbe402a48e43d605721c80d19aa27d49824bb6ea` — a SHA that is not an object in this repository and
-not the PR head. It is a snapshot of the SYNTHETIC merge ref: at verification time
-`refs/pull/248/merge` resolved to `6ed3833` with subject "Merge 52d3f71… into 67e7a00…" and
-parents (`67e7a00`, `52d3f71`) — an auto-generated merge commit whose message carries no trailer
-block by construction. The authoritative head `52d3f71` verifiably carries the required trailer:
+not the PR head. This entry originally attributed it to the SYNTHETIC merge ref; that was an
+over-reading of my own evidence and is corrected here. The merge ref at verification time was
+`6ed3833` (subject "Merge 52d3f71… into 67e7a00…", parents `67e7a00`/`52d3f71`) — which is not
+`bbe402a` either. The honest statement is narrower: the cited SHA is not the head, not the merge
+ref, and not any object in this repository. The authoritative head `52d3f71` verifiably carries
+the required trailer:
 `git show -s --format='%(trailers)' 52d3f71` prints `Review-Convergence: complete` in the final
 trailer block, and `assessConvergence` against that head's real message with this changed packet
 returns `allowed: true`. This repeats the PR #246 round-15 pattern the `AGENTS.md` PR-head
@@ -165,6 +202,18 @@ inspecting commits materialized inside its own environment rather than
 in-repository instruction change can correct it, and none is attempted. The head trailer is
 verifiable at any time with
 `git show -s --format='%(trailers:key=Review-Convergence,valueonly)' <head>`.
+
+### Round 7 addition
+
+`41abd1bd5b67d2e9199106aa8f44911f05d1b907` — cited as the head lacking a convergence trailer.
+`git cat-file -t` reports no such object; it is not the PR head (`91fc1fb`), not any earlier head,
+and not `refs/pull/248/merge`. The real head's trailer parses:
+`git show -s --format='%(trailers)' 91fc1fb` prints `Review-Convergence: complete`.
+
+Notably, this round's review header and its `AGENTS.md` permalinks BOTH cite `91fc1fb` correctly —
+only the finding body carries the corrupted SHA. The other two findings in the same review were
+real and are fixed. So the corruption is confined to SHAs quoted inside finding text, not to which
+commit is reviewed, which is why round 7 produced actionable work where rounds 4–6 did not.
 
 ## Remaining Risk
 

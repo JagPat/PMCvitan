@@ -27,6 +27,25 @@ function isNone(value) {
   return value === undefined || value === null || value === '' || value === NONE;
 }
 
+// The Maintenance queue section is STATUS's own answer to "what does the runner
+// do between work items" — it says the queue keeps the loop live and never
+// idles. So it is part of the state, not commentary, and the assessment reads
+// it. Items are the numbered entries, each naming its slug in backticks.
+export function parseMaintenanceQueue(markdown) {
+  const source = typeof markdown === 'string' ? markdown : '';
+  const heading = source.indexOf('\n## Maintenance queue');
+  if (heading < 0) return [];
+  const next = source.indexOf('\n## ', heading + 1);
+  const section = source.slice(heading, next < 0 ? undefined : next);
+
+  const items = [];
+  for (const line of section.split('\n')) {
+    const item = /^\s*\d+\.\s+`([^`]+)`/u.exec(line);
+    if (item) items.push(item[1]);
+  }
+  return items;
+}
+
 // The Now block is the first fenced yaml block under the `## Now` heading. It is
 // a flat `key: value` map by construction, so this parses exactly that and
 // nothing more — a nested or list value is a malformed Now block, not a state.
@@ -56,7 +75,7 @@ export function parseStatusNow(markdown) {
 // The order encodes the loop's own precedence — a validated defect outranks an
 // open PR, which outranks a task still being built, which outranks the standing
 // queue, which outranks starting the next phase.
-export function assessRunnerState(state) {
+export function assessRunnerState(state, maintenanceQueue = []) {
   if (!state || typeof state !== 'object') {
     return {
       actionable: false,
@@ -66,18 +85,22 @@ export function assessRunnerState(state) {
   }
 
   const taskState = state.task_state;
+  const queue = Array.isArray(maintenanceQueue) ? maintenanceQueue : [];
 
-  // STATUS defines `blocking_directive` as the thing `correction_required`
-  // launches. A directive recorded against any other task state parks the loop
-  // behind something the state machine never scheduled — which is exactly how a
-  // human-approval gate gets expressed. It is a contradiction, not a next step.
-  if (!isNone(state.blocking_directive) && taskState !== 'correction_required') {
+  // STATUS schedules a directive from exactly two states: `correction_required`
+  // ("launch the named blocking_directive"), and `in_progress` — the runner
+  // rules say a post-merge defect returns the parent task to in_progress AND
+  // names its directive, which is the documented fix-forward path. A directive
+  // recorded from any OTHER state parks the loop behind work the state machine
+  // never scheduled, which is the shape a human-approval gate takes.
+  const DIRECTIVE_STATES = new Set(['correction_required', 'in_progress']);
+  if (!isNone(state.blocking_directive) && !DIRECTIVE_STATES.has(taskState)) {
     return {
       actionable: false,
       nextStep: null,
       reason: `blocking_directive '${state.blocking_directive}' is set while task_state `
-        + `is '${taskState}'; STATUS launches a directive only from correction_required, `
-        + 'so this state blocks progression without scheduling any work',
+        + `is '${taskState}'; STATUS schedules a directive only from correction_required `
+        + 'or in_progress, so this state blocks progression without scheduling any work',
     };
   }
 
@@ -93,6 +116,16 @@ export function assessRunnerState(state) {
         nextStep: `directive:${state.blocking_directive}`,
         reason: 'a validated defect outranks every other work source',
       };
+  }
+
+  // A post-merge defect on an in_progress task: the directive is the focused
+  // correction target and outranks the task itself.
+  if (taskState === 'in_progress' && !isNone(state.blocking_directive)) {
+    return {
+      actionable: true,
+      nextStep: `directive:${state.blocking_directive}`,
+      reason: 'a named correction directive is the focused work item for this task',
+    };
   }
 
   if (!isNone(state.open_pr)) {
@@ -127,9 +160,6 @@ export function assessRunnerState(state) {
     };
   }
 
-  // The terminal case that produced both findings: the task merged, nothing is
-  // open, nothing is queued. `next_task` is then the ONLY remaining source of a
-  // move, so it must name one.
   if (!isNone(state.next_task)) {
     return {
       actionable: true,
@@ -138,14 +168,28 @@ export function assessRunnerState(state) {
     };
   }
 
+  // The between-work state. STATUS says the Maintenance queue keeps the loop
+  // live and never idles, so a non-empty queue IS the next step — the runner
+  // drains authorized upkeep rather than stalling.
+  if (queue.length > 0) {
+    return {
+      actionable: true,
+      nextStep: `maintenance:${queue[0]}`,
+      reason: 'no task, PR or handoff is open, so the standing maintenance queue is the work',
+    };
+  }
+
+  // Nothing anywhere, including an empty queue: this is the 8c8f423 state, and
+  // it is the one configuration the runner genuinely cannot act on.
   return {
     actionable: false,
     nextStep: null,
-    reason: 'task_state is merged with no work_item, no open_pr and no next_task; '
-      + 'the runner has nothing it can start',
+    reason: 'task_state is merged with no work_item, no open_pr, no next_task and an '
+      + 'empty maintenance queue; the runner has nothing it can start',
   };
 }
 
-export async function loadStatusState(path = new URL('../docs/STATUS.md', import.meta.url)) {
-  return parseStatusNow(await readFile(path, 'utf8'));
+export async function loadStatusDocument(path = new URL('../docs/STATUS.md', import.meta.url)) {
+  const markdown = await readFile(path, 'utf8');
+  return { now: parseStatusNow(markdown), maintenanceQueue: parseMaintenanceQueue(markdown) };
 }

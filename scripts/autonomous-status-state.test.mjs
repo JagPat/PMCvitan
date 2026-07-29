@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 
 import {
   assessRunnerState,
-  loadStatusState,
+  loadStatusDocument,
+  parseMaintenanceQueue,
   parseStatusNow,
 } from './autonomous-status-state.mjs';
 
@@ -48,13 +49,14 @@ const FINDING_HEADS = [
 ];
 
 // Returns null when the object is not in this clone (CI's shallow checkout).
-function nowBlockAt(sha) {
+function statusAt(sha) {
   try {
-    return parseStatusNow(execFileSync('git', ['show', `${sha}:docs/STATUS.md`], {
+    const markdown = execFileSync('git', ['show', `${sha}:docs/STATUS.md`], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 32 * 1024 * 1024,
-    }));
+    });
+    return { now: parseStatusNow(markdown), maintenanceQueue: parseMaintenanceQueue(markdown) };
   } catch {
     return null;
   }
@@ -103,9 +105,26 @@ test('a merged state with no work, no PR and no next task is not actionable', ()
   assert.match(verdict.reason, /nothing it can start/u);
 });
 
+// The same shape WITH a maintenance queue is actionable — STATUS says the queue
+// keeps the loop live between work items. 8c8f423 had no queue section at all,
+// which is why it reproduces RED above and this does not contradict it.
+test('the maintenance queue is the between-work fallback when it has items', () => {
+  const verdict = assessRunnerState({
+    phase: '4',
+    task: '6',
+    task_state: 'merged',
+    work_item: 'none',
+    open_pr: 'none',
+    next_task: 'none',
+    blocking_directive: 'none',
+  }, ['dependabot-security-updates', 'e2e-flake-burndown']);
+  assert.equal(verdict.actionable, true);
+  assert.equal(verdict.nextStep, 'maintenance:dependabot-security-updates');
+});
+
 // FINDING 2 (head 1d1de47) — "Remove the owner-approval gate from Phase 5".
 // A directive parked the loop from a state that never schedules one.
-test('a directive recorded outside correction_required is a contradiction, not work', () => {
+test('a directive recorded outside a directive-scheduling state is not work', () => {
   const verdict = assessRunnerState({
     phase: '4',
     task: '6',
@@ -117,13 +136,32 @@ test('a directive recorded outside correction_required is a contradiction, not w
   });
   assert.equal(verdict.actionable, false);
   assert.equal(verdict.nextStep, null);
-  assert.match(verdict.reason, /only from correction_required/u);
+  assert.match(verdict.reason, /only from correction_required or in_progress/u);
+});
+
+// The documented post-merge fix-forward path: STATUS's runner rules say a
+// validated defect returns the parent task to in_progress AND names its
+// directive. That state must schedule the correction, not stall the loop.
+test('a post-merge defect on an in_progress task schedules its directive', () => {
+  const verdict = assessRunnerState({
+    phase: '4',
+    task: '6',
+    task_state: 'in_progress',
+    work_item: 'none',
+    open_pr: 'none',
+    next_task: 'none',
+    blocking_directive: 'phase-4-task-6-correction',
+  });
+  assert.equal(verdict.actionable, true);
+  assert.equal(verdict.nextStep, 'directive:phase-4-task-6-correction');
 });
 
 test('both PR #248 finding heads are non-actionable states', () => {
   for (const { sha, label, now } of FINDING_HEADS) {
+    // No maintenance queue existed at either head; the real documents are
+    // cross-checked below when history is available.
     assert.equal(
-      assessRunnerState(now).actionable,
+      assessRunnerState(now, []).actionable,
       false,
       `${sha} (${label}) must reproduce as non-actionable`,
     );
@@ -137,9 +175,13 @@ test('both PR #248 finding heads are non-actionable states', () => {
 test('the finding-head fixtures match the real commits when history is available', () => {
   let compared = 0;
   for (const { sha, now } of FINDING_HEADS) {
-    const actual = nowBlockAt(sha);
+    const actual = statusAt(sha);
     if (!actual) continue;
-    assert.deepEqual(actual, now, `fixture for ${sha} has drifted from the commit`);
+    assert.deepEqual(actual.now, now, `fixture for ${sha} has drifted from the commit`);
+    // Neither finding head carried a maintenance queue, so the RED verdicts
+    // above are the real documents' verdicts, not an artefact of the fixture.
+    assert.deepEqual(actual.maintenanceQueue, [], `${sha} unexpectedly has a queue`);
+    assert.equal(assessRunnerState(actual.now, actual.maintenanceQueue).actionable, false);
     compared += 1;
   }
   assert.ok(
@@ -215,11 +257,19 @@ test('every work source resolves to exactly one next step, in precedence order',
 
 // The regression surface: the live state file, on every CI run.
 test('the committed docs/STATUS.md always leaves the runner a move', async () => {
-  const verdict = assessRunnerState(await loadStatusState());
+  const { now, maintenanceQueue } = await loadStatusDocument();
+  const verdict = assessRunnerState(now, maintenanceQueue);
   assert.equal(
     verdict.actionable,
     true,
     `docs/STATUS.md leaves the autonomous runner stalled: ${verdict.reason}`,
   );
   assert.ok(verdict.nextStep, 'an actionable state must name its next step');
+
+  // The queue is the documented between-work source, so it must be readable and
+  // non-empty — an emptied queue would silently remove the loop's fallback.
+  assert.ok(
+    maintenanceQueue.length > 0,
+    'the Maintenance queue section must parse to at least one named item',
+  );
 });
