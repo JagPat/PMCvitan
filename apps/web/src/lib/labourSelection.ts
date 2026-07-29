@@ -1,0 +1,353 @@
+import { computeLabourSpecFingerprint, LABOUR_SHIFTS } from '@vitan/shared';
+import type { WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto, LabourSpecRef, LabourWorkFactDto, LabourRequisitionDto } from '@vitan/shared';
+
+/**
+ * Phase 4 Task 6 correction — the PURE selection rules behind the Labour hub's allocate action,
+ * extracted so the Codex findings are unit-provable:
+ *
+ *  F1 (P1)  only COMPATIBLE workers may satisfy a demand slice — the worker's own
+ *           (trade, skill, shift) identity must hash to the requirement's head fingerprint, or
+ *           to the target of an ACTIVE approved skill substitution on that requirement (§B
+ *           widening). An electrician can no longer be offered for a mason slice.
+ *  F2 (P1)  an allocation that covers a commitment-covered slice must DRAW DOWN the commitment:
+ *           pick the live same-slice `CapacityCommitment` with undrawn quantity so the store
+ *           passes its id and the server's §F bound-3 drawdown actually runs.
+ *  F6 (P2)  the allocated count must match the server's coverage rule — only ACTIVE allocations
+ *           bound to the requirement's CURRENT activity AND current head fingerprint count; a
+ *           row stranded by a revision (old activity or old trade/skill/shift) does not.
+ */
+
+/** Every fingerprint a worker's own identity can satisfy: for each shift, the bare-trade
+ *  identity plus one per declared skill. Async because the shared fingerprint is WebCrypto
+ *  SHA-256 (identical on web and Node) — compute once per workforce load and cache. */
+export async function buildWorkerFingerprints(workers: readonly WorkerDto[]): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  for (const w of workers) {
+    const fps: string[] = [];
+    for (const shift of LABOUR_SHIFTS) {
+      fps.push(await computeLabourSpecFingerprint({ tradeCode: w.tradeCode, skillCode: null, shift }));
+      for (const skillCode of w.skillCodes) {
+        fps.push(await computeLabourSpecFingerprint({ tradeCode: w.tradeCode, skillCode, shift }));
+      }
+    }
+    out[w.id] = fps;
+  }
+  return out;
+}
+
+/** The fingerprints that satisfy a requirement's head spec: the head fingerprint itself plus the
+ *  targets of ACTIVE substitutions on that requirement whose source IS the current head (the
+ *  Phase-3 T6-F2 rule — a substitution stops applying when the head moves). */
+export function satisfyingFingerprints(
+  spec: Pick<LabourSpecRef, 'labourSpecFingerprint'>,
+  requirementId: string,
+  substitutions: readonly ApprovedSkillSubstitutionDto[],
+): string[] {
+  const targets = substitutions
+    .filter((s) => s.requirementId === requirementId && s.revokedAt === null && s.fromFingerprint === spec.labourSpecFingerprint)
+    .map((s) => s.toFingerprint);
+  return [spec.labourSpecFingerprint, ...targets];
+}
+
+/** F1 — the workers the picker may offer for a slice of this requirement. */
+export function compatibleWorkerIds(
+  workers: readonly WorkerDto[],
+  workerFingerprints: Readonly<Record<string, readonly string[]>>,
+  spec: Pick<LabourSpecRef, 'labourSpecFingerprint'>,
+  requirementId: string,
+  substitutions: readonly ApprovedSkillSubstitutionDto[],
+): Set<string> {
+  const ok = new Set(satisfyingFingerprints(spec, requirementId, substitutions));
+  const ids = new Set<string>();
+  for (const w of workers) {
+    if (w.revokedAt !== null) continue;
+    const fps = workerFingerprints[w.id];
+    if (fps && fps.some((fp) => ok.has(fp))) ids.add(w.id);
+  }
+  return ids;
+}
+
+/** F6 — active allocations that the server's coverage would actually count for this slice:
+ *  bound to the requirement's CURRENT activity and a currently-satisfying fingerprint. */
+export function allocatedCountFor(
+  allocations: readonly WorkerAllocationDto[],
+  requirementId: string,
+  activityId: string,
+  civilDate: string,
+  spec: Pick<LabourSpecRef, 'labourSpecFingerprint'>,
+  substitutions: readonly ApprovedSkillSubstitutionDto[],
+): number {
+  const ok = new Set(satisfyingFingerprints(spec, requirementId, substitutions));
+  return allocations.filter(
+    (a) =>
+      a.requirementId === requirementId &&
+      a.activityId === activityId &&
+      a.civilDate === civilDate &&
+      a.status === 'active' &&
+      ok.has(a.labourSpecFingerprint),
+  ).length;
+}
+
+/** F2 — the drawable same-slice commitment (exact fingerprint + civil date + shift) with undrawn
+ *  quantity, or null for own-workforce allocation. Mirrors the SERVER's rules (Codex rounds 2–3,
+ *  verified against `labour-capacity.service.ts` + the FORECAST's residual matching): only a
+ *  `committed` commitment is drawable (a `revised` one is refused with a deterministic 409), and a
+ *  draw stays CONSUMED while its allocation is ACTIVE — or, round 3, once ANY work fact was
+ *  recorded under it (delivered capacity is spent; the forecast keeps it consumed, so re-offering
+ *  the id would overdraw the supplier). Only a NO-WORK release frees the commitment for a
+ *  replacement. The server re-derives the allocation bound under `FOR UPDATE`; a stale pick is a
+ *  409 the flush reconciles. */
+export function pickCommitmentFor(
+  commitments: readonly CapacityCommitmentDto[],
+  allocations: readonly WorkerAllocationDto[],
+  workFacts: readonly LabourWorkFactDto[],
+  spec: Pick<LabourSpecRef, 'labourSpecFingerprint' | 'shift'>,
+  civilDate: string,
+  // Codex round 6 — draws still IN FLIGHT (queued allocate ops carrying a commitment id, counted
+  // per commitment from the durable outbox): the picker must reserve them, or a second worker
+  // chosen before the labour reload lands re-picks a fully-drawn commitment and the flush 409s
+  // the second command under §F bound 3 — when omitting the id would have allocated the
+  // remaining demand from own workforce.
+  pendingDraws?: Readonly<Record<string, number>>,
+): string | null {
+  const worked = new Set(workFacts.map((f) => f.allocationId));
+  const draws = new Map<string, number>();
+  for (const a of allocations) {
+    if (a.capacityCommitmentId && (a.status === 'active' || worked.has(a.id))) {
+      draws.set(a.capacityCommitmentId, (draws.get(a.capacityCommitmentId) ?? 0) + 1);
+    }
+  }
+  const live = commitments
+    .filter(
+      (c) =>
+        c.labourSpecFingerprint === spec.labourSpecFingerprint &&
+        c.civilDate === civilDate &&
+        c.shift === spec.shift &&
+        c.status === 'committed' &&
+        // Codex round 4 — a LATE promise never covers (`labour-coverage.service.ts` eligibility:
+        // `latestPromise <= civilDate`, own civil date when no promise exists): drawing capacity
+        // whose supplier arrives AFTER the slice would let a blocked activity read as sourced.
+        (c.latestPromise?.promisedDate ?? c.civilDate) <= civilDate &&
+        c.personShiftQty - (draws.get(c.id) ?? 0) - (pendingDraws?.[c.id] ?? 0) > 0,
+    )
+    .sort((a, b) => (a.id < b.id ? -1 : 1)); // deterministic pick
+  return live[0]?.id ?? null;
+}
+
+/** Codex round 2 — whether a (non-revoked) worker's active window admits a civil date. The
+ *  server refuses allocation AND attendance outside `[activeFrom, activeTo]` with a terminal
+ *  400 the outbox drops, so the pickers must never offer the action (ISO civil dates compare
+ *  lexicographically). */
+export function workerActiveOn(
+  w: Pick<WorkerDto, 'revokedAt' | 'activeFrom' | 'activeTo'>,
+  civilDate: string,
+): boolean {
+  return w.revokedAt === null && w.activeFrom <= civilDate && (w.activeTo === null || civilDate <= w.activeTo);
+}
+
+/** Codex round 2 + round 5 — workers already CONSUMED on a `(civilDate, shift)`: an ACTIVE
+ *  allocation (worker-level conservation §C — one live allocation per worker/date/shift
+ *  project-wide; a second pick is a guaranteed terminal 409), OR a released allocation that
+ *  already carries a WORK FACT (the worker delivered that shift — coverage still counts their
+ *  work for the original slice, so re-offering them would let ONE worker satisfy TWO same-shift
+ *  person-shifts). Only a no-work release frees the worker for the shift. */
+export function bookedWorkerIds(
+  allocations: readonly WorkerAllocationDto[],
+  workFacts: readonly LabourWorkFactDto[],
+  civilDate: string,
+  shift: string,
+): Set<string> {
+  const worked = new Set(workFacts.map((f) => f.allocationId));
+  const ids = new Set<string>();
+  for (const a of allocations) {
+    if (a.civilDate === civilDate && a.shift === shift && (a.status === 'active' || worked.has(a.id))) ids.add(a.workerId);
+  }
+  return ids;
+}
+
+/** Codex round 3 — the slice's SOURCED person-shifts, mirroring the server's canonical
+ *  `coveredSourced = |allocated ∪ worked|` (labour-coverage: DISTINCT workers with an ACTIVE
+ *  compatible allocation, UNION workers whose work fact was recorded under a compatible
+ *  allocation of this slice — work counts even after the allocation's release, the §A worked
+ *  guardrail). The allocate action must stop at THIS count, not the active-only one: a
+ *  worked-then-released one-person slice is fulfilled, and another allocation would waste a
+ *  worker on demand readiness already considers delivered. */
+export function sourcedCountFor(
+  allocations: readonly WorkerAllocationDto[],
+  workFacts: readonly LabourWorkFactDto[],
+  requirementId: string,
+  activityId: string,
+  civilDate: string,
+  spec: Pick<LabourSpecRef, 'labourSpecFingerprint' | 'shift'>,
+  substitutions: readonly ApprovedSkillSubstitutionDto[],
+): number {
+  const ok = new Set(satisfyingFingerprints(spec, requirementId, substitutions));
+  const sourced = new Set<string>();
+  for (const a of allocations) {
+    if (a.requirementId !== requirementId || a.activityId !== activityId) continue;
+    if (a.civilDate !== civilDate || a.shift !== spec.shift) continue;
+    if (!ok.has(a.labourSpecFingerprint)) continue;
+    if (a.status === 'active') sourced.add(a.workerId);
+    for (const f of workFacts) {
+      if (f.allocationId === a.id && f.civilDate === civilDate && f.shift === spec.shift) sourced.add(f.workerId);
+    }
+  }
+  return sourced.size;
+}
+
+/** Codex round 7 — workers with an allocate op still IN FLIGHT for a `(civilDate, shift)`:
+ *  the committed `bookedWorkerIds` cannot see them, so the same worker stayed offerable for a
+ *  SECOND same-date/shift slice (a different requirement → a different coalesce key → both
+ *  queue; on flush the first creates the live booking and the second is the server's
+ *  one-live-allocation 409, dropped — leaving that slice unallocated despite the UI offering
+ *  it). The op carries no shift (the server derives it from the requirement head), so it is
+ *  resolved through the op's requirement in the CURRENT view; an op whose requirement is no
+ *  longer in view books the worker CONSERVATIVELY (hiding a worker for one render beats
+ *  offering a doomed action). */
+export function pendingBookedWorkerIds(
+  pendingAllocations: ReadonlyArray<{ requirementId: string; civilDate: string; workerId?: string; originRevision?: number }>,
+  requirements: ReadonlyArray<{ requirementId: string; revision: number; labourSpec: { shift: string } | null }>,
+  civilDate: string,
+  shift: string,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const op of pendingAllocations) {
+    if (!op.workerId || op.civilDate !== civilDate) continue;
+    const req = requirements.find((r) => r.requirementId === op.requirementId);
+    // Codex round 8 — a STALE-revision op never books: its requirement's head has moved past
+    // the op's pin, so the replay is a guaranteed head-drift 409 and drop (round 3). Booking
+    // its worker would lock the only compatible worker OUT of the valid current-head
+    // allocation — the exact fullness mistake round 6 fixed, mirrored onto bookings.
+    if (req && op.originRevision != null && op.originRevision !== req.revision) continue;
+    const opShift = req?.labourSpec?.shift;
+    if (opShift === undefined || opShift === shift) ids.add(op.workerId);
+  }
+  return ids;
+}
+
+/** Codex round 9 — supplier draws still IN FLIGHT, keyed per commitment (the round-6 fold),
+ *  EXCLUDING ops pinned to a STALE revision: such an op is a guaranteed head-drift 409 the
+ *  flush will shed (round 3), so its commitment id will never actually be drawn — reserving it
+ *  would WITHHOLD the supplier commitment from the current head's replacement allocation, which
+ *  then dispatches as own workforce while committed capacity sits idle (the §F bound-3 drawdown
+ *  never runs and the supplier is paid for an undrawn slot). The same current-revision check as
+ *  slice fullness (round 6) and bookings (round 8); an op whose requirement has LEFT the view
+ *  still reserves CONSERVATIVELY (no revision to compare — over-reserving for one render beats
+ *  double-drawing a commitment the server would 409). */
+export function pendingCommitmentDraws(
+  pendingAllocations: ReadonlyArray<{ requirementId: string; capacityCommitmentId?: string | null; originRevision?: number }>,
+  requirements: ReadonlyArray<{ requirementId: string; revision: number }>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const op of pendingAllocations) {
+    if (typeof op.capacityCommitmentId !== 'string') continue;
+    const req = requirements.find((r) => r.requirementId === op.requirementId);
+    if (req && op.originRevision != null && op.originRevision !== req.revision) continue;
+    out[op.capacityCommitmentId] = (out[op.capacityCommitmentId] ?? 0) + 1;
+  }
+  return out;
+}
+
+/** Codex round 7 — whether ANY work op still in flight targets this allocation row OR another
+ *  allocation of the same `(workerId, civilDate, shift)` (the server's cumulative frame). The
+ *  work coalesce key carries the MINUTES, so editing the input while a record is pending would
+ *  otherwise re-enable the button and queue a SECOND distinct command — two facts (or a
+ *  cumulative-cap 409) for a user trying to correct the pending entry. */
+export function hasPendingWorkFor(
+  pendingWorkAllocationIds: ReadonlySet<string>,
+  allocations: readonly WorkerAllocationDto[],
+  row: Pick<WorkerAllocationDto, 'id' | 'workerId' | 'civilDate' | 'shift'>,
+): boolean {
+  if (pendingWorkAllocationIds.has(row.id)) return true;
+  for (const id of pendingWorkAllocationIds) {
+    const other = allocations.find((a) => a.id === id);
+    if (other && other.workerId === row.workerId && other.civilDate === row.civilDate && other.shift === row.shift) return true;
+  }
+  return false;
+}
+
+/** Codex round 10 — whether an allocation still serves LIVE demand: its requirement is in view,
+ *  not cancelled, its head keeps the allocation's frozen identity (the carry-forward rule — a
+ *  responsible-only revision preserves; a trade/skill/shift revision STRANDS the row), and the
+ *  current head still demands the allocation's `(civilDate, shift)` slice. Work entry against a
+ *  row that fails this is effort recorded onto a superseded or dead slice — the server accepts
+ *  it (an active allocation is an active allocation) and §I productivity would roll it in, so
+ *  the hub must not invite it; `allocation.release` is the corrective lever. */
+export function allocationMatchesLiveDemand(
+  a: Pick<WorkerAllocationDto, 'requirementId' | 'activityId' | 'labourSpecFingerprint' | 'civilDate' | 'shift'>,
+  requirements: ReadonlyArray<{
+    requirementId: string;
+    activityId: string;
+    status?: string;
+    labourSpec: { labourSpecFingerprint: string; shift: string; demandSlices: ReadonlyArray<{ civilDate: string; shift: string }> } | null;
+  }>,
+): boolean {
+  const req = requirements.find((r) => r.requirementId === a.requirementId);
+  if (!req || req.status === 'cancelled') return false; // demand gone
+  // round 11 — the ACTIVITY is part of live demand too: a requirement re-homed from activity A
+  // to B strands the old A rows in coverage (the allocation activity must equal the current
+  // head's), so work entry under them books productivity onto the wrong activity.
+  if (req.activityId !== a.activityId) return false;
+  const spec = req.labourSpec;
+  if (!spec) return false;
+  if (spec.labourSpecFingerprint !== a.labourSpecFingerprint || spec.shift !== a.shift) return false; // stranded
+  return spec.demandSlices.some((sl) => sl.civilDate === a.civilDate && sl.shift === a.shift);
+}
+
+/** Codex round 6 — workers already carrying an ACTIVE muster for a shift (the `labour.presence`
+ *  read returns non-revoked musters only). The manual-muster picker must not offer them again:
+ *  a second muster for the same (worker, civil day, shift) is the server's deterministic 409
+ *  ("already recorded — revoke it to correct it") the outbox drops as terminal. */
+export function musteredWorkerIds(
+  musters: ReadonlyArray<{ workerId: string; shift: string }>,
+  shift: string,
+): Set<string> {
+  return new Set(musters.filter((m) => m.shift === shift).map((m) => m.workerId));
+}
+
+/** Codex round 6 — the worker's REMAINING recordable minutes for a (civilDate, shift), mirroring
+ *  the server's cumulative guardrail (`labour-capacity.service.ts` `SHIFT_MINUTES = 720`:
+ *  Σ workedMinutes per worker/date/shift re-derived under the worker lock; an entry that would
+ *  exceed it is a terminal 409). The work facts span ALL of the worker's allocations. */
+export const SHIFT_MINUTES = 720;
+export function remainingShiftMinutes(
+  workFacts: readonly LabourWorkFactDto[],
+  workerId: string,
+  civilDate: string,
+  shift: string,
+): number {
+  const recorded = workFacts
+    .filter((f) => f.workerId === workerId && f.civilDate === civilDate && f.shift === shift)
+    .reduce((sum, f) => sum + f.workedMinutes, 0);
+  return Math.max(0, SHIFT_MINUTES - recorded);
+}
+
+/** Codex round 3 — the UNREQUISITIONED residual of a requirement's demand slices. The server's
+ *  §F bound-1 check counts every existing `open`/`ordered` requisition line on the SAME
+ *  `(requirementId, revision, civilDate)` slice against its `personShiftQty` ceiling, so re-sending
+ *  a slice that is already (partly) in the commercial chain is a guaranteed terminal 409. Send
+ *  only the residual per slice, and drop fully-requisitioned slices entirely (an empty result
+ *  means the raise action has nothing left to do and the button disappears). */
+export function unrequisitionedLines(
+  requirementId: string,
+  revision: number,
+  demandSlices: ReadonlyArray<{ civilDate: string; personShiftQty: number }>,
+  requisitions: readonly LabourRequisitionDto[],
+): Array<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number }> {
+  const already = new Map<string, number>();
+  for (const rq of requisitions) {
+    // Codex round 4 — the server's bound-1 count EXCLUDES lines whose parent requisition is
+    // rejected or closed (`requisition.status NOT IN ('rejected','closed')`): a rejected
+    // requisition's lines can stay `open` in the DTO, but its demand is re-sourceable and the
+    // raise button must come back for it.
+    if (rq.status === 'rejected' || rq.status === 'closed') continue;
+    for (const l of rq.lines) {
+      if (l.requirementId !== requirementId || l.revision !== revision) continue;
+      if (l.status !== 'open' && l.status !== 'ordered') continue;
+      already.set(l.civilDate, (already.get(l.civilDate) ?? 0) + l.personShiftQty);
+    }
+  }
+  return demandSlices
+    .map((sl) => ({ requirementId, revision, civilDate: sl.civilDate, personShiftQty: sl.personShiftQty - (already.get(sl.civilDate) ?? 0) }))
+    .filter((l) => l.personShiftQty > 0);
+}

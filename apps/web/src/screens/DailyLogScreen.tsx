@@ -7,7 +7,7 @@ import { EmptyState, Eyebrow, Swatch, PhotoViewer, Modal, Button } from '@/compo
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
-import { can, SW, type SwatchKey } from '@vitan/shared';
+import { can, SW, labourLabels, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
@@ -27,6 +27,12 @@ export function DailyLogScreen() {
   const submitDailyLog = useStore((s) => s.submitDailyLog);
   const role = useStore((s) => s.role);
   const startDailyLog = useStore((s) => s.startDailyLog);
+  // Phase 4 Task 6 (§E/§J) — the pilot LABOUR presence read: canonical per-worker musters +
+  // unresolved mismatches for today, shown ALONGSIDE the aggregate crew steppers (which stay
+  // display-only and never drive the Team gate). `labourView` is null off-pilot, so the section
+  // is absent and the non-pilot daily log renders byte-identically.
+  const labourPresence = useStore(useShallow((s) => s.labourView?.presence ?? null));
+  const lang = useStore((s) => s.lang);
   // Phase 2 Task 10 (correction, finding 4): under module read-ownership the daily-log read is a
   // SEPARATE async surface from the project snapshot, with its own honest load state. Never claim
   // "No daily log started" until a read has actually SUCCEEDED with null; while it loads show a
@@ -200,6 +206,35 @@ export function DailyLogScreen() {
         <button onClick={openQr} style={{ width: '100%', marginTop: 10, background: '#fff', border: '1px dashed rgba(35,33,28,.3)', borderRadius: 11, padding: 12, fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, color: 'var(--ink)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
           <QrCode size={16} /> Worker self check-in (scan QR)
         </button>
+
+        {/* Phase 4 Task 6 (§E) — the pilot labour register: per-worker musters + unresolved
+            mismatches from the labour-owned `labour.presence` read (identity joined server-side).
+            Display-only here — recording lives in the Labour hub / the worker's own device. */}
+        {labourPresence && (
+          <div data-testid="daily-log-labour-presence">
+            <div style={sectionLabel}>{labourLabels.attendance[lang].toUpperCase()} · {labourPresence.civilDate}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {labourPresence.musters.length === 0 && labourPresence.mismatches.length === 0 && (
+                <div data-testid="daily-log-labour-presence-empty" style={{ fontSize: 12, color: 'var(--faint)' }}>—</div>
+              )}
+              {labourPresence.musters.map((mu) => (
+                <div key={`${mu.workerId}-${mu.shift}`} data-testid={`daily-log-muster-${mu.workerId}`} style={{ background: '#fff', border: '1px solid rgba(35,33,28,.1)', borderRadius: 12, padding: '11px 13px', display: 'flex', alignItems: 'center', gap: 11 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', flex: 'none', background: 'var(--green-solid)' }} />
+                  <div style={{ flex: 1, fontWeight: 600, fontSize: 13.5 }}>{mu.workerName}</div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--faint)' }}>
+                    {mu.tradeCode} · {mu.shift === 'night' ? labourLabels.shiftNight[lang] : labourLabels.shiftDay[lang]} · {labourLabels.present[lang]}{mu.deviceId ? '' : ' *'}
+                  </div>
+                </div>
+              ))}
+              {labourPresence.mismatches.map((mm) => (
+                <div key={mm.id} data-testid={`daily-log-labour-mismatch-${mm.id}`} style={{ background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 12, padding: '11px 13px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <TriangleAlert size={13} color="var(--amber-text)" style={{ flex: 'none' }} />
+                  <div style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>{labourLabels.mismatch[lang]} · {mm.note}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* materials */}
         <div style={sectionLabel}>MATERIAL ON SITE</div>

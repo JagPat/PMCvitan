@@ -89,7 +89,10 @@ export type ScreenKey =
   | 'team-access'
   // Phase 3 Task 7 — the pilot Materials hub (requirements → procurement → deliveries → inventory →
   // reservations → issues → readiness). Capability-gated: present ONLY on a project with `materials`.
-  | 'materials';
+  | 'materials'
+  // Phase 4 Task 6 (§J) — the pilot Labour hub (readiness → demand → suppliers → commitments →
+  // allocation → attendance → productivity). Capability-gated: present ONLY with `labour`.
+  | 'labour';
 
 export type Lang = 'en' | 'hi' | 'gu';
 

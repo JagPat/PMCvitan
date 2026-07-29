@@ -23,6 +23,9 @@ export function useNavItems(): NavItem[] {
   const capabilities = useStore((s) => s.capabilities);
   // the count of material shortages (blocked/at-risk requirements) drives the Materials nav badge
   const shortageCount = useStore((s) => s.materialsView?.readiness.shortages.length ?? 0);
+  // Phase 4 Task 6 (§J) — the Labour badge counts forecast shortfalls (at-risk + blocked activities)
+  const labourShortfallCount = useStore((s) =>
+    s.labourView ? Object.values(s.labourView.readiness.forecast).filter((f) => f.verdict !== 'ready').length : 0);
 
   return enabledScreensFor(role, enabledModules, capabilities).map((m) => {
     let badge = 0;
@@ -31,6 +34,7 @@ export function useNavItems(): NavItem[] {
     if (m.key === 'client-decisions') badge = pending;
     if (m.key === 'inspect-review') badge = reviewPending;
     if (m.key === 'materials') badge = shortageCount;
+    if (m.key === 'labour') badge = labourShortfallCount;
     return { ...m, badge, active: screen === m.key };
   });
 }

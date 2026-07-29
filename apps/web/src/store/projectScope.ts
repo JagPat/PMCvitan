@@ -16,6 +16,8 @@ import type {
   ReservationPlan,
 } from '@vitan/shared';
 import type { MaterialsView } from './materials';
+import type { LabourView } from './labour';
+import type { AllocateLabourInput } from '../data/apiGateway';
 
 /**
  * The frontend project-scope lifecycle (Phase 0 Task 2).
@@ -56,6 +58,11 @@ export interface ProjectDataState {
   // Materials bundle. Project-owned, so they tear down on every scope change: a non-pilot / freshly
   // switched project shows NO Materials nav until its shell reloads the capability (never stale).
   capabilities: string[];
+  // Phase 4 Task 6 correction (Codex F-deeplink) — whether the shell has REPORTED the active
+  // project's capabilities yet. Reset with `capabilities` on every scope change so RouteBridge
+  // treats the next project's capability set as unknown (no premature deep-link bounce) until its
+  // own shell lands.
+  capabilitiesKnown: boolean;
   materialsView: MaterialsView | null;
   // Phase 3 Task 7 (correction 2) — the SERVER-computed reservation plan per activity whose cover UI is
   // open (canonical reserve candidates + the residual to requisition), and the in-flight materials
@@ -63,6 +70,30 @@ export interface ProjectDataState {
   // them down so a stale plan/pending key never leaks into another project's Materials hub.
   reservationPlans: Record<string, ReservationPlan>;
   materialsPending: string[];
+  // Phase 4 Task 6 (§J) — the pilot Labour bundle + the in-flight labour field-op coalesce keys.
+  // Project-owned exactly like the materials pair: a scope change tears them down so a stale
+  // labour bundle / pending key never leaks into another project's Labour hub.
+  labourView: LabourView | null;
+  labourPending: string[];
+  /** Codex round 13 — the ORIGINAL allocate input per retained coalesce key. The key alone (round
+   *  11's parser) loses `capacityCommitmentId`, so in the success→reload gap a resolved
+   *  supplier-backed draw stopped reserving its commitment and a second same-slice worker was
+   *  sent WITH the drawn commitment (a deterministic drawdown 409/drop) instead of own
+   *  workforce. Lifecycle mirrors `labourPending` exactly: written at dispatch, pruned to the
+   *  still-queued outbox ops whenever `labourPending` is rebuilt, torn down with the scope. */
+  labourPendingInputs: Record<string, AllocateLabourInput>;
+  /** Codex rounds 5+8 — the idempotency keys held for submitted roster onboarding forms, keyed
+   *  BY FORM SIGNATURE (round 8: a single slot lost form A's key the moment form B was submitted
+   *  while A was unresolved — A's retry then minted a fresh key and could duplicate the Worker).
+   *  Each entry is reused verbatim on a retry of the SAME form and cleared only by that form's
+   *  CONFIRMED success or a scope teardown. */
+  labourOnboardPending: Record<string, string>;
+  /** Codex rounds 6+8 — the same signature-keyed held-key discipline for the device-bind
+   *  command: a committed-but-lost bind retried with a FRESH key is the server's "already bound
+   *  to this worker" 409 (the CAS is on the still-unbound row), reported as failure for a
+   *  binding that succeeded. Holding the key lets the command ledger replay the original
+   *  success; keying by (device, worker) signature keeps concurrent forms independent. */
+  labourBindPending: Record<string, string>;
 }
 
 /** Explicit absence — null, never a fabricated ''-id record actions could mutate. */
@@ -85,9 +116,15 @@ export function emptyProjectData(): ProjectDataState {
     notifications: [],
     companies: [],
     capabilities: [],
+    capabilitiesKnown: false,
     materialsView: null,
     reservationPlans: {},
     materialsPending: [],
+    labourView: null,
+    labourPending: [],
+    labourPendingInputs: {},
+    labourOnboardPending: {},
+    labourBindPending: {},
   };
 }
 
@@ -115,6 +152,9 @@ export interface ModuleReadState {
   // Phase 3 Task 7 — the pilot Materials bundle load status (module-query-only, greenfield; no snapshot
   // fallback, so no `source`). 'idle' on a non-pilot project; the pilot's shell load triggers 'loading'.
   materialsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  // Phase 4 Task 6 (§J) — the pilot Labour bundle load status (module-query-only, greenfield; no
+  // snapshot fallback, so no `source`). 'idle' on a non-pilot project; the shell load triggers it.
+  labourLoad: 'idle' | 'loading' | 'ready' | 'error';
 }
 export function emptyModuleReadState(): ModuleReadState {
   return {
@@ -129,6 +169,7 @@ export function emptyModuleReadState(): ModuleReadState {
     activitiesLoad: 'idle',
     activitiesSource: null,
     materialsLoad: 'idle',
+    labourLoad: 'idle',
   };
 }
 

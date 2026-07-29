@@ -90,3 +90,43 @@ describe('RouteBridge — deep links survive a pending project switch (Phase 0 T
     expect(currentPath).toMatch(/^\/projects\/project-b\//);
   });
 });
+
+describe('RouteBridge — capability-gated deep links (Phase 4 Task 6, Codex F-deeplink)', () => {
+  it('a labour deep link on a project whose shell REPORTED no `labour` capability is bounced to the role default', async () => {
+    useStore.setState({ capabilities: [], capabilitiesKnown: true });
+    renderAt('/projects/ambli/labour');
+    await flush();
+    expect(useStore.getState().screen).toBe('inbox');
+    expect(currentPath).toBe('/projects/ambli/for-you');
+  });
+
+  it('a labour deep link on a labour-PILOT project lands on the hub', async () => {
+    useStore.setState({ capabilities: ['labour'], capabilitiesKnown: true });
+    renderAt('/projects/ambli/labour');
+    await flush();
+    expect(useStore.getState().screen).toBe('labour');
+    expect(currentPath).toBe('/projects/ambli/labour');
+  });
+
+  it('while capabilities are UNKNOWN (shell in flight) a labour deep link is NOT bounced — and IS bounced the moment the shell reports none', async () => {
+    // cold load: the shell has not answered yet — ejecting now would break every pilot deep link
+    expect(useStore.getState().capabilitiesKnown).toBe(false);
+    renderAt('/projects/ambli/labour');
+    await flush();
+    expect(useStore.getState().screen).toBe('labour');
+    expect(currentPath).toBe('/projects/ambli/labour');
+    // the shell lands: this project has NO labour capability → the provisional screen is ejected
+    act(() => { useStore.setState({ capabilities: [], capabilitiesKnown: true }); });
+    await flush();
+    expect(useStore.getState().screen).toBe('inbox');
+    expect(currentPath).toBe('/projects/ambli/for-you');
+  });
+
+  it('the same gate covers materials (every capability-gated screen, not a labour special case)', async () => {
+    useStore.setState({ capabilities: [], capabilitiesKnown: true });
+    renderAt('/projects/ambli/materials');
+    await flush();
+    expect(useStore.getState().screen).toBe('inbox');
+    expect(currentPath).toBe('/projects/ambli/for-you');
+  });
+});

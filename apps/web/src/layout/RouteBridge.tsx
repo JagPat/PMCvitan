@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { parseLocation, pathForScreen, screensFor } from '@/lib/screens';
+import { parseLocation, pathForScreen, screensFor, SCREEN_CAPABILITY } from '@/lib/screens';
 
 /**
  * Keeps the URL, the active project, and the active screen in sync — the URL is
@@ -24,6 +24,8 @@ export function RouteBridge() {
   const pendingProjectId = useStore((s) => s.pendingProjectId);
   const projectLoadState = useStore((s) => s.projectLoadState);
   const memberships = useStore(useShallow((s) => s.memberships));
+  const capabilities = useStore(useShallow((s) => s.capabilities));
+  const capabilitiesKnown = useStore((s) => s.capabilitiesKnown);
   const setScreen = useStore((s) => s.setScreen);
   const switchProject = useStore((s) => s.switchProject);
   const navigate = useNavigate();
@@ -61,14 +63,26 @@ export function RouteBridge() {
       // the forged/unknown-project path under the ACTIVE project's role-default.
     }
 
-    const allowed = screensFor(role).map((m) => m.key);
+    // Codex F-deeplink — the role list alone is NOT enough for a capability-gated screen
+    // (`materials`/`labour`): the nav hides it on a non-pilot project, but a direct/bookmarked
+    // URL would land on a permanently-loading hub. Once the shell has REPORTED the project's
+    // capabilities, a deep link to a screen whose capability the project lacks is redirected
+    // like any forbidden screen. While capabilities are still UNKNOWN (cold load, shell in
+    // flight or failed) nothing is bounced — a pilot deep link must survive the shell latency.
+    const caps = new Set(capabilities);
+    const allowed = screensFor(role)
+      .filter((m) => {
+        const cap = SCREEN_CAPABILITY[m.key];
+        return cap === undefined || !capabilitiesKnown || caps.has(cap);
+      })
+      .map((m) => m.key);
     if (!fromPath || !allowed.includes(fromPath)) {
       if (screen !== allowed[0]) setScreen(allowed[0]);
       return;
     }
     if (fromPath !== screen) setScreen(fromPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState]);
+  }, [location.pathname, role, activeProjectId, memberships, pendingProjectId, projectLoadState, capabilities, capabilitiesKnown]);
 
   // store -> URL (canonical project-scoped path). ONE-WAY during a transition: while
   // a switch is pending or the target project is loading, the deep link's URL is the

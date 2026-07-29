@@ -795,4 +795,29 @@ describe('Phase 4 Task 4 — §A labour readiness (live PG)', () => {
     // B carries the real (unsatisfied) demand
     expect((await teamOf(projectId, actB)).v).toBe('fail');
   });
+
+  // ── Codex round 12 (PR #246) — supplier drawdown requires a HEAD-NATIVE worker ────────────────
+
+  it('ROUND-12: a substitution-only worker cannot draw supplier capacity committed for the head identity; own-workforce and a native worker still can', async () => {
+    const projectId = await freshProject();
+    await enableLabour(projectId);
+    const act = await freshActivity(projectId);
+    const d = day(3);
+    // head mason/bar-bending, 2 person-shifts; supplier capacity committed FOR THE HEAD identity
+    const req = await labourRequirement(projectId, act, [{ civilDate: d, personShiftQty: 2 }]);
+    const { commitmentId } = await committedCapacity(projectId, req, d, 1);
+    // a carpenter becomes eligible ONLY through an approved substitution (head ← carpenter)
+    await capacity.approveSkillSubstitution(projectId, { requirementId: req.requirementId, tradeCode: 'carpenter', skillCode: 'shuttering', shift: 'day', reason: 'carpenters may stand in' }, pmc(projectId));
+    const carp = (await labour.onboardWorker(projectId, { name: `Carp${seq++}`, tradeCode: 'carpenter', skillCodes: ['shuttering'], activeFrom: '2026-01-01', activeTo: null }, pmc(projectId))).id;
+    // RED at 19106d7: the draw was ACCEPTED — `acceptable` admitted substitution targets, so the
+    // head-trade supplier commitment was consumed while substitute labour actually arrived.
+    await expect(
+      capacity.allocate(projectId, { activityId: act, requirementId: req.requirementId, civilDate: d, workerId: carp, capacityCommitmentId: commitmentId }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/committed for the head identity/) });
+    // the substitute is still allocatable as OWN workforce (no commitment id)
+    await allocate(projectId, act, req.requirementId, d, carp);
+    // and a NATIVE mason draws the commitment exactly as before
+    const mason = await onboardWorker(projectId);
+    await capacity.allocate(projectId, { activityId: act, requirementId: req.requirementId, civilDate: d, workerId: mason, capacityCommitmentId: commitmentId }, pmc(projectId));
+  });
 });

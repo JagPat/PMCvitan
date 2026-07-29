@@ -68,6 +68,18 @@ export const workerTradeLabels: Record<string, Record<Lang, string>> = {
   Electrician: { en: 'Electrician', hi: 'इलेक्ट्रिशियन', gu: 'ઇલેક્ટ્રિશિયન' },
 };
 
+/** Phase 4 Task 6 (§J) — site-facing labour labels (attendance is a field surface, so the
+ *  worker-visible strings are fully translated like the access/trade dictionaries). */
+export const labourLabels: Record<string, Record<Lang, string>> = {
+  attendance: { en: 'Attendance', hi: 'हाज़िरी', gu: 'હાજરી' },
+  present: { en: 'Present', hi: 'हाज़िर', gu: 'હાજર' },
+  crew: { en: 'Crew', hi: 'टोली', gu: 'ટોળી' },
+  worker: { en: 'Worker', hi: 'मज़दूर', gu: 'કારીગર' },
+  shiftDay: { en: 'Day shift', hi: 'दिन की पाली', gu: 'દિવસની પાળી' },
+  shiftNight: { en: 'Night shift', hi: 'रात की पाली', gu: 'રાતની પાળી' },
+  mismatch: { en: 'Crew ≠ allocated', hi: 'टोली ≠ आवंटित', gu: 'ટોળી ≠ ફાળવેલ' },
+};
+
 export const LANGS: { key: Lang; label: string }[] = [
   { key: 'en', label: 'English' },
   { key: 'hi', label: 'हिंदी' },
@@ -78,6 +90,7 @@ const ns = (lang: Lang) => ({
   access: accessDict[lang] as unknown as Record<string, string>,
   trades: Object.fromEntries(Object.entries(tradeLabels).map(([k, v]) => [k, v[lang]])),
   workerTrades: Object.fromEntries(Object.entries(workerTradeLabels).map(([k, v]) => [k, v[lang]])),
+  labour: Object.fromEntries(Object.entries(labourLabels).map(([k, v]) => [k, v[lang]])),
 });
 
 /** i18next-ready resource bundle. */

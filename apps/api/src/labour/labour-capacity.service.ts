@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   ROLE_POLICY, computeLabourSpecFingerprint, isLabourShift,
@@ -223,15 +223,41 @@ export class LabourCapacityService {
    * one simply waits for the other — a lock CYCLE (deadlock) is impossible by construction.
    * Returns the locked rows so the caller can validate the roster inside the lock.
    */
-  private async lockWorkersInOrder(tx: CommandTx, projectId: string, workerIds: string[]): Promise<Array<{ id: string; revokedAt: Date | null; activeFrom: Date; activeTo: Date | null }>> {
+  private async lockWorkersInOrder(tx: CommandTx, projectId: string, workerIds: string[]): Promise<Array<{ id: string; tradeCode: string; revokedAt: Date | null; activeFrom: Date; activeTo: Date | null }>> {
     const ordered = [...new Set(workerIds)].sort();
     if (ordered.length === 0) return [];
-    return tx.$queryRaw<Array<{ id: string; revokedAt: Date | null; activeFrom: Date; activeTo: Date | null }>>`
-      SELECT "id", "revokedAt", "activeFrom", "activeTo"
+    return tx.$queryRaw<Array<{ id: string; tradeCode: string; revokedAt: Date | null; activeFrom: Date; activeTo: Date | null }>>`
+      SELECT "id", "tradeCode", "revokedAt", "activeFrom", "activeTo"
       FROM "Worker"
       WHERE "projectId" = ${projectId} AND "id" IN (${Prisma.join(ordered)})
       ORDER BY "id" ASC
       FOR UPDATE`;
+  }
+
+  /** Round 11 — the fingerprints a worker's OWN identity satisfies for one shift: the bare-trade
+   *  identity plus one per `WorkerSkill` row (the same construction the hub's pickers use with
+   *  the shared fingerprint, §B). */
+  private async workerNativeFingerprints(
+    tx: CommandTx,
+    projectId: string,
+    workers: ReadonlyArray<{ id: string; tradeCode: string }>,
+    shift: 'day' | 'night',
+  ): Promise<Map<string, Set<string>>> {
+    const skills = await tx.workerSkill.findMany({
+      where: { projectId, workerId: { in: workers.map((w) => w.id) } },
+      select: { workerId: true, skillCode: true },
+    });
+    const skillsByWorker = new Map<string, string[]>();
+    for (const s of skills) skillsByWorker.set(s.workerId, [...(skillsByWorker.get(s.workerId) ?? []), s.skillCode]);
+    const out = new Map<string, Set<string>>();
+    for (const w of workers) {
+      const natives = new Set<string>([await computeLabourSpecFingerprint({ tradeCode: w.tradeCode, skillCode: null, shift })]);
+      for (const skillCode of skillsByWorker.get(w.id) ?? []) {
+        natives.add(await computeLabourSpecFingerprint({ tradeCode: w.tradeCode, skillCode, shift }));
+      }
+      out.set(w.id, natives);
+    }
+    return out;
   }
 
   // ── allocation ───────────────────────────────────────────────────────────────────────────────
@@ -261,6 +287,40 @@ export class LabourCapacityService {
           throw new BadRequestException(
             `Requirement ${input.requirementId} belongs to activity ${spec.activityId}, not ${input.activityId} — an allocation must name the activity whose demand it serves`,
           );
+        }
+        // Task 6 review round 3 (P1) — refuse HEAD DRIFT. The client pins the revision it selected
+        // the worker against; if the requirement was revised before this command lands (an
+        // offline-queued replay), the worker was chosen for a DIFFERENT trade/skill/shift demand,
+        // so the stale allocation is refused as a terminal conflict instead of being silently
+        // stamped with the NEW head's fingerprint. An unpinned command keeps today's semantics.
+        if (input.originRevision != null && input.originRevision !== spec.revision) {
+          throw new ConflictException(
+            `Requirement ${input.requirementId} is at revision ${spec.revision}, not the selected revision ${input.originRevision} — the demand changed since this allocation was chosen; reload and re-allocate against the current head`,
+          );
+        }
+        // Task 6 review round 8 — VERIFY the eligibility basis the worker was offered under.
+        // A queued command whose worker was eligible only through a §B substitution must not
+        // land after that substitution's REVOCATION as if the authority were still live: the
+        // caller states the basis and the server refuses a dead or unknown one with a terminal
+        // 409 the outbox drops. The FROZEN identity stays the HEAD identity — the cleared §C
+        // seal (`WorkerAllocation_spec_fkey` pins the spec's WHOLE frozen identity, fingerprint
+        // included, and the T3C deploy seals verify that four-column FK) makes a substitute
+        // identity on the allocation deliberately unrepresentable; undoing a substitution-backed
+        // assignment is the pmc's `allocation.release`, never a silent identity rewrite.
+        if (input.labourSpecFingerprint != null && input.labourSpecFingerprint !== spec.labourSpecFingerprint) {
+          const sub = await tx.approvedSkillSubstitution.findFirst({
+            where: {
+              projectId, requirementId: input.requirementId,
+              fromFingerprint: spec.labourSpecFingerprint, toFingerprint: input.labourSpecFingerprint,
+              revokedAt: null,
+            },
+            select: { id: true },
+          });
+          if (!sub) {
+            throw new ConflictException(
+              'labourSpecFingerprint is neither the requirement head identity nor an ACTIVE approved substitution target for it — the authorization may have been revoked; reload and re-allocate',
+            );
+          }
         }
 
         // the demanded slice must exist on the HEAD revision — allocating onto a date the current
@@ -301,6 +361,41 @@ export class LabourCapacityService {
           if (w.revokedAt) throw new BadRequestException(`worker "${id}" is revoked and cannot be allocated`);
           if (civilDate < w.activeFrom || (w.activeTo && civilDate > w.activeTo)) {
             throw new BadRequestException(`worker "${id}" is not active on ${input.civilDate}`);
+          }
+        }
+
+        // Task 6 review round 11 — every allocated worker must ACTUALLY satisfy the demand's §B
+        // identity. Round 8 verified a STATED substitution basis, but a direct command (or a
+        // malformed client) could still allocate an electrician onto a mason head — the row would
+        // freeze the head fingerprint and coverage would count it as native mason sourcing. The
+        // locked workers' OWN fingerprints (trade + `WorkerSkill` rows, the shared hash) are
+        // recomputed here; a worker satisfying neither the head identity nor an ACTIVE approved
+        // substitution target is refused terminally.
+        if (isLabourShift(spec.shift)) {
+          const activeTargets = await tx.approvedSkillSubstitution.findMany({
+            where: { projectId, requirementId: input.requirementId, fromFingerprint: spec.labourSpecFingerprint, revokedAt: null },
+            select: { toFingerprint: true },
+          });
+          const acceptable = new Set<string>([spec.labourSpecFingerprint, ...activeTargets.map((s) => s.toFingerprint)]);
+          const natives = await this.workerNativeFingerprints(tx, projectId, locked, spec.shift);
+          for (const id of workerIds) {
+            const own = natives.get(id);
+            if (!own || ![...own].some((fp) => acceptable.has(fp))) {
+              throw new BadRequestException(
+                `worker "${id}" does not satisfy the requirement's trade/skill identity (nor any ACTIVE approved substitution for it) — approve a skill substitution first (§B)`,
+              );
+            }
+            // Round 12 — a supplier DRAWDOWN is committed for the HEAD identity (the commitment's
+            // own fingerprint is FK-bound to the head slice): a worker eligible only through a
+            // substitution may be allocated as OWN workforce, but letting them consume the
+            // head-trade committed capacity would conflate §B-widened labour with the §F supply
+            // the supplier is paid to deliver. The hub already draws commitments only for
+            // head-basis workers; this makes the same rule true for DIRECT commands.
+            if (input.capacityCommitmentId && !own.has(spec.labourSpecFingerprint)) {
+              throw new BadRequestException(
+                `worker "${id}" satisfies the demand only through a skill substitution — supplier capacity committed for the head identity cannot be drawn for them; allocate them as own workforce (omit capacityCommitmentId)`,
+              );
+            }
           }
         }
 
@@ -525,9 +620,50 @@ export class LabourCapacityService {
         await lockProjectReadiness(tx, projectId);
         const allocation = await tx.workerAllocation.findFirst({
           where: { projectId, id: input.allocationId },
-          select: { id: true, workerId: true, activityId: true, civilDate: true, shift: true, status: true },
+          select: { id: true, workerId: true, activityId: true, requirementId: true, labourSpecFingerprint: true, civilDate: true, shift: true, status: true },
         });
         if (!allocation) throw new NotFoundException('Allocation not found in this project');
+        // Codex T6 round 7 — effort can only be recorded under an ACTIVE allocation: a released
+        // row freed the worker AND the slice's coverage (§C), so a stale queued work op replaying
+        // after a no-work release must not resurrect delivered-effort evidence. Deterministic 409
+        // (terminal — the client outbox drops it); evaluated under the readiness lock, which the
+        // release command also holds, so the two can never interleave. A keyed replay of an op
+        // that COMMITTED while the allocation was still active is untouched (the ledger returns
+        // the recorded result without re-running this check).
+        if (allocation.status !== 'active') {
+          throw new ConflictException(`Allocation is ${allocation.status} — effort can only be recorded under an active allocation`);
+        }
+        // Round 11 — the allocation must still match LIVE demand. A work command queued while the
+        // allocation was valid can replay AFTER the requirement moved (another trade/skill/shift,
+        // another activity, a dropped civil date, or a cancel): coverage has already stopped
+        // counting the row, and accepting the fact would book actual effort + §I productivity
+        // onto a superseded slice. Re-derived HERE under the same readiness lock the revision
+        // path holds; the refusal is a terminal 409 the outbox drops. The pmc's corrective is
+        // `allocation.release` — history already recorded stays recorded.
+        let head: Awaited<ReturnType<LabourCapacityService['requirementHead']>> | null = null;
+        try {
+          head = await this.requirementHead(tx, projectId, allocation.requirementId);
+        } catch (e) {
+          // Round 12 — only the EXPECTED demand-gone signals mean not-live: `requirementHead`
+          // reports a cancelled/vanished/non-labour head as a Nest HttpException. Anything else
+          // (a transient DB failure) must PROPAGATE as retryable — a blanket 409 here would make
+          // the outbox drop a legitimate work op forever over a momentary read error.
+          if (!(e instanceof HttpException)) throw e;
+        }
+        const live =
+          !!head &&
+          head.activityId === allocation.activityId &&
+          head.labourSpecFingerprint === allocation.labourSpecFingerprint &&
+          head.shift === allocation.shift &&
+          !!(await tx.labourDemandSlice.findFirst({
+            where: { projectId, requirementId: allocation.requirementId, revision: head.revision, civilDate: allocation.civilDate },
+            select: { revision: true },
+          }));
+        if (!live) {
+          throw new ConflictException(
+            'Allocation no longer matches live demand — the requirement was revised or cancelled since this effort was queued; release the allocation to correct the roster',
+          );
+        }
 
         // serialize every effort record for this worker (round-3 guardrail 2)
         await this.lockWorkersInOrder(tx, projectId, [allocation.workerId]);
@@ -639,12 +775,72 @@ export class LabourCapacityService {
         }
         const row = await tx.approvedSkillSubstitution.findFirstOrThrow({ where: { projectId, id: substitutionId } });
         await recordAudit(tx, { projectId, actor, action: 'labour.skillSubstitution.revoke', entity: 'ApprovedSkillSubstitution', entityId: substitutionId });
-        const ev = await emitEvent(tx, {
+        const events: EmittedEventMeta[] = [];
+        events.push(await emitEvent(tx, {
           projectId, actor, eventType: 'skill_substitution.revoked', entityType: 'ApprovedSkillSubstitution', entityId: substitutionId,
           payload: serializeSubstitution(row) as unknown as Prisma.InputJsonValue,
           effectKey: 'skill_substitution.revoked', dispatch: {},
+        }));
+        // Task 6 review round 10 — revocation DISPOSES of the allocations it authorized. An
+        // allocation freezes the HEAD identity (the cleared §C `WorkerAllocation_spec_fkey`
+        // seal), so coverage cannot see WHICH basis qualified the worker; without this step a
+        // worker eligible ONLY through this substitution would keep counting as native
+        // head-fingerprint coverage after the authority ended. In the SAME transaction (still
+        // under the readiness lock `activities.start` also takes, so a start racing this revoke
+        // serializes), every ACTIVE allocation on this requirement whose worker's OWN identity
+        // does not hash to the frozen fingerprint, DOES hash to the revoked target, and is not
+        // covered by any OTHER live substitution, is RELEASED — the same attributable CAS
+        // lifecycle as a manual `allocation.release`, with the revocation as the reason.
+        // Recorded work facts survive (delivered effort is physical history; §A keeps counting
+        // it), and R7-1 refuses any FURTHER work under the released row.
+        const activeAllocations = await tx.workerAllocation.findMany({
+          where: { projectId, requirementId: row.requirementId, labourSpecFingerprint: row.fromFingerprint, status: 'active' },
         });
-        return { resultRef: substitutionId, events: [ev] };
+        if (activeAllocations.length > 0) {
+          const otherTargets = (
+            await tx.approvedSkillSubstitution.findMany({
+              where: { projectId, requirementId: row.requirementId, fromFingerprint: row.fromFingerprint, revokedAt: null },
+              select: { toFingerprint: true },
+            })
+          ).map((s) => s.toFingerprint);
+          const workerIds = [...new Set(activeAllocations.map((a) => a.workerId))];
+          const [workerRows, skillRows] = await Promise.all([
+            tx.worker.findMany({ where: { projectId, id: { in: workerIds } }, select: { id: true, tradeCode: true } }),
+            tx.workerSkill.findMany({ where: { projectId, workerId: { in: workerIds } }, select: { workerId: true, skillCode: true } }),
+          ]);
+          const tradeByWorker = new Map(workerRows.map((w) => [w.id, w.tradeCode]));
+          const skillsByWorker = new Map<string, string[]>();
+          for (const s of skillRows) skillsByWorker.set(s.workerId, [...(skillsByWorker.get(s.workerId) ?? []), s.skillCode]);
+          for (const a of [...activeAllocations].sort((x, y) => (x.id < y.id ? -1 : 1))) {
+            const tradeCode = tradeByWorker.get(a.workerId);
+            if (!tradeCode || !isLabourShift(a.shift)) continue;
+            const natives = new Set<string>([
+              await computeLabourSpecFingerprint({ tradeCode, skillCode: null, shift: a.shift }),
+            ]);
+            for (const skillCode of skillsByWorker.get(a.workerId) ?? []) {
+              natives.add(await computeLabourSpecFingerprint({ tradeCode, skillCode, shift: a.shift }));
+            }
+            if (natives.has(a.labourSpecFingerprint)) continue; // natively qualified — untouched
+            if (!natives.has(row.toFingerprint)) continue; // this substitution never covered them
+            if (otherTargets.some((t) => natives.has(t))) continue; // another LIVE authorization covers
+            const { count: released } = await tx.workerAllocation.updateMany({
+              where: { id: a.id, projectId, status: 'active' },
+              data: {
+                status: 'released', releasedAt: new Date(), releasedById: actor.actorId,
+                releaseReason: `skill substitution revoked: ${input.reason}`,
+              },
+            });
+            if (released === 0) continue;
+            const releasedRow = await tx.workerAllocation.findFirstOrThrow({ where: { projectId, id: a.id } });
+            await recordAudit(tx, { projectId, actor, action: 'labour.allocation.release', entity: 'WorkerAllocation', entityId: a.id });
+            events.push(await emitEvent(tx, {
+              projectId, actor, eventType: 'allocation.released', entityType: 'WorkerAllocation', entityId: a.id,
+              payload: serializeAllocation(releasedRow) as unknown as Prisma.InputJsonValue,
+              effectKey: 'allocation.released', dispatch: {},
+            }));
+          }
+        }
+        return { resultRef: substitutionId, events };
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);

@@ -62,12 +62,16 @@ import {
 import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
+import type { LabourView } from './labour';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
+import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
+import { todayCivil } from '@/lib/civilDate';
+import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
 /**
  * The project to open on a cold load: from the URL (`/projects/:id/…`) so a refresh or a
@@ -206,6 +210,12 @@ export interface AppState {
   // project, `[]` otherwise). The Materials nav/screens gate on `'materials'`, so a non-pilot project
   // shows none. Project-owned → torn down on scope change (never leaks a pilot flag across a switch).
   capabilities: string[];
+  // Phase 4 Task 6 correction (Codex F-deeplink) — whether the ACTIVE project's shell has reported
+  // its capabilities yet. `false` (unknown) means RouteBridge must NOT bounce a capability-gated
+  // deep link — a cold `/projects/<pilot>/labour` load would otherwise be ejected before the shell
+  // lands. Once `true`, a capability-gated screen the project lacks is redirected like any
+  // forbidden screen. Project-owned → reset on every scope change with `capabilities`.
+  capabilitiesKnown: boolean;
   // Phase 3 Task 7 — the pilot Materials bundle + its module-query load status (greenfield, no snapshot
   // fallback → no `source`). `null`/'idle' on a non-pilot project; the pilot's shell load triggers it.
   materialsView: MaterialsView | null;
@@ -215,6 +225,18 @@ export interface AppState {
   // pending). Both project-owned (torn down on scope change via emptyProjectData).
   reservationPlans: Record<string, ReservationPlan>;
   materialsPending: string[];
+  // Phase 4 Task 6 (§J) — the pilot LABOUR bundle + its module-query load status + the in-flight
+  // labour field-op coalesce keys. Same discipline as materials: greenfield module reads (no
+  // snapshot fallback), `null`/'idle' off-pilot, project-owned → torn down on scope change.
+  labourView: LabourView | null;
+  labourLoad: 'idle' | 'loading' | 'ready' | 'error';
+  labourPending: string[];
+  // Codex round 13 — the ORIGINAL allocate input per retained coalesce key (the key alone loses
+  // `capacityCommitmentId`, so a resolved supplier draw stopped reserving its commitment in the
+  // success→reload gap). Same lifecycle as `labourPending`; torn down with the scope.
+  labourPendingInputs: Record<string, AllocateLabourInput>;
+  labourOnboardPending: Record<string, string>;
+  labourBindPending: Record<string, string>;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
   checklist: Checklist | null; // null = no checklist issued for this project (never a ''-id sentinel)
   // Unsubmitted per-field checklist edits (gate round 6). The engineer's marks
@@ -272,6 +294,11 @@ export interface AppState {
   stage: string;
   siteCode: string;
   location: string;
+  /** Phase 4 Task 6 correction (Codex F-TZ) — the project's IANA timezone from the snapshot
+   *  (`null` until known / in the local demo). The server evaluates execution readiness against
+   *  `clock.today(project.timeZone)`, so field surfaces stamping a civil "today" (the manual
+   *  muster, the presence read) MUST derive it from this — never the browser's local date. */
+  timeZone: string | null;
   projStart: string;
   projEnd: string;
   /** Task 6: the schedule anchor (the civil day offset 0 refers to) + real window end */
@@ -365,6 +392,21 @@ export interface AppActions {
   issueMaterial: (lotId: string, storeLocation: string, activityId: string, qty: string) => void;
   /** Record consumption against a §E MaterialIssue. */
   consumeMaterial: (issueId: string, qty: string) => void;
+  /** Phase 4 Task 6 (§J) — fetch the pilot LABOUR bundle (readiness + demand + workforce + catalog +
+   *  commercial chain + capacity + today's presence + productivity) together, ONLY when the active
+   *  project has the `labour` capability. Scope-guarded + honest load states; a no-op off-pilot. */
+  loadLabour: () => Promise<void>;
+  /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
+   *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
+   *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
+  allocateWorker: (activityId: string, requirementId: string, originRevision: number, civilDate: string, workerId: string, capacityCommitmentId?: string | null, labourSpecFingerprint?: string | null) => void;
+  musterWorker: (workerId: string, civilDate: string, shift: 'day' | 'night', manualReason: string) => void;
+  recordWorkedMinutes: (allocationId: string, workedMinutes: number) => void;
+  raiseLabourRequisition: (title: string, lines: ReadonlyArray<{ requirementId: string; revision: number; civilDate: string; personShiftQty: number }>) => void;
+  /** The §J roster commands (Team-screen onboarding; direct, pmc-authored, low-frequency). */
+  releaseAllocation: (allocationId: string, reason: string) => void;
+  onboardLabourWorker: (name: string, tradeCode: string, skillCodes: string[], activeFrom: string) => void;
+  bindLabourDevice: (deviceId: string, workerId: string) => void;
   /** Atomically re-scope to another project. Empties project data BEFORE the auth
    *  request; adopts the SERVER-returned project on success. Resolves true only when
    *  the switch was authenticated. `targetScreen` survives the switch when the new
@@ -631,10 +673,17 @@ export function getInitialState(): AppState {
     activitiesSource: null,
     enabledModules: [],
     capabilities: [],
+    capabilitiesKnown: false,
     materialsView: null,
     materialsLoad: 'idle',
     reservationPlans: {},
     materialsPending: [],
+    labourView: null,
+    labourLoad: 'idle',
+    labourPending: [],
+    labourPendingInputs: {},
+    labourOnboardPending: {},
+    labourBindPending: {},
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
     checklist: structuredClone(SEED_CHECKLIST),
     checklistMarks: { inspectionId: null, generation: 0, rev: 0, byItem: {} },
@@ -672,6 +721,7 @@ export function getInitialState(): AppState {
     stage: PROJECT.stage,
     siteCode: PROJECT.siteCode,
     location: '',
+    timeZone: null,
     projStart: PROJECT.projStart,
     projEnd: PROJECT.projEnd,
     scheduleStartDate: PROJECT.scheduleStartDate,
@@ -700,6 +750,9 @@ export const useStore = create<Store>()(
      *  state — an older success/failure that resolves later is dropped, so a slow refresh can never
      *  overwrite a newer result. */
     let materialsLoadSeq = 0;
+    // Phase 4 Task 6 (§J) — the labour twin of materialsLoadSeq: only the NEWEST in-scope labour
+    // bundle request may write labourView (an older success or failure resolving late is dropped).
+    let labourLoadSeq = 0;
     /** Per-activity latest-request ownership for the reservation plan (correction 3, finding 2). Each
      *  `loadReservationPlan(activityId)` claims the next generation for that activity; only the newest
      *  request in the current project scope may write `reservationPlans[activityId]`, so a slow older
@@ -966,6 +1019,7 @@ export const useStore = create<Store>()(
         s.stage = snap.project.stage;
         s.siteCode = snap.project.siteCode;
         s.location = snap.project.location ?? '';
+        s.timeZone = snap.project.timeZone ?? null;
         s.projStart = snap.project.projStart;
         s.projEnd = snap.project.projEnd;
         s.scheduleStartDate = snap.project.scheduleStartDate ?? null;
@@ -995,7 +1049,14 @@ export const useStore = create<Store>()(
       // Task 9/10 — the module decisions + daily-log + drawings + inspections + activities reads (if any)
       // rode the SAME lease as the snapshot, so they pass the identical scope/newest-owner ordering checks:
       // a stale module response is dropped with its snapshot, never applied over a newer scope's data.
+      const prevTimeZone = st.timeZone;
       applySnapshotCore(snap, decisionsResult, dailyLogResult, drawingsResult, inspectionsResult, activitiesResult);
+      // Phase 4 Task 6 (Codex round 2) — on a cold labour-pilot boot the shell can trigger the
+      // FIRST labour load before any snapshot has delivered the project timezone, so that load's
+      // presence read fell back to the BROWSER's civil day. When an applied snapshot CHANGES the
+      // known timezone, reload the labour bundle so today's presence re-reads for the SITE's civil
+      // day (loadLabour is capability-guarded — a no-op off-pilot; both boot orders converge).
+      if (get().timeZone !== prevTimeZone) get().loadLabour();
       return 'applied';
     };
 
@@ -1394,6 +1455,26 @@ export const useStore = create<Store>()(
       runWriteAhead(op, label, okMsg);
     };
 
+    // ── Phase 4 Task 6 (§J) — the pilot LABOUR single-command dispatch: the labour twin of
+    //    `dispatchMaterials` with the SAME two-key lifecycle (fresh per-action `idempotencyKey`
+    //    reused on retry; deterministic `coalesceKey` deduping an equivalent action while pending,
+    //    tracked in `labourPending` for disable-while-pending). No-op off the labour pilot. ──
+    const isLabourOp = (op: OutboxOp): boolean => isLabourOpType(op.t);
+    const dispatchLabour = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
+      if (!gateway || !get().capabilities.includes('labour')) return;
+      const ck = op.coalesceKey;
+      const queued = get().outbox.some((o) => coalesceKeyOf(o) === ck);
+      if (queued || get().labourPending.includes(ck)) return;
+      set((s) => {
+        s.labourPending.push(ck);
+        // Codex round 13 — retain the ORIGINAL allocate input alongside the key: the coalesce key
+        // alone loses `capacityCommitmentId`, so in the success→reload gap a resolved supplier
+        // draw stopped reserving its commitment and a second same-slice worker re-picked it.
+        if (op.t === 'allocateLabour') s.labourPendingInputs[ck] = op.input;
+      });
+      runWriteAhead(op, label, okMsg);
+    };
+
     /** Adopt a server auth result as the real session — the ONE adoption path for
      *  every API sign-in (password, email-OTP, Google, phone-OTP) AND the project
      *  switch. The token is scoped to exactly the project the SERVER returns
@@ -1431,6 +1512,7 @@ export const useStore = create<Store>()(
             s.descriptor = '';
             s.stage = '';
             s.siteCode = '';
+            s.timeZone = null; // the next project's zone is unknown until its snapshot lands
             Object.assign(s, emptyProjectData());
             Object.assign(s, emptyModuleReadState()); // finding 4: a new project's reads start fresh, not stale-'ready'
           }
@@ -1528,6 +1610,7 @@ export const useStore = create<Store>()(
         // user's records leave memory, and the generation bump refuses any of their
         // replies still in flight — nothing survives for the next identity to see.
         s.projectScopeGeneration += 1;
+        s.timeZone = null; // the demo store has no project zone; the next sign-in's snapshot supplies one
         Object.assign(s, emptyProjectData());
         Object.assign(s, emptyModuleReadState()); // finding 4: sign-out tears down the module read state too
         s.projectLoadState = 'idle';
@@ -2284,13 +2367,34 @@ export const useStore = create<Store>()(
           if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope)) {
             s.enabledModules = shell.enabledModules;
             s.capabilities = shell.capabilities;
+            // F-deeplink — the shell has now REPORTED this project's capabilities, so RouteBridge
+            // may enforce the capability gate on deep links (it never bounces while unknown).
+            s.capabilitiesKnown = true;
           }
         });
         // Phase 3 Task 7 — on a PILOT project, pull the Materials bundle once the capability is known.
         if (isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope) && shell.capabilities.includes('materials')) {
           get().loadMaterials();
         }
-      }).catch(() => {});
+        // Phase 4 Task 6 (§J) — same discipline for the Labour bundle on a labour-pilot project.
+        if (isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope) && shell.capabilities.includes('labour')) {
+          get().loadLabour();
+        }
+      }).catch(() => {
+        // Codex round 12 — a swallowed shell failure left `capabilitiesKnown` false FOREVER while
+        // the capability-gated `loadMaterials`/`loadLabour` stayed inert no-ops: a bookmarked pilot
+        // URL rendered a permanent "loading" screen with no retry. Surface the failure through the
+        // module load states (the hubs' honest unavailable+Retry path — their Retry falls back to
+        // `loadShell()` while capabilities are unknown). Scope-guarded like the success arm, and
+        // only while capabilities are UNKNOWN: once a shell has reported, the hubs' own loads are
+        // live and a later background shell failure must not flip their states.
+        set((s) => {
+          if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope) && !s.capabilitiesKnown) {
+            if (s.materialsLoad === 'idle') s.materialsLoad = 'error';
+            if (s.labourLoad === 'idle') s.labourLoad = 'error';
+          }
+        });
+      });
     },
     loadMaterials: () => {
       if (!gateway) return;
@@ -2379,6 +2483,220 @@ export const useStore = create<Store>()(
         'Consumption recorded.',
       );
     },
+    // ── Phase 4 Task 6 (§J) — the pilot LABOUR bundle + field ops, cloning the materials
+    //    discipline exactly: greenfield module-query reads with honest load states + latest-request
+    //    ownership, and ONE write-ahead server command per user action. All inert off-pilot. ──
+    loadLabour: () => {
+      if (!gateway) return Promise.resolve();
+      if (!get().capabilities.includes('labour')) return Promise.resolve(); // inert off-pilot
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      // latest-request ownership (the materials finding-2 discipline): claim the next token; a stale
+      // reply (older token) is dropped even when the project scope is unchanged.
+      const seq = ++labourLoadSeq;
+      const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
+        seq === labourLoadSeq && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
+      if (get().labourLoad !== 'ready') set((s) => { s.labourLoad = 'loading'; }); // stale-while-revalidate
+      // Today's presence read uses the PROJECT-timezone civil date (Codex F-TZ): the server
+      // evaluates readiness against `clock.today(project.timeZone)`, so a viewer in another
+      // timezone must still read (and muster against) the SITE's "today", never the browser's.
+      const today = todayCivil(get().timeZone);
+      // round 10 — the promise is RETURNED (resolving after the bundle applies or the failure is
+      // recorded) so the roster commands can await the reload before spending their held keys.
+      return Promise.all([
+        gateway.labourReadiness(),
+        gateway.materialRequirements(), // the SHARED type-neutral list; the hub filters to labour rows
+        gateway.labourWorkforce(),
+        gateway.labourCatalog(),
+        gateway.labourRequisitions(),
+        gateway.labourPurchaseOrders(),
+        gateway.labourCommitments(),
+        gateway.labourCapacity(),
+        gateway.labourPresence(today),
+        gateway.labourProductivity(),
+      ]).then(async ([readiness, requirements, workforce, catalog, requisitions, purchaseOrders, commitments, capacity, presence, productivity]) => {
+        // F1 (compatible pickers) — every fingerprint each worker's own (trade, skills) identity
+        // can satisfy, computed ONCE per load with the SAME shared WebCrypto fingerprint the
+        // server pins, so the allocate UI can offer only workers the coverage rule would count.
+        const workerFingerprints = await buildWorkerFingerprints(workforce.workers);
+        set((s) => {
+          if (!owns(s)) return; // dropped after a switch/re-auth OR superseded by a newer load
+          // castDraft: the labour read DTOs are `readonly` server snapshots stored as-is, never mutated.
+          s.labourView = castDraft<LabourView>({
+            readiness,
+            requirements: requirements.requirements,
+            workforce,
+            catalog,
+            requisitions: requisitions.requisitions,
+            purchaseOrders: purchaseOrders.purchaseOrders,
+            commitments: commitments.commitments,
+            capacity,
+            presence,
+            productivity,
+            workerFingerprints,
+          });
+          s.labourLoad = 'ready';
+          // Codex round 8 — the fresh bundle IS on screen now: rebuild `labourPending` from the
+          // live outbox (pending == still-queued ops). A key resolved by the flush clears HERE —
+          // never in the gap where the old bundle still rendered — and a transient-failed op's
+          // key survives because its op is still queued.
+          s.labourPending = s.outbox.flatMap((o) =>
+            isLabourOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
+              ? [(o as { coalesceKey: string }).coalesceKey]
+              : [],
+          );
+          // Codex round 13 — the retained-input register follows the SAME lifecycle: a resolved
+          // op's input clears here WITH its key (the fresh truth is on screen); a still-queued
+          // op's input survives because its key does.
+          const live = new Set(s.labourPending);
+          for (const k of Object.keys(s.labourPendingInputs)) {
+            if (!live.has(k)) delete s.labourPendingInputs[k];
+          }
+        });
+      }).catch(() => set((s) => {
+        // keep the last-good bundle; expose a Retry boundary. An OLDER failure never
+        // overwrites a NEWER result's load state.
+        if (owns(s)) s.labourLoad = 'error';
+      }));
+    },
+    allocateWorker: (activityId, requirementId, originRevision, civilDate, workerId, capacityCommitmentId, labourSpecFingerprint) => {
+      // fresh idempotency key per deliberate action; coalesced while pending on the exact
+      // (activity, requirement, date, worker) target — one live allocation per worker/slice.
+      // F2 (drawdown) — a commitment-covered slice passes the matching commitment id so the
+      // server's §F bound-3 drawdown consumes the supplier capacity; null = own workforce.
+      // Codex round 3 (P1) — the command PINS the head revision the worker was selected against:
+      // an offline-queued replay landing after a requirement revision is a terminal 409 the flush
+      // reconciles, never a silent allocation onto a different trade/skill/shift demand.
+      dispatchLabour(
+        // Codex round 8 — the SATISFYING identity the worker was offered under rides the command
+        // as the eligibility BASIS: the server VERIFIES it is the head identity or an ACTIVE
+        // approved substitution (409 on a revoked/unknown authority) while the persisted identity
+        // stays the HEAD per the sealed §C FK. Absent (a head-identity worker) keeps
+        // pre-round-8 bytes; round 10 makes revocation itself release substitution-only rows.
+        { t: 'allocateLabour', input: { activityId, requirementId, originRevision, civilDate, workerId, ...(capacityCommitmentId ? { capacityCommitmentId } : {}), ...(labourSpecFingerprint ? { labourSpecFingerprint } : {}) }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, originRevision, civilDate, workerId) },
+        'Allocate the worker to the activity',
+        'Worker allocated to the activity.',
+      );
+    },
+    musterWorker: (workerId, civilDate, shift, manualReason) => {
+      // The store's muster path is the pmc-attributable MANUAL exception (a dead battery is site
+      // reality); device-evidenced musters arrive from the worker's own bound device, not this hub.
+      dispatchLabour(
+        { t: 'recordAttendance', input: { workerId, civilDate, shift, manualReason }, idempotencyKey: newIdempotencyKey(), coalesceKey: musterCoalesceKey(workerId, civilDate, shift) },
+        'Record the worker’s attendance',
+        'Attendance recorded.',
+      );
+    },
+    recordWorkedMinutes: (allocationId, workedMinutes) => {
+      dispatchLabour(
+        { t: 'recordLabourWork', input: { allocationId, workedMinutes }, idempotencyKey: newIdempotencyKey(), coalesceKey: workCoalesceKey(allocationId, workedMinutes) },
+        'Record worked minutes',
+        'Worked minutes recorded.',
+      );
+    },
+    releaseAllocation: (allocationId, reason) => {
+      // Codex round 11 — the corrective the hub's stranded states point at, exposed IN the hub:
+      // one release command per allocation through the same durable outbox lifecycle.
+      dispatchLabour(
+        { t: 'releaseLabourAllocation', allocationId, reason, idempotencyKey: newIdempotencyKey(), coalesceKey: releaseCoalesceKey(allocationId) },
+        'Release the allocation',
+        'Allocation released.',
+      );
+    },
+    raiseLabourRequisition: (title, lines) => {
+      // one labour requisition per action: a double-click coalesces on the slice content; a later,
+      // DIFFERENT slice set is a distinct command. Never a fan-out.
+      dispatchLabour(
+        { t: 'createLabourRequisition', input: { title, lines: lines.map((l) => ({ requirementId: l.requirementId, revision: l.revision, civilDate: l.civilDate, personShiftQty: l.personShiftQty })) }, idempotencyKey: newIdempotencyKey(), coalesceKey: labourRequisitionCoalesceKey(lines) },
+        'Raise a labour requisition',
+        'Labour requisition raised.',
+      );
+    },
+    onboardLabourWorker: (name, tradeCode, skillCodes, activeFrom) => {
+      // Roster commands are pmc-authored, low-frequency Team-screen actions reconciled by
+      // reloading the labour bundle (no outbox lifecycle). Codex round 5 — a committed-but-lost
+      // response must NOT duplicate the worker on retry: the roster has no natural uniqueness on
+      // (name, trade), so the ledger's idempotency key IS the identity. The key for the submitted
+      // form is minted ONCE and reused verbatim until a CONFIRMED success clears it; a later
+      // deliberate identical onboarding (after confirmation) mints a fresh key, and a CHANGED
+      // form is a different command with its own fresh key.
+      if (!gateway || !get().capabilities.includes('labour')) return;
+      // Codex round 8 — held keys are keyed BY FORM SIGNATURE: a second form submitted while
+      // the first is unresolved must not evict the first form's key (a single slot did — the
+      // first form's retry then minted a fresh key and could duplicate the Worker).
+      const sig = JSON.stringify([name, tradeCode, skillCodes, activeFrom]);
+      const key = get().labourOnboardPending[sig] ?? newIdempotencyKey();
+      set((s) => { s.labourOnboardPending[sig] = key; });
+      const lease = beginSnapshotLease(currentScope());
+      gateway!.onboardWorker({ name, tradeCode, skillCodes, activeFrom }, key)
+        .then(async (created) => {
+          // Codex round 10 — the command's own 2xx is NOT roster truth: the Team roster renders
+          // the module-owned labour bundle, so the key is spent ONLY once the FRESH bundle
+          // contains the row. If the reload fails or stays stale the key survives, the retry
+          // replays the SAME key, and the ledger returns the ORIGINAL worker — never a
+          // duplicate identity minted under a fresh key while the screen showed no worker.
+          await get().loadLabour();
+          if (scopeStillCurrent(lease.scope) && get().labourView?.workforce.workers.some((w) => w.id === created.id)) {
+            set((s) => { if (s.labourOnboardPending[sig] === key) delete s.labourOnboardPending[sig]; });
+          }
+          return gateway!.snapshot();
+        })
+        .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), 'Worker onboarded to the project roster.', lease.scope))
+        .catch(() => {
+          // failure (including a LOST committed response) RETAINS the key for the retry
+          if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
+        });
+    },
+    bindLabourDevice: (deviceId, workerId) => {
+      // Codex round 6 — the same held-key discipline as `onboardLabourWorker`: the bind CAS
+      // succeeds ONCE (a re-bind of the same pair is the server's "already bound" 409), so a
+      // committed-but-lost response retried with a FRESH key would report failure for a binding
+      // that succeeded. The key for the submitted (device, worker) pair is minted once and
+      // reused verbatim until a CONFIRMED success — the ledger replays the original result.
+      if (!gateway || !get().capabilities.includes('labour')) return;
+      const sig = bindSig(deviceId, workerId);
+      const key = get().labourBindPending[sig] ?? newIdempotencyKey();
+      set((s) => { s.labourBindPending[sig] = key; });
+      const lease = beginSnapshotLease(currentScope());
+      gateway!.bindWorkerDevice(deviceId, workerId, key)
+        .then(
+          async () => {
+            // Codex round 10 — the key is spent only after the post-bind RECONCILE succeeds:
+            // deleting it on the bind's own 2xx meant a failed follow-up snapshot reported
+            // "could not reach the server" with the key already gone, and the retry's FRESH key
+            // hit the CAS's terminal "already bound" 409 for a binding that succeeded. The
+            // reconcile failure path retains the key, so the retry replays the SAME key and
+            // the ledger returns the original success.
+            try {
+              await get().loadLabour();
+              const snap = await gateway!.snapshot();
+              consumeSnapshotResult(acceptSnapshot(snap, lease), 'Device bound to the worker.', lease.scope);
+              if (scopeStillCurrent(lease.scope)) {
+                set((s) => { if (s.labourBindPending[sig] === key) delete s.labourBindPending[sig]; });
+              }
+            } catch {
+              // the bind COMMITTED but the reconcile failed — RETAIN the key (round 10)
+              if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
+            }
+          },
+          (e: unknown) => {
+            // Codex round 14 — the BIND REQUEST itself was answered. A TERMINAL business
+            // rejection (a mistyped device id 404; a device already bound to ANOTHER worker
+            // 409) means NO binding by this key exists to replay — holding the key would leave
+            // `isDeviceBindPending` reserving the DEVICE against every worker until a
+            // reload/scope reset, so the pmc could not correct the id or pick the right
+            // worker. Clear the held key so the corrected form mints a fresh attempt. A
+            // transient/network failure (no status, 401/408/429, 5xx) still RETAINS the key —
+            // a committed-but-LOST response must replay the SAME idempotency key (round 6).
+            if (!scopeStillCurrent(lease.scope)) return;
+            if (isTerminalOutboxError(e)) {
+              set((s) => { if (s.labourBindPending[sig] === key) delete s.labourBindPending[sig]; });
+              get().flash('Device binding was refused — check the device id and worker.');
+            } else {
+              get().flash('Could not reach the server — please try again.');
+            }
+          },
+        );
+    },
     switchProject: (projectId, targetScreen) => {
       if (!gateway || projectId === get().activeProjectId) return Promise.resolve(false);
       const membership = get().memberships.find((m) => m.projectId === projectId);
@@ -2400,6 +2718,7 @@ export const useStore = create<Store>()(
         s.descriptor = '';
         s.stage = '';
         s.siteCode = '';
+        s.timeZone = null; // the target project's zone is unknown until its snapshot lands
         Object.assign(s, emptyProjectData());
         Object.assign(s, emptyModuleReadState()); // finding 4: the target project's reads are not loaded yet
       });
@@ -3104,6 +3423,10 @@ export const useStore = create<Store>()(
       // reconcile below never carries the new stock).
       const resolvedMaterialsCoalesceKeys: string[] = [];
       let materialsAttempted = false;
+      // Phase 4 Task 6 (§J) — the labour twin: resolved labour coalesce keys unblock their buttons;
+      // ANY attempted labour op (succeeded, dropped, or transient) re-derives the labour truth.
+      const resolvedLabourCoalesceKeys: string[] = [];
+      let labourAttempted = false;
       let lastSnap: ApiSnapshot | null = null;
       let synced = 0;
       let dropped = 0;
@@ -3119,20 +3442,24 @@ export const useStore = create<Store>()(
           break;
         }
         const mat = isMaterialsOp(ops[i]);
+        const lab = isLabourOp(ops[i]);
         try {
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
           if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
+          if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
         } catch (err) {
           if (isTerminalOutboxError(err)) {
             dropped += 1; // server will never accept this one — discard and keep going
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
+            if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
             continue;
           }
           stoppedAt = i; // transient — retry this op and the rest on the next reconnect
           if (mat) materialsAttempted = true; // correction 3 finding 3: still refresh truth, keep the op + its coalesceKey
+          if (lab) labourAttempted = true; // same for labour: refresh truth, keep the op + its coalesceKey
           break;
         }
       }
@@ -3210,6 +3537,19 @@ export const useStore = create<Store>()(
           for (const activityId of Object.keys(get().reservationPlans)) get().loadReservationPlan(activityId);
         }
       }
+      // Phase 4 Task 6 (§J) — the LABOUR reconcile hook. Codex round 8: a RESOLVED op's coalesce
+      // key is NOT cleared here — between this flush and the labour reload the screen still
+      // renders the OLD bundle (no committed allocation visible), so clearing the key in that
+      // gap re-enables the action and a second worker can be queued against demand the first
+      // command already filled. The keys stay in `labourPending` (buttons disabled, honest
+      // "…ing" labels) until `loadLabour()` APPLIES the fresh bundle, which rebuilds
+      // `labourPending` from the live outbox (a transient-failed op is still queued → its key
+      // survives; a resolved/dropped op is gone → its key clears WITH the new truth on screen).
+      if (labourAttempted) {
+        if (scopeStillCurrent(flushScope) && get().capabilities.includes('labour')) {
+          get().loadLabour();
+        }
+      }
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };
       } finally {
         outboxFlushing = false;
@@ -3241,7 +3581,12 @@ export const useStore = create<Store>()(
           // a legacy queued op would not coalesce and could execute a SECOND time (double reserve). Derive
           // `coalesceKey` from the legacy `idempotencyKey` (same business-coordinate format), preserve the
           // `idempotencyKey` byte-for-byte (replay stays exactly-once), and drop malformed materials ops.
-          const { ops, changed } = normalizeMaterialsOutbox(Array.isArray(parsed) ? (parsed as OutboxOp[]) : []);
+          const materialsNorm = normalizeMaterialsOutbox(Array.isArray(parsed) ? (parsed as OutboxOp[]) : []);
+          // Phase 4 Task 6 (§J) — labour ops were born two-keyed, so this only DROPS malformed rows
+          // (a labour op missing either key must never replay or leak `undefined` into labourPending).
+          const labourNorm = normalizeLabourOutbox(materialsNorm.ops);
+          const ops = labourNorm.ops;
+          const changed = materialsNorm.changed || labourNorm.changed;
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable
           if (changed) storage.setItem(outboxKey(), JSON.stringify(ops));
           set((s) => {
@@ -3258,6 +3603,19 @@ export const useStore = create<Store>()(
               const ck = coalesceKeyOf(o);
               return isMaterialsOp(o) && typeof ck === 'string' ? [ck] : [];
             });
+            // Phase 4 Task 6 (§J) — same reconstruction for the labour pending coalesce keys, so a
+            // reload keeps an equivalent still-queued labour action coalesced (button disabled).
+            s.labourPending = s.outbox.flatMap((o) => {
+              const ck = coalesceKeyOf(o);
+              return isLabourOp(o) && typeof ck === 'string' ? [ck] : [];
+            });
+            // Codex round 13 — rebuild the retained-input register from the STILL-QUEUED allocate
+            // ops (their durable rows carry the full input, incl. `capacityCommitmentId`). A key
+            // retained for an op that resolved before this reload has no row to rebuild from —
+            // the screen's key-parser fallback covers it, exactly as before this round.
+            s.labourPendingInputs = Object.fromEntries(
+              s.outbox.flatMap((o) => (o.t === 'allocateLabour' && typeof o.coalesceKey === 'string' ? [[o.coalesceKey, o.input] as const] : [])),
+            );
           });
         }
       } catch {

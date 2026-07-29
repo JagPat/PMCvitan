@@ -148,14 +148,17 @@ branch; doing so would intentionally block every PR, including the bootstrap PR.
 
 ## Current Position
 
-Phase 4 Task 4 is merged and cleared (PR #242 at `main` `861b622` — two Codex correction rounds,
-then a fresh clean +1 through the exact-head gate; the mandatory post-Task-4 review stop is
-satisfied). Phase 4 Task 5 (Daily-Log labour reconciliation §E + planned-vs-actual + productivity
-§I) is delivered on PR #245 (branch `claude/phase4-task5`) and is in review through the exact-head
-gate; the six findings Codex raised against the WIP head `f4e6ab1` and the five it raised on the
-attempt-2 review of `4802d9a` are all folded in-branch with reproduce-first probes. Task 6 does
-not begin until Task 5 merges. See `docs/STATUS.md` and
-`docs/reviews/phase-4-t5-reconciliation-packet.md`.
+Phase 4 Task 5 is merged and cleared (PR #245 at `main` `d8a9c50` — a fresh clean Codex +1 on the
+exact head `119816b`; twelve findings across three in-branch Codex rounds all fixed with
+reproduce-first probes; one gate recovery dispatch was needed after a transient double Codex
+timeout, validated against the exact terminal `codex-current-head` status ID). Phase 4 Task 6
+(§J frontend surfaces + the pilot acceptance chain + the consolidated Phase-4 packet) is
+DELIVERED on draft PR #246 (branch `claude/phase4-task6` from `main` `d8a9c50`) riding the
+exact-head `codex-current-head` gate — the FINAL Phase-4 review stop. The Labour hub, store
+slice, field ops, extended surfaces, web suite and the real-browser labour-pilot acceptance
+chain are frontend-only (no schema, no migration, no API change) over the cleared Tasks 1–5
+facts. See `docs/STATUS.md`, `docs/reviews/phase-4-t6-frontend-packet.md` and
+`docs/reviews/phase-4-consolidated-review-packet.md`.
 
 ## External Dependencies
 
