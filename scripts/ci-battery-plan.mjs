@@ -112,8 +112,23 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   // is from the OLD base. Waiting for a verdict we cannot see means guessing;
   // run the battery instead. The current event's own scope run is excluded by
   // the caller, so this never fires merely because this edit's scope is queued.
-  if (checkRuns.some((run) =>
-    GATE_CHECKS.includes(run?.name) && run.status !== 'completed')) {
+  //
+  // Only the FRONTIER's unknown verdict is a reason to run. A gate that hangs
+  // in an attempt a NEWER one has already completed cannot change what is
+  // current: whatever it decides, its products would be older than the evidence
+  // the newer attempt has already produced. Firing on any pending gate anywhere
+  // in the history let one hung straggler force a full duplicate battery on
+  // every later metadata edit — precisely the duplication this job prevents.
+  // An attempt with no completed gate at all cannot be dated, so it counts as
+  // the frontier and still forces a run.
+  const stamps = attemptGateStamps(checkRuns);
+  const newestAttempt = [...stamps.values()]
+    .reduce((newest, stamp) => (stamp > newest ? stamp : newest), '');
+  if (checkRuns.some((run) => {
+    if (!GATE_CHECKS.includes(run?.name) || run.status === 'completed') return false;
+    const stamp = stamps.get(attemptOf(run));
+    return stamp === undefined || stamp >= newestAttempt;
+  })) {
     return {
       runProducts: true,
       reason: 'a gate run from another attempt has not finished, so any product '
@@ -138,7 +153,6 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   }
 
   const notBefore = gateWatermarks(checkRuns);
-  const stamps = attemptGateStamps(checkRuns);
   for (const name of PRODUCT_CHECKS) {
     if (!coveredBy(checkRuns, name, notBefore.get(name) ?? '', stamps)) {
       return {

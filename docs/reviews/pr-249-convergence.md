@@ -534,3 +534,53 @@ its own recency, and the skip-attribution rule fails closed on it.
 `node --test scripts/autonomous-ci-battery.test.mjs` 18/18 — the three new probes RED at
 `2003ee9`, GREEN after, and the five pre-existing coverage probes unchanged.
 `pnpm test:automation` 107/107. `pnpm check` EXIT 0 — web 543/543, API 680/680.
+
+## Round 13 — `fd73ba9`
+
+Codex's review arrived AFTER the two review attempts timed out, so the head carries a
+`timed_out` status alongside two genuine current-head findings. Both are correct and are fixed
+here; the new head re-enters the gate normally, which is the ordinary recovery for a late review.
+
+### F1 (P2): the shared watermark still trusted an aborted attempt's skips
+
+Round 12 taught the GATE that an aborted attempt's skips prove nothing. It did not teach
+`gateWatermarks`, which still classified an attempt as `skipping` whenever its visible product
+runs were skipped — regardless of whether one of its gates had failed.
+
+The two then deadlock. Attempt 900's `battery-plan` fails, its five products skip, the retry makes
+`battery-plan` succeed. The gate reads those skips as a real non-success and fails the head. The
+planner reads them as "attempt 900 deliberately preserved attempt 800's evidence", drops 900's
+gates from the watermark, finds 800's successes current, and returns `run_products=false`. The
+next attempt creates only skipped products. Nothing ever launches the battery that would clear it.
+
+Fix: `attemptsWithPassingGates` is now the single shared definition of "this attempt's gates all
+passed", exported from `check-run-coverage.mjs`. `gateWatermarks` filters out skipped product runs
+from attempts that fail it — such a run neither produces coverage of its own nor preserves anyone
+else's, so the aborted attempt's gates become a watermark and the older evidence is correctly
+superseded. `intentionalSkip` on the gate side now reads that same set instead of recomputing its
+own copy, so the two cannot disagree again.
+
+Probe: `an aborted attempt's skips neither produce nor preserve coverage` — it asserts the plan
+launches the battery AND that the two sides never reach opposite conclusions, which is the
+deadlock condition itself.
+
+### F2 (P2): one hung gate forced a duplicate battery forever
+
+The unfinished-gate guard fired for ANY pending gate anywhere in the history. If attempt 800's
+`review-scope` hangs, every later metadata edit runs the full five-job battery — even after
+attempt 900 has completed its gates and all five products for the same SHA. That is exactly the
+duplication this job exists to prevent, and it never stops.
+
+Fix: only the FRONTIER's unknown verdict is a reason to run. A pending gate whose attempt has a
+completed-gate stamp older than the newest attempt's cannot change what is current — whatever it
+decides, its products would be older than the evidence a newer attempt has already produced. An
+attempt with no completed gate at all cannot be dated, so it still counts as the frontier and
+still forces a run; the probe pins that converse.
+
+Probe: `a hung gate from a superseded attempt does not force a duplicate battery`.
+
+### Gates
+
+`node --test scripts/autonomous-ci-battery.test.mjs` 20/20 — both new probes RED at `fd73ba9`,
+GREEN after, and the eighteen earlier coverage probes unchanged. `pnpm test:automation` 109/109.
+`pnpm check` EXIT 0 — web 543/543, API 680/680.

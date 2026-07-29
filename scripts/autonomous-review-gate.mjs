@@ -12,9 +12,9 @@ import {
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
 import {
-  GATE_CHECKS,
   PRODUCT_CHECKS,
   attemptGateStamps,
+  attemptsWithPassingGates,
   coverageOrder,
   coverageStamp,
   gateWatermarks,
@@ -90,28 +90,20 @@ function attemptOf(run) {
 // so the skip was the plan's `run_products=false` — or because one of those
 // gates failed/cancelled, in which case the attempt was aborted and proves
 // nothing. Only the first kind may defer to older evidence.
-// EVERY gate run of the attempt must have passed, not merely one of them. The
-// bounded retry reruns a failed gate inside the SAME workflow run, so `some`
-// let a later `battery-plan` success retroactively bless products that had
-// skipped precisely because that gate FAILED — and the retry's own product
-// reruns are not visible yet, so the previous base's successes would speak for
-// this head. A gate that failed at any point in the attempt means the attempt
-// aborted; its skips prove nothing.
-function intentionalSkip(skipped, checkRuns) {
+//
+// Only an attempt whose gates ALL passed skipped deliberately; anything else
+// aborted, and an aborted attempt's skips prove nothing. `attemptsWithPassingGates`
+// is the shared definition — the battery plan's watermark reads the same set,
+// so the two cannot disagree about which skips preserve older evidence.
+function intentionalSkip(skipped, gatesPassed) {
   const attempt = attemptOf(skipped);
-  if (!attempt) return false;
-  return GATE_CHECKS.every((gate) => {
-    const runs = checkRuns.filter(
-      (run) => run?.name === gate && attemptOf(run) === attempt,
-    );
-    return runs.length > 0
-      && runs.every((run) => run.status === 'completed' && run.conclusion === 'success');
-  });
+  return attempt !== null && gatesPassed.has(attempt);
 }
 
 export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
   const watermarks = gateWatermarks(checkRuns);
   const attemptStamps = attemptGateStamps(checkRuns);
+  const gatesPassed = attemptsWithPassingGates(checkRuns);
   const missing = [];
   const pending = [];
   const failed = [];
@@ -127,6 +119,14 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     // history let a superseded attempt's still-running job hold the head
     // pending until timeout even though the current attempt had already passed
     // that check — the job will report on a merge result nobody is asking about.
+    //
+    // Ordered by ATTEMPT currency first, not completion time. A product job
+    // from a superseded attempt can still be running when a retarget lands and
+    // finish after the current attempt's run of the same name has already
+    // failed; a completion-ordered sort selects that stale success and this
+    // gate publishes green over red exact-head CI. Within one attempt (a
+    // rerun-failed-jobs keeps the suite) completion still decides, so a rerun
+    // continues to mask the failure it repaired.
     const ordered = [...runs].sort(coverageOrder(attemptStamps));
     if (ordered[0].status !== 'completed') {
       pending.push(name);
@@ -141,15 +141,8 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     // or cancelled) means the products of THAT attempt never ran, and older
     // evidence may predate the change that attempt was testing — so it counts
     // as a real non-success and fails closed.
-    // Ordered by ATTEMPT currency first, not completion time. A product job
-    // from a superseded attempt can still be running when a retarget lands and
-    // finish after the current attempt's run of the same name has already
-    // failed; a completion-ordered sort selects that stale success and this
-    // gate publishes green over red exact-head CI. Within one attempt (a
-    // rerun-failed-jobs keeps the suite) completion still decides, so a rerun
-    // continues to mask the failure it repaired.
     const decider = completed
-      .find((run) => run.conclusion !== 'skipped' || !intentionalSkip(run, checkRuns));
+      .find((run) => run.conclusion !== 'skipped' || !intentionalSkip(run, gatesPassed));
     if (!decider) {
       // A deliberate skip deferring to evidence that is itself still running is
       // waiting, not absent.

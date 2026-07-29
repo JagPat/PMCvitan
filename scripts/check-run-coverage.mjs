@@ -99,8 +99,46 @@ function attemptCharacters(runs) {
   return characters;
 }
 
+// The attempts whose gate jobs ALL passed.
+//
+// EVERY run of every gate, not merely one: the bounded retry reruns a failed
+// gate inside the SAME workflow run, so a later success would otherwise
+// retroactively legitimise everything the earlier failure caused. A gate that
+// failed at any point means the attempt aborted.
+export function attemptsWithPassingGates(checkRuns) {
+  const byAttempt = new Map();
+  for (const run of Array.isArray(checkRuns) ? checkRuns : []) {
+    if (!GATE_CHECKS.includes(run?.name)) continue;
+    const attempt = attemptOf(run);
+    if (!attempt) continue;
+    const gates = byAttempt.get(attempt) ?? new Map();
+    const passed = run.status === 'completed' && run.conclusion === 'success';
+    gates.set(run.name, (gates.get(run.name) ?? true) && passed);
+    byAttempt.set(attempt, gates);
+  }
+  const passing = new Set();
+  for (const [attempt, gates] of byAttempt) {
+    if (GATE_CHECKS.every((gate) => gates.get(gate) === true)) passing.add(attempt);
+  }
+  return passing;
+}
+
 export function gateWatermarks(checkRuns) {
-  const runs = Array.isArray(checkRuns) ? checkRuns : [];
+  const all = Array.isArray(checkRuns) ? checkRuns : [];
+
+  // A skipped product run only means something when the attempt's gates
+  // passed: then it IS the plan's deliberate "this head is already covered".
+  // If a gate of that attempt failed, the attempt aborted and its skips are
+  // evidence of nothing — they neither produce coverage of their own nor
+  // preserve anyone else's. Reading them as preservation dropped the aborted
+  // attempt's gates from the watermark, so the next metadata edit saw the
+  // PREVIOUS attempt's successes as coverage and skipped the battery, while
+  // the gate — which judges those same skips as a real non-success — kept
+  // failing the head. Nothing then relaunches the products.
+  const gatesPassed = attemptsWithPassingGates(all);
+  const runs = all.filter((run) => !isSkipped(run)
+    || !PRODUCT_CHECKS.includes(run?.name)
+    || gatesPassed.has(attemptOf(run)));
 
   const characters = attemptCharacters(runs);
   const attemptsByProduct = new Map(PRODUCT_CHECKS.map((name) => [name, new Set()]));

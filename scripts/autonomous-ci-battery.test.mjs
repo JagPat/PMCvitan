@@ -919,3 +919,91 @@ test('a stale in-flight run does not hold a passed current attempt pending', () 
     'the current attempt is still running api',
   );
 });
+
+// FINDING (#249 round 13 P2) — round 12 taught the GATE that an aborted
+// attempt's skips prove nothing, but the shared watermark still read them as a
+// deliberate "already covered". The two then deadlock the head: the gate calls
+// the aborted skips a failure while the planner refuses to launch the battery
+// that would replace them.
+test('an aborted attempt\'s skips neither produce nor preserve coverage', () => {
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  const runs = [
+    // attempt 800: a full, real, green battery
+    job('review-scope', 'success', '800', '2026-07-29T10:00:00Z'),
+    job('battery-plan', 'success', '800', '2026-07-29T10:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, 'success', '800', '2026-07-29T10:05:00Z')),
+    // attempt 900: battery-plan fails, products skip, the retry then succeeds
+    job('review-scope', 'success', '900', '2026-07-29T11:00:00Z'),
+    job('battery-plan', 'failure', '900', '2026-07-29T11:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, 'skipped', '900', '2026-07-29T11:01:00Z')),
+    job('battery-plan', 'success', '900', '2026-07-29T11:30:00Z'),
+  ];
+
+  const plan = assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: runs });
+  const summary = summarizeRequiredChecks(runs, [...PRODUCT_CHECKS]);
+  assert.equal(
+    plan.runProducts,
+    true,
+    'attempt 900 aborted; the next edit must launch the battery it never ran',
+  );
+  // The two sides must not disagree — that disagreement IS the deadlock.
+  assert.equal(
+    summary.state === 'failure' && plan.runProducts === false,
+    false,
+    'the gate rejects the aborted skips while the planner refuses to replace them',
+  );
+});
+
+// FINDING (#249 round 13 P2) — the unfinished-gate guard fired for ANY pending
+// gate anywhere in the history, so one hung straggler forced a full duplicate
+// battery on every later metadata edit, defeating one-battery-per-SHA.
+test('a hung gate from a superseded attempt does not force a duplicate battery', () => {
+  const job = (name, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion: 'success',
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  const runs = [
+    // attempt 800: review-scope hangs, so its product jobs never get created
+    { name: 'review-scope', status: 'in_progress', conclusion: null,
+      html_url: 'https://github.com/o/r/actions/runs/800/job/1' },
+    job('battery-plan', '800', '2026-07-29T10:00:30Z'),
+    // attempt 900: complete and green for the same SHA
+    job('review-scope', '900', '2026-07-29T11:00:00Z'),
+    job('battery-plan', '900', '2026-07-29T11:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, '900', '2026-07-29T11:05:00Z')),
+  ];
+
+  assert.equal(
+    assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: runs }).runProducts,
+    false,
+    'attempt 900 already covers this head; 800 can no longer change that',
+  );
+
+  // The frontier's unknown verdict still forces a run: an attempt with NO
+  // completed gate cannot be dated, so it may yet supersede this evidence.
+  const frontierUnknown = [
+    ...runs,
+    { name: 'review-scope', status: 'queued', conclusion: null,
+      html_url: 'https://github.com/o/r/actions/runs/1000/job/1' },
+    { name: 'battery-plan', status: 'queued', conclusion: null,
+      html_url: 'https://github.com/o/r/actions/runs/1000/job/2' },
+  ];
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited', baseChanged: false, checkRuns: frontierUnknown,
+    }).runProducts,
+    true,
+    'an undatable in-flight attempt is still a reason to run',
+  );
+});
