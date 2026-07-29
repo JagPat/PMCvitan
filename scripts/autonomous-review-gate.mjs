@@ -12,6 +12,7 @@ import {
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
 import {
+  GATE_CHECKS,
   PRODUCT_CHECKS,
   attemptGateStamps,
   coverageOrder,
@@ -89,15 +90,23 @@ function attemptOf(run) {
 // so the skip was the plan's `run_products=false` — or because one of those
 // gates failed/cancelled, in which case the attempt was aborted and proves
 // nothing. Only the first kind may defer to older evidence.
+// EVERY gate run of the attempt must have passed, not merely one of them. The
+// bounded retry reruns a failed gate inside the SAME workflow run, so `some`
+// let a later `battery-plan` success retroactively bless products that had
+// skipped precisely because that gate FAILED — and the retry's own product
+// reruns are not visible yet, so the previous base's successes would speak for
+// this head. A gate that failed at any point in the attempt means the attempt
+// aborted; its skips prove nothing.
 function intentionalSkip(skipped, checkRuns) {
   const attempt = attemptOf(skipped);
   if (!attempt) return false;
-  return ['review-scope', 'battery-plan'].every((gate) =>
-    checkRuns.some((run) =>
-      run?.name === gate
-      && attemptOf(run) === attempt
-      && run.status === 'completed'
-      && run.conclusion === 'success'));
+  return GATE_CHECKS.every((gate) => {
+    const runs = checkRuns.filter(
+      (run) => run?.name === gate && attemptOf(run) === attempt,
+    );
+    return runs.length > 0
+      && runs.every((run) => run.status === 'completed' && run.conclusion === 'success');
+  });
 }
 
 export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
@@ -113,10 +122,17 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
       missing.push(name);
       continue;
     }
-    if (runs.some((run) => run.status !== 'completed')) {
+    // The NEWEST evidence decides, including whether we are still waiting.
+    // Asking "is ANY run of this name unfinished?" over the full `filter=all`
+    // history let a superseded attempt's still-running job hold the head
+    // pending until timeout even though the current attempt had already passed
+    // that check — the job will report on a merge result nobody is asking about.
+    const ordered = [...runs].sort(coverageOrder(attemptStamps));
+    if (ordered[0].status !== 'completed') {
       pending.push(name);
       continue;
     }
+    const completed = ordered.filter((run) => run.status === 'completed');
     // One SHA can carry several completed runs of the same check: an `edited`
     // re-run of the scope check, or product jobs the battery plan skipped.
     // A skipped run may defer to older evidence ONLY when the skip was the
@@ -132,11 +148,12 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     // gate publishes green over red exact-head CI. Within one attempt (a
     // rerun-failed-jobs keeps the suite) completion still decides, so a rerun
     // continues to mask the failure it repaired.
-    const decider = [...runs]
-      .sort(coverageOrder(attemptStamps))
+    const decider = completed
       .find((run) => run.conclusion !== 'skipped' || !intentionalSkip(run, checkRuns));
     if (!decider) {
-      missing.push(name);
+      // A deliberate skip deferring to evidence that is itself still running is
+      // waiting, not absent.
+      (completed.length < runs.length ? pending : missing).push(name);
       continue;
     }
     if (decider.conclusion !== 'success') {

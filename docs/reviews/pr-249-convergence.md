@@ -463,3 +463,74 @@ revised later. RED at `ab0da64`.
 `pnpm test:automation` 104/104. `pnpm check` EXIT 0 — web 543/543, API 680/680; the
 `onboardLabourWorker` key-timing flake noted in earlier rounds did not recur, its fix having
 merged as PR #251.
+
+## Round 12 — `2003ee9`
+
+Five comments, three distinct findings. All three are correct, and all three are in the same
+place the round-10 and round-11 findings were: **the boundary between an attempt's identity and
+its evidence's timestamps.**
+
+### F1 (P2): the planner's in-flight fast path skipped the currency test
+
+`coveredBy` returned `true` for any non-completed run before comparing it to the watermark. A
+base-A `api` job still executing when base B's gates pass is not coverage in progress for base B —
+whatever it eventually reports describes the old merge result. The planner then emits
+`run_products=false`, the new workflow creates only skipped products, and base B gets no `api` run
+at all.
+
+Fix: the supersession test moves ahead of the fast path in `coveredBy`. A superseded run is not
+coverage whether it has finished or not.
+
+Probe: `an in-flight product from a superseded attempt is not coverage`.
+
+### F2 (P2): a gate rerun retroactively blessed the skips its failure caused
+
+`intentionalSkip` asked whether the attempt held *some* successful run of each gate. The bounded
+`rerun-failed-jobs` retry reruns a failed gate inside the SAME workflow run, so a later
+`battery-plan` success made the products that skipped *because that gate failed* look deliberate.
+Their attempt is then classed `skipping`, its gates drop out of the watermark, and the previous
+base's successes speak for this head — while the retry's own product reruns do not exist yet.
+
+Fix: `every` run of every gate in the attempt must have passed. A gate that failed at any point
+means the attempt aborted, and its skips prove nothing. This is the fail-closed reading and needs
+no timestamp reasoning: `review-scope` and `battery-plan` have no `needs` between them, so a
+healthy attempt has exactly one successful run of each.
+
+Probe: `a gate rerun does not bless the skips its earlier failure caused`.
+
+### F3 (P2): a stale unfinished run held a passed current attempt pending
+
+`summarizeRequiredChecks` marked a check pending if ANY run of that name was unfinished. Since the
+gate reads `filter=all`, that includes every historical run, so a superseded attempt's still-running
+job held the head pending until timeout and returned it to draft — even though the current attempt
+had already passed that exact check.
+
+Fix: the newest evidence decides whether we are waiting, not the existence of any unfinished run.
+The name's runs are ordered by `coverageOrder`, and only if the FIRST is unfinished is the check
+pending. The decider search then runs over completed runs only, so a deliberate skip cannot fall
+through onto an unfinished older run and read its null conclusion as a failure; if a skip defers to
+evidence that is itself still running, that is `pending`, not `missing`.
+
+The converse is pinned in the same probe: the CURRENT attempt's own unfinished job is still
+pending, even with an older completed success on the same name.
+
+Probe: `a stale in-flight run does not hold a passed current attempt pending`.
+
+### Why these keep arriving
+
+Rounds 10, 11 and 12 have all found the same shape: a rule that must judge *which attempt* a run
+belongs to, implemented somewhere as a comparison of *when it finished*. Round 10 fixed the
+watermark comparison; round 11 fixed decider selection and the planner's copy of the rule; round 12
+fixes the three remaining places that never consulted attempt identity at all — the in-flight fast
+path, the skip attribution, and the pending test.
+
+Every one is now expressed through `check-run-coverage.mjs` (`coverageStamp`, `coverageOrder`,
+`gateWatermarks`, `attemptGateStamps`) or through the attempt key directly. The residual risk is
+the same one that module already documents: a run whose attempt cannot be identified falls back to
+its own recency, and the skip-attribution rule fails closed on it.
+
+### Gates
+
+`node --test scripts/autonomous-ci-battery.test.mjs` 18/18 — the three new probes RED at
+`2003ee9`, GREEN after, and the five pre-existing coverage probes unchanged.
+`pnpm test:automation` 107/107. `pnpm check` EXIT 0 — web 543/543, API 680/680.

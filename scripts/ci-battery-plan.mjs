@@ -55,6 +55,12 @@ function coveredBy(checkRuns, name, notBefore = '', stamps = new Map()) {
     .filter((run) => run?.name === name && !isSkipped(run))
     .sort(coverageOrder(stamps))[0];
   if (!decider || typeof decider.status !== 'string') return false;
+  // Currency BEFORE the in-flight fast path. A base-A product job still
+  // executing when base B's gates have passed is not coverage in progress for
+  // base B — whatever it eventually reports describes the old merge result.
+  // Answering "covered" here skips the battery, the new attempt creates only
+  // skipped products, and base B never gets a product run at all.
+  if (coverageStamp(decider, stamps) < notBefore) return false;
   if (decider.status !== 'completed') return true;
   if (decider.conclusion === 'cancelled') return false;
   // Product jobs are created AFTER their gates, so within one attempt a product
@@ -70,7 +76,7 @@ function coveredBy(checkRuns, name, notBefore = '', stamps = new Map()) {
   // gate holds it superseded and waits, so a planner that read the completion
   // instead would skip the battery and nothing would ever relaunch those
   // products. Both sides must use one rule or the head deadlocks.
-  return coverageStamp(decider, stamps) >= notBefore;
+  return true;
 }
 
 // The newest COMPLETED run of a check.

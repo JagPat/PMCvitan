@@ -801,3 +801,121 @@ test('the planner and the gate date coverage identically', () => {
     'planner skipped the battery while the gate treats the same evidence as superseded',
   );
 });
+
+// FINDING (#249 round 12 P2) — the planner's in-flight fast path returned
+// "covered" before asking whether the run's attempt was still current. A base-A
+// product still executing when base B's gates pass is not coverage in progress
+// for base B: whatever it reports will describe the old merge result.
+test('an in-flight product from a superseded attempt is not coverage', () => {
+  const at = (name, runId, stamp, extra = {}) => ({
+    name,
+    status: 'completed',
+    conclusion: 'success',
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+    ...extra,
+  });
+  const others = PRODUCT_CHECKS.filter((n) => n !== 'api');
+
+  const runs = [
+    // attempt 800 on base A: gates, four products done, `api` still running
+    at('review-scope', '800', '2026-07-29T10:00:00Z'),
+    at('battery-plan', '800', '2026-07-29T10:00:30Z'),
+    ...others.map((n) => at(n, '800', '2026-07-29T10:05:00Z')),
+    { name: 'api', status: 'in_progress', conclusion: null,
+      html_url: 'https://github.com/o/r/actions/runs/800/job/9' },
+    // retarget: attempt 900's gates pass, its four other products land, and its
+    // own `api` job has not been created yet
+    at('review-scope', '900', '2026-07-29T11:00:00Z'),
+    at('battery-plan', '900', '2026-07-29T11:00:30Z'),
+    ...others.map((n) => at(n, '900', '2026-07-29T11:05:00Z')),
+  ];
+
+  const plan = assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: runs });
+  assert.equal(
+    plan.runProducts,
+    true,
+    'base B has no api evidence; a base-A job still running is not coverage for it',
+  );
+});
+
+// FINDING (#249 round 12 P2) — a skip was called deliberate whenever the
+// attempt held SOME successful gate run, so a `rerun-failed-jobs` success
+// retroactively blessed products that had skipped because that same gate FAILED.
+test('a gate rerun does not bless the skips its earlier failure caused', () => {
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  const runs = [
+    // attempt 800: a full, real, green battery on the previous base
+    job('review-scope', 'success', '800', '2026-07-29T10:00:00Z'),
+    job('battery-plan', 'success', '800', '2026-07-29T10:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, 'success', '800', '2026-07-29T10:05:00Z')),
+    // attempt 900: battery-plan FAILS, so every product of that attempt skips
+    job('review-scope', 'success', '900', '2026-07-29T11:00:00Z'),
+    job('battery-plan', 'failure', '900', '2026-07-29T11:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, 'skipped', '900', '2026-07-29T11:01:00Z')),
+    // the bounded retry reruns battery-plan; its product reruns are not visible
+    job('battery-plan', 'success', '900', '2026-07-29T11:30:00Z'),
+  ];
+
+  const summary = summarizeRequiredChecks(runs, [...PRODUCT_CHECKS]);
+  assert.notEqual(
+    summary.state,
+    'success',
+    'attempt 900 aborted; its skips cannot defer to the previous base',
+  );
+  assert.deepEqual(summary.failed, [...PRODUCT_CHECKS]);
+});
+
+// FINDING (#249 round 12 P2) — `filter=all` returns every historical run, and
+// the gate marked a check pending if ANY of them was unfinished. A superseded
+// attempt's still-running job then held the head pending until timeout even
+// though the current attempt had already passed that check.
+test('a stale in-flight run does not hold a passed current attempt pending', () => {
+  const at = (name, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion: 'success',
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  const runs = [
+    at('review-scope', '800', '2026-07-29T10:00:00Z'),
+    at('battery-plan', '800', '2026-07-29T10:00:30Z'),
+    // attempt 800's api never finished
+    { name: 'api', status: 'in_progress', conclusion: null,
+      html_url: 'https://github.com/o/r/actions/runs/800/job/9' },
+    at('review-scope', '900', '2026-07-29T11:00:00Z'),
+    at('battery-plan', '900', '2026-07-29T11:00:30Z'),
+    at('api', '900', '2026-07-29T11:05:00Z'),
+  ];
+
+  const summary = summarizeRequiredChecks(runs, ['api']);
+  assert.deepEqual(summary.pending, [], 'the current attempt passed api');
+  assert.deepEqual(summary.failed, []);
+  assert.deepEqual(summary.missing, []);
+
+  // The converse still holds: the CURRENT attempt's own unfinished job is
+  // genuinely pending, even with an older completed success on the same name.
+  const currentRunning = [
+    at('review-scope', '800', '2026-07-29T10:00:00Z'),
+    at('battery-plan', '800', '2026-07-29T10:00:30Z'),
+    at('api', '800', '2026-07-29T10:05:00Z'),
+    at('review-scope', '900', '2026-07-29T11:00:00Z'),
+    at('battery-plan', '900', '2026-07-29T11:00:30Z'),
+    { name: 'api', status: 'in_progress', conclusion: null,
+      html_url: 'https://github.com/o/r/actions/runs/900/job/9' },
+  ];
+  assert.deepEqual(
+    summarizeRequiredChecks(currentRunning, ['api']).pending,
+    ['api'],
+    'the current attempt is still running api',
+  );
+});
