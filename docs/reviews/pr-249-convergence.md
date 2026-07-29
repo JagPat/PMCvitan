@@ -18,6 +18,7 @@ invariant rather than a point patch, and state the remaining risk honestly.
 | `2016f41` | R5 — 2 real (2×P2) + 1 invalid | The two sides of one ambiguity: a SKIPPED product run means either "the plan deliberately found this head covered" or "an upstream gate failed and this attempt aborted", and the gate treated both as deferrable → a skip may now defer to older evidence ONLY when its own workflow run has BOTH `review-scope` and `battery-plan` green (the only state in which the skip can be the plan's `run_products=false` decision); any other skip is a real non-success and fails closed |
 | `8b2f2de` | R6 — 2 real (1×P1, 1×P2) + 1 disproved premise | The R5 rule was stated over the two gates but only HALF-wired: `battery-plan` was not a required check, so its own failure was invisible to the gate and its verdict was not consulted where `review-scope`'s was → `battery-plan` joins `REQUIRED_CHECKS` (and the legacy-PR filter), and both the in-flight guard and the newest-completed-verdict loop iterate `['review-scope','battery-plan']` uniformly. Attempt attribution is hardened to `check_suite.id` with the URL parse as fallback (the P1's stated premise — that `html_url` is `/runs/{check_run_id}` — is false for this repo, see below) |
 | `36a5377` | R9 — 1 real (1×P1) + 2 invalid | The shared rule was written per ATTEMPT when the quantity it governs is per PRODUCT NAME: `gateWatermark` asked "did this attempt produce any products?", so an attempt with `web` visible and its other four check runs not yet created vouched for all five, and those four fell back to the previous base's successes → the watermark is computed PER NAME (`gateWatermarks`), so an attempt vouches only for the names it actually produced; both the plan and the gate index it by name. The two invalid findings are phantom-SHA trailer claims, recorded below |
+| `0f4f19a` | R10 — 2 real (2×P2) + 1 invalid | The R9 per-name watermark fixed one half of a symmetry and introduced the other: a SKIPPING attempt's five skipped runs need not be visible at once either, so per-name alone treated its not-yet-visible names as "produced no run", raised the watermark and rejected the evidence that attempt deliberately preserved → the watermark now reads the CHARACTER of the runs an attempt does have (skipping preserves for every name, running supersedes the names it lacks, no products at all is the retarget window), and `belongsToRun` inspects BOTH URLs rather than `html_url ?? details_url` |
 
 ## Architectural Convergence
 
@@ -238,4 +239,46 @@ case — is unmergeable regardless of its actual CI result. The mechanical conse
 this correction had to be delivered on a fresh SHA, whose single-attempt history the old gate
 reads correctly. No evidence was weakened and no check was bypassed to achieve that; the head
 below carries a complete, genuinely green battery of its own.
+
+## Round 10 (head `0f4f19a`) — the same cause, one level up
+
+R9 corrected the watermark's UNIT (per attempt → per product name). R10 shows the unit was
+still not the whole answer, and the residue is the same architectural cause this packet has
+tracked throughout: a rule stated over a quantity that does not determine the outcome.
+
+"Does attempt X have a run named N?" is ambiguous whenever X's product check runs are not all
+visible yet, and it is ambiguous in BOTH directions. R9 fixed the running case: a partially
+visible RUNNING attempt must not vouch for the names it has not produced. R10 is its mirror: a
+partially visible SKIPPING attempt must not INVALIDATE the names it has not produced, because a
+skip is precisely the decision to keep the previous attempt's evidence.
+
+What actually settles it is not which names an attempt has, but what KIND of runs it has:
+
+| Runs the attempt shows | Character | Watermark effect |
+| --- | --- | --- |
+| none | unknown — the retarget window | raises for every name |
+| at least one, all `skipped` | skipping — it kept older evidence | raises for no name |
+| at least one non-`skipped` | running — it is producing its own | raises for the names it lacks |
+
+A mixed attempt is classified `running`, which is the conservative reading. Both earlier
+properties now hold by construction rather than by separate rules: the round-8 deliberate-skip
+regression and the R9 partial-visibility case are two instances of one table.
+
+The second finding is unrelated and simple: `belongsToRun` used `html_url ?? details_url`, and
+`??` only falls through on null/undefined — a populated non-Actions `html_url` hid an Actions
+job URL sitting in `details_url`, so the current attempt's own in-flight gates escaped the
+exclusion and forced a duplicate battery. It now inspects both, which is what `attemptOf`
+already did.
+
+Reproduce-first: `a partially visible skip still preserves the evidence it kept` is RED with
+the character rule disabled and GREEN with it, and asserts the R9 running case is unchanged in
+the same probe; `the current-run exclusion reads both URLs` is RED with the `??` form restored.
+`pnpm test:automation` 88/88.
+
+### Invalid reviewer evidence (round 10)
+
+The round's third finding cites `529beeff767804aef8479c9cd22943569d7f28b1`, which is not an
+object in this repository and is not `refs/pull/249/head`. The reviewed head `0f4f19a` carries a
+git-parsed `Review-Convergence: complete`. Twenty-second such citation across PRs #246–#249;
+recorded, not acted on. PR #250 addresses the class at the source.
 

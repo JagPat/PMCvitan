@@ -29,9 +29,15 @@ export { PRODUCT_CHECKS };
 // .../actions/runs/<runId>/job/<jobId>
 export function belongsToRun(checkRun, runId) {
   if (!runId) return false;
-  const url = checkRun?.html_url ?? checkRun?.details_url;
-  const match = /\/actions\/runs\/(\d+)\//u.exec(typeof url === 'string' ? url : '');
-  return Boolean(match) && match[1] === String(runId);
+  // Both URLs, not `html_url ?? details_url`: `??` only falls through on
+  // null/undefined, so a populated non-Actions `html_url` would hide an Actions
+  // job URL sitting in `details_url`. This attempt's own in-flight gates would
+  // then survive the exclusion and force a duplicate battery on a covered head.
+  for (const url of [checkRun?.html_url, checkRun?.details_url]) {
+    const match = /\/actions\/runs\/(\d+)\//u.exec(typeof url === 'string' ? url : '');
+    if (match && match[1] === String(runId)) return true;
+  }
+  return false;
 }
 
 // Coverage is decided by the NEWEST non-skipped run of that name, never by

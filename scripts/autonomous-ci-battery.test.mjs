@@ -557,3 +557,70 @@ test('a partially visible attempt vouches only for the products it produced', ()
   );
   assert.equal(summarizeRequiredChecks(complete).state, 'success');
 });
+
+// FINDING (round 10) — the R9 per-name watermark had a mirror-image defect. A
+// SKIPPING attempt's five skipped runs need not be visible at once either, and
+// per-name alone treated the not-yet-visible names as "this attempt produced no
+// run of N", raising the watermark and rejecting the very evidence that attempt
+// deliberately preserved. What resolves the ambiguity is the CHARACTER of the
+// runs the attempt does have, not the presence of a specific name.
+test('a partially visible skip still preserves the evidence it kept', () => {
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  // A: full real battery. B: a metadata edit that skipped, with only `web`
+  // visible as skipped so far. C: a second metadata edit asking the question.
+  const partialSkip = [
+    job('review-scope', 'success', '600', '2026-07-29T10:00:00Z'),
+    job('battery-plan', 'success', '600', '2026-07-29T10:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, 'success', '600', '2026-07-29T10:05:00Z')),
+    job('review-scope', 'success', '700', '2026-07-29T11:00:00Z'),
+    job('battery-plan', 'success', '700', '2026-07-29T11:00:30Z'),
+    job('web', 'skipped', '700', '2026-07-29T11:01:00Z'),
+  ];
+  assert.equal(
+    assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: partialSkip }).runProducts,
+    false,
+    "attempt 700 is skipping, so it preserves 600's evidence for every name",
+  );
+  assert.equal(summarizeRequiredChecks(partialSkip).state, 'success');
+
+  // The R9 case is unchanged: a partially visible RUNNING attempt supersedes.
+  const partialRun = [
+    ...partialSkip.slice(0, 7),
+    job('review-scope', 'success', '700', '2026-07-29T11:00:00Z'),
+    job('battery-plan', 'success', '700', '2026-07-29T11:00:30Z'),
+    job('web', 'success', '700', '2026-07-29T11:05:00Z'),
+  ];
+  assert.equal(
+    assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: partialRun }).runProducts,
+    true,
+    'a running attempt vouches only for the names it has produced',
+  );
+});
+
+// FINDING (round 10) — `html_url ?? details_url` only falls through on
+// null/undefined, so a populated non-Actions html_url hid the Actions job URL.
+test('the current-run exclusion reads both URLs', () => {
+  const runId = '900';
+  assert.equal(
+    belongsToRun({ html_url: `https://github.com/o/r/actions/runs/${runId}/job/1` }, runId),
+    true,
+  );
+  assert.equal(
+    belongsToRun({
+      html_url: 'https://github.com/o/r/runs/12345',
+      details_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+    }, runId),
+    true,
+    'an Actions job URL in details_url must be seen past a populated html_url',
+  );
+  assert.equal(belongsToRun({ html_url: 'https://example.test/x' }, runId), false);
+  assert.equal(belongsToRun({}, runId), false);
+  assert.equal(belongsToRun({ html_url: `https://github.com/o/r/actions/runs/${runId}/job/1` }, null), false);
+});

@@ -72,9 +72,37 @@ export function attemptOf(run) {
 // fall back to the previous base's successes — and the head is promoted while
 // four of its five product jobs have never run against the current merge
 // result. An attempt vouches only for the names it actually produced.
+// An attempt's product check runs do not have to be visible all at once, so
+// "this attempt has no run named N" is ambiguous between "not yet" and "never
+// will". What resolves it is the character of the runs the attempt DOES have:
+//
+//   skipping — every product run it shows is `skipped`, so its battery plan
+//              decided this head was already covered. It deliberately kept the
+//              older evidence and must never invalidate it, including for the
+//              names whose skipped runs have not appeared yet.
+//   running  — it shows at least one real product run, so it is producing its
+//              own evidence. A name it has no run of is superseded-and-pending,
+//              not covered by the previous attempt.
+//   unknown  — no product runs at all: the retarget window, where the new
+//              base's gates are green and no product job exists yet. Older
+//              evidence tested a different merge result, so it is superseded.
+function attemptCharacters(runs) {
+  const characters = new Map();
+  for (const run of runs) {
+    if (!PRODUCT_CHECKS.includes(run?.name)) continue;
+    const attempt = attemptOf(run);
+    if (!attempt) continue;
+    const seen = characters.get(attempt);
+    if (seen === 'running') continue;
+    characters.set(attempt, isSkipped(run) ? 'skipping' : 'running');
+  }
+  return characters;
+}
+
 export function gateWatermarks(checkRuns) {
   const runs = Array.isArray(checkRuns) ? checkRuns : [];
 
+  const characters = attemptCharacters(runs);
   const attemptsByProduct = new Map(PRODUCT_CHECKS.map((name) => [name, new Set()]));
   for (const run of runs) {
     const attempts = attemptsByProduct.get(run?.name);
@@ -93,7 +121,11 @@ export function gateWatermarks(checkRuns) {
     watermarks.set(name, completedGates
       .filter((run) => {
         const attempt = attemptOf(run);
-        return Boolean(attempt) && !producedThisName.has(attempt);
+        if (!attempt) return false;
+        // Already has its own run of this name: its evidence is the decider.
+        if (producedThisName.has(attempt)) return false;
+        // A skipping attempt preserves older evidence for every name.
+        return characters.get(attempt) !== 'skipping';
       })
       .map((run) => recency(run))
       .reduce((newest, stamp) => (stamp > newest ? stamp : newest), ''));
