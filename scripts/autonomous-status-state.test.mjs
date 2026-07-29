@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
 
 import {
   assessRunnerState,
@@ -292,17 +291,21 @@ test('a review-only state without an open PR is a broken record, not work', () =
   );
 });
 
-// FINDING (round 7, `a74143d`) — the packet asserted a runner state STATUS did
-// not implement. The packet now echoes the Now block, and this compares them.
-test('the convergence packet describes the state docs/STATUS.md actually ships', async () => {
-  const packet = await readFile(
-    new URL('../docs/reviews/pr-248-convergence.md', import.meta.url),
-    'utf8',
-  );
-  const claimed = parseStatusNow(packet, '\n### Now block as shipped');
-  assert.ok(claimed, 'the packet must echo the Now block for comparison');
-  const { now } = await loadStatusDocument();
-  assert.deepEqual(claimed, now, 'the packet claims a state docs/STATUS.md does not ship');
+// FINDING (round 10) — an open task whose id is missing yields `task:undefined`,
+// a move the runner cannot make. Certifying it would defeat this whole module.
+test('an open task with no recorded id fails closed', () => {
+  for (const taskState of ['not_started', 'in_progress']) {
+    const verdict = assessRunnerState({
+      phase: '4',
+      task_state: taskState,
+      work_item: 'none',
+      open_pr: 'none',
+      next_task: 'none',
+      blocking_directive: 'none',
+    });
+    assert.equal(verdict.actionable, false, `${taskState} without a task id must fail closed`);
+    assert.match(verdict.reason, /no task id is recorded/u);
+  }
 });
 
 // The regression surface: the live state file, on every CI run.

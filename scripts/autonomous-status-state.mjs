@@ -155,6 +155,17 @@ export function assessRunnerState(state, maintenanceQueue = []) {
   }
 
   if (OPEN_TASK_STATES.has(taskState)) {
+    // The work item IS the task, so its identifier has to be there. Without it
+    // the runner would be handed `task:undefined` — a move it cannot make, and
+    // exactly the "certified but unstartable" state this module exists to catch.
+    if (isNone(state.task)) {
+      return {
+        actionable: false,
+        nextStep: null,
+        reason: `task_state is '${taskState}' but no task id is recorded, `
+          + 'so there is nothing for the runner to start',
+      };
+    }
     return {
       actionable: true,
       nextStep: `task:${state.task}`,

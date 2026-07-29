@@ -17,27 +17,6 @@ findings is out of a review's writ and why.
 | `52d3f71` | (owner instruction, not a Codex finding) | The project owner resolved the dispute directly: remove the directive, keep `next_task: phase-5-planning`, restore automatic progression. |
 | `a74143d` | P1 "Make the convergence remedy match STATUS" | The packet's remedy section still described round 2's design after round 3 had changed STATUS. Real defect — packet/state drift. |
 
-### Now block as shipped
-
-The `a74143d` finding was this packet asserting a runner state that `docs/STATUS.md` did not
-implement. That class of drift IS mechanically checkable, so it is checked: the block below is
-compared field-for-field against the live Now block by
-`scripts/autonomous-status-state.test.mjs` on every CI run. A packet that describes a state the
-state file does not ship fails the build.
-
-```yaml
-phase: 4
-phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
-task: 6
-task_state: merged
-work_item: none
-reviewed_merge: 67e7a00
-open_pr: none
-next_task: phase-5-planning
-blocking_directive: none
-updated: 2026-07-29
-```
-
 ### Evidence and regression surface
 
 An earlier revision of this section claimed a docs-only change admits no RED-then-GREEN probe.
@@ -65,11 +44,27 @@ GREEN  52f04d8 (this head)
 | `1d1de47` owner-approval gate | `1d1de47` | `assessRunnerState` rejects a `blocking_directive` recorded against any `task_state` other than `correction_required` | STATUS's own state-value definitions say a directive is what `correction_required` launches; the invariant now enforces that, so parking the loop behind a directive the state machine never scheduled — the shape a human-approval gate takes — is red in CI |
 | `91fc1fb` directive from `in_progress` | `91fc1fb` | `assessRunnerState` schedules the directive named by an `in_progress` task — STATUS's documented post-merge fix-forward state | The next validated defect can record its correction target without failing CI |
 | `91fc1fb` between-work stall | `91fc1fb` | the all-none state resolves to `maintenance:<first item>`; the live-file test also requires the queue to parse non-empty | Both finding heads have no queue section, so their RED verdicts are unaffected — asserted against the real commits |
-| `a74143d` packet ≠ STATUS | `a74143d` | The **Now block as shipped** section above is compared field-for-field against the live `docs/STATUS.md` Now block; a packet claiming a state the file does not implement fails CI | Exact equality, not prose matching — the drift that produced this finding is now impossible to merge |
+| `a74143d` packet ≠ STATUS | `a74143d` | No executable probe — and the attempt to build one was withdrawn, see below. The check is the reviewer's own comparison of this packet against `docs/STATUS.md`, repeatable by inspection | Both files live in this one PR's diff |
 
 The invariant is deliberately total: `assessRunnerState` returns a decision and a reason for
 every input, including malformed and unrecognized ones, and every non-actionable branch is
 covered by a test. No product code, schema, migration, projection, event or lock is touched.
+
+### The packet-drift check was built, then withdrawn — it was wrong in kind
+
+Round 7 pressed that the `a74143d` finding needed an executable probe, and round 8 built one: the
+packet echoed the Now block and a test compared it field-for-field against the live
+`docs/STATUS.md`. Round 10 showed that check was a trap. A convergence packet is a FROZEN
+historical record of one PR; `docs/STATUS.md` moves on every merge, because advancing it IS the
+loop. So the first future PR that advanced STATUS would have found this packet still echoing the
+Phase-4-complete block and failed `pnpm test:automation` — blocking the very progression the
+runner exists to perform. The check would have had to be rewritten by every future STATUS change,
+forever.
+
+The check is removed and this row is honest again: packet-versus-state drift is caught by reading
+the two files, which is what the reviewer did. That is a real check; it is simply not an automated
+one, and dressing it up as automation cost a round and nearly cost the loop. A mechanism that must
+be edited by every unrelated future change is not a regression surface — it is a liability.
 
 The first version of that test read the two historical Now blocks with `git show`, and CI caught
 it: `actions/checkout` uses `fetch-depth: 1`, so those objects do not exist on the runner and the
@@ -248,6 +243,16 @@ Every code and documentation finding raised against this PR is resolved: the run
 and PR-bearing-state corrections plus the mechanical packet↔STATUS check (round 8). Round 9 found
 nothing else. The convergence audit is therefore complete on the substance, and the sole remaining
 obstacle is a citation that does not correspond to any commit — see below.
+
+### Round 10 (head `c78a112`): the packet-drift trap, and a missing task id
+
+Two real findings. The P1 above — my own mechanization would have blocked every future STATUS
+advance — is withdrawn rather than patched. The P2: an open task (`not_started`/`in_progress`)
+with no `task` recorded returned `actionable: true` / `task:undefined`, certifying a state the
+runner cannot start, which is exactly what this module exists to prevent. It now fails closed.
+
+The round's third finding cited head `bd0c1ef2439238e2f32ebb440bd64379bda5b28a`, which is not an
+object in this repository; the reviewed head `c78a112` carries a git-parsed trailer.
 
 ## Remaining Risk
 
