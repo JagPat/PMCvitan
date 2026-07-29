@@ -802,3 +802,87 @@ at rev 2: the current-head allocate still dispatches WITH `CC-1`).
 - `upgrade-proof.sh` **PASSED** (no migration; every prior seal survives).
 - `test:e2e:api:allmodules` (legacy): **35/35** CLEAN first run; labour-pilot 4/4.
 - `test:e2e:api:allmodules:outbox`: **35/35** CLEAN first run; labour-pilot 4/4.
+
+## §14 — Codex correction round 10 (five findings on `a46e350`)
+
+One SERVER lifecycle gap (the post-allocation half of the substitution story R8-4's
+verify-the-basis left open) and four web outbox/staleness gaps. Reproduce-first: pre-fix
+`apps/api/src` + `apps/web/src` restored at `a46e350` → API pin suite **1 failed | 4 passed**,
+web labour suites **5 failed | 86 passed**; fixes restored → API **5/5**, web **91/91** GREEN.
+
+### R10-1 — revoking a substitution RELEASES the allocations it alone authorized (server)
+
+R8-4 verified the basis at ALLOCATION time but left the persisted identity the HEAD fingerprint
+(the sealed §C `WorkerAllocation_spec_fkey` makes a substitute identity unrepresentable), so a
+worker eligible only through a substitution kept counting as native head-fingerprint coverage
+AFTER the authority was revoked. The correction takes the finding's second lever — revocation
+disposes: in the SAME transaction (under the readiness lock `activities.start` also takes),
+`skillSubstitution.revoke` releases every ACTIVE allocation on the requirement whose worker's
+OWN identity (trade + `WorkerSkill` rows, hashed with the shared fingerprint) does not satisfy
+the frozen head, DOES satisfy the revoked target, and is not covered by any OTHER live
+substitution — the same attributable CAS lifecycle as a manual `allocation.release`
+(`releaseReason: "skill substitution revoked: …"`, the revoker as `releasedById`, one
+`allocation.released` event per row so the readiness projection observes it). Natively-qualified
+rows and rows covered by another live substitution are untouched; recorded work facts survive
+(delivered effort is physical history §A keeps counting) and R7-1 already refuses FURTHER work
+under the released row. Probe: carpenter-only worker via substitution A + carpenter+formwork
+worker via A (also covered by live substitution B) + native mason → revoke A: only the
+carpenter-only row is released (reason + revoker asserted); revoke B: the second row follows;
+the mason stays active throughout.
+
+### R10-2 — no work entry against an allocation whose demand is GONE (web)
+
+Record work was enabled for every active allocation even when its requirement had been revised
+to a different identity or cancelled — the server accepts the fact (an active allocation is an
+active allocation) and §I productivity rolls it in, so a worker could record effort onto a
+superseded or dead slice coverage no longer counts. The pure `allocationMatchesLiveDemand`
+mirrors the carry-forward rule: live iff the requirement is in view, not cancelled, still labour
+demand, its head keeps the allocation's frozen fingerprint AND shift, and the current head still
+demands the allocation's `(civilDate, shift)` slice. A stale row's minutes input + button are
+disabled with the honest "Demand revised — release to correct" state (`allocation.release` is
+the corrective). Probes: the helper table (live · absent · cancelled · material-only · stranded
+fingerprint · stranded shift · undemanded date) + rendered stale-vs-live control; the four
+existing work-entry probes re-fixtured onto LIVE demand so they exercise their own concern.
+
+### R10-3 — the onboarding key is spent only when the roster TRUTH renders (web)
+
+The held form key was deleted on the command's own 2xx, but the Team roster renders the
+module-owned labour bundle — if `/labour/workers` committed and the bundle reload failed or
+stayed stale, the worker was absent on screen and the natural retry minted a FRESH key: a
+duplicate `Worker` identity (the roster has no natural uniqueness). `onboardLabourWorker` now
+AWAITS `loadLabour()` (which returns its promise as of this round) and deletes the sig-keyed
+held key ONLY when the fresh bundle contains the created row; a failed/stale reload keeps it,
+so the retry replays the SAME key and the ledger returns the original worker. Probe: commit +
+failed reload → retry replays the key; the retry's successful reload (bundle contains `W-NEW`)
+spends it; a later deliberate same-name onboarding mints fresh.
+
+### R10-4 — the bind key survives a failed post-bind reconcile (web)
+
+The bind key was deleted as soon as the bind CAS resolved — a failed follow-up snapshot then
+reported "could not reach the server" with the key already gone, and the retry's fresh key hit
+the terminal "already bound" 409 for a binding that succeeded. `bindLabourDevice` now runs the
+reconcile (`loadLabour` + `snapshot`) INSIDE the success path and spends the key only after it
+completes; any rejection lands in the catch with the key retained. Probe: committed bind +
+failed reconcile → retry replays the SAME key; the retry's successful reconcile spends it.
+
+### R10-5 — the bind form reserves the DEVICE while any bind naming it is pending (web)
+
+`labourBindPending` is keyed per `(device, worker)` pair, so binding device D→W2 stayed enabled
+while D→W1 was unresolved — whichever request wins the server CAS permanently attributes the
+device (one-way evidence, no rebind) and the other is a terminal 409. The shared `bindSig` +
+`isDeviceBindPending` (parsing the same signature format the store writes) disable the bind
+button for the typed device while ANY bind naming it is pending ("Binding…"); a different
+device is unaffected. Probe: rendered TeamScreen with a held DEV-1 bind — DEV-1→W-ELEC
+disabled, DEV-2 enabled.
+
+### Round-10 gate battery (this head)
+
+- **Reproduce-first**: pre-fix src at `a46e350` → API **1 failed | 4 passed**, web **5 failed |
+  86 passed**; fixed → API **5/5**, web **91/91**, typechecks clean.
+- `pnpm check` **EXIT 0** — web **528/528** (42 files, +5 round-10 probes), API **680/680**
+  (55 files), builds clean. ALL CLEAN single pass.
+- Full API integration on a pristine migrated DB (psql drop/create + `prisma migrate deploy`):
+  **72 files / 698 tests** passing (+1 — the R10-1 revocation-disposition probe).
+- `upgrade-proof.sh` **PASSED** (no migration in this round; every prior seal survives).
+- `test:e2e:api:allmodules` (legacy): **35/35** CLEAN first run; labour-pilot 4/4.
+- `test:e2e:api:allmodules:outbox`: **35/35** CLEAN first run; labour-pilot 4/4.

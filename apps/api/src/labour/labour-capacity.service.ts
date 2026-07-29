@@ -683,12 +683,72 @@ export class LabourCapacityService {
         }
         const row = await tx.approvedSkillSubstitution.findFirstOrThrow({ where: { projectId, id: substitutionId } });
         await recordAudit(tx, { projectId, actor, action: 'labour.skillSubstitution.revoke', entity: 'ApprovedSkillSubstitution', entityId: substitutionId });
-        const ev = await emitEvent(tx, {
+        const events: EmittedEventMeta[] = [];
+        events.push(await emitEvent(tx, {
           projectId, actor, eventType: 'skill_substitution.revoked', entityType: 'ApprovedSkillSubstitution', entityId: substitutionId,
           payload: serializeSubstitution(row) as unknown as Prisma.InputJsonValue,
           effectKey: 'skill_substitution.revoked', dispatch: {},
+        }));
+        // Task 6 review round 10 — revocation DISPOSES of the allocations it authorized. An
+        // allocation freezes the HEAD identity (the cleared §C `WorkerAllocation_spec_fkey`
+        // seal), so coverage cannot see WHICH basis qualified the worker; without this step a
+        // worker eligible ONLY through this substitution would keep counting as native
+        // head-fingerprint coverage after the authority ended. In the SAME transaction (still
+        // under the readiness lock `activities.start` also takes, so a start racing this revoke
+        // serializes), every ACTIVE allocation on this requirement whose worker's OWN identity
+        // does not hash to the frozen fingerprint, DOES hash to the revoked target, and is not
+        // covered by any OTHER live substitution, is RELEASED — the same attributable CAS
+        // lifecycle as a manual `allocation.release`, with the revocation as the reason.
+        // Recorded work facts survive (delivered effort is physical history; §A keeps counting
+        // it), and R7-1 refuses any FURTHER work under the released row.
+        const activeAllocations = await tx.workerAllocation.findMany({
+          where: { projectId, requirementId: row.requirementId, labourSpecFingerprint: row.fromFingerprint, status: 'active' },
         });
-        return { resultRef: substitutionId, events: [ev] };
+        if (activeAllocations.length > 0) {
+          const otherTargets = (
+            await tx.approvedSkillSubstitution.findMany({
+              where: { projectId, requirementId: row.requirementId, fromFingerprint: row.fromFingerprint, revokedAt: null },
+              select: { toFingerprint: true },
+            })
+          ).map((s) => s.toFingerprint);
+          const workerIds = [...new Set(activeAllocations.map((a) => a.workerId))];
+          const [workerRows, skillRows] = await Promise.all([
+            tx.worker.findMany({ where: { projectId, id: { in: workerIds } }, select: { id: true, tradeCode: true } }),
+            tx.workerSkill.findMany({ where: { projectId, workerId: { in: workerIds } }, select: { workerId: true, skillCode: true } }),
+          ]);
+          const tradeByWorker = new Map(workerRows.map((w) => [w.id, w.tradeCode]));
+          const skillsByWorker = new Map<string, string[]>();
+          for (const s of skillRows) skillsByWorker.set(s.workerId, [...(skillsByWorker.get(s.workerId) ?? []), s.skillCode]);
+          for (const a of [...activeAllocations].sort((x, y) => (x.id < y.id ? -1 : 1))) {
+            const tradeCode = tradeByWorker.get(a.workerId);
+            if (!tradeCode || !isLabourShift(a.shift)) continue;
+            const natives = new Set<string>([
+              await computeLabourSpecFingerprint({ tradeCode, skillCode: null, shift: a.shift }),
+            ]);
+            for (const skillCode of skillsByWorker.get(a.workerId) ?? []) {
+              natives.add(await computeLabourSpecFingerprint({ tradeCode, skillCode, shift: a.shift }));
+            }
+            if (natives.has(a.labourSpecFingerprint)) continue; // natively qualified — untouched
+            if (!natives.has(row.toFingerprint)) continue; // this substitution never covered them
+            if (otherTargets.some((t) => natives.has(t))) continue; // another LIVE authorization covers
+            const { count: released } = await tx.workerAllocation.updateMany({
+              where: { id: a.id, projectId, status: 'active' },
+              data: {
+                status: 'released', releasedAt: new Date(), releasedById: actor.actorId,
+                releaseReason: `skill substitution revoked: ${input.reason}`,
+              },
+            });
+            if (released === 0) continue;
+            const releasedRow = await tx.workerAllocation.findFirstOrThrow({ where: { projectId, id: a.id } });
+            await recordAudit(tx, { projectId, actor, action: 'labour.allocation.release', entity: 'WorkerAllocation', entityId: a.id });
+            events.push(await emitEvent(tx, {
+              projectId, actor, eventType: 'allocation.released', entityType: 'WorkerAllocation', entityId: a.id,
+              payload: serializeAllocation(releasedRow) as unknown as Prisma.InputJsonValue,
+              effectKey: 'allocation.released', dispatch: {},
+            }));
+          }
+        }
+        return { resultRef: substitutionId, events };
       },
     });
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);

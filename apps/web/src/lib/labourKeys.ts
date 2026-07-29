@@ -63,6 +63,26 @@ export const labourRequisitionCoalesceKey = (
   return `lab:req:${sig}`;
 };
 
+/** The roster bind's held-key SIGNATURE — the store's `labourBindPending` map key. Shared so the
+ *  device-level pending check below parses the same format the store writes. */
+export const bindSig = (deviceId: string, workerId: string): string => JSON.stringify([deviceId, workerId]);
+
+/** Codex round 10 — whether ANY bind for this DEVICE is still unresolved, regardless of which
+ *  worker it names. The held-key map is keyed per `(device, worker)` pair, but a device is
+ *  one-way evidence: two racing binds of one device to DIFFERENT workers let the server CAS
+ *  permanently attribute it to whichever wins while the other is a terminal 409 — so the bind
+ *  form must reserve the DEVICE while any bind naming it is pending. */
+export function isDeviceBindPending(pending: Readonly<Record<string, string>>, deviceId: string): boolean {
+  return Object.keys(pending).some((sig) => {
+    try {
+      const parsed = JSON.parse(sig) as unknown;
+      return Array.isArray(parsed) && parsed[0] === deviceId;
+    } catch {
+      return false;
+    }
+  });
+}
+
 /** The labour outbox op types (the §J offline/idempotent field ops). */
 export const LABOUR_OUTBOX_OP_TYPES = ['allocateLabour', 'recordAttendance', 'recordLabourWork', 'createLabourRequisition'] as const;
 

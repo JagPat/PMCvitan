@@ -66,6 +66,17 @@ const requisitionOf = (lines: Array<{ civilDate: string; personShiftQty: number;
   lines: lines.map((l, i) => ({ id: `LRQL-${i}`, requirementId: 'REQ-1', revision: 1, civilDate: l.civilDate, shift: 'day', labourSpecFingerprint: 'fp', personShiftQty: l.personShiftQty, status: l.status ?? 'open' })),
 });
 
+/** Codex round 10 — a requirement whose CURRENT head still demands the given dates (head
+ *  fingerprint returned), so work-entry probes exercise their own concern (parse/cap/pending/
+ *  future) rather than tripping the round-10 stale-demand gate. */
+const liveDemand = async (dates: string[]) => {
+  const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+  return {
+    fp,
+    requirements: [{ ...requirement(fp), labourSpec: labourSpec(fp, { demandSlices: dates.map((civilDate) => ({ civilDate, shift: 'day', personShiftQty: 1 })) }) }],
+  };
+};
+
 async function primeLabour(over: Partial<LabourView> = {}): Promise<LabourView> {
   const workers = [worker('W-MASON', 'mason'), worker('W-ELEC', 'electrician')];
   const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
@@ -260,9 +271,11 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     const t = new Date(`${today}T00:00:00Z`);
     t.setUTCDate(t.getUTCDate() + 1);
     const tomorrow = t.toISOString().slice(0, 10);
+    const live = await liveDemand([today, tomorrow]);
     await primeLabour({
+      requirements: live.requirements,
       capacity: {
-        allocations: [alloc({ id: 'AL-TODAY', civilDate: today }), alloc({ id: 'AL-FUTURE', civilDate: tomorrow })],
+        allocations: [alloc({ id: 'AL-TODAY', civilDate: today, labourSpecFingerprint: live.fp }), alloc({ id: 'AL-FUTURE', civilDate: tomorrow, labourSpecFingerprint: live.fp })],
         attendance: [], workFacts: [], skillSubstitutions: [],
       },
     });
@@ -319,8 +332,10 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
 
   it('R4-3: Record work parses the FULL numeric string — a fractional entry is invalid, scientific notation records the real value', async () => {
     const today = todayCivil(null);
+    const live = await liveDemand([today]);
     await primeLabour({
-      capacity: { allocations: [alloc({ id: 'AL-NOW', civilDate: today })], attendance: [], workFacts: [], skillSubstitutions: [] },
+      requirements: live.requirements,
+      capacity: { allocations: [alloc({ id: 'AL-NOW', civilDate: today, labourSpecFingerprint: live.fp })], attendance: [], workFacts: [], skillSubstitutions: [] },
     });
     const spy = vi.fn();
     useStore.setState({ role: 'pmc', recordWorkedMinutes: spy });
@@ -431,9 +446,11 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     const today = todayCivil(null);
     // 480 already recorded for the worker/date/shift (under ANOTHER allocation of the same
     // worker) — the default entry becomes the 240-minute remainder and 241 is refused
+    const live = await liveDemand([today]);
     await primeLabour({
+      requirements: live.requirements,
       capacity: {
-        allocations: [alloc({ id: 'AL-NOW', civilDate: today })],
+        allocations: [alloc({ id: 'AL-NOW', civilDate: today, labourSpecFingerprint: live.fp })],
         attendance: [],
         workFacts: [workFact({ id: 'WF-PRIOR', allocationId: 'AL-EARLIER', workerId: 'W-MASON', civilDate: today, workedMinutes: 480 })],
         skillSubstitutions: [],
@@ -457,8 +474,9 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     cleanup();
     // a FULL shift (720 recorded) shows 'Shift full' with input + button disabled
     await primeLabour({
+      requirements: live.requirements,
       capacity: {
-        allocations: [alloc({ id: 'AL-NOW', civilDate: today })],
+        allocations: [alloc({ id: 'AL-NOW', civilDate: today, labourSpecFingerprint: live.fp })],
         attendance: [],
         workFacts: [workFact({ id: 'WF-FULL', allocationId: 'AL-EARLIER', workerId: 'W-MASON', civilDate: today, workedMinutes: 720 })],
         skillSubstitutions: [],
@@ -501,8 +519,10 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
 
   it('R7-3: the work row stays DISABLED while a record is pending, even after editing the minutes (no second distinct command)', async () => {
     const today = todayCivil(null);
+    const live = await liveDemand([today]);
     await primeLabour({
-      capacity: { allocations: [alloc({ id: 'AL-NOW', civilDate: today })], attendance: [], workFacts: [], skillSubstitutions: [] },
+      requirements: live.requirements,
+      capacity: { allocations: [alloc({ id: 'AL-NOW', civilDate: today, labourSpecFingerprint: live.fp })], attendance: [], workFacts: [], skillSubstitutions: [] },
     });
     const spy = vi.fn();
     const { workCoalesceKey } = await import('@/lib/labourKeys');
@@ -584,6 +604,55 @@ describe('CODEX R3 — worked demand, future work, and requisition residuals on 
     fireEvent.change(r.getByTestId(`labour-worker-select-REQ-1-${day}`), { target: { value: 'W-MASON-2' } });
     fireEvent.click(r.getByTestId(`labour-do-allocate-REQ-1-${day}`));
     expect(spy).toHaveBeenCalledWith('ACT-1', 'REQ-1', 2, day, 'W-MASON-2', 'CC-1', fp);
+  });
+
+  it('R10-2: Record work is DISABLED for an allocation whose demand was revised away (stranded row — release is the corrective)', async () => {
+    const today = todayCivil(null);
+    // the allocation froze 'fp-old'; the view's head is the computed mason identity — the row is
+    // STRANDED (coverage no longer counts it), yet the server would still accept a work fact and
+    // §I productivity would roll it in. The hub must not invite effort onto dead demand.
+    await primeLabour({
+      capacity: { allocations: [alloc({ id: 'AL-STALE', civilDate: today, labourSpecFingerprint: 'fp-old' })], attendance: [], workFacts: [], skillSubstitutions: [] },
+    });
+    const spy = vi.fn();
+    useStore.setState({ role: 'pmc', recordWorkedMinutes: spy });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    const btn = r.getByTestId('labour-do-work-AL-STALE') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent).toContain('Demand revised');
+    expect((r.getByTestId('labour-work-minutes-AL-STALE') as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(btn);
+    expect(spy).not.toHaveBeenCalled();
+    cleanup();
+    // control — the SAME row under a still-matching head records normally
+    const live = await liveDemand([today]);
+    await primeLabour({
+      requirements: live.requirements,
+      capacity: { allocations: [alloc({ id: 'AL-LIVE', civilDate: today, labourSpecFingerprint: live.fp })], attendance: [], workFacts: [], skillSubstitutions: [] },
+    });
+    useStore.setState({ role: 'pmc', recordWorkedMinutes: spy });
+    const r2 = render(<LabourScreen />);
+    fireEvent.click(r2.getByTestId('labour-tab-allocation'));
+    expect((r2.getByTestId('labour-do-work-AL-LIVE') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R10-5: the bind form reserves the DEVICE while any bind naming it is pending (a device is one-way evidence)', async () => {
+    const { bindSig } = await import('@/lib/labourKeys');
+    await primeLabour();
+    // DEV-1 → W-MASON is still unresolved; binding DEV-1 to ANYONE else risks the losing CAS's
+    // terminal 409 permanently attributing the device to whichever request wins
+    useStore.setState({ role: 'pmc', loadTeam: vi.fn(async () => {}), labourBindPending: { [bindSig('DEV-1', 'W-MASON')]: 'held-key' } });
+    const r = render(<TeamScreen />);
+    fireEvent.change(r.getByTestId('labour-bind-device-id'), { target: { value: 'DEV-1' } });
+    fireEvent.change(r.getByTestId('labour-bind-worker'), { target: { value: 'W-ELEC' } });
+    const btn = () => r.getByTestId('labour-do-bind') as HTMLButtonElement;
+    expect(btn().disabled).toBe(true);
+    expect(btn().textContent).toContain('Binding…');
+    // a DIFFERENT device is unaffected
+    fireEvent.change(r.getByTestId('labour-bind-device-id'), { target: { value: 'DEV-2' } });
+    expect(btn().disabled).toBe(false);
+    expect(btn().textContent).toContain('Bind device');
   });
 
   it('R3-5: Team onboarding stamps activeFrom with the PROJECT civil day, not the browser/UTC date', async () => {

@@ -6,7 +6,7 @@ import type { ApiGateway, ProjectShell } from '@/data/apiGateway';
 import type { LabourView } from '@/store/labour';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, isWorkPendingForAllocation, labourRequisitionCoalesceKey, normalizeLabourOutbox } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, pendingBookedWorkerIds, hasPendingWorkFor, pendingCommitmentDraws } from '@/lib/labourSelection';
+import { buildWorkerFingerprints, compatibleWorkerIds, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, pendingBookedWorkerIds, hasPendingWorkFor, pendingCommitmentDraws, allocationMatchesLiveDemand } from '@/lib/labourSelection';
 import { computeLabourSpecFingerprint } from '@vitan/shared';
 import type { LabourReadinessDto, LabourActivityForecastDto, WorkerDto, WorkerAllocationDto, CapacityCommitmentDto, ApprovedSkillSubstitutionDto, LabourWorkFactDto, LabourRequisitionDto } from '@vitan/shared';
 
@@ -785,6 +785,22 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     )).toEqual({ 'CC-1': 2 });
   });
 
+  it('CODEX R10 — allocationMatchesLiveDemand: cancelled/absent/stranded/undemanded rows are NOT live', () => {
+    const a = { requirementId: 'REQ-1', labourSpecFingerprint: 'fp', civilDate: '2026-08-01', shift: 'day' };
+    const spec = (over: Record<string, unknown> = {}) => ({ labourSpecFingerprint: 'fp', shift: 'day', demandSlices: [{ civilDate: '2026-08-01', shift: 'day' }], ...over });
+    // the head still demands the allocation's slice under the frozen identity → LIVE
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'open', labourSpec: spec() }])).toBe(true);
+    // requirement gone from view / cancelled / no longer labour demand
+    expect(allocationMatchesLiveDemand(a, [])).toBe(false);
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'cancelled', labourSpec: spec() }])).toBe(false);
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'open', labourSpec: null }])).toBe(false);
+    // STRANDED — the head moved to a different identity or shift (the carry-forward rule)
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'open', labourSpec: spec({ labourSpecFingerprint: 'fp-2' }) }])).toBe(false);
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'open', labourSpec: spec({ shift: 'night' }) }])).toBe(false);
+    // the current head no longer demands the allocation's civil date
+    expect(allocationMatchesLiveDemand(a, [{ requirementId: 'REQ-1', status: 'open', labourSpec: spec({ demandSlices: [{ civilDate: '2026-08-02', shift: 'day' }] }) }])).toBe(false);
+  });
+
   it('CODEX R7 — hasPendingWorkFor covers the allocation AND its worker-shift siblings; isWorkPendingForAllocation matches ANY minutes', () => {
     const rows = [
       alloc({ id: 'AL-1', workerId: 'W-1' }),
@@ -887,7 +903,7 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     const g = {
       onboardWorker: vi.fn()
         .mockRejectedValueOnce(new TypeError('network aborted')) // attempt 1 — response LOST
-        .mockResolvedValue({}),                                   // attempt 2 onward — confirmed
+        .mockResolvedValue({ id: 'W-NEW' }),                      // attempt 2 onward — confirmed
       snapshot: vi.fn().mockResolvedValue({
         project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
         decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
@@ -895,7 +911,7 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
       }),
       labourReadiness: vi.fn().mockResolvedValue(readiness({})),
       materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
-      labourWorkforce: vi.fn().mockResolvedValue({ workers: [], crews: [] }),
+      labourWorkforce: vi.fn().mockResolvedValue({ workers: [worker('W-NEW', 'mason')], crews: [] }), // round 10 — the bundle CONFIRMS the row, spending the key
       labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
       labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
       labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
@@ -961,6 +977,99 @@ describe('CODEX F2 — allocation draws down the covering supplier commitment (�
     const [, keyA2] = g.onboardWorker.mock.calls[2]!;
     expect(keyB).not.toBe(keyA1); // a different form is a different command
     expect(keyA2).toBe(keyA1);    // the single-slot bug minted a FRESH key here — a duplicate Worker
+  });
+
+  it('CODEX R10 — the onboarding key survives a COMMITTED command whose labour-bundle reload FAILS (spent only when the roster truth renders)', async () => {
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; st.activeProjectId = 'ambli'; st.capabilities = ['labour']; });
+    const g = {
+      onboardWorker: vi.fn().mockResolvedValue({ id: 'W-NEW' }), // the command COMMITS every time
+      snapshot: vi.fn().mockResolvedValue({
+        project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+        decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+        drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+      }),
+      // reload 1 FAILS — the roster truth is NEVER rendered even though the worker exists server-side
+      labourReadiness: vi.fn()
+        .mockRejectedValueOnce(new TypeError('bundle fetch failed'))
+        .mockResolvedValue(readiness({})),
+      materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
+      labourWorkforce: vi.fn().mockResolvedValue({ workers: [worker('W-NEW', 'mason')], crews: [] }),
+      labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
+      labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
+      labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
+      labourCommitments: vi.fn().mockResolvedValue({ commitments: [] }),
+      labourCapacity: vi.fn().mockResolvedValue({ allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] }),
+      labourPresence: vi.fn().mockResolvedValue({ civilDate: '2026-07-28', musters: [], mismatches: [] }),
+      labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
+    };
+    s()._setGateway(g as unknown as ApiGateway);
+    s().onboardLabourWorker('Ramesh', 'mason', [], '2026-07-28'); // COMMITS; the reload fails
+    await vi.waitFor(() => { if (g.labourReadiness.mock.calls.length < 1) throw new Error('pending'); });
+    await flush(); await flush(); await flush();
+    // the screen never showed the worker — the user's natural retry must REPLAY the same key
+    // (pre-round-10 the key was spent on the command's own 2xx, so this retry minted a fresh
+    // key and the ledger executed a SECOND onboard: a duplicate Worker identity)
+    s().onboardLabourWorker('Ramesh', 'mason', [], '2026-07-28');
+    await vi.waitFor(() => { if (g.onboardWorker.mock.calls.length !== 2) throw new Error('pending'); });
+    await flush(); await flush(); await flush();
+    const [, key1] = g.onboardWorker.mock.calls[0]!;
+    const [, key2] = g.onboardWorker.mock.calls[1]!;
+    expect(key2).toBe(key1);
+    // the retry's reload SUCCEEDED and the bundle contains W-NEW — the key is now spent
+    await vi.waitFor(() => {
+      if (s().labourOnboardPending[JSON.stringify(['Ramesh', 'mason', [], '2026-07-28'])] !== undefined) throw new Error('still held');
+    });
+    s().onboardLabourWorker('Ramesh', 'mason', [], '2026-07-28'); // a deliberate NEW same-name worker
+    await vi.waitFor(() => { if (g.onboardWorker.mock.calls.length !== 3) throw new Error('pending'); });
+    const [, key3] = g.onboardWorker.mock.calls[2]!;
+    expect(key3).not.toBe(key1);
+  });
+
+  it('CODEX R10 — the bind key survives a COMMITTED bind whose post-bind reconcile FAILS (retry replays the SAME key)', async () => {
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+    useStore.setState((st) => { st.online = true; st.projectLoadState = 'ready'; st.projectScopeGeneration = 1; st.activeProjectId = 'ambli'; st.capabilities = ['labour']; });
+    const g = {
+      bindWorkerDevice: vi.fn().mockResolvedValue({ deviceId: 'DEV-1', workerId: 'W-1' }), // the CAS COMMITS
+      // the follow-up reconcile snapshot FAILS once — pre-round-10 the key was already spent, so
+      // the retry's FRESH key hit the terminal "already bound" 409 for a bind that succeeded
+      snapshot: vi.fn()
+        .mockRejectedValueOnce(new TypeError('reconcile failed'))
+        .mockResolvedValue({
+          project: { id: 'ambli', name: 'Ambli', short: 'Ambli', descriptor: '', stage: '', siteCode: '', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+          decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+          drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+        }),
+      labourReadiness: vi.fn().mockResolvedValue(readiness({})),
+      materialRequirements: vi.fn().mockResolvedValue({ requirements: [] }),
+      labourWorkforce: vi.fn().mockResolvedValue({ workers: [], crews: [] }),
+      labourCatalog: vi.fn().mockResolvedValue({ trades: [], skills: [] }),
+      labourRequisitions: vi.fn().mockResolvedValue({ requisitions: [] }),
+      labourPurchaseOrders: vi.fn().mockResolvedValue({ purchaseOrders: [] }),
+      labourCommitments: vi.fn().mockResolvedValue({ commitments: [] }),
+      labourCapacity: vi.fn().mockResolvedValue({ allocations: [], attendance: [], workFacts: [], skillSubstitutions: [] }),
+      labourPresence: vi.fn().mockResolvedValue({ civilDate: '2026-07-28', musters: [], mismatches: [] }),
+      labourProductivity: vi.fn().mockResolvedValue({ activities: [] }),
+    };
+    s()._setGateway(g as unknown as ApiGateway);
+    s().bindLabourDevice('DEV-1', 'W-1'); // bind COMMITS; the reconcile snapshot fails
+    await vi.waitFor(() => { if (g.snapshot.mock.calls.length < 1) throw new Error('pending'); });
+    await flush(); await flush(); await flush();
+    s().bindLabourDevice('DEV-1', 'W-1'); // retry after the reported failure
+    await vi.waitFor(() => { if (g.bindWorkerDevice.mock.calls.length !== 2) throw new Error('pending'); });
+    await flush(); await flush(); await flush();
+    const [, , key1] = g.bindWorkerDevice.mock.calls[0]!;
+    const [, , key2] = g.bindWorkerDevice.mock.calls[1]!;
+    expect(key2).toBe(key1); // the ledger replays the original success — never a false 409
+    // the retry's reconcile SUCCEEDED — the key is spent; a new deliberate bind mints fresh
+    const { bindSig } = await import('@/lib/labourKeys');
+    await vi.waitFor(() => { if (s().labourBindPending[bindSig('DEV-1', 'W-1')] !== undefined) throw new Error('still held'); });
+    s().bindLabourDevice('DEV-1', 'W-1');
+    await vi.waitFor(() => { if (g.bindWorkerDevice.mock.calls.length !== 3) throw new Error('pending'); });
+    const [, , key3] = g.bindWorkerDevice.mock.calls[2]!;
+    expect(key3).not.toBe(key1);
   });
 
   it('CODEX R3 — sourcedCountFor mirrors the server\'s coveredSourced = |allocated ∪ worked| (distinct workers; work survives release)', () => {

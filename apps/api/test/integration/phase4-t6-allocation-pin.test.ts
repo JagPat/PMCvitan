@@ -145,6 +145,38 @@ describe('Phase 4 Task 6 round 3 — allocation pinned to the selected requireme
     expect(head.allocations[0]!.labourSpecFingerprint).toBe(headFp);
   });
 
+  it('CODEX R10-1 — revoking a substitution RELEASES the allocations it ALONE authorized; native and otherwise-covered rows survive', async () => {
+    const { projectId, activityId, requirementId, revision, workers } = await fixture();
+    await labour.upsertSkill(projectId, { code: 'formwork', name: 'Formwork' }, pmc(projectId));
+    // carp1 is eligible ONLY through substitution A (carpenter); carp2 also carries the formwork
+    // skill, so substitution B (carpenter+formwork) covers them independently of A
+    const carp1 = await labour.onboardWorker(projectId, { name: 'CarpOnly', tradeCode: 'carpenter', skillCodes: [], activeFrom: '2026-01-01', activeTo: null }, pmc(projectId));
+    const carp2 = await labour.onboardWorker(projectId, { name: 'CarpForm', tradeCode: 'carpenter', skillCodes: ['formwork'], activeFrom: '2026-01-01', activeTo: null }, pmc(projectId));
+    const subA = await capacity.approveSkillSubstitution(projectId, { requirementId, tradeCode: 'carpenter', skillCode: null, shift: 'day', reason: 'stand-in' } as Parameters<typeof capacity.approveSkillSubstitution>[1], pmc(projectId));
+    const subB = await capacity.approveSkillSubstitution(projectId, { requirementId, tradeCode: 'carpenter', skillCode: 'formwork', shift: 'day', reason: 'formwork stand-in' } as Parameters<typeof capacity.approveSkillSubstitution>[1], pmc(projectId));
+    // three allocations onto the 2-qty slice would exceed demand — widen via a second civil date?
+    // No: worker-level conservation is per (worker, date, shift); the slice qty bounds NOTHING at
+    // allocate time (coverage reads it) — all three rows are legal §C facts.
+    const viaA = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: carp1.id, originRevision: revision, labourSpecFingerprint: subA.toFingerprint }, pmc(projectId));
+    const viaB = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: carp2.id, originRevision: revision, labourSpecFingerprint: subA.toFingerprint }, pmc(projectId));
+    const native = await capacity.allocate(projectId, { activityId, requirementId, civilDate: '2026-08-10', workerId: workers[0], originRevision: revision }, pmc(projectId));
+    // REVOKE A — the authority that alone qualified carp1. Pre-round-10 all three rows stayed
+    // ACTIVE and coverage kept counting carp1 as native head-fingerprint sourcing forever.
+    await capacity.revokeSkillSubstitution(projectId, subA.id, { reason: 'withdrawn' }, pmc(projectId));
+    const carp1Row = await t.prisma.workerAllocation.findFirstOrThrow({ where: { projectId, id: viaA.allocations[0]!.id } });
+    expect(carp1Row.status).toBe('released');
+    expect(carp1Row.releaseReason).toContain('skill substitution revoked');
+    expect(carp1Row.releasedById).toBe(f.memberUser.id);
+    // carp2 is still covered by the LIVE substitution B — untouched
+    expect((await t.prisma.workerAllocation.findFirstOrThrow({ where: { projectId, id: viaB.allocations[0]!.id } })).status).toBe('active');
+    // the natively-qualified mason is untouched
+    expect((await t.prisma.workerAllocation.findFirstOrThrow({ where: { projectId, id: native.allocations[0]!.id } })).status).toBe('active');
+    // revoking B ends carp2's LAST live authority — now that row is released too
+    await capacity.revokeSkillSubstitution(projectId, subB.id, { reason: 'also withdrawn' }, pmc(projectId));
+    expect((await t.prisma.workerAllocation.findFirstOrThrow({ where: { projectId, id: viaB.allocations[0]!.id } })).status).toBe('released');
+    expect((await t.prisma.workerAllocation.findFirstOrThrow({ where: { projectId, id: native.allocations[0]!.id } })).status).toBe('active');
+  });
+
   it('a STALE originRevision — the offline replay landing after a revision — is a deterministic 409 that allocates NOTHING', async () => {
     const { projectId, activityId, requirementId, revision, workers } = await fixture();
     // the head moves: the demand becomes CARPENTER (same activity, same civil date, same qty), so a

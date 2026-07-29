@@ -266,6 +266,29 @@ export function hasPendingWorkFor(
   return false;
 }
 
+/** Codex round 10 — whether an allocation still serves LIVE demand: its requirement is in view,
+ *  not cancelled, its head keeps the allocation's frozen identity (the carry-forward rule — a
+ *  responsible-only revision preserves; a trade/skill/shift revision STRANDS the row), and the
+ *  current head still demands the allocation's `(civilDate, shift)` slice. Work entry against a
+ *  row that fails this is effort recorded onto a superseded or dead slice — the server accepts
+ *  it (an active allocation is an active allocation) and §I productivity would roll it in, so
+ *  the hub must not invite it; `allocation.release` is the corrective lever. */
+export function allocationMatchesLiveDemand(
+  a: Pick<WorkerAllocationDto, 'requirementId' | 'labourSpecFingerprint' | 'civilDate' | 'shift'>,
+  requirements: ReadonlyArray<{
+    requirementId: string;
+    status?: string;
+    labourSpec: { labourSpecFingerprint: string; shift: string; demandSlices: ReadonlyArray<{ civilDate: string; shift: string }> } | null;
+  }>,
+): boolean {
+  const req = requirements.find((r) => r.requirementId === a.requirementId);
+  if (!req || req.status === 'cancelled') return false; // demand gone
+  const spec = req.labourSpec;
+  if (!spec) return false;
+  if (spec.labourSpecFingerprint !== a.labourSpecFingerprint || spec.shift !== a.shift) return false; // stranded
+  return spec.demandSlices.some((sl) => sl.civilDate === a.civilDate && sl.shift === a.shift);
+}
+
 /** Codex round 6 — workers already carrying an ACTIVE muster for a shift (the `labour.presence`
  *  read returns non-revoked musters only). The manual-muster picker must not offer them again:
  *  a second muster for the same (worker, civil day, shift) is the server's deterministic 409

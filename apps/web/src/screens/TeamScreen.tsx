@@ -6,6 +6,7 @@ import { Plus, X, Trash2, Pencil } from '@/lib/icons';
 import { CONSULTANT_DISCIPLINES, type OrgRole, type Role, type CompanyKind, type ProjectCompany } from '@vitan/shared';
 import type { AddMemberInput, NewProjectInput, CompanyInput } from '@/data/apiGateway';
 import { todayCivil } from '@/lib/civilDate';
+import { isDeviceBindPending } from '@/lib/labourKeys';
 import styles from './responsive.module.css';
 
 const ROLES: Role[] = ['pmc', 'client', 'engineer', 'contractor', 'consultant'];
@@ -460,6 +461,7 @@ function LabourRosterSection({ canManage }: { canManage: boolean }) {
   const timeZone = useStore((s) => s.timeZone);
   const onboardLabourWorker = useStore((s) => s.onboardLabourWorker);
   const bindLabourDevice = useStore((s) => s.bindLabourDevice);
+  const labourBindPending = useStore(useShallow((s) => s.labourBindPending));
   const [name, setName] = useState('');
   const [tradeCode, setTradeCode] = useState('');
   const [skillCode, setSkillCode] = useState('');
@@ -481,7 +483,12 @@ function LabourRosterSection({ canManage }: { canManage: boolean }) {
     setName('');
     setSkillCode('');
   };
-  const bindReady = bindDeviceId.trim().length > 0 && bindWorkerId !== '';
+  // Codex round 10 — a device is ONE-WAY evidence (no rebind path), so the form reserves the
+  // DEVICE while any bind naming it is unresolved: two racing binds of one device to different
+  // workers would let the server CAS permanently attribute it to whichever wins while the other
+  // is a terminal 409.
+  const devicePending = isDeviceBindPending(labourBindPending, bindDeviceId.trim());
+  const bindReady = bindDeviceId.trim().length > 0 && bindWorkerId !== '' && !devicePending;
 
   return (
     <div style={{ marginTop: 34, paddingTop: 18, borderTop: '1px solid var(--hairline)' }} data-testid="labour-roster">
@@ -540,7 +547,7 @@ function LabourRosterSection({ canManage }: { canManage: boolean }) {
             {workers.filter((w) => w.revokedAt === null).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
           </select>
           <Button variant="outline" onClick={() => { if (bindReady) { bindLabourDevice(bindDeviceId.trim(), bindWorkerId); setBindDeviceId(''); setBindWorkerId(''); } }} disabled={!bindReady} data-testid="labour-do-bind" style={{ fontSize: 13, padding: '10px 14px' }}>
-            Bind device
+            {devicePending ? 'Binding…' : 'Bind device'}
           </Button>
         </div>
       )}

@@ -7,7 +7,7 @@ import type { LabourForecastVerdict, WorkerDto } from '@vitan/shared';
 import { decAdd } from '@/lib/decimal';
 import { allocateCoalesceKey, isAllocatePendingForSlice, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
-import { compatibleWorkerIds, satisfyingFingerprints, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, SHIFT_MINUTES, pendingBookedWorkerIds, hasPendingWorkFor, pendingCommitmentDraws } from '@/lib/labourSelection';
+import { compatibleWorkerIds, satisfyingFingerprints, allocatedCountFor, sourcedCountFor, pickCommitmentFor, workerActiveOn, bookedWorkerIds, unrequisitionedLines, musteredWorkerIds, remainingShiftMinutes, SHIFT_MINUTES, pendingBookedWorkerIds, hasPendingWorkFor, pendingCommitmentDraws, allocationMatchesLiveDemand } from '@/lib/labourSelection';
 import styles from './responsive.module.css';
 
 /**
@@ -357,6 +357,13 @@ export function LabourScreen() {
                   // booking must not mint delivered-work evidence (productivity + Team coverage
                   // would read a shift as worked before it occurs).
                   const future = a.civilDate > today;
+                  // Codex round 10 — no work entry against an allocation whose demand is GONE:
+                  // the requirement was revised to a different identity (the row is stranded —
+                  // coverage no longer counts it as sourced) or cancelled, yet the server would
+                  // still accept the fact and §I productivity would roll it in. The row shows
+                  // an honest "demand revised" state; `allocation.release` is the corrective.
+                  const live = allocationMatchesLiveDemand(a, labourReqs);
+                  const workBlocked = future || !live || remaining <= 0 || workPending;
                   return (
                     <div key={a.id} data-testid={`labour-allocation-${a.id}`} style={rowCard}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
@@ -366,10 +373,10 @@ export function LabourScreen() {
                       <div style={{ ...muted, marginTop: 4 }}>{a.civilDate} · {a.shift}{a.capacityCommitmentId ? ' · supplier capacity' : ' · own workforce'}</div>
                       {a.status === 'active' && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-                          <input type="number" min={1} max={remaining} value={minutes} disabled={future || remaining <= 0 || workPending} data-testid={`labour-work-minutes-${a.id}`} onChange={(e) => setWorkMinutes((m) => ({ ...m, [a.id]: e.target.value }))} style={{ ...selectStyle, width: 76 }} />
+                          <input type="number" min={1} max={remaining} value={minutes} disabled={workBlocked} data-testid={`labour-work-minutes-${a.id}`} onChange={(e) => setWorkMinutes((m) => ({ ...m, [a.id]: e.target.value }))} style={{ ...selectStyle, width: 76 }} />
                           <span style={muted}>min{remaining < SHIFT_MINUTES ? ` · ${remaining} left this shift` : ''}</span>
-                          <Button variant="outline" disabled={future || remaining <= 0 || workPending || !valid || pending(wKey)} data-testid={`labour-do-work-${a.id}`} onClick={() => !future && remaining > 0 && !workPending && valid && recordWorkedMinutes(a.id, minutesNum)} style={{ fontSize: 11.5, flex: 'none' }}>
-                            {future ? 'Future shift' : remaining <= 0 ? 'Shift full' : workPending ? 'Recording…' : 'Record work'}
+                          <Button variant="outline" disabled={workBlocked || !valid || pending(wKey)} data-testid={`labour-do-work-${a.id}`} onClick={() => !workBlocked && valid && recordWorkedMinutes(a.id, minutesNum)} style={{ fontSize: 11.5, flex: 'none' }}>
+                            {!live ? 'Demand revised — release to correct' : future ? 'Future shift' : remaining <= 0 ? 'Shift full' : workPending ? 'Recording…' : 'Record work'}
                           </Button>
                         </div>
                       )}

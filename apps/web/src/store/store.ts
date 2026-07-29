@@ -69,7 +69,7 @@ import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyK
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
-import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, isLabourOpType, normalizeLabourOutbox } from '@/lib/labourKeys';
+import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -391,7 +391,7 @@ export interface AppActions {
   /** Phase 4 Task 6 (§J) — fetch the pilot LABOUR bundle (readiness + demand + workforce + catalog +
    *  commercial chain + capacity + today's presence + productivity) together, ONLY when the active
    *  project has the `labour` capability. Scope-guarded + honest load states; a no-op off-pilot. */
-  loadLabour: () => void;
+  loadLabour: () => Promise<void>;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
@@ -2461,8 +2461,8 @@ export const useStore = create<Store>()(
     //    discipline exactly: greenfield module-query reads with honest load states + latest-request
     //    ownership, and ONE write-ahead server command per user action. All inert off-pilot. ──
     loadLabour: () => {
-      if (!gateway) return;
-      if (!get().capabilities.includes('labour')) return; // inert off-pilot
+      if (!gateway) return Promise.resolve();
+      if (!get().capabilities.includes('labour')) return Promise.resolve(); // inert off-pilot
       const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
       // latest-request ownership (the materials finding-2 discipline): claim the next token; a stale
       // reply (older token) is dropped even when the project scope is unchanged.
@@ -2474,7 +2474,9 @@ export const useStore = create<Store>()(
       // evaluates readiness against `clock.today(project.timeZone)`, so a viewer in another
       // timezone must still read (and muster against) the SITE's "today", never the browser's.
       const today = todayCivil(get().timeZone);
-      Promise.all([
+      // round 10 — the promise is RETURNED (resolving after the bundle applies or the failure is
+      // recorded) so the roster commands can await the reload before spending their held keys.
+      return Promise.all([
         gateway.labourReadiness(),
         gateway.materialRequirements(), // the SHARED type-neutral list; the hub filters to labour rows
         gateway.labourWorkforce(),
@@ -2532,10 +2534,11 @@ export const useStore = create<Store>()(
       // an offline-queued replay landing after a requirement revision is a terminal 409 the flush
       // reconciles, never a silent allocation onto a different trade/skill/shift demand.
       dispatchLabour(
-        // Codex round 8 — the SATISFYING identity the worker was offered under rides the command:
-        // a substitution-backed worker freezes the SUBSTITUTE fingerprint server-side, so a later
-        // revocation disqualifies the row from coverage instead of it counting as head-trade
-        // coverage forever. Absent (a head-identity worker) keeps pre-round-8 bytes.
+        // Codex round 8 — the SATISFYING identity the worker was offered under rides the command
+        // as the eligibility BASIS: the server VERIFIES it is the head identity or an ACTIVE
+        // approved substitution (409 on a revoked/unknown authority) while the persisted identity
+        // stays the HEAD per the sealed §C FK. Absent (a head-identity worker) keeps
+        // pre-round-8 bytes; round 10 makes revocation itself release substitution-only rows.
         { t: 'allocateLabour', input: { activityId, requirementId, originRevision, civilDate, workerId, ...(capacityCommitmentId ? { capacityCommitmentId } : {}), ...(labourSpecFingerprint ? { labourSpecFingerprint } : {}) }, idempotencyKey: newIdempotencyKey(), coalesceKey: allocateCoalesceKey(activityId, requirementId, originRevision, civilDate, workerId) },
         'Allocate the worker to the activity',
         'Worker allocated to the activity.',
@@ -2583,12 +2586,16 @@ export const useStore = create<Store>()(
       set((s) => { s.labourOnboardPending[sig] = key; });
       const lease = beginSnapshotLease(currentScope());
       gateway!.onboardWorker({ name, tradeCode, skillCodes, activeFrom }, key)
-        .then(() => {
-          // CONFIRMED success — the key is spent; the next deliberate submit gets a fresh one
-          if (scopeStillCurrent(lease.scope)) {
+        .then(async (created) => {
+          // Codex round 10 — the command's own 2xx is NOT roster truth: the Team roster renders
+          // the module-owned labour bundle, so the key is spent ONLY once the FRESH bundle
+          // contains the row. If the reload fails or stays stale the key survives, the retry
+          // replays the SAME key, and the ledger returns the ORIGINAL worker — never a
+          // duplicate identity minted under a fresh key while the screen showed no worker.
+          await get().loadLabour();
+          if (scopeStillCurrent(lease.scope) && get().labourView?.workforce.workers.some((w) => w.id === created.id)) {
             set((s) => { if (s.labourOnboardPending[sig] === key) delete s.labourOnboardPending[sig]; });
           }
-          get().loadLabour();
           return gateway!.snapshot();
         })
         .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), 'Worker onboarded to the project roster.', lease.scope))
@@ -2604,21 +2611,27 @@ export const useStore = create<Store>()(
       // that succeeded. The key for the submitted (device, worker) pair is minted once and
       // reused verbatim until a CONFIRMED success — the ledger replays the original result.
       if (!gateway || !get().capabilities.includes('labour')) return;
-      const sig = JSON.stringify([deviceId, workerId]);
+      const sig = bindSig(deviceId, workerId);
       const key = get().labourBindPending[sig] ?? newIdempotencyKey();
       set((s) => { s.labourBindPending[sig] = key; });
       const lease = beginSnapshotLease(currentScope());
       gateway!.bindWorkerDevice(deviceId, workerId, key)
-        .then(() => {
+        .then(async () => {
+          // Codex round 10 — the key is spent only after the post-bind RECONCILE succeeds:
+          // deleting it on the bind's own 2xx meant a failed follow-up snapshot reported
+          // "could not reach the server" with the key already gone, and the retry's FRESH key
+          // hit the CAS's terminal "already bound" 409 for a binding that succeeded. The
+          // reconcile failure path now retains the key, so the retry replays the SAME key and
+          // the ledger returns the original success.
+          await get().loadLabour();
+          const snap = await gateway!.snapshot();
+          consumeSnapshotResult(acceptSnapshot(snap, lease), 'Device bound to the worker.', lease.scope);
           if (scopeStillCurrent(lease.scope)) {
             set((s) => { if (s.labourBindPending[sig] === key) delete s.labourBindPending[sig]; });
           }
-          get().loadLabour();
-          return gateway!.snapshot();
         })
-        .then((snap) => consumeSnapshotResult(acceptSnapshot(snap, lease), 'Device bound to the worker.', lease.scope))
         .catch(() => {
-          // failure (including a LOST committed response) RETAINS the key for the retry
+          // failure (including a LOST committed response OR a failed reconcile) RETAINS the key
           if (scopeStillCurrent(lease.scope)) get().flash('Could not reach the server — please try again.');
         });
     },
