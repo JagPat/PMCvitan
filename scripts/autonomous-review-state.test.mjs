@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   citedCommits,
+  citesBareHex,
   CODEX_GRAPHQL_LOGIN,
   CODEX_LOGIN,
   codexThreadIdsToResolve,
@@ -350,29 +351,94 @@ test('citedCommits reads the prose, not the permalink', () => {
 
 test('a finding whose every cited commit is absent is not evidence', () => {
   const missing = new Set([ABSENT]);
-  assert.equal(isUnfoundedFinding(codexComment(PHANTOM_TRAILER_BODY), HEAD, missing), true);
-  assert.equal(isUnfoundedFinding(codexComment(PHANTOM_WITH_PERMALINK), HEAD, missing), true);
+  assert.equal(isUnfoundedFinding(codexComment(PHANTOM_TRAILER_BODY), missing), true);
+  assert.equal(isUnfoundedFinding(codexComment(PHANTOM_WITH_PERMALINK), missing), true);
 
   // Every path that is not "definitively absent" keeps the finding.
-  assert.equal(isUnfoundedFinding(codexComment(FOUNDED_BODY), HEAD, missing), false);
+  assert.equal(isUnfoundedFinding(codexComment(FOUNDED_BODY), missing), false);
   assert.equal(
-    isUnfoundedFinding(codexComment(PHANTOM_TRAILER_BODY), HEAD, new Set()),
+    isUnfoundedFinding(codexComment(PHANTOM_TRAILER_BODY), new Set()),
     false,
     'an unresolved lookup must never discount a finding',
   );
+  assert.equal(isUnfoundedFinding(codexComment(PHANTOM_TRAILER_BODY), undefined), false);
+  // Names its own reviewed head as well: founded, even alongside an absent SHA.
   assert.equal(
-    isUnfoundedFinding(codexComment(PHANTOM_TRAILER_BODY), HEAD, undefined),
+    isUnfoundedFinding(codexComment(`${PHANTOM_TRAILER_BODY} on head ${HEAD}`), missing),
     false,
   );
-  // Names the real head as well: founded, even alongside an absent SHA.
+  // Judged against its OWN posted head, so a historical comment is assessed on
+  // the head it actually reviewed — this is what convergence counting needs.
   assert.equal(
     isUnfoundedFinding(
-      codexComment(`${PHANTOM_TRAILER_BODY} compare ${HEAD}`),
-      HEAD,
-      missing,
+      codexComment(`on head ${OLD_HEAD} the trailer is missing`, {
+        original_commit_id: OLD_HEAD,
+      }),
+      new Set([OLD_HEAD]),
     ),
     false,
+    "a comment citing its own reviewed head is founded",
   );
+});
+
+// FINDING (#250 P1) — a 40-hex token is not necessarily a commit. Checksums,
+// object ids and fixture values share the shape, and the commits endpoint 404s
+// for every one of them, so extracting them indiscriminately would let a real
+// finding ABOUT such a value be waived as an "absent commit".
+test('bare hex data is not a commit citation and never permits a dismissal', () => {
+  const CHECKSUM = 'f'.repeat(40);
+  // A real finding about a checksum constant: no commit context anywhere.
+  const aboutAChecksum = `The frozen digest \`${CHECKSUM}\` no longer matches the `
+    + 'recomputed value, so the seal accepts a forged row.';
+  assert.deepEqual(citedCommits(aboutAChecksum), []);
+  assert.equal(citesBareHex(aboutAChecksum), true);
+  assert.equal(
+    isUnfoundedFinding(codexComment(aboutAChecksum), new Set([CHECKSUM])),
+    false,
+    'a finding about hex DATA must survive even when that value 404s as a commit',
+  );
+
+  // Commit context is what makes a token a citation.
+  for (const phrase of ['head', 'commit', 'revision', 'git show -s', 'merge parent']) {
+    assert.deepEqual(
+      citedCommits(`evidence on the ${phrase} \`${ABSENT}\` shows nothing`),
+      [ABSENT],
+      `"${phrase}" must introduce a commit citation`,
+    );
+  }
+
+  // A body mixing a cited commit with unrelated hex data is not dismissible:
+  // the finding may be about the data, whatever the commit lookup says.
+  const mixed = `${PHANTOM_TRAILER_BODY} and the digest ${CHECKSUM} is stale.`;
+  assert.deepEqual(citedCommits(mixed), [ABSENT]);
+  assert.equal(citesBareHex(mixed), true);
+  assert.equal(
+    isUnfoundedFinding(codexComment(mixed), new Set([ABSENT, CHECKSUM])),
+    false,
+  );
+});
+
+// FINDING (#250 P2) — discounting inline comments must not silently clear a
+// review record that explicitly requested changes.
+test('a CHANGES_REQUESTED review outlives the dismissal of its comments', () => {
+  const blocked = classifyCodexState(input({
+    comments: [codexComment(PHANTOM_WITH_PERMALINK)],
+    reviews: [{ user: { login: CODEX_LOGIN }, commit_id: HEAD, state: 'CHANGES_REQUESTED' }],
+    missingCommits: new Set([ABSENT]),
+  }));
+  assert.equal(blocked.state, 'changes_required');
+  assert.match(blocked.detail, /requested changes on this exact head/u);
+  assert.equal(blocked.dismissedCount, 1, 'the dismissal is still reported honestly');
+
+  // A COMMENTED record is the container Codex posts alongside inline comments;
+  // it carries nothing beyond them, so it does not survive their dismissal.
+  const cleared = classifyCodexState(input({
+    comments: [codexComment(PHANTOM_WITH_PERMALINK)],
+    reviews: [{ user: { login: CODEX_LOGIN }, commit_id: HEAD, state: 'COMMENTED' }],
+    missingCommits: new Set([ABSENT]),
+  }));
+  assert.equal(cleared.state, 'clear');
+  assert.equal(cleared.dismissedCount, 1);
 });
 
 // REPRODUCTION: at PR #248 head baf31b9 this was the ONLY finding, and it cost

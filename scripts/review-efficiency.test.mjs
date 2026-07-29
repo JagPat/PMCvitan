@@ -11,6 +11,7 @@ import {
   REQUIRED_INVARIANTS,
 } from './review-efficiency.mjs';
 import { run as runScope } from './review-scope.mjs';
+import { GitHubClient } from './autonomous-review-gate.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 
@@ -293,5 +294,77 @@ test('the dependency-free scope CLI returns success or failure from the PR event
   } finally {
     process.exitCode = previousExitCode;
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// FINDING (#250 P2) — convergence counts finding-bearing HEADS, so it must
+// discount the same findings the current-head classifier does. Otherwise a head
+// whose findings all argued from absent commits still pushes a later correction
+// over the two-head threshold and demands trailer + packet evidence for
+// findings that were never about this repository.
+test('heads whose findings cite only absent commits are not finding heads', () => {
+  const ABSENT_A = 'd'.repeat(40);
+  const ABSENT_B = 'e'.repeat(40);
+  const phantomOn = (head, sha) => ({
+    user: { login: CODEX },
+    original_commit_id: head,
+    body: `Fresh evidence on the requested head \`${sha}\`: `
+      + `\`git show -s --format=%B ${sha}\` has no Review-Convergence trailer.`,
+  });
+  const comments = [
+    phantomOn('a'.repeat(40), ABSENT_A),
+    phantomOn('b'.repeat(40), ABSENT_B),
+  ];
+
+  // Unresolved: both count, convergence is demanded (the fail-closed default).
+  const unresolved = assessConvergence({
+    comments,
+    headMessage: 'fix: correction',
+    changedFiles: ['scripts/x.mjs'],
+  });
+  assert.equal(unresolved.required, true);
+  assert.equal(unresolved.findingHeadCount, 2);
+
+  // Confirmed absent: neither head was ever a finding head.
+  const discounted = assessConvergence({
+    comments,
+    headMessage: 'fix: correction',
+    changedFiles: ['scripts/x.mjs'],
+    missingCommits: new Set([ABSENT_A, ABSENT_B]),
+  });
+  assert.equal(discounted.required, false);
+  assert.equal(discounted.findingHeadCount, 0);
+
+  // A real finding among them still makes its own head count.
+  const mixed = assessConvergence({
+    comments: [
+      ...comments,
+      { user: { login: CODEX }, original_commit_id: 'c'.repeat(40), body: 'The lock is taken after the read.' },
+    ],
+    headMessage: 'fix: correction',
+    changedFiles: ['scripts/x.mjs'],
+    missingCommits: new Set([ABSENT_A, ABSENT_B]),
+  });
+  assert.equal(mixed.findingHeadCount, 1);
+});
+
+// FINDING (#250 P2) — GitHub uses 422 on this endpoint for validation and abuse
+// handling as well as lookup failure, so only 404 proves a commit is absent.
+test('only a 404 proves a commit is absent', async () => {
+  const client = new GitHubClient({ repository: 'o/r', token: 't' });
+  const answers = new Map([
+    ['ok', null],
+    ['404', new Error('GitHub GET /repos/o/r/commits/x failed (404): Not Found')],
+    ['422', new Error('GitHub GET /repos/o/r/commits/x failed (422): Validation Failed')],
+    ['403', new Error('GitHub GET /repos/o/r/commits/x failed (403): rate limited')],
+    ['500', new Error('GitHub GET /repos/o/r/commits/x failed (500): oops')],
+    ['net', new TypeError('fetch failed')],
+  ]);
+  for (const [label, error] of answers) {
+    client.request = async () => { if (error) throw error; return {}; };
+    const verdict = await client.commitExists('a'.repeat(40));
+    if (label === 'ok') assert.equal(verdict, true);
+    else if (label === '404') assert.equal(verdict, false, '404 is a definitive absence');
+    else assert.equal(verdict, null, `${label} must stay unresolved, never an absence`);
   }
 });

@@ -12,6 +12,8 @@ export const REQUIRED_INVARIANTS = [
   'ui-server-parity',
 ];
 
+import { isUnfoundedFinding } from './autonomous-review-state.mjs';
+
 const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
 const CONVERGENCE_PACKET = /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu;
@@ -93,10 +95,14 @@ export function assessReviewScope(
   };
 }
 
-export function codexFindingHeads(comments, reviews = []) {
+export function codexFindingHeads(comments, reviews = [], missingCommits = new Set()) {
   const heads = new Set();
   for (const comment of comments ?? []) {
     if (comment?.user?.login !== CODEX_LOGIN) continue;
+    // A finding argued entirely from commits this repository does not contain
+    // never made its head a finding head, so it cannot advance the convergence
+    // threshold either.
+    if (isUnfoundedFinding(comment, missingCommits)) continue;
     const head = comment.original_commit_id ?? comment.commit_id;
     if (typeof head === 'string' && head.length > 0) heads.add(head);
   }
@@ -132,8 +138,14 @@ function hasConvergenceTrailer(message) {
   );
 }
 
-export function assessConvergence({ comments, reviews, headMessage, changedFiles }) {
-  const findingHeads = codexFindingHeads(comments, reviews);
+export function assessConvergence({
+  comments,
+  reviews,
+  headMessage,
+  changedFiles,
+  missingCommits = new Set(),
+}) {
+  const findingHeads = codexFindingHeads(comments, reviews, missingCommits);
   const findingHeadCount = findingHeads.length;
   if (findingHeadCount < CONVERGENCE_AFTER_FINDING_HEADS) {
     return {

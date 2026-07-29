@@ -376,10 +376,12 @@ export class GitHubClient {
       await this.request(`/repos/${this.repository}/commits/${sha}`);
       return true;
     } catch (error) {
-      // GitHub answers 404 for an unknown commit and 422 for a well-formed SHA
-      // that resolves to nothing. Both are definitive absences; everything else
-      // (5xx, 403, network) is an unresolved lookup.
-      return /\((404|422)\)/u.test(String(error?.message ?? '')) ? false : null;
+      // ONLY 404 proves the commit is not in this repository. GitHub also uses
+      // 422 on this endpoint for validation and abuse handling, which says
+      // nothing about whether the object exists — treating it as absence would
+      // let a rate-limited lookup discount a real finding. Everything that is
+      // not a 404 is an unresolved lookup.
+      return /\(404\)/u.test(String(error?.message ?? '')) ? false : null;
     }
   }
 
@@ -829,11 +831,17 @@ export async function enforceReviewConvergence(
     client.reviewComments(pullRequest.number),
     client.reviews(pullRequest.number),
   ]);
+  // Convergence counts finding-bearing HEADS, so it must discount the same
+  // findings the current-head classifier does. A head whose findings all argued
+  // from absent commits was never a finding head, and must not push a later
+  // correction over the convergence threshold.
+  const missingCommits = await resolveMissingCommits(client, comments);
   const preliminary = assessConvergence({
     comments,
     reviews,
     headMessage: '',
     changedFiles: [],
+    missingCommits,
   });
   if (!preliminary.required) return preliminary;
 
@@ -843,6 +851,7 @@ export async function enforceReviewConvergence(
     reviews,
     headMessage: commit.commit?.message,
     changedFiles: commit.files ?? [],
+    missingCommits,
   });
   if (result.allowed) return result;
 
@@ -998,7 +1007,7 @@ async function reviewAttempt(
       readyAt: reviewNotBefore,
       deadline,
       now: new Date().toISOString(),
-      missingCommits: await resolveMissingCommits(client, comments, expectedHead),
+      missingCommits: await resolveMissingCommits(client, comments),
       reviews,
       comments,
       reactions,
@@ -1025,7 +1034,7 @@ async function reclassifyCurrentCodexEvidence(
     readyAt: reviewNotBefore,
     deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
     now: now.toISOString(),
-    missingCommits: await resolveMissingCommits(client, comments, expectedHead),
+    missingCommits: await resolveMissingCommits(client, comments),
     reviews,
     comments,
     reactions,
@@ -1035,7 +1044,7 @@ async function reclassifyCurrentCodexEvidence(
 // A review naming more distinct commits than this is not the shape the
 // unfounded-finding rule addresses, so its findings simply stand rather than
 // costing a burst of lookups.
-const MAX_CITED_COMMIT_LOOKUPS = 12;
+const MAX_CITED_COMMIT_LOOKUPS = 32;
 
 /**
  * The commits current-head Codex findings argue from that this repository does
@@ -1046,13 +1055,15 @@ const MAX_CITED_COMMIT_LOOKUPS = 12;
  * out, and a SHA left out keeps its finding. The gate can therefore only ever
  * discount a finding on a definitive GitHub answer that the commit is absent.
  */
-export async function resolveMissingCommits(client, comments, expectedHead) {
+export async function resolveMissingCommits(client, comments) {
   const cited = new Set();
   for (const comment of comments ?? []) {
     if (comment?.user?.login !== CODEX_LOGIN) continue;
-    if ((comment.original_commit_id ?? comment.commit_id) !== expectedHead) continue;
+    const own = comment.original_commit_id ?? comment.commit_id;
     for (const sha of citedCommits(comment.body)) {
-      if (sha !== expectedHead) cited.add(sha);
+      // A comment citing its own reviewed head is founded by that alone; only
+      // the OTHER commits it names need resolving.
+      if (sha !== own) cited.add(sha);
     }
   }
 
@@ -1084,7 +1095,7 @@ export async function guardAgainstCurrentHeadFinding(
     readyAt: new Date(0).toISOString(),
     deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
     now: now.toISOString(),
-    missingCommits: await resolveMissingCommits(client, comments, expectedHead),
+    missingCommits: await resolveMissingCommits(client, comments),
     reviews,
     comments,
     reactions: [],
