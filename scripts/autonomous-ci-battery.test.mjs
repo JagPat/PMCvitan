@@ -730,3 +730,74 @@ test('a straggling product run from a superseded attempt is not coverage', () =>
   assert.deepEqual(covered.pending, [], 'no supersession: the late run counts');
   assert.deepEqual(covered.failed, []);
 });
+
+// FINDING (#249 round 11 P1) — the decider was chosen by COMPLETION time across
+// attempts, before attempt currency was considered. A stale straggler that
+// succeeds after the current attempt has already failed the same name was
+// therefore selected, and the gate reported success over red exact-head CI.
+test('a current-attempt failure outranks a stale straggling success', () => {
+  const at = (name, runId, stamp, conclusion = 'success') => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  const runs = [
+    // attempt 800 on base A: gates at 10:00, api still running
+    at('review-scope', '800', '2026-07-29T10:00:00Z'),
+    at('battery-plan', '800', '2026-07-29T10:00:30Z'),
+    // retarget: attempt 900's gates at 11:00, and its api FAILS at 11:02
+    at('review-scope', '900', '2026-07-29T11:00:00Z'),
+    at('battery-plan', '900', '2026-07-29T11:00:30Z'),
+    at('api', '900', '2026-07-29T11:02:00Z', 'failure'),
+    // the stale base-A api then SUCCEEDS at 11:05
+    at('api', '800', '2026-07-29T11:05:00Z'),
+  ];
+
+  const summary = summarizeRequiredChecks(runs, ['api']);
+  assert.ok(
+    summary.failed.includes('api'),
+    'the current attempt failed api; a stale straggler must not report success',
+  );
+  assert.equal(summary.passed?.includes?.('api') ?? false, false);
+});
+
+// FINDING (#249 round 11 P2) — the gate began dating evidence by its attempt's
+// gates while the planner still used completion time. The two then disagree: the
+// planner sees old-base products finishing after the retarget gates and skips
+// the battery, while the gate dates the same evidence to the old attempt and
+// stays pending. Nothing relaunches the products, so the head stalls forever.
+test('the planner and the gate date coverage identically', () => {
+  const at = (name, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion: 'success',
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  // attempt 800 on base A: gates at 10:00; ALL five products finish at 11:05 —
+  // after attempt 900's retarget gates at 11:00.
+  const runs = [
+    at('review-scope', '800', '2026-07-29T10:00:00Z'),
+    at('battery-plan', '800', '2026-07-29T10:00:30Z'),
+    at('review-scope', '900', '2026-07-29T11:00:00Z'),
+    at('battery-plan', '900', '2026-07-29T11:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => at(n, '800', '2026-07-29T11:05:00Z')),
+  ];
+
+  const plan = assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: runs });
+  const summary = summarizeRequiredChecks(runs, [...PRODUCT_CHECKS]);
+
+  // The gate holds this evidence superseded, so the planner must relaunch it.
+  // Whatever the two decide, they must not decide OPPOSITE things — that is the
+  // deadlock: skipped products plus a permanently pending gate.
+  const gateSuperseded = summary.pending.length > 0;
+  assert.equal(
+    gateSuperseded && plan.runProducts === false,
+    false,
+    'planner skipped the battery while the gate treats the same evidence as superseded',
+  );
+});

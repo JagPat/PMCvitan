@@ -170,3 +170,21 @@ export function coverageStamp(run, stamps) {
   const attemptStamp = attempt ? stamps?.get(attempt) : undefined;
   return attemptStamp ?? recency(run);
 }
+
+// Which of a name's runs speaks for the head, newest-first.
+//
+// Completion time alone picks the wrong one. A product job from a superseded
+// attempt can still be running when a retarget lands and finish AFTER the new
+// attempt's own run of that name has already failed — so the stale success is
+// the newest completion, and a completion-ordered sort selects it and reports
+// success over red exact-head CI. Attempt currency has to decide first; within
+// one attempt (a rerun-failed-jobs shares its suite) completion decides, so a
+// rerun still masks the failure it repaired.
+export function coverageOrder(stamps) {
+  return (a, b) => {
+    const aStamp = coverageStamp(a, stamps);
+    const bStamp = coverageStamp(b, stamps);
+    if (aStamp !== bStamp) return aStamp > bStamp ? -1 : 1;
+    return newestFirst(a, b);
+  };
+}

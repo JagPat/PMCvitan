@@ -16,11 +16,13 @@ import { pathToFileURL } from 'node:url';
 import {
   GATE_CHECKS,
   PRODUCT_CHECKS,
+  attemptGateStamps,
   attemptOf,
+  coverageOrder,
+  coverageStamp,
   gateWatermarks,
   isSkipped,
   newestFirst,
-  recency,
 } from './check-run-coverage.mjs';
 
 export { PRODUCT_CHECKS };
@@ -48,10 +50,10 @@ export function belongsToRun(checkRun, runId) {
 // `needs`/`if`), an unfinished run IS coverage in progress (an earlier battery
 // for this SHA is mid-flight), and a completed FAILURE is real coverage: red
 // products are fixed by a new SHA with its own battery, not by a metadata edit.
-function coveredBy(checkRuns, name, notBefore = '') {
+function coveredBy(checkRuns, name, notBefore = '', stamps = new Map()) {
   const decider = checkRuns
     .filter((run) => run?.name === name && !isSkipped(run))
-    .sort(newestFirst)[0];
+    .sort(coverageOrder(stamps))[0];
   if (!decider || typeof decider.status !== 'string') return false;
   if (decider.status !== 'completed') return true;
   if (decider.conclusion === 'cancelled') return false;
@@ -61,7 +63,14 @@ function coveredBy(checkRuns, name, notBefore = '') {
   // retarget window this rule closes: a new base's gates both pass, its product
   // runs do not exist yet, and the old base's successes would otherwise look
   // like coverage for a merge result they never tested.
-  return recency(decider) >= notBefore;
+  //
+  // Dated by the attempt that launched it, exactly as the gate dates it. A
+  // superseded product job that finishes AFTER the new base's gates has a
+  // completion newer than the watermark but tested the old merge result: the
+  // gate holds it superseded and waits, so a planner that read the completion
+  // instead would skip the battery and nothing would ever relaunch those
+  // products. Both sides must use one rule or the head deadlocks.
+  return coverageStamp(decider, stamps) >= notBefore;
 }
 
 // The newest COMPLETED run of a check.
@@ -123,8 +132,9 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   }
 
   const notBefore = gateWatermarks(checkRuns);
+  const stamps = attemptGateStamps(checkRuns);
   for (const name of PRODUCT_CHECKS) {
-    if (!coveredBy(checkRuns, name, notBefore.get(name) ?? '')) {
+    if (!coveredBy(checkRuns, name, notBefore.get(name) ?? '', stamps)) {
       return {
         runProducts: true,
         reason: `product check ${name} has no run covering this head from the current attempt`,

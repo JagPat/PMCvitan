@@ -14,6 +14,7 @@ import {
 import {
   PRODUCT_CHECKS,
   attemptGateStamps,
+  coverageOrder,
   coverageStamp,
   gateWatermarks,
   recency,
@@ -124,8 +125,15 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     // or cancelled) means the products of THAT attempt never ran, and older
     // evidence may predate the change that attempt was testing — so it counts
     // as a real non-success and fails closed.
+    // Ordered by ATTEMPT currency first, not completion time. A product job
+    // from a superseded attempt can still be running when a retarget lands and
+    // finish after the current attempt's run of the same name has already
+    // failed; a completion-ordered sort selects that stale success and this
+    // gate publishes green over red exact-head CI. Within one attempt (a
+    // rerun-failed-jobs keeps the suite) completion still decides, so a rerun
+    // continues to mask the failure it repaired.
     const decider = [...runs]
-      .sort(newerRunFirst)
+      .sort(coverageOrder(attemptStamps))
       .find((run) => run.conclusion !== 'skipped' || !intentionalSkip(run, checkRuns));
     if (!decider) {
       missing.push(name);

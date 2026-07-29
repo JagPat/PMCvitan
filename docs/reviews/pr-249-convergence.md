@@ -407,3 +407,59 @@ audit.
 Third base merge, after PR #248 landed. Conflict-free, no correction content — the incoming
 change is the Phase-4 STATUS flip and its packet. Recorded for the same reason as the previous
 two: the convergence gate requires the trailer on every head, including one that fixes nothing.
+
+## Round 11 — `ab0da64`
+
+Two findings. Both are correct, and one of them is a defect this PR introduced.
+
+### F1 (P1): the decider was selected before currency was considered
+
+Round 10 dated a product run by its attempt's gates, but only in the *comparison* against the
+watermark. The run being compared was still picked by `newerRunFirst` — completion time, across
+attempts — so the fix could never see the run it should have judged.
+
+The interleaving: attempt 800 runs on base A with a slow `api`. A retarget lands, attempt 900's
+gates pass at 11:00, and its own `api` **fails** at 11:02. The stale base-A `api` then succeeds at
+11:05. Completion-ordered selection picks the 11:05 success, the watermark comparison passes it
+(both attempts produced an `api`, so the watermark for that name is empty), and the gate reports
+success while the current attempt's `api` is red.
+
+Fix: `coverageOrder(stamps)` in `check-run-coverage.mjs` orders a name's runs by attempt currency
+first and completion second, and `summarizeRequiredChecks` sorts with it. Within one attempt the
+ordering is unchanged, so a `rerun-failed-jobs` success still masks the failure it repaired — that
+rerun shares the check suite, hence the same coverage stamp. The deliberate-skip fallback is also
+unchanged: the `find` still walks past an intentional skip to older evidence, now in attempt order.
+
+Filtering to the newest attempt outright was rejected. Rounds 4–9 established that a skipping
+attempt must be able to defer to the evidence it deliberately kept; a newest-attempt filter would
+discard exactly that evidence and relaunch the battery on every second metadata edit.
+
+Probe: `a current-attempt failure outranks a stale straggling success`, RED at `ab0da64`.
+
+### F2 (P2): the planner and the gate dated evidence differently
+
+This one is mine. Round 10 changed how the **gate** dates coverage and left the **planner** on
+`recency`. The two then disagree, and the disagreement deadlocks the head rather than merely
+being untidy.
+
+The interleaving: attempt 800's five product runs all finish at 11:05, after attempt 900's
+retarget gates at 11:00. The gate dates them to 800's gates (10:00), holds all five superseded,
+and reports pending. The planner dates them to 11:05, finds them newer than the watermark, and
+skips the battery. Nothing relaunches the products; the gate waits forever on evidence that will
+never be produced.
+
+Fix: `coveredBy` takes the attempt stamps and compares `coverageStamp(decider, stamps)` to the
+watermark, and selects its decider with the same `coverageOrder`. Both sides now read one rule
+from `check-run-coverage.mjs` — which is the entire reason that module exists, per its own header
+comment about rounds 4–9 finding the same defect implemented differently on each side.
+
+Probe: `the planner and the gate date coverage identically` — it asserts the two never reach
+opposite conclusions about the same history, so it stays meaningful if either side's policy is
+revised later. RED at `ab0da64`.
+
+### Gates
+
+`node --test scripts/autonomous-ci-battery.test.mjs` 15/15 (both new probes RED before the fix).
+`pnpm test:automation` 104/104. `pnpm check` EXIT 0 — web 543/543, API 680/680; the
+`onboardLabourWorker` key-timing flake noted in earlier rounds did not recur, its fix having
+merged as PR #251.
