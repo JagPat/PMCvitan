@@ -16,10 +16,11 @@ invariant rather than a point patch, and state the remaining risk honestly.
 | `0698ae8` | R3 — 3 real (3×P2) + 1 invalid | The SAME cause surviving in three places the R2 pass did not reach: the battery-plan's OWN fetch still used the default `filter=latest` (R2 fixed only the gate client), coverage was still `some(run ⇒ …)` so a NEWER cancelled run was masked by an older success, and both recency orderings keyed on `started_at` when GitHub's `latest` is defined by `completed_at` → the plan pages `filter=all` too, coverage is decided by the NEWEST non-skipped run (cancelled ⇒ not covered), and both orderings key on `completed_at` |
 | `ecbc4d7` | R4 — 2 real (2×P2) + 1 invalid | The same cause in its last two hiding places: the retarget guard read only the newest COMPLETED scope run, so a scope still RUNNING from another attempt left old-base products looking like coverage; and a `filter=all` page that failed mid-read left a partial prefix in play, which can look clean while the unread page holds the cancelled product → an unfinished scope run from another attempt forces the battery, and only a COMPLETE pagination may become the history |
 | `2016f41` | R5 — 2 real (2×P2) + 1 invalid | The two sides of one ambiguity: a SKIPPED product run means either "the plan deliberately found this head covered" or "an upstream gate failed and this attempt aborted", and the gate treated both as deferrable → a skip may now defer to older evidence ONLY when its own workflow run has BOTH `review-scope` and `battery-plan` green (the only state in which the skip can be the plan's `run_products=false` decision); any other skip is a real non-success and fails closed |
+| `8b2f2de` | R6 — 2 real (1×P1, 1×P2) + 1 disproved premise | The R5 rule was stated over the two gates but only HALF-wired: `battery-plan` was not a required check, so its own failure was invisible to the gate and its verdict was not consulted where `review-scope`'s was → `battery-plan` joins `REQUIRED_CHECKS` (and the legacy-PR filter), and both the in-flight guard and the newest-completed-verdict loop iterate `['review-scope','battery-plan']` uniformly. Attempt attribution is hardened to `check_suite.id` with the URL parse as fallback (the P1's stated premise — that `html_url` is `/runs/{check_run_id}` — is false for this repo, see below) |
 
 ## Architectural Convergence
 
-All five rounds reduce to ONE cause: the first design decided "has this SHA been tested?" from an
+All six rounds reduce to ONE cause: the first design decided "has this SHA been tested?" from an
 incomplete, unbounded view of the check history — a second workflow whose completions the owner
 never saw, a partial API result, a notion of "ran" that ignored both time and the base under
 test. Every remedy is the same correction applied at a different layer, and each is now an
@@ -46,6 +47,11 @@ invariant rather than a special case:
 6. **Only complete, attributable history decides.** A partially-read page is discarded rather
    than trusted, an unfinished scope verdict from another attempt forces the battery, and the
    current workflow run's own checks are excluded so the guard reads other attempts only.
+7. **The two gates are ONE set, everywhere.** `review-scope` and `battery-plan` both gate the
+   products through `needs`, so every rule that reads a gate reads BOTH: the gate requires both
+   names, the in-flight guard waits on both, and a non-success from either invalidates the
+   product evidence below it. `battery-plan` being required is what makes its own failure
+   visible instead of silently green with five skipped products beneath it.
 
 ## Evidence
 
@@ -64,11 +70,28 @@ Reproduce-first at each round, both probes RED at the prior head and GREEN here:
 | R4 in-flight scope from another attempt | `ecbc4d7` | probe with a completed old-base success PLUS an in-progress scope run; the old logic returns `runProducts: false` and the new one `true` (demonstrated by importing both modules side by side) | The current run's own checks are excluded by `belongsToRun`, pinned by its own unit test, so this can never fire merely because THIS edit's scope is queued |
 | R4 partial pagination | `ecbc4d7` | source test asserts `if (complete) checkRuns =` — a prefix never becomes the decision input | Failing toward a full battery is the only outcome of an incomplete read |
 | R3 `started_at` vs `completed_at` | `0698ae8` | plan probe (started-first/finished-last cancelled decides) + gate probe (10:00→10:30 failure outranks 10:05→10:20 success) | Both orderings share the same rule as GitHub's own `latest` filter |
+| R6 `battery-plan` not required | `8b2f2de` | gate probes: an aborted attempt (`battery-plan` failure + five product skips over older successes) now reports `battery-plan` AND all five products failed; the `REQUIRED_CHECKS` pin and the legacy-PR filter both list it | A failing planner can no longer be invisible to the gate |
+| R6 `battery-plan` verdict not consulted | `8b2f2de` | `assessBatteryPlan` iterates both gates in the in-flight guard and the newest-completed-verdict loop | The R5 rule is now stated over the gate SET, not one member of it |
 
 The R3 round is itself evidence for the convergence claim: two of its three findings are the R2
-remedy applied at sites the R2 pass missed (the second fetch, the second ordering). That is the
-cost of fixing a systemic cause one call-site at a time, and it is why every remedy above is now
-stated as a rule over ALL sites rather than a patch at one.
+remedy applied at sites the R2 pass missed (the second fetch, the second ordering). R6 is the same
+shape once more — the R5 rule was written about both gates but wired for one — which is why
+invariant 7 above is stated over the gate SET rather than at each call site.
+
+### One R6 premise was disproved, and the code still changed
+
+The R6 P1 argued that attempt attribution is unsound because a check run's `html_url` is
+`/actions/runs/{check_run_id}`, so the parse would extract a check-run id and never match a
+workflow run. That premise does not hold for this repository: a real check run read from the API
+during this session carries
+`https://github.com/JagPat/PMCvitan/actions/runs/30432752540/job/90514686877`, and the regex
+`/\/actions\/runs\/(\d+)\//` extracts `30432752540` — the workflow run id, exactly as intended.
+Recording it as fact would have been wrong.
+
+The finding's underlying concern — that attribution rests on URL string shape at all — is sound
+regardless, so `attemptOf` now keys on `check_suite.id` (the API's own grouping of a workflow
+run's check runs) and falls back to the URL parse only when the suite is absent. The behaviour is
+unchanged where the parse already worked; it no longer depends on the parse where it did not.
 
 `pnpm test:automation` 82/82; `pnpm check` EXIT 0 by exit code on each head. No product code,
 schema, migration, event or lock is touched by this PR.

@@ -96,21 +96,29 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   // is from the OLD base. Waiting for a verdict we cannot see means guessing;
   // run the battery instead. The current event's own scope run is excluded by
   // the caller, so this never fires merely because this edit's scope is queued.
-  if (checkRuns.some((run) => run?.name === 'review-scope' && run.status !== 'completed')) {
+  if (checkRuns.some((run) =>
+    ['review-scope', 'battery-plan'].includes(run?.name) && run.status !== 'completed')) {
     return {
       runProducts: true,
-      reason: 'a review-scope run from another attempt has not finished, so any '
-        + 'product coverage on this head predates an unknown scope verdict',
+      reason: 'a gate run from another attempt has not finished, so any product '
+        + 'coverage on this head predates an unknown verdict',
     };
   }
 
-  const scope = newestCompleted(checkRuns, 'review-scope');
-  if (scope && scope.conclusion !== 'success') {
-    return {
-      runProducts: true,
-      reason: 'the last completed review-scope run did not pass, so any product '
-        + 'coverage on this head predates the current scope evaluation',
-    };
+  // Either gate of `needs: [review-scope, battery-plan]` failing skips the
+  // products of that attempt, so a non-success from EITHER means the product
+  // coverage still visible here predates that attempt — and an aborted plan
+  // would otherwise be unclearable: every later edit would read the old
+  // successes, skip again, and add another aborted skip set forever.
+  for (const gate of ['review-scope', 'battery-plan']) {
+    const verdict = newestCompleted(checkRuns, gate);
+    if (verdict && verdict.conclusion !== 'success') {
+      return {
+        runProducts: true,
+        reason: `the last completed ${gate} run did not pass, so any product `
+          + 'coverage on this head predates the current evaluation',
+      };
+    }
   }
 
   for (const name of PRODUCT_CHECKS) {

@@ -14,6 +14,7 @@ import {
 
 export const REQUIRED_CHECKS = [
   'review-scope',
+  'battery-plan',
   'web',
   'api',
   'e2e',
@@ -36,7 +37,11 @@ export function requiredChecksForPullRequest(pullRequestNumber) {
     && pullRequestNumber > 0
     && pullRequestNumber <= REVIEW_SCOPE_ENFORCE_AFTER_PR
   ) {
-    return REQUIRED_CHECKS.filter((name) => name !== 'review-scope');
+    // Neither job exists on pre-policy branches; requiring them would strand
+    // an older PR on a check it cannot emit.
+    return REQUIRED_CHECKS.filter(
+      (name) => name !== 'review-scope' && name !== 'battery-plan',
+    );
   }
   return REQUIRED_CHECKS;
 }
@@ -55,10 +60,20 @@ function newerRunFirst(a, b) {
   return (Number(b.id) || 0) - (Number(a.id) || 0);
 }
 
-function workflowRunOf(run) {
-  const url = run?.html_url ?? run?.details_url;
-  const match = /\/actions\/runs\/(\d+)\//u.exec(typeof url === 'string' ? url : '');
-  return match?.[1] ?? null;
+// Identify the CI attempt a check run belongs to. `check_suite.id` is the
+// authoritative grouping key — every job of one workflow run shares a check
+// suite — and it does not depend on URL shape. The URL parse stays as a
+// fallback for payloads without the suite (GitHub Actions check runs carry
+// /actions/runs/<workflow_run_id>/job/<job_id> in BOTH html_url and
+// details_url; this repository's live responses were verified to do so).
+function attemptOf(run) {
+  const suite = run?.check_suite?.id;
+  if (suite !== undefined && suite !== null) return `suite:${suite}`;
+  for (const url of [run?.html_url, run?.details_url]) {
+    const match = /\/actions\/runs\/(\d+)\//u.exec(typeof url === 'string' ? url : '');
+    if (match) return `run:${match[1]}`;
+  }
+  return null;
 }
 
 // A product job is skipped either because the battery plan decided this head is
@@ -67,12 +82,12 @@ function workflowRunOf(run) {
 // gates failed/cancelled, in which case the attempt was aborted and proves
 // nothing. Only the first kind may defer to older evidence.
 function intentionalSkip(skipped, checkRuns) {
-  const runId = workflowRunOf(skipped);
-  if (!runId) return false;
+  const attempt = attemptOf(skipped);
+  if (!attempt) return false;
   return ['review-scope', 'battery-plan'].every((gate) =>
     checkRuns.some((run) =>
       run?.name === gate
-      && workflowRunOf(run) === runId
+      && attemptOf(run) === attempt
       && run.status === 'completed'
       && run.conclusion === 'success'));
 }

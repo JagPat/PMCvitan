@@ -82,9 +82,13 @@ test('requires every named CI check to have a successful latest run', () => {
   );
 });
 
+const PRODUCTS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
+
 test('duplicate check runs resolve by the newest real evidence per name', () => {
-  const others = REQUIRED_CHECKS.filter((name) => name !== 'review-scope')
-    .map((name) => checkRun(name));
+  const others = REQUIRED_CHECKS
+    .filter((name) => name !== 'review-scope' && name !== 'battery-plan')
+    .map((name) => checkRun(name))
+    .concat(checkRun('battery-plan'));
   const at = (name, conclusion, startedAt, status = 'completed') => ({
     name,
     conclusion,
@@ -129,7 +133,7 @@ test('duplicate check runs resolve by the newest real evidence per name', () => 
     summarizeRequiredChecks([
       job('review-scope', 'success', '700', '2026-07-29T07:10:00Z'),
       job('battery-plan', 'success', '700', '2026-07-29T07:10:00Z'),
-      ...REQUIRED_CHECKS.filter((name) => name !== 'review-scope').flatMap(
+      ...PRODUCTS.flatMap(
         (name) => [
           job(name, 'success', '600', '2026-07-29T07:00:00Z'),
           job(name, 'skipped', '700', '2026-07-29T07:10:00Z'),
@@ -153,12 +157,14 @@ test('duplicate check runs resolve by the newest real evidence per name', () => 
     summarizeRequiredChecks([
       inRun('review-scope', 'success', '900', '2026-07-29T10:30:00Z'),
       inRun('battery-plan', 'failure', '900', '2026-07-29T10:30:00Z'),
-      ...REQUIRED_CHECKS.filter((n) => n !== 'review-scope').map((n) =>
+      ...PRODUCTS.map((n) =>
         inRun(n, 'success', '800', '2026-07-29T10:00:00Z')),
-      ...REQUIRED_CHECKS.filter((n) => n !== 'review-scope').map((n) =>
+      ...PRODUCTS.map((n) =>
         inRun(n, 'skipped', '900', '2026-07-29T10:30:00Z')),
     ]).failed.sort(),
-    ['api', 'api-e2e', 'e2e', 'upgrade-proof', 'web'],
+    // battery-plan is itself a required check, so its own failure is reported
+    // alongside the five products whose skips can no longer be shown deliberate.
+    ['api', 'api-e2e', 'battery-plan', 'e2e', 'upgrade-proof', 'web'],
   );
 
   // …but a skip from a COMPLETE attempt (scope + plan both green, so the plan
@@ -167,9 +173,9 @@ test('duplicate check runs resolve by the newest real evidence per name', () => 
     summarizeRequiredChecks([
       inRun('review-scope', 'success', '901', '2026-07-29T10:30:00Z'),
       inRun('battery-plan', 'success', '901', '2026-07-29T10:30:00Z'),
-      ...REQUIRED_CHECKS.filter((n) => n !== 'review-scope').map((n) =>
+      ...PRODUCTS.map((n) =>
         inRun(n, 'success', '800', '2026-07-29T10:00:00Z')),
-      ...REQUIRED_CHECKS.filter((n) => n !== 'review-scope').map((n) =>
+      ...PRODUCTS.map((n) =>
         inRun(n, 'skipped', '901', '2026-07-29T10:30:00Z')),
     ]),
     { state: 'success', missing: [], pending: [], failed: [] },
@@ -226,7 +232,9 @@ test('rollout cannot require the new scope check from pre-policy PR branches', (
   const legacyChecks = requiredChecksForPullRequest(246);
   assert.deepEqual(
     legacyChecks,
-    REQUIRED_CHECKS.filter((name) => name !== 'review-scope'),
+    REQUIRED_CHECKS.filter(
+      (name) => name !== 'review-scope' && name !== 'battery-plan',
+    ),
   );
   assert.equal(
     summarizeRequiredChecks(
@@ -241,6 +249,7 @@ test('rollout cannot require the new scope check from pre-policy PR branches', (
 test('review scope runs before every expensive product gate', async () => {
   assert.deepEqual(REQUIRED_CHECKS, [
     'review-scope',
+    'battery-plan',
     'web',
     'api',
     'e2e',
