@@ -8,14 +8,56 @@ import {
   parseStatusNow,
 } from './autonomous-status-state.mjs';
 
-// The Now block exactly as it stood on a historical head, read from git so the
-// fixture cannot drift away from the commit it claims to reproduce.
+// The Now blocks exactly as they stood on the two PR #248 finding heads.
+// These are committed literals, not git reads: CI checks out at fetch-depth 1,
+// so historical objects are simply absent there and a git-only fixture would
+// make the whole invariant untestable in the one place it matters most.
+const FINDING_HEADS = [
+  {
+    sha: '8c8f42324583bd652ec07cf32dc98dc686e74ea4',
+    label: 'finding 1 — no next step at all',
+    now: {
+      phase: '4',
+      phase_plan: 'docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md',
+      task: '6',
+      task_state: 'merged',
+      work_item: 'none',
+      reviewed_merge: '67e7a00',
+      open_pr: 'none',
+      next_task: 'none',
+      blocking_directive: 'none',
+      updated: '2026-07-29',
+    },
+  },
+  {
+    sha: '1d1de471c9d4eeca24b0482e95f2273b441ce2a0',
+    label: 'finding 2 — directive parks the loop',
+    now: {
+      phase: '4',
+      phase_plan: 'docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md',
+      task: '6',
+      task_state: 'merged',
+      work_item: 'none',
+      reviewed_merge: '67e7a00',
+      open_pr: 'none',
+      next_task: 'phase-5-planning',
+      blocking_directive: 'phase-5-planning-approval',
+      updated: '2026-07-29',
+    },
+  },
+];
+
+// Returns null when the object is not in this clone (CI's shallow checkout).
 function nowBlockAt(sha) {
-  const file = execFileSync('git', ['show', `${sha}:docs/STATUS.md`], {
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  return parseStatusNow(file);
+  try {
+    return parseStatusNow(execFileSync('git', ['show', `${sha}:docs/STATUS.md`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 32 * 1024 * 1024,
+    }));
+  } catch {
+    return null;
+  }
 }
 
 test('parses the Now block into a flat state map', () => {
@@ -78,12 +120,32 @@ test('a directive recorded outside correction_required is a contradiction, not w
   assert.match(verdict.reason, /only from correction_required/u);
 });
 
-test('both PR #248 finding heads reproduce against their real committed state', () => {
-  const first = assessRunnerState(nowBlockAt('8c8f42324583bd652ec07cf32dc98dc686e74ea4'));
-  assert.equal(first.actionable, false, 'head 8c8f423 must reproduce finding 1');
+test('both PR #248 finding heads are non-actionable states', () => {
+  for (const { sha, label, now } of FINDING_HEADS) {
+    assert.equal(
+      assessRunnerState(now).actionable,
+      false,
+      `${sha} (${label}) must reproduce as non-actionable`,
+    );
+  }
+});
 
-  const second = assessRunnerState(nowBlockAt('1d1de471c9d4eeca24b0482e95f2273b441ce2a0'));
-  assert.equal(second.actionable, false, 'head 1d1de47 must reproduce finding 2');
+// When the clone has history (developer machines, any non-shallow checkout),
+// prove the literals above ARE those commits' state. In a shallow CI checkout
+// the objects are absent and there is nothing to compare — the assertions above
+// still run, so the invariant is never silently unenforced.
+test('the finding-head fixtures match the real commits when history is available', () => {
+  let compared = 0;
+  for (const { sha, now } of FINDING_HEADS) {
+    const actual = nowBlockAt(sha);
+    if (!actual) continue;
+    assert.deepEqual(actual, now, `fixture for ${sha} has drifted from the commit`);
+    compared += 1;
+  }
+  assert.ok(
+    compared === FINDING_HEADS.length || compared === 0,
+    'a partially available history means one fixture went unverified',
+  );
 });
 
 test('the correction state hands off to the recorded next task', () => {

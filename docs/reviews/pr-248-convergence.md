@@ -40,13 +40,20 @@ GREEN  52f04d8 (this head)
 
 | Finding | RED at | Probe | Regression surface |
 | --- | --- | --- | --- |
-| `8c8f423` empty state | `8c8f423` | `assessRunnerState` returns `actionable: false` for the merged terminal state with `work_item`, `next_task` and `blocking_directive` all `none` | The live-file test runs on every CI run: any future STATUS edit that leaves the runner stalled fails `pnpm test:automation`, and the fixture reads the historical Now block **out of git**, so it cannot drift from the commit it claims to reproduce |
+| `8c8f423` empty state | `8c8f423` | `assessRunnerState` returns `actionable: false` for the merged terminal state with `work_item`, `next_task` and `blocking_directive` all `none` | The live-file test runs on every CI run: any future STATUS edit that leaves the runner stalled fails `pnpm test:automation` |
 | `1d1de47` owner-approval gate | `1d1de47` | `assessRunnerState` rejects a `blocking_directive` recorded against any `task_state` other than `correction_required` | STATUS's own state-value definitions say a directive is what `correction_required` launches; the invariant now enforces that, so parking the loop behind a directive the state machine never scheduled — the shape a human-approval gate takes — is red in CI |
 | `a74143d` packet ≠ STATUS | `a74143d` | No executable probe: this is a claim in this packet about a sibling file, and mechanically checking prose against state would be a heuristic, not a proof. Stated honestly rather than dressed up | Both files live in this one PR's diff; the reviewer's own comparison is the check, and it is repeatable by inspection |
 
 The invariant is deliberately total: `assessRunnerState` returns a decision and a reason for
 every input, including malformed and unrecognized ones, and every non-actionable branch is
 covered by a test. No product code, schema, migration, projection, event or lock is touched.
+
+The first version of that test read the two historical Now blocks with `git show`, and CI caught
+it: `actions/checkout` uses `fetch-depth: 1`, so those objects do not exist on the runner and the
+suite failed there while passing locally. The finding-head states are now committed literals, so
+the invariant is enforced in CI — the place it actually matters — and a separate test compares
+them against the real commits whenever the clone has history, so they cannot drift unnoticed on
+any machine that can check. Verified by running the suite in a genuine `--depth 1` clone.
 
 ## Architectural Cause
 
