@@ -20,7 +20,7 @@ invariant rather than a point patch, and state the remaining risk honestly.
 
 ## Architectural Convergence
 
-All six rounds reduce to ONE cause: the first design decided "has this SHA been tested?" from an
+All eight rounds reduce to ONE cause: the first design decided "has this SHA been tested?" from an
 incomplete, unbounded view of the check history — a second workflow whose completions the owner
 never saw, a partial API result, a notion of "ran" that ignored both time and the base under
 test. Every remedy is the same correction applied at a different layer, and each is now an
@@ -72,12 +72,34 @@ Reproduce-first at each round, both probes RED at the prior head and GREEN here:
 | R3 `started_at` vs `completed_at` | `0698ae8` | plan probe (started-first/finished-last cancelled decides) + gate probe (10:00→10:30 failure outranks 10:05→10:20 success) | Both orderings share the same rule as GitHub's own `latest` filter |
 | R6 `battery-plan` not required | `8b2f2de` | gate probes: an aborted attempt (`battery-plan` failure + five product skips over older successes) now reports `battery-plan` AND all five products failed; the `REQUIRED_CHECKS` pin and the legacy-PR filter both list it | A failing planner can no longer be invisible to the gate |
 | R6 `battery-plan` verdict not consulted | `8b2f2de` | `assessBatteryPlan` iterates both gates in the in-flight guard and the newest-completed-verdict loop | The R5 rule is now stated over the gate SET, not one member of it |
+| R8 product evidence older than its gates | `9fc815b` | probe triad: base-A gates+products green → skip; a retarget's gates pass with no products yet → run (`from the current attempt`); the new attempt's products land → skip again | Closes the last window in which one attempt's gates could be paired with a superseded attempt's product evidence |
 | R7 unactionable gate message | `88ea653` | three `assessConvergence` probes: a marker demoted by a blank line, a marker in a final block spoiled by a prose line, and a genuinely absent one — the first two now name the parsing rule, the third still reads plainly `trailer` | The gate's refusal is unchanged; only the reason improves, so no head can pass that could not pass before |
 
 The R3 round is itself evidence for the convergence claim: two of its three findings are the R2
 remedy applied at sites the R2 pass missed (the second fetch, the second ordering). R6 is the same
 shape once more — the R5 rule was written about both gates but wired for one — which is why
 invariant 7 above is stated over the gate SET rather than at each call site.
+
+### R8: an attempt's gates cannot be paired with an earlier attempt's products
+
+Rounds 4–7 progressively tightened "does this head have coverage?" — whole history, newest real
+run, cancelled is not coverage, either gate failing invalidates what is below it, an unfinished
+gate forces the battery. One window survived all of it: a retarget attempt whose `review-scope`
+AND `battery-plan` have both COMPLETED SUCCESSFULLY, but whose five product jobs have not been
+created yet. Every earlier guard passes, and the only product runs visible belong to the old base.
+
+The rule that closes it is the ordering the workflow itself guarantees: product jobs are created
+after the gates that launch them, so within one attempt a product always completes later than its
+gates. Coverage older than the newest completed gate therefore belongs to a superseded attempt.
+`coveredBy` now takes that watermark and refuses anything below it.
+
+This subsumes the earlier special cases rather than adding another: a failed or unfinished gate is
+still caught by its own guard, and the watermark independently catches the case where the gates
+look perfect and the products simply are not there.
+
+One existing fixture had to become realistic to express its own intent — its product runs carried
+no completion time at all, which under the new rule reads as infinitely old. Real check runs always
+have `completed_at`, and a product always completes after its gates, so the fixture now says so.
 
 ### R7: the gate refused this PR's own head, correctly, and the message was not actionable
 

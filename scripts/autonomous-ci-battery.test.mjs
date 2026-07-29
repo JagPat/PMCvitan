@@ -106,13 +106,66 @@ test('the current run\'s own checks are excluded from the history it reads', () 
   assert.equal(belongsToRun({ name: 'x' }, '4242'), false);
 });
 
-test('the battery plan launches products exactly when they are needed', () => {
-  assert.deepEqual(PRODUCT_CHECKS, PRODUCT_JOBS);
-  const realRuns = (conclusion) => PRODUCT_CHECKS.map((name) => ({
+// A retarget attempt whose gates BOTH passed but whose product jobs have not
+// been created yet: the old base's product successes are older than those gates,
+// so they belong to a superseded attempt and cannot be coverage for the new
+// merge result. Fail toward running rather than promote untested code.
+test('product evidence older than the newest passing gate is not coverage', () => {
+  const at = (name, stamp, conclusion = 'success') => ({
     name,
     status: 'completed',
     conclusion,
-  }));
+    completed_at: stamp,
+  });
+  // base A: gates then products, all green at 10:0x
+  const baseA = [
+    at('review-scope', '2026-07-29T10:00:00Z'),
+    at('battery-plan', '2026-07-29T10:00:30Z'),
+    ...PRODUCT_CHECKS.map((name) => at(name, '2026-07-29T10:05:00Z')),
+  ];
+  // that alone is coverage: a metadata edit skips the battery
+  assert.equal(
+    assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: baseA }).runProducts,
+    false,
+  );
+
+  // now a retarget lands: its gates pass at 11:0x, its products do not exist yet
+  const afterRetarget = [
+    ...baseA,
+    at('review-scope', '2026-07-29T11:00:00Z'),
+    at('battery-plan', '2026-07-29T11:00:30Z'),
+  ];
+  const verdict = assessBatteryPlan({
+    action: 'edited',
+    baseChanged: false,
+    checkRuns: afterRetarget,
+  });
+  assert.equal(verdict.runProducts, true, 'base-A products cannot cover the base-B gates');
+  assert.match(verdict.reason, /from the current attempt/u);
+
+  // once the new attempt's products land, coverage is restored
+  const complete = [
+    ...afterRetarget,
+    ...PRODUCT_CHECKS.map((name) => at(name, '2026-07-29T11:05:00Z')),
+  ];
+  assert.equal(
+    assessBatteryPlan({ action: 'edited', baseChanged: false, checkRuns: complete }).runProducts,
+    false,
+  );
+});
+
+test('the battery plan launches products exactly when they are needed', () => {
+  assert.deepEqual(PRODUCT_CHECKS, PRODUCT_JOBS);
+  // Real check runs always carry a completion time, and a product job always
+  // completes after the gates that launched it — the fixture reflects that so
+  // the coverage rules are exercised as they behave in production.
+  const realRuns = (conclusion, completedAt = '2026-07-29T09:00:00Z') =>
+    PRODUCT_CHECKS.map((name) => ({
+      name,
+      status: 'completed',
+      conclusion,
+      completed_at: completedAt,
+    }));
 
   // code events always run the battery
   for (const action of ['opened', 'synchronize', 'reopened', undefined]) {

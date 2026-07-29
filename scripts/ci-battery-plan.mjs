@@ -14,6 +14,8 @@ import { readFile, appendFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
+// The two dependency-free jobs the product jobs are gated on via `needs`.
+const GATE_CHECKS = ['review-scope', 'battery-plan'];
 
 function isSkipped(run) {
   return run?.status === 'completed' && run?.conclusion === 'skipped';
@@ -54,13 +56,20 @@ function newestFirst(a, b) {
 // `needs`/`if`), an unfinished run IS coverage in progress (an earlier battery
 // for this SHA is mid-flight), and a completed FAILURE is real coverage: red
 // products are fixed by a new SHA with its own battery, not by a metadata edit.
-function coveredBy(checkRuns, name) {
+function coveredBy(checkRuns, name, notBefore = '') {
   const decider = checkRuns
     .filter((run) => run?.name === name && !isSkipped(run))
     .sort(newestFirst)[0];
   if (!decider || typeof decider.status !== 'string') return false;
   if (decider.status !== 'completed') return true;
-  return decider.conclusion !== 'cancelled';
+  if (decider.conclusion === 'cancelled') return false;
+  // Product jobs are created AFTER their gates, so within one attempt a product
+  // always completes later than the gates that launched it. Coverage older than
+  // the newest completed gate therefore belongs to an EARLIER attempt — the
+  // retarget window this rule closes: a new base's gates both pass, its product
+  // runs do not exist yet, and the old base's successes would otherwise look
+  // like coverage for a merge result they never tested.
+  return recency(decider) >= notBefore;
 }
 
 // The newest COMPLETED run of a check.
@@ -68,6 +77,16 @@ function newestCompleted(checkRuns, name) {
   return checkRuns
     .filter((run) => run?.name === name && run.status === 'completed')
     .sort(newestFirst)[0] ?? null;
+}
+
+// When the newest gate attempt finished. Product evidence must be at least this
+// recent to belong to it rather than to a superseded attempt.
+function newestGateCompletion(checkRuns) {
+  return GATE_CHECKS
+    .map((gate) => newestCompleted(checkRuns, gate))
+    .filter(Boolean)
+    .map((run) => recency(run))
+    .reduce((newest, stamp) => (stamp > newest ? stamp : newest), '');
 }
 
 export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
@@ -97,7 +116,7 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   // run the battery instead. The current event's own scope run is excluded by
   // the caller, so this never fires merely because this edit's scope is queued.
   if (checkRuns.some((run) =>
-    ['review-scope', 'battery-plan'].includes(run?.name) && run.status !== 'completed')) {
+    GATE_CHECKS.includes(run?.name) && run.status !== 'completed')) {
     return {
       runProducts: true,
       reason: 'a gate run from another attempt has not finished, so any product '
@@ -110,7 +129,7 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   // coverage still visible here predates that attempt — and an aborted plan
   // would otherwise be unclearable: every later edit would read the old
   // successes, skip again, and add another aborted skip set forever.
-  for (const gate of ['review-scope', 'battery-plan']) {
+  for (const gate of GATE_CHECKS) {
     const verdict = newestCompleted(checkRuns, gate);
     if (verdict && verdict.conclusion !== 'success') {
       return {
@@ -121,11 +140,12 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
     }
   }
 
+  const notBefore = newestGateCompletion(checkRuns);
   for (const name of PRODUCT_CHECKS) {
-    if (!coveredBy(checkRuns, name)) {
+    if (!coveredBy(checkRuns, name, notBefore)) {
       return {
         runProducts: true,
-        reason: `product check ${name} has no run covering this head`,
+        reason: `product check ${name} has no run covering this head from the current attempt`,
       };
     }
   }
