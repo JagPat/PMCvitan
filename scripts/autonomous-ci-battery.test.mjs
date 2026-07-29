@@ -676,3 +676,57 @@ test('the undecidable gates-only window resolves toward running, not toward trus
   );
   assert.equal(summarizeRequiredChecks(resolved).state, 'success');
 });
+
+// FINDING (#249 round 10, P1) — the watermark compared a product's own
+// COMPLETION time, but what dates evidence is the attempt that launched it. A
+// straggler from the superseded base can finish after the new base's gates and
+// pass a timestamp-only check, so the gate publishes success for a merge result
+// whose product jobs never ran against it.
+test('a straggling product run from a superseded attempt is not coverage', () => {
+  const at = (name, runId, stamp, extra = {}) => ({
+    name,
+    status: 'completed',
+    conclusion: 'success',
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+    ...extra,
+  });
+
+  // Attempt 800 ran on base A: gates at 10:00, four products done at 10:05 —
+  // but its `api` job is slow and is still running.
+  const baseA = [
+    at('review-scope', '800', '2026-07-29T10:00:00Z'),
+    at('battery-plan', '800', '2026-07-29T10:00:30Z'),
+    ...PRODUCT_CHECKS.filter((n) => n !== 'api').map((n) => at(n, '800', '2026-07-29T10:05:00Z')),
+  ];
+
+  // A retarget to base B lands. Attempt 900's gates pass at 11:00. None of its
+  // product jobs exist yet.
+  const afterRetarget = [
+    ...baseA,
+    at('review-scope', '900', '2026-07-29T11:00:00Z'),
+    at('battery-plan', '900', '2026-07-29T11:00:30Z'),
+  ];
+
+  // NOW the stale base-A `api` finally finishes — at 11:05, AFTER base B's
+  // gates. Its completion is the newest of any `api` run, but it tested base A.
+  const withStraggler = [
+    ...afterRetarget,
+    at('api', '800', '2026-07-29T11:05:00Z'),
+  ];
+
+  const summary = summarizeRequiredChecks(withStraggler, [...PRODUCT_CHECKS]);
+  assert.ok(
+    summary.pending.includes('api'),
+    'a base-A product that merely finished late is not base-B coverage',
+  );
+  assert.deepEqual(summary.failed, [], 'superseded is pending, never failed');
+  assert.equal(summary.passed?.includes?.('api') ?? false, false);
+
+  // The same run IS coverage while its own attempt is still the current one:
+  // with no retarget, attempt 800's late `api` completes the battery.
+  const noRetarget = [...baseA, at('api', '800', '2026-07-29T11:05:00Z')];
+  const covered = summarizeRequiredChecks(noRetarget, [...PRODUCT_CHECKS]);
+  assert.deepEqual(covered.pending, [], 'no supersession: the late run counts');
+  assert.deepEqual(covered.failed, []);
+});

@@ -136,3 +136,37 @@ export function gateWatermarks(checkRuns) {
 export function gateWatermarkFor(checkRuns, name) {
   return gateWatermarks(checkRuns).get(name) ?? '';
 }
+
+// When each attempt's gates completed.
+//
+// An attempt's currency is fixed by its GATES, not by when its product jobs
+// happen to finish. Gates run first and launch the products, so the gate stamp
+// dates the merge result the whole attempt tested.
+export function attemptGateStamps(checkRuns) {
+  const stamps = new Map();
+  for (const run of Array.isArray(checkRuns) ? checkRuns : []) {
+    if (!GATE_CHECKS.includes(run?.name) || run?.status !== 'completed') continue;
+    const attempt = attemptOf(run);
+    if (!attempt) continue;
+    const stamp = recency(run);
+    if (stamp > (stamps.get(attempt) ?? '')) stamps.set(attempt, stamp);
+  }
+  return stamps;
+}
+
+// The stamp a product run's coverage claim is judged by.
+//
+// Comparing the run's own `completed_at` to the watermark is not enough: a
+// product job from a SUPERSEDED attempt can still be running when a retarget
+// lands, and finish after the new base's gates. Its completion is then the
+// newest of its name, but it tested the previous merge result. Dating it by its
+// attempt's gates puts it back where it belongs.
+//
+// A run whose attempt has no visible completed gate cannot be dated that way;
+// it falls back to its own recency rather than being declared superseded, which
+// would stall a head over missing history rather than over real evidence.
+export function coverageStamp(run, stamps) {
+  const attempt = attemptOf(run);
+  const attemptStamp = attempt ? stamps?.get(attempt) : undefined;
+  return attemptStamp ?? recency(run);
+}

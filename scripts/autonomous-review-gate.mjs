@@ -13,6 +13,8 @@ import {
 } from './review-efficiency.mjs';
 import {
   PRODUCT_CHECKS,
+  attemptGateStamps,
+  coverageStamp,
   gateWatermarks,
   recency,
 } from './check-run-coverage.mjs';
@@ -99,6 +101,7 @@ function intentionalSkip(skipped, checkRuns) {
 
 export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
   const watermarks = gateWatermarks(checkRuns);
+  const attemptStamps = attemptGateStamps(checkRuns);
   const missing = [];
   const pending = [];
   const failed = [];
@@ -141,7 +144,13 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     // it never tested. Per-name, because a newer attempt's five product runs
     // appear one at a time: `web` being visible says nothing about `api`.
     // Not yet run is pending, not failed.
-    if (PRODUCT_CHECKS.includes(name) && recency(decider) < (watermarks.get(name) ?? '')) {
+    // Dated by the ATTEMPT that launched it, not by when it finished: a
+    // straggler from the superseded base can complete after the new base's
+    // gates and would otherwise pass a timestamp-only comparison.
+    if (
+      PRODUCT_CHECKS.includes(name)
+      && coverageStamp(decider, attemptStamps) < (watermarks.get(name) ?? '')
+    ) {
       pending.push(name);
     }
   }

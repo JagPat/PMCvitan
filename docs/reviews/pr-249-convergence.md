@@ -345,3 +345,51 @@ raised separately rather than worked around silently.
 
 Validation on the merged tree: `pnpm check` EXIT 0 (web 543/543, API 680/680);
 `pnpm test:automation` green.
+
+## Round 10 (head `60f8431`) — evidence is dated by its attempt, not its clock
+
+Two findings. One is acted on; one is unfounded and is recorded rather than patched.
+
+### Acted on (P1): tie product coverage to the gate attempt
+
+Correct, with a concrete interleaving. The watermark compared a product run's own `completed_at`
+to the newest superseding gate. That dates evidence by when it *finished*, but what makes evidence
+current is the attempt that *launched* it — gates run first and start the products, so the gate
+completion dates the merge result the whole attempt tested.
+
+The hole: attempt 800 runs on base A and its `api` job is slow. A retarget to base B lands and
+attempt 900's gates pass at 11:00 with no product jobs created yet. The stale base-A `api` then
+finishes at 11:05 — newer than base B's gates by clock, but it tested base A. A timestamp-only
+comparison accepts it, and `codex-current-head` can publish success for a merge result four of
+whose five product jobs never ran.
+
+Fix: `attemptGateStamps` records when each attempt's gates completed, and `coverageStamp` dates a
+product run by its own attempt's gates instead of its completion. A run whose attempt has no
+visible completed gate falls back to its own recency — being unable to date an attempt should not
+stall a head over missing history.
+
+Reproduce-first: `a straggling product run from a superseded attempt is not coverage`, RED at
+`60f8431` with the exact assertion the finding predicts, GREEN after. The probe also pins the
+converse — with no retarget, the same late `api` still counts, so the fix supersedes rather than
+simply rejecting late runs.
+
+### Recorded, not patched: the trailer finding is unfounded
+
+The second finding asserts this head lacks the convergence trailer, quoting
+`git show -s --format=%B 62b4485c… | git interpret-trailers --parse`. Checked directly:
+
+```
+git cat-file -t 62b4485c55469f75beea19af1d5e42617357ac20
+  → fatal: git cat-file: could not get object info   (absent, incl. refs/pull/249/head)
+
+git log -1 --format='%(trailers:key=Review-Convergence,valueonly)' 60f8431
+  → complete
+```
+
+The cited commit is not an object in this repository, and the head it was posted against carries
+the trailer. There is nothing to correct, so no correction is made. The repository owner has
+authorised recording such findings as unfounded rather than spending a round on them; the
+measured record is in `docs/reviews/codex-fabricated-citations.md` and the standing instruction
+now lives in `AGENTS.md` (PR #250, merged).
+
+Gates: `pnpm test:automation` 90/90; `pnpm check` EXIT 0.
