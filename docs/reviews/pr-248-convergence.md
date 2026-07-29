@@ -19,19 +19,34 @@ findings is out of a review's writ and why.
 
 ### Evidence and regression surface
 
-This PR changes exactly two files — `docs/STATUS.md` and this packet — and no executable code,
-so there is no test that can be RED-then-GREEN for these findings, and inventing one would be
-dishonest. The evidence for each is stated plainly instead, together with what keeps it from
-recurring:
+An earlier revision of this section claimed a docs-only change admits no RED-then-GREEN probe.
+That was wrong, and the review was right to press on it. `docs/STATUS.md` is not prose — it is
+the state the runner *executes*, so "the runner has no move from this state" is a decidable
+property of the file. `scripts/autonomous-status-state.mjs` decides it, and
+`scripts/autonomous-status-state.test.mjs` pins it. Both findings reproduce RED at their own
+heads:
 
-| Finding | Failing observation (the "RED") | Fix | Regression surface |
+```
+RED    8c8f423 (finding 1 head)
+       task_state is merged with no work_item, no open_pr and no next_task;
+       the runner has nothing it can start
+RED    1d1de47 (finding 2 head)
+       blocking_directive 'phase-5-planning-approval' is set while task_state is 'merged';
+       STATUS launches a directive only from correction_required, so this state blocks
+       progression without scheduling any work
+GREEN  52f04d8 (this head)
+       nextStep: next_task:phase-5-planning
+```
+
+| Finding | RED at | Probe | Regression surface |
 | --- | --- | --- | --- |
-| `8c8f423` empty state | Reading the merged Now block yields no next action: `work_item`, `next_task` and `blocking_directive` all `none`, while the runner rule says to advance — a contradiction the state machine cannot execute | `next_task: phase-5-planning` named; the runner rules reconciled | The **Rules for the runner** section is the executable spec; the Now block and the rules are edited together in one PR (the file's own last rule), so a future flip that empties both again contradicts a rule in the same file |
-| `1d1de47` no concrete work item | The no-open-PR, no-directive state still resolves to nothing to do | The **Maintenance queue** section, kept as the standing between-work source | The queue is a first-class STATUS section with named items; emptying it is a visible diff in the authoritative state file |
-| `a74143d` packet ≠ STATUS | The packet's remedy table said `work_item: maintenance-queue` while the same head's Now block said `none` | Remedy table rewritten to the shipped state machine | Both live in this one PR's diff; the reviewer's own check (comparing the packet's claims against `docs/STATUS.md`) is the check that caught it and is repeatable by inspection |
+| `8c8f423` empty state | `8c8f423` | `assessRunnerState` returns `actionable: false` for the merged terminal state with `work_item`, `next_task` and `blocking_directive` all `none` | The live-file test runs on every CI run: any future STATUS edit that leaves the runner stalled fails `pnpm test:automation`, and the fixture reads the historical Now block **out of git**, so it cannot drift from the commit it claims to reproduce |
+| `1d1de47` owner-approval gate | `1d1de47` | `assessRunnerState` rejects a `blocking_directive` recorded against any `task_state` other than `correction_required` | STATUS's own state-value definitions say a directive is what `correction_required` launches; the invariant now enforces that, so parking the loop behind a directive the state machine never scheduled — the shape a human-approval gate takes — is red in CI |
+| `a74143d` packet ≠ STATUS | `a74143d` | No executable probe: this is a claim in this packet about a sibling file, and mechanically checking prose against state would be a heuristic, not a proof. Stated honestly rather than dressed up | Both files live in this one PR's diff; the reviewer's own comparison is the check, and it is repeatable by inspection |
 
-No product code, schema, migration, projection, event or lock is touched, so no product
-invariant has a regression surface to protect here.
+The invariant is deliberately total: `assessRunnerState` returns a decision and a reason for
+every input, including malformed and unrecognized ones, and every non-actionable branch is
+covered by a test. No product code, schema, migration, projection, event or lock is touched.
 
 ## Architectural Cause
 

@@ -98,3 +98,10 @@ gate as feature work. Work them top-down, one focused PR per item:
   **Maintenance queue** keeps the loop live; it never idles.
 - Update this file in the same PR as the work it describes, so state and code
   never disagree on `main`.
+- The Now block must always leave the runner a move. That is enforced, not
+  merely asked for: `scripts/autonomous-status-state.mjs` decides the next step
+  from the Now block and `scripts/autonomous-status-state.test.mjs` runs it
+  against this file on every CI run. A state with nothing to start — or a
+  `blocking_directive` recorded from any `task_state` other than
+  `correction_required`, which parks the loop behind work the state machine
+  never scheduled — fails the build.
