@@ -36,7 +36,8 @@ This repository is designed to progress without the owner's laptop or technical 
 
 - A standard PR is one user workflow or one architectural concern, at most 20
   files and 1,500 changed lines. PR #247 and later are enforced; earlier PRs are
-  grandfathered only from this size-evidence rule.
+  grandfathered and retain the original five required checks so an older branch
+  cannot be stranded by a job it does not contain.
 - A justified large PR uses the PR template's marker and completes all six risk
   rows: authorization/tenancy, civil time/lifecycle, concurrency/idempotency,
   data integrity/conservation, offline/reconciliation, and UI/server parity.

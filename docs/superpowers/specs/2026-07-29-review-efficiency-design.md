@@ -66,7 +66,9 @@ so compute is not spent on code that is not yet reviewable.
 
 ## Rollout And Compatibility
 
-- Existing PRs through #246 are grandfathered only from the size-evidence check.
+- Existing PRs through #246 retain the original five required checks and are
+  grandfathered from scope evidence because their branches cannot emit the new
+  job. PR #247 onward requires all six checks.
 - Exact-head review, recovery, auto-merge, and Claude handoff semantics remain
   unchanged.
 - Branch protection should add `review-scope`; the internal gate also requires it,

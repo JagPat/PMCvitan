@@ -9,6 +9,7 @@ const {
   hasTerminalReviewFailureAfterPending,
   MAX_REVIEW_ATTEMPTS,
   REQUIRED_CHECKS,
+  requiredChecksForPullRequest,
   summarizeRequiredChecks,
 } = reviewGate;
 
@@ -79,6 +80,22 @@ test('requires every named CI check to have a successful latest run', () => {
       failed: ['api'],
     },
   );
+});
+
+test('rollout cannot require the new scope check from pre-policy PR branches', () => {
+  const legacyChecks = requiredChecksForPullRequest(246);
+  assert.deepEqual(
+    legacyChecks,
+    REQUIRED_CHECKS.filter((name) => name !== 'review-scope'),
+  );
+  assert.equal(
+    summarizeRequiredChecks(
+      legacyChecks.map((name) => checkRun(name)),
+      legacyChecks,
+    ).state,
+    'success',
+  );
+  assert.deepEqual(requiredChecksForPullRequest(247), REQUIRED_CHECKS);
 });
 
 test('review scope runs before every expensive product gate', async () => {

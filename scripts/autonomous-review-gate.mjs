@@ -6,7 +6,10 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
-import { assessConvergence } from './review-efficiency.mjs';
+import {
+  assessConvergence,
+  REVIEW_SCOPE_ENFORCE_AFTER_PR,
+} from './review-efficiency.mjs';
 
 export const REQUIRED_CHECKS = [
   'review-scope',
@@ -26,12 +29,23 @@ const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 10 * 60_000);
 const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 15 * 60_000);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
 
-export function summarizeRequiredChecks(checkRuns) {
+export function requiredChecksForPullRequest(pullRequestNumber) {
+  if (
+    Number.isInteger(pullRequestNumber)
+    && pullRequestNumber > 0
+    && pullRequestNumber <= REVIEW_SCOPE_ENFORCE_AFTER_PR
+  ) {
+    return REQUIRED_CHECKS.filter((name) => name !== 'review-scope');
+  }
+  return REQUIRED_CHECKS;
+}
+
+export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHECKS) {
   const missing = [];
   const pending = [];
   const failed = [];
 
-  for (const name of REQUIRED_CHECKS) {
+  for (const name of requiredChecks) {
     const runs = checkRuns.filter((run) => run.name === name);
     if (runs.length === 0) {
       missing.push(name);
@@ -732,11 +746,15 @@ export async function ensureTerminalReviewState(
 
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
+  const requiredChecks = requiredChecksForPullRequest(pullRequest.number);
   while (true) {
     const live = await client.pullRequest(pullRequest.number);
     if (live.head.sha !== expectedHead) return { state: 'superseded' };
 
-    const summary = summarizeRequiredChecks(await client.checkRuns(expectedHead));
+    const summary = summarizeRequiredChecks(
+      await client.checkRuns(expectedHead),
+      requiredChecks,
+    );
     if (summary.state !== 'pending' || Date.now() > deadline) return summary;
     await sleep(POLL_INTERVAL_MS);
   }
@@ -1036,6 +1054,7 @@ export async function run() {
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     const ciSummary = summarizeRequiredChecks(
       await client.checkRuns(expectedHead),
+      requiredChecksForPullRequest(pullRequest.number),
     );
     if (shouldRetryCiFailure(context, existingStatus, ciSummary.failed)) {
       try {
@@ -1296,6 +1315,7 @@ export async function run() {
       const finalStatuses = await client.statuses(expectedHead);
       const finalCheckSummary = summarizeRequiredChecks(
         await client.checkRuns(expectedHead),
+        requiredChecksForPullRequest(pullRequest.number),
       );
       if (
         finalCheckSummary.state !== 'success'
