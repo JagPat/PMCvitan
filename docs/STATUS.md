@@ -17,8 +17,8 @@ task_state: merged
 work_item: none
 reviewed_merge: 67e7a00
 open_pr: none
-next_task: none
-blocking_directive: none
+next_task: phase-5-planning
+blocking_directive: phase-5-planning-approval
 updated: 2026-07-29
 ```
 
@@ -30,8 +30,12 @@ rounds (46 findings, every one fixed forward with a reproduce-first RED→GREEN
 probe and a full gate battery) and the PR-#247-protocol convergence audit
 `docs/reviews/pr-246-convergence.md`. Capability-enabled internal (pilot)
 projects may use the Labour workflow end to end; non-pilot projects are
-unaffected (§D). Phase 5 has NOT begun and does not begin until JagPat
-explicitly approves Phase 5 planning.
+unaffected (§D). Phase 5 has NOT begun. Its planning is the recorded
+`next_task`, gated by the named `blocking_directive:
+phase-5-planning-approval` (defined under **Blocking directives** below) —
+the machine-actionable form of the project owner's standing phase gate. The
+runner does not idle on it: the standing duties continue and the directive
+clears only on the owner's explicit approval.
 
 ## Phase 4 — labour readiness
 
@@ -58,6 +62,25 @@ Review Stops" section of the phase plan.
 - `ready` — PR marked ready for review; the merge is queued behind CI
 - `merged` — squash-merged to `main` and deployed
 
+## Blocking directives
+
+A `blocking_directive` names the one thing that gates `next_task`. It is
+machine-actionable by definition: the runner never idles or polls on a
+directive — it continues the standing duties (shepherd every open PR through
+the exact-head `codex-current-head` gate, answer post-merge review findings
+with focused fix-forward corrections, keep CI and the gate battery green) and
+starts `next_task` the moment the directive clears.
+
+- `phase-5-planning-approval` — the project owner's standing phase gate:
+  Phase-5 planning starts only on JagPat's explicit GO, the same gate every
+  prior phase rode (Phase-4 planning began only after the explicit Phase-4
+  approval, and Task-1 implementation only after the explicit implementation
+  GO). This is a **scope-authorization** gate, not a review gate: no open PR
+  waits on it, and it never substitutes for — or adds to — the exact-head
+  review evidence (`AGENTS.md` §Autonomy still holds for every PR). It gates
+  only which NEW work the runner may begin. Cleared by: an explicit Phase-5
+  approval from the project owner recorded in the session or repository.
+
 ## Rules for the runner
 
 - Work one task at a time. A correction keeps its parent task open. Do not open a
@@ -69,7 +92,11 @@ Review Stops" section of the phase plan.
 - After a clean-reviewed merge: set that task to `merged`, set the next task to
   `in_progress`, update `open_pr` and `updated`. If post-merge review finds a
   defect, return the parent task to `in_progress` and name its blocking directive.
-- When every task in a phase is `merged`, move to the next phase's plan and start
-  at its task 1.
+- When every task in a phase is `merged`, set `next_task` to the next phase's
+  planning item and record that phase's approval gate as the named
+  `blocking_directive` (see **Blocking directives**). Move to the next phase's
+  plan and start at its task 1 only once that directive is cleared; until then
+  the loop stays live on the standing duties — it never idles, and it never
+  starts unapproved phase work.
 - Update this file in the same PR as the work it describes, so state and code
   never disagree on `main`.
