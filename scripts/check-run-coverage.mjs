@@ -15,13 +15,22 @@ export function isSkipped(run) {
 }
 
 // Recency key, newest-first. GitHub's own `latest` filter is defined by
-// completed_at, so that is the primary key. A run that has not completed is the
-// most recent activity for its name and sorts ahead of every completed one.
+// completed_at, so that is the primary key; an unfinished run has none and is
+// dated by when it STARTED.
+//
+// Dating every unfinished run as "newer than everything" instead was wrong for
+// a hung straggler: an attempt whose jobs are all still queued has no gate
+// stamp either, so the sentinel put its runs ahead of a later attempt that had
+// completed the same checks, and the head stayed pending until timeout. A run
+// that started at 09:00 and is still going is not more recent activity than one
+// that finished at 11:00. Only a run with no timestamp at all keeps the
+// sentinel: it cannot be placed, and for an unfinished run the safe placement
+// is first, since the gate then waits rather than reporting a verdict for a
+// check that is still moving.
 export function recency(run) {
-  if (run?.status !== 'completed') return '￿';
-  return (typeof run?.completed_at === 'string' && run.completed_at)
-    || (typeof run?.started_at === 'string' && run.started_at)
-    || '';
+  if (typeof run?.completed_at === 'string' && run.completed_at) return run.completed_at;
+  if (typeof run?.started_at === 'string' && run.started_at) return run.started_at;
+  return run?.status === 'completed' ? '' : '￿';
 }
 
 export function newestFirst(a, b) {

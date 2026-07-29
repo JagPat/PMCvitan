@@ -1007,3 +1007,85 @@ test('a hung gate from a superseded attempt does not force a duplicate battery',
     'an undatable in-flight attempt is still a reason to run',
   );
 });
+
+// FINDING (#249 round 14 P1) — attempt-currency ordering dates a run by the
+// GATES THAT LAUNCHED IT. That is meaningful for a product job and wrong for a
+// gate, which dates itself: a gate run inherits its sibling gate's later
+// completion and can outrank a NEWER failure of its own name.
+test('a gate check is ordered by its own completion, not its sibling\'s', () => {
+  const job = (name, conclusion, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    started_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  const runs = [
+    // attempt 900: review-scope passes at 11:00; its battery-plan is slow
+    job('review-scope', 'success', '900', '2026-07-29T11:00:00Z'),
+    // a body edit starts attempt 1000, whose review-scope FAILS at 11:05
+    job('review-scope', 'failure', '1000', '2026-07-29T11:05:00Z'),
+    // only now does attempt 900's battery-plan finish, at 11:10
+    job('battery-plan', 'success', '900', '2026-07-29T11:10:00Z'),
+  ];
+
+  const summary = summarizeRequiredChecks(runs, ['review-scope']);
+  assert.deepEqual(
+    summary.failed,
+    ['review-scope'],
+    'the current review-scope is red; 900 must not borrow 11:10 to outrank it',
+  );
+  assert.notEqual(summary.state, 'success');
+});
+
+// FINDING (#249 round 14 P2) — an attempt whose gates are ALL still queued has
+// no attempt stamp, so the undatable sentinel sorted its runs ahead of a later
+// completed attempt and held the head pending until timeout.
+test('a hung undatable attempt does not hold completed gates pending', () => {
+  const queued = (name, runId, started) => ({
+    name,
+    status: 'queued',
+    conclusion: null,
+    started_at: started,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  const job = (name, runId, stamp) => ({
+    name,
+    status: 'completed',
+    conclusion: 'success',
+    completed_at: stamp,
+    started_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+
+  const runs = [
+    // attempt 800 queues both gates and hangs: neither ever completes, so the
+    // attempt has no gate stamp at all
+    queued('review-scope', '800', '2026-07-29T09:00:00Z'),
+    queued('battery-plan', '800', '2026-07-29T09:00:00Z'),
+    // attempt 900 then completes everything for the same SHA
+    job('review-scope', '900', '2026-07-29T11:00:00Z'),
+    job('battery-plan', '900', '2026-07-29T11:00:30Z'),
+    ...PRODUCT_CHECKS.map((n) => job(n, '900', '2026-07-29T11:05:00Z')),
+  ];
+
+  const summary = summarizeRequiredChecks(runs);
+  assert.deepEqual(summary.pending, [], 'attempt 900 completed every check');
+  assert.deepEqual(summary.failed, []);
+  assert.deepEqual(summary.missing, []);
+  assert.equal(summary.state, 'success');
+
+  // The converse: a gate started AFTER the newest completion is live activity
+  // and still holds the head pending.
+  const liveRerun = [
+    ...runs,
+    queued('review-scope', '1000', '2026-07-29T11:30:00Z'),
+  ];
+  assert.deepEqual(
+    summarizeRequiredChecks(liveRerun).pending,
+    ['review-scope'],
+    'a gate that started after the newest completion is genuinely pending',
+  );
+});

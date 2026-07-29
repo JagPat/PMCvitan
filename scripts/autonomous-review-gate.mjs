@@ -18,6 +18,7 @@ import {
   coverageOrder,
   coverageStamp,
   gateWatermarks,
+  newestFirst,
   recency,
 } from './check-run-coverage.mjs';
 
@@ -53,20 +54,6 @@ export function requiredChecksForPullRequest(pullRequestNumber) {
     );
   }
   return REQUIRED_CHECKS;
-}
-
-// GitHub defines its own `latest` check-run filter by completed_at, so that is
-// the primary key here too. Ordering by started_at instead would let a run that
-// started earlier but finished LATER (10:00→10:30 failure) be masked by a rerun
-// that started later and finished sooner (10:05→10:20 success), publishing a
-// clean review status over a red latest check.
-function newerRunFirst(a, b) {
-  const aKey = (typeof a.completed_at === 'string' && a.completed_at)
-    || (typeof a.started_at === 'string' && a.started_at) || '';
-  const bKey = (typeof b.completed_at === 'string' && b.completed_at)
-    || (typeof b.started_at === 'string' && b.started_at) || '';
-  if (aKey !== bKey) return aKey > bKey ? -1 : 1;
-  return (Number(b.id) || 0) - (Number(a.id) || 0);
 }
 
 // Identify the CI attempt a check run belongs to. `check_suite.id` is the
@@ -120,14 +107,23 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     // pending until timeout even though the current attempt had already passed
     // that check — the job will report on a merge result nobody is asking about.
     //
-    // Ordered by ATTEMPT currency first, not completion time. A product job
-    // from a superseded attempt can still be running when a retarget lands and
-    // finish after the current attempt's run of the same name has already
-    // failed; a completion-ordered sort selects that stale success and this
-    // gate publishes green over red exact-head CI. Within one attempt (a
+    // A PRODUCT job is ordered by ATTEMPT currency first, not completion time:
+    // one from a superseded attempt can still be running when a retarget lands
+    // and finish after the current attempt's run of the same name has already
+    // failed, and a completion-ordered sort selects that stale success and
+    // publishes green over red exact-head CI. Within one attempt (a
     // rerun-failed-jobs keeps the suite) completion still decides, so a rerun
     // continues to mask the failure it repaired.
-    const ordered = [...runs].sort(coverageOrder(attemptStamps));
+    //
+    // A GATE dates ITSELF. Attempt currency is the completion of the gates that
+    // LAUNCHED a run — meaningful for a product, circular for a gate, which
+    // would inherit its sibling's stamp: a `review-scope` that passed at 11:00
+    // in an attempt whose `battery-plan` finished at 11:10 would outrank a
+    // NEWER `review-scope` failure at 11:05 and this gate would publish success
+    // over a red current scope check.
+    const ordered = [...runs].sort(
+      PRODUCT_CHECKS.includes(name) ? coverageOrder(attemptStamps) : newestFirst,
+    );
     if (ordered[0].status !== 'completed') {
       pending.push(name);
       continue;

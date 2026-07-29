@@ -584,3 +584,52 @@ Probe: `a hung gate from a superseded attempt does not force a duplicate battery
 `node --test scripts/autonomous-ci-battery.test.mjs` 20/20 — both new probes RED at `fd73ba9`,
 GREEN after, and the eighteen earlier coverage probes unchanged. `pnpm test:automation` 109/109.
 `pnpm check` EXIT 0 — web 543/543, API 680/680.
+
+## Round 14 — `c9e43cf`
+
+Two findings, both correct. The P1 is a hole round 11 opened.
+
+### F1 (P1): attempt-currency ordering was applied to gate checks too
+
+Round 11 made the decider selection order by attempt currency. `coverageStamp` dates a run by the
+completion of its attempt's gates — which is exactly right for a product job, because the gates
+LAUNCHED it, and circular for a gate, which dates itself.
+
+The consequence: a gate borrows its sibling's timestamp. Attempt 900's `review-scope` passes at
+11:00 while its `battery-plan` is slow; a body edit starts attempt 1000, whose `review-scope`
+FAILS at 11:05; attempt 900's `battery-plan` then finishes at 11:10. `attemptGateStamps` gives
+attempt 900 an 11:10 stamp, so its 11:00 scope success outranks the 11:05 failure and this gate
+publishes success over a red current scope check.
+
+Fix: `summarizeRequiredChecks` selects the ordering per name — `coverageOrder` for the five
+product checks, plain `newestFirst` for the gates. Attempt currency is reserved for runs whose
+attempt genuinely dates them.
+
+Probe: `a gate check is ordered by its own completion, not its sibling's`.
+
+### F2 (P2): the undatable sentinel outranked a completed newer attempt
+
+`recency` dated every unfinished run as "newer than everything". Round 12 fixed the case where a
+stale unfinished run's attempt could be dated by its gates; this is the case where it cannot,
+because ALL of that attempt's jobs are still queued. Attempt 800 queues both gates and hangs,
+attempt 900 completes every check for the same SHA — and 800's undatable runs still sorted first,
+so `review-scope` and `battery-plan` stayed pending until timeout and the head returned to draft.
+
+Fix: an unfinished run is dated by when it STARTED. A run that began at 09:00 and is still going
+is not more recent activity than one that finished at 11:00. Only a run with no timestamp at all
+keeps the sentinel — it cannot be placed, and first is the safe placement for an unfinished run,
+since the gate then waits rather than publishing a verdict for a check that is still moving.
+
+The converse is pinned in the same probe: a gate that STARTED after the newest completion is live
+activity and does hold the head pending.
+
+That change makes `recency` agree with the gate's own local `newerRunFirst` helper, which already
+dated by `completed_at || started_at`. The two were byte-equivalent afterwards, so the local copy
+is deleted and the gate imports `newestFirst`. Duplicated ordering rules across these two files
+are what produced the round-11 and round-13 findings; this removes the last one.
+
+### Gates
+
+`node --test scripts/autonomous-ci-battery.test.mjs` 22/22 — both new probes RED at `c9e43cf`,
+GREEN after, twenty earlier coverage probes unchanged. `pnpm test:automation` 111/111.
+`pnpm check` EXIT 0 — web 543/543, API 680/680.
