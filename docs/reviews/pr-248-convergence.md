@@ -285,3 +285,23 @@ alone, is made outside this packet, and is not recommended by it.
   `8c8f423`, `1d1de47` → `required: true`; the head trailer + this changed packet →
   `allowed: true`; removing either → `allowed: false`). The round-3 head retains the trailer
   and changes this packet, so the requirement holds for it identically.
+
+## Base merge (head after `main` advanced)
+
+This head is a merge of `origin/main` requested by the conflict bot after PR #251 merged. It
+carries **no correction content**: the only incoming change is
+`apps/web/tests/labour.test.ts` (the labour onboarding probe's load-dependent wait), and the
+merge is conflict-free.
+
+It is recorded here because the convergence gate cannot distinguish a base merge from a
+correction head — with 12 finding heads behind this PR, every subsequent head is required to
+carry the trailer and a changed packet, including one that fixes nothing. The trailer on this
+commit therefore asserts only what remains true: the batched architectural audit for this PR is
+complete and is the document you are reading. It does not claim this head is that audit.
+
+The gate should exempt a head whose diff against its first parent is empty — a pure base merge
+introduces no reviewable change of its own. That is a defect in the gate, not in this PR, and is
+raised separately rather than worked around silently.
+
+Validation on the merged tree: `pnpm check` EXIT 0 (web 543/543, API 680/680);
+`pnpm test:automation` green.
