@@ -200,3 +200,42 @@ such claims across four PRs, none naming a real object, every real head carrying
 It is now addressed at the source rather than re-recorded per round — PR #250 puts the trailer
 and CI state out of a review's scope and has the gate discount a finding whose every cited
 commit is absent from the repository.
+
+## The defect, observed on this PR (head `68f2e2c`)
+
+Between the round-9 push and this head, PR #249 reproduced its own target defect in
+production. The record is worth keeping because it is the clearest possible statement of
+what this PR is for.
+
+Head `68f2e2c` accumulated two CI attempts:
+
+| Attempt | `review-scope` | `battery-plan` | products |
+| --- | --- | --- | --- |
+| `30448858798` (push) | **failure** 11:46:35 — the PR had grown to 1,531 changed lines with no `justified-large` marker | success | 5× **skipped** (correctly — gated behind the failed scope check) |
+| `30448995571` (body edit adding the marker) | **success** 11:48:41 | success | 5× **success** 11:49:25–11:54:32 |
+
+Every check on the head was green. The trusted gate published
+`ci: Failed checks: review-scope, web, api, e2e, api-e2e, upgrade-proof` — all six false.
+
+The cause is the check-summary semantics this PR replaces. The gate that judged the head is
+the DEFAULT-BRANCH copy (`auto-merge.yml` checks out
+`${{ github.event.repository.default_branch }}`), and on `main` `summarizeRequiredChecks` reads:
+
+```js
+if (runs.some((run) => run.conclusion !== 'success')) failed.push(name);
+```
+
+Any non-success run for a name marks that name failed, so the superseded 11:46 scope failure
+poisoned `review-scope` and each deliberate `skipped` poisoned its product name — exactly the
+R1-F3 and R5 findings. This head's `summarizeRequiredChecks` resolves each name by its newest
+non-skipped run and defers a skip only to evidence a green-gated attempt deliberately kept, so
+it reads the same history as `success`.
+
+That produces a bootstrapping constraint worth stating plainly rather than discovering again:
+**a PR that repairs the merge gate is judged by the unrepaired gate.** Until this merges, any
+head needing two CI attempts on one SHA — a scope failure fixed by a body edit is the common
+case — is unmergeable regardless of its actual CI result. The mechanical consequence is that
+this correction had to be delivered on a fresh SHA, whose single-attempt history the old gate
+reads correctly. No evidence was weakened and no check was bypassed to achieve that; the head
+below carries a complete, genuinely green battery of its own.
+
