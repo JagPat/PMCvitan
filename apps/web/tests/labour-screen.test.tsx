@@ -824,3 +824,59 @@ describe('CODEX R12 — the unavailable hub Retry re-drives the SHELL read while
     expect(g.shell).not.toHaveBeenCalled();
   });
 });
+
+describe('CODEX R13 — a RESOLVED supplier draw stays reserved until the labour bundle reloads', () => {
+  it('the retained key recovers its FULL input: the second same-slice worker goes OWN-WORKFORCE, never the drawn commitment', async () => {
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const m1 = worker('W-MASON', 'mason');
+    const m2 = worker('W-MASON-2', 'mason');
+    const twoQty = { ...requirement(fp), labourSpec: labourSpec(fp, { demandSlices: [{ civilDate: day, shift: 'day', personShiftQty: 2 }] }) };
+    const spy = vi.fn();
+    const { allocateCoalesceKey } = await import('@/lib/labourKeys');
+    const key = allocateCoalesceKey('ACT-1', 'REQ-1', 1, day, 'W-MASON');
+    await primeLabour({
+      requirements: [twoQty],
+      commitments: [commitment(fp)], // ONE person-shift — drawn by the RESOLVED op below
+      workforce: { workers: [m1, m2], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([m1, m2]),
+    });
+    // the success→reload gap: the supplier-backed allocate op RESOLVED (left the outbox) but
+    // `loadLabour` has not applied the fresh bundle — only the retained key + its recorded
+    // input remember the draw
+    useStore.setState({
+      role: 'pmc', allocateWorker: spy, outbox: [], labourPending: [key],
+      labourPendingInputs: { [key]: { activityId: 'ACT-1', requirementId: 'REQ-1', originRevision: 1, civilDate: day, workerId: 'W-MASON', capacityCommitmentId: 'CC-1' } },
+    });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    // RED at 6853ac5: the round-11 key parser lost `capacityCommitmentId`, the picker re-offered
+    // CC-1, and W-MASON-2 was sent WITH the drawn commitment — a deterministic §F bound-3
+    // 409/drop where own workforce would have covered the remaining demand
+    expect(r.getByTestId(`labour-alloc-slice-REQ-1-${day}`).textContent!).not.toContain('supplier capacity available');
+    fireEvent.change(r.getByTestId(`labour-worker-select-REQ-1-${day}`), { target: { value: 'W-MASON-2' } });
+    fireEvent.click(r.getByTestId(`labour-do-allocate-REQ-1-${day}`));
+    expect(spy).toHaveBeenCalledWith('ACT-1', 'REQ-1', 1, day, 'W-MASON-2', null, fp);
+  });
+
+  it('a retained key with NO surviving input record (a reload inside the gap) still books its worker via the key-parser fallback', async () => {
+    const fp = await computeLabourSpecFingerprint({ tradeCode: 'mason', skillCode: null, shift: 'day' });
+    const m1 = worker('W-MASON', 'mason');
+    const m2 = worker('W-MASON-2', 'mason');
+    const twoQty = { ...requirement(fp), labourSpec: labourSpec(fp, { demandSlices: [{ civilDate: day, shift: 'day', personShiftQty: 2 }] }) };
+    const { allocateCoalesceKey } = await import('@/lib/labourKeys');
+    const key = allocateCoalesceKey('ACT-1', 'REQ-1', 1, day, 'W-MASON');
+    await primeLabour({
+      requirements: [twoQty],
+      workforce: { workers: [m1, m2], crews: [] },
+      workerFingerprints: await buildWorkerFingerprints([m1, m2]),
+    });
+    useStore.setState({ role: 'pmc', outbox: [], labourPending: [key], labourPendingInputs: {} });
+    const r = render(<LabourScreen />);
+    fireEvent.click(r.getByTestId('labour-tab-allocation'));
+    // round-11 behaviour preserved: the parsed reservation still excludes the just-allocated
+    // worker from the picker while the fresh bundle is pending
+    const options = [...r.getByTestId(`labour-worker-select-REQ-1-${day}`).querySelectorAll('option')].map((o) => o.getAttribute('value'));
+    expect(options).not.toContain('W-MASON');
+    expect(options).toContain('W-MASON-2');
+  });
+});

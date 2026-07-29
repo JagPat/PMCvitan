@@ -56,6 +56,7 @@ export function LabourScreen() {
   const labour = useStore(useShallow((s) => s.labourView));
   const labourLoad = useStore((s) => s.labourLoad);
   const labourPending = useStore(useShallow((s) => s.labourPending));
+  const labourPendingInputs = useStore(useShallow((s) => s.labourPendingInputs));
   const outbox = useStore(useShallow((s) => s.outbox));
   const activities = useStore(useShallow((s) => s.activities));
   const role = useStore((s) => s.role);
@@ -97,9 +98,22 @@ export function LabourScreen() {
   // outbox before `loadLabour` applies the fresh bundle, so in that gap the outbox alone went
   // blind while the screen still rendered PRE-command truth (a just-allocated worker offerable
   // for a second slice; an edited minutes entry queueing a second work fact).
+  // Round 13 — a retained key recovers its FULL original input from `labourPendingInputs`
+  // (the coalesce key never carried `capacityCommitmentId`, so the round-11 parser lost a
+  // resolved supplier draw and the picker re-offered the drawn commitment to the next worker —
+  // a deterministic drawdown 409/drop where own workforce would have covered). Keys still
+  // QUEUED in the outbox are folded from the outbox alone (never twice — a double-counted
+  // draw would over-reserve); the key parser remains the fallback for a retained key whose
+  // input record did not survive (a reload inside the gap).
+  const queuedKeys = new Set(outbox.flatMap((op) => {
+    const ck = (op as { coalesceKey?: unknown }).coalesceKey;
+    return typeof ck === 'string' ? [ck] : [];
+  }));
+  const retainedKeys = labourPending.filter((k) => !queuedKeys.has(k));
   const pendingAllocInputs = [
     ...outbox.flatMap((op) => (op.t === 'allocateLabour' ? [op.input] : [])),
-    ...pendingAllocationsFromKeys(labourPending),
+    ...retainedKeys.flatMap((k) => (labourPendingInputs[k] ? [labourPendingInputs[k]] : [])),
+    ...pendingAllocationsFromKeys(retainedKeys.filter((k) => !labourPendingInputs[k])),
   ];
   const pendingWorkIds = new Set([
     ...outbox.flatMap((op) => (op.t === 'recordLabourWork' ? [op.input.allocationId] : [])),

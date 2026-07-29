@@ -64,7 +64,7 @@ import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type Pro
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
@@ -231,6 +231,10 @@ export interface AppState {
   labourView: LabourView | null;
   labourLoad: 'idle' | 'loading' | 'ready' | 'error';
   labourPending: string[];
+  // Codex round 13 — the ORIGINAL allocate input per retained coalesce key (the key alone loses
+  // `capacityCommitmentId`, so a resolved supplier draw stopped reserving its commitment in the
+  // success→reload gap). Same lifecycle as `labourPending`; torn down with the scope.
+  labourPendingInputs: Record<string, AllocateLabourInput>;
   labourOnboardPending: Record<string, string>;
   labourBindPending: Record<string, string>;
   nodes: ProjectNode[]; // the project location tree (zones → rooms → elements)
@@ -677,6 +681,7 @@ export function getInitialState(): AppState {
     labourView: null,
     labourLoad: 'idle',
     labourPending: [],
+    labourPendingInputs: {},
     labourOnboardPending: {},
     labourBindPending: {},
     nodes: structuredClone(SEED_NODES), // the demo location tree (server snapshot replaces it)
@@ -1460,7 +1465,13 @@ export const useStore = create<Store>()(
       const ck = op.coalesceKey;
       const queued = get().outbox.some((o) => coalesceKeyOf(o) === ck);
       if (queued || get().labourPending.includes(ck)) return;
-      set((s) => { s.labourPending.push(ck); });
+      set((s) => {
+        s.labourPending.push(ck);
+        // Codex round 13 — retain the ORIGINAL allocate input alongside the key: the coalesce key
+        // alone loses `capacityCommitmentId`, so in the success→reload gap a resolved supplier
+        // draw stopped reserving its commitment and a second same-slice worker re-picked it.
+        if (op.t === 'allocateLabour') s.labourPendingInputs[ck] = op.input;
+      });
       runWriteAhead(op, label, okMsg);
     };
 
@@ -2533,6 +2544,13 @@ export const useStore = create<Store>()(
               ? [(o as { coalesceKey: string }).coalesceKey]
               : [],
           );
+          // Codex round 13 — the retained-input register follows the SAME lifecycle: a resolved
+          // op's input clears here WITH its key (the fresh truth is on screen); a still-queued
+          // op's input survives because its key does.
+          const live = new Set(s.labourPending);
+          for (const k of Object.keys(s.labourPendingInputs)) {
+            if (!live.has(k)) delete s.labourPendingInputs[k];
+          }
         });
       }).catch(() => set((s) => {
         // keep the last-good bundle; expose a Retry boundary. An OLDER failure never
@@ -3571,6 +3589,13 @@ export const useStore = create<Store>()(
               const ck = coalesceKeyOf(o);
               return isLabourOp(o) && typeof ck === 'string' ? [ck] : [];
             });
+            // Codex round 13 — rebuild the retained-input register from the STILL-QUEUED allocate
+            // ops (their durable rows carry the full input, incl. `capacityCommitmentId`). A key
+            // retained for an op that resolved before this reload has no row to rebuild from —
+            // the screen's key-parser fallback covers it, exactly as before this round.
+            s.labourPendingInputs = Object.fromEntries(
+              s.outbox.flatMap((o) => (o.t === 'allocateLabour' && typeof o.coalesceKey === 'string' ? [[o.coalesceKey, o.input] as const] : [])),
+            );
           });
         }
       } catch {

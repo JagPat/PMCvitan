@@ -1031,3 +1031,49 @@ bundle load; with capabilities known it keeps today's bundle reload).
 - Full integration on a pristine recreated+migrated DB: **72 files / 702 tests** passing
 - `upgrade-proof.sh` PASSED (every legacy meaning + all prior forgery rejections survive; no migration in this round)
 - `test:e2e:api:allmodules` **35/35** and `:outbox` **35/35**, single pass each (labour-pilot suite included; no flake rerun needed)
+
+## §17 — Codex correction round 13 (one finding on `6853ac5`)
+
+One web outbox-lifecycle gap in the round-11 retained-key fold. Reproduce-first: pre-fix
+`apps/web/src` restored at `6853ac5` → web labour suites **3 failed | 101 passed** (the fourth
+new probe pins PRESERVED round-11 fallback behaviour and passes at both heads); fixes restored →
+**104/104** GREEN.
+
+### R13-1 — a RESOLVED supplier draw stays reserved until the labour bundle reloads (web)
+
+The round-11 `pendingAllocationsFromKeys` parser recovers activity/requirement/revision/date/
+worker from a retained `labourPending` key — but the coalesce key never carried
+`capacityCommitmentId`, so the moment a supplier-backed allocate op RESOLVED (left the outbox)
+its commitment draw vanished from `pendingCommitmentDraws`. For a two-person slice with a
+one-person commitment: allocate worker A with the commitment, command succeeds while
+`loadLabour()` is still in flight → the old bundle shows no committed draw, the picker re-offers
+the same commitment, and worker B is sent WITH it — a deterministic §F bound-3 409 the outbox
+drops, where own workforce would have covered.
+
+Fix — retain the ORIGINAL allocate input alongside the retained key: a new project-owned
+`labourPendingInputs: Record<coalesceKey, AllocateLabourInput>` written at dispatch, pruned to
+the still-queued outbox ops exactly when `labourPending` is rebuilt (the loadLabour bundle-apply
+and the hydration rebuild — a resolved op's input clears WITH its key, once the fresh truth is
+on screen), and torn down with the project scope. The hub's fold now takes outbox inputs for
+QUEUED keys and the recorded input for RETAINED keys (never both — a double-counted draw would
+over-reserve), with the round-11 key parser kept as the fallback for a retained key whose input
+record did not survive a mid-gap reload.
+
+Probes (RED at `6853ac5` → GREEN):
+- Screen — the finding's exact scenario: retained key + recorded input, one-person commitment
+  drawn → no "supplier capacity available" hint and worker B dispatched OWN-WORKFORCE
+  (`allocateWorker(..., null, fp)`); at `6853ac5` the button sent `'CC-1'`.
+- Screen — fallback pinned: a retained key with NO input record still books its worker out of
+  the picker via the parser (round-11 behaviour preserved).
+- Store — lifecycle: input recorded at dispatch with the commitment id; alive (with the key)
+  through the success→reload gap under a deferred readiness read; cleared WITH the key when the
+  fresh bundle applies.
+- Store — hydration: the register rebuilds from the STILL-QUEUED durable ops' full inputs.
+
+### Gates (round 13)
+
+- Web labour suites 104/104 (RED 3 at `6853ac5` → GREEN)
+- `pnpm check` EXIT 0 (web 541/541 across 42 files, API unit 680/680 across 55 files, builds clean)
+- Full integration on a pristine recreated+migrated DB: **72 files / 702 tests** passing (unchanged — this round is web-only)
+- `upgrade-proof.sh` PASSED (regression only; no migration, no server change)
+- `test:e2e:api:allmodules` **35/35** and `:outbox` **35/35**, single pass each (labour-pilot suite included; no flake rerun needed)

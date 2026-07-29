@@ -525,6 +525,44 @@ describe('Task 6 — labour single-command field ops through the write-ahead out
     expect(g.allocateLabour.mock.calls[0]![1]).toBe('idem-1');
   });
 
+  it('CODEX R13 — the retained allocate INPUT follows the key lifecycle: recorded at dispatch, alive through the success→reload gap, cleared when the fresh bundle applies', async () => {
+    // RED at 6853ac5: `labourPendingInputs` did not exist — after the op resolved, only the
+    // coalesce key survived and the key CANNOT carry `capacityCommitmentId`, so the resolved
+    // supplier draw vanished from the picker's reservations in the gap.
+    const releases: Array<() => void> = [];
+    const g = gw();
+    g.labourReadiness = vi.fn(() => new Promise((res) => { releases.push(() => res(readiness({}))); }));
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: ['labour'] });
+    s().allocateWorker('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1', 'CC-1', 'fp');
+    const key = allocateCoalesceKey('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
+    // recorded AT DISPATCH, with the full input
+    expect(s().labourPendingInputs[key]).toMatchObject({ workerId: 'WKR-1', capacityCommitmentId: 'CC-1' });
+    await settles(() => g.allocateLabour.mock.calls.length === 1);
+    await flush();
+    // the success→reload gap: the op left the outbox, the bundle has NOT applied — the key AND
+    // its input both survive so the draw stays reserved on screen
+    expect(s().outbox).toHaveLength(0);
+    expect(s().labourPending).toEqual([key]);
+    expect(s().labourPendingInputs[key]?.capacityCommitmentId).toBe('CC-1');
+    // the fresh bundle applies → key and input clear TOGETHER (the truth is on screen)
+    releases.splice(0).forEach((r) => r());
+    await settles(() => s().labourPending.length === 0);
+    expect(s().labourPendingInputs[key]).toBeUndefined();
+  });
+
+  it('CODEX R13 — hydration rebuilds the retained-input register from the STILL-QUEUED durable ops (their rows carry the full input)', () => {
+    globalThis.localStorage.clear();
+    const ck = allocateCoalesceKey('ACT-1', 'REQ-1', 1, '2026-08-01', 'WKR-1');
+    globalThis.localStorage.setItem(OUTBOX_KEY, JSON.stringify([
+      { t: 'allocateLabour', input: { activityId: 'ACT-1', requirementId: 'REQ-1', originRevision: 1, civilDate: '2026-08-01', workerId: 'WKR-1', capacityCommitmentId: 'CC-1' }, idempotencyKey: 'idem-1', coalesceKey: ck },
+    ]));
+    s()._setGateway(gw() as unknown as ApiGateway);
+    s().hydrateOutbox();
+    expect(s().labourPending).toEqual([ck]);
+    expect(s().labourPendingInputs[ck]?.capacityCommitmentId).toBe('CC-1');
+  });
+
   it('hydrateOutbox DROPS a malformed labour op (missing either key) — never an undefined pending entry', () => {
     globalThis.localStorage.clear();
     const ck = musterCoalesceKey('WKR-1', '2026-08-01', 'day');

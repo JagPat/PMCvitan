@@ -17,6 +17,7 @@ import type {
 } from '@vitan/shared';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
+import type { AllocateLabourInput } from '../data/apiGateway';
 
 /**
  * The frontend project-scope lifecycle (Phase 0 Task 2).
@@ -74,6 +75,13 @@ export interface ProjectDataState {
   // labour bundle / pending key never leaks into another project's Labour hub.
   labourView: LabourView | null;
   labourPending: string[];
+  /** Codex round 13 — the ORIGINAL allocate input per retained coalesce key. The key alone (round
+   *  11's parser) loses `capacityCommitmentId`, so in the success→reload gap a resolved
+   *  supplier-backed draw stopped reserving its commitment and a second same-slice worker was
+   *  sent WITH the drawn commitment (a deterministic drawdown 409/drop) instead of own
+   *  workforce. Lifecycle mirrors `labourPending` exactly: written at dispatch, pruned to the
+   *  still-queued outbox ops whenever `labourPending` is rebuilt, torn down with the scope. */
+  labourPendingInputs: Record<string, AllocateLabourInput>;
   /** Codex rounds 5+8 — the idempotency keys held for submitted roster onboarding forms, keyed
    *  BY FORM SIGNATURE (round 8: a single slot lost form A's key the moment form B was submitted
    *  while A was unresolved — A's retry then minted a fresh key and could duplicate the Worker).
@@ -114,6 +122,7 @@ export function emptyProjectData(): ProjectDataState {
     materialsPending: [],
     labourView: null,
     labourPending: [],
+    labourPendingInputs: {},
     labourOnboardPending: {},
     labourBindPending: {},
   };
