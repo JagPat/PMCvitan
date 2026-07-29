@@ -368,3 +368,40 @@ test('only a 404 proves a commit is absent', async () => {
     else assert.equal(verdict, null, `${label} must stay unresolved, never an absence`);
   }
 });
+
+// FINDING (#250 round 2) — GitHub posts a COMMENTED review record alongside
+// each set of inline comments. Filtering only the comments left that paired
+// record to restore the very head the comments had just lost.
+test('a paired COMMENTED review does not restore a discounted head', () => {
+  const ABSENT_A = 'd'.repeat(40);
+  const HEAD_A = 'a'.repeat(40);
+  const HEAD_B = 'b'.repeat(40);
+  const phantom = (head) => ({
+    user: { login: CODEX },
+    original_commit_id: head,
+    body: `Fresh evidence on the requested head \`${ABSENT_A}\`: no trailer.`,
+  });
+  const paired = (head, state) => ({ user: { login: CODEX }, commit_id: head, state });
+
+  const discounted = assessConvergence({
+    comments: [phantom(HEAD_A), phantom(HEAD_B)],
+    reviews: [paired(HEAD_A, 'COMMENTED'), paired(HEAD_B, 'COMMENTED')],
+    headMessage: 'fix: correction',
+    changedFiles: ['scripts/x.mjs'],
+    missingCommits: new Set([ABSENT_A]),
+  });
+  assert.equal(discounted.findingHeadCount, 0);
+  assert.equal(discounted.required, false);
+
+  // CHANGES_REQUESTED is evidence of its own and still counts its head.
+  const blocking = assessConvergence({
+    comments: [phantom(HEAD_A), phantom(HEAD_B)],
+    reviews: [paired(HEAD_A, 'CHANGES_REQUESTED'), paired(HEAD_B, 'CHANGES_REQUESTED')],
+    headMessage: 'fix: correction',
+    changedFiles: ['scripts/x.mjs'],
+    missingCommits: new Set([ABSENT_A]),
+  });
+  assert.equal(blocking.findingHeadCount, 2);
+  assert.equal(blocking.required, true);
+});
+

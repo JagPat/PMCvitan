@@ -48,7 +48,8 @@ const FULL_SHA = /\b[0-9a-f]{40}\b/gu;
 // permalink embeds the head the reviewer was given, so leaving it in would make
 // every finding look like it discusses the real head. Stripping URLs first
 // leaves only the SHAs the finding's prose actually reasons about.
-const URL_TOKEN = /\[[^\]]*\]\([^)]*\)|https?:\/\/\S+/gu;
+const MARKDOWN_LINK = /\[([^\]]*)\]\([^)]*\)/gu;
+const BARE_URL = /https?:\/\/\S+/gu;
 
 // A 40-character hex string is not necessarily a commit. Checksums, object ids,
 // storage keys and test fixtures have the same shape, and the commits endpoint
@@ -56,11 +57,16 @@ const URL_TOKEN = /\[[^\]]*\]\([^)]*\)|https?:\/\/\S+/gu;
 // citation would let a real finding ABOUT such a value be discounted as
 // "absent commit". A token counts only when the prose immediately before it
 // says it is a commit.
+// `object` is deliberately ABSENT: "the object key <hex>" is precisely the
+// non-commit citation this rule exists to protect, and git's own object
+// vocabulary would have swallowed it.
 const COMMIT_CONTEXT =
-  /\b(?:commit|head|sha|revision|rev|ref|parent|merge|object|git(?:\s+(?:show|log|cat-file|rev-parse|interpret-trailers))?)\b[^\n]{0,80}$/iu;
+  /\b(?:commit|head|sha|revision|rev|ref|parent|merge|git(?:\s+(?:show|log|cat-file|rev-parse|interpret-trailers))?)\b[^\n]{0,80}$/iu;
 
 function scanFullHex(body) {
-  const prose = String(body ?? '').replace(URL_TOKEN, ' ');
+  const prose = String(body ?? '')
+    .replace(MARKDOWN_LINK, ' $1 ')
+    .replace(BARE_URL, ' ');
   const inCommitContext = new Set();
   const bare = new Set();
   for (const match of prose.matchAll(FULL_SHA)) {

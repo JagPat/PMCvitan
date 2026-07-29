@@ -398,6 +398,15 @@ test('bare hex data is not a commit citation and never permits a dismissal', () 
     'a finding about hex DATA must survive even when that value 404s as a commit',
   );
 
+  // FINDING (#250 round 2) — `object` was in the context list, so "the object
+  // key <hex> was deleted before commit" read as a commit citation and the
+  // finding could be dismissed. An object key is exactly what the rule protects.
+  const objectKey = `The object key ${CHECKSUM} is deleted before the commit lands, `
+    + 'so the evidence photo is gone.';
+  assert.deepEqual(citedCommits(objectKey), [], 'an object key is not a commit citation');
+  assert.equal(citesBareHex(objectKey), true);
+  assert.equal(isUnfoundedFinding(codexComment(objectKey), new Set([CHECKSUM])), false);
+
   // Commit context is what makes a token a citation.
   for (const phrase of ['head', 'commit', 'revision', 'git show -s', 'merge parent']) {
     assert.deepEqual(
@@ -489,3 +498,20 @@ test('a Codex review record still blocks when it carried no inline findings', ()
   assert.equal(result.state, 'changes_required');
   assert.equal(result.detail, 'Codex submitted a current-head review');
 });
+
+// FINDING (#250 round 2) — the URL stripper removed whole markdown links, so a
+// finding naming the absent commit in LINK TEXT lost its citation entirely and
+// could never be discounted. Only the URL target should be ignored.
+test('a commit named in markdown link text is still a citation', () => {
+  const linked = `Fresh evidence on [commit ${ABSENT}](https://github.com/o/r/commit/${ABSENT}) `
+    + 'shows no trailer.';
+  assert.deepEqual(citedCommits(linked), [ABSENT]);
+  assert.equal(isUnfoundedFinding(codexComment(linked), new Set([ABSENT])), true);
+
+  // The permalink's own SHA lives in the TARGET, which is still ignored — that
+  // is what stops a permalink from disguising a fabricated citation.
+  const permalinked = `${PHANTOM_TRAILER_BODY}\n\n`
+    + `[AGENTS.md:L92-L95](https://github.com/JagPat/PMCvitan/blob/${HEAD}/AGENTS.md#L92-L95)`;
+  assert.deepEqual(citedCommits(permalinked), [ABSENT]);
+});
+
