@@ -563,3 +563,87 @@ test('a commit word binds only to the SHA it introduces', () => {
     'a real finding about the key survives even when both lookups 404',
   );
 });
+
+// FINDING (#250 round 4 P2) — the context words were singular only, so
+// "commits <a> and <b>" — the natural way to name two of them — left the second
+// bare, and the whole finding then blocked on a citation nobody could inspect.
+test('plural commit words introduce every SHA they name', () => {
+  const A = 'd'.repeat(40);
+  const B = 'e'.repeat(40);
+  const plural = `The convergence trailer is missing on commits ${A} and ${B}.`;
+  assert.deepEqual(citedCommits(plural), [A, B]);
+  assert.equal(citesBareHex(plural), false, 'both are citations, neither is data');
+  assert.equal(isUnfoundedFinding(codexComment(plural), new Set([A, B])), true);
+
+  for (const phrase of ['heads', 'shas', 'revisions', 'refs', 'merge parents']) {
+    assert.deepEqual(
+      citedCommits(`the ${phrase} ${A} and ${B} disagree`),
+      [A, B],
+      `"${phrase}" must introduce both citations`,
+    );
+  }
+
+  // The plural widened the window, so the sentence bound is what keeps it
+  // honest: a digest in the NEXT sentence is data, not a third commit.
+  const KEY = 'f'.repeat(40);
+  const spillover = `${plural} The frozen digest ${KEY} no longer matches.`;
+  assert.deepEqual(citedCommits(spillover), [A, B]);
+  assert.equal(citesBareHex(spillover), true);
+  assert.equal(
+    isUnfoundedFinding(codexComment(spillover), new Set([A, B, KEY])),
+    false,
+    'the digest keeps the finding founded',
+  );
+
+  // The list continuation is symmetric: a plural DATA word keeps its whole list
+  // data, so both halves of "the digests <a> and <b>" still block a dismissal.
+  const dataList = `The frozen digests ${A} and ${B} no longer match the recomputed values.`;
+  assert.deepEqual(citedCommits(dataList), []);
+  assert.equal(citesBareHex(dataList), true);
+  assert.equal(isUnfoundedFinding(codexComment(dataList), new Set([A, B])), false);
+
+  // And a noun phrase between two SHAs is not list glue, so the second is
+  // judged on its own context — the round-3 binding rule is intact.
+  const notAList = `On commits ${A} and ${B}, the object key ${KEY} was deleted.`;
+  assert.deepEqual(citedCommits(notAList), [A, B]);
+  assert.equal(citesBareHex(notAList), true);
+});
+
+// FINDING (#250 round 4 P1) — the container filter dropped a review record
+// whole once its comments were dismissed, without reading `body`. Codex writes
+// its own findings there, and those cite no absent SHA at all.
+test('a discounted container keeps the finding its own body carries', () => {
+  const CONTAINER = 987;
+  const carrying = classifyCodexState(input({
+    comments: [codexComment(PHANTOM_WITH_PERMALINK, { pull_request_review_id: CONTAINER })],
+    reviews: [{
+      user: { login: CODEX_LOGIN },
+      commit_id: HEAD,
+      id: CONTAINER,
+      state: 'COMMENTED',
+      body: '💡 Codex Review\n\nHere are some automated review suggestions for this '
+        + 'pull request.\n\n**P1** `gateWatermarks` clears the watermark for every '
+        + 'name when one attempt is undecidable.',
+    }],
+    missingCommits: new Set([ABSENT]),
+  }));
+  assert.equal(carrying.state, 'changes_required', 'the body is a finding of its own');
+  assert.equal(carrying.dismissedCount, 1, 'the comment is still reported dismissed');
+
+  // Boilerplate alone is not a finding: the wrapper carries nothing its
+  // comments did not, so it goes with them.
+  const wrapperOnly = classifyCodexState(input({
+    comments: [codexComment(PHANTOM_WITH_PERMALINK, { pull_request_review_id: CONTAINER })],
+    reviews: [{
+      user: { login: CODEX_LOGIN },
+      commit_id: HEAD,
+      id: CONTAINER,
+      state: 'COMMENTED',
+      body: '💡 Codex Review\n\nHere are some automated review suggestions for this '
+        + `pull request.\n\n**Reviewed commit:** \`${HEAD}\``,
+    }],
+    missingCommits: new Set([ABSENT]),
+  }));
+  assert.equal(wrapperOnly.state, 'clear');
+  assert.equal(wrapperOnly.dismissedCount, 1);
+});

@@ -131,3 +131,59 @@ record was discounted while carrying no `pull_request_review_id`, which the exac
 refuses. That was a fixture modelling GitHub's payload incompletely, and the stricter rule caught
 it — recorded here rather than quietly amended.
 
+
+## Round 4 (head `d4ff71f`) — three findings, one shared rule
+
+All three are correct. Two of them are the same precondition (d) the packet already names —
+*one test must govern every counting surface* — arriving through the two places that had not yet
+been made to share it. That is the argument for fixing the cause rather than the instances.
+
+**(d) the classifier and the convergence counter must ask the same question.** Round 3 matched
+the container by `pull_request_review_id` in `classifyCodexState`, but `codexFindingHeads` still
+suppressed by HEAD: any head with a dismissed comment lost every `COMMENTED` record on it, so a
+standalone review note vanished from convergence history even though the gate itself would have
+counted it. The two surfaces now call the same exported pair — `discountedReviewIds` and
+`reviewSurvivesDismissal` — so they cannot answer differently. This is the structural remedy;
+round 3's fix to one caller was the instance.
+
+**(c) a container is discounted for what it carried, not for existing.** Even matched by id, a
+review record was dropped whole without reading `body`. Codex writes findings there directly, and
+those cite no absent SHA at all. `reviewCarriesOwnFinding` strips only the known boilerplate — the
+`<details>` block, the "Codex Review" heading, the standard preamble, the `Reviewed commit:` line
+— and treats anything left as substantive. An unrecognised body is evidence, so the failure mode
+is a finding that blocks when it need not, never one that disappears.
+
+**(a) a plural word introduces a list.** `\bcommit\b` does not match "commits", so
+"the trailer is missing on commits `<a>` and `<b>`" — the natural way to name two — left `<b>`
+bare, and `citesBareHex` then kept the whole finding blocking on a citation nobody could inspect.
+Pluralising the vocabulary alone does not fix it: round 3's window reset starts each token's
+context after the previous token, so `<b>`'s window is just " and ". The rule is therefore about
+the text BETWEEN two tokens — punctuation and a conjunction and nothing else is a list, and the
+classification carries forward. A noun phrase ("on commit `<a>`, the object key `<b>`") is not,
+so round 3's binding survives intact, and the continuation is symmetric: "the digests `<a>` and
+`<b>`" keeps both halves as data.
+
+Pluralising also widened the proximity window enough to reach across a sentence break, which the
+existing bare-hex probe caught: "…the two recorded finding heads report X. The digest `<hex>` is
+stale." read the digest as a commit. The window now stops at the last sentence terminator. That
+cut errs the safe way — a token that loses its context becomes bare hex, which BLOCKS a dismissal
+rather than permitting one.
+
+### Reproduce-first
+
+Each fix was removed in isolation and only its own probe failed:
+
+| Finding | Fix removed | RED probe |
+|---|---|---|
+| P1 container body | `reviewCarriesOwnFinding` arm | `a discounted container keeps the finding its own body carries` |
+| P2 standalone COMMENTED | `reviewSurvivesDismissal` in `codexFindingHeads` | `a paired COMMENTED review does not restore a discounted head` + `finding history includes blocking Codex review records without inline comments` |
+| P2 plural citations | plural vocabulary + list continuation | `plural commit words introduce every SHA they name` |
+
+`scripts/autonomous-review-state.test.mjs` 24/24 and `scripts/review-efficiency.test.mjs` 17/17
+(41 together); `pnpm test:automation` 90/90, up from 88; `pnpm check` exit 0.
+
+The round-2 convergence fixture needed the same correction round 3 recorded for the classifier
+fixture: it modelled paired review records with no `id` and comments with no
+`pull_request_review_id`, which the id-matched rule refuses. GitHub sends both. Corrected here
+and recorded rather than quietly amended, and a third case pins the behaviour the finding asked
+for — an unlinked record keeps its head.

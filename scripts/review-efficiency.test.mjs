@@ -376,16 +376,28 @@ test('a paired COMMENTED review does not restore a discounted head', () => {
   const ABSENT_A = 'd'.repeat(40);
   const HEAD_A = 'a'.repeat(40);
   const HEAD_B = 'b'.repeat(40);
-  const phantom = (head) => ({
+  const REVIEW_A = 9001;
+  const REVIEW_B = 9002;
+  // GitHub links the two: every inline comment carries the `id` of the review
+  // record that delivered it. Modelling that linkage is the whole point — the
+  // record is dropped because ITS comments were dismissed, never because the
+  // head happened to have some.
+  const phantom = (head, reviewId) => ({
     user: { login: CODEX },
     original_commit_id: head,
+    pull_request_review_id: reviewId,
     body: `Fresh evidence on the requested head \`${ABSENT_A}\`: no trailer.`,
   });
-  const paired = (head, state) => ({ user: { login: CODEX }, commit_id: head, state });
+  const paired = (head, state, id) => ({
+    user: { login: CODEX },
+    commit_id: head,
+    state,
+    id,
+  });
 
   const discounted = assessConvergence({
-    comments: [phantom(HEAD_A), phantom(HEAD_B)],
-    reviews: [paired(HEAD_A, 'COMMENTED'), paired(HEAD_B, 'COMMENTED')],
+    comments: [phantom(HEAD_A, REVIEW_A), phantom(HEAD_B, REVIEW_B)],
+    reviews: [paired(HEAD_A, 'COMMENTED', REVIEW_A), paired(HEAD_B, 'COMMENTED', REVIEW_B)],
     headMessage: 'fix: correction',
     changedFiles: ['scripts/x.mjs'],
     missingCommits: new Set([ABSENT_A]),
@@ -395,13 +407,35 @@ test('a paired COMMENTED review does not restore a discounted head', () => {
 
   // CHANGES_REQUESTED is evidence of its own and still counts its head.
   const blocking = assessConvergence({
-    comments: [phantom(HEAD_A), phantom(HEAD_B)],
-    reviews: [paired(HEAD_A, 'CHANGES_REQUESTED'), paired(HEAD_B, 'CHANGES_REQUESTED')],
+    comments: [phantom(HEAD_A, REVIEW_A), phantom(HEAD_B, REVIEW_B)],
+    reviews: [
+      paired(HEAD_A, 'CHANGES_REQUESTED', REVIEW_A),
+      paired(HEAD_B, 'CHANGES_REQUESTED', REVIEW_B),
+    ],
     headMessage: 'fix: correction',
     changedFiles: ['scripts/x.mjs'],
     missingCommits: new Set([ABSENT_A]),
   });
   assert.equal(blocking.findingHeadCount, 2);
   assert.equal(blocking.required, true);
+
+  // FINDING (#250 round 4 P2) — the dismissal used to travel by HEAD, so a
+  // COMMENTED review that carried nothing dismissed lost its head too. A record
+  // with no discounted comments of its own is untouched evidence.
+  const standalone = assessConvergence({
+    comments: [phantom(HEAD_A, REVIEW_A)],
+    reviews: [
+      paired(HEAD_A, 'COMMENTED', REVIEW_A),
+      paired(HEAD_A, 'COMMENTED', 9003),
+    ],
+    headMessage: 'fix: correction',
+    changedFiles: ['scripts/x.mjs'],
+    missingCommits: new Set([ABSENT_A]),
+  });
+  assert.equal(
+    standalone.findingHeadCount,
+    1,
+    'an unlinked review record is evidence and keeps its head',
+  );
 });
 

@@ -12,7 +12,11 @@ export const REQUIRED_INVARIANTS = [
   'ui-server-parity',
 ];
 
-import { isUnfoundedFinding } from './autonomous-review-state.mjs';
+import {
+  discountedReviewIds,
+  isUnfoundedFinding,
+  reviewSurvivesDismissal,
+} from './autonomous-review-state.mjs';
 
 const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
@@ -97,30 +101,24 @@ export function assessReviewScope(
 
 export function codexFindingHeads(comments, reviews = [], missingCommits = new Set()) {
   const heads = new Set();
-  const headsWithComments = new Set();
   for (const comment of comments ?? []) {
     if (comment?.user?.login !== CODEX_LOGIN) continue;
     const head = comment.original_commit_id ?? comment.commit_id;
     if (typeof head !== 'string' || head.length === 0) continue;
-    headsWithComments.add(head);
     // A finding argued entirely from commits this repository does not contain
     // never made its head a finding head, so it cannot advance the convergence
     // threshold either.
     if (!isUnfoundedFinding(comment, missingCommits)) heads.add(head);
   }
+  // The SAME rule the current-head classifier applies, not a head-level
+  // approximation of it: only the record that carried dismissed comments, and
+  // carries nothing itself, goes with them.
+  const discountedIds = discountedReviewIds(comments, missingCommits);
   for (const review of reviews ?? []) {
     if (review?.user?.login !== CODEX_LOGIN) continue;
     const head = review.commit_id;
     if (typeof head !== 'string' || head.length === 0) continue;
-    // A CHANGES_REQUESTED record is evidence in its own right. A COMMENTED one
-    // is the container GitHub posts alongside inline comments, so once every
-    // comment on that head is discounted it carries nothing — otherwise the
-    // paired record would silently restore the head the comments just lost. A
-    // record with no inline comments at all still counts.
-    if (String(review.state ?? '').toUpperCase() === 'CHANGES_REQUESTED'
-      || !headsWithComments.has(head)) {
-      heads.add(head);
-    }
+    if (reviewSurvivesDismissal(review, discountedIds)) heads.add(head);
   }
   return [...heads];
 }

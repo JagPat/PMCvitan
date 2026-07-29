@@ -61,7 +61,24 @@ const BARE_URL = /https?:\/\/\S+/gu;
 // non-commit citation this rule exists to protect, and git's own object
 // vocabulary would have swallowed it.
 const COMMIT_CONTEXT =
-  /\b(?:commit|head|sha|revision|rev|ref|parent|merge|git(?:\s+(?:show|log|cat-file|rev-parse|interpret-trailers))?)\b[^\n]{0,80}$/iu;
+  /\b(?:commits?|heads?|shas?|revisions?|revs?|refs?|parents?|merges?|git(?:\s+(?:show|log|cat-file|rev-parse|interpret-trailers))?)\b[^\n]{0,80}$/iu;
+
+// A citation is a PHRASE, not a paragraph. "…the two recorded finding heads
+// report X. The digest <hex> is stale." names a digest, and only a window that
+// ran back across the sentence break would find "heads" and read it as a commit
+// citation. Cutting at the last sentence terminator keeps the proximity rule
+// honest, and it errs the safe way: a token that loses its context becomes BARE
+// hex, which blocks a dismissal rather than permitting one.
+const SENTENCE_BREAK = /[.!?]\s|\n/gu;
+
+// A plural word introduces a LIST, and the window reset below would otherwise
+// hand the second entry of "commits <a> and <b>" an empty context. What makes
+// it a list is the text BETWEEN the two tokens: punctuation and a conjunction,
+// nothing else. "on commit <a>, the object key <b>" carries a noun phrase
+// instead, so it does not continue — which is exactly what keeps a real finding
+// about the key alive. The continuation copies whichever classification the
+// previous token got, so "the digests <a> and <b>" stays data.
+const LIST_GLUE = /^[\s,;`'"()[\]]*(?:and|or|&|plus)?[\s,;`'"()[\]]*$/iu;
 
 function scanFullHex(body) {
   const prose = String(body ?? '')
@@ -74,9 +91,15 @@ function scanFullHex(body) {
   // "on commit <a>, the object key <b> was deleted" reuses "commit" for <b> and
   // a real finding about the key could be discounted.
   let windowStart = 0;
+  let previous = null;
   for (const match of prose.matchAll(FULL_SHA)) {
     const preceding = prose.slice(windowStart, match.index);
-    (COMMIT_CONTEXT.test(preceding) ? inCommitContext : bare).add(match[0]);
+    const continuesList = previous !== null && LIST_GLUE.test(preceding);
+    const cited = continuesList
+      ? previous
+      : COMMIT_CONTEXT.test(preceding.split(SENTENCE_BREAK).at(-1));
+    (cited ? inCommitContext : bare).add(match[0]);
+    previous = cited;
     windowStart = match.index + match[0].length;
   }
   return { inCommitContext: [...inCommitContext], bare: [...bare] };
@@ -135,6 +158,56 @@ export function isUnfoundedFinding(comment, missingCommits) {
   if (citesBareHex(comment?.body)) return false;
   const missing = missingCommits instanceof Set ? missingCommits : new Set();
   return cited.every((sha) => missing.has(sha));
+}
+
+// Codex wraps its inline comments in a review record whose body is a fixed
+// preamble. That wrapper carries nothing the comments do not; anything Codex
+// writes ITSELF in the body is a finding in its own right and must survive the
+// comments' dismissal. Stripping only the known boilerplate is what separates
+// the two — an unrecognised body is treated as substantive.
+const CODEX_BOILERPLATE = [
+  /<details>[\s\S]*?<\/details>/giu,
+  /#{0,6}\s*\u{1F4A1}?\s*Codex Review/giu,
+  /Here are some automated review suggestions for this pull request\./giu,
+  /\*\*Reviewed commit:\*\*\s*`?[0-9a-f]{7,40}`?/giu,
+];
+
+export function reviewCarriesOwnFinding(review) {
+  let body = String(review?.body ?? '');
+  for (const pattern of CODEX_BOILERPLATE) body = body.replace(pattern, ' ');
+  return body.trim().length > 0;
+}
+
+/**
+ * The review records the dismissal takes with it.
+ *
+ * A record qualifies only when it CARRIED dismissed comments (matched by
+ * `pull_request_review_id`, never inferred from the head having comments), it
+ * did not request changes, it has no surviving comment of its own, and its body
+ * adds nothing beyond the boilerplate. Every other record is evidence and
+ * blocks. Both the current-head classifier and convergence counting call this,
+ * so the two cannot answer the question differently.
+ */
+export function discountedReviewIds(comments, missingCommits) {
+  const carried = new Map();
+  for (const comment of comments ?? []) {
+    if (comment?.user?.login !== CODEX_LOGIN) continue;
+    const id = comment?.pull_request_review_id;
+    if (id === undefined || id === null) continue;
+    const founded = !isUnfoundedFinding(comment, missingCommits);
+    carried.set(id, (carried.get(id) ?? false) || founded);
+  }
+  const discounted = new Set();
+  for (const [id, hasFounded] of carried) {
+    if (!hasFounded) discounted.add(id);
+  }
+  return discounted;
+}
+
+export function reviewSurvivesDismissal(review, discountedIds) {
+  if (String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED') return true;
+  if (reviewCarriesOwnFinding(review)) return true;
+  return !discountedIds.has(review?.id);
 }
 
 export function isEligiblePullRequest(pullRequest) {
@@ -213,16 +286,10 @@ export function classifyCodexState({
   // comments at all. A record that requests changes is evidence in its own
   // right; so is a standalone COMMENTED note whose body says something the
   // dismissed comments did not. Everything else survives the dismissal.
-  const dismissedContainerIds = new Set(
-    postedOnHead
-      .filter((comment) => isUnfoundedFinding(comment, missingCommits))
-      .map((comment) => comment?.pull_request_review_id)
-      .filter((id) => id !== undefined && id !== null),
+  const discountedIds = discountedReviewIds(postedOnHead, missingCommits);
+  const survivingReviews = currentHeadReviews.filter(
+    (review) => reviewSurvivesDismissal(review, discountedIds),
   );
-  const survivingReviews = currentHeadReviews.filter((review) => {
-    if (String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED') return true;
-    return !dismissedContainerIds.has(review?.id);
-  });
   if (survivingReviews.length > 0) {
     const blocking = survivingReviews.some(
       (review) => String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED',
