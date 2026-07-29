@@ -14,7 +14,7 @@ phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
 task: 6
 task_state: merged
-work_item: none
+work_item: maintenance-queue
 reviewed_merge: 67e7a00
 open_pr: none
 next_task: phase-5-planning
@@ -34,8 +34,10 @@ unaffected (§D). Phase 5 has NOT begun. Its planning is the recorded
 `next_task`, gated by the named `blocking_directive:
 phase-5-planning-approval` (defined under **Blocking directives** below) —
 the machine-actionable form of the project owner's standing phase gate. The
-runner does not idle on it: the standing duties continue and the directive
-clears only on the owner's explicit approval.
+runner's concrete work item meanwhile is the **Maintenance queue**
+(`work_item: maintenance-queue`): already-authorized upkeep of delivered
+scope that no phase directive blocks. The directive clears only on the
+owner's explicit approval.
 
 ## Phase 4 — labour readiness
 
@@ -69,7 +71,10 @@ machine-actionable by definition: the runner never idles or polls on a
 directive — it continues the standing duties (shepherd every open PR through
 the exact-head `codex-current-head` gate, answer post-merge review findings
 with focused fix-forward corrections, keep CI and the gate battery green) and
-starts `next_task` the moment the directive clears.
+starts `next_task` the moment the directive clears. When no PR is open and no
+correction is active, the concrete work item is the **Maintenance queue**
+below — a directive gates only `next_task`, never the queue, so no reachable
+state leaves the runner without a machine-actionable item.
 
 - `phase-5-planning-approval` — the project owner's standing phase gate:
   Phase-5 planning starts only on JagPat's explicit GO, the same gate every
@@ -78,8 +83,31 @@ starts `next_task` the moment the directive clears.
   GO). This is a **scope-authorization** gate, not a review gate: no open PR
   waits on it, and it never substitutes for — or adds to — the exact-head
   review evidence (`AGENTS.md` §Autonomy still holds for every PR). It gates
-  only which NEW work the runner may begin. Cleared by: an explicit Phase-5
-  approval from the project owner recorded in the session or repository.
+  only which NEW work the runner may begin. `docs/AUTONOMOUS_LOOP.md` places
+  the owner as able to "interrupt or redirect the loop" without being a
+  technical gate: this directive is exactly such a recorded redirection — it
+  gates new-phase scope only and never blocks a PR, a merge, or the
+  Maintenance queue. Cleared by: an explicit Phase-5 approval from the
+  project owner recorded in the session or repository.
+
+## Maintenance queue
+
+The concrete work source whenever no PR is open and no correction directive
+is active — the runner is never without a machine-actionable item, regardless
+of any phase gate. Queue items are already-authorized upkeep of delivered
+scope (never new product scope), and each rides the same draft → CI →
+exact-head Codex gate as feature work. Work them top-down, one focused PR per
+item:
+
+1. `dependabot-security-updates` — GitHub reports open vulnerability alerts
+   on the default branch (5 as of 2026-07-29: 3 high, 1 moderate, 1 low).
+   Raise the affected dependencies with the full gate battery; one PR per
+   coherent dependency group.
+2. `e2e-flake-burndown` — the documented flake families the review packets
+   record honestly (`daily-log-lost-response` visibility, the
+   timing-sensitive `pillar-chain` inspection steps,
+   `inspections-module-query`, `project-scope` browser history). Convert
+   each to a deterministic wait — reproduce-first, one family per PR.
 
 ## Rules for the runner
 
@@ -96,7 +124,8 @@ starts `next_task` the moment the directive clears.
   planning item and record that phase's approval gate as the named
   `blocking_directive` (see **Blocking directives**). Move to the next phase's
   plan and start at its task 1 only once that directive is cleared; until then
-  the loop stays live on the standing duties — it never idles, and it never
-  starts unapproved phase work.
+  the loop stays live on the standing duties and the **Maintenance queue**
+  (`work_item: maintenance-queue`) — it never idles, and it never starts
+  unapproved phase work.
 - Update this file in the same PR as the work it describes, so state and code
   never disagree on `main`.
