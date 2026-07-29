@@ -55,30 +55,45 @@ const BARE_URL = /https?:\/\/\S+/gu;
 // storage keys and test fixtures have the same shape, and the commits endpoint
 // answers 404 for every one of them — so treating any hex token as a commit
 // citation would let a real finding ABOUT such a value be discounted as
-// "absent commit". A token counts only when the prose immediately before it
-// says it is a commit.
-// `object` is deliberately ABSENT: "the object key <hex>" is precisely the
-// non-commit citation this rule exists to protect, and git's own object
-// vocabulary would have swallowed it.
-const COMMIT_CONTEXT =
-  /\b(?:commits?|heads?|shas?|revisions?|revs?|refs?|parents?|merges?|git(?:\s+(?:show|log|cat-file|rev-parse|interpret-trailers))?)\b[^\n]{0,80}$/iu;
+// "absent commit".
+//
+// Deciding that question from prose PROXIMITY does not converge. Rounds 3, 4
+// and 5 each found another sentence where a nearby commit word bound the wrong
+// token ("the object key <b>", "git object <b>", "…head status is clear, but
+// the digest <b>"). Widening the window admits more of them; narrowing it drops
+// real citations. The shape of the rule was the defect, not its width.
+//
+// So the rule is now two-sided, and the DATA side wins:
+//
+//   1. A DATA word adjacent to the token vetoes it outright. This list is
+//      finite and enumerable — the things a 40-hex value actually is when it is
+//      not a commit — and it is checked FIRST, so no positive rule can override
+//      it.
+//   2. Otherwise the token must be INTRODUCED: the commit word sits adjacent,
+//      with only quoting and whitespace between. Not "somewhere in the
+//      sentence" — adjacent.
+//
+// Anything else is bare hex, and bare hex BLOCKS a dismissal. Every remaining
+// ambiguity therefore keeps the finding.
+const DATA_INTRODUCER =
+  /\b(?:digests?|checksums?|hash(?:es)?|objects?|blobs?|trees?|keys?|fingerprints?|ids?|identifiers?|values?|constants?|strings?)\s*[`'"([]*\s*$/iu;
 
-// A citation is a PHRASE, not a paragraph. "…the two recorded finding heads
-// report X. The digest <hex> is stale." names a digest, and only a window that
-// ran back across the sentence break would find "heads" and read it as a commit
-// citation. Cutting at the last sentence terminator keeps the proximity rule
-// honest, and it errs the safe way: a token that loses its context becomes BARE
-// hex, which blocks a dismissal rather than permitting one.
-const SENTENCE_BREAK = /[.!?]\s|\n/gu;
+const COMMIT_INTRODUCER =
+  /\b(?:commits?|heads?|shas?|revisions?|revs?|refs?|parents?|merge\s+parents?)\s*[`'"([]*\s*$/iu;
 
-// A plural word introduces a LIST, and the window reset below would otherwise
-// hand the second entry of "commits <a> and <b>" an empty context. What makes
-// it a list is the text BETWEEN the two tokens: punctuation and a conjunction,
-// nothing else. "on commit <a>, the object key <b>" carries a noun phrase
-// instead, so it does not continue — which is exactly what keeps a real finding
-// about the key alive. The continuation copies whichever classification the
-// previous token got, so "the digests <a> and <b>" stays data.
-const LIST_GLUE = /^[\s,;`'"()[\]]*(?:and|or|&|plus)?[\s,;`'"()[\]]*$/iu;
+// A git command's argument IS a revision by construction, so this arm is the
+// one place bounded proximity stays sound — the flags and format strings the
+// phantom findings quote sit between the command and its SHA. Bare `git` is NOT
+// accepted: "git object <hex>" and "git blob <hex>" name objects, not commits,
+// and the DATA veto above runs first regardless.
+const GIT_REVISION_COMMAND =
+  /\bgit\s+(?:show|log|cat-file|rev-parse|interpret-trailers)\b[^\n]{0,60}$/iu;
+
+// A plural word introduces a LIST, so "commits <a> and <b>" must carry the
+// classification forward. What makes it a list is an actual CONJUNCTION between
+// the two tokens — a bare comma is not enough, because "on commit <a>, <b> is
+// the object key" separates a citation from data with exactly that comma.
+const LIST_GLUE = /^[\s,;`'"()[\]]*\b(?:and|or|plus)\b[\s,;`'"()[\]]*$|^[\s`'"()[\]]*&[\s`'"()[\]]*$/iu;
 
 function scanFullHex(body) {
   const prose = String(body ?? '')
@@ -94,10 +109,14 @@ function scanFullHex(body) {
   let previous = null;
   for (const match of prose.matchAll(FULL_SHA)) {
     const preceding = prose.slice(windowStart, match.index);
-    const continuesList = previous !== null && LIST_GLUE.test(preceding);
-    const cited = continuesList
-      ? previous
-      : COMMIT_CONTEXT.test(preceding.split(SENTENCE_BREAK).at(-1));
+    let cited;
+    if (DATA_INTRODUCER.test(preceding)) {
+      cited = false;
+    } else if (previous !== null && LIST_GLUE.test(preceding)) {
+      cited = previous;
+    } else {
+      cited = COMMIT_INTRODUCER.test(preceding) || GIT_REVISION_COMMAND.test(preceding);
+    }
     (cited ? inCommitContext : bare).add(match[0]);
     previous = cited;
     windowStart = match.index + match[0].length;
@@ -147,15 +166,25 @@ export function citesBareHex(body) {
  * does not contain any commit the finding argues from.
  */
 export function isUnfoundedFinding(comment, missingCommits) {
-  const cited = citedCommits(comment?.body);
+  return isUnfoundedText(comment?.body, postedAgainst(comment), missingCommits);
+}
+
+/**
+ * The same test, applied to any finding text — an inline comment's body or a
+ * review record's own body. Both are findings; only their envelope differs, and
+ * a rule that reached one but not the other would keep blocking on exactly the
+ * fabricated citation this exists to discount.
+ */
+export function isUnfoundedText(body, ownHead, missingCommits) {
+  const cited = citedCommits(body);
   if (cited.length === 0) return false;
   // Its OWN reviewed head, not some ambient expectation: this is asked of
-  // historical comments too, and each one's claim is about the head it was
+  // historical findings too, and each one's claim is about the head it was
   // posted against.
-  if (cited.includes(postedAgainst(comment))) return false;
-  // The body also reasons about a 40-hex value that is not a commit, so an
+  if (ownHead !== undefined && ownHead !== null && cited.includes(ownHead)) return false;
+  // The text also reasons about a 40-hex value that is not a commit, so an
   // absent-commit lookup cannot establish that the finding is about nothing.
-  if (citesBareHex(comment?.body)) return false;
+  if (citesBareHex(body)) return false;
   const missing = missingCommits instanceof Set ? missingCommits : new Set();
   return cited.every((sha) => missing.has(sha));
 }
@@ -165,17 +194,30 @@ export function isUnfoundedFinding(comment, missingCommits) {
 // writes ITSELF in the body is a finding in its own right and must survive the
 // comments' dismissal. Stripping only the known boilerplate is what separates
 // the two — an unrecognised body is treated as substantive.
+//
+// The `<details>` pattern is pinned to the KNOWN wrapper by its summary text. A
+// blanket `<details>…</details>` strip removed collapsed findings too, which
+// could clear a head on a finding that cites no SHA at all.
 const CODEX_BOILERPLATE = [
-  /<details>[\s\S]*?<\/details>/giu,
+  /<details>\s*<summary>[^<]*About Codex in GitHub[\s\S]*?<\/details>/giu,
   /#{0,6}\s*\u{1F4A1}?\s*Codex Review/giu,
   /Here are some automated review suggestions for this pull request\./giu,
   /\*\*Reviewed commit:\*\*\s*`?[0-9a-f]{7,40}`?/giu,
 ];
 
-export function reviewCarriesOwnFinding(review) {
+export function reviewBodyFinding(review) {
   let body = String(review?.body ?? '');
   for (const pattern of CODEX_BOILERPLATE) body = body.replace(pattern, ' ');
-  return body.trim().length > 0;
+  return body.trim();
+}
+
+export function reviewCarriesOwnFinding(review, missingCommits) {
+  const body = reviewBodyFinding(review);
+  if (body.length === 0) return false;
+  // A review body argues from commits exactly as an inline comment does, so the
+  // same absent-SHA test decides it. Without this the wrapper kept blocking on
+  // the very citation the comments were discounted for.
+  return !isUnfoundedText(body, review?.commit_id, missingCommits);
 }
 
 /**
@@ -204,9 +246,9 @@ export function discountedReviewIds(comments, missingCommits) {
   return discounted;
 }
 
-export function reviewSurvivesDismissal(review, discountedIds) {
+export function reviewSurvivesDismissal(review, discountedIds, missingCommits) {
   if (String(review?.state ?? '').toUpperCase() === 'CHANGES_REQUESTED') return true;
-  if (reviewCarriesOwnFinding(review)) return true;
+  if (reviewCarriesOwnFinding(review, missingCommits)) return true;
   return !discountedIds.has(review?.id);
 }
 
@@ -288,7 +330,7 @@ export function classifyCodexState({
   // dismissed comments did not. Everything else survives the dismissal.
   const discountedIds = discountedReviewIds(postedOnHead, missingCommits);
   const survivingReviews = currentHeadReviews.filter(
-    (review) => reviewSurvivesDismissal(review, discountedIds),
+    (review) => reviewSurvivesDismissal(review, discountedIds, missingCommits),
   );
   if (survivingReviews.length > 0) {
     const blocking = survivingReviews.some(

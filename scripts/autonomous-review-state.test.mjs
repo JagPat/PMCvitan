@@ -10,6 +10,8 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
   isUnfoundedFinding,
+  reviewBodyFinding,
+  reviewCarriesOwnFinding,
 } from './autonomous-review-state.mjs';
 
 const HEAD = 'a'.repeat(40);
@@ -646,4 +648,121 @@ test('a discounted container keeps the finding its own body carries', () => {
   }));
   assert.equal(wrapperOnly.state, 'clear');
   assert.equal(wrapperOnly.dismissedCount, 1);
+});
+
+
+// ---------------------------------------------------------------------------
+// Round 5. Rounds 3, 4 and 5 each found another sentence where a nearby commit
+// word bound the wrong token, so the rule stopped being a proximity heuristic:
+// a DATA word adjacent to the token now vetoes it outright, and the positive
+// side requires the commit word to be ADJACENT rather than merely nearby.
+// ---------------------------------------------------------------------------
+
+test('a data word adjacent to the token vetoes any commit reading', () => {
+  const COMMIT = 'd'.repeat(40);
+  const DATA = 'f'.repeat(40);
+
+  // FINDING (#250 round 5 P1) — a bare comma read as list glue, so
+  // "On commit <a>, <b> is the object key" made the key a second citation.
+  const comma = `On commit ${COMMIT}, ${DATA} is the object key deleted before commit`;
+  assert.deepEqual(citedCommits(comma), [COMMIT], 'a comma is not a list');
+  assert.equal(citesBareHex(comma), true);
+  assert.equal(isUnfoundedFinding(codexComment(comma), new Set([COMMIT, DATA])), false);
+
+  // FINDING (#250 round 5 P1) — the optional bare-`git` arm matched before an
+  // object identifier, so "git object <hex>" read as a commit citation.
+  for (const phrase of ['git object', 'git blob', 'git tree']) {
+    const body = `The ${phrase} ${DATA} is removed before the authorizing transaction commits.`;
+    assert.deepEqual(citedCommits(body), [], `"${phrase}" names an object, not a commit`);
+    assert.equal(citesBareHex(body), true);
+    assert.equal(isUnfoundedFinding(codexComment(body), new Set([DATA])), false);
+  }
+
+  // FINDING (#250 round 5 P1) — a commit word ANYWHERE in the sentence bound
+  // the next token, so a digest after an unrelated clause became the citation.
+  const nearby = `The current head status is clear, but the digest ${DATA} is stale`;
+  assert.deepEqual(citedCommits(nearby), [], 'proximity is not introduction');
+  assert.equal(citesBareHex(nearby), true);
+  assert.equal(isUnfoundedFinding(codexComment(nearby), new Set([DATA])), false);
+
+  // The data veto beats the positive rule even when both could match.
+  const both = `On commit ${COMMIT} the checksum ${DATA} no longer matches.`;
+  assert.deepEqual(citedCommits(both), [COMMIT]);
+  assert.equal(citesBareHex(both), true);
+
+  // The data veto carries the three phrases the finding named, so it — not the
+  // narrowed git arm — is what defends them. The arm still has to be narrowed:
+  // a git subcommand the list does not know, followed by a noun the veto does
+  // not know, would otherwise make any hex its argument. Only a command that
+  // TAKES a revision may introduce one.
+  const unlisted = `The git verify-pack summary reported ${DATA} as unreachable.`;
+  assert.deepEqual(citedCommits(unlisted), [], 'bare `git` introduces nothing');
+  assert.equal(citesBareHex(unlisted), true);
+  assert.equal(isUnfoundedFinding(codexComment(unlisted), new Set([DATA])), false);
+});
+
+test('an adjacent commit word still introduces its SHA, lists included', () => {
+  const A = 'd'.repeat(40);
+  const B = 'e'.repeat(40);
+  for (const phrase of ['commit', 'head', 'revision', 'ref', 'merge parent']) {
+    assert.deepEqual(
+      citedCommits(`evidence on the ${phrase} \`${A}\` shows nothing`),
+      [A],
+      `"${phrase}" must still introduce a citation`,
+    );
+  }
+  // A conjunction carries the list; the earlier bare-comma path does not.
+  assert.deepEqual(citedCommits(`the trailer is missing on commits ${A} and ${B}.`), [A, B]);
+  assert.equal(citesBareHex(`the trailer is missing on commits ${A} and ${B}.`), false);
+
+  // A real git revision command still introduces its argument through flags.
+  const quoted = `\`git show -s --format='%(trailers:key=Review-Convergence,valueonly)' ${A}\` outputs nothing`;
+  assert.deepEqual(citedCommits(quoted), [A]);
+});
+
+// FINDING (#250 round 5 P2) — a review BODY argues from commits exactly as an
+// inline comment does, but the absent-SHA test never reached it, so the wrapper
+// kept blocking on the very citation its comments were discounted for.
+test('a review body is subject to the same absent-SHA test', () => {
+  const phantomBody = `Fresh evidence on the requested head \`${ABSENT}\` shows no trailer.`;
+  const review = { user: { login: CODEX_LOGIN }, commit_id: HEAD, id: 7, state: 'COMMENTED', body: phantomBody };
+  assert.equal(reviewCarriesOwnFinding(review, new Set([ABSENT])), false, 'the body cites only an absent commit');
+  assert.equal(reviewCarriesOwnFinding(review, new Set()), true, 'unresolved: the body stands');
+
+  const result = classifyCodexState(input({
+    comments: [codexComment(PHANTOM_WITH_PERMALINK, { pull_request_review_id: 7 })],
+    reviews: [review],
+    missingCommits: new Set([ABSENT]),
+  }));
+  assert.equal(result.state, 'clear');
+
+  // A body that cites its OWN reviewed head, or no SHA at all, still blocks.
+  for (const body of [`The lock is taken after the read on ${HEAD}.`, 'The lock is taken after the read.']) {
+    assert.equal(
+      reviewCarriesOwnFinding({ ...review, body }, new Set([ABSENT])),
+      true,
+    );
+  }
+});
+
+// FINDING (#250 round 5 P2) — the blanket <details> strip removed a collapsed
+// FINDING along with the known wrapper, so a head could clear on a body that
+// cited no SHA at all.
+test('only the known Codex wrapper details block is boilerplate', () => {
+  const wrapper = '<details> <summary>ℹ️ About Codex in GitHub</summary>\n\nCodex reviews PRs.\n</details>';
+  const collapsed = '<details><summary>Repro</summary>\n\nThe watermark clears for every name.\n</details>';
+
+  assert.equal(reviewBodyFinding({ body: `💡 Codex Review\n\n${wrapper}` }), '');
+  assert.match(
+    reviewBodyFinding({ body: `💡 Codex Review\n\n${collapsed}\n\n${wrapper}` }),
+    /watermark clears for every name/u,
+  );
+  assert.equal(
+    reviewCarriesOwnFinding(
+      { user: { login: CODEX_LOGIN }, commit_id: HEAD, id: 7, state: 'COMMENTED', body: `💡 Codex Review\n\n${collapsed}` },
+      new Set([ABSENT]),
+    ),
+    true,
+    'a collapsed finding citing no SHA counts in full',
+  );
 });

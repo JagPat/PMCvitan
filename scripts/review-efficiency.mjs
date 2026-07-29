@@ -118,7 +118,7 @@ export function codexFindingHeads(comments, reviews = [], missingCommits = new S
     if (review?.user?.login !== CODEX_LOGIN) continue;
     const head = review.commit_id;
     if (typeof head !== 'string' || head.length === 0) continue;
-    if (reviewSurvivesDismissal(review, discountedIds)) heads.add(head);
+    if (reviewSurvivesDismissal(review, discountedIds, missingCommits)) heads.add(head);
   }
   return [...heads];
 }

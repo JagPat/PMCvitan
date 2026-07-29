@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   citedCommits,
+  reviewBodyFinding,
   CODEX_LOGIN,
   codexThreadIdsToResolve,
   classifyCodexState,
@@ -835,7 +836,7 @@ export async function enforceReviewConvergence(
   // findings the current-head classifier does. A head whose findings all argued
   // from absent commits was never a finding head, and must not push a later
   // correction over the convergence threshold.
-  const missingCommits = await resolveMissingCommits(client, comments);
+  const missingCommits = await resolveMissingCommits(client, comments, reviews);
   const preliminary = assessConvergence({
     comments,
     reviews,
@@ -1007,7 +1008,7 @@ async function reviewAttempt(
       readyAt: reviewNotBefore,
       deadline,
       now: new Date().toISOString(),
-      missingCommits: await resolveMissingCommits(client, comments),
+      missingCommits: await resolveMissingCommits(client, comments, reviews),
       reviews,
       comments,
       reactions,
@@ -1034,7 +1035,7 @@ async function reclassifyCurrentCodexEvidence(
     readyAt: reviewNotBefore,
     deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
     now: now.toISOString(),
-    missingCommits: await resolveMissingCommits(client, comments),
+    missingCommits: await resolveMissingCommits(client, comments, reviews),
     reviews,
     comments,
     reactions,
@@ -1055,16 +1056,25 @@ const MAX_CITED_COMMIT_LOOKUPS = 32;
  * out, and a SHA left out keeps its finding. The gate can therefore only ever
  * discount a finding on a definitive GitHub answer that the commit is absent.
  */
-export async function resolveMissingCommits(client, comments) {
+export async function resolveMissingCommits(client, comments, reviews) {
   const cited = new Set();
-  for (const comment of comments ?? []) {
-    if (comment?.user?.login !== CODEX_LOGIN) continue;
-    const own = comment.original_commit_id ?? comment.commit_id;
-    for (const sha of citedCommits(comment.body)) {
-      // A comment citing its own reviewed head is founded by that alone; only
+  const collect = (body, own) => {
+    for (const sha of citedCommits(body)) {
+      // A finding citing its own reviewed head is founded by that alone; only
       // the OTHER commits it names need resolving.
       if (sha !== own) cited.add(sha);
     }
+  };
+  for (const comment of comments ?? []) {
+    if (comment?.user?.login !== CODEX_LOGIN) continue;
+    collect(comment.body, comment.original_commit_id ?? comment.commit_id);
+  }
+  // A review BODY argues from commits exactly as an inline comment does. Only
+  // scanning comments left every body-cited SHA unresolved, so the body kept
+  // blocking on a citation the gate had never even looked up.
+  for (const review of reviews ?? []) {
+    if (review?.user?.login !== CODEX_LOGIN) continue;
+    collect(reviewBodyFinding(review), review.commit_id);
   }
 
   const missing = new Set();
@@ -1095,7 +1105,7 @@ export async function guardAgainstCurrentHeadFinding(
     readyAt: new Date(0).toISOString(),
     deadline: new Date(now.getTime() + REVIEW_TIMEOUT_MS).toISOString(),
     now: now.toISOString(),
-    missingCommits: await resolveMissingCommits(client, comments),
+    missingCommits: await resolveMissingCommits(client, comments, reviews),
     reviews,
     comments,
     reactions: [],

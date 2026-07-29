@@ -187,3 +187,72 @@ fixture: it modelled paired review records with no `id` and comments with no
 `pull_request_review_id`, which the id-matched rule refuses. GitHub sends both. Corrected here
 and recorded rather than quietly amended, and a third case pins the behaviour the finding asked
 for — an unlinked record keeps its head.
+
+## Round 5 (head `a68c48f`) — the heuristic was the defect, not its width
+
+Five findings, all correct. Two of them (F1 comma-as-list, F5 nearby-word-binds) are the SAME
+cause as round 3 and round 4: a proximity rule over English prose deciding whether a hex token
+denotes a commit. Rounds 3, 4 and 5 each supplied another sentence shape it got wrong. Widening
+the window admits more of them; narrowing it drops real citations. That oscillation is the
+evidence that the rule's SHAPE was wrong, so this correction replaces it rather than tuning it
+again.
+
+**The rule is now two-sided, and the data side wins.**
+
+1. **A data word adjacent to the token vetoes it outright.** `digest`, `checksum`, `hash`,
+   `object`, `blob`, `tree`, `key`, `fingerprint`, `id`, `value`, `constant`, `string` — the
+   finite, enumerable set of things a 40-hex value actually is when it is not a commit. Checked
+   FIRST, so no positive rule can override it.
+2. **Otherwise the commit word must be ADJACENT**, with only quoting and whitespace between —
+   not "somewhere in the sentence". The 80-character window and the sentence-boundary cut are
+   both gone; neither was doing honest work.
+3. **A list carries only across an actual conjunction.** A bare comma is not list glue, because
+   "on commit `<a>`, `<b>` is the object key" separates a citation from data with exactly that
+   comma.
+4. **Bare `git` no longer introduces anything.** Only a command that TAKES a revision
+   (`show`/`log`/`cat-file`/`rev-parse`/`interpret-trailers`) may, and that arm is the one place
+   bounded proximity stays sound — a git command's argument is a revision by construction.
+
+Everything else is bare hex, and bare hex BLOCKS a dismissal. Every remaining ambiguity therefore
+keeps the finding, which is the direction this rule must fail in.
+
+**F3 — the same test now reaches review bodies.** A review body argues from commits exactly as an
+inline comment does, but `reviewCarriesOwnFinding` returned true for any non-boilerplate text and
+`resolveMissingCommits` scanned only comments. The wrapper therefore kept blocking on the very
+citation its comments had been discounted for, and the body's SHAs were never even looked up. The
+predicate is extracted as `isUnfoundedText(body, ownHead, missingCommits)` and both envelopes call
+it; `resolveMissingCommits` now collects from bodies too.
+
+**F4 — boilerplate is the KNOWN wrapper, not any `<details>`.** The blanket strip removed a
+collapsed finding along with Codex's "About Codex in GitHub" block, so a head could clear on a
+body that cited no SHA at all. The pattern is pinned by its summary text.
+
+### Reproduce-first
+
+Each fix removed in isolation fails its own probe:
+
+| Finding | Fix removed | RED probe |
+|---|---|---|
+| F1 comma-as-list · F5 nearby word binds | adjacency + conjunction-only glue | `a data word adjacent to the token vetoes any commit reading` |
+| F2 bare `git` swallows object ids | narrowed git arm | `a data word adjacent to the token vetoes any commit reading` (the unlisted-subcommand case) |
+| F3 body skips the absent-SHA test | `isUnfoundedText` in `reviewCarriesOwnFinding` | `a review body is subject to the same absent-SHA test` |
+| F4 blanket details strip | summary-pinned wrapper pattern | `only the known Codex wrapper details block is boilerplate` |
+
+**Stated honestly about F2:** restoring the bare-`git` arm alone does NOT fail the three phrases
+the finding named (`git object` / `git blob` / `git tree`) — the data veto defends those, and it
+fires first. Narrowing the arm is still required, and it now has a probe that isolates it: a git
+subcommand the list does not know followed by a noun the veto does not know
+(`git verify-pack summary reported <hex>`) must introduce nothing. Without that probe the
+narrowing would have been unverified code.
+
+`scripts/autonomous-review-state.test.mjs` 28/28, `scripts/review-efficiency.test.mjs` 17/17;
+`pnpm test:automation` 94/94; `pnpm check` exit 0.
+
+### Where this stops
+
+Three rounds of prose-parsing findings is the signal that the gate-side dismissal is the
+expensive half of this change. The AGENTS.md scope exclusion — which stops the finding being
+written at all — costs nothing and carries no risk of discounting a real finding. If a further
+round produces more sentence-shape findings, the correct response is not a sixth tightening: it
+is to ship the instruction alone and drop the dismissal engine. That call belongs to the
+repository owner and is recorded here rather than taken unilaterally.
