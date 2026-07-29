@@ -380,10 +380,22 @@ export class GitHubClient {
   }
 
   async checkRuns(head) {
-    const payload = await this.request(
-      `/repos/${this.repository}/commits/${head}/check-runs?filter=latest&per_page=100`,
-    );
-    return payload.check_runs;
+    // filter=all (paginated), not filter=latest: one SHA can carry several runs
+    // of the same check name — a re-run scope check after a PR body edit, or
+    // product jobs the battery plan skipped. summarizeRequiredChecks resolves
+    // each name by its newest REAL run, which it can only do if it is given
+    // the older real runs too.
+    const runs = [];
+    let page = 1;
+    while (true) {
+      const payload = await this.request(
+        `/repos/${this.repository}/commits/${head}/check-runs?filter=all&per_page=100&page=${page}`,
+      );
+      const batch = payload.check_runs ?? [];
+      runs.push(...batch);
+      if (batch.length < 100) return runs;
+      page += 1;
+    }
   }
 
   rerunFailedJobs(runId) {

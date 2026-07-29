@@ -15,14 +15,31 @@ import { pathToFileURL } from 'node:url';
 
 export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
 
-// A check run counts as a REAL execution only when it completed with a
-// conclusion produced by actually running (skipped = gated off by `needs` or
-// `if`; cancelled = never finished).
-function reallyRan(run) {
-  return run?.status === 'completed'
-    && typeof run?.conclusion === 'string'
+// A check run counts as coverage when it is actually executing or has executed:
+// still queued/in_progress is coverage IN PROGRESS (an earlier battery for this
+// same SHA is mid-flight — starting a second one duplicates the work and lets a
+// later duplicate failure supersede the first run's success), and a completed
+// run counts unless it was skipped (gated off by `needs`/`if`) or cancelled
+// (never finished). A completed FAILURE is real coverage: red products are
+// fixed by a new SHA with its own battery, never by a metadata edit.
+function coversHead(run) {
+  if (!run || typeof run.status !== 'string') return false;
+  if (run.status !== 'completed') return run.conclusion !== 'skipped';
+  return typeof run.conclusion === 'string'
     && run.conclusion !== 'skipped'
     && run.conclusion !== 'cancelled';
+}
+
+// The newest COMPLETED run of a check, by start time (id breaks ties).
+function newestCompleted(checkRuns, name) {
+  return checkRuns
+    .filter((run) => run?.name === name && run.status === 'completed')
+    .sort((a, b) => {
+      const aStarted = typeof a.started_at === 'string' ? a.started_at : '';
+      const bStarted = typeof b.started_at === 'string' ? b.started_at : '';
+      if (aStarted !== bStarted) return aStarted > bStarted ? -1 : 1;
+      return (Number(b.id) || 0) - (Number(a.id) || 0);
+    })[0] ?? null;
 }
 
 export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
@@ -35,18 +52,35 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   if (!Array.isArray(checkRuns)) {
     return { runProducts: true, reason: 'check history unavailable; failing toward a full run' };
   }
+
+  // A failed scope check skips the product jobs of that same attempt, so any
+  // product coverage on this head predates it. The retarget case is exactly
+  // this shape: retarget to a new base → review-scope fails there → products
+  // skipped → a body edit that fixes the scope evidence must run the battery
+  // against the NEW base rather than accept the pre-retarget runs. The same
+  // rule unsticks a large PR whose first attempt failed review-scope. The
+  // scope run for THIS event is still queued at plan time, so this reads the
+  // previous attempt's verdict, which is the one that gated those products.
+  const scope = newestCompleted(checkRuns, 'review-scope');
+  if (scope && scope.conclusion !== 'success') {
+    return {
+      runProducts: true,
+      reason: 'the last completed review-scope run did not pass, so any product '
+        + 'coverage on this head predates the current scope evaluation',
+    };
+  }
+
   for (const name of PRODUCT_CHECKS) {
-    const ran = checkRuns.some((run) => run?.name === name && reallyRan(run));
-    if (!ran) {
+    if (!checkRuns.some((run) => run?.name === name && coversHead(run))) {
       return {
         runProducts: true,
-        reason: `product check ${name} has never really run for this head`,
+        reason: `product check ${name} has no run covering this head`,
       };
     }
   }
   return {
     runProducts: false,
-    reason: 'metadata-only edit; every product check already ran for this head',
+    reason: 'metadata-only edit; every product check already covers this head',
   };
 }
 

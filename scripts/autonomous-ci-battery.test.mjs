@@ -135,6 +135,90 @@ test('the battery plan launches products exactly when they are needed', () => {
     true,
   );
 
+  // in-flight coverage: an earlier battery for this SHA is still running when
+  // the body edit lands — do not start a second one alongside it
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: PRODUCT_CHECKS.map((name) => ({
+        name,
+        status: 'in_progress',
+        conclusion: null,
+      })),
+    }).runProducts,
+    false,
+  );
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: PRODUCT_CHECKS.map((name, index) => ({
+        name,
+        status: index === 0 ? 'queued' : 'completed',
+        conclusion: index === 0 ? null : 'success',
+      })),
+    }).runProducts,
+    false,
+  );
+
+  // retarget → scope fails on the new base → products skipped → the body edit
+  // that fixes the scope evidence must NOT accept the pre-retarget product
+  // runs: they were green against the OLD base
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: [
+        ...PRODUCT_CHECKS.map((name) => ({
+          name,
+          status: 'completed',
+          conclusion: 'success',
+          started_at: '2026-07-29T07:00:00Z',
+        })),
+        {
+          name: 'review-scope',
+          status: 'completed',
+          conclusion: 'success',
+          started_at: '2026-07-29T07:00:00Z',
+        },
+        // the base-change attempt: scope failed, products skipped
+        ...PRODUCT_CHECKS.map((name) => ({
+          name,
+          status: 'completed',
+          conclusion: 'skipped',
+          started_at: '2026-07-29T07:20:00Z',
+        })),
+        {
+          name: 'review-scope',
+          status: 'completed',
+          conclusion: 'failure',
+          started_at: '2026-07-29T07:20:00Z',
+        },
+      ],
+    }).runProducts,
+    true,
+  );
+
+  // …but a passing scope check on the newest completed attempt keeps the
+  // metadata-only skip (the one-battery-per-SHA goal) intact
+  assert.equal(
+    assessBatteryPlan({
+      action: 'edited',
+      baseChanged: false,
+      checkRuns: [
+        ...realRuns('success'),
+        {
+          name: 'review-scope',
+          status: 'completed',
+          conclusion: 'success',
+          started_at: '2026-07-29T07:00:00Z',
+        },
+      ],
+    }).runProducts,
+    false,
+  );
+
   // one product check missing entirely, or history unavailable: fail toward
   // running the battery
   assert.equal(

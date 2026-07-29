@@ -334,6 +334,9 @@ test('the bounded CI retry has only the permission and endpoint it needs', async
   );
   assert.match(workflow, /permissions:[\s\S]*actions:\s*write/);
   assert.match(gate, /actions\/runs\/\$\{runId\}\/rerun-failed-jobs/);
+  // the skipped-run fallback can only see older real runs with filter=all
+  assert.match(gate, /check-runs\?filter=all&per_page=100&page=\$\{page\}/u);
+  assert.doesNotMatch(gate, /check-runs\?filter=latest/u);
   assert.match(gate, /context\.ciRunAttempt === 1/);
   assert.match(gate, /!isTerminalReviewStatus\(existingStatus\)/);
 });
