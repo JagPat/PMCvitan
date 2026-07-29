@@ -401,3 +401,9 @@ Conflict-free; the incoming change is the `AGENTS.md` review-scope instruction a
 No correction content. As before, the trailer on this commit asserts only that this PR's
 batched architectural audit is complete and is this document — not that a base merge is that
 audit.
+
+### Base merge after PR #248
+
+Third base merge, after PR #248 landed. Conflict-free, no correction content — the incoming
+change is the Phase-4 STATUS flip and its packet. Recorded for the same reason as the previous
+two: the convergence gate requires the trailer on every head, including one that fixes nothing.

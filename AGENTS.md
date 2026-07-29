@@ -94,6 +94,12 @@ so directly rather than framing it as a suggestion.
   changed `docs/reviews/*convergence*.md` packet and the commit trailer
   `Review-Convergence: complete`. Never evade this by splitting one fix into
   multiple commits or by resetting review history.
+- To verify that trailer, resolve the PR HEAD first: in a synthetic-merge
+  checkout the head is `HEAD^2` (`git show -s --format='%(trailers)' HEAD^2`),
+  or fetch `refs/pull/<number>/head`. The merge commit's own auto-generated
+  message ("Merge <head> into <base>") never carries trailers, and a SHA that
+  is not the PR head — including any snapshot of the regenerating merge ref —
+  is not evidence of a missing trailer.
 
 ## Out of a review's scope
 
