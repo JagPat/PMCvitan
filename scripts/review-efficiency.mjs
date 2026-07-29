@@ -57,9 +57,16 @@ export function assessReviewScope(
 
   const body = String(pullRequest?.body ?? '');
   const justified = body.includes(LARGE_MARKER);
-  const normalizedBody = body.toLowerCase();
+  const tableRows = body
+    .split(/\r?\n/u)
+    .filter((line) => line.trimStart().startsWith('|'))
+    .map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()));
   const missingInvariants = REQUIRED_INVARIANTS.filter(
-    (invariant) => !normalizedBody.includes(invariant),
+    (invariant) => !tableRows.some(
+      (cells) => cells[0]?.toLowerCase() === invariant
+        && Boolean(cells[1])
+        && Boolean(cells[2]),
+    ),
   );
   if (!justified || missingInvariants.length > 0) {
     const missing = [
@@ -85,11 +92,16 @@ export function assessReviewScope(
   };
 }
 
-export function codexFindingHeads(comments) {
+export function codexFindingHeads(comments, reviews = []) {
   const heads = new Set();
   for (const comment of comments ?? []) {
     if (comment?.user?.login !== CODEX_LOGIN) continue;
     const head = comment.original_commit_id ?? comment.commit_id;
+    if (typeof head === 'string' && head.length > 0) heads.add(head);
+  }
+  for (const review of reviews ?? []) {
+    if (review?.user?.login !== CODEX_LOGIN) continue;
+    const head = review.commit_id;
     if (typeof head === 'string' && head.length > 0) heads.add(head);
   }
   return [...heads];
@@ -99,8 +111,8 @@ function changedFilename(file) {
   return typeof file === 'string' ? file : file?.filename;
 }
 
-export function assessConvergence({ comments, headMessage, changedFiles }) {
-  const findingHeads = codexFindingHeads(comments);
+export function assessConvergence({ comments, reviews, headMessage, changedFiles }) {
+  const findingHeads = codexFindingHeads(comments, reviews);
   const findingHeadCount = findingHeads.length;
   if (findingHeadCount < CONVERGENCE_AFTER_FINDING_HEADS) {
     return {

@@ -1071,6 +1071,68 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   assert.match(gate, /client\.pullRequestFiles\(pullRequest\.number\)/u);
   assert.match(gate, /state: 'convergence_required'/u);
   assert.match(gate, /Review-Convergence: complete/u);
+  assert.match(gate, /assessReviewScope\(pullRequest\)/u);
+  assert.match(gate, /state: 'scope_required'/u);
+  assert.match(
+    gate,
+    /async paginated\(path\)[\s\S]*?page \+= 1/u,
+  );
+  assert.match(gate, /reviewComments\(number\)[\s\S]*?this\.paginated/u);
+});
+
+test('trusted scope enforcement rejects a spoofed green preflight', async () => {
+  const head = 'd'.repeat(40);
+  const pullRequest = {
+    number: 247,
+    additions: 2_000,
+    deletions: 0,
+    changed_files: 24,
+    body: '<!-- review-size: justified-large -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
+    head: { sha: head },
+  };
+  const statuses = [];
+  const sticky = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus(...args) { statuses.push(args); },
+    async updateStickyComment(...args) { sticky.push(args); },
+  };
+
+  const result = await reviewGate.enforceReviewScope(
+    client,
+    pullRequest,
+    head,
+  );
+  assert.equal(result.allowed, false);
+  assert.equal(statuses[0][1], 'failure');
+  assert.match(sticky[0][1], /scope_required/u);
+});
+
+test('Codex review records and inline comments are fully paginated', async () => {
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    const page = new URL(url).searchParams.get('page');
+    const count = page === '1' ? 100 : 1;
+    return new Response(JSON.stringify(Array.from({ length: count }, (_, index) => ({ index }))));
+  };
+  try {
+    const client = new reviewGate.GitHubClient({
+      repository: 'JagPat/PMCvitan',
+      token: 'test-token',
+    });
+    assert.equal((await client.reviewComments(247)).length, 101);
+    assert.equal((await client.reviews(247)).length, 101);
+    assert.ok(urls.some((url) => url.includes('/comments?per_page=100&page=2')));
+    assert.ok(urls.some((url) => url.includes('/reviews?per_page=100&page=2')));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('convergence enforcement fails closed until the batched packet and trailer exist', async () => {
@@ -1090,6 +1152,7 @@ test('convergence enforcement fails closed until the batched packet and trailer 
   const sticky = [];
   const client = {
     async reviewComments() { return comments; },
+    async reviews() { return []; },
     async commit() { return { commit: { message: 'fix: isolated patch' } }; },
     async pullRequestFiles() { return [{ filename: 'apps/web/src/store/store.ts' }]; },
     async pullRequest() { return pullRequest; },

@@ -20,9 +20,11 @@ finding-bearing heads.
 ### 1. Keep the existing safety boundary
 
 The five existing product checks remain mandatory. A new, cheap `review-scope`
-check runs first. Codex still reviews only a CI-green exact head, and only the
-exact-SHA `codex-current-head` success may merge it. No AI API key or human
-approval is introduced.
+check runs first for fast feedback. Because pull-request code is author-controlled,
+the trusted default-branch orchestrator independently re-evaluates the same scope
+policy before Codex promotion; a spoofed green preflight cannot merge. Codex still
+reviews only a CI-green exact head, and only the exact-SHA `codex-current-head`
+success may merge it. No AI API key or human approval is introduced.
 
 ### 2. Review-unit preflight
 
@@ -46,9 +48,10 @@ dripping one correction at a time.
 
 ### 4. Convergence after two finding heads
 
-Review comments from `chatgpt-codex-connector[bot]` provide durable finding-head
-history. Once two distinct heads have findings, the next CI-green head is accepted
-for Codex review only when:
+Paginated review records and inline review comments from
+`chatgpt-codex-connector[bot]` provide durable finding-head history. Once two
+distinct heads have findings, the next CI-green head is accepted for Codex review
+only when:
 
 - its head commit carries `Review-Convergence: complete`; and
 - the PR contains a changed `docs/reviews/*convergence*.md` packet.

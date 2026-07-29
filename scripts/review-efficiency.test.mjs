@@ -32,9 +32,9 @@ function justifiedLargeBody(categories = REQUIRED_INVARIANTS) {
     'This workflow crosses generated contracts and their acceptance fixture.',
     '',
     '## Invariant matrix',
-    '| Invariant | Proof |',
-    '| --- | --- |',
-    ...categories.map((category) => `| ${category} | focused probe |`),
+    '| Invariant | Risk | Evidence |',
+    '| --- | --- | --- |',
+    ...categories.map((category) => `| ${category} | relevant risk | focused probe |`),
   ].join('\n');
 }
 
@@ -78,6 +78,22 @@ test('a large review unit with an incomplete invariant matrix remains blocked', 
   assert.match(result.detail, new RegExp(REQUIRED_INVARIANTS.at(-1), 'u'));
 });
 
+test('invariant labels without risk and evidence do not satisfy a large review unit', () => {
+  const body = [
+    '<!-- review-size: justified-large -->',
+    '| Invariant | Risk | Evidence |',
+    '| --- | --- | --- |',
+    ...REQUIRED_INVARIANTS.map((invariant) => `| ${invariant} | | |`),
+  ].join('\n');
+  const result = assessReviewScope(pullRequest({
+    additions: 2_000,
+    changed_files: 24,
+    body,
+  }));
+  assert.equal(result.allowed, false);
+  assert.deepEqual(result.missingInvariants, REQUIRED_INVARIANTS);
+});
+
 test('a justified large review unit passes only with the complete invariant matrix', () => {
   const result = assessReviewScope(pullRequest({
     additions: 2_000,
@@ -108,6 +124,21 @@ test('finding history counts distinct Codex heads and ignores human comments', (
     'a'.repeat(40),
     'b'.repeat(40),
   ]);
+});
+
+test('finding history includes blocking Codex review records without inline comments', () => {
+  const result = assessConvergence({
+    comments: [],
+    reviews: [
+      { user: { login: CODEX }, commit_id: 'a'.repeat(40) },
+      { user: { login: CODEX }, commit_id: 'b'.repeat(40) },
+    ],
+    headMessage: 'fix: isolated patch',
+    changedFiles: [],
+  });
+  assert.equal(result.required, true);
+  assert.equal(result.allowed, false);
+  assert.equal(result.findingHeadCount, 2);
 });
 
 test('one finding head still permits an ordinary correction', () => {

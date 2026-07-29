@@ -41,6 +41,9 @@ This repository is designed to progress without the owner's laptop or technical 
 - A justified large PR uses the PR template's marker and completes all six risk
   rows: authorization/tenancy, civil time/lifecycle, concurrency/idempotency,
   data integrity/conservation, offline/reconciliation, and UI/server parity.
+- The PR-side scope check is fast feedback. The trusted default-branch owner
+  re-evaluates the PR metadata and every evidence cell before review promotion,
+  so editing the PR's policy script cannot bypass the merge boundary.
 - Claude self-audits those rows before the first review. Codex performs one
   comprehensive first pass and batches all findings. Correction reviews cover
   the delta, prior findings, and affected adjacent invariants.

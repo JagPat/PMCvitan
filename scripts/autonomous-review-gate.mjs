@@ -8,6 +8,7 @@ import {
 } from './autonomous-review-state.mjs';
 import {
   assessConvergence,
+  assessReviewScope,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
 
@@ -288,7 +289,7 @@ function requiredEnvironment(name) {
   return value;
 }
 
-class GitHubClient {
+export class GitHubClient {
   constructor({ repository, token }) {
     this.repository = repository;
     this.token = token;
@@ -396,15 +397,29 @@ class GitHubClient {
     }
   }
 
+  async paginated(path) {
+    const items = [];
+    let page = 1;
+    while (true) {
+      const separator = path.includes('?') ? '&' : '?';
+      const batch = await this.request(
+        `${path}${separator}per_page=100&page=${page}`,
+      );
+      items.push(...batch);
+      if (batch.length < 100) return items;
+      page += 1;
+    }
+  }
+
   reviews(number) {
-    return this.request(
-      `/repos/${this.repository}/pulls/${number}/reviews?per_page=100`,
+    return this.paginated(
+      `/repos/${this.repository}/pulls/${number}/reviews`,
     );
   }
 
   reviewComments(number) {
-    return this.request(
-      `/repos/${this.repository}/pulls/${number}/comments?per_page=100`,
+    return this.paginated(
+      `/repos/${this.repository}/pulls/${number}/comments`,
     );
   }
 
@@ -765,9 +780,13 @@ export async function enforceReviewConvergence(
   pullRequest,
   expectedHead,
 ) {
-  const comments = await client.reviewComments(pullRequest.number);
+  const [comments, reviews] = await Promise.all([
+    client.reviewComments(pullRequest.number),
+    client.reviews(pullRequest.number),
+  ]);
   const preliminary = assessConvergence({
     comments,
+    reviews,
     headMessage: '',
     changedFiles: [],
   });
@@ -779,6 +798,7 @@ export async function enforceReviewConvergence(
   ]);
   const result = assessConvergence({
     comments,
+    reviews,
     headMessage: commit.commit?.message,
     changedFiles,
   });
@@ -806,6 +826,36 @@ export async function enforceReviewConvergence(
       detail,
       attempt: 0,
       next: `Claude must batch every open finding into one architectural audit, add docs/reviews/pr-${pullRequest.number}-convergence.md, and push a head whose commit includes Review-Convergence: complete.`,
+    }),
+  );
+  return result;
+}
+
+export async function enforceReviewScope(client, pullRequest, expectedHead) {
+  const result = assessReviewScope(pullRequest);
+  if (result.allowed) return result;
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return { ...result, superseded: true };
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `scope: ${result.detail}`,
+    pullRequest.html_url,
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'scope_required',
+      head: expectedHead,
+      detail: result.detail,
+      attempt: 0,
+      next: 'Claude splits the review unit or completes every justified-large invariant row with concrete risk and verification evidence.',
     }),
   );
   return result;
@@ -1050,6 +1100,10 @@ export async function run() {
     );
     return;
   }
+
+  const scope = await enforceReviewScope(client, pullRequest, expectedHead);
+  if (scope.superseded) return;
+  if (!scope.allowed) throw new Error(scope.detail);
 
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     const ciSummary = summarizeRequiredChecks(
