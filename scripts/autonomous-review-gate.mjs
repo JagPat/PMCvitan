@@ -857,6 +857,35 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
   return result;
 }
 
+export async function revalidateFinalReviewPolicy(
+  client,
+  number,
+  expectedHead,
+) {
+  const pullRequest = await refreshCurrentHead(client, number, expectedHead);
+  if (!pullRequest) {
+    return { state: 'superseded', allowed: false, superseded: true };
+  }
+
+  const scope = await enforceReviewScope(client, pullRequest, expectedHead);
+  if (scope.superseded) return { ...scope, state: 'superseded' };
+  if (!scope.allowed) return { ...scope, state: 'scope_required' };
+
+  const convergence = await enforceReviewConvergence(
+    client,
+    pullRequest,
+    expectedHead,
+  );
+  if (convergence.superseded) {
+    return { ...convergence, state: 'superseded' };
+  }
+  if (!convergence.allowed) {
+    return { ...convergence, state: 'convergence_required' };
+  }
+
+  return { state: 'allowed', allowed: true, pullRequest };
+}
+
 async function reviewAttempt(
   client,
   pullRequest,
@@ -1421,6 +1450,16 @@ export async function run() {
           next: 'GitHub sets the required status and completes this exact reviewed head.',
         }),
       );
+      const finalPolicy = await revalidateFinalReviewPolicy(
+        client,
+        pullRequest.number,
+        expectedHead,
+      );
+      if (finalPolicy.superseded) return;
+      if (!finalPolicy.allowed) {
+        throw new Error(`Final review policy changed: ${finalPolicy.state}`);
+      }
+      pullRequest = finalPolicy.pullRequest;
       // One run polls one Codex invocation to its mutually exclusive terminal
       // result: finding-bearing evidence or the clean reaction. Review webhooks
       // never enter this orchestrator, so no second writer can race admission.

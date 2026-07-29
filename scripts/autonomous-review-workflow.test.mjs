@@ -1061,8 +1061,8 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
     'utf8',
   );
   const checks = gate.indexOf('await waitForRequiredChecks');
-  const convergence = gate.indexOf('await enforceReviewConvergence');
-  const review = gate.indexOf('await reviewAttempt');
+  const convergence = gate.indexOf('await enforceReviewConvergence', checks);
+  const review = gate.indexOf('await reviewAttempt', convergence);
 
   assert.ok(checks >= 0);
   assert.ok(convergence > checks);
@@ -1111,6 +1111,57 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
   assert.equal(result.allowed, false);
   assert.equal(statuses[0][1], 'failure');
   assert.match(sticky[0][1], /scope_required/u);
+});
+
+test('final admission revalidates live scope and late convergence evidence', async () => {
+  const head = 'e'.repeat(40);
+  const pullRequest = {
+    number: 247,
+    additions: 2_000,
+    deletions: 0,
+    changed_files: 24,
+    body: '<!-- review-size: standard -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
+    head: { sha: head },
+  };
+  const statuses = [];
+  const sticky = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus(...args) { statuses.push(args); },
+    async updateStickyComment(...args) { sticky.push(args); },
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async commit() { return { commit: { message: 'fix: no convergence' }, files: [] }; },
+  };
+
+  const invalidScope = await reviewGate.revalidateFinalReviewPolicy(
+    client,
+    pullRequest.number,
+    head,
+  );
+  assert.equal(invalidScope.allowed, false);
+  assert.equal(invalidScope.state, 'scope_required');
+
+  pullRequest.additions = 1;
+  pullRequest.changed_files = 1;
+  pullRequest.body = '<!-- review-size: standard -->';
+  client.reviewComments = async () => ([
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
+    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
+  ]);
+  statuses.length = 0;
+  sticky.length = 0;
+  const lateConvergence = await reviewGate.revalidateFinalReviewPolicy(
+    client,
+    pullRequest.number,
+    head,
+  );
+  assert.equal(lateConvergence.allowed, false);
+  assert.equal(lateConvergence.state, 'convergence_required');
 });
 
 test('Codex review records and inline comments are fully paginated', async () => {
@@ -1602,6 +1653,19 @@ test('reclassifies Codex evidence immediately before publishing success', async 
   );
   assert.match(implementation, /reclassifyCurrentCodexEvidence/);
   assert.match(implementation, /verifiedResult\.state !== 'clear'/);
+});
+
+test('revalidates live policy after polling and immediately before clean success', async () => {
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const evidence = gate.indexOf('await reclassifyCurrentCodexEvidence');
+  const finalPolicy = gate.indexOf('await revalidateFinalReviewPolicy', evidence);
+  const success = gate.indexOf("'review: Codex found no blocking issue on this exact head'", finalPolicy);
+  assert.ok(evidence >= 0);
+  assert.ok(finalPolicy > evidence);
+  assert.ok(success > finalPolicy);
 });
 
 test('CI runs once per pull-request head', async () => {
