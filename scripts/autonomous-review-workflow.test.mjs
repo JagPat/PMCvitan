@@ -1194,8 +1194,13 @@ test('final admission revalidates live scope and late convergence evidence', asy
 test('Codex review records and inline comments are fully paginated', async () => {
   const originalFetch = globalThis.fetch;
   const urls = [];
+  let transientFailure = true;
   globalThis.fetch = async (url) => {
     urls.push(String(url));
+    if (transientFailure) {
+      transientFailure = false;
+      return new Response('', { status: 500 });
+    }
     const parsed = new URL(url);
     const page = parsed.searchParams.get('page');
     const count = page === '1' ? 100 : 1;

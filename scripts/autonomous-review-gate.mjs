@@ -296,7 +296,8 @@ export class GitHubClient {
   }
 
   async request(path, { method = 'GET', body } = {}) {
-    const response = await fetch(`${API_ROOT}${path}`, {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const response = await fetch(`${API_ROOT}${path}`, {
       method,
       headers: {
         Accept: 'application/vnd.github+json',
@@ -305,15 +306,19 @@ export class GitHubClient {
         'X-GitHub-Api-Version': '2022-11-28',
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await response.text();
-    const payload = text ? JSON.parse(text) : null;
-    if (!response.ok) {
+      });
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) : null;
+      if (response.ok) return payload;
+      if (method === 'GET' && response.status >= 500 && attempt < 3) {
+        await sleep(attempt * 250);
+        continue;
+      }
       throw new Error(
         `GitHub ${method} ${path} failed (${response.status}): ${text}`,
       );
     }
-    return payload;
+    throw new Error(`GitHub ${method} ${path} retry loop exhausted`);
   }
 
   async graphql(query, variables) {

@@ -1,12 +1,10 @@
 # PR #247 Review Convergence
 
 ## Objective
-
 Make the Claude-to-Codex loop converge faster while preserving every existing
 product gate, exact-head review, and fail-closed merge boundary.
 
 ## Why Convergence Was Required
-
 Codex found defects on two distinct heads:
 
 - `893266ad2f00ac20a116d05b93bd59534dd4a7dd`: four findings in the initial
@@ -27,7 +25,6 @@ This packet and its commit contain the complete architectural correction rather
 than another isolated patch.
 
 ## Finding Map
-
 | Head | Finding | Architectural cause | Batched remedy | Reproduce-first proof |
 | --- | --- | --- | --- | --- |
 | `893266a` | Blank invariant rows passed | Scope policy looked only for invariant labels | Parse the six table rows and require non-empty risk and evidence cells | Blank-row large PR RED at base, GREEN after correction |
@@ -42,9 +39,9 @@ than another isolated patch.
 | `f50eaca` | Same-head PR-body edit could bypass scope | Scope was evaluated only before CI and review polling | Re-fetch the live PR and re-run trusted scope immediately before clean success | Oversized live-body mutation RED at reviewed head, GREEN through final-admission helper |
 | `f50eaca` | Late old-head finding could activate convergence after polling | Finding-head history was not re-read after Codex returned clean | Re-read paginated review evidence and re-run convergence immediately before clean success | Late second finding-head probe RED at reviewed head, GREEN with convergence required |
 | `9d0ebcb` | Recovered clean status could bypass late convergence | Terminal-status reuse returned before the final policy recheck | Apply the same live scope and convergence admission before reusing clean status | Delayed second finding-head recovery RED at reviewed head, GREEN without merge |
+| `b62c641` owner run | Transient GitHub 500 stopped review dispatch | Trusted GETs had no transport retry | Retry only idempotent GET requests, three bounded attempts; never retry mutations | Injected first-call 500 RED before retry, GREEN with pagination preserved |
 
 ## Reviewer Merge-Ref Misread
-
 The round also claimed that the convergence head lacked the required trailer,
 citing synthetic merge ref `965f8bb`. The authoritative PR head was `c924968`,
 whose commit message ended with `Review-Convergence: complete`. The trusted gate
@@ -60,7 +57,6 @@ authoritative head was `6a98a1b`. Review guidance now requires explicit PR-head
 resolution, and duplicate identical comments count as one finding.
 
 ## Invariant Audit
-
 | Invariant | Result | Evidence |
 | --- | --- | --- |
 | authorization-tenancy | No product surface changed | Automation-only diff; full API check green |
@@ -71,7 +67,6 @@ resolution, and duplicate identical comments count as one finding.
 | ui-server-parity | No UI or API contract change | Web/API typecheck, tests, and builds green |
 
 ## Regression Surface
-
 - Pull requests through #246 retain their original five required checks.
 - Pull requests from #247 onward receive the scope preflight and trusted scope
   re-evaluation.
@@ -80,7 +75,6 @@ resolution, and duplicate identical comments count as one finding.
 - Product CI remains mandatory after a valid scope decision.
 
 ## Remaining Risks
-
 - The PR-side preflight is fast feedback and author-controlled; the trusted
   default-branch re-evaluation is therefore the authoritative boundary.
 - Branch protection adds `review-scope` only after PR #246 terminates. Until
@@ -89,7 +83,6 @@ resolution, and duplicate identical comments count as one finding.
   commit-file behavior are pinned by executable fixtures.
 
 ## Verification
-
 - `pnpm test:automation`: 75/75 after this convergence correction.
 - `pnpm check`: exit 0.
 - API unit: 680/680.
