@@ -2,7 +2,7 @@
 
 ## Objective
 
-Converge the Phase-5 planning review. Fourteen heads have received findings; the per-round
+Converge the Phase-5 planning review. Sixteen heads have received findings; the per-round
 sections below run in order, each mapping its findings to their architectural cause, the batched
 remedy, and how each is proven. The Termination section carries the running totals and the
 current exit route. The two sections immediately below are the round-2 record, written when the
@@ -528,15 +528,15 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Does an acceptance reversal dispute the MINIMUM set that restores the aggregate bound? | probe 5an | phase-5-task-4 |
 | Is cross-vendor bill-to-PO-line pinning refused by PostgreSQL, not the service? | probe 5ao | phase-5-task-4 |
 | Is every reason column this phase adds non-blank at PG, enumerated from the schema? | probe 5ap | phase-5-task-5 |
-| Is the labour BILLED row's tax/freight refused at PG, given Phase 4 froze no ordered side? | probe 5aq | phase-5-task-4 |
-| Does an acceptance reversal dispute newest-first until the aggregate bound holds, and no further? | probe 5ar | phase-5-task-4 |
-| Is the consumption set frozen with `(rowId, consumedQty)` on BOTH the acceptance and measurement sides? | probe 5as | phase-5-task-5 |
-| Is `disputed` terminal, with correction only by a superseding version? | probe 5at | phase-5-task-5 |
-| Does supersession re-state the deductions on the new certificate? | probe 5au | phase-5-task-5 |
+| Is there exactly one live budget chain per `(projectId, costHead)`, with `amount >= 0`? | probe 5aq | phase-5-task-1 |
+| Does attribution authority follow the WRITE rather than the route, so PO-issue authority alone cannot attribute? | probe 5ar | phase-5-task-2 |
+| Is cumulative `MEASURED` capped at the ORDERED person-shift quantity, and released by an amendment? | probe 5as | phase-5-task-3 |
+| Is the consumption set frozen with `(rowId, consumedQty)` on BOTH the acceptance and measurement sides? | probe 5at | phase-5-task-5 |
+| Is a labour bill line's tax/freight refused at PG, given Phase 4 froze no ordered side to compare? | probe 5au | phase-5-task-4 |
+| Is `disputed` terminal, with correction only by a superseding version? | probe 5av | phase-5-task-5 |
+| Does supersession re-state the deductions on the new certificate? | probe 5aw | phase-5-task-5 |
+| Does the vendor-pinning migration backfill from the PO chain and ABORT on any line it cannot resolve? | probe 5ax | phase-5-task-4 |
 | Is payment status re-derived after a reversal rather than left stale? | probe 5ba | phase-5-task-6 |
-| Is cumulative `MEASURED` capped at the ordered person-shift quantity? | probe 5av | phase-5-task-3 |
-| Does a participant write enforce `commercial.attribute` rather than trusting the caller? | probe 5aw | phase-5-task-2 |
-| Is there exactly one live budget chain per `(projectId, costHead)`, with `amount >= 0`? | probe 5ax | phase-5-task-1 |
 | Are approvals sign-constrained, so a negative approval cannot offset a limit or drop below `PAID`? | probe 5az | phase-5-task-6 |
 | Does certification take ONE ascending lock order over every PO line the bill touches? | probe 5bb | phase-5-task-5 |
 | Do all seven §J buckets partition the money as residuals, at both ends of the chain? | probe 5bc | phase-5-task-7 |
@@ -550,6 +550,10 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Is there a frozen vendor-document key that makes a duplicate claim unrepresentable? | probe 5bg | phase-5-task-4 |
 | Does supersession carry retention RELEASES with the deductions, so nothing is clawed back? | probe 5bh | phase-5-task-5 |
 | Is `PAID` floored at zero, so a reversal cannot exceed the cash paid? | probe 5ae | phase-5-task-6 |
+| Does an attribution name exactly one PO line, with no amount column to copy into? | probe 5bi | phase-5-task-1 |
+| Does the duplicate-document index release on `rejected`/`resolved` so a corrected resubmission is possible? | probe 5bj | phase-5-task-4 |
+| Does a retention release re-derive payment status, so `paid` cannot stand with cash owed? | probe 5bk | phase-5-task-6 |
+| Does a reducing measurement dispute uncertified claims and refuse only against a certificate? | probe 5bl | phase-5-task-3 |
 
 ## Round 10 (head `c5f9887` → `d3d9945`) — the prediction fired, and this section was missing
 
@@ -753,10 +757,54 @@ noting as the §0b failure in its purest form: an exception KIND was named in a 
 identity anywhere that could detect it, so every bound would have passed for both copies of one
 invoice and Task 4 would have had to invent the predicate the plan declared.
 
+## Round 15 (head `badd6e1`) — seven findings, three of them defects round 14 introduced
+
+All seven correct. Round 14's own lesson was "fix the rule, then enumerate its sites from the
+document" — and three of these seven are round 14 failing that test in the act of writing it.
+
+| Finding | Origin | Fix |
+|---|---|---|
+| **P1** the restored deferral ledger maps questions to the WRONG probes | round 14, mine | rows 5aq–5ax rebuilt from each probe's own text; mapping then verified mechanically |
+| `CommitmentAttribution`'s freeze list names an `amount` column | round 14, mine | the row carries NO amount — §C already said "the amount is not copied" |
+| the attribution needs the same XOR seal as a bill line | round 14, mine | `CHECK ((poLineId IS NULL) <> (labourPoLineId IS NULL))` (probe 5bi) |
+| the duplicate index keys on "non-cancelled", a state §F has no arrow for | new | predicate is `NOT IN ('rejected','resolved')` — the lifecycle's own terminals (probe 5bj) |
+| a retention release after `paid` leaves the status stale | new | derivation is against `NET_PAYABLE`, not `APPROVED`; `deductions.release` re-derives under CAS (probe 5bk) |
+| a reducing measurement is refused by any live claim, certified or not | new | DISPUTE uncertified claims newest-first, refuse only against a certificate — §G's material disposition at the measurement site (probe 5bl) |
+| the capability ships in Task 1, the attribution table in Task 2 | round 13, mine | the table, its seals, the participant and the activation backfill move to Task 1; Task 2 owns the lifecycle |
+
+**The P1 is the worst kind of error I have made on this PR**, and it is worth being precise about
+why. Round 14 restored the deferral ledger because a pointer at the probe list "answers only the
+middle term". I then wrote the rows by mapping round 12's findings, in the order I had listed them,
+onto probe letters in the order they appear — and never opened the probes. So `5aq` (budget
+uniqueness) was labelled as the labour tax/freight question, and seven rows after it were shifted
+by one. The ledger was not merely wrong: it pointed review at probes that cannot adjudicate the
+questions beside them, which is worse than the pointer it replaced, because a pointer is honestly
+vague and a wrong citation looks like evidence.
+
+The remedy is not care. It is that I now derive the mapping instead of asserting it: every row's
+probe id is extracted from the plan and checked to exist, and every probe in the 5aq–5bl range is
+checked to have a row. That run reports **45 ledger rows, every probe reference defined, no probe
+without a row.** The same mechanical habit caught the round-14 bucket-table and set-count defects
+before they shipped; it should have been applied to the ledger in the same pass.
+
+**The other two round-14 defects are the propagation class inside a propagation fix.** I added the
+bill-line XOR rule and did not carry it to `CommitmentAttribution`, which has the identical
+nullable-alternatives shape one section earlier — and the consequence is sharper there: one row
+standing for two obligations means superseding the material side silently un-attributes a live
+labour line, so `COMMITTED` drops for work still owed. And while rewriting §C's freeze list I
+included an `amount` column, twenty lines below the sentence "the amount is not copied" — creating
+the second committed-amount ledger §C exists to forbid. Neither is a subtle mechanism; both are
+what happens when a rule is restated in a second place instead of read from the first.
+
+The Task-1/Task-2 sequencing finding is round 13's: probe 5bd requires enabling the capability to
+attribute every pre-existing live PO line, and the task table put the attribution table a task
+later. Two independent statements about the same thing, contradicting; the fix names which one
+moves and why either escape would be worse.
+
 ## Termination, and what happens next
 
-Fifteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11 — **one hundred and
-twenty-one** findings. One hundred and twenty were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
+Sixteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7 — **one hundred
+and twenty-eight** findings. One hundred and twenty-seven were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
 in the round-10 section above with the passing check-run cited. (The round-7 packet said "sixty-six" for the
 first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
 forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
@@ -799,7 +847,7 @@ paragraph replaces the round-10 and round-11 wording rather than sitting beside 
 11's own rule.
 
 An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
-the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11) but their KIND has narrowed and
+the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7) but their KIND has narrowed and
 round 8 finally names the mechanism. Rounds 1–6 read as "I fix instances, not classes." Round 7
 read as "prose has no compiler." Round 8 is more specific and more actionable than either: **the
 recurring defect is a rule with two written statements, and every one of them was created by a

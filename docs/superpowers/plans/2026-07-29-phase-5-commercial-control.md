@@ -221,6 +221,25 @@ live vendor obligation out of every budget and forecast: revoke Head A as miscod
 therefore an ATOMIC REPLACEMENT in one transaction, and a partial unique enforces exactly
 one active attribution per live PO line version, so a live line can never be unattributed. The attribution is the ONLY new fact; the amount is not copied.
 
+**The row carries NO amount column at all.** "The amount is not copied" is the rule; a column to
+copy it into is how the rule gets broken, and an earlier revision of the freeze list below named
+`amount` among the attribution's frozen columns — which would have created exactly the second
+committed-amount ledger this section forbids, with the freeze trigger then preserving whatever a
+bad issuance wrote. `COMMITTED` reads `committedAmountBase` from the frozen PO-line snapshot
+through `ProcurementQuery` (§0), always. The attribution's columns are the identity ones only:
+the target PO-line reference, `costHead`, `reason`, and the supersession stamp.
+
+**And PostgreSQL enforces EXACTLY ONE attribution target.** `(poLineId | labourPoLineId)` is two
+nullable alternatives, so it needs the same XOR CHECK §F states for a bill line — the identical
+rule at a second site, and stating it there and not here is the propagation failure this review
+keeps finding. Both degenerate shapes are real: a row with BOTH targets is ONE row standing for
+two obligations, so cancelling or re-attributing the material side stamps it superseded and the
+labour line silently loses its live attribution while its obligation stands — `COMMITTED` drops
+for work still owed; a row with NEITHER is an attribution-shaped fact that attributes nothing,
+letting issuance satisfy the "never unattributed" partial unique while the live PO line is in
+fact unattributed. So: `CHECK ((poLineId IS NULL) <> (labourPoLineId IS NULL))`, and the partial
+unique is per target, not per row.
+
 One active attribution per LINE is not sufficient, because a PO amendment retains v1's line
 and issues v2's: both attributions stay active and the committed total reads ₹200 for a
 ₹100 order. The fold is `COMMITTED(costHead)` (§0) — restricted to attributions whose PO
@@ -266,10 +285,11 @@ passes because they all inspect frozen columns on rows that were never re-keyed.
 is the ordinary append-only shape this repository already uses (AGENTS.md: immutable after write
 except a single explicit permitted transition): **DELETE is refused always, and UPDATE is refused
 always EXCEPT the one controlled transition — stamping an ACTIVE row superseded** (setting
-`supersededAt`/`supersededBy` and nothing else; `costHead`, `poLineId`, `amount`, `reason` and
-the attribution's own identity columns are rejected on any UPDATE, and a row already superseded
+`supersededAt`/`supersededBy` and nothing else; `costHead`, the PO-line target, `reason` and the
+attribution's own identity columns are rejected on any UPDATE, and a row already superseded
 cannot be stamped again). Reclassification therefore has exactly one representable path, and it
-always leaves two rows.
+always leaves two rows. There is no `amount` in that list because there is no `amount` column —
+see above.
 
 This is the Phase-4 §C lesson applied to money: a second ledger holding the same number is
 a second truth, and the two will diverge under amendment.
@@ -335,12 +355,25 @@ line**. It has a different unit, a different authority and a different lifecycle
   A zero floor alone stops `MEASURED` going negative and nothing else: measure 100, certify a
   100-unit bill, then append −50 and the fold sits at a perfectly legal 50 while a live
   certificate for 100 stands — bound 2 is broken AFTER the payable fact exists, and the
-  certificate is append-only so nothing walks it back. So a reducing correction is refused
-  unless the result still covers live consumption: `MEASURED(poLine)` after the correction must
-  be `≥ max(0, BILLED_QTY(poLine) over live bills)`, re-derived under the same serialization as
-  the positive cap. Withdrawing measured work that a live claim rests on requires superseding
-  that certificate first — the same ordering §E requires for withdrawing accepted material.
-  A measurement correction IS an evidence-withdrawal path and belongs in that row of §0b.
+  certificate is append-only so nothing walks it back. So a reducing correction may not leave
+  `MEASURED(poLine)` below what a live payable fact has already consumed, re-derived under the
+  same serialization as the positive cap.
+
+  **But "consumed" means CERTIFIED, and an uncertified claim is DISPUTED rather than blocking.**
+  An earlier revision refused the correction whenever live `BILLED_QTY` would exceed the new
+  total, which blocks evidence repair on the strength of a bill nobody has verified: measure 100,
+  a vendor submits a 100-unit labour claim, then the engineer discovers the real figure is 50 —
+  the correction is refused and the site cannot fix its own record until the vendor's unverified
+  claim is dealt with. §G already decided this for the material side, where an acceptance reversal
+  DISPUTES live uncertified claims and refuses only against a live certificate; the measurement
+  path owes the identical disposition, and giving acceptance one rule and measurement another is
+  the same one-site-short defect as the rest of this round. So, under the serialization:
+  refuse only if the result would fall below `max(0, BILLED_QTY over live CERTIFIED bills)`;
+  otherwise DISPUTE enough live uncertified claims — newest-first, stopping as soon as the
+  aggregate bound holds, exactly as §G disputes acceptances — and let the correction land.
+  Withdrawing measured work a live CERTIFICATE rests on still requires superseding that
+  certificate first, the same ordering §E requires for accepted material. A measurement
+  correction IS an evidence-withdrawal path and belongs in that row of §0b.
 - **Material lines are not measured.** For a material PO line the accepted quantity IS the
   measurement: `ACCEPTED(poLine)` per §0 — acceptance movements net of acceptance reversals,
   read through `InventoryQuery`. A parallel manual measurement of delivered material would
@@ -402,16 +435,28 @@ both certifiable — and Task 4 would have to invent its own duplicate predicate
 exception this section declared. So the bill carries a **FROZEN vendor reference**: the vendor's
 own document number (`vendorBillNumber`) and its document date, non-blank under the §0b whitespace
 rule, column-frozen after write like every other identity column this phase seals. A **partial
-unique index on `(projectId, vendorId, vendorBillNumber)` over non-cancelled bills** makes a
-second live claim under one vendor document unrepresentable at PostgreSQL — the same shape as
-Task 2's one-recorded-quote-per-`(rfq, vendor)` seal, whose review established that a duplicate
-commercial document is a PG constraint and not a service check, because two concurrent submissions
-each see zero. `duplicate-claim` is then the SERVICE-side verdict for the cases the index cannot
-see: a re-submission after the first was cancelled, and the same units claimed twice under
-DIFFERENT vendor document numbers, which the index permits and the accepted-quantity bound
-catches only once the second claim exceeds what was accepted. A superseding version of the same
-bill reuses its own reference and is not a duplicate — the uniqueness is per BILL, over its live
-versions, not per version.
+unique index on `(projectId, vendorId, vendorBillNumber)` over bills whose current version is
+NON-TERMINAL** makes a second live claim under one vendor document unrepresentable at
+PostgreSQL — the same shape as Task 2's one-recorded-quote-per-`(rfq, vendor)` seal, whose review
+established that a duplicate commercial document is a PG constraint and not a service check,
+because two concurrent submissions each see zero.
+
+**The index predicate names states §F actually has.** An earlier revision scoped it to
+"non-cancelled" bills, and §F's lifecycle has no `cancelled` state — it has
+`draft → submitted → under-verification → { verified | disputed }`, `disputed → resolved`
+(terminal), and `disputed | verified → rejected`. Keying on a state that does not exist leaves
+Task 4 two bad choices, which is what makes this a defect rather than wording: follow the
+lifecycle and the index never releases, so a vendor whose bad `V-1` was REJECTED can never
+resubmit a corrected `V-1` under its own document number; or invent an unreviewed cancel path to
+satisfy the predicate. So the predicate is `WHERE status NOT IN ('rejected', 'resolved')` — the
+two terminal states the lifecycle defines — and a rejected or resolved bill releases its vendor
+document number for an honest resubmission. `duplicate-claim` is then the SERVICE-side verdict
+for the cases the index cannot see: a resubmission after rejection that is genuinely the same
+claim rather than a correction, and the same units claimed twice under DIFFERENT vendor document
+numbers, which the index permits and the accepted-quantity bound catches only once the second
+claim exceeds what was accepted. A superseding version of the same bill reuses its own reference
+and is not a duplicate — the uniqueness is per BILL, over its current version's status, not per
+version.
 
 The triple is **recomputed at every state transition that depends on it** — submission,
 verification and certification — never read from a stored column. A stored verdict is a
@@ -547,7 +592,20 @@ the cash left the practice. So `payments.reverse` re-derives the status from the
 transaction — `PAID = 0 → approved-for-payment`, `0 < PAID < APPROVED → part-paid`,
 `PAID = APPROVED → paid` — as a CAS transition on the status it read, exactly the stored-versus-
 derived discipline Phase 4 Task 2 needed twice (a defaulted commitment left a requisition line
-STALE, and a post-closure default left a closed parent with an open child). A status column that
+STALE, and a post-closure default left a closed parent with an open child).
+
+**A retention RELEASE re-derives it too, and the derivation is against `NET_PAYABLE`, not
+`APPROVED`.** A release raises `NET_PAYABLE` (§H), which makes money payable that no approval
+covers — and the reversal rule above compares `PAID` to `APPROVED` only, so it cannot see it.
+Certify ₹100 with ₹10 retention, approve and pay the ₹90, then release ₹5: `APPROVED = PAID = ₹90`
+so every clause above says `paid`, while §J correctly reports ₹5 sitting in `certified-payable`.
+The bill would read fully paid with cash still owed — a stored status contradicting the forecast
+built from the same folds, which is the exact failure this paragraph exists to prevent. So the
+derivation's terminal arm is `PAID = APPROVED = NET_PAYABLE → paid`, and `NET_PAYABLE > APPROVED`
+derives `approved-for-payment` (or `part-paid` when `0 < PAID`) regardless of how much has been
+paid; `deductions.release` performs that same CAS re-derivation in its own transaction, under the
+bill lock, exactly as `payments.reverse` does. One derivation, every writer that can move either
+side of it. A status column that
 can disagree with its own fold is the same defect in a third phase.
 
 **A `disputed` version is never revived.** Round 11 wrote the reason into §0 — "a disputed
@@ -963,6 +1021,21 @@ than inventing a cost head — the operator picks). This is the same rule as Tas
 backfill, at the site where the capability itself turns on: existing rows need a backfill, not only
 forward writes.
 
+**Which fixes where the attribution table lands: Task 1, not Task 2.** This rule and Task 2's
+placement of `CommitmentAttribution` were written independently and contradict each other — Task 1
+ships the capability, so on a pilot project that already holds a live PO, Task 1 must attribute
+that line in the activation transaction, and it cannot without the table and its participant.
+Neither escape is acceptable: implementing activation without the backfill leaves a
+capability-on project whose forecast silently omits every commitment predating enablement — the
+"observational not operational" defect Phase 3 Task 7 was blocked for — and deferring activation
+to Task 2 means Task 1 ships a capability nothing may turn on, so its own §D inertness proof has
+nothing to prove. So **Task 1 owns the `CommitmentAttribution` table, its XOR/uniqueness seals,
+the `CommercialParticipant` write path, and the activation backfill**; Task 2 owns the attribution
+LIFECYCLE over it — the issue/amend/cancel/close-short hooks, supersession, and the §C
+`COMMITTED` fold. That is still one architectural concern per task: Task 1 is "the capability can
+be turned on truthfully", Task 2 is "obligations track their PO's lifecycle". Probe 5bd therefore
+runs at the Task-1 tree, and probes 5ai/5ar/5aj at the Task-2 tree.
+
 ### §M. Frontend surfaces
 
 ONE capability-gated Commercial hub cloning the cleared Materials/Labour discipline: tabs
@@ -978,8 +1051,8 @@ draft → CI → exact-head Codex gate.
 
 | Task | Scope | Review stop |
 |---|---|---|
-| 1 | `commercial` capability + module skeleton + `CostHead` + versioned immutable `BudgetLine` + SINK manifest + acyclicity test + §D/§L inertness proof | — |
-| 2 | `CommitmentAttribution` over the EXISTING frozen committed amounts (§C) + budget-vs-committed exception + Inbox action | — |
+| 1 | `commercial` capability + module skeleton + `CostHead` + versioned immutable `BudgetLine` + the `CommitmentAttribution` TABLE with its XOR/uniqueness seals + `CommercialParticipant` + the activation backfill that attributes every pre-existing live PO line or refuses naming it (§L) + SINK manifest + acyclicity test + §D/§L inertness proof | — |
+| 2 | The attribution LIFECYCLE over Task 1's table — issue/amend/cancel/close-short hooks, supersession, the §C `COMMITTED` fold over the EXISTING frozen committed amounts + budget-vs-committed exception + Inbox action | — |
 | 3 | `Measurement` (§D) — immutable, delta corrections, activity sign-off gate, material lines read acceptance instead | **STOP** — narrow review before any bill can consume a measurement |
 | 4 | `VendorBill` + lines + immutable versions + the §F CAS lifecycle **up to `under-verification`** + §G bounds 1–2 + **the `disputed` transition AND both withdrawal guards, because this is the task that first creates a LIVE bill: the acceptance side (`InventoryParticipant`-side `assertAcceptanceReversible`) AND the measurement side — Task 3 ships the signed-delta correction route while no `BILLED_QTY` row can exist, so its guard has only the zero floor; the §D live-claim floor (`MEASURED` may not fall below `BILLED_QTY(poLine)`) has to ship HERE or measure 100 → bill 100 live → correct −50 leaves `BILLED_QTY = 100 > MEASURED = 50`. Same rule, both sites (§0b)** | — |
 | 5 | Three-way verification (§E) — and therefore the `verified` transition itself — + dispute/resolution + certification + §G bound 3 + §H deduction ledger + **the §I measurer/acceptor-vs-certifier SoD rule AND the `SodException` record with its seals** | **STOP** — narrow review before payment authority exists |
@@ -1300,6 +1373,29 @@ SECTION is right and the probe is the defect.
    reference and is accepted; a re-submission after cancellation is accepted and the same units
    claimed under a DIFFERENT vendor number raises the service-side `duplicate-claim` verdict
    rather than passing every bound silently.
+5bi. §C an attribution names EXACTLY ONE PO line at PostgreSQL and carries NO amount: a row with
+   NEITHER a material nor a labour target is REJECTED (so issuance cannot satisfy the
+   never-unattributed unique with a fact that attributes nothing), a row with BOTH is REJECTED
+   (so superseding the material side cannot silently un-attribute a live labour line), each valid
+   shape is ACCEPTED, and the table has no `amount` column — `COMMITTED` is asserted to change
+   when the PO line's frozen `committedAmountBase` is the only thing that moved.
+5bj. §F the duplicate-document index releases on the lifecycle's OWN terminal states: submit
+   vendor bill `V-1`, REJECT it, resubmit a corrected `V-1` → ACCEPTED; the same for a `resolved`
+   bill; while a second `V-1` against a `submitted`, `under-verification`, `verified`, `certified`
+   or `disputed` bill is REFUSED, and two concurrent first submissions admit exactly one under a
+   deterministic barrier. RED against a `WHERE NOT cancelled` predicate, which names no state §F
+   defines and so never releases.
+5bk. §F a retention release re-derives payment status: certify ₹100 with ₹10 retention, approve
+   and pay ₹90 (status `paid`), then release ₹5 → the status re-derives to `approved-for-payment`
+   under CAS in the release's own transaction, and §J reports ₹5 in `certified-payable` — the
+   stored status and the forecast never disagree. RED against a derivation that compares only
+   `PAID` to `APPROVED`.
+5bl. §D a reducing measurement correction DISPUTES uncertified claims and refuses only against a
+   certificate: measure 100, submit an uncertified 100-shift labour bill, correct to 50 → the
+   correction LANDS and the claim is disputed (newest-first, stopping when the bound holds);
+   certify that bill first and the same correction is REFUSED naming the certificate; superseding
+   the certificate then permits it. RED against a floor that blocks on live `BILLED_QTY`
+   regardless of certification — the material side's §G disposition at the measurement site.
 5bh. §E supersession re-scopes deductions AND releases atomically: certify ₹100, retain ₹10,
    release ₹5, then supersede to ₹50 — the live certificate reads ₹10 retained and ₹5 released
    (`NET_PAYABLE` ₹45), never ₹10 retained with ₹0 released, so no released rupee is clawed back;
