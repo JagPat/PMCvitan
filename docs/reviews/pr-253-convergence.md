@@ -1,6 +1,6 @@
 # PR #253 — convergence audit
 
-Bounded docs-only review (`Review-Deferred-To-Probes`). Seven finding-bearing heads, seventeen
+Bounded docs-only review (`Review-Deferred-To-Probes`). Eight finding-bearing heads, eighteen
 findings, all correct. **Round 7 withdraws the packet-ledger verification rather than patching
 it a fifth time — see the closing section, which is the real conclusion of this PR.**
 
@@ -23,6 +23,7 @@ it a fifth time — see the closing section, which is the real conclusion of thi
 | `c852d06` | P2 `probe 5w and 9z` left 9z unverified | how many probes does one row cite? |
 | `c852d06` | P2 an `.mdx` plan was admitted but never read | do my own two definitions agree? |
 | `c852d06` | P2 a table row without a trailing pipe was refused | which markdown spelling is a row? |
+| `a801ff9` | P2 `phase-999-task-999` was shape-valid | is this task REAL? |
 
 ## Architectural cause
 
@@ -324,6 +325,32 @@ thing being checked is prose. I read it instead as "my regex is not tight enough
 times. The generalisable rule: **when a gate needs to parse English to decide, the decision
 belongs to the reviewer — and the tell is the second fix, not the fifth.**
 
+## Round 8 — one finding, and it lands on the mechanical side of the line
+
+`phase-999-task-999` satisfies the shape allowlist and names no review stop, so the trailer can
+declare a handoff to nothing. Correct, and worth separating carefully from what round 7 withdrew:
+**this one is checkable without reading prose.** `docs/STATUS.md` is a machine-readable state
+file with an existing parser (`parseStatusNow`), and this workflow already runs from the trusted
+default branch's own checkout — so the fix is a structured-field read, not a markdown parse.
+
+`deferralPhases(now)` returns the phases a deferral may name: the CURRENT `phase` and the phase
+`next_task` names. On today's `main` that is `{4, 5}`, so `phase-5-task-1` is accepted and
+`phase-999-task-999` is refused. The rule behind it is substantive, not merely a filter: a
+deferral hands work to a review stop **in the phase under review**, and pointing at a later phase
+is a scope change disguised as a handoff.
+
+**What is still not checked, stated plainly.** The task INDEX inside a valid phase. `phase-5-task-99`
+passes. Task indices live in the plan's markdown task table, and reading that is exactly the prose
+parsing round 7 withdrew — so AGENTS.md asks the reviewer to flag a deferral naming a task the plan
+does not define. An unreadable STATUS imposes no constraint at all, because that is not evidence a
+task is fake.
+
+**Why this is not round 7 relapsing.** The distinction that matters is not "how strict" but "what
+kind of artifact". A YAML field in a state file has one meaning; a markdown line does not. Round 7's
+rule was *when a gate needs to parse English to decide, the decision belongs to the reviewer* — and
+this check never parses English. The count is also evidence the line is in the right place: five
+findings on the head that still parsed prose, one on the head that stopped.
+
 ## What this does not do
 
 Nothing here discounts, filters or downgrades a finding, and `codex-current-head` still
@@ -334,6 +361,6 @@ suppressed a correct finding; this is deliberately not that, which is also why #
 findings were fixed rather than deferred even though its head count was past the cap.
 
 Gates (re-run at this head): `pnpm test:automation` 119/119; `pnpm check` EXIT 0 (web 543/543,
-API 680/680). The suite count is unchanged across rounds 5–7: rounds 5 and 6 added assertions
+API 680/680). The suite count is unchanged across rounds 5–8: rounds 5, 6 and 8 added assertions
 inside existing tests, and round 7 replaced the ledger test with a withdrawal test one-for-one.
 `origin/main` (PR #254) is merged into this branch; the branch was behind, not conflicted.

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { loadStatusDocument } from './autonomous-status-state.mjs';
 
 import {
   codexThreadIdsToResolve,
@@ -9,6 +10,7 @@ import {
 import {
   assessConvergence,
   assessReviewScope,
+  deferralPhases,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
 import {
@@ -957,12 +959,24 @@ export async function enforceReviewConvergence(
   } catch {
     pullRequestFiles = undefined;
   }
+  // Which phases a deferral may name. `docs/STATUS.md` is a machine-readable state file and
+  // this workflow runs from the trusted default branch's own checkout, so this is a plain
+  // structured-field read — not the PR-head content fetching this PR withdrew. Unreadable
+  // leaves it undefined, which assessConvergence treats as "no constraint".
+  let activePhases;
+  try {
+    const status = await loadStatusDocument();
+    activePhases = deferralPhases(status?.now);
+  } catch {
+    activePhases = undefined;
+  }
   const result = assessConvergence({
     comments,
     reviews,
     headMessage: commit.commit?.message,
     changedFiles: commit.files ?? [],
     pullRequestFiles,
+    activePhases,
   });
   if (result.allowed) return result;
 

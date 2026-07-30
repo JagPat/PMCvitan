@@ -191,7 +191,26 @@ const DEFERRAL_TRAILER = 'review-deferred-to-probes';
 // an unrecognised value as no task at all — the direction that fails closed. The two shapes
 // are this repository's own task vocabulary, the same strings `docs/STATUS.md` uses for
 // `next_task`/`work_item`.
-const TASK_REFERENCE = /^phase-\d+-(?:task-\d+|planning)$/iu;
+const TASK_REFERENCE = /^phase-(?<phase>\d+)-(?:task-\d+|planning)$/iu;
+
+// A shape-valid value can still name a review stop that does not exist:
+// `phase-999-task-999` parses and schedules nothing. The PHASE is checkable against
+// `docs/STATUS.md`, which is a machine-readable state file with an existing parser — so this is
+// a structured-field read, not the prose parsing withdrawn below. Acceptable phases are the
+// CURRENT one and the one `next_task` names: a deferral belongs to the phase under review, and
+// pointing at a later phase is a scope change disguised as a deferral, not a handoff.
+//
+// The task INDEX inside a valid phase is NOT checked. It lives in the plan's markdown task
+// table, and reading that is the prose parsing this PR withdrew. AGENTS.md asks the reviewer to
+// flag a deferral naming a task the plan does not define.
+export function deferralPhases(now) {
+  const phases = new Set();
+  const current = Number.parseInt(String(now?.phase ?? '').trim(), 10);
+  if (Number.isInteger(current)) phases.add(current);
+  const next = TASK_REFERENCE.exec(String(now?.next_task ?? '').trim());
+  if (next) phases.add(Number.parseInt(next.groups.phase, 10));
+  return [...phases];
+}
 
 function messageTrailers(message) {
   const blocks = String(message ?? '').trimEnd().split(/\n[\t ]*\n/u);
@@ -294,6 +313,7 @@ export function assessConvergence({
   headMessage,
   changedFiles,
   pullRequestFiles,
+  activePhases,
 }) {
   const findingHeads = codexFindingHeads(comments, reviews);
   const findingHeadCount = findingHeads.length;
@@ -346,6 +366,20 @@ export function assessConvergence({
         + 'deferred findings, in this repository\'s own task vocabulary '
         + '("phase-<n>-task-<m>" or "phase-<n>-planning"); a bare marker or a word like '
         + '"later" schedules nothing']
+      : []),
+    // A shape-valid task in a phase this repository is not working on schedules nothing
+    // either. Checked only when the phase set could be read; an unreadable STATUS is not
+    // evidence that the task is fake.
+    ...(deferralRequired && typeof deferral === 'string'
+      && Array.isArray(activePhases) && activePhases.length > 0
+      && !activePhases.includes(
+        Number.parseInt(TASK_REFERENCE.exec(deferral).groups.phase, 10),
+      )
+      ? [`"${deferral}" names phase `
+        + `${Number.parseInt(TASK_REFERENCE.exec(deferral).groups.phase, 10)}, but `
+        + `docs/STATUS.md puts this repository in phase ${activePhases.join(' or ')}. A `
+        + 'deferral hands work to a review stop in the phase under review; a later phase is a '
+        + 'scope change, not a handoff']
       : []),
     // A trailer naming a task, with a packet that records no handoff, is the bare marker
     // wearing a task name: nothing is actually scheduled. The obligation has always been

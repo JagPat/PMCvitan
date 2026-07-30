@@ -202,7 +202,12 @@ them. `assessConvergence` enforces it.
 **What the gate verifies, and what it deliberately does not.** The gate checks ONE thing about
 the deferral: the trailer value names a TASK — `phase-<n>-task-<m>` or `phase-<n>-planning`, this
 repository's own vocabulary. An allowlist, not a list of rejected placeholders, so a value like
-`later` names no task and is refused.
+`later` names no task and is refused. The PHASE is also checked against `docs/STATUS.md` — the
+current phase and the one `next_task` names — so `phase-999-task-999` is refused too: a deferral
+hands work to a review stop in the phase under review, and a later phase is a scope change rather
+than a handoff. That is a structured-field read of a machine-readable state file, which is the
+class of check a gate can make. The task INDEX inside a valid phase is not checked; it lives in
+the plan's markdown task table, and reading that is the prose parsing described below.
 
 The **deferral ledger** — each still-open question with the probe that adjudicates it, and each
 probe named in the plan — is an author obligation stated in `AGENTS.md` and judged by the

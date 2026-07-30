@@ -1320,6 +1320,12 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   assert.doesNotMatch(gate, /packetText/u);
   assert.doesNotMatch(gate, /planText/u);
   assert.doesNotMatch(gate, /fileText/u);
+  // The one thing the gate DOES read beyond the API: docs/STATUS.md, from its own trusted
+  // checkout, to bound which phases a deferral may name. A structured-field read of a
+  // machine-readable state file is the class of check that belongs in a gate.
+  assert.match(gate, /loadStatusDocument\(\)/u);
+  assert.match(gate, /deferralPhases\(status\?\.now\)/u);
+  assert.match(gate, /activePhases,/u);
   assert.match(gate, /state: 'convergence_required'/u);
   assert.match(gate, /Review-Convergence: complete/u);
   assert.match(gate, /assessReviewScope\(pullRequest\)/u);

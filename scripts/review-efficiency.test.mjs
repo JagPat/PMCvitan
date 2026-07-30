@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 import {
   assessConvergence,
+  deferralPhases,
   assessReviewScope,
   codexFindingHeads,
   isDocsOnlyDiff,
@@ -577,6 +578,34 @@ test('the deferral is the trailer only; the ledger is the reviewer\'s to judge',
   });
   assert.equal(noTrailer.allowed, false);
   assert.match(noTrailer.missing.join(' '), /Review-Deferred-To-Probes/u);
+
+  // FINDING (#253 round 8 P2) — a shape-valid value can name a review stop that does not
+  // exist. The PHASE is checkable against docs/STATUS.md, a machine-readable state file, so
+  // this is a structured-field read rather than the prose parsing round 7 withdrew.
+  const phases = deferralPhases({ phase: '4', next_task: 'phase-5-planning' });
+  assert.deepEqual(phases, [4, 5]);
+  const unreal = assessConvergence({
+    ...base, activePhases: phases, headMessage: withTrailer('phase-999-task-999'),
+  });
+  assert.equal(unreal.allowed, false, 'phase 999 is not a phase this repository is in');
+  assert.match(unreal.missing.join(' '), /names phase 999/u);
+  const real = assessConvergence({
+    ...base, activePhases: phases, headMessage: withTrailer('phase-5-task-1'),
+  });
+  assert.equal(real.allowed, true, 'phase 5 is the phase under review');
+
+  // ...and an unreadable STATUS imposes no constraint — it is not evidence the task is fake
+  const noStatus = assessConvergence({
+    ...base, activePhases: deferralPhases(null), headMessage: withTrailer('phase-999-task-999'),
+  });
+  assert.equal(noStatus.allowed, true, 'no phase set means no phase constraint');
+
+  // the task INDEX inside a valid phase is deliberately unchecked — it lives in the plan's
+  // markdown table, and reading that is what round 7 withdrew
+  const unknownIndex = assessConvergence({
+    ...base, activePhases: phases, headMessage: withTrailer('phase-5-task-99'),
+  });
+  assert.equal(unknownIndex.allowed, true, 'the task index is the reviewer\'s to check');
 
   // below the cap no deferral is owed at all
   const withinCap = assessConvergence({
