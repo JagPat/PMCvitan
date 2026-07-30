@@ -6,10 +6,14 @@ import { join } from 'node:path';
 
 import {
   assessConvergence,
+  deferralPhases,
   assessReviewScope,
   codexFindingHeads,
+  isDocsOnlyDiff,
+  PLAN_REVIEW_ROUND_CAP,
   REQUIRED_INVARIANTS,
 } from './review-efficiency.mjs';
+import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
 import { run as runScope } from './review-scope.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -336,4 +340,533 @@ test('the dependency-free scope CLI returns success or failure from the PR event
     process.exitCode = previousExitCode;
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('a docs-only diff is recognised, and any code file disqualifies it', () => {
+  assert.equal(isDocsOnlyDiff([
+    'docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md',
+    'docs/STATUS.md',
+    { filename: 'docs/reviews/pr-252-convergence.md', status: 'modified' },
+    'README.md',
+  ]), true);
+
+  // one script, schema, test or workflow file and it is no longer a plan review
+  for (const code of [
+    'scripts/review-efficiency.mjs',
+    'apps/api/prisma/schema.prisma',
+    'apps/web/tests/labour.test.ts',
+    '.github/workflows/ci.yml',
+  ]) {
+    assert.equal(
+      isDocsOnlyDiff(['docs/STATUS.md', code]),
+      false,
+      `${code} must disqualify a docs-only claim`,
+    );
+  }
+  assert.equal(isDocsOnlyDiff([]), false, 'an empty diff is not a plan review');
+});
+
+// A plan has no executable surface, so a finding on it can never be answered
+// with a RED→GREEN proof — only with more prose. PR #252 ran four finding-bearing
+// heads (8/8/7/7, every finding correct) with no declining rate, because the
+// convergence protocol demands a batched audit after two heads and never says
+// when a DOCS-ONLY review is finished. This bounds it.
+test('a docs-only review past the round cap must record a probe deferral', () => {
+  const codexHeads = (n) => Array.from({ length: n }, (_, i) => ({
+    user: { login: CODEX },
+    commit_id: String.fromCharCode(97 + i).repeat(40),
+  }));
+  const packet = { filename: 'docs/reviews/pr-252-convergence.md', status: 'modified' };
+  const docsOnly = ['docs/superpowers/plans/2026-07-29-phase-5.md', packet];
+
+  // below the cap nothing changes: convergence trailer + packet is enough
+  const withinCap = assessConvergence({
+    comments: [],
+    reviews: codexHeads(PLAN_REVIEW_ROUND_CAP - 1),
+    headMessage: 'fix: correction\n\nReview-Convergence: complete',
+    changedFiles: docsOnly,
+    pullRequestFiles: docsOnly,
+  });
+  assert.equal(withinCap.allowed, true);
+  assert.equal(withinCap.deferralRequired, false);
+
+  // at the cap, the same head is no longer sufficient — the still-open
+  // architectural questions must be named, with the probe and task that settle
+  // each. This does NOT dismiss a finding; it moves its verification to where a
+  // verification can exist.
+  const atCap = assessConvergence({
+    comments: [],
+    reviews: codexHeads(PLAN_REVIEW_ROUND_CAP),
+    headMessage: 'fix: correction\n\nReview-Convergence: complete',
+    changedFiles: docsOnly,
+    pullRequestFiles: docsOnly,
+  });
+  assert.equal(atCap.deferralRequired, true);
+  assert.equal(atCap.allowed, false);
+  assert.match(atCap.missing.join(' '), /Review-Deferred-To-Probes/u);
+
+  const deferred = assessConvergence({
+    comments: [],
+    reviews: codexHeads(PLAN_REVIEW_ROUND_CAP),
+    headMessage: [
+      'fix: plan convergence, remainder deferred to probes',
+      '',
+      'Review-Convergence: complete',
+      'Review-Deferred-To-Probes: phase-5-task-1',
+    ].join('\n'),
+    changedFiles: docsOnly,
+    pullRequestFiles: docsOnly,
+    // the trailer asserts the handoff; the packet is where it is written down
+    packetText: '## Deferral ledger\n| Question | Probe | Settled by |\n'
+      + '| --- | --- | --- |\n| does overage clamp? | probe 5w | phase-5-task-1 |\n',
+    planText: '## Required plan probes\n5w. §0 COMMITTED close-short behaviour.\n',
+    // and STATUS must SHOW phase 5 still has a review stop ahead of it — see the
+    // fail-closed test below for why an absent phase set no longer passes
+    activePhases: [5],
+  });
+  assert.equal(deferred.allowed, true);
+  assert.equal(deferred.deferredTo, 'phase-5-task-1');
+
+  // the cap is for documents only: a CODE PR past the same round count still
+  // owes an ordinary convergence head, because its findings ARE provable.
+  const codePr = assessConvergence({
+    comments: [],
+    reviews: codexHeads(PLAN_REVIEW_ROUND_CAP),
+    headMessage: 'fix: correction\n\nReview-Convergence: complete',
+    changedFiles: ['scripts/review-efficiency.mjs', packet],
+    pullRequestFiles: ['scripts/review-efficiency.mjs', packet],
+  });
+  assert.equal(codePr.deferralRequired, false);
+  assert.equal(codePr.allowed, true);
+});
+
+test('a probe deferral must name the task that will settle it', () => {
+  const reviews = Array.from({ length: PLAN_REVIEW_ROUND_CAP }, (_, i) => ({
+    user: { login: CODEX },
+    commit_id: String.fromCharCode(97 + i).repeat(40),
+  }));
+  const changedFiles = [
+    'docs/superpowers/plans/plan.md',
+    { filename: 'docs/reviews/pr-252-convergence.md', status: 'modified' },
+  ];
+  const bare = assessConvergence({
+    comments: [],
+    reviews,
+    headMessage: [
+      'fix: correction',
+      '',
+      'Review-Convergence: complete',
+      'Review-Deferred-To-Probes: yes',
+    ].join('\n'),
+    changedFiles,
+    pullRequestFiles: changedFiles,
+  });
+  assert.equal(
+    bare.allowed,
+    false,
+    '"yes" names no task, so nothing is scheduled to settle the deferred findings',
+  );
+  assert.match(bare.missing.join(' '), /name the TASK/u);
+
+  // FINDING (#253 round 6 P2) — the check was a BLOCKLIST of bare words, so any value the
+  // list had not anticipated was accepted as a scheduled handoff. An allowlist of this
+  // repository's own task vocabulary treats an unrecognised value as no task at all.
+  for (const value of ['later', 'the next task', 'TBD', 'phase-5', 'task-1', 'soon']) {
+    const notATask = assessConvergence({
+      comments: [],
+      reviews,
+      headMessage: [
+        'fix: correction',
+        '',
+        'Review-Convergence: complete',
+        `Review-Deferred-To-Probes: ${value}`,
+      ].join('\n'),
+      changedFiles,
+      pullRequestFiles: changedFiles,
+    });
+    assert.equal(notATask.allowed, false, `"${value}" is not a task reference`);
+    assert.match(notATask.missing.join(' '), /name the TASK/u);
+  }
+  // the two real shapes are accepted when STATUS shows their phase still has work
+  for (const value of ['phase-5-task-1', 'phase-6-planning']) {
+    const real = assessConvergence({
+      comments: [],
+      reviews,
+      activePhases: [5, 6],
+      headMessage: [
+        'fix: correction',
+        '',
+        'Review-Convergence: complete',
+        `Review-Deferred-To-Probes: ${value}`,
+      ].join('\n'),
+      changedFiles,
+      pullRequestFiles: changedFiles,
+      packetText: `## Deferral ledger\n| q? | probe 5w | ${value} |\n`,
+      planText: '5w. §0 COMMITTED close-short behaviour.\n',
+    });
+    assert.equal(real.allowed, true, `${value} is a task reference`);
+    assert.equal(real.deferredTo, value);
+  }
+});
+
+// FINDING (#253 round 1 P2 ×3) — three ways isDocsOnlyDiff misclassified a diff.
+test('runnable and schema files never count as documentation, wherever they live', () => {
+  for (const runnable of [
+    'docs/probes/foo.test.mjs',
+    'docs/schema.prisma',
+    'docs/tools/repair.ts',
+    'docs/ci/deploy.yml',
+    'docs/migrations/20270101_x/migration.sql',
+    'docs/scripts/gen.py',
+  ]) {
+    assert.equal(
+      isDocsOnlyDiff(['docs/STATUS.md', runnable]),
+      false,
+      `${runnable} runs, so it is provable and not a plan review`,
+    );
+  }
+  // real documentation under docs/ still qualifies
+  assert.equal(isDocsOnlyDiff(['docs/a.md', 'docs/reviews/b.md', 'docs/img/c.svg']), true);
+});
+
+// WITHDRAWN (#253 round 7) — the packet-ledger and plan-probe verification is gone. Rounds
+// 3-6 built it four times and round 7 defeated the "complete" definition twice over: a ledger
+// maps QUESTIONS to probes and the definition specified only the probe side, and
+// `planDefinesProbe` could not tell `5. **Task 5 — frontend surfaces**` from a probe named 5.
+// Both need MEANING, which is the reviewer's side of the PR #250 line. This test pins the
+// withdrawal so it is not silently reintroduced: past the cap the gate demands a task-shaped
+// TRAILER and nothing about the packet's prose.
+test('the deferral is the trailer only; the ledger is the reviewer\'s to judge', () => {
+  const reviews = Array.from({ length: PLAN_REVIEW_ROUND_CAP }, (_, i) => ({
+    user: { login: CODEX },
+    commit_id: String.fromCharCode(97 + i).repeat(40),
+  }));
+  const docsOnly = ['docs/superpowers/plans/plan.md', 'docs/reviews/pr-252-convergence.md'];
+  const base = {
+    comments: [], reviews, changedFiles: docsOnly, pullRequestFiles: docsOnly,
+    // STATUS shows phase 5 with work ahead; the fail-closed cases override this
+    activePhases: [5],
+  };
+  const withTrailer = (value) => [
+    'fix: plan convergence',
+    '',
+    'Review-Convergence: complete',
+    `Review-Deferred-To-Probes: ${value}`,
+  ].join('\n');
+
+  // a task-shaped trailer is the whole obligation the GATE enforces
+  const allowed = assessConvergence({ ...base, headMessage: withTrailer('phase-5-task-1') });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.deferredTo, 'phase-5-task-1');
+  assert.deepEqual(allowed.missing, []);
+
+  // ...and no packet or plan content is consulted, so passing either changes nothing
+  for (const extra of [
+    { packetText: '' },
+    { packetText: 'no ledger here at all' },
+    { planText: '' },
+    { packetText: '## Deferral ledger\n| q | probe 5w | phase-5-task-1 |\n', planText: '5w. x' },
+  ]) {
+    const same = assessConvergence({
+      ...base, ...extra, headMessage: withTrailer('phase-5-task-1'),
+    });
+    assert.equal(same.allowed, true, `${JSON.stringify(extra)} must not change the verdict`);
+  }
+
+  // the trailer still has to name a task, and it still has to be PRESENT past the cap
+  for (const value of ['yes', 'later', 'TBD', 'phase-5', 'task-1']) {
+    const notATask = assessConvergence({ ...base, headMessage: withTrailer(value) });
+    assert.equal(notATask.allowed, false, `"${value}" is not a task reference`);
+    assert.match(notATask.missing.join(' '), /name the TASK/u);
+  }
+  const noTrailer = assessConvergence({
+    ...base,
+    headMessage: 'fix: plan convergence\n\nReview-Convergence: complete',
+  });
+  assert.equal(noTrailer.allowed, false);
+  assert.match(noTrailer.missing.join(' '), /Review-Deferred-To-Probes/u);
+
+  // FINDING (#253 round 8 P2) — a shape-valid value can name a review stop that does not
+  // exist. The PHASE is checkable against docs/STATUS.md, a machine-readable state file, so
+  // this is a structured-field read rather than the prose parsing round 7 withdrew.
+  const phases = deferralPhases({
+    phase: '4', task_state: 'in_progress', next_task: 'phase-5-planning',
+  });
+  assert.deepEqual(phases, [4, 5]);
+  const unreal = assessConvergence({
+    ...base, activePhases: phases, headMessage: withTrailer('phase-999-task-999'),
+  });
+  assert.equal(unreal.allowed, false, 'phase 999 is not a phase this repository is in');
+  assert.match(unreal.missing.join(' '), /names phase 999/u);
+  const real = assessConvergence({
+    ...base, activePhases: phases, headMessage: withTrailer('phase-5-task-1'),
+  });
+  assert.equal(real.allowed, true, 'phase 5 is the phase under review');
+
+  // FINDING (#253 round 10 P2) — an unreadable STATUS used to impose NO constraint, on the
+  // reasoning that it is not evidence the task is fake. True, and beside the point: it is
+  // equally not evidence the task is REAL, and round 9 had already settled that an
+  // unreadable cumulative diff must block rather than pick a path. The same principle, two
+  // fields apart in one commit, resolved two different ways. It now fails closed.
+  const noStatus = assessConvergence({
+    ...base, activePhases: deferralPhases(null), headMessage: withTrailer('phase-999-task-999'),
+  });
+  assert.equal(noStatus.allowed, false, 'an unprovable phase is not a proven one');
+  assert.match(noStatus.missing.join(' '), /could not be read/u);
+  // ...and it blocks a REAL task too, because the gate cannot tell the difference
+  const realButUnprovable = assessConvergence({
+    ...base, activePhases: undefined, headMessage: withTrailer('phase-5-task-1'),
+  });
+  assert.equal(realButUnprovable.allowed, false);
+
+  // FINDING (#253 round 10 P2) — the gate runs from the trusted default branch, so it reads
+  // main's STATUS. When the PR itself edits STATUS, that copy is not the PR's phase truth: a
+  // head closing phase 5 while deferring into phase-5-task-1 would pass on the pre-merge
+  // state. Reading the head's STATUS would also fix it, and would mean pulling PR-authored
+  // content into a write-capable workflow — the boundary this loop does not cross. The file
+  // LIST is metadata the gate already has, and it is enough.
+  const statusInDiff = ['docs/superpowers/plans/plan.md', 'docs/STATUS.md',
+    'docs/reviews/pr-252-convergence.md'];
+  // FINDING (#253 round 11 P2) — git's trailer separator is ':' with OPTIONAL whitespace.
+  // `git interpret-trailers --parse` normalizes `Key:value` to `Key: value`, so a head
+  // spelled without the space carries a VALID trailer that all three of this file's parsers
+  // reported as missing — the convergence trailer included. A gate that rejects a trailer git
+  // accepts blocks a compliant head.
+  const noSpace = assessConvergence({
+    ...base,
+    headMessage: [
+      'fix: plan convergence',
+      '',
+      'Review-Convergence:complete',
+      'Review-Deferred-To-Probes:phase-5-task-1',
+    ].join('\n'),
+  });
+  assert.equal(noSpace.hasTrailer, true, 'git parses Key:value as a trailer');
+  assert.equal(noSpace.deferredTo, 'phase-5-task-1');
+  assert.equal(noSpace.allowed, true);
+  // ...and extra whitespace is still fine
+  assert.equal(assessConvergence({
+    ...base,
+    headMessage: 'fix: x\n\nReview-Convergence:\tcomplete\nReview-Deferred-To-Probes:  phase-5-task-1',
+  }).allowed, true);
+
+  // FINDING (#253 round 11 P2) — a RENAME away from docs/STATUS.md carries the new path in
+  // `filename` and the old one in `previous_filename`, so the guard read only half the entry
+  // and a PR that moved the phase truth out from under the gate passed. Round 2 of this PR
+  // established the two-path rule and built changedPaths; the new check now uses it.
+  const renamedAway = assessConvergence({
+    ...base,
+    changedFiles: [{ filename: 'docs/STATE.md', previous_filename: 'docs/STATUS.md',
+      status: 'renamed' }, 'docs/reviews/pr-252-convergence.md'],
+    pullRequestFiles: [{ filename: 'docs/STATE.md', previous_filename: 'docs/STATUS.md',
+      status: 'renamed' }, 'docs/reviews/pr-252-convergence.md'],
+    headMessage: withTrailer('phase-5-task-1'),
+  });
+  assert.equal(renamedAway.allowed, false, 'a rename still moves the phase truth');
+  assert.match(renamedAway.missing.join(' '), /changes docs\/STATUS\.md/u);
+
+  const editsStatus = assessConvergence({
+    ...base,
+    changedFiles: statusInDiff,
+    pullRequestFiles: statusInDiff,
+    headMessage: withTrailer('phase-5-task-1'),
+  });
+  assert.equal(editsStatus.allowed, false, "main's STATUS is not this PR's phase truth");
+  assert.match(editsStatus.missing.join(' '), /changes docs\/STATUS\.md/u);
+  // a PR that does NOT touch STATUS is unaffected
+  assert.equal(assessConvergence({
+    ...base, headMessage: withTrailer('phase-5-task-1'),
+  }).allowed, true);
+
+  // the task INDEX inside a valid phase is deliberately unchecked — it lives in the plan's
+  // markdown table, and reading that is what round 7 withdrew
+  const unknownIndex = assessConvergence({
+    ...base, activePhases: phases, headMessage: withTrailer('phase-5-task-99'),
+  });
+  assert.equal(unknownIndex.allowed, true, 'the task index is the reviewer\'s to check');
+
+  // FINDING (#253 round 9 P2) — the CURRENT phase was admitted unconditionally, so once its
+  // last task merged the gate still accepted a deferral to it. A deferral names the review
+  // stop that will SETTLE the question; a phase with no open work has no such stop left, and
+  // the questions would be settled by nothing. The current phase counts only while it has
+  // open work; the next_task phase always counts, because that is where work is going.
+  const closed = deferralPhases({ phase: '4', task_state: 'merged', work_item: 'none' });
+  assert.deepEqual(closed, [], 'a phase whose work is merged settles nothing further');
+  const toClosedPhase = assessConvergence({
+    ...base, activePhases: closed, headMessage: withTrailer('phase-4-task-99'),
+  });
+  assert.equal(toClosedPhase.allowed, false, 'phase 4 has no remaining review stop');
+  assert.match(toClosedPhase.missing.join(' '), /no phase with open work/u);
+
+  // The probe above exposed a defect in its own fix: an EMPTY phase set was read as "no
+  // constraint", the same as an unreadable STATUS, so a closed phase authorized every
+  // deferral. The two answers are different and must stay different — undefined is
+  // "STATUS told us nothing" (no constraint), [] is "nothing is open" (refuse).
+  assert.equal(deferralPhases(null), undefined, 'no STATUS is not an empty phase set');
+  assert.equal(deferralPhases({}), undefined);
+  assert.equal(deferralPhases({ phase: 'unreleased' }), undefined, 'an unparseable phase');
+
+  // ...but the phase named as NEXT still counts even when the current one is closed, which
+  // is exactly the state a phase-boundary planning PR sits in
+  assert.deepEqual(
+    deferralPhases({
+      phase: '4', task_state: 'merged', work_item: 'none', next_task: 'phase-5-planning',
+    }),
+    [5],
+  );
+  // an open work item keeps the current phase eligible whatever the state word is
+  assert.deepEqual(
+    deferralPhases({ phase: '4', task_state: 'complete', work_item: 'P4T7 follow-up' }),
+    [4],
+  );
+  assert.deepEqual(deferralPhases({ phase: '4', task_state: 'in_review' }), [4]);
+
+  // FINDING (#253 round 11 P2) — the open test was a BLOCKLIST of closed words, so any state
+  // it had not heard of counted as open and authorized a deferral STATUS never justified.
+  // Round 6 of this PR replaced exactly such a blocklist with an allowlist; this is the same
+  // lesson at a second site. An UNRECOGNIZED or ABSENT state is unverified, not open — and
+  // the allowlist is docs/STATUS.md's own, imported rather than copied.
+  for (const state of ['somewhere-new', '', 'OPEN', 'done']) {
+    assert.deepEqual(
+      deferralPhases({ phase: '5', task_state: state }), [],
+      `"${state}" is not a state STATUS defines as open`,
+    );
+  }
+  assert.deepEqual(deferralPhases({ phase: '5' }), [], 'an absent task_state proves nothing');
+  // ...while every state STATUS DOES define as open counts
+  for (const state of [...OPEN_TASK_STATES]) {
+    assert.deepEqual(deferralPhases({ phase: '5', task_state: state }), [5], state);
+  }
+
+  // below the cap no deferral is owed at all
+  const withinCap = assessConvergence({
+    ...base,
+    reviews: reviews.slice(0, PLAN_REVIEW_ROUND_CAP - 1),
+    headMessage: 'fix: correction\n\nReview-Convergence: complete',
+  });
+  assert.equal(withinCap.allowed, true);
+  assert.equal(withinCap.deferralRequired, false);
+});
+
+// FINDING (#253 round 2 P2) — a rename carries TWO paths and only one was classified.
+test('a rename out of a runnable path disqualifies a docs-only diff', () => {
+  // GitHub reports a rename as status:'renamed', filename = the NEW path,
+  // previous_filename = the OLD one. Reading only `filename` made
+  // scripts/old-gate.mjs -> docs/old-gate.md look like pure documentation while
+  // runnable code was removed — the same defect as the `removed` filter, one step on.
+  assert.equal(
+    isDocsOnlyDiff([
+      { filename: 'docs/STATUS.md', status: 'modified' },
+      {
+        filename: 'docs/old-gate.md',
+        previous_filename: 'scripts/old-gate.mjs',
+        status: 'renamed',
+      },
+    ]),
+    false,
+    'renaming a script into a docs path still removes runnable code',
+  );
+  // the reverse direction was already caught by `filename`; pin it so it stays caught
+  assert.equal(
+    isDocsOnlyDiff([
+      {
+        filename: 'scripts/gate.mjs',
+        previous_filename: 'docs/gate.md',
+        status: 'renamed',
+      },
+    ]),
+    false,
+  );
+  // a doc moved to another doc path is still documentation on both sides
+  assert.equal(
+    isDocsOnlyDiff([
+      {
+        filename: 'docs/plans/b.md',
+        previous_filename: 'docs/a.md',
+        status: 'renamed',
+      },
+    ]),
+    true,
+  );
+});
+
+test('a deleted code file disqualifies a docs-only diff', () => {
+  assert.equal(
+    isDocsOnlyDiff([
+      { filename: 'docs/STATUS.md', status: 'modified' },
+      { filename: 'scripts/old-gate.mjs', status: 'removed' },
+    ]),
+    false,
+    'deleting a script is a provable change, not a plan edit',
+  );
+  // a removed DOC is still documentation
+  assert.equal(
+    isDocsOnlyDiff([
+      { filename: 'docs/STATUS.md', status: 'modified' },
+      { filename: 'docs/old-plan.md', status: 'removed' },
+    ]),
+    true,
+  );
+});
+
+// The gate passes the HEAD COMMIT's files as changedFiles. A code PR whose fourth
+// head is a convergence-packet-only commit would therefore look docs-only and be
+// blocked pending a deferral trailer that means nothing for it — this fix must not
+// break the ordinary code convergence flow it is meant to leave alone.
+test('the docs-only cap reads the whole PR, not just the convergence commit', () => {
+  const reviews = Array.from({ length: PLAN_REVIEW_ROUND_CAP }, (_, i) => ({
+    user: { login: CODEX },
+    commit_id: String.fromCharCode(97 + i).repeat(40),
+  }));
+  const packetOnlyHead = [
+    { filename: 'docs/reviews/pr-249-convergence.md', status: 'modified' },
+  ];
+  const headMessage = 'fix: batched correction\n\nReview-Convergence: complete';
+
+  // a CODE pr: the cumulative diff carries scripts, so no deferral is owed even
+  // though this head touched only the packet
+  const codePr = assessConvergence({
+    comments: [],
+    reviews,
+    headMessage,
+    changedFiles: packetOnlyHead,
+    pullRequestFiles: ['scripts/check-run-coverage.mjs', 'docs/reviews/pr-249-convergence.md'],
+  });
+  assert.equal(codePr.deferralRequired, false, 'a code PR keeps the ordinary protocol');
+  assert.equal(codePr.allowed, true);
+
+  // a genuine plan pr: the cumulative diff is documentation only
+  const planPr = assessConvergence({
+    comments: [],
+    reviews,
+    headMessage,
+    changedFiles: packetOnlyHead,
+    pullRequestFiles: ['docs/superpowers/plans/plan.md', 'docs/reviews/pr-252-convergence.md'],
+  });
+  assert.equal(planPr.deferralRequired, true);
+  assert.equal(planPr.allowed, false);
+
+  // An unknown cumulative diff used to fall to the CODE path. That silently dropped
+  // the deferral obligation from a docs-only PR whose file list happened not to read,
+  // so past the cap it now BLOCKS on its own unreadability instead of guessing: it
+  // demands no trailer (deferralRequired stays false — the gate cannot justify one)
+  // but it does not certify the head either, and the next event re-runs the read.
+  const unknown = assessConvergence({
+    comments: [], reviews, headMessage, changedFiles: packetOnlyHead,
+  });
+  assert.equal(unknown.deferralRequired, false, 'an unread diff cannot demand a deferral');
+  assert.equal(unknown.cumulativeUnreadable, true);
+  assert.equal(unknown.allowed, false, 'nor may it certify the head by guessing "code"');
+  assert.match(unknown.missing.join(' '), /cumulative diff could not be read/u);
+
+  // Below the cap the same unread list is irrelevant: no deferral is owed at all,
+  // so the ordinary convergence protocol proceeds untouched.
+  const belowCap = assessConvergence({
+    comments: [],
+    reviews: reviews.slice(0, PLAN_REVIEW_ROUND_CAP - 1),
+    headMessage,
+    changedFiles: packetOnlyHead,
+  });
+  assert.equal(belowCap.cumulativeUnreadable, false);
+  assert.equal(belowCap.allowed, true);
 });
