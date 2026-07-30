@@ -135,7 +135,7 @@ a row owes every site in that row, and the row is the acceptance criterion.
 |---|---|
 | Exactly one live attribution per live PO line version | `pos.issue` **and** labour PO issue (atomic with the version becoming live) · amend · cancel · close-short — all four through `CommercialParticipant`, none deferred to a later commercial command |
 | A status a guard depends on is read under that row's lock | measurement (activity/root) · certification (activity/root **and** the contributing lots **and** the PO line) · payment approval (the bill) |
-| Evidence cannot be withdrawn while a live payable fact consumes it | acceptance reversal (refuse vs a live certificate, DISPUTE a live uncertified claim) · `ActivityWorkOutput` supersession · sign-off revert · measurement correction · **deduction insertion after approval** — every one asks the commercial participant, or serializes on the bill, first |
+| Evidence cannot be withdrawn while a live payable fact consumes it | acceptance reversal (refuse vs a live certificate, DISPUTE a live uncertified claim) · sign-off revert · measurement correction · **deduction insertion after approval** — every one asks the commercial participant, or serializes on the bill, first. **These are the withdrawal paths that EXIST, and the list is exhaustive by construction.** An earlier revision also named `ActivityWorkOutput` supersession, which is not a path: §D verified against `20270305000000_phase4_t5_reconciliation` that the table is append-only (`ActivityWorkOutput_append_only`, BEFORE UPDATE OR DELETE) with no supersession transition, and §K's edge row says the participant edge is NOT for it. Keeping the row would have made this closure row the acceptance criterion for a guard that cannot be written — forcing either an out-of-scope Activities lifecycle added for Phase 5's benefit, or a permanently unsatisfiable check in a required participant surface. A closure list naming an impossible site is worse than a short one: it cannot be closed, so it silently converts the row from a criterion into an excuse |
 | A fold that consumes a frozen amount is clamped and overage-aware | `COMMITTED` (clamp at 0) · `BILLED_TAX`/`BILLED_FREIGHT` pro-rata cap (never scale past the frozen authority) |
 | An append-only amount column is constrained to its sign — **positive where a zero is meaningless, NON-NEGATIVE where the ordered side permits zero** | STRICTLY POSITIVE: certification · **approval** · payment · payment reversal · every deduction and release row · a claim line's QUANTITY. Approvals were the missed site of this very rule: `APPROVED(bill)` is an append-only money fold, so a negative approval could offset a later over-limit positive row under the cumulative-limit guard, or be appended after payment to drop `APPROVED` below `PAID` and break bound 5 with immutable evidence on both sides. NON-NEGATIVE (`>= 0`): a claim line's TAX and FREIGHT, because `PurchaseOrderLine`'s own CHECK is `"taxAmount" >= 0 AND "freightAmount" >= 0` — a zero-tax or zero-freight PO is legitimate, and a strictly-positive claim check would refuse a bill that matches the ordered evidence EXACTLY. Verified against `20261220000000_phase3_purchase_orders`; an earlier revision of this row said positive for all three, which would have made honest bills unrepresentable. What the sign rule actually forbids is a NEGATIVE amount: the row TYPE carries direction, so a live −100-unit claim plus a 200-unit bill would leave cumulative `BILLED_QTY` at 100 and pass bounds 1–2 against 100 accepted while the second bill certifies against its own bill-scoped amount. A credit is a separate document with its own semantics, NOT a negative line inside a conservation fold; Phase 5 has no credit note, so a negative claim is refused. |
 | A participant edge is declared in BOTH directions it is used | §K's edge table is the single source and this row deliberately does NOT copy it — a copy here would be a second declaration to keep in sync, which is exactly how round 8's §K disagreement happened. Any §-section that describes a transaction-bound call adds its row to that table in the same change. |
@@ -251,10 +251,25 @@ specified as "re-attributable with a reason" without ever joining the seals. An 
 of the active row from `CIVIL` to `MEP`, or an edited reason on an existing replacement, moves a
 historical commitment and every budget exception that fired against it with no immutable record
 that anything was reclassified. So: a re-attribution INSERTS a new row and stamps the prior one
-superseded (never edits it), an append-only trigger rejects UPDATE and DELETE of a superseded
-row, and `reason` is column-frozen after write — the same discipline the §C ledger, the promise
-registers and the frozen PO snapshots already use. This is the third site of the "a key that
-groups facts is frozen" rule and it is now in that §0b row alongside `CostHead.code`.
+superseded (never edits it), and `reason` is column-frozen after write — the same discipline the
+§C ledger, the promise registers and the frozen PO snapshots already use. This is the third site
+of the "a key that groups facts is frozen" rule and it is now in that §0b row alongside
+`CostHead.code`.
+
+**The seal is on EVERY row from insertion, not only once superseded.** An earlier revision of
+this section wrote the trigger as "rejects UPDATE and DELETE of a SUPERSEDED row", which is
+narrower than the defect the paragraph above describes: the ACTIVE row is precisely the one an
+in-place `CIVIL → MEP` edit would move, and it is not superseded at the moment of the edit. That
+spelling left the whole attack open — one UPDATE moves the live obligation between cost heads
+with no replacement row, no supersession, no reason and no evidence, and every later check still
+passes because they all inspect frozen columns on rows that were never re-keyed. So the trigger
+is the ordinary append-only shape this repository already uses (AGENTS.md: immutable after write
+except a single explicit permitted transition): **DELETE is refused always, and UPDATE is refused
+always EXCEPT the one controlled transition — stamping an ACTIVE row superseded** (setting
+`supersededAt`/`supersededBy` and nothing else; `costHead`, `poLineId`, `amount`, `reason` and
+the attribution's own identity columns are rejected on any UPDATE, and a row already superseded
+cannot be stamped again). Reclassification therefore has exactly one representable path, and it
+always leaves two rows.
 
 This is the Phase-4 §C lesson applied to money: a second ledger holding the same number is
 a second truth, and the two will diverge under amendment.
@@ -378,6 +393,25 @@ The verdict is `matched | exception`, with each exception naming its own kind
 `freight-mismatch`, `duplicate-claim`). Freight is compared, not merely carried: the
 ordered side freezes `freightAmount`, so a bill matching on quantity, rate and tax while
 inflating freight would otherwise reach certification unexamined.
+
+**`duplicate-claim` needs a KEY, and this is where it is defined.** An exception kind with no
+identity behind it is a name, not a check: naming it here while leaving vendor-bill identity
+unspecified means every quantity and amount bound passes for both copies of one invoice — 200
+units accepted, the same invoice for 100 units submitted twice, each copy inside every bound,
+both certifiable — and Task 4 would have to invent its own duplicate predicate to satisfy an
+exception this section declared. So the bill carries a **FROZEN vendor reference**: the vendor's
+own document number (`vendorBillNumber`) and its document date, non-blank under the §0b whitespace
+rule, column-frozen after write like every other identity column this phase seals. A **partial
+unique index on `(projectId, vendorId, vendorBillNumber)` over non-cancelled bills** makes a
+second live claim under one vendor document unrepresentable at PostgreSQL — the same shape as
+Task 2's one-recorded-quote-per-`(rfq, vendor)` seal, whose review established that a duplicate
+commercial document is a PG constraint and not a service check, because two concurrent submissions
+each see zero. `duplicate-claim` is then the SERVICE-side verdict for the cases the index cannot
+see: a re-submission after the first was cancelled, and the same units claimed twice under
+DIFFERENT vendor document numbers, which the index permits and the accepted-quantity bound
+catches only once the second claim exceeds what was accepted. A superseding version of the same
+bill reuses its own reference and is not a duplicate — the uniqueness is per BILL, over its live
+versions, not per version.
 
 The triple is **recomputed at every state transition that depends on it** — submission,
 verification and certification — never read from a stored column. A stored verdict is a
@@ -547,6 +581,19 @@ definitions rather than by prose an implementer has to remember:
   new certificate in the same transaction (the superseded rows survive as history on the
   superseded certificate), and `NET_PAYABLE` reads only the live certificate's rows. Retention
   released later is released against the live certificate.
+- **Releases are re-stated WITH the deductions, in the same transaction.** The rule above was
+  stated for deduction rows and not carried to the release rows that discharge them, and a
+  retained balance is a fold over BOTH: `retention` minus `retention-release` (§H). Certify ₹100
+  with ₹10 retention, release ₹5, then supersede to ₹50 re-stating only the ₹10 deduction — the
+  live certificate now reads ₹10 retained and ₹0 released, which claws back ₹5 the vendor was
+  already told it could have, with the release row stranded on a superseded certificate as
+  immutable evidence of a payment the live truth denies. The alternative spelling — folding
+  releases across certificates while deductions are certificate-scoped — is worse: it ties the
+  live retained balance to a superseded fact, so the two halves of one subtraction live in
+  different scopes. So supersession re-scopes the release rows onto the new certificate exactly
+  as it re-states the deductions, atomically, and the released portion stays released. Both
+  halves of the fold always share one scope: whatever certificate `NET_PAYABLE` reads, it reads
+  BOTH row kinds from.
 - **Approvals.** `APPROVED(bill)` is scoped to the LIVE certificate (§0), so supersession
   lowers it automatically and the reduced amount must be RE-approved by someone holding the
   authority for it. Certify ₹100, approve ₹100, supersede to ₹50: approved reads ₹0, bound 4
@@ -625,6 +672,18 @@ false. The refusal names the outstanding `PAID` so the operator knows exactly wh
   their own `vendorId`, so within one project Vendor A's bill could name Vendor B's PO line,
   pass the ordered and accepted checks, and attribute a payable amount to the wrong
   counterparty. Binding the vendor makes that unrepresentable rather than merely unlikely.
+- **And PostgreSQL enforces EXACTLY ONE PO-line target per bill line.** A material claim points at
+  a `PurchaseOrderLine` and a labour claim at a `LabourPurchaseOrderLine`, which means two
+  nullable reference columns — and an FK on each constrains only the reference that is PRESENT.
+  Both degenerate cases are then representable and both defeat §G: a line with NEITHER reference
+  carries ₹100 into `BILLED_AMOUNT(bill)` and certifies while bounds 1–2 never run, because they
+  are folds over a PO line and there is no PO line to fold against; a line with BOTH leaves the
+  fold owner ambiguous, so the same ₹100 draws down two ordered quantities or, depending on which
+  side a given fold reads, neither. So the table carries a CHECK that exactly one of the two
+  references is non-null (`(material IS NULL) <> (labour IS NULL)`), and the `type` discriminator
+  must agree with whichever is present — the same type↔detail correspondence Phase 4 Task 1
+  sealed for `ActivityRequirement`. Bounds 1–2 can then be stated without a "if a PO line exists"
+  qualifier, because for a live claim line one always does.
 
 ### §G. Conservation bounds (the §F-bounds analogue, one per hand-off)
 
@@ -703,6 +762,16 @@ bill for material that never arrived or work never measured.
   attributable, reason-bearing, authored under `commercial.record-payment` — the same authority
   that recorded the payment it reverses, because reversing cash is the same kind of act as
   paying it. It subtracts inside `PAID(bill)` (§0), so no fold anywhere restates the netting.
+  **`PAID(bill)` has a floor of zero, and the refusal lives HERE, under the bill lock.** A
+  reversal may not exceed the cash actually paid: ₹100 paid then ₹150 reversed would leave
+  `PAID = −₹50`, and nothing else catches it — bound 5 (`PAID ≤ APPROVED`) is satisfied by a
+  negative number, the strictly-positive CHECK passes because the ROW is +₹150 with the type
+  carrying direction, and the status derivation has no negative case, so the §J forecast would
+  report negative paid cash. The rule is therefore a bound like §G's: under the bill lock,
+  `Σ payment − Σ payment-reversal` is re-derived and a reversal that would drive it below zero is
+  REFUSED, naming the reversible balance. Stating it only in probe 5ae would have made the probe
+  the specification — a test asserting a refusal no stated rule requires, which is exactly the
+  §0b failure of putting a rule at one site and not the site that needs it.
 - Retention release is its own append-only row with its own authority; the retained balance
   is a FOLD over `retention` minus `retention-release`, with **no stored balance column** —
   the Phase-3 §C rule that produced a correct stock model.
@@ -777,16 +846,30 @@ spec §16 names them and distinct by construction:
 `budget` (= `BUDGET`) · `committed` (= `COMMITTED`, OUTSTANDING) · `received-not-billed` ·
 `awaiting-certification` · `certified-payable` · `approved` · `paid`
 
-**Each bucket is a RESIDUAL, not a raw set.** Naming `approved` and `paid` after `APPROVED(bill)`
-and `PAID(bill)` would double-count every partial payment: a ₹100 approved bill with ₹40 paid
-reports ₹140 across two buckets for one ₹100 payable. The definitions are therefore
-`awaiting-certification` = billed-not-certified, `certified-payable` = `CERTIFIED − APPROVED`,
-`approved` = `APPROVED − PAID` (approved-not-paid), `paid` = `PAID`. Only the last is a raw fold,
-because paid cash is where the money stops.
+**Each bucket is a RESIDUAL, not a raw set** — and EVERY bucket, not merely the two nearest the
+end of the chain. Naming `approved` and `paid` after `APPROVED(bill)` and `PAID(bill)` would
+double-count every partial payment: a ₹100 approved bill with ₹40 paid reports ₹140 across two
+buckets for one ₹100 payable. The complete definitions:
 
-The buckets PARTITION the money — no rupee appears in two of them. That is why `COMMITTED`
-is defined as outstanding rather than gross (§0): a received-but-unbilled ₹100 order belongs
-in `received-not-billed` and must not also be reported as `committed`.
+| Bucket | Definition | Why it is a residual |
+|---|---|---|
+| `budget` | `BUDGET` (the live version only, §0) **− `COMMITTED`** — uncommitted authority | the gross live budget already contains every rupee the other six buckets report; naming it raw would double-count the whole chain against its own authority. This row completes the table: an earlier revision of it defined six buckets while the list above and probe 5bc both say seven, which is the same one-site-short defect the rest of this round corrects |
+| `committed` | `COMMITTED` (already defined as OUTSTANDING in §0) | a received-but-unbilled ₹100 order belongs in `received-not-billed`, not here as well |
+| `received-not-billed` | accepted/measured value **− live `BILLED_AMOUNT`** | ₹100 accepted with a ₹40 submitted-uncertified bill is ₹60 here and ₹40 in `awaiting-certification`; the raw accepted value would report ₹140 for one ₹100 delivery |
+| `awaiting-certification` | live billed-not-certified | the ₹40 above, once and only once |
+| `certified-payable` | **`NET_PAYABLE` − `APPROVED`** | gross `CERTIFIED − APPROVED` reports ₹100 payable on a ₹100 certificate carrying ₹10 retention, when only ₹90 can ever be approved — and after approving ₹90 it leaves a phantom ₹10 payable until a release row exists. Deductions are withheld, not payable |
+| `approved` | `APPROVED − PAID` (approved-not-paid) | see the ₹140 case above |
+| `paid` | `PAID` | the only raw fold, because paid cash is where the money stops |
+
+Retention that is withheld and not yet released is therefore in NO payable bucket — which is
+correct, because it is not payable. It becomes payable when a release row is appended, which
+raises `NET_PAYABLE` and moves it into `certified-payable` by the same definition.
+
+The buckets PARTITION the money — no rupee appears in two of them, and the partition holds at
+BOTH ends of the chain. Round 13 corrected the post-certification buckets to residuals and left
+`received-not-billed` and `certified-payable` reading gross sets, which is the same defect
+surviving in the same table; both are corrected here so the rule has one statement and no
+exceptions. That is also why `COMMITTED` is defined as outstanding rather than gross (§0).
 
 `live == projection == rebuild` through ONE shared compute function, the discipline that
 made the material and labour readiness projections correct.
@@ -1044,10 +1127,22 @@ SECTION is right and the probe is the defect.
      runs the same barrier — a rejection committing mid-certification can never leave a
      certified bill resting on a withdrawn sign-off, and the lock order matches `revertSignOff`
      so neither ordering deadlocks.
-   - **withdrawal checks at all THREE paths that exist**: acceptance reversal (5j), sign-off
-     revert (5q), and a measurement correction — measure 100, certify 100, then
+   - **withdrawal checks at all FOUR paths that exist**: acceptance reversal (5j), sign-off
+     revert (5q), a measurement correction — measure 100, certify 100, then
      −50 is REFUSED naming the certificate; superseding the certificate first permits it; a
-     −50 with no live claim succeeds and floors at zero (5n).
+     −50 with no live claim succeeds and floors at zero (5n) — **and deduction insertion after
+     approval**. That fourth site is named in the §0b row and was missing from this probe, so a
+     Task-5 implementation could pass the closure test while certify ₹100 → approve ₹100 → append
+     a ₹10 penalty left `APPROVED = 100` against `NET_PAYABLE = 90`, both facts append-only and
+     neither correctable: a payable authorised above what the certificate can pay, with immutable
+     evidence on both sides. The probe therefore drives exactly that sequence and asserts the
+     serialized outcome: under the bill lock the ₹10 deduction is REFUSED while an approval that
+     it would invalidate is live, naming the approval; the representable path is to supersede the
+     certificate (which drops the approval with it, per §F), append the deduction on the new
+     certificate, and re-approve the reduced `NET_PAYABLE`; and a deduction appended BEFORE any
+     approval succeeds and lowers the cap, so the guard is precise rather than a blanket ban on
+     late deductions. A concurrent approval and deduction admit exactly one, in both orderings,
+     under a deterministic barrier.
    - **positive amounts on every append-only money row**: a `-10` deduction and a `-10` release
      are both rejected by PG; `NET_PAYABLE` on a ₹100 certificate with a ₹10 retention is ₹90,
      never ₹110.
@@ -1087,15 +1182,27 @@ SECTION is right and the probe is the defect.
    reversal alone still refuses (₹50 remains); the FULL ₹100 reversal then permits the
    supersession, after which `APPROVED` and `PAID` are both ₹0, a fresh ₹50 approval is
    required, and bound 5 holds at every step.
-5ai. §C attribution seals: PG rejects UPDATE and DELETE of a SUPERSEDED
-   `CommitmentAttribution`; `reason` is frozen after write; a re-attribution from `CIVIL` to
-   `MEP` INSERTS a new row and stamps the prior superseded, and `COMMITTED(CIVIL)` /
-   `COMMITTED(MEP)` move together with immutable evidence of the reclassification.
+5ai. §C attribution seals: PG rejects DELETE of ANY `CommitmentAttribution` and rejects UPDATE
+   of an ACTIVE row's `costHead`/`poLineId`/`amount`/`reason` — the hostile `CIVIL → MEP`
+   in-place edit of the LIVE row is refused, not merely the edit of a superseded one — while the
+   single permitted transition (stamping an ACTIVE row superseded) succeeds and a second stamp of
+   an already-superseded row is refused; a re-attribution from `CIVIL` to `MEP` INSERTS a new row
+   and stamps the prior superseded, and `COMMITTED(CIVIL)` / `COMMITTED(MEP)` move together with
+   immutable evidence of the reclassification. RED against a trigger written to fire only on
+   superseded rows.
 5aj. §K labour edges: certifying a LABOUR bill takes the labour PO-line lock through the
    labour participant — under a deterministic barrier a concurrent `labour.po.closeShort`
-   cannot move the ordered line mid-certification — and issuing/amending a labour PO writes
-   or supersedes its attribution in the SAME transaction, so `COMMITTED` never reads ₹0 for a
-   live labour order. RED against a manifest carrying only the material edges.
+   cannot move the ordered line mid-certification — and every one of the FOUR labour lifecycle
+   sites writes or supersedes its attribution in the SAME transaction: issue, amend, **cancel**
+   and **close-short**. The §0b attribution row names all four and the labour twin owes all four;
+   an earlier revision of this probe covered issue/amend only, which a Task-2 implementation
+   could pass while `labour.po.closeShort` on a live ₹100 labour order left the attribution
+   active and `COMMITTED` still reporting ₹100 against an obligation that no longer exists.
+   So: cancelling a live labour PO supersedes its attribution and `COMMITTED` returns to ₹0
+   (never −₹100, per the clamp), closing one short to ₹40 supersedes and re-attributes so
+   `COMMITTED` reads ₹40, and `COMMITTED` never reads ₹0 for a still-live labour order. RED
+   against a manifest carrying only the material edges, and RED against a labour implementation
+   that attributes on issue only.
 5ak. §F/§G Task-4 boundary: at the Task-4 tree, a 101-unit claim against 100 accepted lands
    `disputed` (never live, never refused), and `stock.reverse` of an acceptance under a live
    uncertified claim moves that claim to `disputed` rather than committing silently — both
@@ -1156,16 +1263,49 @@ SECTION is right and the probe is the defect.
 5bb. §E certification takes ONE ascending lock order over every PO line the bill touches: a
    two-line bill certified concurrently from both orderings COMMITS EXACTLY ONE and never
    deadlocks, under a deterministic barrier (the Phase-4 overlapping-crews probe shape).
-5bc. §J buckets are residual and partition the money: a ₹100 approved bill with ₹40 paid reports
-   ₹60 in `approved` and ₹40 in `paid` — never ₹140 across the two — and the seven buckets sum to
-   the total exposure exactly.
+5bc. §J buckets are residual and partition the money at BOTH ends of the chain: a ₹100 approved
+   bill with ₹40 paid reports ₹60 in `approved` and ₹40 in `paid` — never ₹140 across the two;
+   ₹100 accepted with a ₹40 submitted-uncertified bill reports ₹60 `received-not-billed` and ₹40
+   `awaiting-certification`, never ₹140 for one ₹100 delivery; and a ₹100 certificate carrying
+   ₹10 retention reports ₹90 `certified-payable` before approval — never ₹100 — then ₹0 after the
+   ₹90 is approved, with no phantom ₹10 payable, and ₹5 once a ₹5 release is appended. The seven
+   buckets sum to the total exposure exactly at every step. RED against the round-13 spelling,
+   where only the post-certification buckets were residuals.
 5bd. §D enabling the `commercial` capability on a project that ALREADY holds live material and
    labour POs attributes every one of them in the enabling transaction: `COMMITTED(costHead)`
    reads the real obligation immediately, and a line that cannot be attributed REFUSES the
    activation naming it rather than inventing a cost head.
 5be. §L both structural tables parse: `docs/STATUS.md`'s named source of task numbering yields
-   exactly Tasks 1–7 from ONE contiguous execution table, and §0 yields all fourteen canonical
-   sets from ONE contiguous table — no prose splits either.
+   exactly Tasks 1–7 from ONE contiguous execution table; §0's set table is ONE contiguous block
+   with no prose split; and the §J bucket table has one row per bucket the §J list names, so a
+   bucket cannot be listed without a definition. The §0 assertion is stated WITHOUT a row count,
+   deliberately — probe 5g gives the reason (a written count is one more thing that goes stale
+   when a set is added, which is how round 8 happened), and an earlier revision of this probe
+   ignored its own sibling and hardcoded "fourteen", which does not even equal the row count
+   because one row defines `BILLED_TAX` and `BILLED_FREIGHT` together. The check is therefore
+   NAME-based, from the document: every `SET(arg)` name any §-section references resolves to a row
+   in that one block, and every row is referenced somewhere. That fails when a set is added and
+   left undefined, or defined and never used, and it never needs updating when the count changes.
+5bf. §F a bill line names EXACTLY ONE PO line at PostgreSQL: a line with NEITHER a material nor a
+   labour PO-line reference is REJECTED (so a ₹100 claim can never enter `BILLED_AMOUNT` with
+   bounds 1–2 unable to run), a line with BOTH is REJECTED (so no fold has two owners), a `type`
+   discriminator disagreeing with the reference present is REJECTED, and each of the two valid
+   shapes is ACCEPTED — the seal is precise, not merely strict. RED against nullable alternatives
+   guarded only by per-column FKs.
+5bg. §F `duplicate-claim` has a key: `vendorBillNumber` and its document date are non-blank and
+   column-frozen after write (an UPDATE is refused); a SECOND live bill under the same
+   `(projectId, vendorId, vendorBillNumber)` is refused by the partial unique index, and two
+   CONCURRENT submissions of it admit exactly one under a deterministic barrier — the Task-2
+   one-quote-per-`(rfq, vendor)` shape; a superseding VERSION of the same bill reuses the
+   reference and is accepted; a re-submission after cancellation is accepted and the same units
+   claimed under a DIFFERENT vendor number raises the service-side `duplicate-claim` verdict
+   rather than passing every bound silently.
+5bh. §E supersession re-scopes deductions AND releases atomically: certify ₹100, retain ₹10,
+   release ₹5, then supersede to ₹50 — the live certificate reads ₹10 retained and ₹5 released
+   (`NET_PAYABLE` ₹45), never ₹10 retained with ₹0 released, so no released rupee is clawed back;
+   both row kinds are read from the SAME certificate the fold reads; and the superseded
+   certificate keeps its own rows as history. RED against a supersession that re-states deductions
+   only.
 5g. §0 set identity: for EVERY row of the §0 table (no count is written here — a count is one
    more thing that goes stale when a set is added, which is how round 8 happened), the
    "must NOT be" column is a probe — the

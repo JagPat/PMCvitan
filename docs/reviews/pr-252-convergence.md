@@ -528,6 +528,28 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Does an acceptance reversal dispute the MINIMUM set that restores the aggregate bound? | probe 5an | phase-5-task-4 |
 | Is cross-vendor bill-to-PO-line pinning refused by PostgreSQL, not the service? | probe 5ao | phase-5-task-4 |
 | Is every reason column this phase adds non-blank at PG, enumerated from the schema? | probe 5ap | phase-5-task-5 |
+| Is the labour BILLED row's tax/freight refused at PG, given Phase 4 froze no ordered side? | probe 5aq | phase-5-task-4 |
+| Does an acceptance reversal dispute newest-first until the aggregate bound holds, and no further? | probe 5ar | phase-5-task-4 |
+| Is the consumption set frozen with `(rowId, consumedQty)` on BOTH the acceptance and measurement sides? | probe 5as | phase-5-task-5 |
+| Is `disputed` terminal, with correction only by a superseding version? | probe 5at | phase-5-task-5 |
+| Does supersession re-state the deductions on the new certificate? | probe 5au | phase-5-task-5 |
+| Is payment status re-derived after a reversal rather than left stale? | probe 5ba | phase-5-task-6 |
+| Is cumulative `MEASURED` capped at the ordered person-shift quantity? | probe 5av | phase-5-task-3 |
+| Does a participant write enforce `commercial.attribute` rather than trusting the caller? | probe 5aw | phase-5-task-2 |
+| Is there exactly one live budget chain per `(projectId, costHead)`, with `amount >= 0`? | probe 5ax | phase-5-task-1 |
+| Are approvals sign-constrained, so a negative approval cannot offset a limit or drop below `PAID`? | probe 5az | phase-5-task-6 |
+| Does certification take ONE ascending lock order over every PO line the bill touches? | probe 5bb | phase-5-task-5 |
+| Do all seven §J buckets partition the money as residuals, at both ends of the chain? | probe 5bc | phase-5-task-7 |
+| Does enabling the capability attribute every pre-existing live PO line, or refuse naming it? | probe 5bd | phase-5-task-1 |
+| Do both structural tables parse from ONE contiguous table each? | probe 5be | phase-5-task-1 |
+| Is exact decimal arithmetic used on both sides — `Prisma.Decimal` server, `lib/decimal.ts` browser? | probe 5ay | phase-5-task-7 |
+| Is a live PO line's attribution unrepresentable as an in-place edit, not merely once superseded? | probe 5ai | phase-5-task-2 |
+| Do all FOUR labour lifecycle sites attribute, including cancel and close-short? | probe 5aj | phase-5-task-2 |
+| Is a deduction refused after an approval it would invalidate — the fourth §0b withdrawal site? | probe 5ab | phase-5-task-5 |
+| Does a bill line name exactly one PO line at PG, neither zero nor two? | probe 5bf | phase-5-task-4 |
+| Is there a frozen vendor-document key that makes a duplicate claim unrepresentable? | probe 5bg | phase-5-task-4 |
+| Does supersession carry retention RELEASES with the deductions, so nothing is clawed back? | probe 5bh | phase-5-task-5 |
+| Is `PAID` floored at zero, so a reversal cannot exceed the cash paid? | probe 5ae | phase-5-task-6 |
 
 ## Round 10 (head `c5f9887` → `d3d9945`) — the prediction fired, and this section was missing
 
@@ -690,10 +712,51 @@ this one merges, moving text **verbatim** rather than rewriting it, so no review
 dropped in the move. It is not folded into this head: restructuring the document under review
 would invalidate the review in progress.
 
+## Round 14 (head `56006de`) — eleven findings, and four were corrections that stopped short
+
+All eleven correct. The composition is the same as rounds 12 and 13, with a sharper edge: **four
+of the eleven are a fix from an earlier round of THIS review, applied at one site and not at every
+site the same rule governs.** Not new mechanism missed — my own remedies left half-finished.
+
+| Finding | The round that half-fixed it | Fix |
+|---|---|---|
+| §J `certified-payable` subtracts approvals from GROSS `CERTIFIED` | round 13 made `approved`/`paid` residuals and left the pre-certification buckets raw | all six buckets defined as residuals in one table; `NET_PAYABLE − APPROVED` |
+| §J `received-not-billed` is a raw accepted value | same round, same table, the other end | accepted/measured **−** live `BILLED_AMOUNT` (probe 5bc extended) |
+| supersession re-states deductions but not RELEASES | round 12 stated the rule for deduction rows only | releases re-scoped in the same transaction; both halves of the fold share one scope (probe 5bh) |
+| §C attribution seal fires only once SUPERSEDED | round 12 wrote the seal narrower than the bug it described | DELETE always refused; UPDATE refused except stamping an ACTIVE row superseded (probe 5ai, RED against the old spelling) |
+| §0b names `ActivityWorkOutput` supersession as a withdrawal path | the output-supersession cleanup corrected §0/§D/§K and not §0b | row lists only paths that exist — an impossible closure site cannot be closed, so it converts a criterion into an excuse |
+| the closure probe covers 3 of §0b's 4 withdrawal sites | the fourth site was added to §0b and not to the probe | deduction-after-approval driven end to end: refusal under the bill lock, supersede→re-approve as the representable path, pre-approval deduction still permitted |
+| the labour probe covers issue/amend, not cancel/close-short | §0b names four lifecycle sites; the labour twin covered two | all four, with `COMMITTED` asserted at ₹0 after cancel and ₹40 after close-short |
+| the deferral ledger replaced by a pointer at the probe list | round 13, in this packet | real ledger rows restored for 5aq–5bh |
+| a bill line's PO reference has FKs but no XOR | new | PG CHECK: exactly one of material/labour, `type` must agree (probe 5bf) |
+| `duplicate-claim` named with no identity to detect it | new | frozen `vendorBillNumber` + partial unique per `(project, vendor, number)`, Task-2's one-quote shape; service verdict for what the index cannot see (probe 5bg) |
+| `PAID` has no non-negative floor in the rule text | new | the refusal stated in §H under the bill lock, not only in probe 5ae |
+
+**What four half-finished fixes say that twelve fresh defects would not.** Rounds 12 and 13
+diagnosed the class as "a rule decided once, not propagated to every site". This round shows the
+same failure one level in: when I fix a propagation defect, the FIX propagates incompletely too. I
+corrected the §J buckets and stopped at the two I had been shown; corrected deduction scoping and
+stopped at deductions; wrote a seal for the case the finding named rather than the case the
+paragraph above it described. Each time the reviewer's example became the specification, and the
+rule it was an example OF went unapplied.
+
+That is a specific, nameable habit, and it has a specific remedy: **when a finding names a site,
+fix the RULE and then enumerate the sites it governs from the document, not from the finding.**
+Round 13's §0-table lesson was the same shape ("this document has two such tables") and I recorded
+it as a one-off rather than as this. It is not a one-off. The §J fix here enumerates all six
+buckets in a table so a seventh cannot be added without a row; the deduction fix states that both
+halves of the fold always share one scope; the attribution seal is stated as the general
+append-only shape with its one exception rather than as a list of refused cases.
+
+The remaining four are ordinary new mechanism, and one of them — `duplicate-claim` — is worth
+noting as the §0b failure in its purest form: an exception KIND was named in a verdict enum with no
+identity anywhere that could detect it, so every bound would have passed for both copies of one
+invoice and Task 4 would have had to invent the predicate the plan declared.
+
 ## Termination, and what happens next
 
-Fourteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6 — **one hundred and
-ten** findings. One hundred and nine were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
+Fifteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11 — **one hundred and
+twenty-one** findings. One hundred and twenty were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
 in the round-10 section above with the passing check-run cited. (The round-7 packet said "sixty-six" for the
 first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
 forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
@@ -706,10 +769,15 @@ converted into named probes plus the task that settles them. **It merged at `a16
 head is the first to run against it** — `origin/main` is merged into this branch here, so the
 gate the workflow runs is the merged one.
 
-The deferral ledger for this plan is the probe list itself: 5g–5be are executable the moment
-Task 1 exists, and every finding from rounds 2–13 maps to one of them. This head closes through
-that route with `Review-Deferred-To-Probes: phase-5-task-1`, verified against the merged gate
-rather than asserted (see the round-13 section: allowed with the trailer, refused without it).
+The deferral ledger is the **table above**, and it now covers every round through this one. Round
+13 replaced it with a sentence pointing at the plan's probe list, which is not a ledger: the
+mapping a reviewer needs is question → probe → settling task, and a probe list answers only the
+middle term. Rounds 12 and 13 added probes 5aq–5be with no ledger rows at all, so their open
+questions were unreadable from the packet — the obligation is trailer AND ledger, and the pointer
+quietly discharged half of it. The table carries real rows for all of them, plus the four this
+round adds. This head closes through that route with
+`Review-Deferred-To-Probes: phase-5-task-1`, verified against the merged gate rather than
+asserted (see the round-13 section: allowed with the trailer, refused without it).
 
 Round 4's packet said I would report rather than answer a sixth PROSE round. Neither round 5
 nor round 6 was that: mechanism defects with right answers, so answering them was correct and
@@ -731,7 +799,7 @@ paragraph replaces the round-10 and round-11 wording rather than sitting beside 
 11's own rule.
 
 An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
-the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6) but their KIND has narrowed and
+the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11) but their KIND has narrowed and
 round 8 finally names the mechanism. Rounds 1–6 read as "I fix instances, not classes." Round 7
 read as "prose has no compiler." Round 8 is more specific and more actionable than either: **the
 recurring defect is a rule with two written statements, and every one of them was created by a
