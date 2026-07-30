@@ -2,7 +2,7 @@
   "name": "vitan-pmc",
   "private": true,
   "type": "module",
-  "description": "Vitan PMC — project-management console for an architect-led PMC. Monorepo root.",
+  "description": "Vitan PMC \u2014 project-management console for an architect-led PMC. Monorepo root.",
   "scripts": {
     "dev": "pnpm --filter web dev",
     "build": "pnpm --filter web build",
@@ -31,5 +31,14 @@
     "check:api": "pnpm build:shared && pnpm --filter api prisma:generate && pnpm --filter api typecheck && pnpm --filter api test && pnpm --filter api build",
     "check": "pnpm check:automation && pnpm check:web && pnpm check:api"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss@<8.5.18": ">=8.5.18",
+      "esbuild@<0.28.1": ">=0.28.1",
+      "multer@<2.2.0": ">=2.2.0"
+    }
+  }
 }
