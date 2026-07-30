@@ -213,3 +213,61 @@ the remainder. The gate decides whether this head is clean; the runner does not 
 declare its own plan finished.
 
 Gates: `pnpm test:automation` 111/111.
+
+---
+
+## Round 4 — `f38a93e`
+
+Nine findings, all correct. The rate went **up**: 8, 8, 7, 7, 9.
+
+Two are the same defect applied to one side and not its mirror, which is worth naming because
+it is now a repeated authoring failure and not bad luck:
+
+| Finding | The mirror I missed |
+|---|---|
+| P1 labour evidence unprotected after certification | round 3 added the material reversal channel and stopped there. Activities can supersede a cited output and `revertSignOff` can withdraw a sign-off, both after certification, leaving the certificate payable against evidence that no longer stands. `activities.workflowParticipants` now gains `commercial` too. |
+| P1 reversal guard compares aggregates, not rows | `assertAcceptanceReversible(poLineId, qty)` lets the evidence be SWAPPED: certify 100 against acceptance A by user X, accept another 100 by user Y, reverse A — aggregate still 100, reversal passes, and the certificate now rests on rows and an actor the §E triple and §I SoD rule never saw. Certification now freezes WHICH rows it consumed, and the guard takes row identity. |
+
+The other seven are set-definition precision, all in §0 or the bounds that read it:
+
+- `COMMITTED` subtracted `rate × ACCEPTED` while `committedAmountBase` includes tax and
+  freight, stranding ₹150 of a ₹1,150 line in `committed` after full acceptance — now the
+  prorated LANDED amount, and a labour line reduces by measured person-shifts at the frozen
+  rate.
+- bound 3 capped a certificate against `BILLED_AMOUNT(poLine)`, so two live ₹100 bills on one
+  line let a ₹150 certificate through — now a bill-scoped set.
+- `EFFORT` matched fingerprint and slice but not the funding PO line, so two vendors sharing a
+  fingerprint on one day could consume each other's work facts — now joined through
+  `WorkerAllocation → CapacityCommitment → LabourPurchaseOrderLine`.
+- attribution was revocable to nothing, dropping a live obligation out of every forecast — now
+  an atomic replacement with exactly one active attribution per live PO line version.
+- deduction rows were not append-only and were absent from §F's seal list, so dropping a
+  retention row raised net payable with no release.
+- reason columns were presence-only, not non-blank — the discipline Phase-4 Task 5 already
+  established.
+
+Probes 5q–5v cover each.
+
+## Termination, and what happens next
+
+Five finding-bearing heads: 8, 8, 7, 7, 9 — forty-four findings, every one correct, none
+contradicted by a later round, and the rate is not falling. Round 3's packet recorded the
+recommendation to hand the remainder to probes; the owner approved it and asked for the
+process to be fixed so this does not recur.
+
+That fix is **PR #253** (`Review-Deferred-To-Probes`), which bounds a docs-only review at
+`PLAN_REVIEW_ROUND_CAP = 3` finding-bearing heads and requires the remaining questions to be
+converted into named probes plus the task that settles them. It is under review now. The gate
+reads `main`'s copy of its scripts, so the deferral is not yet enforceable here — which is
+precisely why this head fixes all nine rather than asserting an exit it cannot yet take.
+
+The deferral ledger for this plan is the probe list itself: 5g–5v are executable the moment
+Task 1 exists, and every finding from rounds 2–4 maps to one of them. Once #253 merges, this
+PR closes through that route with `Review-Deferred-To-Probes: phase-5-task-1`.
+
+If a sixth prose round arrives before #253 merges, I will report it rather than spend another
+correction on it. Continuing to answer a rising finding rate with more prose is the failure
+this whole exchange identified, and doing it once more would be choosing the thing we agreed
+to stop.
+
+Gates: `pnpm test:automation` 111/111.
