@@ -1,3 +1,7 @@
+// The deferral-phase check shares docs/STATUS.md's own state vocabulary rather than keeping
+// a second copy of it — see phaseHasOpenWork.
+import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
+
 export const REVIEW_SCOPE_ENFORCE_AFTER_PR = 246;
 export const STANDARD_MAX_FILES = 20;
 export const STANDARD_MAX_CHANGED_LINES = 1_500;
@@ -211,13 +215,23 @@ const TASK_REFERENCE = /^phase-(?<phase>\d+)-(?:task-\d+|planning)$/iu;
 // shape STATUS uses — every phase-4 review stop is already closed, so `phase-4-task-99` names a
 // stop that cannot adjudicate anything. `next_task`'s phase is always eligible, because that is
 // the phase whose stops are about to exist.
-const CLOSED_TASK_STATE = new Set(['merged', 'complete', 'completed', 'cleared']);
 const NO_WORK_ITEM = new Set(['', 'none', 'null', '-']);
+// The states STATUS uses for a task that is DONE. Recognized, so a named work_item against
+// one still counts; distinct from a state this repository has no vocabulary for at all.
+const TERMINAL_TASK_STATES = new Set(['merged', 'complete', 'completed', 'cleared']);
 
 function phaseHasOpenWork(now) {
   const state = String(now?.task_state ?? '').trim().toLowerCase();
   const item = String(now?.work_item ?? '').trim().toLowerCase();
-  if (!CLOSED_TASK_STATE.has(state)) return true;
+  // An ALLOWLIST, sharing docs/STATUS.md's own vocabulary. A blocklist of closed words
+  // treats every state it has not heard of as open — `task_state: somewhere-new`, or an
+  // absent field — and authorizes a deferral on evidence STATUS never gave. Round 6 of
+  // this PR replaced exactly such a blocklist (BARE_DEFERRAL) with the TASK_REFERENCE
+  // allowlist for the same reason; this is that lesson at a second site.
+  if (OPEN_TASK_STATES.has(state)) return true;
+  // A recognized terminal state can still carry a named work item — a follow-up recorded
+  // against a merged task. Anything UNRECOGNIZED is unverified, not open.
+  if (!TERMINAL_TASK_STATES.has(state)) return false;
   return !NO_WORK_ITEM.has(item);
 }
 
@@ -245,7 +259,7 @@ function messageTrailers(message) {
       trailers.at(-1)[1] += ` ${line.trim()}`;
       continue;
     }
-    const trailer = /^([A-Za-z0-9][A-Za-z0-9-]*):[\t ]+(.+)$/u.exec(line);
+    const trailer = /^([A-Za-z0-9][A-Za-z0-9-]*):[\t ]*(.+)$/u.exec(line);
     if (!trailer) return [];
     trailers.push([trailer[1].toLowerCase(), trailer[2].trim()]);
   }
@@ -291,7 +305,11 @@ export function deferredToProbes(message) {
 // stated in AGENTS.md and judged by the reviewer, which is where a question about whether
 // enough thinking happened belongs.
 
-const CONVERGENCE_MARKER = /^[\t ]*review-convergence:[\t ]+complete[\t ]*$/imu;
+// The separator is ':' with OPTIONAL whitespace after it — `git interpret-trailers --parse`
+// normalizes `Key:value` to `Key: value`, so a head spelled without the space carries a VALID
+// trailer. Requiring the space made the gate report a present trailer as missing. All three
+// parsers in this file had the same too-strict separator; all three are fixed together.
+const CONVERGENCE_MARKER = /^[\t ]*review-convergence:[\t ]*complete[\t ]*$/imu;
 
 function hasConvergenceTrailer(message) {
   const blocks = String(message ?? '').trimEnd().split(/\n[\t ]*\n/u);
@@ -304,7 +322,7 @@ function hasConvergenceTrailer(message) {
       trailers.at(-1)[1] += ` ${line.trim()}`;
       continue;
     }
-    const trailer = /^([A-Za-z0-9][A-Za-z0-9-]*):[\t ]+(.+)$/u.exec(line);
+    const trailer = /^([A-Za-z0-9][A-Za-z0-9-]*):[\t ]*(.+)$/u.exec(line);
     if (!trailer) return false;
     trailers.push([trailer[1].toLowerCase(), trailer[2].trim().toLowerCase()]);
   }
@@ -418,7 +436,12 @@ export function assessConvergence({
     // already has, and it is sufficient: if STATUS is in the diff, the phase is unverifiable.
     ...(deferralRequired && typeof deferral === 'string' && Array.isArray(activePhases)
       && (pullRequestFiles ?? []).some(
-        (file) => changedFilename(file) === STATUS_DOCUMENT,
+        // BOTH paths, via the same helper the docs-only classifier uses. A rename AWAY from
+        // docs/STATUS.md carries the new path in `filename` and the old one in
+        // `previous_filename`, so reading `filename` alone misses a PR that moved the phase
+        // truth out from under the gate. Round 2 of this PR established the two-path rule
+        // and built changedPaths for it; this new check simply has to USE it.
+        (file) => changedPaths(file).includes(STATUS_DOCUMENT),
       )
       ? ['this PR changes docs/STATUS.md, so the default-branch copy the gate reads is not this '
         + "PR's own phase truth and cannot verify the deferral's phase. Land the STATUS change "

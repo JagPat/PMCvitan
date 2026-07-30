@@ -13,6 +13,7 @@ import {
   PLAN_REVIEW_ROUND_CAP,
   REQUIRED_INVARIANTS,
 } from './review-efficiency.mjs';
+import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
 import { run as runScope } from './review-scope.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -588,7 +589,9 @@ test('the deferral is the trailer only; the ledger is the reviewer\'s to judge',
   // FINDING (#253 round 8 P2) — a shape-valid value can name a review stop that does not
   // exist. The PHASE is checkable against docs/STATUS.md, a machine-readable state file, so
   // this is a structured-field read rather than the prose parsing round 7 withdrew.
-  const phases = deferralPhases({ phase: '4', next_task: 'phase-5-planning' });
+  const phases = deferralPhases({
+    phase: '4', task_state: 'in_progress', next_task: 'phase-5-planning',
+  });
   assert.deepEqual(phases, [4, 5]);
   const unreal = assessConvergence({
     ...base, activePhases: phases, headMessage: withTrailer('phase-999-task-999'),
@@ -624,6 +627,44 @@ test('the deferral is the trailer only; the ledger is the reviewer\'s to judge',
   // LIST is metadata the gate already has, and it is enough.
   const statusInDiff = ['docs/superpowers/plans/plan.md', 'docs/STATUS.md',
     'docs/reviews/pr-252-convergence.md'];
+  // FINDING (#253 round 11 P2) — git's trailer separator is ':' with OPTIONAL whitespace.
+  // `git interpret-trailers --parse` normalizes `Key:value` to `Key: value`, so a head
+  // spelled without the space carries a VALID trailer that all three of this file's parsers
+  // reported as missing — the convergence trailer included. A gate that rejects a trailer git
+  // accepts blocks a compliant head.
+  const noSpace = assessConvergence({
+    ...base,
+    headMessage: [
+      'fix: plan convergence',
+      '',
+      'Review-Convergence:complete',
+      'Review-Deferred-To-Probes:phase-5-task-1',
+    ].join('\n'),
+  });
+  assert.equal(noSpace.hasTrailer, true, 'git parses Key:value as a trailer');
+  assert.equal(noSpace.deferredTo, 'phase-5-task-1');
+  assert.equal(noSpace.allowed, true);
+  // ...and extra whitespace is still fine
+  assert.equal(assessConvergence({
+    ...base,
+    headMessage: 'fix: x\n\nReview-Convergence:\tcomplete\nReview-Deferred-To-Probes:  phase-5-task-1',
+  }).allowed, true);
+
+  // FINDING (#253 round 11 P2) — a RENAME away from docs/STATUS.md carries the new path in
+  // `filename` and the old one in `previous_filename`, so the guard read only half the entry
+  // and a PR that moved the phase truth out from under the gate passed. Round 2 of this PR
+  // established the two-path rule and built changedPaths; the new check now uses it.
+  const renamedAway = assessConvergence({
+    ...base,
+    changedFiles: [{ filename: 'docs/STATE.md', previous_filename: 'docs/STATUS.md',
+      status: 'renamed' }, 'docs/reviews/pr-252-convergence.md'],
+    pullRequestFiles: [{ filename: 'docs/STATE.md', previous_filename: 'docs/STATUS.md',
+      status: 'renamed' }, 'docs/reviews/pr-252-convergence.md'],
+    headMessage: withTrailer('phase-5-task-1'),
+  });
+  assert.equal(renamedAway.allowed, false, 'a rename still moves the phase truth');
+  assert.match(renamedAway.missing.join(' '), /changes docs\/STATUS\.md/u);
+
   const editsStatus = assessConvergence({
     ...base,
     changedFiles: statusInDiff,
@@ -679,6 +720,23 @@ test('the deferral is the trailer only; the ledger is the reviewer\'s to judge',
     [4],
   );
   assert.deepEqual(deferralPhases({ phase: '4', task_state: 'in_review' }), [4]);
+
+  // FINDING (#253 round 11 P2) — the open test was a BLOCKLIST of closed words, so any state
+  // it had not heard of counted as open and authorized a deferral STATUS never justified.
+  // Round 6 of this PR replaced exactly such a blocklist with an allowlist; this is the same
+  // lesson at a second site. An UNRECOGNIZED or ABSENT state is unverified, not open — and
+  // the allowlist is docs/STATUS.md's own, imported rather than copied.
+  for (const state of ['somewhere-new', '', 'OPEN', 'done']) {
+    assert.deepEqual(
+      deferralPhases({ phase: '5', task_state: state }), [],
+      `"${state}" is not a state STATUS defines as open`,
+    );
+  }
+  assert.deepEqual(deferralPhases({ phase: '5' }), [], 'an absent task_state proves nothing');
+  // ...while every state STATUS DOES define as open counts
+  for (const state of [...OPEN_TASK_STATES]) {
+    assert.deepEqual(deferralPhases({ phase: '5', task_state: state }), [5], state);
+  }
 
   // below the cap no deferral is owed at all
   const withinCap = assessConvergence({

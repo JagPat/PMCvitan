@@ -1,7 +1,7 @@
 # PR #253 — convergence audit
 
-Bounded docs-only review (`Review-Deferred-To-Probes`). Ten finding-bearing heads, twenty-two
-findings, all correct. **Round 7 withdraws the packet-ledger verification rather than patching
+Bounded docs-only review (`Review-Deferred-To-Probes`). Eleven finding-bearing heads,
+twenty-five findings, all correct. **Round 7 withdraws the packet-ledger verification rather than patching
 it a fifth time — see the closing section, which is the real conclusion of this PR.**
 
 | Head | Finding | The question it was really asking |
@@ -28,6 +28,9 @@ it a fifth time — see the closing section, which is the real conclusion of thi
 | `ff55b9a` | P2 an unreadable file list resolved silently to "code" | is not-knowing a verdict? |
 | `1cab5d2` | P2 an unreadable STATUS imposed no phase constraint | ...and is it a verdict HERE too? |
 | `1cab5d2` | P2 main's STATUS is not the phase truth of a PR that edits STATUS | whose state is being read? |
+| `e0d388f` | P2 the STATUS guard read one path, so a RENAME slipped past | how many paths, again? |
+| `e0d388f` | P2 `Key:value` is a valid git trailer and was refused | what does GIT call a trailer? |
+| `e0d388f` | P2 an unrecognized `task_state` counted as OPEN | allowlist or blocklist, again? |
 
 ## Architectural cause
 
@@ -417,6 +420,32 @@ receives the file list, and that the gate still fetches no `refs/pull/*/head` co
 A PR that does not touch STATUS is unaffected, and no head that claims no deferral is touched at
 all. Three existing tests changed to supply explicit phase evidence; that is the intended
 behavioural change, not a regression.
+
+## Round 11 — three findings, and my gate code has the disease I just diagnosed in the plan
+
+All three correct. Each is a rule THIS PR already decided, at a site that did not get it — which
+is exactly the defect I described one round earlier on PR #252 round 12. The plan was not the
+patient; the habit was.
+
+| Finding | The rule, and where this PR decided it | Fix |
+|---|---|---|
+| the STATUS self-edit guard read only `filename`, so a RENAME away from `docs/STATUS.md` passed | **round 2**: a rename carries TWO paths, and `changedPaths` was built for it | the guard calls `changedPaths(file).includes(...)` — the helper was already there |
+| `Review-Deferred-To-Probes:phase-5-task-1` (no space) was reported missing | git's separator is `:` with OPTIONAL whitespace; `interpret-trailers --parse` normalizes it | all THREE parsers in the file relaxed together, convergence marker included |
+| an unrecognized or absent `task_state` counted as OPEN | **round 6**: a BLOCKLIST admits everything it has not heard of — that is why `BARE_DEFERRAL` became the `TASK_REFERENCE` allowlist | an allowlist, and it IMPORTS `OPEN_TASK_STATES` from the status module instead of copying it |
+
+**The pattern, stated without flinching.** Round 12 of #252 concluded that a rule can be right in
+one place and never reach the section that needs it, and that §0b's prose site-table cannot catch
+it. Three rounds of my own gate code then reproduced it: two-path classification (round 2) not
+used by a round-10 check, allowlist-over-blocklist (round 6) not used by a round-9 helper. I
+wrote the diagnosis and shipped the disease in the same session.
+
+What actually helps is not another rule. It is what the third fix does: **stop having a second
+copy at all.** `OPEN_TASK_STATES` now lives once, in the module that owns `docs/STATUS.md`, and
+the gate imports it — so the next state STATUS adds cannot be missed here, because there is
+nothing here to miss it. The first fix has the same shape (use the existing helper, do not write
+a second classifier); so does the second (one separator rule, three call sites, one edit).
+
+Gates: `pnpm test:automation` 119/119; `pnpm check` EXIT 0 (web 543/543, API 680/680).
 
 ## What this does not do
 
