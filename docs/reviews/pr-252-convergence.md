@@ -2,7 +2,7 @@
 
 ## Objective
 
-Converge the Phase-5 planning review. Nineteen heads have received findings; the per-round
+Converge the Phase-5 planning review. Twenty heads have received findings; the per-round
 sections below run in order, each mapping its findings to their architectural cause, the batched
 remedy, and how each is proven. The Termination section carries the running totals and the
 current exit route. The two sections immediately below are the round-2 record, written when the
@@ -523,11 +523,13 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Does superseding a PAID certificate require full cash reversal first, with bound 5 true at every step? | probe 5ah | phase-5-task-6 |
 | Is a re-attribution append-only with a frozen reason, so a reclassification leaves evidence? | probe 5ai | phase-5-task-2 |
 | Do the dispute transition and acceptance-withdrawal guard exist in the task that first creates a live bill? | probe 5ak | phase-5-task-4 |
-| Can a read-only commercial member mutate budget or attribution? | probe 5al | phase-5-task-1 |
+| Can a read-only commercial member mutate cost heads or attribution? | probe 5al | phase-5-task-1 |
+| Can a read-only commercial member create or revise a BUDGET LINE — the route Task 2 adds? | probe 5al | phase-5-task-2 |
 | Is `CostHead.code` unique per project, so a budget and its attribution meet in one head? | probe 5am | phase-5-task-1 |
 | Does an acceptance reversal dispute the MINIMUM set that restores the aggregate bound? | probe 5an | phase-5-task-4 |
 | Is cross-vendor bill-to-PO-line pinning refused by PostgreSQL, not the service? | probe 5ao | phase-5-task-4 |
-| Is every reason column this phase adds non-blank at PG, enumerated from the schema? | probe 5ap | phase-5-task-5 |
+| Is every reason column existing by Task 5 non-blank at PG, enumerated from the schema? | probe 5ap | phase-5-task-5 |
+| Is the PAYMENT-REVERSAL reason column non-blank at PG — the column that does not exist until Task 6? | probe 5ap | phase-5-task-6 |
 | Is there exactly one live budget chain per `(projectId, costHead)`, with `amount >= 0`? | probe 5aq | phase-5-task-2 |
 | Does attribution authority follow the WRITE rather than the route, so PO-issue authority alone cannot attribute? | probe 5ar | phase-5-task-1 |
 | Is cumulative `MEASURED` capped at the ORDERED person-shift quantity, and released by an amendment? | probe 5as | phase-5-task-3 |
@@ -557,6 +559,9 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Does labour close-short refuse to move the ordered line below what is already MEASURED? | probe 5bo | phase-5-task-3 |
 | Is cumulative advance recovery capped at the advance actually PAID? | probe 5bp | phase-5-task-6 |
 | Is `NET_PAYABLE` floored at zero by a guard on the DEDUCTION, not only on the approval? | probe 5br | phase-5-task-5 |
+| Can EVERY uncertified live state (`submitted`, `under-verification`, `verified`) be disputed? | probe 5bv | phase-5-task-5 |
+| Does `COMMITTED` read each PO line through its OWNING module's query, material and labour? | probe 5bw | phase-5-task-2 |
+| Does a deduction INSERTION re-derive payment status, not only a release or reversal? | probe 5bx | phase-5-task-6 |
 | Does a zero-net certificate reach a terminal status rather than stranding? | probe 5bs | phase-5-task-6 |
 | Can a VERIFIED uncertified claim be disputed when its evidence is withdrawn? | probe 5bt | phase-5-task-5 |
 | Does the over-budget exception fire from commitments AND budget revisions AND re-attributions? | probe 5bq | phase-5-task-2 |
@@ -960,10 +965,38 @@ One housekeeping note: I first numbered the new Task-2 probe `5bd′`, which the
 parse — a primed identifier in a mechanically-checked document is a trap for the next round. Renamed
 `5bu` before pushing.
 
+## Round 19 (head `b29c41c`) — seven findings, six of them my own fixes one site short
+
+All seven correct. Six are corrections from rounds 16–18 that reached one surface and not the
+others; one is a genuine module-boundary defect that had been latent since the plan was written.
+
+| Finding | Origin | Fix |
+|---|---|---|
+| probe 5o still summed SEVEN buckets "to no more than budget + committed" | §J fixed at rounds 16/18, 5bc/5bm updated, 5o not | six exposure buckets, an equality, budget never an addend |
+| the deferral paragraph still DEFINED the trailer as Task 1 | round 17 fixed the value and one sentence, not the definition two sentences later | the definition names Task 7 |
+| ledger settled 5ap (all reason columns) at Task 5 | the payment-reversal reason column ships in Task 6 | split by task |
+| ledger settled 5al (write authority) at Task 1 | round 18 moved `BudgetLine` to Task 2 | cost-head/attribution authority Task 1, budget-line authority Task 2 |
+| the lifecycle had `verified → disputed` but not `submitted → disputed` | the round-17 addendum added the arrow the finding named, not the rule | every uncertified live state has it (probe 5bv) |
+| the deduction INSERTION did not re-derive payment status | the addendum added the floor and the terminal arm; §F's own words are "every writer that can move ANY of the three folds" | insertion re-derives under CAS like release and reversal (probe 5bx) |
+| **`COMMITTED` read every PO line through `ProcurementQuery`, "always"** | new — latent since the section was written | material through `ProcurementQuery`, labour through `LabourQuery` (probe 5bw) |
+
+**The last one is the only finding in several rounds that is not a propagation artefact, and it is
+the most serious of the seven.** §0 makes `LabourPurchaseOrderLine` labour-owned and §K already locks
+it through the labour participant — but §C said the fold reads the frozen amount through
+`ProcurementQuery`, always. Following that sentence leaves Task 2 with two bad options: omit live
+labour POs from `COMMITTED` entirely, or have procurement synchronously read labour-owned rows, which
+is the cross-module synchronous read this repository forbids and the boundary analyzer would flag.
+One fold, two owners, each read through its own contract.
+
+The `submitted → disputed` miss is worth naming separately, because it is the finding-as-specification
+habit again: round 17's addendum was told the guard disputes a `verified` claim, so I added the
+`verified` arrow — when the rule is that a claim is LIVE from submission and every uncertified state
+needs the transition. The example became the fix, and the state in between stayed unreachable.
+
 ## Termination, and what happens next
 
-Nineteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8, 10, 7 — **one
-hundred and fifty-three** findings. One hundred and fifty-two were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
+Twenty finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8, 10, 7, 7 — **one
+hundred and sixty** findings. One hundred and fifty-nine were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
 in the round-10 section above with the passing check-run cited. (The round-7 packet said "sixty-six" for the
 first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
 forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
@@ -1010,8 +1043,8 @@ do is invoke it against a round of real defects because the round number matches
 on the reasoning that claiming a deferral while fixing every finding would misdescribe the head.
 Rounds 11–16 carried `Review-Deferred-To-Probes: phase-5-task-1`; round 17 corrected the VALUE to `phase-5-task-7` (the round-17 section records why that was a P1 and how it is now checked). What follows is about what the trailer CLAIMS, which the correction does not change. The two positions are
 compatible once the claim is stated precisely: the trailer says the plan's REMAINING OPEN
-questions are settled at Task 1's review stop — which is what the ledger above records — not that
-any round's findings went unanswered. Every finding was fixed on the head that received it. From
+questions are settled by the LAST review stop the ledger names — Task 7 — not that any round's
+findings went unanswered. Every finding was fixed on the head that received it. From
 this head the trailer IS load-bearing: #253 is merged, the gate reads it, and the round-13
 section records the run that proves the clause fires. What the trailer still does not do is buy
 an exit — `guardAgainstCurrentHeadFinding` runs after convergence and fails closed on every
@@ -1020,7 +1053,7 @@ paragraph replaces the round-10 and round-11 wording rather than sitting beside 
 11's own rule.
 
 An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
-the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8, 10, 7) but their KIND has narrowed and
+the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8, 10, 7, 7) but their KIND has narrowed and
 round 8 finally names the mechanism. Rounds 1–6 read as "I fix instances, not classes." Round 7
 read as "prose has no compiler." Round 8 is more specific and more actionable than either: **the
 recurring defect is a rule with two written statements, and every one of them was created by a

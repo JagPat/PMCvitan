@@ -237,8 +237,13 @@ one active attribution per live PO line version, so a live line can never be una
 copy it into is how the rule gets broken, and an earlier revision of the freeze list below named
 `amount` among the attribution's frozen columns — which would have created exactly the second
 committed-amount ledger this section forbids, with the freeze trigger then preserving whatever a
-bad issuance wrote. `COMMITTED` reads `committedAmountBase` from the frozen PO-line snapshot
-through `ProcurementQuery` (§0), always. The attribution's columns are the identity ones only:
+bad issuance wrote. `COMMITTED` reads the frozen amount from the PO-line snapshot **through the OWNING module's query**:
+`ProcurementQuery` for a `PurchaseOrderLine`, `LabourQuery` for a `LabourPurchaseOrderLine`. An
+earlier revision said "through `ProcurementQuery`, always", which contradicts §0 and §K — the labour
+line is labour-owned, and §K already locks it through the labour participant for exactly that reason.
+Following the old sentence leaves Task 2 with two bad options: omit live labour POs from `COMMITTED`
+altogether, or have procurement synchronously read labour-owned rows, which is the cross-module
+synchronous read this repository forbids. One fold, two owners, each read through its own contract. The attribution's columns are the identity ones only:
 the target PO-line reference, `costHead`, `reason`, and the supersession stamp.
 
 **And PostgreSQL enforces EXACTLY ONE attribution target.** `(poLineId | labourPoLineId)` is two
@@ -598,6 +603,8 @@ responsible review."
 
 ```text
 draft → submitted → under-verification → { verified | disputed }
+submitted → disputed                     (evidence withdrawn under a live UNCERTIFIED claim)
+under-verification → disputed            (the §E verdict, or evidence withdrawn)
 verified  → disputed                     (evidence withdrawn under a live UNCERTIFIED claim)
 disputed → resolved                      (terminal; resolution supersedes into a NEW version)
 verified → certified → approved-for-payment → { part-paid → paid }
@@ -605,8 +612,12 @@ paid | part-paid → (payment reversal) → RE-DERIVED from PAID vs APPROVED, ne
 draft | submitted | under-verification |
   disputed | verified → rejected            (attributable reason required)
 
-`verified → disputed` exists because the §E/§G withdrawal guard needs somewhere to put a claim it
-invalidates. A `verified` bill is LIVE and UNCERTIFIED, so reversing accepted material under it
+`submitted → disputed` and `verified → disputed` both exist because the §E/§G withdrawal guard needs
+somewhere to put a claim it invalidates, and a claim is LIVE from the moment it is submitted. An
+earlier revision added only the `verified` arrow, which leaves the most ordinary case unhandled: a
+vendor submits a 100-unit bill and an acceptance reversal or measurement correction lands before
+verification even starts, so the participant is required to dispute a live claim with no legal CAS
+target from `submitted`. Every uncertified live state therefore has the arrow. A `verified` bill is LIVE and UNCERTIFIED, so reversing accepted material under it
 must dispute it — and an earlier revision of the lifecycle offered only `under-verification →
 disputed`, which left two bad options: follow the lifecycle and leave a verified bill live with
 `BILLED_QTY > ACCEPTED` (§G bound 2 broken with no state that says so), or use `verified →
@@ -860,6 +871,14 @@ bill for material that never arrived or work never measured.
   balance; recovering more than a certificate carries is a matter for the NEXT certificate, where
   the money to withhold exists. Same shape as the `PAID` floor in §F: the refusal sits on the write
   that would break the invariant, not on a downstream reader of it.
+- **A deduction insertion also RE-DERIVES the payment status, under the bill lock.** §F names
+  `deductions.release` and `payments.reverse` as the writers that re-derive, and the insertion moves
+  `NET_PAYABLE` just as surely: insert a ₹100 retention (or advance-recovery) against a ₹100
+  certified bill before any approval and `NET_PAYABLE = PAID = 0`, which the derivation table calls
+  `paid` — but an implementation following only the refusal rule above leaves the stored status at
+  `certified`, and no positive approval or payment row can ever advance it. §F's own words are "every
+  writer that can move ANY of the three folds"; the deduction insertion is one of them, and listing
+  it only under the release was the omission.
 - **A deduction cannot be appended after an approval has already consumed the net payable.**
   Certify ₹100, approve ₹100, then append a ₹10 penalty and `NET_PAYABLE` drops to ₹90 while the
   live approved total stays ₹100 — bound 4 broken AFTER the approval fact exists, and both rows
@@ -1237,7 +1256,10 @@ SECTION is right and the probe is the defect.
 5n. §0 `MEASURED` floor: recording 100 then correcting −150 is REFUSED, and the fold stays
    at 100 so later honest bills still pass.
 5o. §J partition: a received-but-unbilled ₹100 order appears in `received-not-billed` and
-   NOT in `committed`; the seven buckets sum to no more than budget + committed obligations.
+   NOT in `committed`, and the SIX EXPOSURE buckets sum to exactly the total exposure — `budget` is
+   reported separately as authority plus headroom and is never an addend (§J, probes 5bc/5bm). An
+   earlier spelling summed seven buckets "to no more than budget + committed obligations", which
+   both counts budget as exposure and states an inequality where the invariant is an equality.
 5p. §0 `BUDGET`: a ₹100 line revised to ₹120 forecasts ₹120, never ₹220 and never ₹100.
 5q. §E evidence identity: certify 100 against acceptance A, accept another 100, then reverse
    A — REFUSED naming the certificate, because the frozen consumption set holds A, not a
@@ -1491,6 +1513,21 @@ SECTION is right and the probe is the defect.
    (approved portion settled, remainder unapproved) and NOT to `paid` or `approved-for-payment`;
    and `PAID = APPROVED = NET_PAYABLE` is the only route to `paid`. RED against a derivation that
    maps any `NET_PAYABLE > APPROVED` to `approved-for-payment`.
+5bv. §F every UNCERTIFIED live state can be disputed: a claim at `submitted`, at
+   `under-verification` and at `verified` each moves to `disputed` when an acceptance reversal or
+   measurement correction withdraws its evidence — never left live with `BILLED_QTY` above the
+   available evidence, and never `rejected` (which would judge the claim rather than record that its
+   evidence moved). RED against a lifecycle offering the arrow from only some of the three.
+5bw. §C `COMMITTED` reads each PO line through its OWNING module: a live ₹100 material PO and a live
+   ₹40 labour PO attributed to one cost head fold to ₹140, the material amount read through
+   `ProcurementQuery` and the labour amount through `LabourQuery`; the boundary analyzer reports NO
+   cross-module read for either. RED against a spelling where procurement is the universal owner,
+   which either drops the labour ₹40 or makes procurement read labour-owned rows.
+5bx. §H a deduction INSERTION re-derives payment status: on a ₹100 certified bill with no approval,
+   inserting a ₹100 retention makes `NET_PAYABLE = PAID = 0` and the status re-derives to `paid`
+   under CAS in the insertion's own transaction — not left at `certified`, which no positive approval
+   or payment row could ever advance. RED against a plan that names only the release and the payment
+   reversal as re-deriving writers.
 5br. §H `NET_PAYABLE` never goes negative: on a ₹100 certificate, a ₹150 penalty is REFUSED naming
    the withholdable balance, ₹100 is PERMITTED (`NET_PAYABLE = 0`), a further ₹1 is REFUSED, and
    after releasing ₹40 a ₹40 deduction is PERMITTED again — the cap is on unreleased deductions, not
