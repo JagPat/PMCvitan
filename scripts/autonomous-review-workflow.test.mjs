@@ -1311,6 +1311,10 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   assert.match(gate, /changedFiles: commit\.files/u);
   assert.doesNotMatch(gate, /changedFiles: pullRequestFiles/u);
   assert.match(gate, /pullRequestFiles = await client\.pullRequestFiles\(pullRequest\.number\)/u);
+  // The deferral ledger lives in the packet's PROSE, so the gate reads the packet's content
+  // at the exact head — a filename cannot evidence a ledger.
+  assert.match(gate, /client\.fileText\(packetPath, expectedHead\)/u);
+  assert.match(gate, /async fileText\(path, ref\)[\s\S]*?base64/u);
   assert.match(gate, /state: 'convergence_required'/u);
   assert.match(gate, /Review-Convergence: complete/u);
   assert.match(gate, /assessReviewScope\(pullRequest\)/u);

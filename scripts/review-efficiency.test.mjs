@@ -414,6 +414,9 @@ test('a docs-only review past the round cap must record a probe deferral', () =>
     ].join('\n'),
     changedFiles: docsOnly,
     pullRequestFiles: docsOnly,
+    // the trailer asserts the handoff; the packet is where it is written down
+    packetText: '## Deferral ledger\n| Question | Probe | Settled by |\n'
+      + '| --- | --- | --- |\n| does overage clamp? | 5w | phase-5-task-1 |\n',
   });
   assert.equal(deferred.allowed, true);
   assert.equal(deferred.deferredTo, 'phase-5-task-1');
@@ -478,6 +481,64 @@ test('runnable and schema files never count as documentation, wherever they live
   }
   // real documentation under docs/ still qualifies
   assert.equal(isDocsOnlyDiff(['docs/a.md', 'docs/reviews/b.md', 'docs/img/c.svg']), true);
+});
+
+// FINDING (#253 round 3 P2) — the trailer alone was accepted as the whole deferral.
+test('a deferral needs the packet ledger, not just the trailer', () => {
+  const reviews = Array.from({ length: PLAN_REVIEW_ROUND_CAP }, (_, i) => ({
+    user: { login: CODEX },
+    commit_id: String.fromCharCode(97 + i).repeat(40),
+  }));
+  const docsOnly = ['docs/superpowers/plans/plan.md', 'docs/reviews/pr-252-convergence.md'];
+  const headMessage = [
+    'fix: plan convergence, remainder deferred',
+    '',
+    'Review-Convergence: complete',
+    'Review-Deferred-To-Probes: phase-5-task-1',
+  ].join('\n');
+  const base = {
+    comments: [], reviews, headMessage, changedFiles: docsOnly, pullRequestFiles: docsOnly,
+  };
+
+  // a packet that says nothing about the handoff the trailer claims
+  const noLedger = assessConvergence({
+    ...base,
+    packetText: '## Architectural cause\nThe folds were written locally.\n',
+  });
+  assert.equal(noLedger.allowed, false, 'the trailer asserts a handoff the packet does not record');
+  assert.match(noLedger.missing.join(' '), /phase-5-task-1/u);
+
+  // names the task but never says what it hands over
+  const taskOnly = assessConvergence({
+    ...base,
+    packetText: '## Next\nphase-5-task-1 continues from here.\n',
+  });
+  assert.equal(taskOnly.allowed, false);
+
+  // both artifacts agree on the same handoff
+  const withLedger = assessConvergence({
+    ...base,
+    packetText: [
+      '## Deferral ledger',
+      '| Open question | Probe | Settled by |',
+      '| --- | --- | --- |',
+      '| does overage clamp? | 5w | phase-5-task-1 |',
+    ].join('\n'),
+  });
+  assert.equal(withLedger.allowed, true);
+  assert.equal(withLedger.deferredTo, 'phase-5-task-1');
+
+  // an unreadable packet is not evidence of a ledger, and must not pass silently
+  const unreadable = assessConvergence(base);
+  assert.equal(unreadable.allowed, false);
+  assert.match(unreadable.missing.join(' '), /could not be read/u);
+
+  // below the cap none of this applies — no deferral is owed, so no ledger is either
+  const withinCap = assessConvergence({
+    ...base,
+    reviews: reviews.slice(0, PLAN_REVIEW_ROUND_CAP - 1),
+  });
+  assert.equal(withinCap.allowed, true);
 });
 
 // FINDING (#253 round 2 P2) — a rename carries TWO paths and only one was classified.

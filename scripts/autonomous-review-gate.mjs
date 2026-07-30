@@ -564,6 +564,17 @@ export class GitHubClient {
     );
   }
 
+  // A file's text AT a ref. Used for the convergence packet, whose CONTENT carries the
+  // deferral ledger — a filename alone cannot show that the ledger exists.
+  async fileText(path, ref) {
+    const payload = await this.request(
+      `/repos/${this.repository}/contents/${path.split('/').map(encodeURIComponent).join('/')}`
+        + `?ref=${encodeURIComponent(ref)}`,
+    );
+    if (payload?.encoding !== 'base64' || typeof payload.content !== 'string') return null;
+    return Buffer.from(payload.content, 'base64').toString('utf8');
+  }
+
   reactions(number) {
     return this.request(
       `/repos/${this.repository}/issues/${number}/reactions?per_page=100`,
@@ -954,12 +965,28 @@ export async function enforceReviewConvergence(
   } catch {
     pullRequestFiles = undefined;
   }
+  // The packet's CONTENT, only when this head actually carries one. The deferral ledger
+  // lives in the prose, so a filename cannot evidence it. An unreadable fetch is left
+  // undefined and assessConvergence reports it as unverified rather than absent.
+  let packetText;
+  const packetPath = (commit.files ?? [])
+    .map((file) => file?.filename)
+    .find((name) => typeof name === 'string'
+      && /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu.test(name));
+  if (packetPath) {
+    try {
+      packetText = await client.fileText(packetPath, expectedHead) ?? undefined;
+    } catch {
+      packetText = undefined;
+    }
+  }
   const result = assessConvergence({
     comments,
     reviews,
     headMessage: commit.commit?.message,
     changedFiles: commit.files ?? [],
     pullRequestFiles,
+    packetText,
   });
   if (result.allowed) return result;
 

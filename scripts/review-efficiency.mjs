@@ -212,6 +212,25 @@ export function deferredToProbes(message) {
   return undefined;
 }
 
+// Does the packet record the handoff the trailer claims?
+//
+// The trailer is the author's ASSERTION that the remaining questions moved to probes; the
+// packet ledger is the assertion's content. Accepting the trailer alone made the deferral
+// exactly the bare marker the bare-marker rule refuses — a task name and nothing scheduled.
+//
+// What this verifies is that the two ARTIFACTS AGREE: the packet names the task the trailer
+// defers to, and it says the handoff is to probes. It deliberately does NOT judge whether the
+// ledger is adequate. That distinction is the whole lesson of PR #250 — a mechanism that
+// scores substance suppressed a correct finding on its first real case — so substance stays
+// with the reviewer and only the agreement is mechanical. A packet naming a different task
+// than the trailer, or one that never mentions a probe, is not a judgement call: the two
+// documents describe different handoffs, or none.
+function packetRecordsDeferral(packetText, target) {
+  if (typeof packetText !== 'string' || packetText.length === 0) return false;
+  const text = packetText.toLowerCase();
+  return text.includes(String(target).toLowerCase()) && /\bprobes?\b/u.test(text);
+}
+
 const CONVERGENCE_MARKER = /^[\t ]*review-convergence:[\t ]+complete[\t ]*$/imu;
 
 function hasConvergenceTrailer(message) {
@@ -257,6 +276,7 @@ export function assessConvergence({
   headMessage,
   changedFiles,
   pullRequestFiles,
+  packetText,
 }) {
   const findingHeads = codexFindingHeads(comments, reviews);
   const findingHeadCount = findingHeads.length;
@@ -307,6 +327,20 @@ export function assessConvergence({
     ...(deferralRequired && deferral === null
       ? ['the Review-Deferred-To-Probes value must name the task that will settle the '
         + 'deferred findings; a bare marker schedules nothing']
+      : []),
+    // A trailer naming a task, with a packet that records no handoff, is the bare marker
+    // wearing a task name: nothing is actually scheduled. The obligation has always been
+    // trailer AND ledger (AGENTS.md, and this repo's own packets say so); only the trailer
+    // half was enforced.
+    ...(deferralRequired && typeof deferral === 'string'
+      && !packetRecordsDeferral(packetText, deferral)
+      ? [typeof packetText === 'string' && packetText.length > 0
+        ? `the convergence packet must record the deferral ledger it claims — name "${deferral}" `
+          + 'and the probes each still-open question hands to. The trailer asserts a handoff; '
+          + 'the packet is where the handoff is written down'
+        : 'the convergence packet could not be read, so the deferral ledger it must contain '
+          + 'is unverified. This is not evidence that the ledger is missing — re-run once the '
+          + 'packet is readable']
       : []),
   ];
   return {
