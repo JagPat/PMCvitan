@@ -83,10 +83,12 @@ triple references them by name. No fold restates a filter inline.**
 | Set | Definition | What it must NOT be |
 |---|---|---|
 | `ACCEPTED(poLine)` | Σ qty of `acceptance` movements on that line's lots, MINUS Σ qty of reversals whose target is an acceptance row | NOT `accepted − rejected` (disjoint arms; understates an 80/20 split as 60). NOT the `acceptedOnHand` bucket balance: issuing moves `acceptedOnHand → issuedToActivity`, so accept-100-then-issue-100 reads 0 and fails an honest bill, while a cycle-count `stock.adjust` INTO that bucket would read as billable delivery with no receipt behind it. Acceptance is an EVENT, not a balance. |
-| `MEASURED(poLine)` | Σ quantity of live `Measurement` rows for that line (corrections are signed deltas, so they fold in) | not a stored total |
+| `MEASURED(poLine)` | Σ quantity of live `Measurement` rows for that line (corrections are signed deltas, so they fold in), and the fold may never go NEGATIVE — a correction taking it below zero is refused under the same lock as the positive cap | not a stored total, and never negative: recording 100 then correcting −150 leaves −50 and permanently fails `BILLED_QTY ≤ MEASURED` for work that was actually done |
 | `EFFORT(poLine)` | work facts and allocations whose `labourSpecFingerprint` AND `(civilDate, shift)` slices match THAT line, each unit consumable by at most one PO line | NOT "any effort on the activity/slice" — that lets an electrical crew's attendance support a plumbing line's bill on the same day |
 | `OUTPUT(poLine)` | the cited `ActivityWorkOutput` quantity REMAINING after every other line's measurements have drawn it down — output is consumable exactly once across all lines and all measurements | NOT the activity's total output: with one 100 sqm output and two output-priced lines in sqm, each line passes a per-line cap of 100 and 200 sqm gets certified from one 100 sqm fact |
+| `BUDGET(costHead)` | the amount of the LIVE budget version only | not Σ over the immutable revision rows — a ₹100 line revised to ₹120 would forecast ₹220 — and not an arbitrary row, which leaves the forecast at the superseded ₹100 |
 | `BILLED_QTY(poLine)` | Σ **quantity** over LIVE claim lines | see the live rule below |
+| `BILLED_TAX(poLine)` / `BILLED_FREIGHT(poLine)` | Σ claimed tax / freight over the same LIVE claim lines | see the pro-rata cap in §E — a line-level frozen amount is never compared whole against a partial bill |
 | `BILLED_AMOUNT(poLine)` | Σ **money** over the same LIVE claim lines | — |
 
 `BILLED_QTY` and `BILLED_AMOUNT` are separate names on purpose. One "billed" set used as
@@ -101,7 +103,7 @@ retained amended version as 200). NOT "`submitted` only" — a first claim that 
 Live spans the whole post-submission lifecycle.
 
 | `CERTIFIED(bill)` | the LIVE certificate only | not Σ over superseded certificates, which double-counts a corrected certification and either blocks a valid correction or overstates the forecast |
-| `COMMITTED(costHead)` | Σ `committedAmountBase` over attributions whose PO version is LIVE | not "one active attribution per line": an amendment retains v1's line and issues v2's, so both attributions can be active and the forecast reads ₹200 for a ₹100 order. An attribution is superseded atomically with the PO version it describes. |
+| `COMMITTED(costHead)` | the OUTSTANDING obligation: Σ `committedAmountBase` over attributions whose PO version is LIVE, MINUS the portion already received or released (accepted quantity at the frozen rate; the released remainder of a closed-short version) | not the gross frozen amount — a ₹100 PO accepted but not billed would sit in `committed` AND `received-not-billed` at once, forecasting a ₹200 obligation from a ₹100 order. The §J buckets must partition the money, not overlap it. Also not "one active attribution per line": an amendment retains v1's line and issues v2's, so both attributions could be active; an attribution is superseded atomically with the PO version it describes. |
 
 The shared shape: **an amendment retains history, so "every row" is never the answer; and a
 bucket balance is a current state, so it is never evidence of a past event.** A new fold
@@ -164,8 +166,13 @@ line**. It has a different unit, a different authority and a different lifecycle
   and — for work measured against an activity — the activity reference validated through
   `ActivityParticipant`.
 - A measurement against an activity requires that activity to be `done` with its closing
-  sign-off (read through the activities query contract). Measuring incomplete work for
-  payment is exactly the failure Phase 1 existed to prevent.
+  sign-off. Measuring incomplete work for payment is exactly the failure Phase 1 existed to
+  prevent. **The status must be read under the activity/root row lock, not by a plain
+  query.** `ActivityParticipant.revertSignOff` can move `done → in_progress` when a closing
+  inspection is rejected, so an unlocked read admits: measurement sees `done`, the rejection
+  commits, the immutable measurement commits anyway, and a bill later rests on work whose
+  sign-off was withdrawn. The guard runs inside the locked participant — the same discipline
+  §E uses for the accepted side.
 - **A measurement is BOUNDED BY operational evidence, not merely permitted by a status.**
   Sign-off alone would let a commercial actor author the only quantity evidence in the
   chain — a 100-unit measurement against an activity with no recorded output — and
@@ -209,6 +216,14 @@ line**. It has a different unit, a different authority and a different lifecycle
 Each side is the §0 set by name. Restating any of those filters here is exactly the drift
 that produced two rounds of findings.
 
+**Tax and freight are prorated, never compared whole.** The PO line freezes a LINE-level
+`taxAmount` and `freightAmount` for the full ordered quantity, so a 50-unit bill against a
+100-unit PO carrying ₹1,800 tax and ₹500 freight legitimately claims ₹900 and ₹250.
+Comparing either against the full frozen figure disputes an honest partial bill; comparing
+neither lets two 50-unit bills each claim the whole ₹1,800. The cap is cumulative and
+pro-rata: `BILLED_TAX(poLine)` and `BILLED_FREIGHT(poLine)` (§0) may not exceed the frozen
+amount scaled by `BILLED_QTY / qty`, with §A's rounding applied once at the line.
+
 The verdict is `matched | exception`, with each exception naming its own kind
 (`qty-over-ordered`, `qty-over-accepted`, `rate-mismatch`, `tax-mismatch`,
 `freight-mismatch`, `duplicate-claim`). Freight is compared, not merely carried: the
@@ -233,6 +248,19 @@ in this stable order to stay deadlock-free:
 4. for labour, the contributing measurements and their cited work outputs
 
 and re-reads every side inside that lock before deciding.
+
+**The converse direction needs a channel too.** Recomputing on bill-side transitions cannot
+see an inventory correction that lands AFTER certification: inventory does not depend on
+commercial, so `stock.reverse` commits freely and leaves a certified, payable bill whose
+`ACCEPTED(poLine)` is now zero. The reversal must therefore ask, in its own transaction,
+through a new `CommercialParticipant.assertAcceptanceReversible(tx, poLineId, qty)` —
+`inventory.workflowParticipants` gains `commercial`, a participant edge, cycle-exempt
+exactly as the media-delete and receipt-progress edges already are. The participant REFUSES
+a reversal that would drop `ACCEPTED` below the live certified quantity, naming the
+certificate; the operator path is to supersede that certificate first (and reverse the
+payment where money moved), then reverse the acceptance. This is the `assertMediaDisposable`
+precedent applied to money: evidence a payable fact rests on cannot be withdrawn while that
+fact stands.
 
 **That order is not a free choice — it must match what inventory already does.** Every
 inventory write today runs `lockProjectReadiness → lockLot → applyReceiptProgress`, and
@@ -331,8 +359,12 @@ bill for material that never arrived or work never measured.
   authority (org admin) AND writes an attributable `SodException` record naming the rule,
   the actor, the approver and the reason. Silently allowing it is not an option; silently
   banning it is not either, because a two-person practice must still be able to operate.
-- Approval limits are per-membership amount ceilings. Exceeding one escalates to a higher
-  limit holder; it never silently succeeds.
+- Approval limits are per-membership amount ceilings applied to the **cumulative** approved
+  total for the bill, not to each approval row. A per-row check lets a ₹50-limit approver
+  authorize a ₹100 payable as two ₹50 rows — each within limit, bound 4 satisfied, the
+  ceiling defeated. The guard serializes on the bill, folds what is already approved, and
+  compares the actor's limit to the resulting total; crossing it escalates to a higher-limit
+  holder and never silently succeeds.
 - Every route enforces authorization server-side. UI visibility is convenience (spec §18).
 
 ### §J. Cash forecast — the EIGHTH rebuildable projection
@@ -341,8 +373,12 @@ bill for material that never arrived or work never measured.
 events and zero notifications — the established projection contract). Buckets, exactly as
 spec §16 names them and distinct by construction:
 
-`budget` · `committed` · `received-not-billed` · `awaiting-certification` ·
-`certified-payable` · `approved` · `paid`
+`budget` (= `BUDGET`) · `committed` (= `COMMITTED`, OUTSTANDING) · `received-not-billed` ·
+`awaiting-certification` · `certified-payable` · `approved` · `paid`
+
+The buckets PARTITION the money — no rupee appears in two of them. That is why `COMMITTED`
+is defined as outstanding rather than gross (§0): a received-but-unbilled ₹100 order belongs
+in `received-not-billed` and must not also be reported as `committed`.
 
 `live == projection == rebuild` through ONE shared compute function, the discipline that
 made the material and labour readiness projections correct.
@@ -437,6 +473,22 @@ rests on, and certification is the last point before money becomes payable.
 5i. one 100 sqm output cannot fund two output-priced lines' 100 sqm measurements; a ₹100
    certification with ₹10 retention approves at most ₹90; a certified bill cannot be
    rejected to free its accepted quantity.
+5j. §E post-certification reversal: after a 100-unit bill is certified, `stock.reverse` of
+   that acceptance is REFUSED naming the certificate; superseding the certificate first
+   permits the reversal. Both orderings under a deterministic barrier.
+5k. §D measurement vs sign-off revert, both orderings under a barrier: a closing-inspection
+   rejection committing mid-measurement can never leave a measurement standing against an
+   activity whose sign-off was withdrawn.
+5l. §E pro-rata: a 50-unit bill of a 100-unit PO with ₹1,800 tax / ₹500 freight passes at
+   ₹900 / ₹250 and is disputed at ₹1,800 / ₹500; two 50-unit bills cannot each claim the
+   full amounts.
+5m. §I cumulative limit: a ₹50-limit approver cannot authorize a ₹100 payable as two ₹50
+   rows; the second escalates.
+5n. §0 `MEASURED` floor: recording 100 then correcting −150 is REFUSED, and the fold stays
+   at 100 so later honest bills still pass.
+5o. §J partition: a received-but-unbilled ₹100 order appears in `received-not-billed` and
+   NOT in `committed`; the seven buckets sum to no more than budget + committed obligations.
+5p. §0 `BUDGET`: a ₹100 line revised to ₹120 forecasts ₹120, never ₹220 and never ₹100.
 5g. §0 set identity: for each of the six sets, the "must NOT be" column is a probe — the
    80/20 acceptance, the accept-then-issue, the adjust-into-bucket, the amended bill, the
    advanced-lifecycle bill, the superseded certificate and the amended PO commitment each

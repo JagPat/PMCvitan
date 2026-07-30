@@ -163,3 +163,53 @@ defects the plan's own probes are written to catch, and after this head the chea
 to find the next one is Task 1's code, not another prose round.
 
 Gates: `pnpm test:automation` 111/111.
+
+---
+
+## Round 3 — `22175f8`
+
+Seven findings, all correct. No finding contradicted §0; five were folds or guards §0's own
+rule should have caught and I had not written down, and two were fresh concurrency/arithmetic
+gaps.
+
+| Finding | Shape |
+|---|---|
+| I5 no `BUDGET(costHead)` live set, though §J has a budget bucket | a fold with no named set — the §0 rule, again |
+| I2 `COMMITTED` gross, so committed and received-not-billed overlap | a set defined without asking what the bucket it feeds must mean |
+| I7 `MEASURED` unbounded below; −150 correction strands the line | a set with no floor |
+| I3 tax/freight compared whole against partial bills | two amounts with no named cumulative fold |
+| I1 measurement reads activity status unlocked | lock-after-read — the same class as F4 and G2 |
+| I4 approval limits per row, so ₹100 splits into two ₹50s | a ceiling applied to the wrong aggregate |
+| I6 post-certification acceptance reversal leaves a payable bill with zero accepted | the missing REVERSE channel |
+
+**I6 is the one that mattered most.** §E made certification lock the accepted evidence, which
+closes the race in one direction only: inventory does not depend on commercial, so
+`stock.reverse` commits freely afterwards and leaves a certified, payable bill whose
+`ACCEPTED` is zero. The fix is the channel this codebase already uses for exactly this shape —
+`inventory.workflowParticipants` gains `commercial`, and the reversal asks
+`CommercialParticipant.assertAcceptanceReversible` in its own transaction, which refuses
+while a live certificate depends on the quantity and names it. That is `assertMediaDisposable`
+applied to money: evidence a payable fact rests on cannot be withdrawn while the fact stands.
+
+New sets: `BUDGET`, `BILLED_TAX`, `BILLED_FREIGHT`. `COMMITTED` is redefined as OUTSTANDING
+and `MEASURED` gains a floor at zero. Probes 5j–5p cover every finding.
+
+## Where this review stands, stated with numbers
+
+Four finding-bearing heads: 8, 8, 7, 7 — thirty findings, every one correct, none yet
+contradicted by a later round. The rate is not declining, and the plan has no executable
+surface, so nothing here can be proven RED→GREEN; each round can only be answered with more
+prose.
+
+That is not an argument that the review is wrong — it has caught real defects, several of
+which would have cost a migration to fix after Task 1. It is an argument about where the next
+one is cheapest to find. Every finding in rounds 2–3 is a case the plan's own probe list now
+names: 5g–5p are executable the moment Task 1 exists, and would have failed RED for I2, I3,
+I5, I7 and both races. A plan is a hypothesis about invariants; probes are how it gets tested.
+
+The recommendation, for the record and not as a unilateral action: after this head, take
+Task 1 — which ships the six §0 sets as named query functions — and let the probes adjudicate
+the remainder. The gate decides whether this head is clean; the runner does not get to
+declare its own plan finished.
+
+Gates: `pnpm test:automation` 111/111.
