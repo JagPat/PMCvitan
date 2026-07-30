@@ -49,17 +49,31 @@ const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 10 * 60_000);
 const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 15 * 60_000);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
 
-export function requiredChecksForPullRequest(pullRequestNumber, pullRequestFiles) {
-  if (
+// Pre-policy branches emit neither gate job, so requiring them would strand an
+// older PR on a check it cannot produce.
+function isPrePolicyPullRequest(pullRequestNumber) {
+  return (
     Number.isInteger(pullRequestNumber)
     && pullRequestNumber > 0
     && pullRequestNumber <= REVIEW_SCOPE_ENFORCE_AFTER_PR
-  ) {
-    // Neither job exists on pre-policy branches; requiring them would strand
-    // an older PR on a check it cannot emit.
-    return REQUIRED_CHECKS.filter(
+  );
+}
+
+// The full product battery for this PR, with pre-policy grandfathering applied.
+// Named separately so a caller that has ALREADY established the head runs
+// products can say so directly, instead of routing a synthetic file list through
+// the docs-only classifier to reach this branch.
+export function productChecksForPullRequest(pullRequestNumber) {
+  return isPrePolicyPullRequest(pullRequestNumber)
+    ? REQUIRED_CHECKS.filter(
       (name) => name !== 'review-scope' && name !== 'battery-plan',
-    );
+    )
+    : REQUIRED_CHECKS;
+}
+
+export function requiredChecksForPullRequest(pullRequestNumber, pullRequestFiles) {
+  if (isPrePolicyPullRequest(pullRequestNumber)) {
+    return productChecksForPullRequest(pullRequestNumber);
   }
   if (Array.isArray(pullRequestFiles) && isDocsOnlyDiff(pullRequestFiles)) {
     return DOCS_FAST_CHECKS;
@@ -75,7 +89,7 @@ export function inferRequiredChecksFromRuns(pullRequestNumber, checkRuns) {
   const hasRealProduct = PRODUCT_CHECKS.some((name) =>
     runs.some((run) => run?.name === name && !isSkipped(run)));
   if (hasRealProduct) {
-    return requiredChecksForPullRequest(pullRequestNumber, ['apps/api/src/x.ts']);
+    return productChecksForPullRequest(pullRequestNumber);
   }
 
   const productsOnlySkippedOrAbsent = PRODUCT_CHECKS.every((name) => {
@@ -954,19 +968,56 @@ export async function ensureTerminalReviewState(
   return true;
 }
 
-async function resolveRequiredChecks(client, pullRequest) {
-  let pullRequestFiles;
-  try {
-    pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
-  } catch {
-    const headSha = pullRequest.head?.sha;
-    if (!headSha) return REQUIRED_CHECKS;
-    return inferRequiredChecksFromRuns(
-      pullRequest.number,
-      await client.checkRuns(headSha),
-    );
+// ONE classification per (pull request, head), shared by every consumer.
+//
+// A head's cumulative file list is immutable, but the gate consults it from four
+// places: the check-wait loop, the CI-failure branch, the final verification, and
+// the scope/convergence checks. Reading it independently at each site meant a
+// transient files-API failure could be observed by some and not others, so a
+// single run could require DOCS_FAST_CHECKS in its wait loop and the full product
+// battery in the verification that actually sets `codex-current-head` — the same
+// planner-versus-gate disagreement findings 4/6/8 are about, one level in, with
+// the gate disagreeing with itself.
+//
+// An unreadable list is cached as unreadable for the rest of the run. That is
+// deliberate: one head gets one classification, and every consumer then fails
+// closed the same way. A genuinely transient failure is retried by the next gate
+// invocation, which builds a fresh client.
+const headClassifications = new WeakMap();
+
+export async function classifyHead(client, pullRequest) {
+  const key = `${pullRequest?.number}@${pullRequest?.head?.sha ?? ''}`;
+  let perClient = headClassifications.get(client);
+  if (!perClient) {
+    perClient = new Map();
+    headClassifications.set(client, perClient);
   }
-  return requiredChecksForPullRequest(pullRequest.number, pullRequestFiles);
+  if (perClient.has(key)) return perClient.get(key);
+
+  let classification;
+  try {
+    classification = {
+      available: true,
+      files: await client.pullRequestFiles(pullRequest.number),
+    };
+  } catch {
+    classification = { available: false, files: undefined };
+  }
+  perClient.set(key, classification);
+  return classification;
+}
+
+async function resolveRequiredChecks(client, pullRequest) {
+  const { available, files } = await classifyHead(client, pullRequest);
+  if (available) {
+    return requiredChecksForPullRequest(pullRequest.number, files);
+  }
+  const headSha = pullRequest.head?.sha;
+  if (!headSha) return REQUIRED_CHECKS;
+  return inferRequiredChecksFromRuns(
+    pullRequest.number,
+    await client.checkRuns(headSha),
+  );
 }
 
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
@@ -1007,12 +1058,8 @@ export async function enforceReviewConvergence(
   // is provable at all is a question about the PR's CUMULATIVE diff — a code PR's
   // convergence head is very often the packet alone. An unreadable list is left
   // undefined, which assessConvergence resolves toward the ordinary code protocol.
-  let pullRequestFiles;
-  try {
-    pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
-  } catch {
-    pullRequestFiles = undefined;
-  }
+  // Same classification the battery decision used — see classifyHead.
+  const { files: pullRequestFiles } = await classifyHead(client, pullRequest);
   // Which phases a deferral may name. `docs/STATUS.md` is a machine-readable state file and
   // this workflow runs from the trusted default branch's own checkout, so this is a plain
   // structured-field read — not the PR-head content fetching this PR withdrew. Unreadable
@@ -1062,19 +1109,14 @@ export async function enforceReviewConvergence(
 }
 
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
-  let pullRequestFiles;
-  try {
-    pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
-  } catch {
-    pullRequestFiles = undefined;
-  }
+  // Same classification the battery decision and the convergence check used, so
+  // one unreadable file list produces one consistent fail-closed verdict rather
+  // than a mixture across the run — see classifyHead.
+  const { available, files } = await classifyHead(client, pullRequest);
 
-  const planInput = pullRequestFiles === undefined
-    ? { unavailable: true, stats: [] }
-    : {
-      unavailable: false,
-      stats: planStatsFromPullRequestFiles(pullRequestFiles),
-    };
+  const planInput = available
+    ? { unavailable: false, stats: planStatsFromPullRequestFiles(files) }
+    : { unavailable: true, stats: [] };
   const result = assessPullRequestScope(pullRequest, planInput);
   if (result.allowed) return result;
 

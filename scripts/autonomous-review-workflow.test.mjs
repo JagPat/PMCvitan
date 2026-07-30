@@ -1322,7 +1322,16 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   // and must never be the source of `changedFiles`.
   assert.match(gate, /changedFiles: commit\.files/u);
   assert.doesNotMatch(gate, /changedFiles: pullRequestFiles/u);
-  assert.match(gate, /pullRequestFiles = await client\.pullRequestFiles\(pullRequest\.number\)/u);
+  // The cumulative list comes from the ONE per-head classification every consumer
+  // shares, so a transient files-API failure cannot be seen by the convergence
+  // check and not by the battery decision (or vice versa) within a single run.
+  assert.match(gate, /const \{ files: pullRequestFiles \} = await classifyHead\(client, pullRequest\)/u);
+  // Exactly one place reads the endpoint; everything else goes through classifyHead.
+  assert.equal(
+    (gate.match(/client\.pullRequestFiles\(pullRequest\.number\)/gu) ?? []).length,
+    1,
+    'the PR file list must be fetched in one place only — see classifyHead',
+  );
   // The deferral LEDGER is deliberately not gate-verified — see the note in
   // review-efficiency.mjs. Four rounds of prose parsing were withdrawn because telling a
   // question from a probe list, or a probe declaration from a numbered task heading, needs
