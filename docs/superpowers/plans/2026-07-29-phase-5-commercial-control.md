@@ -84,7 +84,7 @@ triple references them by name. No fold restates a filter inline.**
 |---|---|---|
 | `ACCEPTED(poLine)` | Σ qty of `acceptance` movements on that line's lots, MINUS Σ qty of reversals whose target is an acceptance row | NOT `accepted − rejected` (disjoint arms; understates an 80/20 split as 60). NOT the `acceptedOnHand` bucket balance: issuing moves `acceptedOnHand → issuedToActivity`, so accept-100-then-issue-100 reads 0 and fails an honest bill, while a cycle-count `stock.adjust` INTO that bucket would read as billable delivery with no receipt behind it. Acceptance is an EVENT, not a balance. |
 | `MEASURED(poLine)` | Σ quantity of live `Measurement` rows for that line (corrections are signed deltas, so they fold in), and the fold may never go NEGATIVE — a correction taking it below zero is refused under the same lock as the positive cap | not a stored total, and never negative: recording 100 then correcting −150 leaves −50 and permanently fails `BILLED_QTY ≤ MEASURED` for work that was actually done |
-| `EFFORT(poLine)` | work facts joined through `WorkerAllocation → CapacityCommitment → LabourPurchaseOrderLine` to THIS line, each unit consumable by at most one PO line | NOT matched on fingerprint and slice alone: two vendors can hold the same `labourSpecFingerprint` on the same activity and day, and A's work fact would then be consumable by B's bill while A stays unbillable. The join must reach the exact PO line through the commitment that funded the allocation. |
+| `EFFORT(poLine)` | work facts joined through `WorkerAllocation → CapacityCommitment → LabourPurchaseOrderLine` to THIS line, each unit consumable by at most one PO line, **NORMALISED into billable person-shifts before any comparison** — `LabourWorkFact` is worked-MINUTES (Phase 4), the bill is person-SHIFTS, and comparing them raw lets a 10-person-shift measurement satisfy `10 ≤ 480` from a single worker's one 480-minute day. The conversion is `Σ workedMinutes / shiftMinutes` for that project's shift definition, floored at the §A scale, and it happens INSIDE this set so no call site can forget it | NOT matched on fingerprint and slice alone: two vendors can hold the same `labourSpecFingerprint` on the same activity and day, and A's work fact would then be consumable by B's bill while A stays unbillable. The join must reach the exact PO line through the commitment that funded the allocation. |
 | `OUTPUT(poLine)` | the cited `ActivityWorkOutput` quantity REMAINING after every other line's measurements have drawn it down — output is consumable exactly once across all lines and all measurements | NOT the activity's total output: with one 100 sqm output and two output-priced lines in sqm, each line passes a per-line cap of 100 and 200 sqm gets certified from one 100 sqm fact |
 | `BUDGET(costHead)` | the amount of the LIVE budget version only | not Σ over the immutable revision rows — a ₹100 line revised to ₹120 would forecast ₹220 — and not an arbitrary row, which leaves the forecast at the superseded ₹100 |
 | `BILLED_QTY(poLine)` | Σ **quantity** over LIVE claim lines | see the live rule below |
@@ -134,9 +134,10 @@ a row owes every site in that row, and the row is the acceptance criterion.
 |---|---|
 | Exactly one live attribution per live PO line version | `pos.issue` **and** labour PO issue (atomic with the version becoming live) · amend · cancel · close-short — all four through `CommercialParticipant`, none deferred to a later commercial command |
 | A status a guard depends on is read under that row's lock | measurement (activity/root) · certification (activity/root **and** the contributing lots **and** the PO line) · payment approval (the bill) |
-| Evidence cannot be withdrawn while a live payable fact consumes it | acceptance reversal · `ActivityWorkOutput` supersession · sign-off revert · **measurement correction** — every one asks the commercial participant first |
+| Evidence cannot be withdrawn while a live payable fact consumes it | acceptance reversal (refuse vs a live certificate, DISPUTE a live uncertified claim) · `ActivityWorkOutput` supersession · sign-off revert · measurement correction · **deduction insertion after approval** — every one asks the commercial participant, or serializes on the bill, first |
 | A fold that consumes a frozen amount is clamped and overage-aware | `COMMITTED` (clamp at 0) · `BILLED_TAX`/`BILLED_FREIGHT` pro-rata cap (never scale past the frozen authority) |
-| An append-only amount column is constrained to its sign | certification · payment · **every deduction and release row** (positive; the row TYPE carries direction, never a negative amount) |
+| An append-only amount column is constrained to its sign | certification · payment · every deduction and release row · **every vendor CLAIM line — quantity, tax and freight** (positive; the row TYPE carries direction, never a negative amount). A live −100-unit claim plus a 200-unit bill leaves cumulative `BILLED_QTY` at 100, passing bounds 1–2 against 100 accepted while the second bill certifies against its own bill-scoped amount. A credit is a separate document with its own semantics, NOT a negative line inside a conservation fold; Phase 5 has no credit note, so a negative claim is simply refused. |
+| A participant edge is declared in BOTH directions it is used | §K's edge table is the single source: `commercial → inventory · activities · procurement` outbound; `procurement · activities · inventory → commercial` inbound. Any §-section that describes a transaction-bound call adds its edge HERE in the same change. |
 | Every declared enum member appears in the fold that uses it | `NET_PAYABLE` covers retention · advance-recovery · penalty · **`other`** |
 | Non-blank text discipline | every reason column **and** `CostHead.code`/`name`, with the complete ASCII set `btrim(x, E' \t\n\x0B\f\r')` |
 | A rule and the record that authorises its exception ship together | §I SoD **and** `SodException` both in Task 5 for certification; Task 6 adds only the payment-approval half |
@@ -240,11 +241,17 @@ line**. It has a different unit, a different authority and a different lifecycle
   - a measurement MUST cite at least one `ActivityWorkOutput` for that activity, read
     through `ActivitiesQuery`. What that citation BOUNDS depends on how the line is priced,
     because the two contract shapes measure different things:
-    - **priced by output quantity** (a rate per sqm, per rm, per unit): the cap is
-      `MEASURED(poLine) ≤ OUTPUT(poLine)` (§0) in the SAME UOM — the cited output NET of
-      what other lines' measurements have already drawn, because one 100 sqm output must
-      not fund two lines' 100 sqm claims; a UOM mismatch is a refusal, never a silent
-      conversion;
+    - **priced by output quantity** (a rate per sqm, per rm, per unit): **OUT OF SCOPE for
+      Phase 5, and removed here.** I introduced this shape mid-review without checking that
+      the ordered side supports it, and it does not: a Phase-4 `LabourPurchaseOrderLine`
+      freezes `personShiftQty` and `ratePerPersonShift` and nothing else, so a 100 sqm claim
+      has no frozen ordered quantity and no frozen ₹/sqm to verify against. §G bound 1 would
+      compare sqm to person-shifts and the rate check would have no authoritative value —
+      certification from no ordered evidence, which is precisely what this phase exists to
+      prevent. Output-priced (lump-sum / item-rate) subcontracts need a frozen work-order
+      snapshot of their own, which is a procurement change and a later phase. Phase 5 verifies
+      person-shift-priced labour only; `OUTPUT(poLine)` survives in §0 solely as the
+      progress-evidence citation below, never as a priced quantity.
     - **priced per person-shift**: the billable unit is person-shifts and the output is
       recorded in a physical unit, so a same-unit cap is not merely wrong but unsatisfiable
       — it would refuse a valid attended shift whenever progress is recorded in sqm, or
@@ -345,7 +352,18 @@ commercial, so `stock.reverse` commits freely and leaves a certified, payable bi
 through a new `CommercialParticipant.assertAcceptanceReversible(tx, poLineId, acceptanceTxIds)`
 — the TARGET ROWS, not an aggregate quantity. Certification freezes WHICH acceptance rows it
 consumed (a `CertifiedAcceptanceConsumption` set, append-only), and the participant refuses a
-reversal of any row in a live certificate's set. An aggregate check would let the evidence be
+reversal of any row in a live certificate's set.
+
+**A live UNCERTIFIED claim is protected too, by disputing rather than refusing.** Guarding only
+certificates leaves the pre-certification window open: 100 accepted, a submitted (or verified)
+100-unit bill, then `stock.reverse` before anyone certifies — no certificate exists, the guard
+allows it, and `BILLED_QTY = 100` stands live against `ACCEPTED = 0`, breaking bound 2 with no
+transition to notice. But REFUSING here would be wrong: no money has been promised, and a store
+user correcting a genuine mis-acceptance must not be blocked by a vendor's claim. So the
+participant, in the reversal's own transaction, moves every live uncertified claim on that PO
+line to `disputed` with a `qty-over-accepted` exception — which §0 excludes from the live folds,
+so bound 2 holds by construction and the vendor is told why. Refuse when money is committed
+(a live certificate); dispute when only a claim is. An aggregate check would let the evidence be
 swapped after the fact: certify 100 against acceptance A recorded by store user X, accept
 another 100 by user Y, then reverse A — the aggregate is still 100 so the reversal passes, and
 the payable certificate now rests on different rows, by a different actor, than the §E triple
@@ -467,6 +485,15 @@ bill for material that never arrived or work never measured.
   payable cannot be corrected in place. `CHECK (amount > 0)` on deduction and release rows
   alike, with releases separately bounded by the unreleased balance of their own deduction (an
   over-release is already refused). This is the sign-constraint row of §0b, at its third site.
+- **A deduction cannot be appended after an approval has already consumed the net payable.**
+  Certify ₹100, approve ₹100, then append a ₹10 penalty and `NET_PAYABLE` drops to ₹90 while the
+  live approved total stays ₹100 — bound 4 broken AFTER the approval fact exists, and both rows
+  are append-only so neither walks back. Insertion therefore serializes on the bill and is
+  refused when `Σ approved-for-payment` would exceed the resulting `NET_PAYABLE`; withholding
+  more than that requires superseding the approval first (and reversing the payment where money
+  moved). This is the same shape as the §D measurement-correction floor and the §E
+  evidence-withdrawal rule — a reducing append is bounded by what downstream facts already
+  consume — and it is the fourth site of that rule, now listed in §0b.
 - **Deduction rows are append-only at PostgreSQL, exactly like certificates, approvals and
   payments**, and they join §F's append-only list. They determine `NET_PAYABLE` directly, so
   a row that could be updated or deleted is a withholding that never withheld anything: on a
@@ -573,10 +600,20 @@ made the material and labour readiness projections correct.
   - `activities.workflowParticipants` gains `commercial` (already stated in §E) so that
     superseding a cited output or reverting a sign-off asks
     `CommercialParticipant.assertWorkEvidenceRevisable` first.
+  - `procurement` is ALSO an outbound participant, because certification takes the PO-line
+    lock (§E step 3) and a lock is a transaction-bound call, not a query. Reading the ordered
+    side through `ProcurementQuery` instead would let certification see a live 100-unit line
+    while `pos.closeShort`/amend moves that version under procurement's own lock, and commit a
+    certificate against ordered authority that no longer stands.
+  - `inventory` is ALSO an INBOUND participant, because §E requires `stock.reverse` to call
+    `CommercialParticipant.assertAcceptanceReversible` before withdrawing accepted material.
+    Without the edge, accept 100 → certify → reverse the acceptance commits with no commercial
+    check, leaving the certificate payable against evidence that was withdrawn.
   - The manifest table Task 1 must produce is therefore: `commercial.dependsOn` = those four;
-    `commercial.workflowParticipants` = `['inventory', 'activities']`;
-    `procurement.workflowParticipants` and `activities.workflowParticipants` each gain
-    `commercial`; nothing gains `commercial` in any `dependsOn`. A Task-1 acceptance test
+    `commercial.workflowParticipants` = `['inventory', 'activities', 'procurement']`;
+    `procurement.workflowParticipants`, `activities.workflowParticipants` **and
+    `inventory.workflowParticipants`** each gain `commercial`; nothing gains `commercial` in
+    any `dependsOn`. A Task-1 acceptance test
     asserts that exact edge set and that a topological sort of the `dependsOn` graph
     succeeds.
 - **No readiness gate consults commercial.** An unpaid bill, a breached budget and a

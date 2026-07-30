@@ -334,9 +334,60 @@ by whichever site the finding pointed at. Named sets stopped me writing the wron
 not stop me writing the right fold in one place and not the other. §0b is the site-level
 counterpart.
 
+## Round 7 (head `2a0d26c`) — §0b did not work, and why that settles the trajectory
+
+Seven findings, all correct. **Four are §0b closure failures in the very head that introduced
+§0b**, which is the decisive fact in this packet:
+
+- §K's edge table omitted `inventory → commercial`, though §E requires `stock.reverse` to call
+  `assertAcceptanceReversible` — accept 100, certify, reverse, and the certificate is payable
+  against withdrawn evidence.
+- The same table omitted `commercial → procurement`, though certification takes the PO-line
+  lock — a lock is a transaction-bound call, and reading through `ProcurementQuery` instead
+  lets a certificate commit against ordered authority `closeShort` has already moved.
+- The sign-constraint row named certification, payment and deductions and missed **vendor claim
+  lines** — a live −100 claim plus a 200-unit bill leaves cumulative `BILLED_QTY` at 100 and
+  passes bounds 1–2 against 100 accepted.
+- A deduction appended after approval breaks bound 4 — the same reducing-append-after-
+  consumption rule I had just fixed at measurement corrections and left open at deductions.
+
+The other three: `EFFORT` folds worked-MINUTES and §D compares it to person-SHIFTS, so
+`10 ≤ 480` passes from one worker's day (a unit error, in the phase whose §0 exists to stop
+exactly that); a pre-certification `stock.reverse` leaves a live claim against zero accepted;
+and output-priced labour has **no frozen ordered quantity or rate** in Phase 4 to verify
+against — a shape I invented mid-review without checking the ordered side supports it. That one
+is removed rather than patched: Phase 5 verifies person-shift-priced labour only, and
+output-priced subcontracts need a work-order snapshot that is a procurement change and a later
+phase.
+
+**§0b was the wrong instrument and this round proves it.** A hand-authored site list cannot fix
+a failure whose cause is my recall: I wrote the closure table and, in the same document, failed
+to close four rules. Prose has no compiler, so the only mechanism that closes a rule over its
+sites is an executable probe. That is the #253 thesis, arrived at the hard way.
+
+## Deferral ledger
+
+Each still-open question, the probe that adjudicates it, and the task whose review stop settles
+it. This is the mapping the deferral requires — not a pointer at the probe list.
+
+| Open question | Probe | Settled by |
+|---|---|---|
+| Does `COMMITTED` stay ≥ 0 when overage is accepted, at both clamp sites? | probe 5w | phase-5-task-2 |
+| Is the §K edge set exactly as declared, inbound and outbound, with an acyclic `dependsOn`? | probe 5x | phase-5-task-1 |
+| Is a live PO line ever unattributed, at all four lifecycle sites? | probe 5y, 5u | phase-5-task-2 |
+| Can a bill be amended after certification? | probe 5z | phase-5-task-5 |
+| Is a `SodException` immutable, single-use, and written in the override's transaction? | probe 5aa | phase-5-task-5 |
+| Does an unresolved `disputed` claim leave the live folds so its correction can be submitted? | probe 5ac | phase-5-task-5 |
+| Is `EFFORT` normalised to person-shifts before any cap compares it? | probe 5c, 5s | phase-5-task-3 |
+| Is a reducing append refused/disputed at every site a downstream fact consumes it? | probe 5j, 5ab | phase-5-task-5 |
+| Are claim quantity, tax and freight positive, and tax/freight capped at frozen authority? | probe 5l, 5ab | phase-5-task-4 |
+| Does every declared deduction type reduce the approval cap? | probe 5m, 5ab | phase-5-task-6 |
+| Do the certification locks match inventory's and procurement's existing order without deadlock? | probe 5b, 5j | phase-5-task-5 |
+| Is `live == projection == rebuild` for the cash forecast? | probe 10 | phase-5-task-7 |
+
 ## Termination, and what happens next
 
-Seven finding-bearing heads: 8, 8, 7, 7, 9, 5, 10 — fifty-nine findings, every one correct and
+Eight finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7 — sixty-six findings, every one correct and
 none contradicted by a later round. Round 3's packet recorded the recommendation to hand the
 remainder to probes; the owner approved it and asked for the process to be fixed so this does
 not recur.
