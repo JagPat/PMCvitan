@@ -1,6 +1,6 @@
 # PR #253 — convergence audit
 
-Bounded docs-only review (`Review-Deferred-To-Probes`). Four finding-bearing heads, six
+Bounded docs-only review (`Review-Deferred-To-Probes`). Five finding-bearing heads, nine
 findings, all correct.
 
 | Head | Finding | The question it was really asking |
@@ -11,6 +11,9 @@ findings, all correct.
 | `2734013` | P2 a rename's previous path was never classified | how many PATHS does one entry touch? |
 | `44f88bf` | P2 the deferral trailer was accepted without its packet ledger | what EVIDENCES the obligation? |
 | `1c9f201` | P2 the ledger check tested vocabulary, so prose passed | what makes a ledger a LEDGER? |
+| `9ef1d0c` | P2 a table HEADER satisfied the ledger | is a ROW an entry, or a LABEL? |
+| `9ef1d0c` | P2 `phase-5-task-10` satisfied `phase-5-task-1` | where does a task NAME end? |
+| `9ef1d0c` | P2 the first convergence file on the head was verified | WHOSE packet evidences this PR? |
 
 ## Architectural cause
 
@@ -117,6 +120,52 @@ carries no deferral trailer), so nothing is broken right now — but when it doe
 packet owes a real per-question table. That obligation is recorded here deliberately rather
 than fixed in this PR, whose scope is the gate.
 
+**Update (round 5):** the obligation has since been discharged on `claude/phase5-planning` —
+`pr-252-convergence.md` now carries a 13-row table, one row per deferred question, each naming
+the probe that adjudicates it and the task whose review stop settles it. Re-verified against
+the TIGHTENED round-5 check (header rows excluded, task matched as a token): 13 ledger entries,
+`allowed: true`. So #252 can take the deferral route once this PR merges, and it earns it with a
+mapping rather than a pointer.
+
+## Round 5 — the boundary of an entry, of a name, and of a packet
+
+Three findings, all correct, and the first of them is one I had already found and reported
+myself before this review round ran — I recorded it as a known weakness rather than opening a
+fifth round mid-flight, and the reviewer raised it independently. That is the honest sequence
+and worth stating: self-reporting a defect is not the same as fixing it.
+
+**A row is not an entry.** `| Open question | Probe | Settled by |` is structurally a table row
+and contains the word "Probe", so round 4's check accepted a table consisting of nothing but a
+header and a `| --- |` separator. The header LABELS the column; it records no mapping. The fix
+keeps the structural line drawn in round 4 and sharpens what "names a probe" means: the probe
+reference must carry an IDENTIFIER — strip the word `probe`/`probes` from the cell and something
+must remain (`probe 5w` → `5w`; a bare `Probe` → nothing). Separator rows are excluded on the
+same reasoning. This is still structure, not substance: it does not ask whether `5w` is a good
+probe, only whether a probe was named rather than a column titled.
+
+**A prefix is not a name.** The task match was `packetText.includes(target)`, so a packet whose
+ledger settles everything at `phase-5-task-10` satisfied a trailer deferring to
+`phase-5-task-1`. The two documents then describe different review stops while the gate reports
+agreement — exactly the disagreement round 3 was built to detect, defeated by a missing token
+boundary. `namesTarget` now requires the task to appear as its own token, with `-` treated as
+part of the token so a hyphenated suffix cannot slip through.
+
+**A convergence file is not necessarily THIS PR's packet.** The gate took the FIRST
+`docs/reviews/*convergence*.md` name on the head. A head touching two of them (this session has
+had two convergence packets open at once — #252's and #253's) could be verified against an
+unrelated older packet that happens to name the same task and carry a probe row, while the PR's
+own packet records no ledger at all. The gate now prefers `docs/reviews/pr-<number>-convergence.md`,
+accepts a single unambiguous candidate otherwise, and falls to `undefined` — reported as
+UNVERIFIED, never as satisfied — when several candidates match and none is this PR's.
+
+**The shape, again.** All three are the same failure as this PR's first four findings, now
+applied to the check I wrote to close them: a boundary asserted by the nearest convenient
+test — a row by its pipes, a name by substring containment, a packet by first match. Each was
+plausible and each admitted something it was written to refuse. The generalisation is narrower
+than the round-2 remedy and worth stating separately: **a structural check must be bounded on
+every side it is claimed to bound.** Structure was the right line to draw; drawing it loosely
+is not a licence to move to substance, it is an obligation to draw it exactly.
+
 ## Probes
 
 Reproduce-first, each RED at the head that carried the finding:
@@ -136,6 +185,8 @@ Reproduce-first, each RED at the head that carried the finding:
   below the cap none of it applies.
 - prose naming the task and the word "probes" is REFUSED (no mapping); a structurally-valid row
   that names no probe is refused; table, bullet and numbered ledger entries all pass.
+- a table of header + separator only is REFUSED (a header labels a column, it records no
+  mapping); `phase-5-task-10` does not satisfy a trailer deferring to `phase-5-task-1`.
 - gate wiring: the packet's content is fetched at the exact head via `fileText`, and
   `changedFiles` remains `commit.files`.
 
@@ -148,5 +199,7 @@ dismissal engine built in PR #250 was withdrawn because on its first real case i
 suppressed a correct finding; this is deliberately not that, which is also why #252's round-5
 findings were fixed rather than deferred even though its head count was past the cap.
 
-Gates: `pnpm test:automation` 119/119; `pnpm check` EXIT 0 (web 543/543, API 680/680).
+Gates (re-run at this head): `pnpm test:automation` 119/119; `pnpm check` EXIT 0 (web 543/543,
+API 680/680). The suite count is unchanged because round 5's two new probes are assertions
+inside the existing deferral-ledger test, not new test blocks.
 `origin/main` (PR #254) is merged into this branch; the branch was behind, not conflicted.

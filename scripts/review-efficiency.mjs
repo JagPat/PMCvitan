@@ -237,14 +237,41 @@ export function deferredToProbes(message) {
 // Table, bullet, or numbered entries all count. Pinning one markdown format would block an
 // author who wrote a perfectly good ledger the other way, which is a false refusal and the
 // same class of defect as this PR's first finding.
-const LEDGER_ENTRY = /^[\t ]*(?:\|.*\||[-*+][\t ]+\S|\d+[.)][\t ]+\S)/u;
+// An entry NAMES a probe; a header LABELS the column. `| Question | Probe | Settled by |`
+// is structurally a row and mentions the word, and accepting it let a table of nothing but a
+// header and a separator satisfy the ledger. So the probe reference must carry an IDENTIFIER:
+// strip the word from the cell that mentions it and something must remain (`probe 5w` → `5w`;
+// a bare `Probe` → nothing). Separator rows (`|---|---|`) are excluded for the same reason.
+const LEDGER_ROW = /^[\t ]*(?:\|(?<cells>.*)\||(?:[-*+]|\d+[.)])[\t ]+(?<item>\S.*))$/u;
+const PROBE_WORD = /\bprobes?\b/iu;
+const SEPARATOR_CELL = /^[\t :|-]*$/u;
+
+function namesAProbe(text) {
+  return PROBE_WORD.test(text) && text.replace(PROBE_WORD, '').replace(/[^\p{L}\p{N}]/gu, '')
+    .length > 0;
+}
+
+function isLedgerEntry(line) {
+  const row = LEDGER_ROW.exec(line);
+  if (!row) return false;
+  if (row.groups.item !== undefined) return namesAProbe(row.groups.item);
+  const cells = row.groups.cells.split('|');
+  if (cells.every((cell) => SEPARATOR_CELL.test(cell))) return false;
+  return cells.some((cell) => namesAProbe(cell));
+}
+
+// The trailer's task must appear as its own TOKEN, not as a substring: `phase-5-task-1` is a
+// prefix of `phase-5-task-10`, so a substring test let the packet name a different review stop
+// than the trailer while still passing.
+function namesTarget(packetText, target) {
+  const token = String(target).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return new RegExp(`(?<![\\p{L}\\p{N}_-])${token}(?![\\p{L}\\p{N}_-])`, 'iu').test(packetText);
+}
 
 function packetRecordsDeferral(packetText, target) {
   if (typeof packetText !== 'string' || packetText.length === 0) return false;
-  if (!packetText.toLowerCase().includes(String(target).toLowerCase())) return false;
-  return packetText
-    .split(/\r?\n/u)
-    .some((line) => LEDGER_ENTRY.test(line) && /\bprobes?\b/iu.test(line));
+  if (!namesTarget(packetText, target)) return false;
+  return packetText.split(/\r?\n/u).some((line) => isLedgerEntry(line));
 }
 
 const CONVERGENCE_MARKER = /^[\t ]*review-convergence:[\t ]+complete[\t ]*$/imu;

@@ -968,11 +968,22 @@ export async function enforceReviewConvergence(
   // The packet's CONTENT, only when this head actually carries one. The deferral ledger
   // lives in the prose, so a filename cannot evidence it. An unreadable fetch is left
   // undefined and assessConvergence reports it as unverified rather than absent.
+  // THIS PR's packet, not whichever convergence file the head happens to touch first. A head
+  // editing two packets could otherwise be verified against an unrelated older one that
+  // mentions the same task and a probe row, while this PR's own packet records no ledger.
   let packetText;
-  const packetPath = (commit.files ?? [])
+  const packetNames = (commit.files ?? [])
     .map((file) => file?.filename)
-    .find((name) => typeof name === 'string'
+    .filter((name) => typeof name === 'string'
       && /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu.test(name));
+  const ownPacket = new RegExp(
+    `^docs/reviews/pr-${pullRequest.number}-convergence\\.md$`,
+    'iu',
+  );
+  // Exactly one candidate is unambiguous; several require the PR-numbered one. None matching
+  // leaves packetText undefined, which assessConvergence reports as UNVERIFIED, not absent.
+  const packetPath = packetNames.find((name) => ownPacket.test(name))
+    ?? (packetNames.length === 1 ? packetNames[0] : undefined);
   if (packetPath) {
     try {
       packetText = await client.fileText(packetPath, expectedHead) ?? undefined;

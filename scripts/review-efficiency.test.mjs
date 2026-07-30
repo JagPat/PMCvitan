@@ -416,7 +416,7 @@ test('a docs-only review past the round cap must record a probe deferral', () =>
     pullRequestFiles: docsOnly,
     // the trailer asserts the handoff; the packet is where it is written down
     packetText: '## Deferral ledger\n| Question | Probe | Settled by |\n'
-      + '| --- | --- | --- |\n| does overage clamp? | 5w | phase-5-task-1 |\n',
+      + '| --- | --- | --- |\n| does overage clamp? | probe 5w | phase-5-task-1 |\n',
   });
   assert.equal(deferred.allowed, true);
   assert.equal(deferred.deferredTo, 'phase-5-task-1');
@@ -544,6 +544,24 @@ test('a deferral needs the packet ledger, not just the trailer', () => {
     assert.equal(listLedger.allowed, true, `${entry} is a ledger entry`);
   }
 
+  // FINDING (#253 round 5 P2 ×2) — a header is not an entry, and a prefix is not a token.
+  const headerOnly = assessConvergence({
+    ...base,
+    packetText: '## Deferral ledger\nphase-5-task-1 settles these.\n'
+      + '| Open question | Probe | Settled by |\n| --- | --- | --- |\n',
+  });
+  assert.equal(headerOnly.allowed, false, 'a header labels the column; it records no mapping');
+
+  const prefixTask = assessConvergence({
+    ...base,
+    packetText: '## Deferral ledger\n| does overage clamp? | probe 5w | phase-5-task-10 |\n',
+  });
+  assert.equal(
+    prefixTask.allowed,
+    false,
+    'phase-5-task-1 must not be satisfied by phase-5-task-10',
+  );
+
   // both artifacts agree on the same handoff
   const withLedger = assessConvergence({
     ...base,
@@ -551,7 +569,7 @@ test('a deferral needs the packet ledger, not just the trailer', () => {
       '## Deferral ledger',
       '| Open question | Probe | Settled by |',
       '| --- | --- | --- |',
-      '| does overage clamp? | 5w | phase-5-task-1 |',
+      '| does overage clamp? | probe 5w | phase-5-task-1 |',
     ].join('\n'),
   });
   assert.equal(withLedger.allowed, true);
