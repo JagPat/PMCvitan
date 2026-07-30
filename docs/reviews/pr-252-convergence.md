@@ -518,15 +518,82 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Do the dispute transition and acceptance-withdrawal guard exist in the task that first creates a live bill? | probe 5ak | phase-5-task-4 |
 | Can a read-only commercial member mutate budget or attribution? | probe 5al | phase-5-task-1 |
 | Is `CostHead.code` unique per project, so a budget and its attribution meet in one head? | probe 5am | phase-5-task-1 |
-| Does an acceptance reversal dispute only the claims it actually makes over-bound? | probe 5an | phase-5-task-4 |
+| Does an acceptance reversal dispute the MINIMUM set that restores the aggregate bound? | probe 5an | phase-5-task-4 |
 | Is cross-vendor bill-to-PO-line pinning refused by PostgreSQL, not the service? | probe 5ao | phase-5-task-4 |
 | Is every reason column this phase adds non-blank at PG, enumerated from the schema? | probe 5ap | phase-5-task-5 |
 
+## Round 10 (head `c5f9887` → `d3d9945`) — the prediction fired, and this section was missing
+
+Seven findings. Six correct and fixed: a `UNIQUE (projectId, code)` on `CostHead`; the §F
+full-reversal payment bullet; output supersession removed from §E; the acceptance-reversal
+dispute rule; the complete reason-column list; and probes 5am–5ap.
+
+One was verifiably FALSE — a P1 claiming the PR lacked large-review-unit scope evidence. The
+`review-scope` job had already PASSED on this exact head after the `justified-large` marker was
+added to the PR body: run 30516875427, job 90788612886, against the pre-marker failure at job
+90788370524. It is also out of a review's scope by `AGENTS.md` ("do not review CI state"),
+because the trusted gate evaluates it before promotion and fails closed. Dismissed with that
+evidence, which is the first dismissal in 86 findings.
+
+**The round-8 prediction fired.** Round 8 committed to this: if a later round again contains a
+stale-copy finding, the one-site meta-rule failed too, and the next step is not another document
+change. Round 9 had none. Round 10 had three, and two were in round 9's own edits.
+
+**A defect in this packet, found while writing round 11.** The Termination section below says
+round 10's false finding was "dismissed above with the passing check-run cited" — and until this
+edit there was no round-10 section above it to dismiss anything. The evidence existed (it is in
+the round-10 commit message) but the packet asserted a location that did not contain it. A packet
+that cites itself incorrectly is the same defect class it is documenting, so it is recorded here
+rather than quietly back-filled.
+
+## Round 11 (head `d3d9945`) — six findings, and the corrective discipline that was missing
+
+All six correct, all fixed:
+
+| Finding | The defect | Fix |
+|---|---|---|
+| §0 table | prose interrupted the Markdown table twice, so `CERTIFIED`/`APPROVED`/`COMMITTED` were not rows of it — and probe 5g enumerates "every row of that table" | both prose blocks moved BELOW the table; all 13 sets are now one contiguous table |
+| §E labour billed side | ordered froze `ratePerPersonShift + shiftPremium`; billed compared `quantity × rate`, so a ₹100+₹20 line verifies against ₹1,000 not ₹1,200 | billed uses the SAME combined frozen terms |
+| §G reversal participant | disputing "only claims individually over-bound" cannot enforce an AGGREGATE bound: accept 100, bill 60+40, reverse 20 → each ≤ 80, fold 100 > 80 | dispute against the fold, newest-first by `(submittedAt, id)`, stopping when the bound holds |
+| probe 5c | required superseding an `ActivityWorkOutput` that Phase 4 made append-only | replaced with the existence test §0 defines + the sign-off path (5k) that really exists |
+| probe 5ad | a ₹50 reversal before superseding a ₹100 paid certificate leaves `PAID` ₹50 > `APPROVED` ₹0 | the FULL ₹100 reversal, with the complete legal sequence spelled out |
+| Task 4 scope | Task 3 ships measurement corrections with only a zero floor; Task 4 is the first task with live bills but named only the acceptance guard | Task 4 ships BOTH withdrawal guards; the §D live-claim floor lands with the first live bill |
+
+**The corrective discipline, which is what round 10 actually got wrong.** Applying §0b's
+own site-closure rule to these six turned up THREE MORE stale statements of the
+output-supersession assumption that Codex had not flagged — §D's re-check rationale, §E's setup
+sentence, and the probe-coverage list ("all four withdrawal paths"), plus probe 5q. So that one
+rule had SIX written statements and FOUR were stale.
+
+The mechanism is now exact, and it is not the one round 8 named. Round 8 said the defect is *a
+rule with two written statements*. True, but incomplete: **the second statement keeps being
+created by the correction itself.** Round 10 "removed output supersession from §E" by appending
+`**Output supersession is NOT one of these paths**` immediately after a sentence that still
+asserted Activities *can* supersede the output. The paragraph then contradicted itself, and every
+other site kept the old claim.
+
+So the rule is not "state it once" — it is **a correction DELETES or REWRITES the superseded
+sentence; it never annotates it.** Annotation feels safer because nothing is lost, and it is
+strictly worse: the stale claim stays readable and authoritative-looking, and the next reader (or
+the next task) can follow either one. This head rewrites all four sites instead of negating them.
+That is also exactly how #253 round 9 was closed — a stale comment deleted rather than left
+standing beside its replacement.
+
+**What this says about the plan, stated plainly.** Twelve finding-bearing heads and 92 findings
+on one 1,700-line document specifying seven tasks. Five of round 11's six findings are per-task
+mechanism detail — a formula in a verification table, two probes' worked arithmetic, one task's
+scope row. Those are the things a RED probe settles in one run and prose cannot settle at all.
+The recommendation carried since round 8 stands and is now better evidenced: keep §0, §0b, §K,
+§L, §M, the task table and the probe list in the phase plan, and let each task PR author its own
+§B/§C/§E/§F/§G/§H/§I mechanism detail where a failing test can adjudicate it. Phase 3 and Phase 4
+cleared in 2 and 3 rounds by doing exactly that. That is an owner decision because splitting
+wrongly could drop reviewed architecture, so it is recorded, not acted on unilaterally.
+
 ## Termination, and what happens next
 
-Eleven finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7 — **eighty-six** findings. Eighty-five
-were correct; round 10's scope-evidence P1 is the FIRST verifiably false one, dismissed above with
-the passing check-run cited. (The round-7 packet said "sixty-six" for the
+Twelve finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6 — **ninety-two** findings.
+Ninety-one were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
+in the round-10 section above with the passing check-run cited. (The round-7 packet said "sixty-six" for the
 first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
 forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
 the recommendation to hand the remainder to probes; the owner approved it and asked for the
@@ -552,7 +619,7 @@ do is invoke it against a round of real defects because the round number matches
 while fixing everything would misdescribe what happened.
 
 An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
-the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7) but their KIND has narrowed and
+the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6) but their KIND has narrowed and
 round 8 finally names the mechanism. Rounds 1–6 read as "I fix instances, not classes." Round 7
 read as "prose has no compiler." Round 8 is more specific and more actionable than either: **the
 recurring defect is a rule with two written statements, and every one of them was created by a
