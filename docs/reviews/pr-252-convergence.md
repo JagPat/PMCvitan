@@ -615,8 +615,15 @@ the commitment did not apply. It still stands for its actual case — a round wh
 all "the plan should also specify X" gets reported, not another correction. **What I will not
 do is invoke it against a round of real defects because the round number matches.**
 
-**No deferral trailer on this head.** Every finding is FIXED here, and claiming a deferral
-while fixing everything would misdescribe what happened.
+**The deferral trailer, and what it does and does not claim.** Rounds 3–10 carried no trailer,
+on the reasoning that claiming a deferral while fixing every finding would misdescribe the head.
+Round 11 carries `Review-Deferred-To-Probes: phase-5-task-1`, and the two positions are
+compatible once the claim is stated precisely: the trailer says the plan's REMAINING OPEN
+questions are settled at Task 1's review stop — which is what the 17-row ledger above records —
+not that this round's findings went unanswered. All six were fixed here. The trailer is also not
+load-bearing yet: the gate runs `main`'s scripts, #253 has not merged, and
+`guardAgainstCurrentHeadFinding` fails closed on every current-head finding regardless. This
+sentence replaces the round-10 wording rather than sitting beside it, per round 11's own rule.
 
 An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
 the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6) but their KIND has narrowed and
