@@ -1,6 +1,6 @@
 # PR #253 — convergence audit
 
-Bounded docs-only review (`Review-Deferred-To-Probes`). Eight finding-bearing heads, eighteen
+Bounded docs-only review (`Review-Deferred-To-Probes`). Nine finding-bearing heads, twenty
 findings, all correct. **Round 7 withdraws the packet-ledger verification rather than patching
 it a fifth time — see the closing section, which is the real conclusion of this PR.**
 
@@ -24,6 +24,8 @@ it a fifth time — see the closing section, which is the real conclusion of thi
 | `c852d06` | P2 an `.mdx` plan was admitted but never read | do my own two definitions agree? |
 | `c852d06` | P2 a table row without a trailing pipe was refused | which markdown spelling is a row? |
 | `a801ff9` | P2 `phase-999-task-999` was shape-valid | is this task REAL? |
+| `ff55b9a` | P2 a CLOSED phase still authorized a deferral to itself | is this task real, or merely PAST? |
+| `ff55b9a` | P2 an unreadable file list resolved silently to "code" | is not-knowing a verdict? |
 
 ## Architectural cause
 
@@ -351,6 +353,38 @@ rule was *when a gate needs to parse English to decide, the decision belongs to 
 this check never parses English. The count is also evidence the line is in the right place: five
 findings on the head that still parsed prose, one on the head that stopped.
 
+## Round 9 — two findings, and one of them is the shape of the last four
+
+Both correct. They differ in kind, and the difference is the useful part.
+
+**(a) A closed phase still authorized a deferral to itself.** Round 8's `deferralPhases` added
+the current `phase` unconditionally, so with `task_state: merged` and `work_item: none` — the
+exact state `main` sits in between phases — `phase-4-task-99` was accepted. Every phase-4 review
+stop is closed; the questions would be handed to nothing. The current phase now counts only while
+it has open work (`phaseHasOpenWork`: any non-terminal `task_state`, or a real `work_item`); the
+`next_task` phase always counts, because that is where work is going.
+
+That is round 8's own fix, one round old, defeated by a state the repository was already in. It
+is the same shape as rounds 1–6: I fixed the instance in front of me (`999` is not a phase) and
+not the question behind it (**what makes a review stop available to receive work?** — that it
+exists is necessary; that it is still open is the actual requirement).
+
+**(b) An unreadable cumulative file list resolved silently to "ordinary code".** Round 1 made the
+cap read the whole PR instead of the head commit, and wrote the failure mode as "fail toward the
+code path" — reasoning that demanding a deferral from a code PR is worse than not demanding one
+from a docs PR. That is a real trade-off between two errors, and choosing between them was the
+mistake: an unread file list is not evidence in either direction. Past the cap it now blocks on
+its own unreadability, with a reason that says so, and the next event re-runs the read. Below the
+cap it is irrelevant — no deferral is owed at all, so nothing changes for an ordinary code PR.
+
+**The probe for (a) caught a defect in (a)'s own fix.** With `phaseHasOpenWork` gating the
+current phase, `deferralPhases` returned `[]` for a closed phase — and `assessConvergence`
+required `activePhases.length > 0` before checking membership, so an empty set was read as "no
+constraint" and authorized *every* deferral, including the one the finding was about. `undefined`
+(STATUS told us nothing) and `[]` (STATUS is readable and nothing is open) are different answers
+and are now kept distinct, pinned by a test that says why. Recorded because it is the mechanism
+working: the probe was written to fail before the fix, and it did — on the fix.
+
 ## What this does not do
 
 Nothing here discounts, filters or downgrades a finding, and `codex-current-head` still
@@ -361,6 +395,7 @@ suppressed a correct finding; this is deliberately not that, which is also why #
 findings were fixed rather than deferred even though its head count was past the cap.
 
 Gates (re-run at this head): `pnpm test:automation` 119/119; `pnpm check` EXIT 0 (web 543/543,
-API 680/680). The suite count is unchanged across rounds 5–8: rounds 5, 6 and 8 added assertions
-inside existing tests, and round 7 replaced the ledger test with a withdrawal test one-for-one.
+API 680/680). The suite count is unchanged across rounds 5–9: rounds 5, 6, 8 and 9 added
+assertions inside existing tests, and round 7 replaced the ledger test with a withdrawal test
+one-for-one.
 `origin/main` (PR #254) is merged into this branch; the branch was behind, not conflicted.

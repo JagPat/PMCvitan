@@ -203,11 +203,12 @@ them. `assessConvergence` enforces it.
 the deferral: the trailer value names a TASK — `phase-<n>-task-<m>` or `phase-<n>-planning`, this
 repository's own vocabulary. An allowlist, not a list of rejected placeholders, so a value like
 `later` names no task and is refused. The PHASE is also checked against `docs/STATUS.md` — the
-current phase and the one `next_task` names — so `phase-999-task-999` is refused too: a deferral
-hands work to a review stop in the phase under review, and a later phase is a scope change rather
-than a handoff. That is a structured-field read of a machine-readable state file, which is the
-class of check a gate can make. The task INDEX inside a valid phase is not checked; it lives in
-the plan's markdown task table, and reading that is the prose parsing described below.
+phase `next_task` names, plus the current phase WHILE IT STILL HAS OPEN WORK — so
+`phase-999-task-999` is refused, and so is a deferral to a phase whose last task has merged: a
+deferral hands work to a review stop that is still ahead, and one that is closed or in a later
+phase settles nothing. That is a structured-field read of a machine-readable state file, which is
+the class of check a gate can make. The task INDEX inside a valid phase is not checked; it lives
+in the plan's markdown task table, and reading that is the prose parsing described below.
 
 The **deferral ledger** — each still-open question with the probe that adjudicates it, and each
 probe named in the plan — is an author obligation stated in `AGENTS.md` and judged by the
@@ -228,8 +229,11 @@ as a plan review. Within that diff every file must be documentation by BOTH exte
 (`docs/`, `.github/`, or the repository root). A directory name alone decides nothing:
 `docs/probes/x.test.mjs`, `docs/schema.prisma` and `docs/ci/deploy.yml` run, so a diff
 carrying them is provable and stays under the ordinary code protocol. Deletions count
-too — removing a script changes what runs. An empty diff, an unrecognised extension, or
-a cumulative list the gate could not read all fail toward the code path.
+too — removing a script changes what runs. An empty diff or an unrecognised extension
+fails toward the code path. A cumulative list the gate could not READ is different: past
+the cap it blocks on the unreadability itself, because resolving it either way would guess
+(toward code drops a real deferral obligation; toward docs demands a meaningless trailer).
+The next event re-runs the read; below the cap nothing is owed, so nothing changes.
 
 This is not a dismissal mechanism. A finding-dismissal engine was built in PR #250
 and withdrawn because it would have suppressed a correct finding on its first real

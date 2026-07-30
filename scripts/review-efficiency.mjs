@@ -203,11 +203,31 @@ const TASK_REFERENCE = /^phase-(?<phase>\d+)-(?:task-\d+|planning)$/iu;
 // The task INDEX inside a valid phase is NOT checked. It lives in the plan's markdown task
 // table, and reading that is the prose parsing this PR withdrew. AGENTS.md asks the reviewer to
 // flag a deferral naming a task the plan does not define.
+// A phase is eligible only while it can still SETTLE something. The current phase qualifies
+// only when it has open work: with `task_state: merged` and no `work_item` — the between-work
+// shape STATUS uses — every phase-4 review stop is already closed, so `phase-4-task-99` names a
+// stop that cannot adjudicate anything. `next_task`'s phase is always eligible, because that is
+// the phase whose stops are about to exist.
+const CLOSED_TASK_STATE = new Set(['merged', 'complete', 'completed', 'cleared']);
+const NO_WORK_ITEM = new Set(['', 'none', 'null', '-']);
+
+function phaseHasOpenWork(now) {
+  const state = String(now?.task_state ?? '').trim().toLowerCase();
+  const item = String(now?.work_item ?? '').trim().toLowerCase();
+  if (!CLOSED_TASK_STATE.has(state)) return true;
+  return !NO_WORK_ITEM.has(item);
+}
+
+// undefined means "STATUS told us nothing" — no constraint. An empty ARRAY is a different
+// answer: STATUS was readable and no phase has an open review stop, so there is nothing a
+// deferral could hand work to. Collapsing the two would make an unreadable STATUS refuse every
+// deferral, or a closed phase authorize any of them.
 export function deferralPhases(now) {
-  const phases = new Set();
   const current = Number.parseInt(String(now?.phase ?? '').trim(), 10);
-  if (Number.isInteger(current)) phases.add(current);
   const next = TASK_REFERENCE.exec(String(now?.next_task ?? '').trim());
+  if (!Number.isInteger(current) && !next) return undefined;
+  const phases = new Set();
+  if (Number.isInteger(current) && phaseHasOpenWork(now)) phases.add(current);
   if (next) phases.add(Number.parseInt(next.groups.phase, 10));
   return [...phases];
 }
@@ -345,9 +365,13 @@ export function assessConvergence({
   // deferral trailer that means nothing for it. `changedFiles` keeps its own meaning
   // above — whether THIS head carries the audit — which is a per-head question.
   //
-  // A cumulative diff we could not read is not evidence of anything, so it falls to the
-  // CODE path: the ordinary convergence obligations stand and no deferral is demanded on
-  // a review that may well be provable.
+  // An UNREADABLE cumulative diff is not evidence either way, and it must not silently pick a
+  // path. Resolving it toward "code" drops the deferral obligation on a docs-only PR; resolving
+  // it toward "docs" demands a meaningless trailer from a code PR. So past the cap it BLOCKS
+  // with its own reason and the gate re-runs on the next event — the same self-healing shape the
+  // packet read used. Below the cap it is irrelevant, because no deferral is owed.
+  const cumulativeUnreadable = !Array.isArray(pullRequestFiles)
+    && findingHeadCount >= PLAN_REVIEW_ROUND_CAP;
   const deferralRequired = Array.isArray(pullRequestFiles)
     && isDocsOnlyDiff(pullRequestFiles)
     && findingHeadCount >= PLAN_REVIEW_ROUND_CAP;
@@ -356,6 +380,11 @@ export function assessConvergence({
   const missing = [
     ...(!hasTrailer ? [convergenceTrailerHint(headMessage)] : []),
     ...(!hasPacket ? ['packet'] : []),
+    ...(cumulativeUnreadable
+      ? ["the PR's cumulative diff could not be read, so whether this review is docs-only — and "
+        + 'therefore whether it owes a probe deferral — is unverified. This is not evidence '
+        + 'either way; re-run once the file list is readable']
+      : []),
     ...(deferralRequired && deferral === undefined
       ? [`a "Review-Deferred-To-Probes: <task>" trailer — after ${PLAN_REVIEW_ROUND_CAP} `
         + 'finding-bearing heads a docs-only review must hand its remaining open '
@@ -368,18 +397,23 @@ export function assessConvergence({
         + '"later" schedules nothing']
       : []),
     // A shape-valid task in a phase this repository is not working on schedules nothing
-    // either. Checked only when the phase set could be read; an unreadable STATUS is not
-    // evidence that the task is fake.
+    // either. Checked only when the phase set could be READ (an unreadable STATUS is not
+    // evidence that the task is fake) — but an empty set IS readable evidence: no phase has
+    // an open review stop, so no deferral can hand work to one.
     ...(deferralRequired && typeof deferral === 'string'
-      && Array.isArray(activePhases) && activePhases.length > 0
+      && Array.isArray(activePhases)
       && !activePhases.includes(
         Number.parseInt(TASK_REFERENCE.exec(deferral).groups.phase, 10),
       )
       ? [`"${deferral}" names phase `
         + `${Number.parseInt(TASK_REFERENCE.exec(deferral).groups.phase, 10)}, but `
-        + `docs/STATUS.md puts this repository in phase ${activePhases.join(' or ')}. A `
-        + 'deferral hands work to a review stop in the phase under review; a later phase is a '
-        + 'scope change, not a handoff']
+        + (activePhases.length > 0
+          ? `docs/STATUS.md puts this repository in phase ${activePhases.join(' or ')}. A `
+            + 'deferral hands work to a review stop in the phase under review; a later phase '
+            + 'is a scope change, not a handoff'
+          : 'docs/STATUS.md records no phase with open work, so there is no review stop left '
+            + 'to settle these questions. Advance STATUS to the phase that will answer them, '
+            + 'or answer them on this head')]
       : []),
     // A trailer naming a task, with a packet that records no handoff, is the bare marker
     // wearing a task name: nothing is actually scheduled. The obligation has always been
@@ -394,6 +428,7 @@ export function assessConvergence({
     hasTrailer,
     hasPacket,
     deferralRequired,
+    cumulativeUnreadable,
     deferredTo: deferral ?? null,
     missing,
   };

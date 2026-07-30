@@ -607,6 +607,42 @@ test('the deferral is the trailer only; the ledger is the reviewer\'s to judge',
   });
   assert.equal(unknownIndex.allowed, true, 'the task index is the reviewer\'s to check');
 
+  // FINDING (#253 round 9 P2) — the CURRENT phase was admitted unconditionally, so once its
+  // last task merged the gate still accepted a deferral to it. A deferral names the review
+  // stop that will SETTLE the question; a phase with no open work has no such stop left, and
+  // the questions would be settled by nothing. The current phase counts only while it has
+  // open work; the next_task phase always counts, because that is where work is going.
+  const closed = deferralPhases({ phase: '4', task_state: 'merged', work_item: 'none' });
+  assert.deepEqual(closed, [], 'a phase whose work is merged settles nothing further');
+  const toClosedPhase = assessConvergence({
+    ...base, activePhases: closed, headMessage: withTrailer('phase-4-task-99'),
+  });
+  assert.equal(toClosedPhase.allowed, false, 'phase 4 has no remaining review stop');
+  assert.match(toClosedPhase.missing.join(' '), /no phase with open work/u);
+
+  // The probe above exposed a defect in its own fix: an EMPTY phase set was read as "no
+  // constraint", the same as an unreadable STATUS, so a closed phase authorized every
+  // deferral. The two answers are different and must stay different — undefined is
+  // "STATUS told us nothing" (no constraint), [] is "nothing is open" (refuse).
+  assert.equal(deferralPhases(null), undefined, 'no STATUS is not an empty phase set');
+  assert.equal(deferralPhases({}), undefined);
+  assert.equal(deferralPhases({ phase: 'unreleased' }), undefined, 'an unparseable phase');
+
+  // ...but the phase named as NEXT still counts even when the current one is closed, which
+  // is exactly the state a phase-boundary planning PR sits in
+  assert.deepEqual(
+    deferralPhases({
+      phase: '4', task_state: 'merged', work_item: 'none', next_task: 'phase-5-planning',
+    }),
+    [5],
+  );
+  // an open work item keeps the current phase eligible whatever the state word is
+  assert.deepEqual(
+    deferralPhases({ phase: '4', task_state: 'complete', work_item: 'P4T7 follow-up' }),
+    [4],
+  );
+  assert.deepEqual(deferralPhases({ phase: '4', task_state: 'in_review' }), [4]);
+
   // below the cap no deferral is owed at all
   const withinCap = assessConvergence({
     ...base,
@@ -715,11 +751,27 @@ test('the docs-only cap reads the whole PR, not just the convergence commit', ()
   assert.equal(planPr.deferralRequired, true);
   assert.equal(planPr.allowed, false);
 
-  // unknown cumulative diff: fail toward the CODE path, which asks for an
-  // ordinary convergence head rather than a deferral it cannot justify
+  // An unknown cumulative diff used to fall to the CODE path. That silently dropped
+  // the deferral obligation from a docs-only PR whose file list happened not to read,
+  // so past the cap it now BLOCKS on its own unreadability instead of guessing: it
+  // demands no trailer (deferralRequired stays false — the gate cannot justify one)
+  // but it does not certify the head either, and the next event re-runs the read.
   const unknown = assessConvergence({
     comments: [], reviews, headMessage, changedFiles: packetOnlyHead,
   });
-  assert.equal(unknown.deferralRequired, false);
-  assert.equal(unknown.allowed, true);
+  assert.equal(unknown.deferralRequired, false, 'an unread diff cannot demand a deferral');
+  assert.equal(unknown.cumulativeUnreadable, true);
+  assert.equal(unknown.allowed, false, 'nor may it certify the head by guessing "code"');
+  assert.match(unknown.missing.join(' '), /cumulative diff could not be read/u);
+
+  // Below the cap the same unread list is irrelevant: no deferral is owed at all,
+  // so the ordinary convergence protocol proceeds untouched.
+  const belowCap = assessConvergence({
+    comments: [],
+    reviews: reviews.slice(0, PLAN_REVIEW_ROUND_CAP - 1),
+    headMessage,
+    changedFiles: packetOnlyHead,
+  });
+  assert.equal(belowCap.cumulativeUnreadable, false);
+  assert.equal(belowCap.allowed, true);
 });
