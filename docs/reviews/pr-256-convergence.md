@@ -2,8 +2,8 @@
 
 **PR:** #256 · *Autonomous handoff hygiene: runner continuation + daily-log flake fix*
 **Branch:** `claude/runner-handoff-hygiene` · **Base:** `main` `a16e68c`
-**Finding-bearing heads:** `b967f29` (findings 1–3), `2919e32` (findings 4–5)
-**Convergence head:** this commit, from `baa919a`
+**Finding-bearing heads:** `b967f29` (findings 1–3), `2919e32` (findings 4–5), `ab7f4dc` (finding 6)
+**Convergence head:** this commit, from `ab7f4dc`
 
 Two finding-bearing heads answered five Codex findings with isolated patches.
 Per `AGENTS.md`, ordinary patching stops there: this head is ONE batched
@@ -141,10 +141,79 @@ open, the runner could be handed a next step that never merged.
   `Runner next step: pr:999`), `A2b` (an unreadable head degrades to `now: null`
   and cannot suppress drift — the fail-safe direction).
 
+### Finding 6 — P2, `ab7f4dc`: derive the next step after clearing stale `open_pr`
+
+*Codex:* with `open_pr: 251` recorded and no live autonomous PRs,
+`assessRunnerState()` still returns `pr:251`, so the handoff publishes
+`Runner next step: pr:251` even though the same comment says the open-PR list is
+`none` and to create the next branch — sending the runner back to a closed PR
+instead of advancing STATUS after a clean merge.
+
+- **Root cause: D — the displayed next step was assessed from a record the drift
+  detector had just declared wrong.** The convergence head made the drift
+  *detection* authoritative and the shepherd *decision* authoritative, but left
+  the next-step *display* reading raw `statusNow`. `assessRunnerState` checks
+  `open_pr` before anything else, so a stale value wins there regardless of what
+  the rest of the comment concludes. One message then carried two contradictory
+  instructions, and the contradictory one was the actionable line.
+- **Reproduced at `ab7f4dc`** before fixing, rendering the real message:
+
+  ```
+  **Runner next step:** `pr:251` — an open PR is the current work item until it merges or closes
+  **Open autonomous PRs:** none
+  **STATUS drift:** docs/STATUS.md records open_pr: 251 but that PR is not among the live autonomous PRs.
+  Create the next same-repository `claude/**` branch and draft PR with Auto-fix enabled.
+  **Note:** clear stale `open_pr: 251` in STATUS before starting new work.
+  ```
+
+- **Correction:** `assessDriftCorrected(statusNow, maintenanceQueue, drift)` assesses
+  from `{ ...statusNow, open_pr: drift.suggestedOpenPr }` — the value the drift
+  correction already computed — and returns the raw assessment separately so it can
+  be shown, explicitly labelled stale, without being the instruction. The finding
+  offered either remedy ("compute from the drift-corrected state **or** label this
+  value as stale"); both are applied, because an operator still needs to see what
+  STATUS currently claims. The label is emitted only when correcting actually
+  changes the answer, so it is never noise. Applied to `buildDriftHandoff` too,
+  where drift is true by construction and the same contradiction existed under the
+  softer `Recorded next step:` heading.
+- **The corrected state gives the right answer in all three shapes**, verified
+  directly against `assessRunnerState`: stale-cleared + `merged` →
+  `next_task:phase-5-planning` (agrees with "create the next branch"); correction
+  pointing at a live PR → `pr:<that PR>` (agrees with "shepherd it"); `in_review`
+  with no PR → not actionable, with the honest reason that STATUS defines that
+  state by its open PR. The last case matters: the record IS broken there, and the
+  comment now says so instead of naming phantom work.
+- **Evidence:** `D1` (stale + no live PR: corrected step published, `pr:251`
+  absent from the instruction, present as stale, consistent with the branch
+  advice), `D1b` (correction points at a live PR), `D1c` (no drift ⇒ assessment
+  untouched, nothing labelled stale), `D1d` (broken record reported honestly),
+  `D2` (the drift handoff derives the same way and the old unqualified
+  `Recorded next step:` label is gone).
+
 ## Reproduce-first evidence
 
-`scripts/runner-continuation-convergence.test.mjs`, 11 tests, all GREEN on this
+`scripts/runner-continuation-convergence.test.mjs`, 16 tests, all GREEN on this
 head.
+
+### Finding 6 (this round)
+
+The five `D*` assertions were run against `ab7f4dc` with
+`scripts/runner-continuation.mjs` stashed back to that head:
+
+```
+not ok 1 - D1: a stale open_pr with no live PR does not publish the stale next step
+not ok 2 - D1b: the corrected step names a live PR when the drift correction points at one
+ok   3 - D1c: with no drift the assessment is untouched and nothing is labelled stale
+not ok 4 - D1d: correcting a broken record reports it honestly rather than inventing a step
+not ok 5 - D2: the drift handoff also derives its step from the corrected state
+# tests 5 / # pass 1 / # fail 4
+```
+
+`D1c` passing at base is correct and is stated rather than hidden: it is the
+no-drift control, which was already right and must stay right — the fix must not
+start labelling things stale when nothing drifted.
+
+### Findings 1–5 (earlier rounds)
 
 Three assertions use only surfaces that exist at `baa919a`, so they run against
 the base source unmodified and are genuinely RED there. Reproduction, with the

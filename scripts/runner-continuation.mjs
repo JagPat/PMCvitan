@@ -117,18 +117,49 @@ export function shouldShepherdOpenPullRequests({ openPullRequests = [] }) {
   return openPullRequests.length > 0;
 }
 
+// The next step must never be assessed from a record the drift detector has just
+// declared wrong.
+//
+// `assessRunnerState` reads `open_pr` first, so a STATUS still naming a closed PR
+// yields `pr:<closed>` — and the handoff published that as the instruction while
+// the same comment said the open-PR list was `none` and to create the next branch.
+// That sends the runner back to a PR that no longer exists.
+//
+// The drift correction already computes what `open_pr` SHOULD say
+// (`suggestedOpenPr`), so assess from that. The recorded value is still returned,
+// explicitly labelled stale, because an operator reading the comment needs to know
+// what STATUS currently claims — but it is never the actionable line.
+function assessDriftCorrected(statusNow, maintenanceQueue, drift) {
+  const assessment = assessRunnerState(statusNow, maintenanceQueue);
+  if (!drift?.drift) return { assessment, recorded: null };
+
+  const corrected = assessRunnerState(
+    { ...statusNow, open_pr: drift.suggestedOpenPr },
+    maintenanceQueue,
+  );
+  // Only call the record stale when correcting it actually changes the answer;
+  // otherwise the label is noise.
+  return corrected.nextStep === assessment.nextStep
+    ? { assessment, recorded: null }
+    : { assessment: corrected, recorded: assessment };
+}
+
 export function buildPostMergeContinuation({
   statusNow,
   maintenanceQueue = [],
   openPullRequests = [],
   headStatuses = [],
 }) {
-  const assessment = assessRunnerState(statusNow, maintenanceQueue);
   const drift = detectStatusDriftAcrossHeads({
     defaultBranchNow: statusNow,
     headStatuses,
     openPullRequests,
   });
+  const { assessment, recorded } = assessDriftCorrected(
+    statusNow,
+    maintenanceQueue,
+    drift,
+  );
   const nextStep = assessment.nextStep ?? 'none';
 
   const lines = [
@@ -139,6 +170,12 @@ export function buildPostMergeContinuation({
     `**Runner next step:** \`${nextStep}\` — ${assessment.reason}`,
     `**Open autonomous PRs:** ${formatOpenPullRequestList(openPullRequests)}`,
   ];
+
+  if (recorded) {
+    lines.push(
+      `**Recorded in STATUS (STALE — do not act on it):** \`${recorded.nextStep ?? 'none'}\` — ${recorded.reason}`,
+    );
+  }
 
   if (drift.drift) {
     lines.push(
@@ -183,14 +220,24 @@ export function buildDriftHandoff({
   });
   if (!drift.drift) return null;
 
-  const assessment = assessRunnerState(statusNow, maintenanceQueue);
+  // Drift is true by construction here, so the same rule applies: the actionable
+  // step is the drift-corrected one, and the recorded value is shown only as the
+  // stale record it is.
+  const { assessment, recorded } = assessDriftCorrected(
+    statusNow,
+    maintenanceQueue,
+    drift,
+  );
   const nextStep = assessment.nextStep ?? 'none';
 
   return [
     '@claude The autonomous runner detected drift between `docs/STATUS.md` and live GitHub state.',
     '',
     `**STATUS drift:** ${drift.reason}.`,
-    `**Recorded next step:** \`${nextStep}\` — ${assessment.reason}`,
+    `**Next step after correcting STATUS:** \`${nextStep}\` — ${assessment.reason}`,
+    ...(recorded
+      ? [`**Recorded in STATUS (STALE — do not act on it):** \`${recorded.nextStep ?? 'none'}\` — ${recorded.reason}`]
+      : []),
     `**Open autonomous PRs:** ${formatOpenPullRequestList(openPullRequests)}`,
     '',
     (openPullRequests ?? []).length > 0

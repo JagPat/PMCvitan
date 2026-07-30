@@ -192,6 +192,81 @@ test('B1b: a live PR with drifted `open_pr: none` is never answered with a compe
   assert.match(message, /STATUS drift/, 'the disagreement is still reported, as drift');
 });
 
+// ---------------------------------------------------------------------------
+// Root cause D — the displayed next step must come from the drift-CORRECTED
+// state. Codex finding on head ab7f4dc.
+// ---------------------------------------------------------------------------
+
+test('D1: a stale open_pr with no live PR does not publish the stale next step', () => {
+  // assessRunnerState reads open_pr first, so STATUS naming a closed PR yielded
+  // `pr:251` — published as the instruction while the same comment said the list
+  // was `none` and to create the next branch. That sends the runner back to a PR
+  // that no longer exists.
+  const message = buildPostMergeContinuation({
+    statusNow: { task_state: 'merged', open_pr: '251', next_task: 'phase-5-planning' },
+    openPullRequests: [],
+  });
+  assert.match(
+    message,
+    /\*\*Runner next step:\*\* `next_task:phase-5-planning`/,
+    'the actionable step must come from the corrected state',
+  );
+  assert.doesNotMatch(
+    message,
+    /\*\*Runner next step:\*\* `pr:251`/,
+    'the closed PR must never be the published instruction',
+  );
+  // The record is still visible, explicitly as stale.
+  assert.match(message, /\*\*Recorded in STATUS \(STALE — do not act on it\):\*\* `pr:251`/);
+  // And it agrees with the rest of the comment.
+  assert.match(message, /Create the next same-repository/);
+});
+
+test('D1b: the corrected step names a live PR when the drift correction points at one', () => {
+  const message = buildPostMergeContinuation({
+    statusNow: { task_state: 'merged', open_pr: 'none', next_task: 'phase-5-planning' },
+    openPullRequests: [pullRequest(256)],
+  });
+  assert.match(message, /\*\*Runner next step:\*\* `pr:256`/);
+  assert.match(message, /An autonomous PR is already open — shepherd it/);
+});
+
+test('D1c: with no drift the assessment is untouched and nothing is labelled stale', () => {
+  const message = buildPostMergeContinuation({
+    statusNow: { task_state: 'merged', open_pr: 'none', next_task: 'phase-5-planning' },
+    openPullRequests: [],
+  });
+  assert.match(message, /\*\*Runner next step:\*\* `next_task:phase-5-planning`/);
+  assert.doesNotMatch(message, /STALE/);
+  assert.doesNotMatch(message, /STATUS drift/);
+});
+
+test('D1d: correcting a broken record reports it honestly rather than inventing a step', () => {
+  // `in_review` with open_pr none is a broken record: STATUS defines that state by
+  // its open PR. The corrected assessment says so instead of naming phantom work.
+  const message = buildPostMergeContinuation({
+    statusNow: { task_state: 'in_review', open_pr: '251', next_task: 'phase-5-planning' },
+    openPullRequests: [],
+  });
+  assert.match(message, /\*\*Runner next step:\*\* `none`/);
+  assert.match(message, /open_pr is none; STATUS defines that state by its open PR/);
+  assert.match(message, /\*\*Recorded in STATUS \(STALE — do not act on it\):\*\* `pr:251`/);
+});
+
+test('D2: the drift handoff also derives its step from the corrected state', () => {
+  const body = buildDriftHandoff({
+    statusNow: { task_state: 'merged', open_pr: '251', next_task: 'phase-5-planning' },
+    openPullRequests: [],
+  });
+  assert.match(body, /\*\*Next step after correcting STATUS:\*\* `next_task:phase-5-planning`/);
+  assert.match(body, /\*\*Recorded in STATUS \(STALE — do not act on it\):\*\* `pr:251`/);
+  assert.doesNotMatch(
+    body,
+    /\*\*Recorded next step:\*\* `pr:251`/,
+    'the old unqualified label is gone',
+  );
+});
+
 test('B1c: with no live PR, a stale open_pr still advances and is called out (finding 5)', () => {
   const message = buildPostMergeContinuation({
     statusNow: { task_state: 'merged', open_pr: '251', next_task: 'phase-5-planning' },
