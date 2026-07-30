@@ -199,27 +199,21 @@ convert each still-open question into a named probe in the plan and carry
 `Review-Deferred-To-Probes: <task>`, naming the task whose review stop will settle
 them. `assessConvergence` enforces it.
 
-**What the gate actually verifies, stated once.** The trailer is the author's assertion;
-the evidence is three cross-references, all structural:
+**What the gate verifies, and what it deliberately does not.** The gate checks ONE thing about
+the deferral: the trailer value names a TASK — `phase-<n>-task-<m>` or `phase-<n>-planning`, this
+repository's own vocabulary. An allowlist, not a list of rejected placeholders, so a value like
+`later` names no task and is refused.
 
-1. the trailer value is a TASK — `phase-<n>-task-<m>` or `phase-<n>-planning`, this
-   repository's own vocabulary. An allowlist, not a list of rejected placeholders: a
-   value like `later` names no task and schedules nothing.
-2. the convergence packet contains a section whose heading says **deferral ledger**, with
-   at least one ENTRY (table row, bullet, or numbered item) naming a probe by identifier.
-   A probe list under some other heading is not a ledger — a ledger maps QUESTIONS to
-   probes — and a table header (`| Question | Probe | Settled by |`) labels a column
-   rather than naming anything. The packet also names the trailer's task as a whole token,
-   so `phase-5-task-10` cannot satisfy `phase-5-task-1`.
-3. every probe the ledger names is DEFINED in the plan at that head — a line beginning
-   with the identifier, the form the plans already use (`5w. …`). A citation of a probe
-   the plan never declares schedules nothing.
-
-None of this scores the ledger's ADEQUACY: whether the questions are the right ones, or
-whether those probes really settle them, stays with the reviewer. That line was drawn
-after PR #250, where a mechanism that judged substance would have suppressed a correct
-finding on its first real case. An unreadable packet or plan reports **unverified**, not
-missing, and the gate re-runs on the next event.
+The **deferral ledger** — each still-open question with the probe that adjudicates it, and each
+probe named in the plan — is an author obligation stated in `AGENTS.md` and judged by the
+REVIEWER. It is not machine-checked, and PR #253 tried four times before concluding it should not
+be. Telling a question from a bare probe list, or a probe declaration from an ordinary numbered
+heading like `5. **Task 5 — frontend surfaces**`, requires reading for meaning; that is the
+reviewer's side of the line this project drew after PR #250, where a mechanism that scored
+substance would have suppressed a correct finding on its first real case. Two further facts
+settled it: nothing about the check is load-bearing, because `codex-current-head` fails closed on
+every current-head finding whether a deferral is claimed or not — so a forged ledger buys an
+author nothing — and each added clause produced a new false pass or a new false block.
 
 **"Docs-only" is a narrow, deliberately strict test.** It is judged on the PR's
 CUMULATIVE diff, not on the current head's commit — a code PR's convergence head is

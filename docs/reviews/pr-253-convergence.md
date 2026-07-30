@@ -1,7 +1,8 @@
 # PR #253 — convergence audit
 
-Bounded docs-only review (`Review-Deferred-To-Probes`). Six finding-bearing heads, twelve
-findings, all correct.
+Bounded docs-only review (`Review-Deferred-To-Probes`). Seven finding-bearing heads, seventeen
+findings, all correct. **Round 7 withdraws the packet-ledger verification rather than patching
+it a fifth time — see the closing section, which is the real conclusion of this PR.**
 
 | Head | Finding | The question it was really asking |
 |---|---|---|
@@ -17,6 +18,11 @@ findings, all correct.
 | `f299476` | P2 any probe-shaped line anywhere in the packet counted | WHERE does a ledger live? |
 | `f299476` | P2 `Review-Deferred-To-Probes: later` was accepted | what makes a value a TASK? |
 | `f299476` | P2 a ledger could cite a probe the plan never defines | where must a probe EXIST? |
+| `c852d06` | P2 a bullet naming only a probe passed as a ledger entry | does a ledger need the QUESTION side? |
+| `c852d06` | P2 `probe 5` matched the plan line `5. **Task 5 …**` | is a numbered line a probe or a heading? |
+| `c852d06` | P2 `probe 5w and 9z` left 9z unverified | how many probes does one row cite? |
+| `c852d06` | P2 an `.mdx` plan was admitted but never read | do my own two definitions agree? |
+| `c852d06` | P2 a table row without a trailing pipe was refused | which markdown spelling is a row? |
 
 ## Architectural cause
 
@@ -259,6 +265,65 @@ Reproduce-first, each RED at the head that carried the finding:
 - gate wiring: the packet's content is fetched at the exact head via `fileText`, and
   `changedFiles` remains `commit.files`.
 
+## Round 7 — the answer is no mechanism, and that is the finding
+
+Round 6 ended with a prediction: *"if a round 7 finds another way past a COMPLETE definition,
+that's evidence the definition is wrong rather than under-specified, and I'll say so rather than
+adding a clause."* Five findings arrived, all correct, and two of them settle it:
+
+- **A ledger maps QUESTIONS to probes, and my "complete" definition specified only the probe
+  side.** `- probe 5w` under the heading passed with no question anywhere in the row. The
+  definition I called complete was missing half the artifact.
+- **`planDefinesProbe` could not tell a probe declaration from an ordinary numbered list item**,
+  so `probe 5` matched the plan line `5. **Task 5 — frontend surfaces**` and scheduled the
+  deferral to a task heading.
+
+Neither is answerable without reading for MEANING. *Is this row a question?* *Is that numbered
+line a probe or a heading?* Those are judgements. Which means they were always on the reviewer's
+side of the line this project drew after PR #250 — where a mechanism that scored substance was
+withdrawn because on its first real case it would have suppressed a correct finding. **The line
+was right. I had drawn it in the wrong place and then defended that position for four rounds**,
+in a packet that quoted the #250 lesson each time.
+
+The other three findings are the same story in miniature: `probe 5w and 9z` leaves 9z unverified;
+an `.mdx` plan is admitted by `isDocumentation` and then never read by the `.md`-only plan reader
+(two of my OWN definitions disagreeing, one round after I claimed to have eliminated that class);
+a table row without a trailing pipe is refused outright. Four rounds, four more parser holes.
+
+**And the check was guarding a door that opens onto a wall.** `guardAgainstCurrentHeadFinding`
+runs AFTER `enforceReviewConvergence` and fails closed on every current-head finding. A deferral
+therefore buys an author nothing a clean review would not already give them — there is no
+incentive to forge a ledger and no outcome a forged one changes. I was spending review rounds
+hardening a check with no adversary.
+
+### So this head deletes it
+
+Removed: `packetRecordsDeferral`, `deferralLedgerSection`, `probeIdsIn`, `entryProbeIds`,
+`planDefinesProbe`, `tokenPattern`, `LEDGER_*`, `PROBE_REF`, `SEPARATOR_CELL`, the `packetText`
+and `planText` parameters, and the gate's packet/plan content reads including the `fileText`
+client method — about 130 lines of markdown parsing.
+
+Kept, because it is decidable without interpretation: **the trailer must name a task**
+(`TASK_REFERENCE`, an allowlist of this repo's own `phase-<n>-task-<m>` / `phase-<n>-planning`
+vocabulary). Also kept: `isDocsOnlyDiff` with `changedPaths` + `isDocumentation`, which decides
+the cap's SCOPE and is genuinely structural — a path either has a documentation extension in a
+documentation location or it does not.
+
+The ledger obligation stays, in `AGENTS.md` and `docs/AUTONOMOUS_LOOP.md`, as an author duty the
+REVIEWER judges — with an explicit instruction to flag a deferral whose ledger is absent, whose
+questions are not the open ones, or whose probes are not in the plan. That is not weaker
+enforcement; it is enforcement by the only agent that can actually read the document.
+
+Three tests pin the withdrawal so it is not silently reintroduced: passing any `packetText` or
+`planText` cannot change the verdict, the gate source contains none of those identifiers, and a
+non-task trailer value is still refused.
+
+**What I would do differently.** The signal was available at round 4, when the second parser fix
+was needed for the same artifact. "This check needs a third regex" was already evidence that the
+thing being checked is prose. I read it instead as "my regex is not tight enough" three more
+times. The generalisable rule: **when a gate needs to parse English to decide, the decision
+belongs to the reviewer — and the tell is the second fix, not the fifth.**
+
 ## What this does not do
 
 Nothing here discounts, filters or downgrades a finding, and `codex-current-head` still
@@ -269,6 +334,6 @@ suppressed a correct finding; this is deliberately not that, which is also why #
 findings were fixed rather than deferred even though its head count was past the cap.
 
 Gates (re-run at this head): `pnpm test:automation` 119/119; `pnpm check` EXIT 0 (web 543/543,
-API 680/680). The suite count is unchanged across rounds 5 and 6 because their new probes are
-assertions inside the existing deferral-ledger and trailer tests, not new test blocks.
+API 680/680). The suite count is unchanged across rounds 5–7: rounds 5 and 6 added assertions
+inside existing tests, and round 7 replaced the ledger test with a withdrawal test one-for-one.
 `origin/main` (PR #254) is merged into this branch; the branch was behind, not conflicted.

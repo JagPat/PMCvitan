@@ -523,176 +523,69 @@ test('runnable and schema files never count as documentation, wherever they live
   assert.equal(isDocsOnlyDiff(['docs/a.md', 'docs/reviews/b.md', 'docs/img/c.svg']), true);
 });
 
-// FINDING (#253 round 3 P2) — the trailer alone was accepted as the whole deferral.
-test('a deferral needs the packet ledger, not just the trailer', () => {
+// WITHDRAWN (#253 round 7) — the packet-ledger and plan-probe verification is gone. Rounds
+// 3-6 built it four times and round 7 defeated the "complete" definition twice over: a ledger
+// maps QUESTIONS to probes and the definition specified only the probe side, and
+// `planDefinesProbe` could not tell `5. **Task 5 — frontend surfaces**` from a probe named 5.
+// Both need MEANING, which is the reviewer's side of the PR #250 line. This test pins the
+// withdrawal so it is not silently reintroduced: past the cap the gate demands a task-shaped
+// TRAILER and nothing about the packet's prose.
+test('the deferral is the trailer only; the ledger is the reviewer\'s to judge', () => {
   const reviews = Array.from({ length: PLAN_REVIEW_ROUND_CAP }, (_, i) => ({
     user: { login: CODEX },
     commit_id: String.fromCharCode(97 + i).repeat(40),
   }));
   const docsOnly = ['docs/superpowers/plans/plan.md', 'docs/reviews/pr-252-convergence.md'];
-  const headMessage = [
-    'fix: plan convergence, remainder deferred',
+  const base = {
+    comments: [], reviews, changedFiles: docsOnly, pullRequestFiles: docsOnly,
+  };
+  const withTrailer = (value) => [
+    'fix: plan convergence',
     '',
     'Review-Convergence: complete',
-    'Review-Deferred-To-Probes: phase-5-task-1',
+    `Review-Deferred-To-Probes: ${value}`,
   ].join('\n');
-  const base = {
-    comments: [], reviews, headMessage, changedFiles: docsOnly, pullRequestFiles: docsOnly,
-    // the plan the ledger's probes must actually be defined in
-    planText: '## Required plan probes\n5w. §0 COMMITTED close-short behaviour.\n',
-  };
 
-  // a packet that says nothing about the handoff the trailer claims
-  const noLedger = assessConvergence({
-    ...base,
-    packetText: '## Architectural cause\nThe folds were written locally.\n',
-  });
-  assert.equal(noLedger.allowed, false, 'the trailer asserts a handoff the packet does not record');
-  assert.match(noLedger.missing.join(' '), /phase-5-task-1/u);
+  // a task-shaped trailer is the whole obligation the GATE enforces
+  const allowed = assessConvergence({ ...base, headMessage: withTrailer('phase-5-task-1') });
+  assert.equal(allowed.allowed, true);
+  assert.equal(allowed.deferredTo, 'phase-5-task-1');
+  assert.deepEqual(allowed.missing, []);
 
-  // names the task but never says what it hands over
-  const taskOnly = assessConvergence({
-    ...base,
-    packetText: '## Next\nphase-5-task-1 continues from here.\n',
-  });
-  assert.equal(taskOnly.allowed, false);
-
-  // FINDING (#253 round 4 P2) — naming the task and the word "probe" in prose is not a
-  // ledger. A ledger is a MAPPING: entries, one per deferred question.
-  const prose = assessConvergence({
-    ...base,
-    packetText: '## Termination\nphase-5-task-1 has probes elsewhere, so the rest is deferred.\n',
-  });
-  assert.equal(prose.allowed, false, 'a sentence mentioning probes records no mapping');
-
-  // an entry that is structurally a row but names no probe is not a ledger entry either
-  const rowWithoutProbe = assessConvergence({
-    ...base,
-    packetText: '## Deferral ledger\n| Question | Owner |\n| --- | --- |\n'
-      + '| does overage clamp? | phase-5-task-1 |\n',
-  });
-  assert.equal(rowWithoutProbe.allowed, false);
-
-  // a bulleted or numbered ledger is just as good as a table — do not false-block a format
-  for (const entry of [
-    '- does overage clamp? → probe 5w, settled by phase-5-task-1',
-    '1. does overage clamp? probe 5w (phase-5-task-1)',
-    '* does overage clamp? — probe 5w',
+  // ...and no packet or plan content is consulted, so passing either changes nothing
+  for (const extra of [
+    { packetText: '' },
+    { packetText: 'no ledger here at all' },
+    { planText: '' },
+    { packetText: '## Deferral ledger\n| q | probe 5w | phase-5-task-1 |\n', planText: '5w. x' },
   ]) {
-    const listLedger = assessConvergence({
-      ...base,
-      packetText: `## Deferral ledger\n${entry}\n\nphase-5-task-1 settles these.\n`,
+    const same = assessConvergence({
+      ...base, ...extra, headMessage: withTrailer('phase-5-task-1'),
     });
-    assert.equal(listLedger.allowed, true, `${entry} is a ledger entry`);
+    assert.equal(same.allowed, true, `${JSON.stringify(extra)} must not change the verdict`);
   }
 
-  // FINDING (#253 round 6 P2) — scanning the WHOLE packet let an ordinary `## Probes`
-  // list stand in for a ledger. A list of probes is not a mapping from questions to probes,
-  // so entries only count inside the deferral-ledger section.
-  const probeListElsewhere = assessConvergence({
+  // the trailer still has to name a task, and it still has to be PRESENT past the cap
+  for (const value of ['yes', 'later', 'TBD', 'phase-5', 'task-1']) {
+    const notATask = assessConvergence({ ...base, headMessage: withTrailer(value) });
+    assert.equal(notATask.allowed, false, `"${value}" is not a task reference`);
+    assert.match(notATask.missing.join(' '), /name the TASK/u);
+  }
+  const noTrailer = assessConvergence({
     ...base,
-    packetText: '## Termination\nphase-5-task-1 settles the remainder.\n\n'
-      + '## Probes\n- probe 5w exercises the close-short fold.\n',
+    headMessage: 'fix: plan convergence\n\nReview-Convergence: complete',
   });
-  assert.equal(
-    probeListElsewhere.allowed,
-    false,
-    'a probe list outside a deferral ledger records no question-to-probe mapping',
-  );
+  assert.equal(noTrailer.allowed, false);
+  assert.match(noTrailer.missing.join(' '), /Review-Deferred-To-Probes/u);
 
-  // ...and a ledger section ENDS at the next same-or-higher heading, so entries after it
-  // do not leak in.
-  const entryAfterSection = assessConvergence({
-    ...base,
-    packetText: '## Deferral ledger\nphase-5-task-1 settles these.\n\n'
-      + '## Probes\n- probe 5w exercises the close-short fold.\n',
-  });
-  assert.equal(entryAfterSection.allowed, false, 'the ledger section itself carries no entry');
-
-  // a DEEPER heading inside the ledger is still part of it
-  const nestedHeading = assessConvergence({
-    ...base,
-    packetText: '## Deferral ledger\n### Open questions\n'
-      + '| q? | probe 5w | phase-5-task-1 |\n',
-  });
-  assert.equal(nestedHeading.allowed, true, 'a subsection of the ledger is inside the ledger');
-
-  // FINDING (#253 round 6 P2) — a ledger row can cite a probe the plan never defines, which
-  // schedules nothing. The rule is that the question becomes a NAMED PROBE IN THE PLAN.
-  const probeNotInPlan = assessConvergence({
-    ...base,
-    packetText: '## Deferral ledger\n| q? | probe 9z | phase-5-task-1 |\n',
-  });
-  assert.equal(probeNotInPlan.allowed, false, 'probe 9z is not defined in the plan');
-  assert.match(probeNotInPlan.missing.join(' '), /DEFINED in\s+the plan/u);
-
-  // EVERY cited probe must exist, not just one of them
-  const onePresentOneMissing = assessConvergence({
-    ...base,
-    packetText: '## Deferral ledger\n| a? | probe 5w | phase-5-task-1 |\n'
-      + '| b? | probe 9z | phase-5-task-1 |\n',
-  });
-  assert.equal(onePresentOneMissing.allowed, false, 'a partly-scheduled ledger is not scheduled');
-
-  // a MENTION in the plan is not a definition — the probe must be declared where it runs
-  const mentionedNotDefined = assessConvergence({
-    ...base,
-    planText: 'The close-short case (see probe 5w) matters.\n',
-    packetText: '## Deferral ledger\n| q? | probe 5w | phase-5-task-1 |\n',
-  });
-  assert.equal(mentionedNotDefined.allowed, false, 'a passing mention defines no probe');
-
-  // an unreadable plan is UNVERIFIED, not absent — same self-healing rule as the packet
-  const planUnreadable = assessConvergence({
-    ...base,
-    planText: undefined,
-    packetText: '## Deferral ledger\n| q? | probe 5w | phase-5-task-1 |\n',
-  });
-  assert.equal(planUnreadable.allowed, false);
-  assert.match(planUnreadable.missing.join(' '), /plan could not be read/u);
-
-  // FINDING (#253 round 5 P2 ×2) — a header is not an entry, and a prefix is not a token.
-  const headerOnly = assessConvergence({
-    ...base,
-    packetText: '## Deferral ledger\nphase-5-task-1 settles these.\n'
-      + '| Open question | Probe | Settled by |\n| --- | --- | --- |\n',
-  });
-  assert.equal(headerOnly.allowed, false, 'a header labels the column; it records no mapping');
-
-  const prefixTask = assessConvergence({
-    ...base,
-    packetText: '## Deferral ledger\n| does overage clamp? | probe 5w | phase-5-task-10 |\n',
-  });
-  assert.equal(
-    prefixTask.allowed,
-    false,
-    'phase-5-task-1 must not be satisfied by phase-5-task-10',
-  );
-
-  // both artifacts agree on the same handoff
-  const withLedger = assessConvergence({
-    ...base,
-    packetText: [
-      '## Deferral ledger',
-      '| Open question | Probe | Settled by |',
-      '| --- | --- | --- |',
-      '| does overage clamp? | probe 5w | phase-5-task-1 |',
-    ].join('\n'),
-  });
-  assert.equal(withLedger.allowed, true);
-  assert.equal(withLedger.deferredTo, 'phase-5-task-1');
-
-  // an unreadable packet is not evidence of a ledger, and must not pass silently
-  const unreadable = assessConvergence(base);
-  assert.equal(unreadable.allowed, false);
-  assert.match(unreadable.missing.join(' '), /could not be read/u);
-
-  // below the cap none of this applies — no deferral is owed, so no ledger is either
+  // below the cap no deferral is owed at all
   const withinCap = assessConvergence({
     ...base,
     reviews: reviews.slice(0, PLAN_REVIEW_ROUND_CAP - 1),
+    headMessage: 'fix: correction\n\nReview-Convergence: complete',
   });
   assert.equal(withinCap.allowed, true);
+  assert.equal(withinCap.deferralRequired, false);
 });
 
 // FINDING (#253 round 2 P2) — a rename carries TWO paths and only one was classified.

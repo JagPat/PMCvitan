@@ -1311,16 +1311,15 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   assert.match(gate, /changedFiles: commit\.files/u);
   assert.doesNotMatch(gate, /changedFiles: pullRequestFiles/u);
   assert.match(gate, /pullRequestFiles = await client\.pullRequestFiles\(pullRequest\.number\)/u);
-  // The deferral ledger lives in the packet's PROSE, so the gate reads the packet's content
-  // at the exact head — a filename cannot evidence a ledger.
-  assert.match(gate, /client\.fileText\(packetPath, expectedHead\)/u);
-  assert.match(gate, /async fileText\(path, ref\)[\s\S]*?base64/u);
-  // The ledger's probes must be DEFINED in the plan, so the gate reads the plan's content at
-  // the exact head too — from the CUMULATIVE file list, because the probe may have been added
-  // by an earlier head of the same review.
-  assert.match(gate, /client\.fileText\(path, expectedHead\)/u);
-  assert.match(gate, /docs\\\/superpowers\\\/plans\\\//u);
-  assert.match(gate, /planText,/u);
+  // The deferral LEDGER is deliberately not gate-verified — see the note in
+  // review-efficiency.mjs. Four rounds of prose parsing were withdrawn because telling a
+  // question from a probe list, or a probe declaration from a numbered task heading, needs
+  // MEANING, and because a deferral buys an author nothing a clean review would not (the
+  // current-head finding guard runs after this and fails closed regardless). Pin the absence
+  // so it is not quietly reintroduced.
+  assert.doesNotMatch(gate, /packetText/u);
+  assert.doesNotMatch(gate, /planText/u);
+  assert.doesNotMatch(gate, /fileText/u);
   assert.match(gate, /state: 'convergence_required'/u);
   assert.match(gate, /Review-Convergence: complete/u);
   assert.match(gate, /assessReviewScope\(pullRequest\)/u);

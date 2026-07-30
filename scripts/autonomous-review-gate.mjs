@@ -566,14 +566,6 @@ export class GitHubClient {
 
   // A file's text AT a ref. Used for the convergence packet, whose CONTENT carries the
   // deferral ledger — a filename alone cannot show that the ledger exists.
-  async fileText(path, ref) {
-    const payload = await this.request(
-      `/repos/${this.repository}/contents/${path.split('/').map(encodeURIComponent).join('/')}`
-        + `?ref=${encodeURIComponent(ref)}`,
-    );
-    if (payload?.encoding !== 'base64' || typeof payload.content !== 'string') return null;
-    return Buffer.from(payload.content, 'base64').toString('utf8');
-  }
 
   reactions(number) {
     return this.request(
@@ -965,62 +957,12 @@ export async function enforceReviewConvergence(
   } catch {
     pullRequestFiles = undefined;
   }
-  // The packet's CONTENT, only when this head actually carries one. The deferral ledger
-  // lives in the prose, so a filename cannot evidence it. An unreadable fetch is left
-  // undefined and assessConvergence reports it as unverified rather than absent.
-  // THIS PR's packet, not whichever convergence file the head happens to touch first. A head
-  // editing two packets could otherwise be verified against an unrelated older one that
-  // mentions the same task and a probe row, while this PR's own packet records no ledger.
-  let packetText;
-  const packetNames = (commit.files ?? [])
-    .map((file) => file?.filename)
-    .filter((name) => typeof name === 'string'
-      && /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu.test(name));
-  const ownPacket = new RegExp(
-    `^docs/reviews/pr-${pullRequest.number}-convergence\\.md$`,
-    'iu',
-  );
-  // Exactly one candidate is unambiguous; several require the PR-numbered one. None matching
-  // leaves packetText undefined, which assessConvergence reports as UNVERIFIED, not absent.
-  const packetPath = packetNames.find((name) => ownPacket.test(name))
-    ?? (packetNames.length === 1 ? packetNames[0] : undefined);
-  if (packetPath) {
-    try {
-      packetText = await client.fileText(packetPath, expectedHead) ?? undefined;
-    } catch {
-      packetText = undefined;
-    }
-  }
-  // The PLAN's content at this head. The rule is that each deferred question becomes a NAMED
-  // PROBE IN THE PLAN, so a ledger row citing `probe 5w` proves nothing unless 5w is actually
-  // defined where it will run. Read from the PR's cumulative file list, not this commit: the
-  // probe may have been added by an earlier head of the same review, and what matters is that
-  // it exists in the plan as the head stands. Unreadable stays undefined → UNVERIFIED.
-  let planText;
-  const planPaths = (pullRequestFiles ?? [])
-    .map((file) => file?.filename)
-    .filter((name) => typeof name === 'string'
-      && /^docs\/superpowers\/plans\/[^/]+\.md$/iu.test(name));
-  if (planPaths.length > 0) {
-    const bodies = [];
-    for (const path of planPaths) {
-      try {
-        const body = await client.fileText(path, expectedHead);
-        if (typeof body === 'string') bodies.push(body);
-      } catch {
-        // one unreadable plan is not evidence about the others
-      }
-    }
-    if (bodies.length > 0) planText = bodies.join('\n');
-  }
   const result = assessConvergence({
     comments,
     reviews,
     headMessage: commit.commit?.message,
     changedFiles: commit.files ?? [],
     pullRequestFiles,
-    packetText,
-    planText,
   });
   if (result.allowed) return result;
 
