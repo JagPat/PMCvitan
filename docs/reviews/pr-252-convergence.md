@@ -426,7 +426,69 @@ that is unchanged and #253 still stands. But probes could not have caught these 
 three of the four defects were IN THE PROBES. What catches a second declaration is not testing
 it — it is not having one. New probes 5ad/5ae/5af cover the three genuine gaps.
 
-## Deferral ledger
+## Round 9 (head `c5f9887`) — the prediction, honoured; and the cap does not do what I said
+
+Eleven findings (eight distinct; three arrived twice), all correct. Round 8 ended with a
+falsifiable prediction, so it gets answered before anything else.
+
+**The prediction, checked honestly.** I wrote: *"if round 9 again contains a stale-copy
+finding, the meta-rule failed too."* It does NOT. No finding here is two copies of a rule
+inside the plan disagreeing — the one-site meta-rule held on its own terms, and §K now has a
+single edge table which is what let the labour gap be seen as a gap rather than a
+contradiction. So by the letter, the prediction is not triggered.
+
+By its spirit it is, and pretending otherwise would be exactly the technicality I said I would
+not hide behind. The causes simply MOVED to classes no document rule can close:
+
+- **Three findings are false claims about what Phase 3/4 code actually does**, asserted from
+  my memory of it. `labourPurchaseOrderLine` is LABOUR-owned (`labourManifest.ownsModels`), not
+  procurement's — my §0 owner column said procurement, and §K's missing labour edges are
+  downstream of that one wrong word. `ActivityWorkOutput` carries `ActivityWorkOutput_append_only`
+  (BEFORE UPDATE OR DELETE, `20270305000000`) with no supersession path at all — I specified a
+  "not superseded" lifecycle the owner module does not have, which would have forced Phase 5 to
+  change an Activities operational fact this phase declares out of scope. `PurchaseOrderLine`'s
+  CHECK is `taxAmount >= 0 AND freightAmount >= 0` — my §0b sign row demanded strictly positive
+  claim tax and freight, which would refuse a bill matching a zero-freight PO EXACTLY. All three
+  are now verified against the repository and cited in the plan by migration name.
+- **Three are task-SEQUENCING gaps**: Task 4 creates live bills but the dispute transition and
+  the acceptance-withdrawal guard were in Task 5, so a Task-4-only deployment has no legal
+  outcome for a 101-vs-100 claim; `advance-recovery` capped against a paid-advance fact that
+  Task 6 creates; Tasks 1–2 add budget/attribution write routes with no permission to call them.
+- **One is a §0b closure failure**, the class round 7 already declared §0b unable to prevent:
+  `CommitmentAttribution` is a key that groups money, exactly like `CostHead.code` which round 8
+  froze, and it was never added to the seals — so an in-place `CIVIL`→`MEP` update moves recorded
+  history with no evidence.
+- **One is a defect in the round-8 fix itself.** "Supersession is refused if it would leave
+  `PAID > APPROVED`" makes the intended correction impossible: reverse ₹50, supersede to ₹50,
+  and `APPROVED` is ₹0 while `PAID` is ₹50 — the guard refuses and skipping it breaks bound 5.
+  Fixed as an explicit SEQUENCE (reverse cash in FULL → supersede → re-approve → re-pay),
+  because partial cash against an uncertified amount has no legal fold.
+
+None of these is closable by another rule in this document. A false claim about another
+module's schema is settled by reading the schema; a sequencing gap is settled by attempting the
+task. **So the prediction's conclusion stands: the remainder belongs to probes, not prose.**
+Six new probes (5ag–5al) carry exactly these questions into the tasks that can execute them.
+
+### And a correction about the mechanism I built
+
+The round-7 and round-8 packets both said PR #253's `PLAN_REVIEW_ROUND_CAP` is the fix that
+bounds this review. Reading `autonomous-review-gate.mjs` again at this head:
+`guardAgainstCurrentHeadFinding` runs AFTER `enforceReviewConvergence` and returns
+`changes_required` independently. **The deferral trailer satisfies the CONVERGENCE obligation
+and does nothing to a current-head finding.** #253's own packet states this correctly — "nothing
+here discounts, filters or downgrades a finding, and `codex-current-head` still fails closed on
+every current-head finding" — and I then described it to the owner as bounding the review
+anyway. It bounds the PAPERWORK past round 3; it does not terminate anything. The only exit
+from this loop has always been a head Codex returns clean on, and that is unchanged.
+
+That matters for what to do next, so it is recorded here rather than left as an impression:
+**the round cap is not the answer to "this review does not converge." The answer is a smaller
+review unit.** This PR is one file, ~1,300 lines, specifying seven tasks' invariants at once —
+inside the 1,500-line budget but emphatically not "one architectural concern", and every round
+has found real problems in a different one of the seven. Phase 3's and Phase 4's plans cleared
+in 2 and 3 rounds because they deferred per-task detail to the tasks. The recommendation for the
+owner is in the closing section.
+
 
 Each still-open question, the probe that adjudicates it, and the task whose review stop settles
 it. This is the mapping the deferral requires — not a pointer at the probe list.
@@ -449,10 +511,16 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Does `PAID` net reversals, and does PG refuse negative payment and reversal rows? | probe 5ae | phase-5-task-6 |
 | Is `CostHead.code` frozen after write, with reclassification only via a new head? | probe 5af | phase-5-task-1 |
 | Is `OUTPUT` a predicate — do two lines measure against one output, each capped by its own `EFFORT`? | probe 5i, 5c | phase-5-task-3 |
+| Is claim tax/freight non-negative rather than positive, so a zero-freight PO can be billed? | probe 5ag | phase-5-task-4 |
+| Does superseding a PAID certificate require full cash reversal first, with bound 5 true at every step? | probe 5ah | phase-5-task-6 |
+| Is a re-attribution append-only with a frozen reason, so a reclassification leaves evidence? | probe 5ai | phase-5-task-2 |
+| Does certifying a LABOUR bill take the labour PO-line lock, and does a labour PO attribute atomically? | probe 5aj | phase-5-task-2 |
+| Do the dispute transition and acceptance-withdrawal guard exist in the task that first creates a live bill? | probe 5ak | phase-5-task-4 |
+| Can a read-only commercial member mutate budget or attribution? | probe 5al | phase-5-task-1 |
 
 ## Termination, and what happens next
 
-Nine finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7 — **sixty-eight** findings, every one
+Ten finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11 — **seventy-nine** findings, every one
 correct and none contradicted by a later round. (The round-7 packet said "sixty-six" for the
 first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
 forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
@@ -487,11 +555,24 @@ previous correction adding a copy instead of moving the single source.** §0b's 
 targets exactly that, and unlike §0b's original rows it is enforced by SUBTRACTION — this head
 deletes three duplicate declarations rather than adding a fourth checklist.
 
-Whether that holds is for the next round to say, not this packet. What I will record now is the
-falsifiable prediction, because a claim that cannot fail is not worth making: **if round 9 again
-contains a stale-copy finding, the meta-rule failed too, and the next step is not another
-document change — it is to stop correcting the plan in prose and let Task 1's probes settle the
-remainder through `Review-Deferred-To-Probes`.**
+Round 9 answered that prediction: no stale-copy finding recurred, so the meta-rule held on its
+own terms — and the causes moved to three classes prose cannot close (false claims about other
+modules' code, task sequencing, and an incomplete §0b site list). The round-9 section records
+the reasoning and the correction to what I claimed the round cap does.
+
+**The recommendation, which is the owner's call.** Nine rounds of correct findings on one
+document is not a reviewer problem and it is not (mostly) a carelessness problem — it is a
+review-unit problem. This PR specifies seven tasks' invariants in one file, so every round finds
+a real defect in a different one, and the deferral cap I built does not and cannot stop that
+(it gates convergence paperwork, never a finding). The structural fix is the rule this repo
+already has and this PR violates in spirit: ONE architectural concern per review unit.
+
+Concretely: keep §0 (the canonical sets), §0b, §K (the module graph), §L (pilot), §M (frontend),
+the task table and the probe list in the phase plan — the parts that are settled, cross-cutting,
+and small — and move §B/§C/§E/§F/§G/§H/§I per-task detail into the task PR that implements it,
+where code and probes answer the questions instead of prose. That is what Phase 3 and Phase 4
+did, and their plans cleared in two and three rounds. Until the owner decides, this head fixes
+all eleven findings as written.
 
 `origin/main` was merged into this branch on the round-5 head (PR #254, ranged pnpm
 overrides); the branch was `behind`, not conflicted, and is up to date at this head.
