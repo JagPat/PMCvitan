@@ -2,7 +2,7 @@
 
 ## Objective
 
-Converge the Phase-5 planning review. Seventeen heads have received findings; the per-round
+Converge the Phase-5 planning review. Eighteen heads have received findings; the per-round
 sections below run in order, each mapping its findings to their architectural cause, the batched
 remedy, and how each is proven. The Termination section carries the running totals and the
 current exit route. The two sections immediately below are the round-2 record, written when the
@@ -521,7 +521,6 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Is claim tax/freight non-negative rather than positive, so a zero-freight PO can be billed? | probe 5ag | phase-5-task-4 |
 | Does superseding a PAID certificate require full cash reversal first, with bound 5 true at every step? | probe 5ah | phase-5-task-6 |
 | Is a re-attribution append-only with a frozen reason, so a reclassification leaves evidence? | probe 5ai | phase-5-task-2 |
-| Does certifying a LABOUR bill take the labour PO-line lock, and does a labour PO attribute atomically? | probe 5aj | phase-5-task-2 |
 | Do the dispute transition and acceptance-withdrawal guard exist in the task that first creates a live bill? | probe 5ak | phase-5-task-4 |
 | Can a read-only commercial member mutate budget or attribution? | probe 5al | phase-5-task-1 |
 | Is `CostHead.code` unique per project, so a budget and its attribution meet in one head? | probe 5am | phase-5-task-1 |
@@ -544,7 +543,8 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Do both structural tables parse from ONE contiguous table each? | probe 5be | phase-5-task-1 |
 | Is exact decimal arithmetic used on both sides — `Prisma.Decimal` server, `lib/decimal.ts` browser? | probe 5ay | phase-5-task-7 |
 | Is a live PO line's attribution unrepresentable as an in-place edit, not merely once superseded? | probe 5ai | phase-5-task-1 |
-| Do all FOUR labour lifecycle sites attribute, including cancel and close-short? | probe 5aj | phase-5-task-1 |
+| Do all FOUR labour lifecycle sites attribute, including cancel and close-short? | probe 5aj (attribution half) | phase-5-task-1 |
+| Does certifying a LABOUR bill take the labour PO-line lock, under a barrier against close-short? | probe 5aj (certification half) | phase-5-task-5 |
 | Is a deduction refused after an approval it would invalidate — the fourth §0b withdrawal site? | probe 5ab | phase-5-task-6 |
 | Does a bill line name exactly one PO line at PG, neither zero nor two? | probe 5bf | phase-5-task-4 |
 | Is there a frozen vendor-document key that makes a duplicate claim unrepresentable? | probe 5bg | phase-5-task-4 |
@@ -554,6 +554,8 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Is `budget` reported as AUTHORITY, with only the six exposure buckets partitioning the money? | probe 5bm | phase-5-task-7 |
 | Does the status derivation tell unapproved payable from approved-not-paid, never inventing an approval? | probe 5bn | phase-5-task-6 |
 | Does labour close-short refuse to move the ordered line below what is already MEASURED? | probe 5bo | phase-5-task-3 |
+| Is cumulative advance recovery capped at the advance actually PAID? | probe 5bp | phase-5-task-6 |
+| Does the over-budget exception fire from commitments AND budget revisions AND re-attributions? | probe 5bq | phase-5-task-2 |
 | Does the duplicate-document index release on `rejected`/`resolved` so a corrected resubmission is possible? | probe 5bj | phase-5-task-4 |
 | Does a retention release re-derive payment status, so `paid` cannot stand with cash owed? | probe 5bk | phase-5-task-6 |
 | Does a reducing measurement dispute uncertified claims and refuse only against a certificate? | probe 5bl | phase-5-task-3 |
@@ -850,10 +852,47 @@ two — and the first version of rule 2 missed BOTH, because I wrote the forbidd
 while the actual defect said `cancellation`. The RED fixture caught that, which is the whole reason
 to build the fixture from the real head instead of hand-editing a plausible one.
 
+## Round 17 (head `c0cc9d8`) — seven findings, and the P1 was a claim I had made six times
+
+All seven correct. Four are round-16 fixes that reached the prose and not the probe or ledger —
+the same three-surface class, sixth consecutive round.
+
+| Finding | Origin | Fix |
+|---|---|---|
+| **P1** the trailer names `phase-5-task-1` while the ledger defers to Tasks 1–7 | rounds 11–16, mine | the trailer names `phase-5-task-7`, the last stop that settles the ledger |
+| probe 5bk expects `approved-for-payment` on release-after-payment | round 16, mine | `certified` — the row of the table round 16 wrote in the same commit |
+| probe 5bc still sums SEVEN buckets to exposure | round 16, mine | the six exposure buckets sum; `budget` asserted separately as authority |
+| the 5aj ledger row settles at Task 2; certification is Task 5 | round 16's move of the attribution half to Task 1 | split into attribution (Task 1) and certification-lock (Task 5) rows |
+| the over-budget exception fires only on commitments | new | also on budget revision and re-attribution, recomputing source AND target (probe 5bq) |
+| the advance-recovery cap has no probe | new | probe 5bp: ₹150 against a ₹100 paid advance refused, ₹100 permitted, +₹1 refused |
+| `received-not-billed` is not on `BILLED_AMOUNT`'s money basis | new | prorated landed for materials, frozen rate + premium for labour — citing §0's `COMMITTED` basis rather than restating one |
+
+**The P1 deserves more than a table row.** Rounds 11 through 16 all carried
+`Review-Deferred-To-Probes: phase-5-task-1`, and every one of those heads also carried a ledger
+deferring questions to Tasks 2 through 7. The trailer's meaning is fixed by AGENTS.md — the review
+stop that SETTLES the deferred questions — so for six heads I asserted that a Task-1 stop
+adjudicates payment-status and cash-forecast questions whose probes cannot run until Tasks 6 and 7.
+The gate could not catch it: it validates that the value names a task in an active phase, which
+`phase-5-task-1` does. Round 15's verifier could not catch it either, because I built it to check
+that probe references RESOLVE, and this is a claim about WHEN.
+
+It is arithmetic — max of a column — so it is now checked. Run against `c0cc9d8` the verifier
+reports `deferral names task 1 but the ledger's last settling task is 7`, RED; here it reports
+`task 7 == ledger max`. Adding a Task-7 row without moving the trailer now fails.
+
+Two smaller things worth recording rather than smoothing over. Fixing the checker exposed that it
+had been reading **48 of the packet's 57 ledger rows** — my new rows carry a parenthetical
+(`probe 5aj (attribution half)`) and the row pattern did not allow one, so nine rows were silently
+outside every check including the new one. A checker that quietly skips input is the same defect it
+exists to catch, and it was mine, introduced in the same round as the check. And the orphan-scan
+range still ended at `5bo` while the probes had reached `5bq` — a hardcoded bound going stale,
+which is precisely what probe 5g warns about and what round 15's `5be` count already taught. Both
+corrected; the row parser now tolerates qualifiers and the range follows the letters.
+
 ## Termination, and what happens next
 
-Seventeen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8 — **one
-hundred and thirty-six** findings. One hundred and thirty-five were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
+Eighteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8, 7 — **one
+hundred and forty-three** findings. One hundred and forty-two were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
 in the round-10 section above with the passing check-run cited. (The round-7 packet said "sixty-six" for the
 first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
 forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
@@ -873,8 +912,22 @@ middle term. Rounds 12 and 13 added probes 5aq–5be with no ledger rows at all,
 questions were unreadable from the packet — the obligation is trailer AND ledger, and the pointer
 quietly discharged half of it. The table carries real rows for all of them, plus the four this
 round adds. This head closes through that route with
-`Review-Deferred-To-Probes: phase-5-task-1`, verified against the merged gate rather than
+`Review-Deferred-To-Probes: phase-5-task-7`, verified against the merged gate rather than
 asserted (see the round-13 section: allowed with the trailer, refused without it).
+
+**Why task 7 and not task 1.** Rounds 11–16 named `phase-5-task-1`, and that was wrong for a
+reason worth stating rather than quietly editing: the trailer names the review stop that SETTLES
+the deferred questions, and the ledger above defers questions to every task from 1 to 7 — payment
+status at Task 6, the cash forecast at Task 7. Naming Task 1 claimed the whole ledger was
+adjudicated at a stop where most of its probes cannot even run, which would let the loop treat
+payment and forecast questions as settled before the code that could break them exists. A ledger
+spanning several stops is discharged at the LAST of them, so the trailer names Task 7 — the final
+stop, where §M and the pilot acceptance chain close the phase. The alternative the finding offers,
+restricting the ledger to Task-1 questions, would be worse: it would delete the schedule for
+twenty-odd real open questions to make one trailer true.
+
+This is now checked, not remembered: the verifier asserts the trailer's task equals the maximum
+task in the ledger, so adding a Task-7 row without moving the trailer fails.
 
 Round 4's packet said I would report rather than answer a sixth PROSE round. Neither round 5
 nor round 6 was that: mechanism defects with right answers, so answering them was correct and
@@ -884,7 +937,7 @@ do is invoke it against a round of real defects because the round number matches
 
 **The deferral trailer, and what it does and does not claim.** Rounds 3–10 carried no trailer,
 on the reasoning that claiming a deferral while fixing every finding would misdescribe the head.
-Rounds 11–13 carry `Review-Deferred-To-Probes: phase-5-task-1`, and the two positions are
+Rounds 11–16 carried `Review-Deferred-To-Probes: phase-5-task-1`; round 17 corrected the VALUE to `phase-5-task-7` (the round-17 section records why that was a P1 and how it is now checked). What follows is about what the trailer CLAIMS, which the correction does not change. The two positions are
 compatible once the claim is stated precisely: the trailer says the plan's REMAINING OPEN
 questions are settled at Task 1's review stop — which is what the ledger above records — not that
 any round's findings went unanswered. Every finding was fixed on the head that received it. From
@@ -896,7 +949,7 @@ paragraph replaces the round-10 and round-11 wording rather than sitting beside 
 11's own rule.
 
 An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
-the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8) but their KIND has narrowed and
+the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8, 7) but their KIND has narrowed and
 round 8 finally names the mechanism. Rounds 1–6 read as "I fix instances, not classes." Round 7
 read as "prose has no compiler." Round 8 is more specific and more actionable than either: **the
 recurring defect is a rule with two written statements, and every one of them was created by a

@@ -205,10 +205,22 @@ licence to write a local filter.
   able to move independently.
 - Budget lines are **versioned and immutable** (spec §97). A revision APPENDS a new version
   retaining the prior verbatim, with an attributable reason. There is no in-place edit.
-- A budget line does not gate anything. Exceeding budget produces a flagged exception on the
-  commitment and an Inbox action; it never blocks a PO, because stopping site supply over a
-  planning number is the wrong failure mode. Whether an over-budget commitment requires a
-  stronger authority is a §I approval-limit decision, not a hard block.
+- A budget line does not gate anything. Exceeding budget produces a flagged exception and an
+  Inbox action; it never blocks a PO, because stopping site supply over a planning number is the
+  wrong failure mode. Whether an over-budget commitment requires a stronger authority is a §I
+  approval-limit decision, not a hard block.
+- **The exception is raised from EVERY write that can move headroom, not only from the
+  commitment.** Headroom is `BUDGET(costHead) − Σ exposure` (§J), so three different writes can
+  turn it negative: a new or amended commitment (exposure up), a budget REVISION downward
+  (authority down), and a RE-ATTRIBUTION that moves an obligation onto a head that cannot absorb
+  it (exposure up on the target). An earlier revision named only the commitment, which leaves the
+  most ordinary case silent: with a ₹100 budget and a ₹90 PO already attributed, revising the live
+  budget to ₹50 produces −₹40 of headroom with no commitment write anywhere, so a
+  commitment-triggered Inbox action never fires and the practice learns nothing. So
+  `budget.revise`, `commercial.attribute`/re-attribution, and the commitment hooks all recompute
+  the affected cost head(s) — the re-attribution recomputing BOTH the source and the target — and
+  raise or clear the exception in the same transaction. This is the same "every writer that can
+  move any input" rule §F's status derivation states; the two are one discipline at two sites.
 
 ### §C. Commitment — consumed, never rebuilt
 
@@ -930,7 +942,7 @@ buckets for one ₹100 payable. The complete definitions:
 |---|---|---|
 | `budget` | `BUDGET` (the live version only, §0), reported ALONGSIDE `BUDGET − Σ(the six exposure buckets)` — **authority, not exposure** | Two earlier revisions got this wrong in opposite directions. Reporting `BUDGET` raw double-counts the whole chain against its own authority; subtracting only `COMMITTED` is worse, because `COMMITTED` is already just the OUTSTANDING remainder — a ₹100 PO fully accepted and unbilled has `COMMITTED = 0`, so the ₹100 would appear in `budget` AND in `received-not-billed`. The fix is not a third subtraction but a category correction: **budget is the CEILING the other six are measured against, and only those six partition the money.** The headroom figure subtracts all six, and it is deliberately allowed to go NEGATIVE — that is the over-commitment signal §B's budget-vs-committed exception fires on, not an error to clamp away |
 | `committed` | `COMMITTED` (already defined as OUTSTANDING in §0) | a received-but-unbilled ₹100 order belongs in `received-not-billed`, not here as well |
-| `received-not-billed` | accepted/measured value **− live `BILLED_AMOUNT`** | ₹100 accepted with a ₹40 submitted-uncertified bill is ₹60 here and ₹40 in `awaiting-certification`; the raw accepted value would report ₹140 for one ₹100 delivery |
+| `received-not-billed` | received value **− live `BILLED_AMOUNT`**, where received value is on the SAME money basis as `BILLED_AMOUNT`: for a material line the PRORATED LANDED amount for `ACCEPTED` (`committedAmountBase × ACCEPTED / qty`, the §0 `COMMITTED` basis — tax and freight included), for a labour line the measured person-shifts at the frozen rate plus shift premium | ₹100 accepted with a ₹40 submitted-uncertified bill is ₹60 here and ₹40 in `awaiting-certification`; the raw accepted value would report ₹140 for one ₹100 delivery. And the two sides must be the same KIND of money, or the subtraction is meaningless: `BILLED_AMOUNT` includes claimed tax and freight, so pricing the received side at quantity × rate makes a fully-accepted ₹1,000 line with ₹100 tax and ₹50 freight report **−₹150** once billed, and leaves ₹150 of real exposure outside headroom before billing even though `COMMITTED` is already zero. Landed-vs-rate is exactly the mistake the Phase-3 §C `COMMITTED` row was corrected for; this row now cites that basis instead of restating one |
 | `awaiting-certification` | live billed-not-certified | the ₹40 above, once and only once |
 | `certified-payable` | **`NET_PAYABLE` − `APPROVED`** | gross `CERTIFIED − APPROVED` reports ₹100 payable on a ₹100 certificate carrying ₹10 retention, when only ₹90 can ever be approved — and after approving ₹90 it leaves a phantom ₹10 payable until a release row exists. Deductions are withheld, not payable |
 | `approved` | `APPROVED − PAID` (approved-not-paid) | see the ₹140 case above |
@@ -1370,9 +1382,12 @@ SECTION is right and the probe is the defect.
    ₹100 accepted with a ₹40 submitted-uncertified bill reports ₹60 `received-not-billed` and ₹40
    `awaiting-certification`, never ₹140 for one ₹100 delivery; and a ₹100 certificate carrying
    ₹10 retention reports ₹90 `certified-payable` before approval — never ₹100 — then ₹0 after the
-   ₹90 is approved, with no phantom ₹10 payable, and ₹5 once a ₹5 release is appended. The seven
-   buckets sum to the total exposure exactly at every step. RED against the round-13 spelling,
-   where only the post-certification buckets were residuals.
+   ₹90 is approved, with no phantom ₹10 payable, and ₹5 once a ₹5 release is appended. The SIX
+   EXPOSURE buckets sum to the total exposure exactly at every step, and `budget` is asserted
+   SEPARATELY as authority plus headroom — never as a seventh addend, which would put the money
+   back in two places (§J, probe 5bm). RED against the round-13 spelling, where only the
+   post-certification buckets were residuals, AND against the round-16 spelling of this probe,
+   which still summed seven buckets after §J had made budget authority.
 5bd. §D enabling the `commercial` capability on a project that ALREADY holds live material and
    labour POs attributes every one of them in the enabling transaction: `COMMITTED(costHead)`
    reads the real obligation immediately, and a line that cannot be attributed REFUSES the
@@ -1416,6 +1431,18 @@ SECTION is right and the probe is the defect.
    (approved portion settled, remainder unapproved) and NOT to `paid` or `approved-for-payment`;
    and `PAID = APPROVED = NET_PAYABLE` is the only route to `paid`. RED against a derivation that
    maps any `NET_PAYABLE > APPROVED` to `approved-for-payment`.
+5bp. §H advance recovery cannot exceed the advance PAID: with a ₹100 advance paid, a cumulative
+   ₹150 `advance-recovery` is REFUSED naming the recoverable balance, ₹100 is PERMITTED, and a
+   further ₹1 after that is REFUSED — the fold is `Σ advance − Σ advance-recovery` with no stored
+   balance, re-derived under the bill lock. Without this the sign, fold and status probes all pass
+   while the vendor is underpaid by ₹50: the row is positive, the enum member folds, and the status
+   derives correctly from a `NET_PAYABLE` that is simply too low.
+5bq. §B the over-budget exception fires from every input that moves headroom: with a ₹100 budget
+   and a ₹90 attributed PO, (a) a further ₹20 commitment raises it, (b) revising the live budget
+   DOWN to ₹50 raises it with no commitment write, and (c) re-attributing the ₹90 onto a ₹50 head
+   raises it on the target AND clears it on the source — each in the raising write's own
+   transaction, each producing exactly one Inbox action. RED against a commitment-only trigger,
+   where (b) and (c) are silent.
 5bo. §D labour close-short cannot move the ordered line below MEASURED: measure 100 shifts on a
    100-shift labour PO with no bill anywhere, then `labour.po.closeShort` to 40 → REFUSED naming
    the measured floor; closing short to 100 or above is PERMITTED; and after the refusal the
@@ -1435,10 +1462,15 @@ SECTION is right and the probe is the defect.
    deterministic barrier. RED against a `WHERE NOT cancelled` predicate, which names no state §F
    defines and so never releases.
 5bk. §F a retention release re-derives payment status: certify ₹100 with ₹10 retention, approve
-   and pay ₹90 (status `paid`), then release ₹5 → the status re-derives to `approved-for-payment`
-   under CAS in the release's own transaction, and §J reports ₹5 in `certified-payable` — the
-   stored status and the forecast never disagree. RED against a derivation that compares only
-   `PAID` to `APPROVED`.
+   and pay ₹90 (status `paid`), then release ₹5 → the status re-derives under CAS in the release's
+   own transaction to **`certified`**, because `PAID = APPROVED = ₹90 < NET_PAYABLE = ₹95` and the
+   remaining ₹5 is UNAPPROVED, not unpaid — the same row of §F's derivation table probe 5bn pins,
+   never `approved-for-payment` (which would claim an approval covering ₹95 when ₹90 was approved)
+   and never `paid` (which would claim ₹5 of cash left the practice). §J reports ₹5 in
+   `certified-payable` at the same instant, so the stored status and the forecast agree. RED
+   against a derivation that compares only `PAID` to `APPROVED`, and RED against the round-16
+   spelling of this probe, which expected `approved-for-payment` and so contradicted the table
+   written in the same round.
 5bl. §D a reducing measurement correction DISPUTES uncertified claims and refuses only against a
    certificate: measure 100, submit an uncertified 100-shift labour bill, correct to 50 → the
    correction LANDS and the claim is disputed (newest-first, stopping when the bound holds);
