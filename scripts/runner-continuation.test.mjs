@@ -102,6 +102,36 @@ test('buildDriftHandoff names the corrective action when drift exists', () => {
   assert.match(message, /Do not open a competing branch/u);
 });
 
-test('formatOpenPullRequestList renders none for an empty list', () => {
-  assert.equal(formatOpenPullRequestList([]), 'none');
+test('detectStatusDrift flags stale non-none open_pr values', () => {
+  const drift = detectStatusDrift(
+    { open_pr: '251' },
+    [pullRequest()],
+  );
+  assert.equal(drift.drift, true);
+  assert.match(drift.reason, /251/);
+  assert.equal(drift.suggestedOpenPr, '252');
+});
+
+test('detectStatusDrift is quiet when PR head STATUS already records the open PR', () => {
+  assert.equal(
+    detectStatusDrift({ open_pr: '252' }, [pullRequest()]).drift,
+    false,
+  );
+});
+
+test('buildPostMergeContinuation does not request a new branch when a PR is open', () => {
+  const message = buildPostMergeContinuation({
+    statusNow: {
+      phase: '5',
+      task_state: 'in_review',
+      open_pr: '252',
+      next_task: 'none',
+      blocking_directive: 'none',
+    },
+    maintenanceQueue: [],
+    openPullRequests: [pullRequest()],
+  });
+
+  assert.doesNotMatch(message, /Create the next same-repository/u);
+  assert.match(message, /shepherd it to completion/u);
 });

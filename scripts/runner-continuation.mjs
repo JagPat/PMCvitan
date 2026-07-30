@@ -43,21 +43,36 @@ export function formatOpenPullRequestList(openPullRequests) {
 }
 
 export function detectStatusDrift(statusNow, openPullRequests) {
-  const openPrField = statusNow?.open_pr;
-  const hasOpenAutonomousPrs = (openPullRequests ?? []).length > 0;
+  const openPrField = String(statusNow?.open_pr ?? '').trim();
+  const liveNumbers = new Set(
+    (openPullRequests ?? []).map((pullRequest) => String(pullRequest.number)),
+  );
+  const hasOpenAutonomousPrs = liveNumbers.size > 0;
+  const primary = hasOpenAutonomousPrs
+    ? openPullRequests[openPullRequests.length - 1]
+    : null;
 
-  if (!isNone(openPrField) || !hasOpenAutonomousPrs) {
-    return { drift: false };
+  if (!isNone(openPrField) && !liveNumbers.has(openPrField)) {
+    return {
+      drift: true,
+      reason:
+        `docs/STATUS.md records open_pr: ${openPrField} but that PR is not among the live autonomous PRs`,
+      suggestedOpenPr: primary ? String(primary.number) : 'none',
+      primaryPullRequest: primary,
+    };
   }
 
-  const primary = openPullRequests[openPullRequests.length - 1];
-  return {
-    drift: true,
-    reason:
-      'docs/STATUS.md records open_pr: none while autonomous PR(s) are still open',
-    suggestedOpenPr: String(primary.number),
-    primaryPullRequest: primary,
-  };
+  if (isNone(openPrField) && hasOpenAutonomousPrs) {
+    return {
+      drift: true,
+      reason:
+        'docs/STATUS.md records open_pr: none while autonomous PR(s) are still open',
+      suggestedOpenPr: String(primary.number),
+      primaryPullRequest: primary,
+    };
+  }
+
+  return { drift: false };
 }
 
 export function buildPostMergeContinuation({
@@ -85,10 +100,19 @@ export function buildPostMergeContinuation({
     );
   }
 
-  lines.push(
-    '',
-    'Create the next same-repository `claude/**` branch and draft PR with Auto-fix enabled. If the merged result or state file is inconsistent, open a focused correction instead of advancing.',
-  );
+  const hasOpenPrs = (openPullRequests ?? []).length > 0;
+  const nextIsOpenPr = typeof nextStep === 'string' && nextStep.startsWith('pr:');
+
+  lines.push('');
+  if (hasOpenPrs || nextIsOpenPr) {
+    lines.push(
+      'An autonomous PR is already open — shepherd it to completion instead of opening a competing branch. If the merged result or state file is inconsistent, open a focused correction instead of advancing.',
+    );
+  } else {
+    lines.push(
+      'Create the next same-repository `claude/**` branch and draft PR with Auto-fix enabled. If the merged result or state file is inconsistent, open a focused correction instead of advancing.',
+    );
+  }
 
   return lines.join('\n');
 }

@@ -9,7 +9,7 @@ import {
   isAutonomousPullRequest,
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
-import { loadStatusDocument } from './autonomous-status-state.mjs';
+import { loadStatusDocument, parseStatusNow } from './autonomous-status-state.mjs';
 
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
@@ -163,6 +163,14 @@ class GitHubClient {
       body: { body },
     });
   }
+
+  async fileContent(path, ref) {
+    const payload = await this.request(
+      `/repos/${this.repository}/contents/${path}?ref=${encodeURIComponent(ref)}`,
+    );
+    if (!payload?.content) return null;
+    return Buffer.from(payload.content, payload.encoding ?? 'base64').toString('utf8');
+  }
 }
 
 async function refreshedMergeability(client, pullRequest) {
@@ -215,6 +223,23 @@ async function handOffConflict(
       'Merge `origin/main` into this PR branch without rebasing or force-pushing. Resolve the conflicts according to `AGENTS.md`, run the complete documented validation suite, and push the resolution normally. Keep the PR in draft until CI and the exact-head Codex review are clean.',
     ].join('\n'),
   );
+}
+
+async function authoritativeStatusForDrift(client, defaultBranchStatus, openPullRequests) {
+  if (!openPullRequests?.length) return defaultBranchStatus;
+  const primary = openPullRequests[openPullRequests.length - 1];
+  const headRef = primary?.head?.sha;
+  if (!headRef) return defaultBranchStatus;
+  try {
+    const markdown = await client.fileContent('docs/STATUS.md', headRef);
+    const headNow = parseStatusNow(markdown ?? '');
+    if (headNow) return headNow;
+  } catch (error) {
+    console.warn(
+      `Could not read STATUS from PR #${primary.number} head: ${error.message}`,
+    );
+  }
+  return defaultBranchStatus;
 }
 
 async function loadContinuationContext(client, repository, defaultBranch) {
@@ -280,8 +305,13 @@ async function handOffStatusDrift(
   continuationContext,
 ) {
   const { now, maintenanceQueue, openPullRequests } = continuationContext;
+  const authoritativeNow = await authoritativeStatusForDrift(
+    client,
+    now,
+    openPullRequests,
+  );
   const body = buildDriftHandoff({
-    statusNow: now,
+    statusNow: authoritativeNow,
     maintenanceQueue,
     openPullRequests,
   });
