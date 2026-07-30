@@ -2,9 +2,11 @@
 
 ## Objective
 
-Converge the Phase-5 planning review. Two heads received findings — `bd0c085` (8) and
-`cf81ca9` (8) — and all sixteen are correct. This head maps them to their one shared
-architectural cause, states the batched remedy, and records how each is proven.
+Converge the Phase-5 planning review. Fourteen heads have received findings; the per-round
+sections below run in order, each mapping its findings to their architectural cause, the batched
+remedy, and how each is proven. The Termination section carries the running totals and the
+current exit route. The two sections immediately below are the round-2 record, written when the
+review stood at two heads — `bd0c085` (8) and `cf81ca9` (8), all sixteen correct.
 
 ## Finding map
 
@@ -91,6 +93,11 @@ superseded certificate, amended PO commitment).
 The one finding that could be proven now was: F1's fixed STATUS was run through the real
 `assessRunnerState` over the edited file, returning `task:1` — the state the finding said
 was required. `pnpm test:automation` 111/111.
+
+**Superseded at round 13.** The STATUS edit is no longer part of this PR — it blocks the
+deferral check PR #253 merged, so it moves to a follow-up PR after this one (round-13 section).
+F1's fix and its `assessRunnerState` proof travel with it and land there; the state above is the
+round-2 record, not a claim about this head's diff.
 
 ## Invariant audit
 
@@ -625,10 +632,68 @@ checks the propagation — a RED test, not a reader. The recommendation carried 
 not changed, and this round is its strongest evidence: 13 heads, 104 findings, no declining rate,
 and the defect class is now precisely "one decision, many uncheckable restatements".
 
+## Round 13 (head `a7aa5fd`) — six findings, and the class did not change
+
+All six correct, and all six are round 12's composition again: a rule already decided, not
+carried to a site that needed it.
+
+| Finding | Already-decided rule it missed | Fix |
+|---|---|---|
+| payment status stale after reversal | §0 makes `PAID` a fold; a status column is a cache of it | re-derived under CAS after reversal (probe 5ba) |
+| Tasks 6–7 are prose, not table rows | round 12 fixed the §0 table's contiguity — at ONE of the document's two tables | execution table contiguous, 7 rows (probe 5be) |
+| per-line lock order, not per-bill | §A already fixes one ascending order per lock protocol | ONE ascending order over every PO line the bill touches, before per-line work (probe 5bb) |
+| approvals missing from the sign list | §H's STRICTLY POSITIVE list named every other row kind | approvals added (probe 5az) |
+| `capability:enable` silent on live PO lines | §L requires attribution for anything the pilot claims | attributes every live PO line or refuses naming them (probe 5bd) |
+| §J buckets read as gross totals | §0 defines each bucket as a residual | `approved = APPROVED − PAID`, etc. (probe 5bc) |
+
+**The second finding is this packet's own remedy failing to propagate.** Round 12's fix was to
+make the §0 table contiguous, because prose interleaved into a table makes rows invisible to a
+reader scanning it. I fixed that table. This document has two tables of that kind, and I did not
+look at the other one. One round later the identical defect was found in the execution table.
+There is no better illustration of the class: the rule was correct, freshly written, and mine, and
+it still did not reach the second site.
+
+### The same defect, in the gate, authored by me
+
+PR #253 — the mechanism built to bound this review — merged while this head was in flight. It
+added a rule I wrote: past the round cap a docs-only review owes a probe deferral, and a PR that
+edits `docs/STATUS.md` cannot have that deferral's phase verified, because the gate runs from the
+trusted default branch and reads `main`'s STATUS, which is not the PR's own phase truth.
+
+This PR edited `docs/STATUS.md`. I wrote that rule knowing this PR was open and did not check it
+against this PR's composition, so the mechanism intended to close this review made it
+unmergeable instead. Verified rather than assumed, by running the merged gate over this PR's real
+file list and `main`'s real STATUS:
+
+- pre-subtraction composition (STATUS in the diff) → `allowed = false`, blocked on exactly that
+  clause;
+- after subtraction → `allowed = true`;
+- with the deferral trailer removed → `allowed = false`, so the check is live, not vacuous.
+
+The remedy is the one the gate's own message names: **land the STATUS change separately.** The
+Now-block flip and the Phase-5 task table leave this PR and go to a follow-up PR after it merges,
+which is how every prior phase transition has landed (Task 3's flip was PR #237). `main`'s STATUS
+already records `next_task: phase-5-planning`, so `deferralPhases` yields `[5]` and
+`phase-5-task-1` is a verifiable target with no STATUS edit needed here.
+
+Two consequences worth stating plainly. The earlier F1 and H1 fixes in this packet were STATUS
+fixes; they are no longer in this PR and move with it — the packet should not claim a fix it does
+not contain. And the fix here is subtraction, which is the same shape as round 8's: the head that
+closes a propagation defect removes a copy rather than adding a rule about copies.
+
+### The split is approved
+
+The recommendation carried since round 8 — keep §0, §0b, §K, §L, §M, the task table and the probe
+list in the phase plan, and move §B/§C/§E/§F/§G/§H/§I per-task mechanism into each task's own PR —
+was put to the owner with this round's evidence and **approved**. It ships as ONE separate PR after
+this one merges, moving text **verbatim** rather than rewriting it, so no reviewed decision is
+dropped in the move. It is not folded into this head: restructuring the document under review
+would invalidate the review in progress.
+
 ## Termination, and what happens next
 
-Thirteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12 — **one hundred and
-four** findings. One hundred and three were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
+Fourteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6 — **one hundred and
+ten** findings. One hundred and nine were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
 in the round-10 section above with the passing check-run cited. (The round-7 packet said "sixty-six" for the
 first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
 forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
@@ -637,13 +702,14 @@ process to be fixed so this does not recur.
 
 That fix is **PR #253** (`Review-Deferred-To-Probes`), which bounds a docs-only review at
 `PLAN_REVIEW_ROUND_CAP = 3` finding-bearing heads and requires the remaining questions to be
-converted into named probes plus the task that settles them. It is under review now. The gate
-reads `main`'s copy of its scripts, so the deferral is not yet enforceable here — which is
-precisely why this head fixes all nine rather than asserting an exit it cannot yet take.
+converted into named probes plus the task that settles them. **It merged at `a16e68c`, and this
+head is the first to run against it** — `origin/main` is merged into this branch here, so the
+gate the workflow runs is the merged one.
 
-The deferral ledger for this plan is the probe list itself: 5g–5ac are executable the moment
-Task 1 exists, and every finding from rounds 2–6 maps to one of them. Once #253 merges, this
-PR closes through that route with `Review-Deferred-To-Probes: phase-5-task-1`.
+The deferral ledger for this plan is the probe list itself: 5g–5be are executable the moment
+Task 1 exists, and every finding from rounds 2–13 maps to one of them. This head closes through
+that route with `Review-Deferred-To-Probes: phase-5-task-1`, verified against the merged gate
+rather than asserted (see the round-13 section: allowed with the trailer, refused without it).
 
 Round 4's packet said I would report rather than answer a sixth PROSE round. Neither round 5
 nor round 6 was that: mechanism defects with right answers, so answering them was correct and
@@ -653,16 +719,19 @@ do is invoke it against a round of real defects because the round number matches
 
 **The deferral trailer, and what it does and does not claim.** Rounds 3–10 carried no trailer,
 on the reasoning that claiming a deferral while fixing every finding would misdescribe the head.
-Round 11 carries `Review-Deferred-To-Probes: phase-5-task-1`, and the two positions are
+Rounds 11–13 carry `Review-Deferred-To-Probes: phase-5-task-1`, and the two positions are
 compatible once the claim is stated precisely: the trailer says the plan's REMAINING OPEN
-questions are settled at Task 1's review stop — which is what the 17-row ledger above records —
-not that this round's findings went unanswered. All six were fixed here. The trailer is also not
-load-bearing yet: the gate runs `main`'s scripts, #253 has not merged, and
-`guardAgainstCurrentHeadFinding` fails closed on every current-head finding regardless. This
-sentence replaces the round-10 wording rather than sitting beside it, per round 11's own rule.
+questions are settled at Task 1's review stop — which is what the ledger above records — not that
+any round's findings went unanswered. Every finding was fixed on the head that received it. From
+this head the trailer IS load-bearing: #253 is merged, the gate reads it, and the round-13
+section records the run that proves the clause fires. What the trailer still does not do is buy
+an exit — `guardAgainstCurrentHeadFinding` runs after convergence and fails closed on every
+current-head finding, so the only way this PR merges is a head Codex returns clean on. This
+paragraph replaces the round-10 and round-11 wording rather than sitting beside it, per round
+11's own rule.
 
 An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
-the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12) but their KIND has narrowed and
+the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6) but their KIND has narrowed and
 round 8 finally names the mechanism. Rounds 1–6 read as "I fix instances, not classes." Round 7
 read as "prose has no compiler." Round 8 is more specific and more actionable than either: **the
 recurring defect is a rule with two written statements, and every one of them was created by a
@@ -675,7 +744,13 @@ own terms — and the causes moved to three classes prose cannot close (false cl
 modules' code, task sequencing, and an incomplete §0b site list). The round-9 section records
 the reasoning and the correction to what I claimed the round cap does.
 
-**The recommendation, which is the owner's call.** Nine rounds of correct findings on one
+**The recommendation, now approved.** The owner approved the split after round 12 (recorded in
+the round-13 section): §0, §0b, §K, §L, §M, the task table and the probe list stay in the phase
+plan; §B/§C/§E/§F/§G/§H/§I per-task mechanism moves into each task's own PR, text carried
+verbatim, as ONE separate PR after this one merges. The reasoning below is what was put to them
+and is kept as the record of why.
+
+Nine rounds of correct findings on one
 document is not a reviewer problem and it is not (mostly) a carelessness problem — it is a
 review-unit problem. This PR specifies seven tasks' invariants in one file, so every round finds
 a real defect in a different one, and the deferral cap I built does not and cannot stop that
@@ -686,12 +761,13 @@ Concretely: keep §0 (the canonical sets), §0b, §K (the module graph), §L (pi
 the task table and the probe list in the phase plan — the parts that are settled, cross-cutting,
 and small — and move §B/§C/§E/§F/§G/§H/§I per-task detail into the task PR that implements it,
 where code and probes answer the questions instead of prose. That is what Phase 3 and Phase 4
-did, and their plans cleared in two and three rounds. Until the owner decides, this head fixes
-all eleven findings as written.
+did, and their plans cleared in two and three rounds. This head still fixes all six of its own
+findings as written; the split moves text, it does not answer findings.
 
-`origin/main` was merged into this branch on the round-5 head (PR #254, ranged pnpm
-overrides); the branch was `behind`, not conflicted, and is up to date at this head.
+`origin/main` was merged into this branch on the round-5 head (PR #254, ranged pnpm overrides)
+and again on this head (PR #253 the bounded-review mechanism, PR #254, PR #249). Both times the
+branch was `behind`, not conflicted — the two merges touched no file this PR changes.
 
-Gates: `pnpm test:automation` 111/111 — the count is unchanged from round 4 because #253's
-probes live on its own branch and have not merged. Docs-only diff, so no product surface is
-touched; `pnpm check` is unchanged by construction.
+Gates: `pnpm test:automation` **119/119** (111 before the merge; #253's eight probes arrive with
+it). The PR's cumulative diff is two documentation files, so no product surface is touched and
+`pnpm check` is unchanged by construction.
