@@ -97,14 +97,49 @@ both would be compared against `qty + approvedOverage` in one bound and against 
 certificate in another, and whichever unit the implementation picked, the other bound would
 silently compare rupees to units. A set carries exactly one unit.
 
-**LIVE**, for both billed sets: the bill version is not superseded AND the bill status is
-neither `draft` nor `rejected`. NOT "every earlier non-rejected line" (double-counts a
-retained amended version as 200). NOT "`submitted` only" — a first claim that advances to
-`verified` would drop out of the fold and a second claim for the same quantity would pass.
-Live spans the whole post-submission lifecycle.
+**LIVE**, for both billed sets: the bill version is not superseded, the bill status is
+neither `draft` nor `rejected`, AND it is not an unresolved `disputed` version. NOT "every
+earlier non-rejected line" (double-counts a retained amended version as 200). NOT
+"`submitted` only" — a first claim that advances to `verified` would drop out of the fold and
+a second claim for the same quantity would pass. Live otherwise spans the whole
+post-submission lifecycle.
+
+**Why `disputed` is excluded.** §E's own exception path is what creates it: 100 accepted, a
+120-unit bill submitted, verification records `qty-over-accepted` and moves the bill to
+`disputed`. If that version stayed live it would violate `BILLED_QTY ≤ ACCEPTED` on the spot
+and reserve 120 of 100 units, so the honest corrected 100-unit claim could never be
+submitted — the dispute would block its own resolution. A disputed version is a rejected
+CLAIM whose history is retained, not an outstanding one. It re-enters the fold only when
+resolved into a new live version. (The alternative — hard-rejecting an over-bound submission
+before it becomes live — was considered and refused: it destroys the record of what the
+vendor actually claimed, which is the evidence the dispute is about.)
 
 | `CERTIFIED(bill)` | the LIVE certificate only | not Σ over superseded certificates, which double-counts a corrected certification and either blocks a valid correction or overstates the forecast |
-| `COMMITTED(costHead)` | the OUTSTANDING obligation: Σ `committedAmountBase` over attributions whose PO version is LIVE, MINUS the portion already consumed AND MINUS the portion released — for a material line the consumed part is the PRORATED LANDED amount for `ACCEPTED` (`committedAmountBase × ACCEPTED / qty`), NOT `rate × ACCEPTED`, because `committedAmountBase` includes tax and freight and rate-only leaves that remainder stranded; for a LABOUR line the measured person-shifts at the frozen rate plus shift premium, since a labour line has measurement rather than acceptance evidence; the RELEASED part is the unreceived remainder of a version closed short (Phase-3 `pos.closeShort` / Phase-4 close-short keeps only the received portion) | not the gross frozen amount — a ₹100 PO accepted but not billed would sit in `committed` AND `received-not-billed` at once, forecasting a ₹200 obligation from a ₹100 order. The §J buckets must partition the money, not overlap it. Not "one active attribution per line": an amendment retains v1's line and issues v2's, so both attributions could be active; an attribution is superseded atomically with the PO version it describes. And a released remainder is subtracted ONCE and never added back: a ₹100 PO closed short before any receipt has ₹0 outstanding, because the practice explicitly cancelled that obligation — carrying the released ₹100 would forecast a payable for work nobody will do and nobody can bill. Closing short to zero is the deliberate way to end an obligation; the fold must honour it. |
+| `COMMITTED(costHead)` | the OUTSTANDING obligation: Σ `committedAmountBase` over attributions whose PO version is LIVE, MINUS the portion already consumed AND MINUS the portion released — for a material line the consumed part is the PRORATED LANDED amount for `ACCEPTED` (`committedAmountBase × ACCEPTED / qty`), NOT `rate × ACCEPTED`, because `committedAmountBase` includes tax and freight and rate-only leaves that remainder stranded; for a LABOUR line the measured person-shifts at the frozen rate plus shift premium, since a labour line has measurement rather than acceptance evidence; the RELEASED part is the unreceived remainder of a version closed short (Phase-3 `pos.closeShort` / Phase-4 close-short keeps only the received portion) | not the gross frozen amount — a ₹100 PO accepted but not billed would sit in `committed` AND `received-not-billed` at once, forecasting a ₹200 obligation from a ₹100 order. The §J buckets must partition the money, not overlap it. Not "one active attribution per line": an amendment retains v1's line and issues v2's, so both attributions could be active; an attribution is superseded atomically with the PO version it describes. And a released remainder is subtracted ONCE and never added back: a ₹100 PO closed short before any receipt has ₹0 outstanding, because the practice explicitly cancelled that obligation — carrying the released ₹100 would forecast a payable for work nobody will do and nobody can bill. Closing short to zero is the deliberate way to end an obligation; the fold must honour it. And it is CLAMPED AT ZERO, because `ACCEPTED` may legitimately exceed `qty`: §G permits receiving up to `qty + approvedOverage` while the Phase-3 PO snapshot froze `committedAmountBase` for `qty` alone. On a ₹100 / 100-unit line with 10 overage units accepted the raw consumed part is ₹110, so an unclamped fold reports −₹10 and that negative silently offsets OTHER cost heads' real obligations. Overage is money the practice authorised as QUANTITY, never as a frozen amount: outstanding goes to ₹0 and the overage value appears only in `received-not-billed` and the billed buckets, where it is backed by an actual bill. A negative commitment is not a discount. |
+
+### §0b. Rule → site closure (read this before writing any task)
+
+Six rounds of review on this plan produced one repeated failure that is worth naming
+structurally, because it will recur in the implementation otherwise: **a rule was stated
+correctly and then applied at one site while an identical sibling site was left alone.** Five
+of round 6's ten findings are exactly that — the amendment channel without the issuance
+channel, the measurement lock without the certification lock, the zero floor without the
+live-consumption floor, the SoD rule one task ahead of its own exception record, the consumed
+formula without the overage clamp.
+
+So each rule below is stated once with its COMPLETE site list. A task that touches any site in
+a row owes every site in that row, and the row is the acceptance criterion.
+
+| Rule | Every site that must obey it |
+|---|---|
+| Exactly one live attribution per live PO line version | `pos.issue` **and** labour PO issue (atomic with the version becoming live) · amend · cancel · close-short — all four through `CommercialParticipant`, none deferred to a later commercial command |
+| A status a guard depends on is read under that row's lock | measurement (activity/root) · certification (activity/root **and** the contributing lots **and** the PO line) · payment approval (the bill) |
+| Evidence cannot be withdrawn while a live payable fact consumes it | acceptance reversal · `ActivityWorkOutput` supersession · sign-off revert · **measurement correction** — every one asks the commercial participant first |
+| A fold that consumes a frozen amount is clamped and overage-aware | `COMMITTED` (clamp at 0) · `BILLED_TAX`/`BILLED_FREIGHT` pro-rata cap (never scale past the frozen authority) |
+| An append-only amount column is constrained to its sign | certification · payment · **every deduction and release row** (positive; the row TYPE carries direction, never a negative amount) |
+| Every declared enum member appears in the fold that uses it | `NET_PAYABLE` covers retention · advance-recovery · penalty · **`other`** |
+| Non-blank text discipline | every reason column **and** `CostHead.code`/`name`, with the complete ASCII set `btrim(x, E' \t\n\x0B\f\r')` |
+| A rule and the record that authorises its exception ship together | §I SoD **and** `SodException` both in Task 5 for certification; Task 6 adds only the payment-approval half |
 
 The shared shape: **an amendment retains history, so "every row" is never the answer; and a
 bucket balance is a current state, so it is never evidence of a past event.** A new fold
@@ -130,6 +165,12 @@ licence to write a local filter.
 - A budget line is a project-scoped PLAN with an amount and a scope key. Scope is
   `(projectId, costHead)` where `costHead` is a project-contained code from a
   commercial-owned `CostHead` table — NOT the activity id and NOT the location node.
+  Because that code is the SCOPE KEY every budget line and attribution groups under, its
+  `code` and `name` carry the repo's complete non-blank discipline at PostgreSQL —
+  `CHECK (btrim(code, E' \t\n\x0B\f\r') <> '')`, same for `name` — not merely `NOT NULL`.
+  A cost head coded `'   '` would otherwise satisfy every planned check while collecting
+  budget and commitment facts under a key no one can select, report or reconcile. Same rule
+  as the reason columns; see §0b.
   Binding budget to an activity would make a schedule edit a budget edit; the two must be
   able to move independently.
 - Budget lines are **versioned and immutable** (spec §97). A revision APPENDS a new version
@@ -155,6 +196,19 @@ and issues v2's: both attributions stay active and the committed total reads ₹
 ₹100 order. The fold is `COMMITTED(costHead)` (§0) — restricted to attributions whose PO
 version is live — and an amendment supersedes the prior attribution in the SAME transaction
 that issues the new version, so the two can never both be live.
+
+**Issuance is one of those sites, not a separate later step.** A PO version becomes live at
+`pos.issue` (and at labour PO issue), so if the first attribution is a separate commercial
+command then every newly issued order is a live, unattributed obligation until someone runs
+it: `COMMITTED(costHead)` reads ₹0 for a real ₹100 order, the budget exception never fires and
+the cash forecast is short by the whole amount. The invariant "a live line can never be
+unattributed" has to hold from the first instant the line is live, so the initial attribution
+is written through `CommercialParticipant.attribute` in the issuing transaction. The cost head
+is therefore an input to issuance when the capability is on. The alternative — keeping the PO
+version non-live until an attribution exists — was rejected: it would change Phase-3/4
+procurement lifecycle semantics for a commercial concern, and §K's whole premise is that money
+never gates operations. All four lifecycle sites (issue · amend · cancel · close-short) go
+through the same channel; see the §0b closure table.
 
 This is the Phase-4 §C lesson applied to money: a second ledger holding the same number is
 a second truth, and the two will diverge under amendment.
@@ -203,6 +257,16 @@ line**. It has a different unit, a different authority and a different lifecycle
     because an output can be superseded after a measurement is taken.
 - A correction is a new measurement carrying a signed delta and a reason, never an edit.
   The measured total is a fold, with no stored balance — the Phase-3 §C rule.
+- **A negative correction is bounded by what the fold already SUPPORTS, not merely by zero.**
+  A zero floor alone stops `MEASURED` going negative and nothing else: measure 100, certify a
+  100-unit bill, then append −50 and the fold sits at a perfectly legal 50 while a live
+  certificate for 100 stands — bound 2 is broken AFTER the payable fact exists, and the
+  certificate is append-only so nothing walks it back. So a reducing correction is refused
+  unless the result still covers live consumption: `MEASURED(poLine)` after the correction must
+  be `≥ max(0, BILLED_QTY(poLine) over live bills)`, re-derived under the same serialization as
+  the positive cap. Withdrawing measured work that a live claim rests on requires superseding
+  that certificate first — the same ordering §E requires for withdrawing accepted material.
+  A measurement correction IS an evidence-withdrawal path and belongs in that row of §0b.
 - **Material lines are not measured.** For a material PO line the accepted quantity IS the
   measurement: `ACCEPTED(poLine)` per §0 — acceptance movements net of acceptance reversals,
   read through `InventoryQuery`. A parallel manual measurement of delivered material would
@@ -227,7 +291,17 @@ that produced two rounds of findings.
 Comparing either against the full frozen figure disputes an honest partial bill; comparing
 neither lets two 50-unit bills each claim the whole ₹1,800. The cap is cumulative and
 pro-rata: `BILLED_TAX(poLine)` and `BILLED_FREIGHT(poLine)` (§0) may not exceed the frozen
-amount scaled by `BILLED_QTY / qty`, with §A's rounding applied once at the line.
+amount scaled by `min(BILLED_QTY, qty) / qty`, with §A's rounding applied once at the line.
+
+**The `min` is load-bearing, because §G lets material billing reach `qty + approvedOverage`.**
+Scaling by raw `BILLED_QTY / qty` on a 100-unit / ₹1,800-tax line with 10 overage units gives
+a ₹1,980 cap — ₹180 of tax authority nobody ever froze. Phase-3 overage approval records a
+QUANTITY and a reason; it does not snapshot extra landed amounts, so there is no ordered
+commercial figure to compare the extra against, and certifying it would be certifying against
+no evidence. The cap therefore stops at the frozen ordered amounts and any tax or freight on
+overage units is an EXPLICIT charge: a `rate-mismatch`/`tax-mismatch` exception until the
+overage is re-approved as an amendment that freezes its own landed amounts. This is the same
+clamp as `COMMITTED`'s, at the second site — see §0b.
 
 The verdict is `matched | exception`, with each exception naming its own kind
 (`qty-over-ordered`, `qty-over-accepted`, `rate-mismatch`, `tax-mismatch`,
@@ -251,8 +325,18 @@ in this stable order to stay deadlock-free:
    `InventoryParticipant.lockAcceptedEvidence(tx, poLineId)`
 3. the PO line (`FOR UPDATE`)
 4. for labour, the contributing measurements and their cited work outputs
+5. **for labour, the activity/root row each contributing measurement rests on**, through
+   `ActivityParticipant` in the same order `revertSignOff` takes it
 
 and re-reads every side inside that lock before deciding.
+
+Step 5 is not covered by step 4. A measurement can be old and entirely valid while the
+sign-off underneath it is withdrawn concurrently: certification starts from that measurement,
+a closing-inspection rejection reverts the activity to `in_progress` — and the commercial
+participant it asks sees no live certificate yet, so it correctly allows the revert — then
+certification commits, never having serialized on the status it depends on. The bill is payable
+for work whose sign-off no longer stands. §D takes this lock for MEASUREMENT; certification is
+the second site that reads the same status and needs the same lock. Both appear in §0b.
 
 **The converse direction needs a channel too.** Recomputing on bill-side transitions cannot
 see an inventory correction that lands AFTER certification: inventory does not depend on
@@ -350,7 +434,11 @@ serializing is not an invariant.
 2. `BILLED_QTY(poLine)` ≤ `ACCEPTED(poLine)` (materials) / `MEASURED(poLine)` (labour)
 3. `CERTIFIED(bill)` ≤ `BILLED_AMOUNT(bill)` — the BILL-scoped set (§0), never the po-line one
 4. `Σ approved-for-payment` ≤ `NET_PAYABLE(bill)` = `CERTIFIED(bill)` − unreleased deductions
-   (§H fold: retention + advance recovery + penalties, minus releases)
+   (§H fold over EVERY declared type: retention + advance-recovery + penalty + `other`, minus
+   releases for the types that support release). All four, because §H declares four: omitting
+   `other` from the fold makes a ₹10 `other` deduction informational — the bill still approves
+   and pays the gross ₹100 — which is the one thing a deduction must never be. A type that
+   exists in the enum and not in the fold is a withholding that withholds nothing.
 5. `Σ paid` ≤ `Σ approved-for-payment`
 
 Bound 4 is NET, not gross. Capping approval at the gross certificate would let a ₹100
@@ -369,7 +457,16 @@ bill for material that never arrived or work never measured.
 
 - A deduction is a **ledger row against a certification**, never a column on it. Types:
   `retention`, `advance-recovery`, `penalty`, `other`. Each carries an attributable actor, an
-  amount, and — for `other` and every penalty — a reason.
+  amount, and — for `other` and every penalty — a reason. Every one of the four is in the
+  `NET_PAYABLE` fold (§G bound 4).
+- **Amounts are strictly positive, at PostgreSQL and in the service; the row TYPE carries
+  direction.** Direction is already modelled — a withholding is a deduction row and a release
+  is its own append-only row — so a negative amount encodes the same thing twice and the two
+  encodings disagree. A `-10` retention makes `NET_PAYABLE = CERTIFIED − (−10)` raise a ₹100
+  certificate to ₹110: a deduction that PAYS OUT more, sealed append-only so the inflated
+  payable cannot be corrected in place. `CHECK (amount > 0)` on deduction and release rows
+  alike, with releases separately bounded by the unreleased balance of their own deduction (an
+  over-release is already refused). This is the sign-constraint row of §0b, at its third site.
 - **Deduction rows are append-only at PostgreSQL, exactly like certificates, approvals and
   payments**, and they join §F's append-only list. They determine `NET_PAYABLE` directly, so
   a row that could be updated or deleted is a withholding that never withheld anything: on a
@@ -516,19 +613,29 @@ draft → CI → exact-head Codex gate.
 | 2 | `CommitmentAttribution` over the EXISTING frozen committed amounts (§C) + budget-vs-committed exception + Inbox action | — |
 | 3 | `Measurement` (§D) — immutable, delta corrections, activity sign-off gate, material lines read acceptance instead | **STOP** — narrow review before any bill can consume a measurement |
 | 4 | `VendorBill` + lines + immutable versions + the §F CAS lifecycle **up to `under-verification`** + §G bounds 1–2 | — |
-| 5 | Three-way verification (§E) — and therefore the `verified` transition itself — + dispute/resolution + certification + §G bound 3 + §H deduction ledger + **the §I measurer/acceptor-vs-certifier SoD rule** | **STOP** — narrow review before payment authority exists |
+| 5 | Three-way verification (§E) — and therefore the `verified` transition itself — + dispute/resolution + certification + §G bound 3 + §H deduction ledger + **the §I measurer/acceptor-vs-certifier SoD rule AND the `SodException` record with its seals** | **STOP** — narrow review before payment authority exists |
 
 Task 4 deliberately stops SHORT of `verified`. `verified` is the state whose safety is the
 §E verdict, so shipping the transition in Task 4 while §E lands in Task 5 would let a bill
 reach `verified` before the ordered/accepted/billed comparison exists — and pulling §E
 forward into Task 4 would bypass the Task-5 review stop that guards it. The transition
 belongs to the task that produces its evidence.
-| 6 | Payment approval + payment records + §G bounds 4–5 + the certifier-vs-approver SoD rule, approval limits and the exception record | — |
+| 6 | Payment approval + payment records + §G bounds 4–5 + the certifier-vs-approver SoD rule and approval limits — the PAYMENT half of §I only | — |
 
 A control ships in the task that creates the transition it guards. The certification SoD
 rule cannot wait for Task 6: a certificate is append-only and is already the payable basis,
 so a self-certified one written in Task 5 could not be invalidated by a rule added later.
 The same reasoning puts `verified` in Task 5 rather than Task 4.
+
+**And a rule's exception record ships with the rule, not one task later.** §I permits a
+stronger authority to override, and that override is only legitimate because it writes a
+sealed `SodException`. Leaving the record in Task 6 gives Task 5 two bad options: silently
+ban the override — which a two-person practice cannot operate under, and which §I explicitly
+refuses — or write an unsealed authority row before its seals exist, which is the very state
+§I's seals were added to prevent. So Task 5 ships the certification SoD rule AND the
+`SodException` table, CHECKs, append-only trigger and FK; Task 6 adds only the
+payment-approval half of the same rule, reusing the record. This is the last row of §0b, and
+the same reasoning as `verified` belonging to Task 5.
 | 7 | Cash-forecast projection (§J) + frontend hub (§M) + pilot acceptance chain + consolidated Phase-5 packet | **FINAL STOP** |
 
 Task 3 and Task 5 stops are mandatory: measurement is the fact every downstream amount
@@ -616,6 +723,37 @@ rests on, and certification is the last point before money becomes payable.
 5aa. §I exception seals: PG rejects UPDATE and DELETE of a `SodException`; a whitespace-only
    reason is rejected; an exception written outside the override's transaction, or pointed at
    a second certificate, is refused — one exception authorizes one fact.
+5ab. §0b closure — one probe per row, because five of round 6's ten findings were a rule
+   applied at one site with an identical sibling left alone:
+   - **attribution at all four sites**: `pos.issue` and labour PO issue each leave exactly one
+     live attribution and `COMMITTED` equal to the order the instant the version is live
+     (never ₹0 pending a later command); amend/cancel/close-short as probe 5y already covers.
+   - **overage clamps at both sites**: a ₹100 / 100-unit line with 10 overage units accepted
+     leaves `COMMITTED` at ₹0, never −₹10, and no other cost head's obligation moves; the same
+     line's tax cap stays at the frozen ₹1,800, never ₹1,980, and overage tax raises an
+     exception instead of certifying.
+   - **the sign-off lock at both sites**: probe 5k covers measurement; the certification twin
+     runs the same barrier — a rejection committing mid-certification can never leave a
+     certified bill resting on a withdrawn sign-off, and the lock order matches `revertSignOff`
+     so neither ordering deadlocks.
+   - **withdrawal checks at all four paths**: acceptance reversal (5j), output supersession and
+     sign-off revert (5q), and now a measurement correction — measure 100, certify 100, then
+     −50 is REFUSED naming the certificate; superseding the certificate first permits it; a
+     −50 with no live claim succeeds and floors at zero (5n).
+   - **positive amounts on every append-only money row**: a `-10` deduction and a `-10` release
+     are both rejected by PG; `NET_PAYABLE` on a ₹100 certificate with a ₹10 retention is ₹90,
+     never ₹110.
+   - **every enum member in its fold**: a ₹10 `other` deduction reduces the approval cap to
+     ₹90, exactly like retention, advance-recovery and penalty.
+   - **non-blank at both sites**: a `CostHead` coded `'   '` (and one named `'\t'`) is rejected
+     by PG, alongside the reason columns of 5v.
+   - **rule and exception record in one task**: the Task-5 acceptance test exercises an
+     org-admin override end to end — refusal without authority, success with it, and the sealed
+     `SodException` present — with no Task-6 code in the tree.
+5ac. §0 `disputed`: 100 accepted, a 120-unit bill submitted → `qty-over-accepted` and
+   `disputed`, and that version leaves the live fold, so an honest corrected 100-unit claim
+   submits and passes; the disputed version is still readable as history and its claimed 120
+   is still visible on the dispute.
 5g. §0 set identity: for each of the six sets, the "must NOT be" column is a probe — the
    80/20 acceptance, the accept-then-issue, the adjust-into-bucket, the amended bill, the
    advanced-lifecycle bill, the superseded certificate and the amended PO commitment each

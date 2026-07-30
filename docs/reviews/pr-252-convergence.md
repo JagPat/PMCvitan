@@ -294,10 +294,50 @@ anything precisely because that distinction cannot be drawn mechanically. Had #2
 live at round 4, these five would still have had to be answered: a deferral names the probe
 and the task, it does not close a finding.
 
+## Round 6 (head `8354a5f`) — ten findings, and the one that names them all
+
+Ten P2s. Nine are mechanism defects with definite right answers; one (the `CostHead` non-blank
+CHECK) is specify-further and also correct and one line. So the round-4 commitment to REPORT a
+sixth round rather than correct it does not apply — it was scoped to a round whose findings are
+all "the plan should also specify X", and invoking it here would be using an escape written for
+a different case.
+
+**Five of the ten are sites I left broken while fixing an identical sibling in round 5.** That
+is the finding that matters:
+
+| Round-5 fix | Sibling site it missed |
+|---|---|
+| procurement→commercial channel for amend/cancel/close-short | `pos.issue` — a newly issued PO is live and unattributed, so `COMMITTED` reads ₹0 for a real order |
+| `COMMITTED` released-remainder arithmetic | no clamp — overage acceptance drives it to −₹10 and offsets other cost heads |
+| `activities` participant edge for MEASUREMENT | certification reads the same sign-off status without the same lock |
+| `MEASURED` floored at zero | not floored at live consumption — −50 after a certified 100 breaks bound 2 after the payable fact exists |
+| `SodException` sealed | still scheduled one task after the rule that needs it |
+
+The remaining five are ordinary defects: `disputed` staying live so a dispute blocks its own
+resolution; the pro-rata tax cap scaling past frozen authority on overage units; deduction
+amounts unconstrained so `-10` inflates net payable; `other` declared in §H and absent from the
+`NET_PAYABLE` fold; the blank cost-head code.
+
+### The remedy: §0b, a rule → site closure table
+
+Ten more local edits would reproduce the cause. The plan now carries **§0b** — each rule stated
+once with its COMPLETE site list, and the row IS the acceptance criterion for any task touching
+any site in it. Eight rows: attribution lifecycle (four sites), status-under-lock (three),
+evidence withdrawal (four), frozen-amount clamps (two), append-only sign constraints (three),
+enum-member-in-fold, non-blank text (two), rule-ships-with-its-exception-record. Probe 5ab is
+one probe per row rather than one per finding.
+
+This is the third layer of the same cause. #252 round 1: "which rows count?" answered locally at
+each fold — remedied by §0's named sets. #253: "which paths count?" answered by whichever field
+was nearest — remedied by two definitions. Round 6: "which SITES does this rule bind?" answered
+by whichever site the finding pointed at. Named sets stopped me writing the wrong fold; they did
+not stop me writing the right fold in one place and not the other. §0b is the site-level
+counterpart.
+
 ## Termination, and what happens next
 
-Six finding-bearing heads: 8, 8, 7, 7, 9, 5 — forty-nine findings, every one correct and none
-contradicted by a later round. Round 3's packet recorded the recommendation to hand the
+Seven finding-bearing heads: 8, 8, 7, 7, 9, 5, 10 — fifty-nine findings, every one correct and
+none contradicted by a later round. Round 3's packet recorded the recommendation to hand the
 remainder to probes; the owner approved it and asked for the process to be fixed so this does
 not recur.
 
@@ -307,20 +347,28 @@ converted into named probes plus the task that settles them. It is under review 
 reads `main`'s copy of its scripts, so the deferral is not yet enforceable here — which is
 precisely why this head fixes all nine rather than asserting an exit it cannot yet take.
 
-The deferral ledger for this plan is the probe list itself: 5g–5aa are executable the moment
-Task 1 exists, and every finding from rounds 2–5 maps to one of them. Once #253 merges, this
+The deferral ledger for this plan is the probe list itself: 5g–5ac are executable the moment
+Task 1 exists, and every finding from rounds 2–6 maps to one of them. Once #253 merges, this
 PR closes through that route with `Review-Deferred-To-Probes: phase-5-task-1`.
 
-Round 4's packet said I would report rather than answer a sixth PROSE round. Round 5 was not
-that: five mechanism defects with right answers, so answering them was the correct call and
-that commitment did not apply. It still stands for its actual case — a round whose findings
-are all "the plan should also specify X" gets reported, not another correction.
+Round 4's packet said I would report rather than answer a sixth PROSE round. Neither round 5
+nor round 6 was that: mechanism defects with right answers, so answering them was correct and
+the commitment did not apply. It still stands for its actual case — a round whose findings are
+all "the plan should also specify X" gets reported, not another correction. **What I will not
+do is invoke it against a round of real defects because the round number matches.**
 
-**No deferral trailer on this head.** All five findings are FIXED here, and claiming a
-deferral while fixing everything would misdescribe what happened.
+**No deferral trailer on this head.** Every finding is FIXED here, and claiming a deferral
+while fixing everything would misdescribe what happened.
 
-`origin/main` is merged into this branch in the same push (PR #254, ranged pnpm overrides) —
-the branch was `behind`, not conflicted.
+An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
+the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10) but their KIND has narrowed, from
+"which rows count?" architecture in round 1 to a wrong sign on a deduction column in round 6.
+Round 6's real content is not ten separate problems; it is one problem — I fix instances, not
+classes — and §0b is the structural answer. Whether that holds is a question the next round
+answers, not this packet.
+
+`origin/main` was merged into this branch on the round-5 head (PR #254, ranged pnpm
+overrides); the branch was `behind`, not conflicted.
 
 Gates: `pnpm test:automation` 111/111 — the count is unchanged from round 4 because #253's
 probes live on its own branch and have not merged. Docs-only diff, so no product surface is
