@@ -555,6 +555,9 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Does the status derivation tell unapproved payable from approved-not-paid, never inventing an approval? | probe 5bn | phase-5-task-6 |
 | Does labour close-short refuse to move the ordered line below what is already MEASURED? | probe 5bo | phase-5-task-3 |
 | Is cumulative advance recovery capped at the advance actually PAID? | probe 5bp | phase-5-task-6 |
+| Is `NET_PAYABLE` floored at zero by a guard on the DEDUCTION, not only on the approval? | probe 5br | phase-5-task-5 |
+| Does a zero-net certificate reach a terminal status rather than stranding? | probe 5bs | phase-5-task-6 |
+| Can a VERIFIED uncertified claim be disputed when its evidence is withdrawn? | probe 5bt | phase-5-task-4 |
 | Does the over-budget exception fire from commitments AND budget revisions AND re-attributions? | probe 5bq | phase-5-task-2 |
 | Does the duplicate-document index release on `rejected`/`resolved` so a corrected resubmission is possible? | probe 5bj | phase-5-task-4 |
 | Does a retention release re-derive payment status, so `paid` cannot stand with cash owed? | probe 5bk | phase-5-task-6 |
@@ -889,10 +892,33 @@ range still ended at `5bo` while the probes had reached `5bq` — a hardcoded bo
 which is precisely what probe 5g warns about and what round 15's `5be` count already taught. Both
 corrected; the row parser now tolerates qualifiers and the range follows the letters.
 
+### Round 17 addendum — three more findings on the same head, arriving after the correction
+
+Three further comments landed on `c0cc9d8` AFTER I had pushed round 17's correction. They belong to
+that head's count, not to a new one: `c0cc9d8` received ten findings, not seven. All three were
+verified still present in the round-17 tree and fixed on the same head as this addendum.
+
+| Finding | Fix |
+|---|---|
+| a ₹150 penalty on a ₹100 certificate drives `NET_PAYABLE` to −₹50 | the floor is a guard on the DEDUCTION, refusing any row that would exceed the live certificate's withholdable balance (probe 5br) |
+| a zero-net certificate can never leave `certified` | `NET_PAYABLE = PAID → paid` is evaluated FIRST; with strictly-positive approval and payment rows, no legal row could otherwise advance it (probe 5bs) |
+| the withdrawal guard disputes a `verified` claim, but §F has no such arrow | `verified → disputed` added, with the reason: rejection judges the claim, a dispute says its evidence moved (probe 5bt) |
+
+The zero-net defect is mine from round 16 — the same table, ordered so that its guard against
+inventing an approval strands a bill with nothing left to pay. Fixing the overstatement created an
+understatement two arms away, which is the round-16 "overshooting rather than undershooting" note
+recurring inside the same table.
+
+**On timing, stated plainly:** a Codex review of `52f6049` was already in flight when these arrived.
+Pushing supersedes it and costs a review round. I pushed anyway, because all three are verified
+correctness defects in the plan text and a clean verdict on `52f6049` would have queued auto-merge
+with them still in. Spending a round is recoverable; merging a status table that permanently strands
+a settled bill is not.
+
 ## Termination, and what happens next
 
-Eighteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8, 7 — **one
-hundred and forty-three** findings. One hundred and forty-two were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
+Eighteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8, 10 — **one
+hundred and forty-six** findings. One hundred and forty-five were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
 in the round-10 section above with the passing check-run cited. (The round-7 packet said "sixty-six" for the
 first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
 forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
@@ -949,7 +975,7 @@ paragraph replaces the round-10 and round-11 wording rather than sitting beside 
 11's own rule.
 
 An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
-the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8, 7) but their KIND has narrowed and
+the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12, 6, 11, 7, 8, 10) but their KIND has narrowed and
 round 8 finally names the mechanism. Rounds 1–6 read as "I fix instances, not classes." Round 7
 read as "prose has no compiler." Round 8 is more specific and more actionable than either: **the
 recurring defect is a rule with two written statements, and every one of them was created by a

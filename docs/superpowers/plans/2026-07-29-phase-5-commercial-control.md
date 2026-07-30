@@ -590,11 +590,22 @@ responsible review."
 
 ```text
 draft → submitted → under-verification → { verified | disputed }
+verified  → disputed                     (evidence withdrawn under a live UNCERTIFIED claim)
 disputed → resolved                      (terminal; resolution supersedes into a NEW version)
 verified → certified → approved-for-payment → { part-paid → paid }
 paid | part-paid → (payment reversal) → RE-DERIVED from PAID vs APPROVED, never left stale
 draft | submitted | under-verification |
   disputed | verified → rejected            (attributable reason required)
+
+`verified → disputed` exists because the §E/§G withdrawal guard needs somewhere to put a claim it
+invalidates. A `verified` bill is LIVE and UNCERTIFIED, so reversing accepted material under it
+must dispute it — and an earlier revision of the lifecycle offered only `under-verification →
+disputed`, which left two bad options: follow the lifecycle and leave a verified bill live with
+`BILLED_QTY > ACCEPTED` (§G bound 2 broken with no state that says so), or use `verified →
+rejected` and throw the vendor's claim out of the retained dispute path instead of returning it for
+correction. Rejection is a JUDGEMENT about the claim; a dispute is a statement that its EVIDENCE
+moved. Those are different facts and the withdrawal guard is making the second one. `disputed`
+remains terminal — correction is a new version, per §0.
 ```
 
 **Payment status is DERIVED, and a reversal re-derives it under CAS.** The forward arrows above
@@ -626,11 +637,22 @@ therefore participate, in this order:
 
 | Condition | Status |
 |---|---|
-| `APPROVED = 0` (whatever `NET_PAYABLE` is) | `certified` — payable, not yet approved |
+| `NET_PAYABLE = PAID` | `paid` — nothing remains payable. THE FIRST ARM, and the only terminal one |
+| `APPROVED = 0` | `certified` — payable, not yet approved |
 | `PAID = APPROVED < NET_PAYABLE` | `certified` — the approved portion is settled; what remains is UNAPPROVED, not unpaid |
 | `PAID = 0 < APPROVED` | `approved-for-payment` |
 | `0 < PAID < APPROVED` | `part-paid` |
-| `PAID = APPROVED = NET_PAYABLE` | `paid` — the only terminal arm |
+
+**`NET_PAYABLE = PAID` is evaluated FIRST, and that ordering is load-bearing.** An earlier revision
+put `APPROVED = 0` first and made `PAID = APPROVED = NET_PAYABLE` the terminal arm, which strands a
+fully-offset certificate forever: certify ₹100 and offset it entirely with a ₹100 advance-recovery
+and `NET_PAYABLE = APPROVED = PAID = 0`, so the `APPROVED = 0` arm wins and the bill sits at
+`certified` — while approval and payment rows are STRICTLY POSITIVE (§H), so there exists no legal
+row anyone can write to advance it. A bill with nothing left to pay is settled, and the status has
+to be able to say so. Asking "is anything still payable?" before "has anything been approved?"
+answers both cases with one comparison: a ₹0 net bill is `paid` with no cash movement (the state
+means nothing remains payable, not that money was sent), and the ₹95-net/₹90-paid bill from the
+release case is still `certified` because ₹5 remains — which is what probe 5bk pins.
 
 `deductions.release` performs that same CAS re-derivation in its own transaction, under the bill
 lock, exactly as `payments.reverse` does. One derivation, every writer that can move ANY of the
@@ -818,6 +840,18 @@ bill for material that never arrived or work never measured.
   payable cannot be corrected in place. `CHECK (amount > 0)` on deduction and release rows
   alike, with releases separately bounded by the unreleased balance of their own deduction (an
   over-release is already refused). This is the sign-constraint row of §0b, at its third site.
+- **`NET_PAYABLE` has a floor of zero, and the guard is on the DEDUCTION, not on the approval.**
+  Positive rows and bound 4 together still admit a ₹150 penalty against a ₹100 certificate: every
+  row is positive, so the CHECKs pass; bound 4 only stops a later APPROVAL from exceeding
+  `NET_PAYABLE`, which a negative number satisfies trivially; and `NET_PAYABLE = −₹50` then flows
+  into the §F status derivation and the §J `certified-payable` bucket as negative payable money.
+  Phase 5 models deductions as WITHHOLDINGS against a payable — money not yet released — and not as
+  a vendor receivable or credit note, so there is nothing for a withholding beyond the certificate
+  to withhold FROM. Under the bill lock, then, a deduction insertion is REFUSED when cumulative
+  unreleased deductions would exceed the live certificate amount, naming the remaining withholdable
+  balance; recovering more than a certificate carries is a matter for the NEXT certificate, where
+  the money to withhold exists. Same shape as the `PAID` floor in §F: the refusal sits on the write
+  that would break the invariant, not on a downstream reader of it.
 - **A deduction cannot be appended after an approval has already consumed the net payable.**
   Certify ₹100, approve ₹100, then append a ₹10 penalty and `NET_PAYABLE` drops to ₹90 while the
   live approved total stays ₹100 — bound 4 broken AFTER the approval fact exists, and both rows
@@ -1431,6 +1465,21 @@ SECTION is right and the probe is the defect.
    (approved portion settled, remainder unapproved) and NOT to `paid` or `approved-for-payment`;
    and `PAID = APPROVED = NET_PAYABLE` is the only route to `paid`. RED against a derivation that
    maps any `NET_PAYABLE > APPROVED` to `approved-for-payment`.
+5br. §H `NET_PAYABLE` never goes negative: on a ₹100 certificate, a ₹150 penalty is REFUSED naming
+   the withholdable balance, ₹100 is PERMITTED (`NET_PAYABLE = 0`), a further ₹1 is REFUSED, and
+   after releasing ₹40 a ₹40 deduction is PERMITTED again — the cap is on unreleased deductions, not
+   on the lifetime total. RED against a plan where only bound 4 guards the approval, which a
+   negative `NET_PAYABLE` satisfies.
+5bs. §F a zero-net certificate reaches a TERMINAL status: certify ₹100 and offset it entirely with
+   a ₹100 advance-recovery → `NET_PAYABLE = APPROVED = PAID = 0` derives `paid` (nothing remains
+   payable), NOT `certified`; and since approval and payment rows are strictly positive there is no
+   legal row that could have advanced it, so the ordering is the only thing that can. RED against a
+   table whose first arm is `APPROVED = 0`, which strands the bill permanently.
+5bt. §F a VERIFIED uncertified claim can be disputed: with a 100-unit bill at `verified` and no
+   certificate, reversing the acceptance moves the bill to `disputed` (never left live with
+   `BILLED_QTY > ACCEPTED`, and never `rejected`, which would drop it out of the correction path);
+   the same reversal against a CERTIFIED bill is REFUSED naming the certificate. RED against a
+   lifecycle offering only `under-verification → disputed`.
 5bp. §H advance recovery cannot exceed the advance PAID: with a ₹100 advance paid, a cumulative
    ₹150 `advance-recovery` is REFUSED naming the recoverable balance, ₹100 is PERMITTED, and a
    further ₹1 after that is REFUSED — the fold is `Σ advance − Σ advance-recovery` with no stored
