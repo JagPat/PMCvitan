@@ -140,8 +140,13 @@ test('inferRequiredChecksFromRuns matches the docs-fast path from check history'
     completed_at: '2026-07-30T10:00:00Z',
     html_url: 'https://github.com/o/r/actions/runs/1/job/1',
   });
+  // The inference reads the CURRENT attempt, which is the newest one whose gates
+  // ALL passed, so a realistic fixture carries them. A head with no completed
+  // gates has declared no battery at all — pinned as fail-closed below.
+  const gateJobs = [job('review-scope'), job('battery-plan')];
   assert.deepEqual(
     inferRequiredChecksFromRuns(300, [
+      ...gateJobs,
       job('automation'),
       ...['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'].map((name) =>
         job(name, 'skipped')),
@@ -149,7 +154,17 @@ test('inferRequiredChecksFromRuns matches the docs-fast path from check history'
     DOCS_FAST_CHECKS,
   );
   assert.deepEqual(
-    inferRequiredChecksFromRuns(300, [job('web'), job('automation', 'skipped')]),
+    inferRequiredChecksFromRuns(300, [...gateJobs, job('web'), job('automation', 'skipped')]),
+    REQUIRED_CHECKS,
+  );
+  // No attempt has completed its gates: nothing declared a battery, so the
+  // inference must not read a docs-fast path out of skipped product jobs.
+  assert.deepEqual(
+    inferRequiredChecksFromRuns(300, [
+      job('automation'),
+      ...['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'].map((name) =>
+        job(name, 'skipped')),
+    ]),
     REQUIRED_CHECKS,
   );
 });

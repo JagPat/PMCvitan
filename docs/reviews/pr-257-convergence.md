@@ -2,8 +2,8 @@
 
 **PR:** #257 · *Loop efficiency: docs-only fast CI + phase plan skeleton limit*
 **Branch:** `claude/loop-efficiency-fast-path` · **Base:** `main` `a16e68c`
-**Finding-bearing heads:** `c7913a9` (findings 1–4), `596fa99` (findings 5–8)
-**Convergence head:** this commit, from `752968f`
+**Finding-bearing heads:** `c7913a9` (findings 1–4), `596fa99` (findings 5–8), `e9feaf7` (findings 9–10)
+**Convergence head:** this commit, from `e9feaf7`
 
 Two finding-bearing heads answered eight Codex findings with isolated patches.
 Per `AGENTS.md`, ordinary patching stops there: this head is ONE batched
@@ -158,9 +158,62 @@ timed out waiting for product jobs the workflow had deliberately skipped.
   (a new head is classified afresh), `C3d` (separate clients do not share a
   cache).
 
+### Finding 9 — P1, `e9feaf7`: infer the battery path from the current attempt
+
+*Codex:* with the file list unreadable, `inferRequiredChecksFromRuns` treated any
+non-skipped product run anywhere in the SHA's history as proof of the product
+path. With attempt 600 green on products, attempt 700 docs-fast with green gates
+and skipped products, and attempt 700's `automation` not yet finished, it returned
+the product battery; `summarizeRequiredChecks` then accepted attempt-600 products
+because 700's skips are intentional, so `codex-current-head` could go green while
+current automation evidence was still missing.
+
+- **Root cause: concept 2 again, at the attempt level.** The inference was scoped
+  to the head but not to the attempt, so evidence from a merge result nobody is
+  asking about answered a question about the current one.
+- **Correction:** `currentBatteryAttempt` selects the newest attempt whose gates
+  ALL passed — gates run first and launch the rest, so their completion dates the
+  merge result the attempt tests, and an aborted attempt decides nothing.
+  `inferRequiredChecksFromRuns` reads only that attempt's runs. Every undecided
+  path lands on a required check the current attempt has not produced, so the
+  summary reports missing/pending and the gate waits:
+  current attempt has real products → product battery; skipped products →
+  `DOCS_FAST_CHECKS` (whether or not its `automation` has appeared, because when it
+  has not, `automation` is required and only older attempts have runs of it, which
+  the automation watermark supersedes); no products at all → product battery, whose
+  watermark is the current attempt's gate stamp; no attempt with passing gates →
+  product battery.
+- **Evidence:** `E1` (the finding's exact interleaving: `DOCS_FAST_CHECKS`, not
+  success, awaiting `automation`), `E1b` (current attempt with real products →
+  product battery), `E1c` (failed gate ⇒ no current attempt ⇒ fail closed), `E1d`
+  (retarget window stays pending), `E1e` (a complete docs-fast attempt IS accepted,
+  so the fix is precise and not merely strict).
+
 ## Reproduce-first evidence
 
-`scripts/loop-efficiency-convergence.test.mjs`, 10 tests, all GREEN on this head.
+`scripts/loop-efficiency-convergence.test.mjs`, 18 tests, all GREEN on this head.
+
+### Finding 9 (this round)
+
+Run against `e9feaf7` with `scripts/autonomous-review-gate.mjs` stashed to that
+head, through a harness importing only surfaces that exist there:
+
+```
+not ok 1 - E1/RED: current-attempt inference must not accept older product evidence
+# tests 1 / # pass 0 / # fail 1
+```
+
+and after restoring the correction:
+
+```
+ok 1 - E1/RED: current-attempt inference must not accept older product evidence
+# tests 1 / # pass 1 / # fail 0
+```
+
+Directly observed on the same fixture: at `e9feaf7` the inference returns the
+seven-check product battery and `summarizeRequiredChecks` reports **`success`**;
+on this head it returns `DOCS_FAST_CHECKS` and reports **`pending`** with
+`automation` missing.
 
 The two open items are provable against the base source directly. With
 `scripts/autonomous-review-gate.mjs` stashed back to `752968f`:
@@ -187,10 +240,31 @@ The sanity assertion passing at base matters: it shows the base gate was not
 broken outright, so the three failures are the specific defects and not a module
 that fails to load.
 
-The five closed findings are pinned rather than reproduced. Writing a RED
-fixture for a defect that is already fixed would mean reverting the fix to
-manufacture one; the honest artifact is a test that fails if the fix is ever
-removed, which is what `C1`, `C1b`, `C1c` and `C2c` are.
+### The five earlier findings — RED-before-fix proof
+
+An earlier revision of this packet said the five findings closed at `752968f`
+were "pinned rather than reproduced", and argued that manufacturing a RED for an
+already-fixed defect would mean reverting the fix. Codex flagged that (P2 on
+`e9feaf7`) and was right: **a green pin proves the current state is correct; it
+does not prove the assertion discriminates.** A broken watermark or inference
+correction could have been carried forward on the strength of a pin that would
+have passed either way. That is exactly the hole reproduce-first exists to close.
+
+`R1`, `R2` and `R3` close it without reverting anything. Each implements the
+PRE-FIX algorithm and runs it against the SAME fixture the pin uses, asserting it
+produces the unsafe answer, then asserts the shipped code produces the safe one.
+The RED and the GREEN are in one test, so the discrimination is demonstrated
+rather than asserted:
+
+| Proof | Pre-fix behaviour demonstrated | Shipped behaviour |
+| --- | --- | --- |
+| `R1` (findings 1/5/7) | `legacyGateWatermarks` — one character set over all battery checks, watermarks for products only: no `automation` watermark exists at all; a skipped `automation` on a code PR leaves all five product watermarks `''` (attempt-600 products accepted); skipped products on a docs retarget leave attempt-600 automation unsuperseded | automation has its own watermark; both fixtures supersede at attempt 700's gate stamp |
+| `R2` (findings 4/6) | the outer catch's `{ runProducts: true, docsFastPath: false }` — five product jobs launched, `automation` skipped, while a gate that reads the files successfully requires `automation`, a job that plan never started | the real `run()` with a failing fetch returns `{ runProducts: false, docsFastPath: false }`, writes both outputs, and fails the job |
+| `R3` (findings 2/3) | `assessPlanDocumentScope([], …)` allows — an unreadable diff read as "no plan files", so the 900-line cap vanished; and a trusted path computing no plan stats promotes a 1,200-line plan | `planFileStatsFromDiff` returns `{ unavailable: true }`, `assessPullRequestScope` blocks a post-#252 PR on it, and the oversized plan is rejected with the cap message |
+
+These three run on this head, not at `752968f` — they are differential proofs of
+the algorithms, not of a repository state, so there is no base to run them
+against. That is stated plainly rather than dressed up as a base-commit RED.
 
 One existing structural pin in `autonomous-review-workflow.test.mjs` asserted the
 old inline `pullRequestFiles = await client.pullRequestFiles(...)` line inside the

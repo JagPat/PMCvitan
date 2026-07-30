@@ -81,34 +81,67 @@ export function requiredChecksForPullRequest(pullRequestNumber, pullRequestFiles
   return REQUIRED_CHECKS;
 }
 
+// The attempt whose battery decision governs this head: the newest one whose
+// gates ALL passed. Gates run first and launch the rest of the attempt, so their
+// completion dates the merge result the attempt is testing. An attempt whose
+// gates failed aborted and decides nothing.
+export function currentBatteryAttempt(checkRuns) {
+  const runs = Array.isArray(checkRuns) ? checkRuns : [];
+  const stamps = attemptGateStamps(runs);
+  const passing = attemptsWithPassingGates(runs);
+  let current = null;
+  let newest = '';
+  for (const [attempt, stamp] of stamps) {
+    if (!passing.has(attempt)) continue;
+    if (stamp > newest) {
+      newest = stamp;
+      current = attempt;
+    }
+  }
+  return current;
+}
+
 // When the cumulative file list is unreadable, infer the battery path from the
-// head's check-run history so the gate does not require product jobs a
-// docs-fast workflow deliberately skipped (or vice versa).
+// head's check-run history so the gate does not require product jobs a docs-fast
+// workflow deliberately skipped (or vice versa).
+//
+// The inference reads the CURRENT attempt ONLY. Scanning the whole SHA history
+// let any non-skipped product run anywhere vouch for the current battery: with
+// attempt 600 green on the product path and attempt 700 docs-fast with skipped
+// products, this returned the product battery, and `summarizeRequiredChecks` then
+// accepted attempt-600's products because 700's product skips are intentional —
+// so `codex-current-head` could go green while attempt 700's own `automation`
+// evidence was still missing.
+//
+// Every undecided path lands on a required check the current attempt has not
+// produced, so the summary reports missing/pending and the gate WAITS. It never
+// resolves to a battery whose evidence belongs to an older merge result.
 export function inferRequiredChecksFromRuns(pullRequestNumber, checkRuns) {
   const runs = Array.isArray(checkRuns) ? checkRuns : [];
+  const attempt = currentBatteryAttempt(runs);
+  // No attempt has completed its gates: nothing on this head has declared a
+  // battery. Requiring the products keeps the gate waiting on the current
+  // attempt rather than reading an older one's successes as coverage.
+  if (!attempt) return productChecksForPullRequest(pullRequestNumber);
+
+  const current = runs.filter((run) => attemptOf(run) === attempt);
   const hasRealProduct = PRODUCT_CHECKS.some((name) =>
-    runs.some((run) => run?.name === name && !isSkipped(run)));
-  if (hasRealProduct) {
-    return productChecksForPullRequest(pullRequestNumber);
-  }
+    current.some((run) => run?.name === name && !isSkipped(run)));
+  if (hasRealProduct) return productChecksForPullRequest(pullRequestNumber);
 
-  const productsOnlySkippedOrAbsent = PRODUCT_CHECKS.every((name) => {
-    const named = runs.filter((run) => run?.name === name);
-    return named.length === 0 || named.every(isSkipped);
-  });
-  const automationTouched = runs.some((run) => run?.name === AUTOMATION_CHECK);
-  const hasAutomationEvidence = runs.some(
-    (run) => run?.name === AUTOMATION_CHECK && !isSkipped(run),
-  );
+  // The CURRENT attempt skipped its products, so its plan chose the docs-fast
+  // path. This holds whether or not its `automation` run has appeared yet: when
+  // it has not, `automation` is a required check whose only runs belong to older
+  // attempts, which the automation watermark supersedes — the summary reports
+  // pending and the gate waits for this attempt's own evidence.
+  const productsSkipped = PRODUCT_CHECKS.some((name) =>
+    current.some((run) => run?.name === name && isSkipped(run)));
+  if (productsSkipped) return DOCS_FAST_CHECKS;
 
-  if (
-    productsOnlySkippedOrAbsent
-    && (hasAutomationEvidence || automationTouched)
-  ) {
-    return DOCS_FAST_CHECKS;
-  }
-
-  return REQUIRED_CHECKS;
+  // The current attempt has produced no product run at all — the retarget window.
+  // Requiring products makes its gate stamp the watermark, so an older attempt's
+  // successes are superseded and the head stays pending.
+  return productChecksForPullRequest(pullRequestNumber);
 }
 
 // Identify the CI attempt a check run belongs to. `check_suite.id` is the
