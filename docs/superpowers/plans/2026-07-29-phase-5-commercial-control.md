@@ -137,7 +137,7 @@ a row owes every site in that row, and the row is the acceptance criterion.
 | A status a guard depends on is read under that row's lock | measurement (activity/root) · certification (activity/root **and** the contributing lots **and** the PO line) · payment approval (the bill) |
 | Evidence cannot be withdrawn while a live payable fact consumes it | acceptance reversal (refuse vs a live certificate, DISPUTE a live uncertified claim) · `ActivityWorkOutput` supersession · sign-off revert · measurement correction · **deduction insertion after approval** — every one asks the commercial participant, or serializes on the bill, first |
 | A fold that consumes a frozen amount is clamped and overage-aware | `COMMITTED` (clamp at 0) · `BILLED_TAX`/`BILLED_FREIGHT` pro-rata cap (never scale past the frozen authority) |
-| An append-only amount column is constrained to its sign — **positive where a zero is meaningless, NON-NEGATIVE where the ordered side permits zero** | STRICTLY POSITIVE: certification · payment · payment reversal · every deduction and release row · a claim line's QUANTITY. NON-NEGATIVE (`>= 0`): a claim line's TAX and FREIGHT, because `PurchaseOrderLine`'s own CHECK is `"taxAmount" >= 0 AND "freightAmount" >= 0` — a zero-tax or zero-freight PO is legitimate, and a strictly-positive claim check would refuse a bill that matches the ordered evidence EXACTLY. Verified against `20261220000000_phase3_purchase_orders`; an earlier revision of this row said positive for all three, which would have made honest bills unrepresentable. What the sign rule actually forbids is a NEGATIVE amount: the row TYPE carries direction, so a live −100-unit claim plus a 200-unit bill would leave cumulative `BILLED_QTY` at 100 and pass bounds 1–2 against 100 accepted while the second bill certifies against its own bill-scoped amount. A credit is a separate document with its own semantics, NOT a negative line inside a conservation fold; Phase 5 has no credit note, so a negative claim is refused. |
+| An append-only amount column is constrained to its sign — **positive where a zero is meaningless, NON-NEGATIVE where the ordered side permits zero** | STRICTLY POSITIVE: certification · **approval** · payment · payment reversal · every deduction and release row · a claim line's QUANTITY. Approvals were the missed site of this very rule: `APPROVED(bill)` is an append-only money fold, so a negative approval could offset a later over-limit positive row under the cumulative-limit guard, or be appended after payment to drop `APPROVED` below `PAID` and break bound 5 with immutable evidence on both sides. NON-NEGATIVE (`>= 0`): a claim line's TAX and FREIGHT, because `PurchaseOrderLine`'s own CHECK is `"taxAmount" >= 0 AND "freightAmount" >= 0` — a zero-tax or zero-freight PO is legitimate, and a strictly-positive claim check would refuse a bill that matches the ordered evidence EXACTLY. Verified against `20261220000000_phase3_purchase_orders`; an earlier revision of this row said positive for all three, which would have made honest bills unrepresentable. What the sign rule actually forbids is a NEGATIVE amount: the row TYPE carries direction, so a live −100-unit claim plus a 200-unit bill would leave cumulative `BILLED_QTY` at 100 and pass bounds 1–2 against 100 accepted while the second bill certifies against its own bill-scoped amount. A credit is a separate document with its own semantics, NOT a negative line inside a conservation fold; Phase 5 has no credit note, so a negative claim is refused. |
 | A participant edge is declared in BOTH directions it is used | §K's edge table is the single source and this row deliberately does NOT copy it — a copy here would be a second declaration to keep in sync, which is exactly how round 8's §K disagreement happened. Any §-section that describes a transaction-bound call adds its row to that table in the same change. |
 | Every declared enum member appears in the fold that uses it | `NET_PAYABLE` covers retention · advance-recovery · penalty · **`other`** |
 | Non-blank text discipline | every reason column **and** `CostHead.code`/`name`, with the complete ASCII set `btrim(x, E' \t\n\x0B\f\r')` |
@@ -393,7 +393,12 @@ in this stable order to stay deadlock-free:
 1. `lockProjectReadiness(projectId)`
 2. every contributing stock lot, ascending by id, through a new
    `InventoryParticipant.lockAcceptedEvidence(tx, poLineId)`
-3. the PO line (`FOR UPDATE`)
+3. **EVERY PO line the bill touches — material and labour together — in ONE ascending id order,
+   taken BEFORE any per-line verification work** (`FOR UPDATE`). Not "the PO line" per bill line:
+   a multi-line bill visited in bill-line order lets certification A hold line X and wait for Y
+   while B holds Y and waits for X. One total order over the whole bill is the Phase-4 Task-3
+   guardrail (crew allocation locks `Worker` rows in stable ascending `workerId` order) applied
+   here; a per-line lock is that guardrail's missed site.
 4. for labour, the contributing measurements and their cited work outputs
 5. **for labour, the activity/root row each contributing measurement rests on**, through
    `ActivityParticipant` in the same order `revertSignOff` takes it
@@ -496,9 +501,20 @@ responsible review."
 draft → submitted → under-verification → { verified | disputed }
 disputed → resolved                      (terminal; resolution supersedes into a NEW version)
 verified → certified → approved-for-payment → { part-paid → paid }
+paid | part-paid → (payment reversal) → RE-DERIVED from PAID vs APPROVED, never left stale
 draft | submitted | under-verification |
   disputed | verified → rejected            (attributable reason required)
 ```
+
+**Payment status is DERIVED, and a reversal re-derives it under CAS.** The forward arrows above
+are not the whole lifecycle: a payment-reversal row lowers `PAID(bill)` (§0), so a ₹100 bill that
+reached `paid` and is then fully reversed has `PAID = 0` while a stored `paid` would still claim
+the cash left the practice. So `payments.reverse` re-derives the status from the folds in its own
+transaction — `PAID = 0 → approved-for-payment`, `0 < PAID < APPROVED → part-paid`,
+`PAID = APPROVED → paid` — as a CAS transition on the status it read, exactly the stored-versus-
+derived discipline Phase 4 Task 2 needed twice (a defaulted commitment left a requisition line
+STALE, and a post-closure default left a closed parent with an open child). A status column that
+can disagree with its own fold is the same defect in a third phase.
 
 **A `disputed` version is never revived.** Round 11 wrote the reason into §0 — "a disputed
 version re-enters the fold only when resolved into a NEW live version" — and this table still
@@ -761,6 +777,13 @@ spec §16 names them and distinct by construction:
 `budget` (= `BUDGET`) · `committed` (= `COMMITTED`, OUTSTANDING) · `received-not-billed` ·
 `awaiting-certification` · `certified-payable` · `approved` · `paid`
 
+**Each bucket is a RESIDUAL, not a raw set.** Naming `approved` and `paid` after `APPROVED(bill)`
+and `PAID(bill)` would double-count every partial payment: a ₹100 approved bill with ₹40 paid
+reports ₹140 across two buckets for one ₹100 payable. The definitions are therefore
+`awaiting-certification` = billed-not-certified, `certified-payable` = `CERTIFIED − APPROVED`,
+`approved` = `APPROVED − PAID` (approved-not-paid), `paid` = `PAID`. Only the last is a raw fold,
+because paid cash is where the money stops.
+
 The buckets PARTITION the money — no rupee appears in two of them. That is why `COMMITTED`
 is defined as outstanding rather than gross (§0): a received-but-unbilled ₹100 order belongs
 in `received-not-billed` and must not also be reported as `committed`.
@@ -846,6 +869,17 @@ A `commercial` per-project `ProjectCapability`, the same mechanism as `materials
 rows, no events. The two-projects-one-org byte-identity proof is required, as it was for
 both prior pilots.
 
+**Activation must ATTRIBUTE what already exists.** Capability-off means no commercial rows, and
+that is exactly why enabling is not a no-op: a pilot project can already hold live material and
+labour POs, and §C only writes the initial `CommitmentAttribution` during FUTURE issuance. Flipping
+the capability on would leave those obligations unattributed, so `COMMITTED(costHead)` reads ₹0 and
+the budget-vs-committed exception silently misses every existing vendor commitment. So
+`capability:enable` for `commercial` runs a required in-transaction initialization that attributes
+every live PO line, and REFUSES to complete if any line cannot be attributed (it names them rather
+than inventing a cost head — the operator picks). This is the same rule as Task 4's vendor-pinning
+backfill, at the site where the capability itself turns on: existing rows need a backfill, not only
+forward writes.
+
 ### §M. Frontend surfaces
 
 ONE capability-gated Commercial hub cloning the cleared Materials/Labour discipline: tabs
@@ -866,13 +900,14 @@ draft → CI → exact-head Codex gate.
 | 3 | `Measurement` (§D) — immutable, delta corrections, activity sign-off gate, material lines read acceptance instead | **STOP** — narrow review before any bill can consume a measurement |
 | 4 | `VendorBill` + lines + immutable versions + the §F CAS lifecycle **up to `under-verification`** + §G bounds 1–2 + **the `disputed` transition AND both withdrawal guards, because this is the task that first creates a LIVE bill: the acceptance side (`InventoryParticipant`-side `assertAcceptanceReversible`) AND the measurement side — Task 3 ships the signed-delta correction route while no `BILLED_QTY` row can exist, so its guard has only the zero floor; the §D live-claim floor (`MEASURED` may not fall below `BILLED_QTY(poLine)`) has to ship HERE or measure 100 → bill 100 live → correct −50 leaves `BILLED_QTY = 100 > MEASURED = 50`. Same rule, both sites (§0b)** | — |
 | 5 | Three-way verification (§E) — and therefore the `verified` transition itself — + dispute/resolution + certification + §G bound 3 + §H deduction ledger + **the §I measurer/acceptor-vs-certifier SoD rule AND the `SodException` record with its seals** | **STOP** — narrow review before payment authority exists |
+| 6 | Payment approval + payment records + payment reversals + the `advance-recovery` deduction type and its paid-advance fact (§H) + §G bounds 4–5 + the certifier-vs-approver SoD rule and approval limits — the PAYMENT half of §I only | — |
+| 7 | Cash-forecast projection (§J) + frontend hub (§M) + pilot acceptance chain + consolidated Phase-5 packet | **FINAL STOP** |
 
 Task 4 deliberately stops SHORT of `verified`. `verified` is the state whose safety is the
 §E verdict, so shipping the transition in Task 4 while §E lands in Task 5 would let a bill
 reach `verified` before the ordered/accepted/billed comparison exists — and pulling §E
 forward into Task 4 would bypass the Task-5 review stop that guards it. The transition
 belongs to the task that produces its evidence.
-| 6 | Payment approval + payment records + payment reversals + the `advance-recovery` deduction type and its paid-advance fact (§H) + §G bounds 4–5 + the certifier-vs-approver SoD rule and approval limits — the PAYMENT half of §I only | — |
 
 A control ships in the task that creates the transition it guards. The certification SoD
 rule cannot wait for Task 6: a certificate is append-only and is already the payable basis,
@@ -888,7 +923,6 @@ refuses — or write an unsealed authority row before its seals exist, which is 
 `SodException` table, CHECKs, append-only trigger and FK; Task 6 adds only the
 payment-approval half of the same rule, reusing the record. This is the last row of §0b, and
 the same reasoning as `verified` belonging to Task 5.
-| 7 | Cash-forecast projection (§J) + frontend hub (§M) + pilot acceptance chain + consolidated Phase-5 packet | **FINAL STOP** |
 
 Task 3 and Task 5 stops are mandatory: measurement is the fact every downstream amount
 rests on, and certification is the last point before money becomes payable.
@@ -1113,6 +1147,25 @@ SECTION is right and the probe is the defect.
 5ay. §A exact-decimal discipline holds on BOTH sides of the wire: the API probe uses
    `Prisma.Decimal` and the WEB probe uses `apps/web/src/lib/decimal.ts`, each at a full-scale
    value float64 demonstrably corrupts, and neither imports the other's type.
+5az. §H approval rows are strictly positive at PG: a negative approval is REFUSED, so it can
+   neither offset a later over-limit positive row nor drop `APPROVED` below `PAID` after payment.
+5ba. §F payment status is DERIVED, never stale: pay a ₹100 approved bill to `paid`, reverse the
+   full ₹100 → the status re-derives to `approved-for-payment` with `PAID = 0` in the SAME
+   transaction; a ₹40 reversal from `paid` re-derives to `part-paid`. RED against a lifecycle
+   that only moves forward.
+5bb. §E certification takes ONE ascending lock order over every PO line the bill touches: a
+   two-line bill certified concurrently from both orderings COMMITS EXACTLY ONE and never
+   deadlocks, under a deterministic barrier (the Phase-4 overlapping-crews probe shape).
+5bc. §J buckets are residual and partition the money: a ₹100 approved bill with ₹40 paid reports
+   ₹60 in `approved` and ₹40 in `paid` — never ₹140 across the two — and the seven buckets sum to
+   the total exposure exactly.
+5bd. §D enabling the `commercial` capability on a project that ALREADY holds live material and
+   labour POs attributes every one of them in the enabling transaction: `COMMITTED(costHead)`
+   reads the real obligation immediately, and a line that cannot be attributed REFUSES the
+   activation naming it rather than inventing a cost head.
+5be. §L both structural tables parse: `docs/STATUS.md`'s named source of task numbering yields
+   exactly Tasks 1–7 from ONE contiguous execution table, and §0 yields all fourteen canonical
+   sets from ONE contiguous table — no prose splits either.
 5g. §0 set identity: for EVERY row of the §0 table (no count is written here — a count is one
    more thing that goes stale when a set is added, which is how round 8 happened), the
    "must NOT be" column is a probe — the
