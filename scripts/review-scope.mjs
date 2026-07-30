@@ -5,12 +5,41 @@ import { pathToFileURL } from 'node:url';
 import {
   assessPlanDocumentScope,
   assessReviewScope,
+  PLAN_SCOPE_ENFORCE_AFTER_PR,
   planFileStatsFromDiff,
 } from './review-efficiency.mjs';
 
-export function assessPullRequestScope(pullRequest, planStats = []) {
+function normalizePlanStatsInput(planStatsInput) {
+  if (Array.isArray(planStatsInput)) {
+    return { unavailable: false, stats: planStatsInput };
+  }
+  return {
+    unavailable: Boolean(planStatsInput?.unavailable),
+    stats: Array.isArray(planStatsInput?.stats) ? planStatsInput.stats : [],
+  };
+}
+
+export function assessPullRequestScope(pullRequest, planStatsInput = []) {
+  const { unavailable: planUnavailable, stats: planStats } =
+    normalizePlanStatsInput(planStatsInput);
   const scope = assessReviewScope(pullRequest);
   if (!scope.allowed) return scope;
+
+  const prNumber = Number(pullRequest?.number);
+  if (
+    Number.isInteger(prNumber)
+    && prNumber > PLAN_SCOPE_ENFORCE_AFTER_PR
+    && planUnavailable
+  ) {
+    return {
+      ...scope,
+      state: 'blocked',
+      allowed: false,
+      detail:
+        'Phase plan document scope could not be verified because the base..head '
+        + 'diff is unavailable; ensure checkout fetch-depth includes both SHAs',
+    };
+  }
 
   const plan = assessPlanDocumentScope(planStats, { prNumber: pullRequest?.number });
   if (!plan.allowed) {
@@ -32,7 +61,7 @@ export async function run({ eventPath = process.env.GITHUB_EVENT_PATH } = {}) {
     return { state: 'not_applicable', allowed: true };
   }
 
-  const planStats = planFileStatsFromDiff(
+  const planResult = planFileStatsFromDiff(
     event.pull_request?.base?.sha,
     event.pull_request?.head?.sha,
     (baseSha, headSha) => execFileSync(
@@ -42,7 +71,7 @@ export async function run({ eventPath = process.env.GITHUB_EVENT_PATH } = {}) {
     ),
   );
 
-  const result = assessPullRequestScope(event.pull_request, planStats);
+  const result = assessPullRequestScope(event.pull_request, planResult);
   console.log(
     `review-scope: ${result.state}; ${result.changedFiles} files, ${result.changedLines} changed lines`,
   );

@@ -1345,7 +1345,7 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   assert.doesNotMatch(gate, /refs\/pull\/\S+\/head/u);
   assert.match(gate, /state: 'convergence_required'/u);
   assert.match(gate, /Review-Convergence: complete/u);
-  assert.match(gate, /assessReviewScope\(pullRequest\)/u);
+  assert.match(gate, /assessPullRequestScope\(pullRequest/u);
   assert.match(gate, /state: 'scope_required'/u);
   assert.match(
     gate,
@@ -1371,6 +1371,7 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
   const sticky = [];
   const client = {
     async pullRequest() { return pullRequest; },
+    async pullRequestFiles() { return []; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
     async updateStickyComment(...args) { sticky.push(args); },

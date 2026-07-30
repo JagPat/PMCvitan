@@ -7,6 +7,7 @@
 
 export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
 export const AUTOMATION_CHECK = 'automation';
+export const BATTERY_CHECKS = [...PRODUCT_CHECKS, AUTOMATION_CHECK];
 export const DOCS_FAST_CHECKS = ['review-scope', 'battery-plan', AUTOMATION_CHECK];
 
 // The dependency-free jobs the product jobs are gated on via `needs`.
@@ -104,7 +105,7 @@ export function attemptOf(run) {
 function attemptCharacters(runs) {
   const characters = new Map();
   for (const run of runs) {
-    if (!PRODUCT_CHECKS.includes(run?.name)) continue;
+    if (!BATTERY_CHECKS.includes(run?.name)) continue;
     const attempt = attemptOf(run);
     if (!attempt) continue;
     const seen = characters.get(attempt);
@@ -156,7 +157,7 @@ export function gateWatermarks(checkRuns) {
     || gatesPassed.has(attemptOf(run)));
 
   const characters = attemptCharacters(runs);
-  const attemptsByProduct = new Map(PRODUCT_CHECKS.map((name) => [name, new Set()]));
+  const attemptsByProduct = new Map(BATTERY_CHECKS.map((name) => [name, new Set()]));
   for (const run of runs) {
     const attempts = attemptsByProduct.get(run?.name);
     if (!attempts) continue;
@@ -169,7 +170,7 @@ export function gateWatermarks(checkRuns) {
   );
 
   const watermarks = new Map();
-  for (const name of PRODUCT_CHECKS) {
+  for (const name of BATTERY_CHECKS) {
     const producedThisName = attemptsByProduct.get(name);
     watermarks.set(name, completedGates
       .filter((run) => {

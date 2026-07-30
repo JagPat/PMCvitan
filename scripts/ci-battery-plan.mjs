@@ -269,13 +269,17 @@ export async function run({
     const pullNumber = event.pull_request?.number;
 
     let docsOnly = false;
+    let classificationFailed = false;
     if (pullNumber && repository && token) {
       try {
         docsOnly = isDocsOnlyDiff(
           await fetchPullRequestFiles(repository, token, pullNumber, fetchImpl),
         );
       } catch (error) {
-        console.warn(`battery-plan: could not classify docs-only diff (${error.message}); failing toward full battery`);
+        classificationFailed = true;
+        console.error(
+          `::error title=Docs-only classification failed::${error.message}`,
+        );
       }
     }
 
@@ -319,6 +323,11 @@ export async function run({
       if (complete) checkRuns = runs.filter((run) => !belongsToRun(run, ownRunId));
     }
     plan = assessBatteryPlan({ action, baseChanged, checkRuns, docsOnly });
+    if (classificationFailed) {
+      throw new Error(
+        'could not classify docs-only diff; refusing to launch a mismatched battery',
+      );
+    }
   } catch (error) {
     plan = {
       runProducts: true,

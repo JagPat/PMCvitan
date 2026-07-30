@@ -189,11 +189,23 @@ export function isDocsOnlyDiff(changedFiles) {
   return names.length > 0 && names.every((name) => isDocumentation(name));
 }
 
+export function planStatsFromPullRequestFiles(files) {
+  return (files ?? [])
+    .filter((file) => PLAN_DOCUMENT_PATH.test(file?.filename ?? ''))
+    .map((file) => ({
+      filename: file.filename,
+      additions: Number(file.additions) || 0,
+      deletions: Number(file.deletions) || 0,
+    }));
+}
+
 export function planFileStatsFromDiff(baseSha, headSha, runGit) {
-  if (!baseSha || !headSha || typeof runGit !== 'function') return [];
+  if (!baseSha || !headSha || typeof runGit !== 'function') {
+    return { unavailable: true, stats: [] };
+  }
   try {
     const output = runGit(baseSha, headSha);
-    return output
+    const stats = output
       .trim()
       .split('\n')
       .filter(Boolean)
@@ -206,8 +218,9 @@ export function planFileStatsFromDiff(baseSha, headSha, runGit) {
         };
       })
       .filter((entry) => PLAN_DOCUMENT_PATH.test(entry.filename));
+    return { unavailable: false, stats };
   } catch {
-    return [];
+    return { unavailable: true, stats: [] };
   }
 }
 

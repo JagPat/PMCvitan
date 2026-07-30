@@ -47,11 +47,11 @@ test('assessBatteryPlan launches automation instead of products on docs-only cod
   assert.equal(plan.docsFastPath, true);
 });
 
-test('assessBatteryPlan skips automation on a covered docs-only metadata edit', () => {
-  const job = (name, runId, stamp) => ({
+test('summarizeRequiredChecks waits for fresh automation after retarget interleaving', () => {
+  const job = (name, runId, stamp, conclusion = 'success') => ({
     name,
     status: 'completed',
-    conclusion: 'success',
+    conclusion,
     completed_at: stamp,
     html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
   });
@@ -61,7 +61,25 @@ test('assessBatteryPlan skips automation on a covered docs-only metadata edit', 
     job('automation', '600', '2026-07-29T10:01:00Z'),
     job('review-scope', '700', '2026-07-29T11:00:00Z'),
     job('battery-plan', '700', '2026-07-29T11:00:30Z'),
-    job('automation', 'skipped', '700', '2026-07-29T11:01:00Z'),
+  ];
+  assert.equal(summarizeRequiredChecks(runs, DOCS_FAST_CHECKS).state, 'pending');
+});
+
+test('assessBatteryPlan skips automation on a covered docs-only metadata edit', () => {
+  const job = (name, runId, stamp, conclusion = 'success') => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  const runs = [
+    job('review-scope', '600', '2026-07-29T10:00:00Z'),
+    job('battery-plan', '600', '2026-07-29T10:00:30Z'),
+    job('automation', '600', '2026-07-29T10:01:00Z'),
+    job('review-scope', '700', '2026-07-29T11:00:00Z'),
+    job('battery-plan', '700', '2026-07-29T11:00:30Z'),
+    job('automation', '700', '2026-07-29T11:01:00Z', 'skipped'),
   ];
   const plan = assessBatteryPlan({
     action: 'edited',
@@ -96,11 +114,29 @@ test('assessPlanDocumentScope blocks oversized phase plan documents after the ro
 });
 
 test('planFileStatsFromDiff parses only phase plan paths', () => {
-  const stats = planFileStatsFromDiff('base', 'head', () =>
+  const result = planFileStatsFromDiff('base', 'head', () =>
     '1200\t0\tdocs/superpowers/plans/phase-6.md\n10\t1\tdocs/STATUS.md\n');
-  assert.deepEqual(stats, [
+  assert.equal(result.unavailable, false);
+  assert.deepEqual(result.stats, [
     { filename: 'docs/superpowers/plans/phase-6.md', additions: 1200, deletions: 0 },
   ]);
+});
+
+test('planFileStatsFromDiff fails closed when git diff is unavailable', () => {
+  const result = planFileStatsFromDiff('base', 'head', () => {
+    throw new Error('bad revision');
+  });
+  assert.equal(result.unavailable, true);
+  assert.deepEqual(result.stats, []);
+});
+
+test('assessPullRequestScope blocks when plan diff stats are unavailable after rollout', () => {
+  const blocked = assessPullRequestScope(
+    { number: 300, additions: 10, deletions: 0, changed_files: 1, body: '' },
+    { unavailable: true, stats: [] },
+  );
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.detail, /could not be verified/u);
 });
 
 test('assessPullRequestScope combines review-unit and plan-document gates', () => {

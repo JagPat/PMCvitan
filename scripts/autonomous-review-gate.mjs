@@ -9,11 +9,12 @@ import {
 } from './autonomous-review-state.mjs';
 import {
   assessConvergence,
-  assessReviewScope,
   deferralPhases,
   isDocsOnlyDiff,
+  planStatsFromPullRequestFiles,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
+import { assessPullRequestScope } from './review-scope.mjs';
 import {
   DOCS_FAST_CHECKS,
   isBatteryProductCheck,
@@ -1024,7 +1025,20 @@ export async function enforceReviewConvergence(
 }
 
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
-  const result = assessReviewScope(pullRequest);
+  let pullRequestFiles;
+  try {
+    pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
+  } catch {
+    pullRequestFiles = undefined;
+  }
+
+  const planInput = pullRequestFiles === undefined
+    ? { unavailable: true, stats: [] }
+    : {
+      unavailable: false,
+      stats: planStatsFromPullRequestFiles(pullRequestFiles),
+    };
+  const result = assessPullRequestScope(pullRequest, planInput);
   if (result.allowed) return result;
 
   const live = await setDraftForCurrentHead(
