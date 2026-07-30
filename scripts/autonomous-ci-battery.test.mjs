@@ -68,11 +68,16 @@ test('ci.yml handles every PR event and gates the battery on the plan', async ()
 
   // the plan job itself stays cheap: no dependency install, no database
   const planStart = workflow.indexOf('  battery-plan:');
+  const automationStart = workflow.indexOf('  automation:');
   const webStart = workflow.indexOf('  web:');
-  assert.ok(planStart >= 0 && webStart > planStart);
-  const planJob = workflow.slice(planStart, webStart);
+  assert.ok(planStart >= 0 && automationStart > planStart && webStart > automationStart);
+  const planJob = workflow.slice(planStart, automationStart);
   assert.match(planJob, /node scripts\/ci-battery-plan\.mjs/u);
   assert.doesNotMatch(planJob, /pnpm install|setup-node|postgres/u);
+
+  const automationJob = workflow.slice(automationStart, webStart);
+  assert.match(automationJob, /pnpm test:automation/u);
+  assert.doesNotMatch(automationJob, /postgres/u);
 });
 
 test('the plan reads the whole check history, not just the latest run', async () => {
@@ -475,6 +480,7 @@ test('the battery plan launches products exactly when they are needed', () => {
 
 test('exactly one workflow can launch each product job', async () => {
   const launchers = new Map(PRODUCT_JOBS.map((job) => [job, []]));
+  launchers.set('automation', []);
   for (const file of await workflowFiles()) {
     const workflow = await readFile(new URL(file, workflowsDir), 'utf8');
     for (const job of jobNames(workflow)) {
@@ -485,7 +491,7 @@ test('exactly one workflow can launch each product job', async () => {
     assert.deepEqual(
       files,
       ['ci.yml'],
-      `product job ${job} must be defined only by ci.yml`,
+      `job ${job} must be defined only by ci.yml`,
     );
   }
 });

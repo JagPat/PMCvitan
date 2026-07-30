@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import * as reviewGate from './autonomous-review-gate.mjs';
+import { DOCS_FAST_CHECKS } from './check-run-coverage.mjs';
 
 const {
   hasTerminalReviewFailureAfterPending,
@@ -244,6 +245,10 @@ test('rollout cannot require the new scope check from pre-policy PR branches', (
     'success',
   );
   assert.deepEqual(requiredChecksForPullRequest(247), REQUIRED_CHECKS);
+  assert.deepEqual(
+    requiredChecksForPullRequest(300, ['docs/superpowers/plans/plan.md']),
+    DOCS_FAST_CHECKS,
+  );
 });
 
 test('review scope runs before every expensive product gate', async () => {
@@ -263,12 +268,19 @@ test('review scope runs before every expensive product gate', async () => {
     /pull_request:\s*\n\s+types:\s*\[opened, synchronize, reopened, edited\]/u,
   );
   const scopeStart = workflow.indexOf('  review-scope:');
+  const automationStart = workflow.indexOf('  automation:');
   const webStart = workflow.indexOf('  web:');
   assert.ok(scopeStart >= 0);
-  assert.ok(webStart > scopeStart);
-  const scopeJob = workflow.slice(scopeStart, webStart);
+  assert.ok(automationStart > scopeStart);
+  assert.ok(webStart > automationStart);
+  const scopeJob = workflow.slice(scopeStart, automationStart);
   assert.match(scopeJob, /node scripts\/review-scope\.mjs/u);
   assert.doesNotMatch(scopeJob, /pnpm install|setup-node|postgres/u);
+
+  assert.match(
+    workflow,
+    /automation:[\s\S]*?if: needs\.battery-plan\.outputs\.docs_fast_path == 'true'/u,
+  );
 
   for (const job of ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof']) {
     const pattern = new RegExp(

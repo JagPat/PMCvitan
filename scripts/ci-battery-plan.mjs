@@ -16,6 +16,7 @@ import { pathToFileURL } from 'node:url';
 import {
   GATE_CHECKS,
   PRODUCT_CHECKS,
+  AUTOMATION_CHECK,
   attemptGateStamps,
   attemptOf,
   coverageOrder,
@@ -24,8 +25,9 @@ import {
   isSkipped,
   newestFirst,
 } from './check-run-coverage.mjs';
+import { isDocsOnlyDiff } from './review-efficiency.mjs';
 
-export { PRODUCT_CHECKS };
+export { PRODUCT_CHECKS, AUTOMATION_CHECK };
 
 // A check run's URLs carry the workflow run that produced it:
 // .../actions/runs/<runId>/job/<jobId>
@@ -86,15 +88,58 @@ function newestCompleted(checkRuns, name) {
     .sort(newestFirst)[0] ?? null;
 }
 
-export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
+function batteryLaunch(docsOnly, reason, { runProducts = true } = {}) {
+  if (docsOnly) {
+    return { runProducts: false, docsFastPath: true, reason };
+  }
+  return { runProducts, docsFastPath: false, reason };
+}
+
+function batteryTargets(docsOnly) {
+  return docsOnly ? [AUTOMATION_CHECK] : PRODUCT_CHECKS;
+}
+
+export function assessBatteryPlan({
+  action,
+  baseChanged,
+  checkRuns,
+  docsOnly = false,
+}) {
+  const targets = batteryTargets(docsOnly);
+
   if (action !== 'edited') {
-    return { runProducts: true, reason: `code event (${action ?? 'no pull_request action'})` };
+    if (docsOnly) {
+      return {
+        runProducts: false,
+        docsFastPath: true,
+        reason: 'docs-only diff; automation battery replaces the product jobs',
+      };
+    }
+    return {
+      runProducts: true,
+      docsFastPath: false,
+      reason: `code event (${action ?? 'no pull_request action'})`,
+    };
   }
   if (baseChanged) {
-    return { runProducts: true, reason: 'base retarget changes the merge result under test' };
+    if (docsOnly) {
+      return {
+        runProducts: false,
+        docsFastPath: true,
+        reason: 'docs-only diff after base retarget; automation battery required for the new merge result',
+      };
+    }
+    return {
+      runProducts: true,
+      docsFastPath: false,
+      reason: 'base retarget changes the merge result under test',
+    };
   }
   if (!Array.isArray(checkRuns)) {
-    return { runProducts: true, reason: 'check history unavailable; failing toward a full run' };
+    return batteryLaunch(
+      docsOnly,
+      'check history unavailable; failing toward a full run',
+    );
   }
 
   // A failed scope check skips the product jobs of that same attempt, so any
@@ -129,11 +174,11 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
     const stamp = stamps.get(attemptOf(run));
     return stamp === undefined || stamp >= newestAttempt;
   })) {
-    return {
-      runProducts: true,
-      reason: 'a gate run from another attempt has not finished, so any product '
+    return batteryLaunch(
+      docsOnly,
+      'a gate run from another attempt has not finished, so any product '
         + 'coverage on this head predates an unknown verdict',
-    };
+    );
   }
 
   // Either gate of `needs: [review-scope, battery-plan]` failing skips the
@@ -144,27 +189,66 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
   for (const gate of GATE_CHECKS) {
     const verdict = newestCompleted(checkRuns, gate);
     if (verdict && verdict.conclusion !== 'success') {
-      return {
-        runProducts: true,
-        reason: `the last completed ${gate} run did not pass, so any product `
+      return batteryLaunch(
+        docsOnly,
+        `the last completed ${gate} run did not pass, so any product `
           + 'coverage on this head predates the current evaluation',
-      };
+      );
     }
   }
 
   const notBefore = gateWatermarks(checkRuns);
-  for (const name of PRODUCT_CHECKS) {
+  for (const name of targets) {
     if (!coveredBy(checkRuns, name, notBefore.get(name) ?? '', stamps)) {
+      if (docsOnly) {
+        return {
+          runProducts: false,
+          docsFastPath: true,
+          reason: `automation check ${name} has no run covering this head from the current attempt`,
+        };
+      }
       return {
         runProducts: true,
+        docsFastPath: false,
         reason: `product check ${name} has no run covering this head from the current attempt`,
       };
     }
   }
+  if (docsOnly) {
+    return {
+      runProducts: false,
+      docsFastPath: false,
+      reason: 'docs-only metadata edit; automation already covers this head',
+    };
+  }
   return {
     runProducts: false,
+    docsFastPath: false,
     reason: 'metadata-only edit; every product check already covers this head',
   };
+}
+
+async function fetchPullRequestFiles(repository, token, pullNumber, fetchImpl = fetch) {
+  const files = [];
+  for (let page = 1; ; page += 1) {
+    const response = await fetchImpl(
+      `https://api.github.com/repos/${repository}/pulls/${pullNumber}/files`
+        + `?per_page=100&page=${page}`,
+      {
+        headers: {
+          authorization: `Bearer ${token}`,
+          accept: 'application/vnd.github+json',
+          'user-agent': 'pmcvitan-ci-battery-plan',
+        },
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`GitHub files fetch failed (${response.status})`);
+    }
+    const batch = await response.json();
+    files.push(...batch);
+    if (batch.length < 100) return files;
+  }
 }
 
 export async function run({
@@ -182,6 +266,18 @@ export async function run({
     const action = event.action;
     const baseChanged = Boolean(event.changes?.base);
     const headSha = event.pull_request?.head?.sha;
+    const pullNumber = event.pull_request?.number;
+
+    let docsOnly = false;
+    if (pullNumber && repository && token) {
+      try {
+        docsOnly = isDocsOnlyDiff(
+          await fetchPullRequestFiles(repository, token, pullNumber, fetchImpl),
+        );
+      } catch (error) {
+        console.warn(`battery-plan: could not classify docs-only diff (${error.message}); failing toward full battery`);
+      }
+    }
 
     let checkRuns;
     if (action === 'edited' && !baseChanged && headSha && repository && token) {
@@ -222,17 +318,21 @@ export async function run({
       // construction and must not be read as another attempt's pending verdict
       if (complete) checkRuns = runs.filter((run) => !belongsToRun(run, ownRunId));
     }
-    plan = assessBatteryPlan({ action, baseChanged, checkRuns });
+    plan = assessBatteryPlan({ action, baseChanged, checkRuns, docsOnly });
   } catch (error) {
     plan = {
       runProducts: true,
+      docsFastPath: false,
       reason: `battery plan errored (${error.message}); failing toward a full run`,
     };
   }
 
-  console.log(`battery-plan: run_products=${plan.runProducts}; ${plan.reason}`);
+  console.log(
+    `battery-plan: run_products=${plan.runProducts}; docs_fast_path=${plan.docsFastPath ?? false}; ${plan.reason}`,
+  );
   if (outputPath) {
     await appendFile(outputPath, `run_products=${plan.runProducts}\n`);
+    await appendFile(outputPath, `docs_fast_path=${plan.docsFastPath ?? false}\n`);
   }
   return plan;
 }

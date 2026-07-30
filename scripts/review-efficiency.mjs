@@ -30,6 +30,9 @@ export const CONVERGENCE_AFTER_FINDING_HEADS = 2;
 // review stop will settle it. The finding is kept and its verification is moved to the
 // one place a verification can exist.
 export const PLAN_REVIEW_ROUND_CAP = 3;
+export const PLAN_DOCUMENT_PATH = /^docs\/superpowers\/plans\/.+\.md$/iu;
+export const PLAN_SKELETON_MAX_ADDITIONS = 900;
+export const PLAN_SCOPE_ENFORCE_AFTER_PR = 252;
 
 export const REQUIRED_INVARIANTS = [
   'authorization-tenancy',
@@ -184,6 +187,56 @@ export function isDocsOnlyDiff(changedFiles) {
   // whether the head ADDS the audit at that path, which the surviving name answers.)
   const names = (changedFiles ?? []).flatMap((file) => changedPaths(file));
   return names.length > 0 && names.every((name) => isDocumentation(name));
+}
+
+export function planFileStatsFromDiff(baseSha, headSha, runGit) {
+  if (!baseSha || !headSha || typeof runGit !== 'function') return [];
+  try {
+    const output = runGit(baseSha, headSha);
+    return output
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [additions, deletions, filename] = line.split('\t');
+        return {
+          filename,
+          additions: additions === '-' ? 0 : Number(additions),
+          deletions: deletions === '-' ? 0 : Number(deletions),
+        };
+      })
+      .filter((entry) => PLAN_DOCUMENT_PATH.test(entry.filename));
+  } catch {
+    return [];
+  }
+}
+
+export function assessPlanDocumentScope(
+  planStats,
+  {
+    enforceAfterPr = PLAN_SCOPE_ENFORCE_AFTER_PR,
+    prNumber,
+    maxAdditions = PLAN_SKELETON_MAX_ADDITIONS,
+  } = {},
+) {
+  const stats = Array.isArray(planStats) ? planStats : [];
+  if (finiteCount(prNumber) <= enforceAfterPr) {
+    return { applies: false, allowed: true, oversized: [] };
+  }
+  const oversized = stats.filter((entry) => entry.additions > maxAdditions);
+  if (oversized.length === 0) {
+    return { applies: stats.length > 0, allowed: true, oversized: [] };
+  }
+  return {
+    applies: true,
+    allowed: false,
+    oversized: oversized.map((entry) => entry.filename),
+    detail:
+      `Phase plan document(s) exceed ${maxAdditions} added lines in one PR: `
+      + `${oversized.map((entry) => entry.filename).join(', ')}. `
+      + 'Split into a cross-cutting skeleton (§0, module graph, task table, probes) '
+      + 'and leave per-task detail for implementation PRs.',
+  };
 }
 
 // The deferral names the TASK that will settle the deferred findings, so the handoff is

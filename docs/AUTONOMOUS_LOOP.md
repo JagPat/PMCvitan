@@ -45,15 +45,17 @@ This repository is designed to progress without the owner's laptop or technical 
 - The PR-side scope check is fast feedback. The trusted default-branch owner
   re-evaluates the PR metadata and every evidence cell before review promotion,
   so editing the PR's policy script cannot bypass the merge boundary.
-- Product CI runs once per SHA, in ONE workflow. Every PR event (including
-  `edited`) runs through `ci.yml`, so a completed CI run always wakes the
-  trusted owner; the cheap `battery-plan` job gates the five product jobs — a
-  metadata-only body/title edit whose head already has real product runs skips
-  them, while a base retarget (`changes.base`) or a head whose product jobs
-  never really ran (a large PR whose first run failed `review-scope`) gets the
-  full battery. The required-check summary reads the newest REAL run per check
-  name: a skipped run defers to the evidence it kept, and a stale failure
-  never outlives a newer passing run. `scripts/autonomous-ci-battery.test.mjs`
+- Product CI runs once per SHA, in ONE workflow. Docs-only PRs use a fast
+  path: `review-scope`, `battery-plan`, and `automation` (`pnpm test:automation`)
+  instead of web/api/e2e/api-e2e/upgrade-proof. Code PRs keep the full battery.
+  Every PR event (including `edited`) runs through `ci.yml`, so a completed CI
+  run always wakes the trusted owner; the cheap `battery-plan` job gates the
+  five product jobs — a metadata-only body/title edit whose head already has
+  real product runs skips them, while a base retarget (`changes.base`) or a head
+  whose product jobs never really ran (a large PR whose first run failed
+  `review-scope`) gets the full battery. The required-check summary reads the
+  newest REAL run per check name: a skipped run defers to the evidence it kept,
+  and a stale failure never outlives a newer passing run. `scripts/autonomous-ci-battery.test.mjs`
   and the gate tests pin all of this.
 - Claude self-audits those rows before the first review. Codex performs one
   comprehensive first pass and batches all findings. Correction reviews cover
@@ -66,6 +68,20 @@ This repository is designed to progress without the owner's laptop or technical 
   remaining correctness finding still blocks the exact head.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
+
+## Loop speed
+
+Three mechanisms keep the autonomous loop fast without weakening code review:
+
+1. **Docs-only fast CI** — when the cumulative PR diff is documentation only,
+   CI runs `review-scope`, `battery-plan`, and `automation` instead of the five
+   product jobs. Exact-head Codex review is unchanged.
+2. **Phase plan skeleton limit** — after PR #252, a single
+   `docs/superpowers/plans/*.md` file may add at most 900 lines per PR. Larger
+   plans must split: cross-cutting skeleton in planning, per-task detail in
+   implementation PRs where probes adjudicate.
+3. **Bounded plan review** — after three finding-bearing heads on a docs-only
+   diff, remaining questions move to named probes (`Review-Deferred-To-Probes`).
 
 ## Non-Negotiable Safety Rules
 

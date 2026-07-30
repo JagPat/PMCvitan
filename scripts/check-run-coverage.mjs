@@ -6,9 +6,15 @@
 // live here once so the two cannot drift apart again.
 
 export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
+export const AUTOMATION_CHECK = 'automation';
+export const DOCS_FAST_CHECKS = ['review-scope', 'battery-plan', AUTOMATION_CHECK];
 
 // The dependency-free jobs the product jobs are gated on via `needs`.
 export const GATE_CHECKS = ['review-scope', 'battery-plan'];
+
+export function isBatteryProductCheck(name) {
+  return PRODUCT_CHECKS.includes(name) || name === AUTOMATION_CHECK;
+}
 
 export function isSkipped(run) {
   return run?.status === 'completed' && run?.conclusion === 'skipped';

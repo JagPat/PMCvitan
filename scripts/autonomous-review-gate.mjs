@@ -11,9 +11,12 @@ import {
   assessConvergence,
   assessReviewScope,
   deferralPhases,
+  isDocsOnlyDiff,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
 import {
+  DOCS_FAST_CHECKS,
+  isBatteryProductCheck,
   PRODUCT_CHECKS,
   attemptGateStamps,
   attemptsWithPassingGates,
@@ -43,7 +46,7 @@ const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 10 * 60_000);
 const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 15 * 60_000);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
 
-export function requiredChecksForPullRequest(pullRequestNumber) {
+export function requiredChecksForPullRequest(pullRequestNumber, pullRequestFiles) {
   if (
     Number.isInteger(pullRequestNumber)
     && pullRequestNumber > 0
@@ -54,6 +57,9 @@ export function requiredChecksForPullRequest(pullRequestNumber) {
     return REQUIRED_CHECKS.filter(
       (name) => name !== 'review-scope' && name !== 'battery-plan',
     );
+  }
+  if (Array.isArray(pullRequestFiles) && isDocsOnlyDiff(pullRequestFiles)) {
+    return DOCS_FAST_CHECKS;
   }
   return REQUIRED_CHECKS;
 }
@@ -124,7 +130,7 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     // NEWER `review-scope` failure at 11:05 and this gate would publish success
     // over a red current scope check.
     const ordered = [...runs].sort(
-      PRODUCT_CHECKS.includes(name) ? coverageOrder(attemptStamps) : newestFirst,
+      isBatteryProductCheck(name) ? coverageOrder(attemptStamps) : newestFirst,
     );
     if (ordered[0].status !== 'completed') {
       pending.push(name);
@@ -164,7 +170,7 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
     // straggler from the superseded base can complete after the new base's
     // gates and would otherwise pass a timestamp-only comparison.
     if (
-      PRODUCT_CHECKS.includes(name)
+      isBatteryProductCheck(name)
       && coverageStamp(decider, attemptStamps) < (watermarks.get(name) ?? '')
     ) {
       pending.push(name);
@@ -915,9 +921,19 @@ export async function ensureTerminalReviewState(
   return true;
 }
 
+async function resolveRequiredChecks(client, pullRequest) {
+  let pullRequestFiles;
+  try {
+    pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
+  } catch {
+    pullRequestFiles = undefined;
+  }
+  return requiredChecksForPullRequest(pullRequest.number, pullRequestFiles);
+}
+
 async function waitForRequiredChecks(client, pullRequest, expectedHead) {
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
-  const requiredChecks = requiredChecksForPullRequest(pullRequest.number);
+  const requiredChecks = await resolveRequiredChecks(client, pullRequest);
   while (true) {
     const live = await client.pullRequest(pullRequest.number);
     if (live.head.sha !== expectedHead) return { state: 'superseded' };
@@ -1320,7 +1336,7 @@ export async function run() {
   if (context.ciConclusion && context.ciConclusion !== 'success') {
     const ciSummary = summarizeRequiredChecks(
       await client.checkRuns(expectedHead),
-      requiredChecksForPullRequest(pullRequest.number),
+      await resolveRequiredChecks(client, pullRequest),
     );
     if (shouldRetryCiFailure(context, existingStatus, ciSummary.failed)) {
       try {
@@ -1581,7 +1597,7 @@ export async function run() {
       const finalStatuses = await client.statuses(expectedHead);
       const finalCheckSummary = summarizeRequiredChecks(
         await client.checkRuns(expectedHead),
-        requiredChecksForPullRequest(pullRequest.number),
+        await resolveRequiredChecks(client, pullRequest),
       );
       if (
         finalCheckSummary.state !== 'success'

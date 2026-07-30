@@ -1,12 +1,14 @@
 name: CI
 
 # One workflow handles every PR event, so a completed CI run always wakes the
-# trusted default-branch owner. The five product jobs run once per SHA: the
-# battery-plan job skips them for a metadata-only body/title edit whose head
-# already has real product runs, and launches them when the merge result under
-# test changed (a base retarget) or when this head's product jobs never really
-# ran (a large PR whose first run failed review-scope — the body edit that
-# fixes the scope evidence is exactly when the battery must finally launch).
+# trusted default-branch owner. The five product jobs run once per SHA unless
+# the cumulative diff is docs-only, in which case the automation job replaces
+# them. The battery-plan job skips products for a metadata-only body/title edit
+# whose head already has real product runs, and launches them when the merge
+# result under test changed (a base retarget) or when this head's product jobs
+# never really ran (a large PR whose first run failed review-scope — the body
+# edit that fixes the scope evidence is exactly when the battery must finally
+# launch).
 # scripts/autonomous-ci-battery.test.mjs pins this design.
 on:
   pull_request:
@@ -28,8 +30,10 @@ jobs:
     permissions:
       contents: read
       checks: read
+      pull-requests: read
     outputs:
       run_products: ${{ steps.plan.outputs.run_products }}
+      docs_fast_path: ${{ steps.plan.outputs.docs_fast_path }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Decide whether this event needs the product battery
@@ -37,6 +41,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/ci-battery-plan.mjs
+
+  automation:
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.docs_fast_path == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Autonomous loop policy tests
+        run: pnpm test:automation
 
   web:
     needs: [review-scope, battery-plan]
