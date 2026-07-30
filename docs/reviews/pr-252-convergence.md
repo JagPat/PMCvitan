@@ -248,12 +248,58 @@ The other seven are set-definition precision, all in §0 or the bounds that read
 
 Probes 5q–5v cover each.
 
+## Round 5 (head `ade50eb`) — five findings, and a correction to this packet's own reasoning
+
+Five P2s, all correct, and — this matters — **not the same kind of finding as rounds 2–4.**
+Rounds 2–4 were dominated by "the plan does not yet say how X is handled", which is true of
+every plan at some depth. Round 5 is five concrete defects with definite right answers:
+
+- **`COMMITTED` added back what it had just subtracted.** The definition read "MINUS the
+  portion already consumed or released … plus the released remainder of a closed-short
+  version", so a ₹100 PO closed short before any receipt reported ₹100 outstanding for an
+  obligation the practice had explicitly cancelled. The clause is deleted and the close-short
+  rule stated: a released remainder is subtracted once and never added back. Probe 5w.
+- **The manifest declared one participant edge where the prose required four.** §D requires a
+  measurement to read `Activity.status = done` under the activity row lock through
+  `ActivityParticipant`; §E requires locking cited outputs; §C requires an amendment to
+  supersede the attribution in the same transaction that issues the new PO version. §K
+  declared only `workflowParticipants: ['inventory']`. Task 1 following the manifest literally
+  would take the unlocked `ActivitiesQuery` fallback §D itself proves unsafe, and would have
+  no channel at all for the atomic re-attribution — so amending a live ₹100 PO would drop the
+  whole obligation out of every forecast until some later commercial command. §K now states
+  the complete edge table: `commercial.workflowParticipants: ['inventory', 'activities']`, and
+  `procurement`/`activities` each gain `commercial` as INBOUND participant edges (write
+  channels, not `dependsOn` — commercial is still a sink in the read graph, and participant
+  edges are cycle-exempt by the cleared `activities → labour` precedent). Probes 5x, 5y.
+- **A bill could be amended after certification.** §0 removes a superseded version from
+  `BILLED_AMOUNT(bill)`, so certifying a ₹100 bill and amending it to ₹50 leaves the
+  certificate, approval and payment rows standing against a claim that is no longer live —
+  simultaneously in breach of bound 3 and payable. Amendment is now CAS-restricted to
+  `submitted`/`verified`/`disputed`; after certification the path is the one §F already had,
+  supersede the certificate first. Probe 5z.
+- **`SodException` was required to be written but never sealed.** It is the evidence that makes
+  an otherwise forbidden certification valid, and an override whose approver or reason can be
+  edited afterwards is indistinguishable from no override. It now carries the trusted-evidence
+  seals: append-only at PG, immutable rule/actor/approver/reason with the complete non-blank
+  CHECK, written in the override's own transaction, and FK-bound to the one fact it authorizes
+  rather than standing as a reusable waiver. Probe 5aa.
+
+**This packet's earlier reasoning needs a correction.** Rounds 2–4 argued that a plan finding
+"can only be answered with more prose"; round 5 shows that is not true of every plan finding.
+A wrong formula, a manifest that contradicts its own prose, a missing lifecycle guard and a
+missing seal all have single right answers, and fixing them made the plan strictly more
+correct — not merely longer. The bounded-review argument holds for the "specify further" class
+and not for this one, and PR #253 was written to add an obligation rather than to suppress
+anything precisely because that distinction cannot be drawn mechanically. Had #253's cap been
+live at round 4, these five would still have had to be answered: a deferral names the probe
+and the task, it does not close a finding.
+
 ## Termination, and what happens next
 
-Five finding-bearing heads: 8, 8, 7, 7, 9 — forty-four findings, every one correct, none
-contradicted by a later round, and the rate is not falling. Round 3's packet recorded the
-recommendation to hand the remainder to probes; the owner approved it and asked for the
-process to be fixed so this does not recur.
+Six finding-bearing heads: 8, 8, 7, 7, 9, 5 — forty-nine findings, every one correct and none
+contradicted by a later round. Round 3's packet recorded the recommendation to hand the
+remainder to probes; the owner approved it and asked for the process to be fixed so this does
+not recur.
 
 That fix is **PR #253** (`Review-Deferred-To-Probes`), which bounds a docs-only review at
 `PLAN_REVIEW_ROUND_CAP = 3` finding-bearing heads and requires the remaining questions to be
@@ -261,13 +307,21 @@ converted into named probes plus the task that settles them. It is under review 
 reads `main`'s copy of its scripts, so the deferral is not yet enforceable here — which is
 precisely why this head fixes all nine rather than asserting an exit it cannot yet take.
 
-The deferral ledger for this plan is the probe list itself: 5g–5v are executable the moment
-Task 1 exists, and every finding from rounds 2–4 maps to one of them. Once #253 merges, this
+The deferral ledger for this plan is the probe list itself: 5g–5aa are executable the moment
+Task 1 exists, and every finding from rounds 2–5 maps to one of them. Once #253 merges, this
 PR closes through that route with `Review-Deferred-To-Probes: phase-5-task-1`.
 
-If a sixth prose round arrives before #253 merges, I will report it rather than spend another
-correction on it. Continuing to answer a rising finding rate with more prose is the failure
-this whole exchange identified, and doing it once more would be choosing the thing we agreed
-to stop.
+Round 4's packet said I would report rather than answer a sixth PROSE round. Round 5 was not
+that: five mechanism defects with right answers, so answering them was the correct call and
+that commitment did not apply. It still stands for its actual case — a round whose findings
+are all "the plan should also specify X" gets reported, not another correction.
 
-Gates: `pnpm test:automation` 111/111.
+**No deferral trailer on this head.** All five findings are FIXED here, and claiming a
+deferral while fixing everything would misdescribe what happened.
+
+`origin/main` is merged into this branch in the same push (PR #254, ranged pnpm overrides) —
+the branch was `behind`, not conflicted.
+
+Gates: `pnpm test:automation` 111/111 — the count is unchanged from round 4 because #253's
+probes live on its own branch and have not merged. Docs-only diff, so no product surface is
+touched; `pnpm check` is unchanged by construction.

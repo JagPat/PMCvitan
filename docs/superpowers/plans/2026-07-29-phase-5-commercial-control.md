@@ -104,7 +104,7 @@ retained amended version as 200). NOT "`submitted` only" — a first claim that 
 Live spans the whole post-submission lifecycle.
 
 | `CERTIFIED(bill)` | the LIVE certificate only | not Σ over superseded certificates, which double-counts a corrected certification and either blocks a valid correction or overstates the forecast |
-| `COMMITTED(costHead)` | the OUTSTANDING obligation: Σ `committedAmountBase` over attributions whose PO version is LIVE, MINUS the portion already consumed or released — for a material line the PRORATED LANDED amount for `ACCEPTED` (`committedAmountBase × ACCEPTED / qty`), NOT `rate × ACCEPTED`, because `committedAmountBase` includes tax and freight and rate-only leaves that remainder stranded; for a LABOUR line the measured person-shifts at the frozen rate plus shift premium, since a labour line has measurement rather than acceptance evidence; plus the released remainder of a closed-short version | not the gross frozen amount — a ₹100 PO accepted but not billed would sit in `committed` AND `received-not-billed` at once, forecasting a ₹200 obligation from a ₹100 order. The §J buckets must partition the money, not overlap it. Also not "one active attribution per line": an amendment retains v1's line and issues v2's, so both attributions could be active; an attribution is superseded atomically with the PO version it describes. |
+| `COMMITTED(costHead)` | the OUTSTANDING obligation: Σ `committedAmountBase` over attributions whose PO version is LIVE, MINUS the portion already consumed AND MINUS the portion released — for a material line the consumed part is the PRORATED LANDED amount for `ACCEPTED` (`committedAmountBase × ACCEPTED / qty`), NOT `rate × ACCEPTED`, because `committedAmountBase` includes tax and freight and rate-only leaves that remainder stranded; for a LABOUR line the measured person-shifts at the frozen rate plus shift premium, since a labour line has measurement rather than acceptance evidence; the RELEASED part is the unreceived remainder of a version closed short (Phase-3 `pos.closeShort` / Phase-4 close-short keeps only the received portion) | not the gross frozen amount — a ₹100 PO accepted but not billed would sit in `committed` AND `received-not-billed` at once, forecasting a ₹200 obligation from a ₹100 order. The §J buckets must partition the money, not overlap it. Not "one active attribution per line": an amendment retains v1's line and issues v2's, so both attributions could be active; an attribution is superseded atomically with the PO version it describes. And a released remainder is subtracted ONCE and never added back: a ₹100 PO closed short before any receipt has ₹0 outstanding, because the practice explicitly cancelled that obligation — carrying the released ₹100 would forecast a payable for work nobody will do and nobody can bill. Closing short to zero is the deliberate way to end an obligation; the fold must honour it. |
 
 The shared shape: **an amendment retains history, so "every row" is never the answer; and a
 bucket balance is a current state, so it is never evidence of a past event.** A new fold
@@ -321,6 +321,17 @@ attributable, never a status flip that makes the prior facts orphans.
   issues a NEW version retaining the prior verbatim with `supersedesVersion` lineage.
   Certificates are immutable versions in the same sense — a certificate is never edited,
   only superseded with a reason.
+- **An amendment is admissible only BEFORE certification** — `submitted`, `verified` or
+  `disputed`, and never once a live certificate exists. CAS-guarded on that status set, so a
+  concurrent certification and amendment cannot both commit. §0 removes a superseded version
+  from `BILLED_AMOUNT(bill)`, so amending a certified bill orphans every payable fact that
+  rests on it: certify a live ₹100 bill, amend to a ₹50 version, and the ₹100 claim lines are
+  no longer live while the ₹100 certificate, its approval and any payment row still stand —
+  the bill is simultaneously in breach of bound 3 and payable against a claim that has been
+  withdrawn. The correction path after certification is the one §F already states for every
+  post-certification change: supersede the certificate with a reason (reversing the payment
+  where money moved), which returns the bill to an amendable status, and only then amend. One
+  rule, so the append-only chain is never left resting on a retired claim.
 - `certified`, `approved-for-payment` and every payment row are **append-only at PG**, with
   the same trigger discipline the §C ledger and the promise registers already use.
 - A bill line is FK-bound to its PO line by a composite FK carrying **both `projectId` and
@@ -394,6 +405,19 @@ bill for material that never arrived or work never measured.
   authority (org admin) AND writes an attributable `SodException` record naming the rule,
   the actor, the approver and the reason. Silently allowing it is not an option; silently
   banning it is not either, because a two-person practice must still be able to operate.
+- **A `SodException` is trusted evidence, so it carries the trusted-evidence seals**, not
+  merely a requirement that the row be written. It IS the thing that makes an otherwise
+  forbidden certification or payment approval valid, and an override whose justification can
+  be rewritten afterwards is indistinguishable from no override at all. So: append-only at PG
+  (UPDATE and DELETE both rejected, the same trigger discipline as the certificate and payment
+  rows); `rule`, `actorId`, `approverId` and `reason` immutable after write with `reason`
+  under the complete non-blank CHECK (`btrim(x, E' \t\n\x0B\f\r')`); written in the SAME
+  transaction as the override it authorizes; and bound to that exact fact by a composite FK
+  carrying `projectId` — an exception is authority for ONE certificate or ONE approval, never
+  a standing waiver a later override can point at. Without these, the material case is:
+  the acceptance actor certifies under an override, then the approver or reason is edited or
+  the row deleted, and the append-only certificate stays payable with no immutable authority
+  evidence behind it — the exact shape the Phase-4 `T3CRepairAction` seals exist to prevent.
 - Approval limits are per-membership amount ceilings applied to the **cumulative** approved
   total for the bill, not to each approval row. A per-row check lets a ₹50-limit approver
   authorize a ₹100 payable as two ₹50 rows — each within limit, bound 4 satisfied, the
@@ -421,12 +445,43 @@ made the material and labour readiness projections correct.
 ### §K. Module graph — `commercial` is a SINK, and never gates operations
 
 - `commercial.dependsOn: ['procurement', 'inventory', 'labour', 'activities']`;
-  `workflowParticipants: ['inventory']` — certification invokes
-  `InventoryParticipant.lockAcceptedEvidence` inside its transaction (§E), and that edge must
-  be DECLARED or Task 1 ships a manifest saying the call cannot happen. An undeclared
-  transaction-bound call is a boundary escape the analyzer is built to catch, and skipping
-  the lock instead would reopen the stale-acceptance race §E exists to close. **Nothing depends on `commercial`**, so the graph is acyclic
-  by construction and the Task-N acyclicity acceptance test extends without a new exemption.
+  `workflowParticipants: ['inventory', 'activities']`. Every transaction-bound call must be
+  DECLARED or Task 1 ships a manifest saying the call cannot happen — an undeclared one is a
+  boundary escape the analyzer is built to catch, and taking the fallback plain read instead
+  would reopen the very race the participant exists to close. Both outbound edges are
+  load-bearing:
+  - `inventory` — certification invokes `InventoryParticipant.lockAcceptedEvidence` (§E), or
+    the stale-acceptance race reopens.
+  - `activities` — a measurement validates `Activity.status = done` **under the activity/root
+    row lock** through `ActivityParticipant` (§D). This edge is not optional: the fallback is
+    an unlocked `ActivitiesQuery` status read, and §D already gives the interleaving that
+    breaks it (measurement reads `done`, `revertSignOff` commits on a rejected closing
+    inspection, the immutable measurement commits anyway). §E adds the same requirement for
+    locking cited `ActivityWorkOutput` rows during certification. Declaring only `inventory`
+    would leave §D and §E describing calls the manifest forbids.
+- **Two INBOUND participant edges, because two foreign transactions must write commercial
+  facts atomically with their own.** Neither is a `dependsOn` edge — nobody READS commercial
+  — and participant channels are cycle-exempt (the cleared `activities → labour`,
+  `media → inventory` precedent), so the acyclicity acceptance test still extends without a
+  new exemption. `commercial` is a sink in the READ graph; it is not unreachable.
+  - `procurement.workflowParticipants` gains `commercial`. §C requires an amendment to
+    supersede the prior attribution in the SAME transaction that issues the new PO version,
+    and that is a commercial-owned write performed from procurement's transaction:
+    `CommercialParticipant.replaceAttribution(tx, poLineId, fromVersion, toVersion)`. Without
+    the edge, amending a live ₹100 PO leaves the old attribution superseded with its version
+    and the new live version unattributed until some later commercial command — so
+    `COMMITTED` silently drops the whole vendor obligation out of every budget and forecast,
+    which is exactly the "a live line can never be unattributed" invariant §C states. Cancel
+    and close-short use the same channel to release.
+  - `activities.workflowParticipants` gains `commercial` (already stated in §E) so that
+    superseding a cited output or reverting a sign-off asks
+    `CommercialParticipant.assertWorkEvidenceRevisable` first.
+  - The manifest table Task 1 must produce is therefore: `commercial.dependsOn` = those four;
+    `commercial.workflowParticipants` = `['inventory', 'activities']`;
+    `procurement.workflowParticipants` and `activities.workflowParticipants` each gain
+    `commercial`; nothing gains `commercial` in any `dependsOn`. A Task-1 acceptance test
+    asserts that exact edge set and that a topological sort of the `dependsOn` graph
+    succeeds.
 - **No readiness gate consults commercial.** An unpaid bill, a breached budget and a
   disputed certification must never stop an activity from starting or a receipt from being
   accepted. Money follows the site; it does not command it. This is stated as an invariant
@@ -538,6 +593,29 @@ rests on, and certification is the last point before money becomes payable.
    version can never be left unattributed (COMMITTED never silently drops to zero).
 5v. §H seals: PG rejects UPDATE and DELETE of a deduction row; a whitespace-only reason is
    rejected on every reason column named in §H.
+5w. §0 `COMMITTED` close-short: a ₹100 PO closed short before ANY receipt leaves ₹0
+   outstanding — the released remainder is subtracted once and never added back, so no
+   forecast bucket carries a cancelled obligation; a ₹100 PO with ₹40 accepted then closed
+   short leaves ₹0 outstanding and ₹40 in `received-not-billed`, and the buckets still
+   partition. The labour twin behaves identically.
+5x. §K edge set: the Task-1 manifest matches the §K table exactly —
+   `commercial.workflowParticipants` contains BOTH `inventory` and `activities`, and
+   `procurement`/`activities` each list `commercial`. RED against a manifest declaring only
+   `['inventory']`, which is the state in which §D's locked status read and §C's atomic
+   re-attribution are calls the manifest forbids. A topological sort of the `dependsOn` graph
+   still succeeds (participant edges are exempt).
+5y. §C amendment channel: amending a live ₹100 PO through procurement replaces the
+   attribution in the SAME transaction — `COMMITTED` reads ₹100 before and ₹100 after, never
+   ₹0 in between and never ₹200; a cancel and a close-short release through the same channel.
+   Under a deterministic barrier, a concurrent forecast read never observes an unattributed
+   live line.
+5z. §F amendment lifecycle: a `submitted`/`verified`/`disputed` bill amends; a CERTIFIED bill
+   REFUSES to amend, naming the certificate; superseding the certificate first permits the
+   amendment. Under a barrier, concurrent certify-and-amend admits exactly one, and neither
+   ordering leaves a live certificate on a superseded claim version.
+5aa. §I exception seals: PG rejects UPDATE and DELETE of a `SodException`; a whitespace-only
+   reason is rejected; an exception written outside the override's transaction, or pointed at
+   a second certificate, is refused — one exception authorizes one fact.
 5g. §0 set identity: for each of the six sets, the "must NOT be" column is a probe — the
    80/20 acceptance, the accept-then-issue, the adjust-into-bucket, the amended bill, the
    advanced-lifecycle bill, the superseded certificate and the amended PO commitment each
