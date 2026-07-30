@@ -380,7 +380,15 @@ line**. It has a different unit, a different authority and a different lifecycle
   DISPUTES live uncertified claims and refuses only against a live certificate; the measurement
   path owes the identical disposition, and giving acceptance one rule and measurement another is
   the same one-site-short defect as the rest of this round. So, under the serialization:
-  refuse only if the result would fall below `max(0, BILLED_QTY over live CERTIFIED bills)`;
+  refuse only if the result would fall below `max(0, BILLED_QTY over live CERTIFIED bills)` — **and,
+  before that aggregate test, refuse any correction that would reduce a measurement row a live
+  certificate has FROZEN as its consumed evidence** (§E's `(measurementId, consumedQty)` set). The
+  aggregate alone is strictly weaker, and the gap is not hypothetical: measurement A records 100, an
+  80-shift certificate freezes A as its evidence, measurement B later records another 100, then A is
+  corrected by −100. Aggregate `MEASURED` is still 100, so an aggregate-only floor permits it — and
+  the certificate now rests on rows, and an actor, that neither certification nor the §I SoD rule
+  ever evaluated. That is the identity failure §E's consumption freeze exists to prevent, so the
+  row-level check comes first and the aggregate test second;
   otherwise DISPUTE enough live uncertified claims — newest-first, stopping as soon as the
   aggregate bound holds, exactly as §G disputes acceptances — and let the correction land.
   Withdrawing measured work a live CERTIFICATE rests on still requires superseding that
@@ -976,7 +984,7 @@ buckets for one ₹100 payable. The complete definitions:
 |---|---|---|
 | `budget` | `BUDGET` (the live version only, §0), reported ALONGSIDE `BUDGET − Σ(the six exposure buckets)` — **authority, not exposure** | Two earlier revisions got this wrong in opposite directions. Reporting `BUDGET` raw double-counts the whole chain against its own authority; subtracting only `COMMITTED` is worse, because `COMMITTED` is already just the OUTSTANDING remainder — a ₹100 PO fully accepted and unbilled has `COMMITTED = 0`, so the ₹100 would appear in `budget` AND in `received-not-billed`. The fix is not a third subtraction but a category correction: **budget is the CEILING the other six are measured against, and only those six partition the money.** The headroom figure subtracts all six, and it is deliberately allowed to go NEGATIVE — that is the over-commitment signal §B's budget-vs-committed exception fires on, not an error to clamp away |
 | `committed` | `COMMITTED` (already defined as OUTSTANDING in §0) | a received-but-unbilled ₹100 order belongs in `received-not-billed`, not here as well |
-| `received-not-billed` | received value **− live `BILLED_AMOUNT`**, where received value is on the SAME money basis as `BILLED_AMOUNT`: for a material line the PRORATED LANDED amount for `ACCEPTED` (`committedAmountBase × ACCEPTED / qty`, the §0 `COMMITTED` basis — tax and freight included), for a labour line the measured person-shifts at the frozen rate plus shift premium | ₹100 accepted with a ₹40 submitted-uncertified bill is ₹60 here and ₹40 in `awaiting-certification`; the raw accepted value would report ₹140 for one ₹100 delivery. And the two sides must be the same KIND of money, or the subtraction is meaningless: `BILLED_AMOUNT` includes claimed tax and freight, so pricing the received side at quantity × rate makes a fully-accepted ₹1,000 line with ₹100 tax and ₹50 freight report **−₹150** once billed, and leaves ₹150 of real exposure outside headroom before billing even though `COMMITTED` is already zero. Landed-vs-rate is exactly the mistake the Phase-3 §C `COMMITTED` row was corrected for; this row now cites that basis instead of restating one |
+| `received-not-billed` | received value **− live `BILLED_AMOUNT`**, where received value is on the SAME money basis as `BILLED_AMOUNT`: for a material line the prorated landed amount for `ACCEPTED` **with tax and freight clamped at the frozen authority**: `rate × ACCEPTED` plus `(tax + freight) × min(ACCEPTED, qty) / qty`; for a labour line the measured person-shifts at the frozen rate plus shift premium | ₹100 accepted with a ₹40 submitted-uncertified bill is ₹60 here and ₹40 in `awaiting-certification`; the raw accepted value would report ₹140 for one ₹100 delivery. And the two sides must be the same KIND of money, or the subtraction is meaningless: `BILLED_AMOUNT` includes claimed tax and freight, so pricing the received side at quantity × rate makes a fully-accepted ₹1,000 line with ₹100 tax and ₹50 freight report **−₹150** once billed, and leaves ₹150 of real exposure outside headroom before billing even though `COMMITTED` is already zero. Landed-vs-rate is exactly the mistake the Phase-3 §C `COMMITTED` row was corrected for. And the clamp matters for the same reason the §E billed-side cap does: scaling the WHOLE `committedAmountBase` by `ACCEPTED / qty` over-values overage, because the PO froze tax and freight for `qty` alone. On a 100-unit / ₹1,000 line with ₹100 tax and ₹50 freight, accepting and legally billing 110 units makes an unclamped received value ₹1,265 while §E caps the live bill at ₹1,250 — a phantom ₹15 stranded in this bucket that no downstream row can ever move. Overage is authorised as QUANTITY, so it is valued at rate only unless a PO amendment freezes more tax and freight; then the amended figures are the authority and the clamp follows them |
 | `awaiting-certification` | live billed-not-certified | the ₹40 above, once and only once |
 | `certified-payable` | **`NET_PAYABLE` − `APPROVED`** | gross `CERTIFIED − APPROVED` reports ₹100 payable on a ₹100 certificate carrying ₹10 retention, when only ₹90 can ever be approved — and after approving ₹90 it leaves a phantom ₹10 payable until a release row exists. Deductions are withheld, not payable |
 | `approved` | `APPROVED − PAID` (approved-not-paid) | see the ₹140 case above |
@@ -1106,8 +1114,19 @@ instead of backward. This section's closing sentence already says it: existing r
 backfill, NOT ONLY forward writes. Both halves, one task.
 
 That is still one architectural concern per task: Task 1 is "every live PO line is attributed, from
-whenever the capability is on", Task 2 is "the budget reads that attribution and reacts". Probes
-5bd/5ai/5ar/5aj therefore run at the Task-1 tree.
+whenever the capability is on", Task 2 is "budget authority exists and is compared against committed
+obligation". Probes 5ai/5ar/5aj and the ROW half of 5bd run at the Task-1 tree.
+
+**And `BudgetLine` moves to Task 2 with them, which is the other half of this seam.** An earlier
+revision left the versioned budget in Task 1 while the `COMMITTED` fold and the over-budget exception
+stayed in Task 2 — so a Task-1 deployment could enable a project holding a ₹90 attributed PO, revise
+the live budget from ₹100 to ₹50, and produce −₹40 of headroom with no fold, no exception and no
+Inbox writer in the tree to say so. A budget you can revise but whose breach nothing reports is a
+worse state than no budget at all, because the number looks authoritative. The fix is not to add a
+Task-1 reader — it is to notice that BUDGET and its exception are one concern: authority is only
+meaningful against the obligation it measures. So Task 1 ships `CostHead` (attribution needs somewhere
+to point) and no budget; Task 2 ships the budget, the fold, and the exception together, and its own
+probes can verify all three. Task 1 consequently has no headroom to be silent about.
 
 ### §M. Frontend surfaces
 
@@ -1124,8 +1143,8 @@ draft → CI → exact-head Codex gate.
 
 | Task | Scope | Review stop |
 |---|---|---|
-| 1 | `commercial` capability + module skeleton + `CostHead` + versioned immutable `BudgetLine` + the `CommitmentAttribution` TABLE with its XOR/uniqueness seals + `CommercialParticipant` + the activation backfill AND the forward issue/amend/cancel/close-short hooks with supersession, so no live PO line is ever unattributed while the capability is on (§C/§L) + SINK manifest + acyclicity test + §D/§L inertness proof | — |
-| 2 | What READS the attribution — the §C `COMMITTED` fold over the EXISTING frozen committed amounts + the budget-vs-committed exception + its Inbox action | — |
+| 1 | `commercial` capability + module skeleton + `CostHead` + the `CommitmentAttribution` TABLE with its XOR/uniqueness seals + `CommercialParticipant` + the activation backfill AND the forward issue/amend/cancel/close-short hooks with supersession, so no live PO line is ever unattributed while the capability is on (§C/§L) + SINK manifest + acyclicity test + §D/§L inertness proof. **No `BudgetLine`, so no headroom and nothing to except** | — |
+| 2 | Versioned immutable `BudgetLine` + the §C `COMMITTED` fold over the EXISTING frozen committed amounts + the budget-vs-committed exception and its Inbox action, raised from commitments AND budget revisions AND re-attributions (§B) | — |
 | 3 | `Measurement` (§D) — immutable, delta corrections, activity sign-off gate, material lines read acceptance instead | **STOP** — narrow review before any bill can consume a measurement |
 | 4 | `VendorBill` + lines + immutable versions + the §F CAS lifecycle **up to `under-verification`** + §G bounds 1–2 + **the `disputed` transition AND both withdrawal guards, because this is the task that first creates a LIVE bill: the acceptance side (`InventoryParticipant`-side `assertAcceptanceReversible`) AND the measurement side — Task 3 ships the signed-delta correction route while no `BILLED_QTY` row can exist, so its guard has only the zero floor; the §D live-claim floor (`MEASURED` may not fall below `BILLED_QTY(poLine)`) has to ship HERE or measure 100 → bill 100 live → correct −50 leaves `BILLED_QTY = 100 > MEASURED = 50`. Same rule, both sites (§0b)** | — |
 | 5 | Three-way verification (§E) — and therefore the `verified` transition itself — + dispute/resolution + certification + §G bound 3 + §H deduction ledger + **the §I measurer/acceptor-vs-certifier SoD rule AND the `SodException` record with its seals** | **STOP** — narrow review before payment authority exists |
@@ -1423,9 +1442,16 @@ SECTION is right and the probe is the defect.
    post-certification buckets were residuals, AND against the round-16 spelling of this probe,
    which still summed seven buckets after §J had made budget authority.
 5bd. §D enabling the `commercial` capability on a project that ALREADY holds live material and
-   labour POs attributes every one of them in the enabling transaction: `COMMITTED(costHead)`
-   reads the real obligation immediately, and a line that cannot be attributed REFUSES the
-   activation naming it rather than inventing a cost head.
+   labour POs attributes every one of them in the enabling transaction — asserted at the TASK-1 tree
+   on the ROWS, because that is what Task 1 ships: after activation every live PO line (material and
+   labour) has exactly one active `CommitmentAttribution`, and a line that cannot be attributed
+   REFUSES the activation naming it rather than inventing a cost head. An earlier revision asserted
+   `COMMITTED(costHead)` here, which Task 1 has no fold to answer with; that half is 5bu below, at
+   the tree that ships the reader.
+5bu. §C at the TASK-2 tree, `COMMITTED(costHead)` reads the real obligation for exactly those
+   backfilled rows: enable on a project with a live ₹100 material PO and a live ₹40 labour PO
+   attributed to two heads, and the fold reports ₹100 and ₹40 with no commercial command run since
+   activation — the backfill is not merely present, it is READ.
 5be. §L both structural tables parse: `docs/STATUS.md`'s named source of task numbering yields
    exactly Tasks 1–7 from ONE contiguous execution table; §0's set table is ONE contiguous block
    with no prose split; and the §J bucket table has one row per bucket the §J list names, so a
