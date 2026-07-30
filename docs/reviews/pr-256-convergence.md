@@ -2,8 +2,8 @@
 
 **PR:** #256 · *Autonomous handoff hygiene: runner continuation + daily-log flake fix*
 **Branch:** `claude/runner-handoff-hygiene` · **Base:** `main` `a16e68c`
-**Finding-bearing heads:** `b967f29` (findings 1–3), `2919e32` (findings 4–5), `ab7f4dc` (finding 6)
-**Convergence head:** this commit, from `ab7f4dc`
+**Finding-bearing heads:** `b967f29` (findings 1–3), `2919e32` (findings 4–5), `ab7f4dc` (finding 6), `d9372c9` (findings 7–8)
+**Convergence head:** this commit, from `d9372c9`
 
 Two finding-bearing heads answered five Codex findings with isolated patches.
 Per `AGENTS.md`, ordinary patching stops there: this head is ONE batched
@@ -190,10 +190,62 @@ instead of advancing STATUS after a clean merge.
   `D2` (the drift handoff derives the same way and the old unqualified
   `Recorded next step:` label is gone).
 
+### Finding 7 — P2, `d9372c9`: refresh STATUS after queued auto-merge
+
+*Codex:* `completeReviewedPullRequest()` enables auto-merge and dispatches the
+handoff before the PR has closed; when the merge finally lands, the continuation
+still uses the STATUS the run read at start-up, so a PR that just merged
+`open_pr: 252 / in_review` into `merged / next_task: …` receives a continuation
+derived from the state it replaced.
+
+- **Root cause:** the run's checkout is a snapshot taken before the work it is
+  reporting on. It is the right source for "what does the default branch say now"
+  and the wrong one for "what does the default branch say *after this merge*".
+- **Correction:** `statusAtCommit(client, ref)` reads `docs/STATUS.md` at a
+  commit; `handOffMergedPullRequest` reads it at `pullRequest.merge_commit_sha` —
+  the exact post-merge tree for that PR — and falls back to the checkout only
+  when it cannot be read. Unreadable returns `null`, never an empty state.
+- **Evidence:** `E2` (reads at the merge commit; unknown ref and empty ref both
+  degrade to `null`).
+
+### Finding 8 — P2, `d9372c9`: correct in-flight next steps while suppressing drift
+
+*Codex:* when an open PR head records `open_pr`, `drift: false` suppresses the
+hourly false positive — but `buildPostMergeContinuation` then runs that value
+through `assessDriftCorrected` as if there were no disagreement, so the comment
+renders conflicting instructions.
+
+- **Root cause — mine, from the previous round.** Finding 6's fix keyed the
+  correction on `drift.drift`. Suppressing the *shepherd* is not a claim that the
+  *record* is right: it only says a fix is already in flight. The record being
+  assessed is still the stale default-branch one, so the message said "shepherd
+  the open PR" beside a next step computed from an `open_pr` that predates it.
+  Same conflation as finding 6, one level along: reporting and correcting are
+  different questions.
+- **Correction:** `detectStatusDriftAcrossHeads` carries `suggestedOpenPr` in the
+  suppressed case too, and `assessDriftCorrected` keys on whether a correction
+  EXISTS rather than on whether drift is REPORTED. The shepherd stays quiet.
+- **Evidence:** `E1` (live PR + in-flight correction ⇒ `pr:256` as the next step,
+  agreeing with the shepherd line, and no drift section), `E1b` (no correction ⇒
+  assessment untouched).
+
 ## Reproduce-first evidence
 
-`scripts/runner-continuation-convergence.test.mjs`, 16 tests, all GREEN on this
+`scripts/runner-continuation-convergence.test.mjs`, 19 tests, all GREEN on this
 head.
+
+### Findings 7–8 (this round)
+
+Run against `d9372c9` with both changed sources stashed to that head:
+
+```
+not ok 1 - E1: an in-flight correction still corrects the post-merge next step
+ok   2 - E1b: with no correction available the assessment is untouched
+not ok 3 - E2: the merged handoff reads STATUS at the merge commit, not the run checkout
+# tests 3 / # pass 1 / # fail 2
+```
+
+`E1b` passes at base — the no-correction control, which was already right.
 
 ### Finding 6 (this round)
 

@@ -100,10 +100,16 @@ export function detectStatusDriftAcrossHeads({
     (entry) => entry?.now && !detectStatusDrift(entry.now, openPullRequests).drift,
   );
   if (correctingHead) {
+    // Suppressing the SHEPHERD is not a claim that the record is right — it only
+    // says a correction is already in flight, so posting a drift comment would be
+    // noise. `suggestedOpenPr` is carried through regardless, because the
+    // post-merge next step must still be assessed from the corrected record: the
+    // default branch's `open_pr` is stale either way.
     return {
       drift: false,
       correctedInFlight: true,
       correctingPullRequest: correctingHead.number ?? null,
+      suggestedOpenPr: defaultBranchDrift.suggestedOpenPr,
     };
   }
 
@@ -131,7 +137,15 @@ export function shouldShepherdOpenPullRequests({ openPullRequests = [] }) {
 // what STATUS currently claims — but it is never the actionable line.
 function assessDriftCorrected(statusNow, maintenanceQueue, drift) {
   const assessment = assessRunnerState(statusNow, maintenanceQueue);
-  if (!drift?.drift) return { assessment, recorded: null };
+  // Key on whether a CORRECTION exists, not on whether drift is REPORTED.
+  //
+  // When an open head already records the fix, `detectStatusDriftAcrossHeads`
+  // sets `drift: false` to keep the hourly shepherd quiet — but the record this
+  // function is assessing is still the stale default-branch one. Keying on
+  // `drift.drift` therefore assessed it as if there were no disagreement, and the
+  // comment rendered "shepherd the open PR" beside a next step computed from an
+  // `open_pr` that predates it.
+  if (drift?.suggestedOpenPr === undefined) return { assessment, recorded: null };
 
   const corrected = assessRunnerState(
     { ...statusNow, open_pr: drift.suggestedOpenPr },

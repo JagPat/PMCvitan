@@ -339,3 +339,66 @@ test('C1c: drift with a live PR is posted on that PR, keyed to its head SHA (fin
   assert.equal(client.posted[0].number, 256);
   assert.match(client.posted[0].body, /autonomous-status-drift:sha256 -->/);
 });
+
+// ---------------------------------------------------------------------------
+// Root cause E — suppressing the drift SHEPHERD is not a claim that the record
+// is right. Codex findings on head d9372c9.
+// ---------------------------------------------------------------------------
+
+test('E1: an in-flight correction still corrects the post-merge next step', () => {
+  // main says `open_pr: none`; #256 is live and its own head already records
+  // `open_pr: 256`, so the hourly shepherd is correctly suppressed. The record
+  // being assessed is STILL main's stale one — keying the correction on
+  // `drift.drift` rendered "shepherd the open PR" beside `next_task:…`.
+  const message = buildPostMergeContinuation({
+    statusNow: { task_state: 'merged', open_pr: 'none', next_task: 'phase-5-planning' },
+    openPullRequests: [pullRequest(256)],
+    headStatuses: [{ number: 256, now: { open_pr: '256', task_state: 'in_review' } }],
+  });
+  assert.match(message, /An autonomous PR is already open — shepherd it/);
+  assert.match(
+    message,
+    /\*\*Runner next step:\*\* `pr:256`/,
+    'the actionable step must agree with the shepherd instruction',
+  );
+  assert.doesNotMatch(
+    message,
+    /\*\*Runner next step:\*\* `next_task:phase-5-planning`/,
+    'the stale record must not drive the next step just because drift is quiet',
+  );
+  // The shepherd stays suppressed — this fix must not reintroduce the noise.
+  assert.doesNotMatch(message, /\*\*STATUS drift:\*\*/);
+});
+
+test('E1b: with no correction available the assessment is untouched', () => {
+  const message = buildPostMergeContinuation({
+    statusNow: { task_state: 'merged', open_pr: 'none', next_task: 'phase-5-planning' },
+    openPullRequests: [],
+  });
+  assert.match(message, /\*\*Runner next step:\*\* `next_task:phase-5-planning`/);
+  assert.doesNotMatch(message, /STALE/);
+});
+
+test('E2: the merged handoff reads STATUS at the merge commit, not the run checkout', async () => {
+  const { statusAtCommit } = await import('./autonomous-handoff.mjs');
+  const merged = [
+    '# STATUS', '', '## Now', '', '```yaml',
+    'task_state: merged', 'open_pr: none', 'next_task: phase-5-planning',
+    '```', '',
+  ].join('\n');
+  const client = {
+    async fileContent(path, ref) {
+      assert.equal(path, 'docs/STATUS.md');
+      if (ref !== 'mergesha') throw new Error(`unexpected ref ${ref}`);
+      return merged;
+    },
+  };
+  assert.deepEqual(
+    await statusAtCommit(client, 'mergesha'),
+    { task_state: 'merged', open_pr: 'none', next_task: 'phase-5-planning' },
+  );
+  // Unreadable or missing ref degrades to null so the caller falls back rather
+  // than acting on an empty state.
+  assert.equal(await statusAtCommit(client, 'nope'), null);
+  assert.equal(await statusAtCommit(client, ''), null);
+});

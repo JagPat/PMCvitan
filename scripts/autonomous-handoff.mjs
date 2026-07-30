@@ -277,6 +277,19 @@ export async function loadContinuationContext(
   };
 }
 
+// STATUS as it exists at one commit, or null when it cannot be read or parsed.
+// Null is a signal to fall back, never a silent empty state.
+export async function statusAtCommit(client, ref) {
+  if (!ref) return null;
+  try {
+    const markdown = await client.fileContent('docs/STATUS.md', ref);
+    return parseStatusNow(markdown ?? '');
+  } catch (error) {
+    console.warn(`Could not read STATUS at ${ref}: ${error.message}`);
+    return null;
+  }
+}
+
 async function handOffMergedPullRequest(
   client,
   pullRequest,
@@ -311,12 +324,22 @@ async function handOffMergedPullRequest(
 
   const { defaultBranchNow, maintenanceQueue, openPullRequests, headStatuses } =
     continuationContext;
+  // STATUS as of THIS merge, not as of the run's checkout.
+  //
+  // `loadContinuationContext` reads the workflow's own checkout, which is taken
+  // when the run starts. On the queued auto-merge path the run enables
+  // auto-merge and only later observes the merge, so that copy predates it: a PR
+  // that merged `open_pr: 252 / in_review` into `merged / next_task: …` would be
+  // handed a continuation derived from the state it just replaced. The merge
+  // commit is the exact post-merge tree for this PR, so read STATUS there.
+  const mergedNow = await statusAtCommit(client, pullRequest.merge_commit_sha)
+    ?? defaultBranchNow;
   await client.comment(
     pullRequest.number,
     [
       marker,
       buildPostMergeContinuation({
-        statusNow: defaultBranchNow,
+        statusNow: mergedNow,
         maintenanceQueue,
         openPullRequests,
         headStatuses,
