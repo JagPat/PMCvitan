@@ -589,10 +589,46 @@ The recommendation carried since round 8 stands and is now better evidenced: kee
 cleared in 2 and 3 rounds by doing exactly that. That is an owner decision because splitting
 wrongly could drop reviewed architecture, so it is recorded, not acted on unilaterally.
 
+## Round 12 (head `4fcedd6`) — twelve findings, and ten were already-decided rules
+
+All twelve correct. The count is the highest of any round on this PR, and the composition is the
+important part: **ten of the twelve are a rule §0 or §I already decided, applied at one site and
+missing at another.** Only two are genuinely new mechanism.
+
+| Finding | Already-decided rule it missed | Fix |
+|---|---|---|
+| one live budget chain per cost head | §0 defines `BUDGET` as "the LIVE version only" — which presupposes one chain | partial unique on the live root + `amount >= 0` |
+| attribution authority on participant writes | §I decides authority per WRITE; the participant path was unnamed | `CommercialParticipant.attribute` enforces `commercial.attribute` |
+| measurement uncapped by ordered qty | §D bounds evidence; only `EFFORT` was stated | cumulative `MEASURED ≤ ordered personShiftQty` unless amended |
+| acceptance consumption by row only | protects too much | set carries `(rowId, consumedQty)` |
+| measurement consumption unfrozen | the same rule, other side | identical `(rowId, consumedQty)` freeze |
+| labour tax/freight with no ordered side | Phase 4 froze none, and §0 puts Phase-4 edits out of scope | Phase 5 refuses them at PG (`CHECK = 0`) |
+| `disputed → under-verification` | §0 already says "re-enters the fold only as a NEW live version" | resolution supersedes; disputed is terminal |
+| supersession drops deductions | §0 scoped APPROVALS to the live certificate | deductions re-stated on the new certificate |
+| deduction/release permissions absent | §H makes those rows attributable | `commercial.deduct` + `commercial.release` |
+| `Prisma.Decimal` in the frontend | not implementable — the web package has no Prisma | server `Prisma.Decimal`, browser `lib/decimal.ts` |
+| vendor-pinning backfill (NEW) | — | diagnostic-first backfill from the PO chain before the FK |
+| — | — | probes 5aq–5ay pin all of the above |
+
+**What the composition says.** Round 11 named the mechanism: a correction that ANNOTATES rather
+than REWRITES leaves the stale statement standing. Round 12 shows the other half of the same
+problem — a rule can be stated correctly in §0 and simply never reach the section that needs it.
+Round 11's rule ("rewrite, never annotate") governs corrections. It says nothing about a rule
+that was right the first time and was never propagated. That is what §0b's site-closure table was
+for, and §0b has now failed at this twice, because a prose table of sites is itself prose: it
+cannot be checked, and nothing fails when a site is missing.
+
+**This is the argument for the split, made by the findings themselves.** Ten of twelve are
+"§0 decided X; section Y does not know". In a plan that states each decision once and hands
+per-task mechanism to the task PR, §0 IS the single statement and the task's own probe is what
+checks the propagation — a RED test, not a reader. The recommendation carried since round 8 has
+not changed, and this round is its strongest evidence: 13 heads, 104 findings, no declining rate,
+and the defect class is now precisely "one decision, many uncheckable restatements".
+
 ## Termination, and what happens next
 
-Twelve finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6 — **ninety-two** findings.
-Ninety-one were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
+Thirteen finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12 — **one hundred and
+four** findings. One hundred and three were correct; round 10's scope-evidence P1 is the only verifiably false one, dismissed
 in the round-10 section above with the passing check-run cited. (The round-7 packet said "sixty-six" for the
 first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
 forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
@@ -626,7 +662,7 @@ load-bearing yet: the gate runs `main`'s scripts, #253 has not merged, and
 sentence replaces the round-10 wording rather than sitting beside it, per round 11's own rule.
 
 An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
-the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6) but their KIND has narrowed and
+the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7, 6, 12) but their KIND has narrowed and
 round 8 finally names the mechanism. Rounds 1–6 read as "I fix instances, not classes." Round 7
 read as "prose has no compiler." Round 8 is more specific and more actionable than either: **the
 recurring defect is a rule with two written statements, and every one of them was created by a

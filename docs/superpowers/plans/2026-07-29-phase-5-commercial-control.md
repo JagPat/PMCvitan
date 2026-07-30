@@ -159,9 +159,13 @@ licence to write a local filter.
 - Every amount is `Decimal(18,2)`. Every quantity keeps its own scale (`Decimal(18,6)` for
   material base units, `Int` for person-shifts) — the Phase-4 rule that distinct fact
   families keep distinct units applies to money too.
-- **All arithmetic in `Prisma.Decimal` end to end.** No `Number()` on a money value at any
-  point, including in read projections and the frontend. A full-scale probe that float64
-  demonstrably corrupts is a required plan probe.
+- **All arithmetic in an EXACT decimal type end to end, never float64.** No `Number()` on a
+  money value at any point, including read projections and the frontend. Server-side that type
+  is `Prisma.Decimal`; **browser-side it is the web package's existing exact helpers
+  (`apps/web/src/lib/decimal.ts`), NOT `Prisma.Decimal`** — the web package has no Prisma
+  dependency and pulling the client into the bundle to do arithmetic would be the wrong fix for
+  a rule about precision. The invariant is exactness, not a library. A full-scale probe that
+  float64 demonstrably corrupts is required on BOTH sides.
 - Rounding is stated once: half-up at 2 decimals, applied only where a value is persisted,
   never mid-computation.
 
@@ -190,6 +194,13 @@ licence to write a local filter.
   Reclassifying is a real operation and it has a real path: create the new head, then
   supersede the attribution (§C, attributable and reasoned) and revise the budget (§B). The
   display `name` stays editable — it labels a head, it does not key one.
+- **Exactly one live budget chain per `(projectId, costHead)`, PG-enforced**, and the amount
+  carries `CHECK (amount >= 0)`. `BUDGET(costHead)` is defined (§0) as "the amount of the LIVE
+  budget version only", which presupposes there is exactly one: with two live roots for the
+  same head, summing them overstates the plan and picking one hides an approved plan, and a
+  negative live amount feeds nonsensical capacity into the budget-vs-committed exception before
+  any PO exists. A partial unique on the live root plus the sign CHECK make both unrepresentable
+  rather than merely unvalidated.
   Binding budget to an activity would make a schedule edit a budget edit; the two must be
   able to move independently.
 - Budget lines are **versioned and immutable** (spec §97). A revision APPENDS a new version
@@ -222,7 +233,11 @@ command then every newly issued order is a live, unattributed obligation until s
 it: `COMMITTED(costHead)` reads ₹0 for a real ₹100 order, the budget exception never fires and
 the cash forecast is short by the whole amount. The invariant "a live line can never be
 unattributed" has to hold from the first instant the line is live, so the initial attribution
-is written through `CommercialParticipant.attribute` in the issuing transaction. The cost head
+is written through `CommercialParticipant.attribute` in the issuing transaction. **That
+participant call enforces `commercial.attribute` on the acting actor, exactly as the standalone
+route does** — otherwise a user holding PO-issue authority but not `commercial.attribute` chooses
+the cost head during `pos.issue` and mutates budget evidence through a side door. §I's authority
+is about the WRITE, not about which HTTP route reached it. The cost head
 is therefore an input to issuance when the capability is on. The alternative — keeping the PO
 version non-live until an attribution exists — was rejected: it would change Phase-3/4
 procurement lifecycle semantics for a commercial concern, and §K's whole premise is that money
@@ -289,7 +304,12 @@ line**. It has a different unit, a different authority and a different lifecycle
       REQUIRED AS EVIDENCE that work happened, and the QUANTITY cap is
       `MEASURED(poLine) ≤ EFFORT(poLine)` (§0) — effort matched to that line's own
       `labourSpecFingerprint` and slices, each unit consumable once, so one trade's
-      attendance can never fund another trade's bill on the same day;
+      attendance can never fund another trade's bill on the same day. **Cumulative
+      `MEASURED(poLine)` is ALSO capped at the ordered `personShiftQty`** (raised only by a PO
+      amendment that orders more): `EFFORT` alone would let 120 worked shifts be measured
+      against a 100-shift PO, and since `COMMITTED` consumes measured person-shifts (§0) the
+      forecast would carry 20 shifts of unauthorised work long before Task 4 refuses to bill
+      them. Ordered authority bounds measurement, not just billing;
   - the bound is re-derived under lock at measurement time AND re-checked at certification,
     because `EFFORT` can grow or be consumed by another line between the two, and the
     activity's sign-off can be reverted. NOT because the output can be superseded — it
@@ -319,10 +339,21 @@ line**. It has a different unit, a different authority and a different lifecycle
 |---|---|---|
 | ORDERED | PO line frozen `qty` + `approvedOverage`, at frozen `rate` / `taxAmount` / `freightAmount` | PO line `personShiftQty` at frozen `ratePerPersonShift` + `shiftPremium` |
 | ACCEPTED / MEASURED | `ACCEPTED(poLine)` (§0) via `InventoryQuery` | `MEASURED(poLine)` (§0) |
-| BILLED | this bill line's quantity × rate + its claimed tax and freight, plus `BILLED_QTY(poLine)` / `BILLED_AMOUNT(poLine)` (§0) for the rest | this line's person-shifts × (`ratePerPersonShift` + `shiftPremium`) — the SAME combined frozen terms the ordered side uses — plus its claimed tax and freight, plus the §0 folds for the rest |
+| BILLED | this bill line's quantity × rate + its claimed tax and freight, plus `BILLED_QTY(poLine)` / `BILLED_AMOUNT(poLine)` (§0) for the rest | this line's person-shifts × (`ratePerPersonShift` + `shiftPremium`) — the SAME combined frozen terms the ordered side uses — and NO tax or freight — see below | 
 
 Each side is the §0 set by name. Restating any of those filters here is exactly the drift
 that produced two rounds of findings.
+
+**A labour bill line carries NO tax or freight in Phase 5, and PostgreSQL refuses one.** The
+shipped `LabourPurchaseOrderLine` snapshot (`20270201000000_phase4_t2_labour_procurement`)
+freezes `personShiftQty`, `ratePerPersonShift`, `shiftPremium` and `committedAmountBase` — and
+no tax or freight. There is therefore no ordered-side frozen amount to compare a labour tax or
+freight claim against, so a 10-shift ₹100+₹20 PO could carry an extra ₹200 claim that bound 3
+would certify on the strength of a certificate alone. The two ways out are to refuse the claim
+or to add a frozen labour tax/freight snapshot — and the second edits a cleared Phase-4 table,
+which §0 puts out of scope. So Phase 5 refuses it: a labour bill line's tax and freight columns
+are `CHECK (... = 0)`, and a vendor with labour taxes to claim is a Phase-6 scope item with its
+own ordered-side snapshot. Materials are unaffected — their PO line freezes both.
 
 **Tax and freight are prorated, never compared whole.** The PO line freezes a LINE-level
 `taxAmount` and `freightAmount` for the full ordered quantity, so a 50-unit bill against a
@@ -382,9 +413,22 @@ see an inventory correction that lands AFTER certification: inventory does not d
 commercial, so `stock.reverse` commits freely and leaves a certified, payable bill whose
 `ACCEPTED(poLine)` is now zero. The reversal must therefore ask, in its own transaction,
 through a new `CommercialParticipant.assertAcceptanceReversible(tx, poLineId, acceptanceTxIds)`
-— the TARGET ROWS, not an aggregate quantity. Certification freezes WHICH acceptance rows it
-consumed (a `CertifiedAcceptanceConsumption` set, append-only), and the participant refuses a
-reversal of any row in a live certificate's set.
+— the TARGET ROWS, not an aggregate quantity. Certification freezes which acceptance rows it
+consumed **AND HOW MUCH OF EACH** (a `CertifiedAcceptanceConsumption` set of
+`(rowId, consumedQty)`, append-only), and the participant refuses a reversal only to the extent
+it would take a row below its consumed quantity.
+
+**Row identity alone is too coarse, and the aggregate is too weak — the set needs both.** One
+acceptance row of 100 with an 80-unit bill certified against it: an aggregate check lets the
+evidence be swapped (see below), while row-identity-only refuses a legitimate reversal of the
+unused 20 even though `ACCEPTED` would stay at 80 and the certificate's 80 would be intact.
+`(rowId, consumedQty)` permits exactly the unconsumed remainder and no more. **The same rule
+applies on the measurement side** (§D): certification freezes the `Measurement` rows and
+quantities it consumed, a reducing correction that would take a consumed row below its consumed
+quantity is refused until the certificate is superseded, and the aggregate-only guard is not
+sufficient there either — measure 100 by actor A, certify, add a second 100 by actor B, then
+correct −100, and the fold still covers the bill while the certificate now rests on different
+rows by a different actor than the §E triple and the §I SoD rule ever evaluated.
 
 **A live UNCERTIFIED claim is protected too, by disputing rather than refusing.** Guarding only
 certificates leaves the pre-certification window open: 100 accepted, a submitted (or verified)
@@ -450,11 +494,21 @@ responsible review."
 
 ```text
 draft → submitted → under-verification → { verified | disputed }
-disputed → under-verification            (after a resolved exception)
+disputed → resolved                      (terminal; resolution supersedes into a NEW version)
 verified → certified → approved-for-payment → { part-paid → paid }
 draft | submitted | under-verification |
   disputed | verified → rejected            (attributable reason required)
 ```
+
+**A `disputed` version is never revived.** Round 11 wrote the reason into §0 — "a disputed
+version re-enters the fold only when resolved into a NEW live version" — and this table still
+moved the same version back to `under-verification`, which is that rule's stale sibling. Moving
+a 120-unit claim out of `disputed` against 100 accepted makes `BILLED_QTY = 120` live again
+BEFORE the quantity changes, breaking bound 2 and blocking the corrected 100-unit claim the
+dispute exists to enable. So resolution supersedes into a new version carrying the corrected
+quantity (or the vendor withdraws and the version stays `disputed` as history), and the new
+version enters `submitted` where the ordinary bounds apply. The disputed version's claimed 120
+remains readable on the dispute — the record of what was claimed is never edited.
 
 Rejection stops at `verified`. A certified bill has produced append-only payable facts — the
 certificate, and possibly an approval or a part payment — and §0 removes every `rejected`
@@ -469,6 +523,14 @@ those, and both are append-only, so lowering the certificate alone leaves an aut
 and possibly cash standing at an amount nobody certified. Both are handled by the §0 set
 definitions rather than by prose an implementer has to remember:
 
+- **Deductions.** Scoped to the LIVE certificate exactly as approvals are, and for the same
+  reason: a deduction is a ledger row AGAINST a certificate, not against the bill. Certify ₹100
+  with ₹10 retention and supersede to ₹50 — carrying the old row caps the new certificate at ₹40
+  by a withholding attached to an amount nobody certified, and silently dropping it makes a
+  retained balance vanish with no release. Supersession therefore RE-STATES the deductions on the
+  new certificate in the same transaction (the superseded rows survive as history on the
+  superseded certificate), and `NET_PAYABLE` reads only the live certificate's rows. Retention
+  released later is released against the live certificate.
 - **Approvals.** `APPROVED(bill)` is scoped to the LIVE certificate (§0), so supersession
   lowers it automatically and the reduced amount must be RE-approved by someone holding the
   authority for it. Certify ₹100, approve ₹100, supersede to ₹50: approved reads ₹0, bound 4
@@ -505,6 +567,15 @@ an amount nobody has certified, and there is no honest fold in which that is leg
 extra reversal row on a rare correction and buys an invariant with no window in which it is
 false. The refusal names the outstanding `PAID` so the operator knows exactly what to reverse.
 
+- **The vendor-pinning columns need a BACKFILL, not only issuance-time copying.** Both PO-line
+  tables are already deployed and projects may hold lines before Task 4 runs, so copying
+  `vendorId`/`purchaseOrderId` at issuance populates future rows only: making the composite-FK
+  keys `NOT NULL` then fails the migration, and leaving them nullable leaves old lines
+  un-pinned, so their first commercial bill is either unrepresentable or not PG-bound to the
+  vendor. Task 4's migration therefore backfills every existing line from the PO root/version
+  chain it already references, ABORTS diagnostically if any line cannot be resolved (never
+  inventing a vendor), and only then adds the FK and the non-null seal — the diagnostic-first
+  shape every Phase-3/4 correction migration used.
 - Every transition is a CAS `updateMany(id, projectId, expectedStatus)` — a deterministic
   409 on a concurrent second attempt, the Phase-3/4 machine.
 - A `VendorBill` carries immutable versions exactly like `PurchaseOrder`: an amendment
@@ -637,7 +708,13 @@ bill for material that never arrived or work never measured.
 - New permissions: `commercial.read`, **`commercial.budget`** (create a `CostHead`, create or
   revise a `BudgetLine`), **`commercial.attribute`** (choose or re-attribute a cost head for a
   PO line), `commercial.measure`, `commercial.verify`, `commercial.certify`,
-  `commercial.approve-payment`, `commercial.record-payment`. Certification and payment approval
+  **`commercial.deduct`** (record or re-state a deduction row) and **`commercial.release`**
+  (release a retained balance — a separate authority because releasing withheld money is not the
+  same act as withholding it), `commercial.approve-payment`, `commercial.record-payment`. The
+  deduction pair is named explicitly because §H makes those rows attributable: without them the
+  Task-5/6 routes are either uncallable through `RolesFor` or silently borrow
+  `commercial.certify`/`commercial.record-payment`, which would let a certifier or a payer move
+  withheld balances under an authority the plan never granted for it. Certification and payment approval
   are deliberately separate. The two write permissions are listed because Tasks 1–2 add those
   routes: without them the endpoints are either uncallable through `RolesFor`, or they borrow
   `commercial.read`/a generic PMC check — which would let a read-only commercial user mutate the
@@ -1008,6 +1085,34 @@ SECTION is right and the probe is the defect.
    column this phase introduces — deduction, rejection, budget revision, attribution, override,
    measurement correction, certificate supersession and payment reversal — enumerated from the
    schema rather than from a list written by hand.
+5aq. §B budget scope is single-valued at PG: a second live `BudgetLine` chain for the same
+   `(projectId, costHead)` is REFUSED by the partial unique, and a negative amount by the CHECK,
+   so `BUDGET(costHead)` can never be ambiguous or nonsensical.
+5ar. §C attribution authority follows the WRITE, not the route: a user with PO-issue authority
+   but without `commercial.attribute` is refused when `pos.issue` (and labour PO issue) tries to
+   write the initial `CommitmentAttribution` through the participant.
+5as. §D measurement is bounded by ORDERED authority too: 120 worked person-shifts against a
+   100-shift PO measures at most 100, and a PO amendment ordering 120 then permits the rest.
+5at. §E consumption is `(rowId, consumedQty)` on BOTH sides: with one 100-unit acceptance row and
+   an 80-unit certified bill, reversing the unused 20 is PERMITTED and reversing 21 is REFUSED;
+   the measurement twin — measure 100 by A, certify, add 100 by B, correct −100 — is REFUSED
+   even though the aggregate still covers the bill.
+5au. §E a labour bill line's tax and freight are refused at PG (`CHECK = 0`), because the
+   `LabourPurchaseOrderLine` snapshot freezes no ordered tax or freight to compare against; a
+   material line's prorated tax/freight is unaffected.
+5av. §F a `disputed` version never returns to live: resolution issues a NEW version and the
+   disputed one stays terminal, so a 120-unit dispute against 100 accepted can never re-enter
+   `BILLED_QTY` and block its own corrected 100-unit claim.
+5aw. §F supersession re-states DEDUCTIONS on the new certificate: certify ₹100 with ₹10
+   retention, supersede to ₹50 → `NET_PAYABLE` reads ₹40 against the LIVE certificate's own
+   restated row, never ₹40 from a row attached to the superseded ₹100, and the retained balance
+   never silently disappears.
+5ax. §F Task 4's vendor-pinning migration BACKFILLS existing PO lines from the PO chain and
+   ABORTS on any line it cannot resolve, so a project with lines predating Task 4 upgrades with
+   every line pinned and none invented.
+5ay. §A exact-decimal discipline holds on BOTH sides of the wire: the API probe uses
+   `Prisma.Decimal` and the WEB probe uses `apps/web/src/lib/decimal.ts`, each at a full-scale
+   value float64 demonstrably corrupts, and neither imports the other's type.
 5g. §0 set identity: for EVERY row of the §0 table (no count is written here — a count is one
    more thing that goes stale when a set is added, which is how round 8 happened), the
    "must NOT be" column is a probe — the
