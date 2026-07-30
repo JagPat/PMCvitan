@@ -480,6 +480,48 @@ test('runnable and schema files never count as documentation, wherever they live
   assert.equal(isDocsOnlyDiff(['docs/a.md', 'docs/reviews/b.md', 'docs/img/c.svg']), true);
 });
 
+// FINDING (#253 round 2 P2) — a rename carries TWO paths and only one was classified.
+test('a rename out of a runnable path disqualifies a docs-only diff', () => {
+  // GitHub reports a rename as status:'renamed', filename = the NEW path,
+  // previous_filename = the OLD one. Reading only `filename` made
+  // scripts/old-gate.mjs -> docs/old-gate.md look like pure documentation while
+  // runnable code was removed — the same defect as the `removed` filter, one step on.
+  assert.equal(
+    isDocsOnlyDiff([
+      { filename: 'docs/STATUS.md', status: 'modified' },
+      {
+        filename: 'docs/old-gate.md',
+        previous_filename: 'scripts/old-gate.mjs',
+        status: 'renamed',
+      },
+    ]),
+    false,
+    'renaming a script into a docs path still removes runnable code',
+  );
+  // the reverse direction was already caught by `filename`; pin it so it stays caught
+  assert.equal(
+    isDocsOnlyDiff([
+      {
+        filename: 'scripts/gate.mjs',
+        previous_filename: 'docs/gate.md',
+        status: 'renamed',
+      },
+    ]),
+    false,
+  );
+  // a doc moved to another doc path is still documentation on both sides
+  assert.equal(
+    isDocsOnlyDiff([
+      {
+        filename: 'docs/plans/b.md',
+        previous_filename: 'docs/a.md',
+        status: 'renamed',
+      },
+    ]),
+    true,
+  );
+});
+
 test('a deleted code file disqualifies a docs-only diff', () => {
   assert.equal(
     isDocsOnlyDiff([

@@ -158,15 +158,24 @@ function isDocumentation(name) {
   return DOCS_EXTENSION.test(name) && DOCS_LOCATION.test(name);
 }
 
-export function isDocsOnlyDiff(changedFiles) {
-  // Every entry, INCLUDING removals. Deleting `scripts/old-gate.mjs` changes what runs
-  // just as surely as editing it, so a diff that deletes code is provable and is not a
-  // plan review. (The convergence-PACKET check below keeps its own `removed` filter:
-  // there the question is whether the head ADDS the audit, and a deleted packet is not
-  // an audit.)
-  const names = (changedFiles ?? [])
-    .map((file) => changedFilename(file))
+// Every path a diff entry TOUCHES. A rename touches two: GitHub reports it as
+// `status: 'renamed'` with `filename` set to the new path and `previous_filename` to the
+// old one, so reading only `filename` let `scripts/old-gate.mjs` → `docs/old-gate.md`
+// present as pure documentation while runnable code was removed. A rename is a removal
+// plus an addition, and both sides have to be classified.
+function changedPaths(file) {
+  if (typeof file === 'string') return [file];
+  return [file?.filename, file?.previous_filename]
     .filter((name) => typeof name === 'string' && name.length > 0);
+}
+
+export function isDocsOnlyDiff(changedFiles) {
+  // Every entry, INCLUDING removals and renames. Deleting `scripts/old-gate.mjs` — or
+  // moving it out from under that name — changes what runs just as surely as editing it,
+  // so such a diff is provable and is not a plan review. (The convergence-PACKET check
+  // below keeps its own `removed` filter and reads only `filename`: there the question is
+  // whether the head ADDS the audit at that path, which the surviving name answers.)
+  const names = (changedFiles ?? []).flatMap((file) => changedPaths(file));
   return names.length > 0 && names.every((name) => isDocumentation(name));
 }
 
