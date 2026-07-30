@@ -16,8 +16,10 @@ import {
 } from './review-efficiency.mjs';
 import { assessPullRequestScope } from './review-scope.mjs';
 import {
+  AUTOMATION_CHECK,
   DOCS_FAST_CHECKS,
   isBatteryProductCheck,
+  isSkipped,
   PRODUCT_CHECKS,
   attemptGateStamps,
   attemptsWithPassingGates,
@@ -62,6 +64,36 @@ export function requiredChecksForPullRequest(pullRequestNumber, pullRequestFiles
   if (Array.isArray(pullRequestFiles) && isDocsOnlyDiff(pullRequestFiles)) {
     return DOCS_FAST_CHECKS;
   }
+  return REQUIRED_CHECKS;
+}
+
+// When the cumulative file list is unreadable, infer the battery path from the
+// head's check-run history so the gate does not require product jobs a
+// docs-fast workflow deliberately skipped (or vice versa).
+export function inferRequiredChecksFromRuns(pullRequestNumber, checkRuns) {
+  const runs = Array.isArray(checkRuns) ? checkRuns : [];
+  const hasRealProduct = PRODUCT_CHECKS.some((name) =>
+    runs.some((run) => run?.name === name && !isSkipped(run)));
+  if (hasRealProduct) {
+    return requiredChecksForPullRequest(pullRequestNumber, ['apps/api/src/x.ts']);
+  }
+
+  const productsOnlySkippedOrAbsent = PRODUCT_CHECKS.every((name) => {
+    const named = runs.filter((run) => run?.name === name);
+    return named.length === 0 || named.every(isSkipped);
+  });
+  const automationTouched = runs.some((run) => run?.name === AUTOMATION_CHECK);
+  const hasAutomationEvidence = runs.some(
+    (run) => run?.name === AUTOMATION_CHECK && !isSkipped(run),
+  );
+
+  if (
+    productsOnlySkippedOrAbsent
+    && (hasAutomationEvidence || automationTouched)
+  ) {
+    return DOCS_FAST_CHECKS;
+  }
+
   return REQUIRED_CHECKS;
 }
 
@@ -927,7 +959,12 @@ async function resolveRequiredChecks(client, pullRequest) {
   try {
     pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
   } catch {
-    pullRequestFiles = undefined;
+    const headSha = pullRequest.head?.sha;
+    if (!headSha) return REQUIRED_CHECKS;
+    return inferRequiredChecksFromRuns(
+      pullRequest.number,
+      await client.checkRuns(headSha),
+    );
   }
   return requiredChecksForPullRequest(pullRequest.number, pullRequestFiles);
 }

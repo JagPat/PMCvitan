@@ -259,75 +259,73 @@ export async function run({
   ownRunId = process.env.GITHUB_RUN_ID,
   fetchImpl = fetch,
 } = {}) {
+  if (!eventPath) throw new Error('GITHUB_EVENT_PATH is required');
+  const event = JSON.parse(await readFile(eventPath, 'utf8'));
+  const action = event.action;
+  const baseChanged = Boolean(event.changes?.base);
+  const headSha = event.pull_request?.head?.sha;
+  const pullNumber = event.pull_request?.number;
+
+  let docsOnly = false;
+  if (pullNumber && repository && token) {
+    try {
+      docsOnly = isDocsOnlyDiff(
+        await fetchPullRequestFiles(repository, token, pullNumber, fetchImpl),
+      );
+    } catch (error) {
+      console.error(
+        `::error title=Docs-only classification failed::${error.message}`,
+      );
+      process.exitCode = 1;
+      const failedPlan = {
+        runProducts: false,
+        docsFastPath: false,
+        reason:
+          `could not classify docs-only diff (${error.message}); refusing to launch a mismatched battery`,
+      };
+      console.log(
+        `battery-plan: run_products=${failedPlan.runProducts}; docs_fast_path=${failedPlan.docsFastPath}; ${failedPlan.reason}`,
+      );
+      if (outputPath) {
+        await appendFile(outputPath, `run_products=${failedPlan.runProducts}\n`);
+        await appendFile(outputPath, `docs_fast_path=${failedPlan.docsFastPath}\n`);
+      }
+      return failedPlan;
+    }
+  }
+
+  let checkRuns;
+  if (action === 'edited' && !baseChanged && headSha && repository && token) {
+    const runs = [];
+    let page = 1;
+    let complete = false;
+    while (true) {
+      const response = await fetchImpl(
+        `https://api.github.com/repos/${repository}/commits/${headSha}`
+          + `/check-runs?filter=all&per_page=100&page=${page}`,
+        {
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'application/vnd.github+json',
+            'user-agent': 'pmcvitan-ci-battery-plan',
+          },
+        },
+      );
+      if (!response.ok) break;
+      const batch = (await response.json()).check_runs ?? [];
+      runs.push(...batch);
+      if (batch.length < 100) {
+        complete = true;
+        break;
+      }
+      page += 1;
+    }
+    if (complete) checkRuns = runs.filter((run) => !belongsToRun(run, ownRunId));
+  }
+
   let plan;
   try {
-    if (!eventPath) throw new Error('GITHUB_EVENT_PATH is required');
-    const event = JSON.parse(await readFile(eventPath, 'utf8'));
-    const action = event.action;
-    const baseChanged = Boolean(event.changes?.base);
-    const headSha = event.pull_request?.head?.sha;
-    const pullNumber = event.pull_request?.number;
-
-    let docsOnly = false;
-    let classificationFailed = false;
-    if (pullNumber && repository && token) {
-      try {
-        docsOnly = isDocsOnlyDiff(
-          await fetchPullRequestFiles(repository, token, pullNumber, fetchImpl),
-        );
-      } catch (error) {
-        classificationFailed = true;
-        console.error(
-          `::error title=Docs-only classification failed::${error.message}`,
-        );
-      }
-    }
-
-    let checkRuns;
-    if (action === 'edited' && !baseChanged && headSha && repository && token) {
-      // filter=all (paginated). The default is filter=latest, which returns
-      // only the newest run per name — after one metadata edit the products
-      // are recorded as newer SKIPPED runs, so a latest-only read would see no
-      // coverage and launch a duplicate battery, defeating this job's purpose.
-      const runs = [];
-      let page = 1;
-      let complete = false;
-      while (true) {
-        const response = await fetchImpl(
-          `https://api.github.com/repos/${repository}/commits/${headSha}`
-            + `/check-runs?filter=all&per_page=100&page=${page}`,
-          {
-            headers: {
-              authorization: `Bearer ${token}`,
-              accept: 'application/vnd.github+json',
-              'user-agent': 'pmcvitan-ci-battery-plan',
-            },
-          },
-        );
-        // A page that fails mid-read leaves a PREFIX of the history, and a
-        // prefix can look clean while the unread page holds the cancelled
-        // product or failed scope run that would have forced a rerun. Partial
-        // history is no history: leave checkRuns undefined and fail toward
-        // running the battery.
-        if (!response.ok) break;
-        const batch = (await response.json()).check_runs ?? [];
-        runs.push(...batch);
-        if (batch.length < 100) {
-          complete = true;
-          break;
-        }
-        page += 1;
-      }
-      // exclude THIS workflow run's own checks: its review-scope is queued by
-      // construction and must not be read as another attempt's pending verdict
-      if (complete) checkRuns = runs.filter((run) => !belongsToRun(run, ownRunId));
-    }
     plan = assessBatteryPlan({ action, baseChanged, checkRuns, docsOnly });
-    if (classificationFailed) {
-      throw new Error(
-        'could not classify docs-only diff; refusing to launch a mismatched battery',
-      );
-    }
   } catch (error) {
     plan = {
       runProducts: true,

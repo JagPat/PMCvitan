@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 import { assessBatteryPlan } from './ci-battery-plan.mjs';
 import { DOCS_FAST_CHECKS } from './check-run-coverage.mjs';
-import { requiredChecksForPullRequest } from './autonomous-review-gate.mjs';
+import { requiredChecksForPullRequest, inferRequiredChecksFromRuns, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
 import { summarizeRequiredChecks } from './autonomous-review-gate.mjs';
 import {
   assessPlanDocumentScope,
@@ -90,6 +90,68 @@ test('assessBatteryPlan skips automation on a covered docs-only metadata edit', 
   assert.equal(plan.runProducts, false);
   assert.equal(plan.docsFastPath, false);
   assert.equal(summarizeRequiredChecks(runs, DOCS_FAST_CHECKS).state, 'success');
+});
+
+test('product watermarks ignore skipped automation on a code-path retarget', () => {
+  const job = (name, runId, stamp, conclusion = 'success') => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  const runs = [
+    job('review-scope', '600', '2026-07-29T10:00:00Z'),
+    job('battery-plan', '600', '2026-07-29T10:00:30Z'),
+    ...['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'].map((name) =>
+      job(name, '600', '2026-07-29T10:02:00Z')),
+    job('review-scope', '700', '2026-07-29T11:00:00Z'),
+    job('battery-plan', '700', '2026-07-29T11:00:30Z'),
+    job('automation', '700', '2026-07-29T11:00:45Z', 'skipped'),
+  ];
+  assert.equal(summarizeRequiredChecks(runs, REQUIRED_CHECKS).state, 'pending');
+});
+
+test('automation watermarks ignore skipped products on a docs-fast retarget', () => {
+  const job = (name, runId, stamp, conclusion = 'success') => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: stamp,
+    html_url: `https://github.com/o/r/actions/runs/${runId}/job/1`,
+  });
+  const runs = [
+    job('review-scope', '600', '2026-07-29T10:00:00Z'),
+    job('battery-plan', '600', '2026-07-29T10:00:30Z'),
+    job('automation', '600', '2026-07-29T10:01:00Z'),
+    job('review-scope', '700', '2026-07-29T11:00:00Z'),
+    job('battery-plan', '700', '2026-07-29T11:00:30Z'),
+    ...['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'].map((name) =>
+      job(name, '700', '2026-07-29T11:00:45Z', 'skipped')),
+  ];
+  assert.equal(summarizeRequiredChecks(runs, DOCS_FAST_CHECKS).state, 'pending');
+});
+
+test('inferRequiredChecksFromRuns matches the docs-fast path from check history', () => {
+  const job = (name, conclusion = 'success') => ({
+    name,
+    status: 'completed',
+    conclusion,
+    completed_at: '2026-07-30T10:00:00Z',
+    html_url: 'https://github.com/o/r/actions/runs/1/job/1',
+  });
+  assert.deepEqual(
+    inferRequiredChecksFromRuns(300, [
+      job('automation'),
+      ...['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'].map((name) =>
+        job(name, 'skipped')),
+    ]),
+    DOCS_FAST_CHECKS,
+  );
+  assert.deepEqual(
+    inferRequiredChecksFromRuns(300, [job('web'), job('automation', 'skipped')]),
+    REQUIRED_CHECKS,
+  );
 });
 
 test('assessPlanDocumentScope blocks oversized phase plan documents after the rollout PR', () => {

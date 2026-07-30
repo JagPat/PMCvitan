@@ -102,10 +102,10 @@ export function attemptOf(run) {
 //   unknown  — no product runs at all: the retarget window, where the new
 //              base's gates are green and no product job exists yet. Older
 //              evidence tested a different merge result, so it is superseded.
-function attemptCharacters(runs) {
+function attemptCharactersFor(runs, names) {
   const characters = new Map();
   for (const run of runs) {
-    if (!BATTERY_CHECKS.includes(run?.name)) continue;
+    if (!names.includes(run?.name)) continue;
     const attempt = attemptOf(run);
     if (!attempt) continue;
     const seen = characters.get(attempt);
@@ -113,6 +113,15 @@ function attemptCharacters(runs) {
     characters.set(attempt, isSkipped(run) ? 'skipping' : 'running');
   }
   return characters;
+}
+
+function watermarkRuns(all, gatesPassed) {
+  return all.filter((run) => {
+    if (!isSkipped(run)) return true;
+    if (!BATTERY_CHECKS.includes(run?.name)) return true;
+    const attempt = attemptOf(run);
+    return attempt !== null && gatesPassed.has(attempt);
+  });
 }
 
 // The attempts whose gate jobs ALL passed.
@@ -152,17 +161,13 @@ export function gateWatermarks(checkRuns) {
   // the gate — which judges those same skips as a real non-success — kept
   // failing the head. Nothing then relaunches the products.
   const gatesPassed = attemptsWithPassingGates(all);
-  const runs = all.filter((run) => !isSkipped(run)
-    || !PRODUCT_CHECKS.includes(run?.name)
-    || gatesPassed.has(attemptOf(run)));
+  const runs = watermarkRuns(all, gatesPassed);
 
-  const characters = attemptCharacters(runs);
-  const attemptsByProduct = new Map(BATTERY_CHECKS.map((name) => [name, new Set()]));
+  const attemptsByName = new Map(BATTERY_CHECKS.map((name) => [name, new Set()]));
   for (const run of runs) {
-    const attempts = attemptsByProduct.get(run?.name);
-    if (!attempts) continue;
+    if (!BATTERY_CHECKS.includes(run?.name)) continue;
     const attempt = attemptOf(run);
-    if (attempt) attempts.add(attempt);
+    if (attempt) attemptsByName.get(run.name).add(attempt);
   }
 
   const completedGates = runs.filter(
@@ -171,7 +176,9 @@ export function gateWatermarks(checkRuns) {
 
   const watermarks = new Map();
   for (const name of BATTERY_CHECKS) {
-    const producedThisName = attemptsByProduct.get(name);
+    const scope = name === AUTOMATION_CHECK ? [AUTOMATION_CHECK] : PRODUCT_CHECKS;
+    const characters = attemptCharactersFor(runs, scope);
+    const producedThisName = attemptsByName.get(name);
     watermarks.set(name, completedGates
       .filter((run) => {
         const attempt = attemptOf(run);
