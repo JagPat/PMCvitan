@@ -218,17 +218,33 @@ export function deferredToProbes(message) {
 // packet ledger is the assertion's content. Accepting the trailer alone made the deferral
 // exactly the bare marker the bare-marker rule refuses — a task name and nothing scheduled.
 //
-// What this verifies is that the two ARTIFACTS AGREE: the packet names the task the trailer
-// defers to, and it says the handoff is to probes. It deliberately does NOT judge whether the
-// ledger is adequate. That distinction is the whole lesson of PR #250 — a mechanism that
-// scores substance suppressed a correct finding on its first real case — so substance stays
-// with the reviewer and only the agreement is mechanical. A packet naming a different task
-// than the trailer, or one that never mentions a probe, is not a judgement call: the two
-// documents describe different handoffs, or none.
+// TWO things are required, and both are syntax:
+//   1. the packet names the task the trailer defers to — the two artifacts must describe the
+//      same handoff;
+//   2. it carries at least one LEDGER ENTRY: a table row or list item that names a probe.
+//
+// (2) is the difference between a ledger and a sentence. A ledger is a MAPPING — one entry
+// per deferred question, each pointing at the probe that adjudicates it — so "phase-5-task-1
+// has probes elsewhere" satisfies the vocabulary and records no mapping at all. Requiring an
+// ENTRY rather than a keyword is still purely structural: distinguishing a row from a
+// paragraph needs no opinion about what the row says.
+//
+// What this deliberately does NOT do is judge whether the ledger is adequate — whether the
+// questions are the right questions, or the probes really settle them. That is the whole
+// lesson of PR #250, where a mechanism that scored SUBSTANCE would have suppressed a correct
+// finding on its first real case. Structure is mechanical; adequacy is the reviewer's.
+//
+// Table, bullet, or numbered entries all count. Pinning one markdown format would block an
+// author who wrote a perfectly good ledger the other way, which is a false refusal and the
+// same class of defect as this PR's first finding.
+const LEDGER_ENTRY = /^[\t ]*(?:\|.*\||[-*+][\t ]+\S|\d+[.)][\t ]+\S)/u;
+
 function packetRecordsDeferral(packetText, target) {
   if (typeof packetText !== 'string' || packetText.length === 0) return false;
-  const text = packetText.toLowerCase();
-  return text.includes(String(target).toLowerCase()) && /\bprobes?\b/u.test(text);
+  if (!packetText.toLowerCase().includes(String(target).toLowerCase())) return false;
+  return packetText
+    .split(/\r?\n/u)
+    .some((line) => LEDGER_ENTRY.test(line) && /\bprobes?\b/iu.test(line));
 }
 
 const CONVERGENCE_MARKER = /^[\t ]*review-convergence:[\t ]+complete[\t ]*$/imu;

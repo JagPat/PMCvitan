@@ -515,6 +515,35 @@ test('a deferral needs the packet ledger, not just the trailer', () => {
   });
   assert.equal(taskOnly.allowed, false);
 
+  // FINDING (#253 round 4 P2) — naming the task and the word "probe" in prose is not a
+  // ledger. A ledger is a MAPPING: entries, one per deferred question.
+  const prose = assessConvergence({
+    ...base,
+    packetText: '## Termination\nphase-5-task-1 has probes elsewhere, so the rest is deferred.\n',
+  });
+  assert.equal(prose.allowed, false, 'a sentence mentioning probes records no mapping');
+
+  // an entry that is structurally a row but names no probe is not a ledger entry either
+  const rowWithoutProbe = assessConvergence({
+    ...base,
+    packetText: '## Deferral ledger\n| Question | Owner |\n| --- | --- |\n'
+      + '| does overage clamp? | phase-5-task-1 |\n',
+  });
+  assert.equal(rowWithoutProbe.allowed, false);
+
+  // a bulleted or numbered ledger is just as good as a table — do not false-block a format
+  for (const entry of [
+    '- does overage clamp? → probe 5w, settled by phase-5-task-1',
+    '1. does overage clamp? probe 5w (phase-5-task-1)',
+    '* does overage clamp? — probe 5w',
+  ]) {
+    const listLedger = assessConvergence({
+      ...base,
+      packetText: `## Deferral ledger\n${entry}\n\nphase-5-task-1 settles these.\n`,
+    });
+    assert.equal(listLedger.allowed, true, `${entry} is a ledger entry`);
+  }
+
   // both artifacts agree on the same handoff
   const withLedger = assessConvergence({
     ...base,

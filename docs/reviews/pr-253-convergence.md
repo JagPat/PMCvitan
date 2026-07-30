@@ -1,6 +1,6 @@
 # PR #253 — convergence audit
 
-Bounded docs-only review (`Review-Deferred-To-Probes`). Three finding-bearing heads, five
+Bounded docs-only review (`Review-Deferred-To-Probes`). Four finding-bearing heads, six
 findings, all correct.
 
 | Head | Finding | The question it was really asking |
@@ -10,12 +10,13 @@ findings, all correct.
 | `dad37d4` | P2 removed files were filtered out before classification | which diff STATUSES count? |
 | `2734013` | P2 a rename's previous path was never classified | how many PATHS does one entry touch? |
 | `44f88bf` | P2 the deferral trailer was accepted without its packet ledger | what EVIDENCES the obligation? |
+| `1c9f201` | P2 the ledger check tested vocabulary, so prose passed | what makes a ledger a LEDGER? |
 
 ## Architectural cause
 
 The first four are one question — **which paths does this review unit touch, and which of them
 are provable?** — answered four times by reaching for whichever field was nearest to hand
-(the fifth is a different shape and has its own section below):
+(the last two are a different shape and have their own sections below):
 
 - `commit.files`, because the gate already fetched it. That is one commit, and the unit
   under review is the PR. A code PR's convergence head is usually the packet alone, so the
@@ -78,8 +79,9 @@ exact failure the bare-marker refusal was written to stop, one level up.
 exact head (a new `client.fileText`) when this head carries one.
 
 **What is checked, and deliberately what is not.** `packetRecordsDeferral` verifies the two
-ARTIFACTS AGREE: the packet names the task the trailer defers to, and it says the handoff is to
-probes. It does not score whether the ledger is a good ledger. That line is drawn on purpose —
+ARTIFACTS AGREE: the packet names the task the trailer defers to, and it records the handoff as
+probes (round 4 below tightens *records* from "mentions the word" to "carries a ledger entry").
+It does not score whether the ledger is a good ledger. That line is drawn on purpose —
 PR #250 built a mechanism that judged the substance of findings and was withdrawn because on
 its first real case it would have suppressed a correct one. A packet naming a different task
 than the trailer, or never mentioning a probe, is not a judgement call: the two documents
@@ -88,6 +90,32 @@ describe different handoffs, or none. Anything past that stays with the reviewer
 An unreadable packet reports "unverified", not "missing", and says so in the refusal text — it
 is not evidence of an absent ledger, and the gate re-runs on the next event, so a transient API
 failure self-heals rather than stranding a head on a claim about content nobody read.
+
+## Round 4 — a ledger is a mapping, not a vocabulary
+
+Round 3's check was `names the task && mentions "probe"`, so `phase-5-task-1 has probes
+elsewhere` passed. The finding is correct and the fix does not cross the line drawn above,
+because it was never a substance question: **a ledger is a MAPPING** — one entry per deferred
+question, each pointing at the probe that adjudicates it — and telling a table row or list item
+apart from a paragraph needs no opinion about what the row says. Round 3 checked words where it
+could have checked structure. That is under-delivery, not a boundary.
+
+So `packetRecordsDeferral` now requires the packet to name the task AND to carry at least one
+LEDGER ENTRY: a line that is a table row, a bullet, or a numbered item, and that names a probe.
+All three formats count — pinning one markdown shape would refuse an author who wrote a
+perfectly good ledger the other way, which is a false block and the same class of defect as
+this PR's very first finding.
+
+**The check bites on my own packet, which is the evidence it is not a formality.**
+`docs/reviews/pr-252-convergence.md` names `phase-5-task-1` and contains ZERO ledger entry
+lines: its "deferral ledger" is the sentence *"the deferral ledger for this plan is the probe
+list itself: 5g–5ac are executable the moment Task 1 exists."* That is a pointer, not a
+mapping — it never says WHICH question each probe settles. Verified mechanically at
+`claude/phase5-planning`: task named `true`, entries `0`. So #252 could not take the deferral
+route as written. It is not taking it today (every round-6 finding was fixed, and that head
+carries no deferral trailer), so nothing is broken right now — but when it does defer, the
+packet owes a real per-question table. That obligation is recorded here deliberately rather
+than fixed in this PR, whose scope is the gate.
 
 ## Probes
 
@@ -106,6 +134,8 @@ Reproduce-first, each RED at the head that carried the finding:
   trailer claimed; a packet naming the task but never mentioning a probe is refused; both
   together pass; an unreadable packet is refused as UNVERIFIED with that word in the message;
   below the cap none of it applies.
+- prose naming the task and the word "probes" is REFUSED (no mapping); a structurally-valid row
+  that names no probe is refused; table, bullet and numbered ledger entries all pass.
 - gate wiring: the packet's content is fetched at the exact head via `fileText`, and
   `changedFiles` remains `commit.files`.
 
