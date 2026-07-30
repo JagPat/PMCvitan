@@ -75,6 +75,31 @@ export function detectStatusDrift(statusNow, openPullRequests) {
   return { drift: false };
 }
 
+export function openPrIsLive(statusNow, openPullRequests) {
+  const openPrField = String(statusNow?.open_pr ?? '').trim();
+  if (isNone(openPrField)) return false;
+  return (openPullRequests ?? []).some(
+    (pullRequest) => String(pullRequest.number) === openPrField,
+  );
+}
+
+export function shouldShepherdOpenPullRequests({
+  statusNow,
+  nextStep,
+  openPullRequests = [],
+}) {
+  const hasOpenPrs = openPullRequests.length > 0;
+  if (!hasOpenPrs) return false;
+  if (openPrIsLive(statusNow, openPullRequests)) return true;
+  if (typeof nextStep === 'string' && nextStep.startsWith('pr:')) {
+    const recorded = nextStep.slice('pr:'.length);
+    return openPullRequests.some(
+      (pullRequest) => String(pullRequest.number) === recorded,
+    );
+  }
+  return false;
+}
+
 export function buildPostMergeContinuation({
   statusNow,
   maintenanceQueue = [],
@@ -100,11 +125,15 @@ export function buildPostMergeContinuation({
     );
   }
 
-  const hasOpenPrs = (openPullRequests ?? []).length > 0;
-  const nextIsOpenPr = typeof nextStep === 'string' && nextStep.startsWith('pr:');
+  const shouldShepherd = shouldShepherdOpenPullRequests({
+    statusNow,
+    nextStep,
+    openPullRequests,
+  });
+  const openPrField = String(statusNow?.open_pr ?? '').trim();
 
   lines.push('');
-  if (hasOpenPrs || nextIsOpenPr) {
+  if (shouldShepherd) {
     lines.push(
       'An autonomous PR is already open — shepherd it to completion instead of opening a competing branch. If the merged result or state file is inconsistent, open a focused correction instead of advancing.',
     );
@@ -112,6 +141,12 @@ export function buildPostMergeContinuation({
     lines.push(
       'Create the next same-repository `claude/**` branch and draft PR with Auto-fix enabled. If the merged result or state file is inconsistent, open a focused correction instead of advancing.',
     );
+    if (!isNone(openPrField) && !openPrIsLive(statusNow, openPullRequests)) {
+      lines.push(
+        '',
+        `**Note:** clear stale \`open_pr: ${openPrField}\` in STATUS before starting new work.`,
+      );
+    }
   }
 
   return lines.join('\n');
@@ -135,6 +170,8 @@ export function buildDriftHandoff({
     `**Recorded next step:** \`${nextStep}\` — ${assessment.reason}`,
     `**Open autonomous PRs:** ${formatOpenPullRequestList(openPullRequests)}`,
     '',
-    `Update \`open_pr\` to \`${drift.suggestedOpenPr}\` (or the correct current PR), align \`task_state\`, and shepherd the open PR. Do not open a competing branch for the same work item.`,
+    (openPullRequests ?? []).length > 0
+      ? `Update \`open_pr\` to \`${drift.suggestedOpenPr}\` (or the correct current PR), align \`task_state\`, and shepherd the open PR. Do not open a competing branch for the same work item.`
+      : `Update \`open_pr\` to \`${drift.suggestedOpenPr}\`, align \`task_state\`, and start the next permitted work item. There is no live autonomous PR to shepherd.`,
   ].join('\n');
 }

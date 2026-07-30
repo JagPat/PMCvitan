@@ -249,7 +249,12 @@ async function loadContinuationContext(client, repository, defaultBranch) {
       selectAutonomousOpenPullRequests(pullRequests, repository, defaultBranch),
     ),
   ]);
-  return { now, maintenanceQueue, openPullRequests };
+  const authoritativeNow = await authoritativeStatusForDrift(
+    client,
+    now,
+    openPullRequests,
+  );
+  return { now: authoritativeNow, maintenanceQueue, openPullRequests };
 }
 
 async function handOffMergedPullRequest(
@@ -305,19 +310,24 @@ async function handOffStatusDrift(
   continuationContext,
 ) {
   const { now, maintenanceQueue, openPullRequests } = continuationContext;
-  const authoritativeNow = await authoritativeStatusForDrift(
-    client,
-    now,
-    openPullRequests,
-  );
   const body = buildDriftHandoff({
-    statusNow: authoritativeNow,
+    statusNow: now,
     maintenanceQueue,
     openPullRequests,
   });
   if (!body) return;
 
-  const primary = openPullRequests[openPullRequests.length - 1];
+  const primary = openPullRequests.at(-1);
+  if (!primary) {
+    const marker = `${DRIFT_MARKER}status-only:`;
+    const comments = await client.comments(STATE_ISSUE_NUMBER);
+    if (comments.some((comment) =>
+      comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
+    )) return;
+    await client.comment(STATE_ISSUE_NUMBER, [marker, body].join('\n'));
+    return;
+  }
+
   const marker = `${DRIFT_MARKER}${primary.head.sha} -->`;
   const comments = await client.comments(primary.number);
   if (comments.some((comment) =>

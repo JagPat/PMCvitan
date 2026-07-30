@@ -135,3 +135,30 @@ test('buildPostMergeContinuation does not request a new branch when a PR is open
   assert.doesNotMatch(message, /Create the next same-repository/u);
   assert.match(message, /shepherd it to completion/u);
 });
+
+test('buildPostMergeContinuation advances after merge when open_pr is stale', () => {
+  const message = buildPostMergeContinuation({
+    statusNow: {
+      phase: '5',
+      task_state: 'merged',
+      open_pr: '251',
+      next_task: 'phase-5-planning',
+      blocking_directive: 'none',
+    },
+    maintenanceQueue: [],
+    openPullRequests: [],
+  });
+
+  assert.match(message, /Create the next same-repository/u);
+  assert.doesNotMatch(message, /shepherd it to completion/u);
+  assert.match(message, /clear stale `open_pr: 251`/u);
+});
+
+test('buildDriftHandoff handles stale open_pr with no live autonomous PR', () => {
+  const message = buildDriftHandoff({
+    statusNow: { open_pr: '251' },
+    openPullRequests: [],
+  });
+  assert.match(message, /no live autonomous PR to shepherd/u);
+  assert.match(message, /open_pr` to `none`/u);
+});
