@@ -1326,6 +1326,11 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   assert.match(gate, /loadStatusDocument\(\)/u);
   assert.match(gate, /deferralPhases\(status\?\.now\)/u);
   assert.match(gate, /activePhases,/u);
+  // The phase check needs the FILE LIST too, so it can notice when the PR itself edits
+  // STATUS and main's copy is therefore not the PR's phase truth (#253 round 10). The
+  // gate still reads only the trusted default branch — no PR content is fetched.
+  assert.match(gate, /pullRequestFiles,\n\s+activePhases,/u);
+  assert.doesNotMatch(gate, /refs\/pull\/\S+\/head/u);
   assert.match(gate, /state: 'convergence_required'/u);
   assert.match(gate, /Review-Convergence: complete/u);
   assert.match(gate, /assessReviewScope\(pullRequest\)/u);

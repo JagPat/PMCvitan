@@ -210,6 +210,14 @@ phase settles nothing. That is a structured-field read of a machine-readable sta
 the class of check a gate can make. The task INDEX inside a valid phase is not checked; it lives
 in the plan's markdown task table, and reading that is the prose parsing described below.
 
+**The phase check fails closed when it cannot be made.** Two ways it cannot: STATUS did not parse,
+or the PR ITSELF edits `docs/STATUS.md`, in which case the default-branch copy the gate reads is
+not that PR's phase truth (a head closing phase 5 while deferring into `phase-5-task-1` would
+otherwise pass on the pre-merge state). Both block with their own reason, because an unprovable
+phase is not a proven one. The second is detected from the PR's FILE LIST, which the gate already
+fetches — it does NOT read the head's STATUS content, since a write-capable workflow checks out
+only the trusted default branch.
+
 The **deferral ledger** — each still-open question with the probe that adjudicates it, and each
 probe named in the plan — is an author obligation stated in `AGENTS.md` and judged by the
 REVIEWER. It is not machine-checked, and PR #253 tried four times before concluding it should not

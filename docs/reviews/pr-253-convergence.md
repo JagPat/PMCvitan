@@ -1,6 +1,6 @@
 # PR #253 — convergence audit
 
-Bounded docs-only review (`Review-Deferred-To-Probes`). Nine finding-bearing heads, twenty
+Bounded docs-only review (`Review-Deferred-To-Probes`). Ten finding-bearing heads, twenty-two
 findings, all correct. **Round 7 withdraws the packet-ledger verification rather than patching
 it a fifth time — see the closing section, which is the real conclusion of this PR.**
 
@@ -26,6 +26,8 @@ it a fifth time — see the closing section, which is the real conclusion of thi
 | `a801ff9` | P2 `phase-999-task-999` was shape-valid | is this task REAL? |
 | `ff55b9a` | P2 a CLOSED phase still authorized a deferral to itself | is this task real, or merely PAST? |
 | `ff55b9a` | P2 an unreadable file list resolved silently to "code" | is not-knowing a verdict? |
+| `1cab5d2` | P2 an unreadable STATUS imposed no phase constraint | ...and is it a verdict HERE too? |
+| `1cab5d2` | P2 main's STATUS is not the phase truth of a PR that edits STATUS | whose state is being read? |
 
 ## Architectural cause
 
@@ -385,6 +387,37 @@ constraint" and authorized *every* deferral, including the one the finding was a
 and are now kept distinct, pinned by a test that says why. Recorded because it is the mechanism
 working: the probe was written to fail before the fix, and it did — on the fix.
 
+## Round 10 — the same question I answered twice, differently, in one commit
+
+Both findings correct, and together they are one defect: **round 9 established that unreadable
+evidence must block rather than pick a path, and I applied it to one field and not the neighbouring
+one — in the same commit.**
+
+**(a) An unreadable STATUS imposed no phase constraint.** Round 9's own comment said so explicitly:
+"an unreadable STATUS is not evidence that the task is fake." True, and beside the point. It is
+equally not evidence the task is REAL, and the round-9 finding I had just accepted was that an
+unreadable cumulative diff must not resolve toward "allowed". Two fields, one commit, opposite
+resolutions. Both now fail closed, and the block fires on a real task too (`phase-5-task-1` with
+no readable STATUS) because the gate cannot tell the difference — which is the whole point.
+
+**(b) main's STATUS is not the phase truth of a PR that edits STATUS.** The gate runs from the
+trusted default branch, so `loadStatusDocument()` reads main's copy. A capped docs-only head that
+closes phase 5 while carrying `Review-Deferred-To-Probes: phase-5-task-1` passes on the pre-merge
+state, and post-merge the deferred questions have no review stop.
+
+**The remedy I shipped is not the one the finding asked for, and that is deliberate.** The finding
+says "read STATUS from the reviewed head." That would work, and it would mean pulling PR-authored
+content into a write-capable workflow — the boundary `docs/AUTONOMOUS_LOOP.md` draws ("checks out
+only the trusted default branch, never PR code") and the content fetching round 7 withdrew. The
+PR's FILE LIST is metadata the gate already fetches, and it is sufficient: **if `docs/STATUS.md`
+is in the diff, the phase is unverifiable from main, so the deferral blocks.** Same hole closed,
+no new read. `autonomous-review-workflow.test.mjs` pins both halves — that the phase check
+receives the file list, and that the gate still fetches no `refs/pull/*/head` content.
+
+A PR that does not touch STATUS is unaffected, and no head that claims no deferral is touched at
+all. Three existing tests changed to supply explicit phase evidence; that is the intended
+behavioural change, not a regression.
+
 ## What this does not do
 
 Nothing here discounts, filters or downgrades a finding, and `codex-current-head` still
@@ -395,7 +428,7 @@ suppressed a correct finding; this is deliberately not that, which is also why #
 findings were fixed rather than deferred even though its head count was past the cap.
 
 Gates (re-run at this head): `pnpm test:automation` 119/119; `pnpm check` EXIT 0 (web 543/543,
-API 680/680). The suite count is unchanged across rounds 5–9: rounds 5, 6, 8 and 9 added
+API 680/680). The suite count is unchanged across rounds 5–10: rounds 5, 6, 8, 9 and 10 added
 assertions inside existing tests, and round 7 replaced the ledger test with a withdrawal test
 one-for-one.
 `origin/main` (PR #254) is merged into this branch; the branch was behind, not conflicted.

@@ -419,6 +419,9 @@ test('a docs-only review past the round cap must record a probe deferral', () =>
     packetText: '## Deferral ledger\n| Question | Probe | Settled by |\n'
       + '| --- | --- | --- |\n| does overage clamp? | probe 5w | phase-5-task-1 |\n',
     planText: '## Required plan probes\n5w. §0 COMMITTED close-short behaviour.\n',
+    // and STATUS must SHOW phase 5 still has a review stop ahead of it — see the
+    // fail-closed test below for why an absent phase set no longer passes
+    activePhases: [5],
   });
   assert.equal(deferred.allowed, true);
   assert.equal(deferred.deferredTo, 'phase-5-task-1');
@@ -483,11 +486,12 @@ test('a probe deferral must name the task that will settle it', () => {
     assert.equal(notATask.allowed, false, `"${value}" is not a task reference`);
     assert.match(notATask.missing.join(' '), /name the TASK/u);
   }
-  // the two real shapes are accepted (given a ledger + plan, tested below)
+  // the two real shapes are accepted when STATUS shows their phase still has work
   for (const value of ['phase-5-task-1', 'phase-6-planning']) {
     const real = assessConvergence({
       comments: [],
       reviews,
+      activePhases: [5, 6],
       headMessage: [
         'fix: correction',
         '',
@@ -539,6 +543,8 @@ test('the deferral is the trailer only; the ledger is the reviewer\'s to judge',
   const docsOnly = ['docs/superpowers/plans/plan.md', 'docs/reviews/pr-252-convergence.md'];
   const base = {
     comments: [], reviews, changedFiles: docsOnly, pullRequestFiles: docsOnly,
+    // STATUS shows phase 5 with work ahead; the fail-closed cases override this
+    activePhases: [5],
   };
   const withTrailer = (value) => [
     'fix: plan convergence',
@@ -594,11 +600,42 @@ test('the deferral is the trailer only; the ledger is the reviewer\'s to judge',
   });
   assert.equal(real.allowed, true, 'phase 5 is the phase under review');
 
-  // ...and an unreadable STATUS imposes no constraint — it is not evidence the task is fake
+  // FINDING (#253 round 10 P2) — an unreadable STATUS used to impose NO constraint, on the
+  // reasoning that it is not evidence the task is fake. True, and beside the point: it is
+  // equally not evidence the task is REAL, and round 9 had already settled that an
+  // unreadable cumulative diff must block rather than pick a path. The same principle, two
+  // fields apart in one commit, resolved two different ways. It now fails closed.
   const noStatus = assessConvergence({
     ...base, activePhases: deferralPhases(null), headMessage: withTrailer('phase-999-task-999'),
   });
-  assert.equal(noStatus.allowed, true, 'no phase set means no phase constraint');
+  assert.equal(noStatus.allowed, false, 'an unprovable phase is not a proven one');
+  assert.match(noStatus.missing.join(' '), /could not be read/u);
+  // ...and it blocks a REAL task too, because the gate cannot tell the difference
+  const realButUnprovable = assessConvergence({
+    ...base, activePhases: undefined, headMessage: withTrailer('phase-5-task-1'),
+  });
+  assert.equal(realButUnprovable.allowed, false);
+
+  // FINDING (#253 round 10 P2) — the gate runs from the trusted default branch, so it reads
+  // main's STATUS. When the PR itself edits STATUS, that copy is not the PR's phase truth: a
+  // head closing phase 5 while deferring into phase-5-task-1 would pass on the pre-merge
+  // state. Reading the head's STATUS would also fix it, and would mean pulling PR-authored
+  // content into a write-capable workflow — the boundary this loop does not cross. The file
+  // LIST is metadata the gate already has, and it is enough.
+  const statusInDiff = ['docs/superpowers/plans/plan.md', 'docs/STATUS.md',
+    'docs/reviews/pr-252-convergence.md'];
+  const editsStatus = assessConvergence({
+    ...base,
+    changedFiles: statusInDiff,
+    pullRequestFiles: statusInDiff,
+    headMessage: withTrailer('phase-5-task-1'),
+  });
+  assert.equal(editsStatus.allowed, false, "main's STATUS is not this PR's phase truth");
+  assert.match(editsStatus.missing.join(' '), /changes docs\/STATUS\.md/u);
+  // a PR that does NOT touch STATUS is unaffected
+  assert.equal(assessConvergence({
+    ...base, headMessage: withTrailer('phase-5-task-1'),
+  }).allowed, true);
 
   // the task INDEX inside a valid phase is deliberately unchecked — it lives in the plan's
   // markdown table, and reading that is what round 7 withdrew

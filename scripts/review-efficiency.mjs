@@ -39,6 +39,9 @@ export const REQUIRED_INVARIANTS = [
 const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
 const CONVERGENCE_PACKET = /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu;
+// The state file `deferralPhases` reads. Named here because the gate must also notice when a
+// PR CHANGES it — see the phase check in assessConvergence.
+export const STATUS_DOCUMENT = 'docs/STATUS.md';
 
 function finiteCount(value) {
   const count = Number(value);
@@ -396,10 +399,34 @@ export function assessConvergence({
         + '("phase-<n>-task-<m>" or "phase-<n>-planning"); a bare marker or a word like '
         + '"later" schedules nothing']
       : []),
+    // A shape-valid task needs a PROVABLE phase, and "unprovable" is not "proven". Round 9
+    // made an unreadable cumulative diff block rather than pick a path, then left the phase
+    // check resolving an unreadable STATUS toward "no constraint" — the same defect, two
+    // fields apart, in one commit. Both now fail closed. This never touches a head that
+    // claims no deferral.
+    ...(deferralRequired && typeof deferral === 'string' && !Array.isArray(activePhases)
+      ? [`"${deferral}" names a task, but docs/STATUS.md could not be read, so whether that `
+        + 'phase still has a review stop ahead of it is unverified. An unprovable phase is not '
+        + 'a proven one; re-run once STATUS parses']
+      : []),
+    // And the phase set must be ABOUT this PR. The gate runs from the trusted default branch,
+    // so it reads main's STATUS — which is not this PR's phase truth when the PR itself edits
+    // STATUS. A head that closes phase 5 while deferring into phase-5-task-1 would otherwise
+    // pass on the pre-merge state. Reading the head's STATUS would fix it too, and would mean
+    // fetching PR-authored content into a write-capable workflow — the boundary this loop does
+    // not cross, and the content read round 7 withdrew. The FILE LIST is metadata the gate
+    // already has, and it is sufficient: if STATUS is in the diff, the phase is unverifiable.
+    ...(deferralRequired && typeof deferral === 'string' && Array.isArray(activePhases)
+      && (pullRequestFiles ?? []).some(
+        (file) => changedFilename(file) === STATUS_DOCUMENT,
+      )
+      ? ['this PR changes docs/STATUS.md, so the default-branch copy the gate reads is not this '
+        + "PR's own phase truth and cannot verify the deferral's phase. Land the STATUS change "
+        + 'on its own, or defer to a phase the current STATUS already shows has work ahead']
+      : []),
     // A shape-valid task in a phase this repository is not working on schedules nothing
-    // either. Checked only when the phase set could be READ (an unreadable STATUS is not
-    // evidence that the task is fake) — but an empty set IS readable evidence: no phase has
-    // an open review stop, so no deferral can hand work to one.
+    // either. An empty set is readable evidence: no phase has an open review stop, so no
+    // deferral can hand work to one.
     ...(deferralRequired && typeof deferral === 'string'
       && Array.isArray(activePhases)
       && !activePhases.includes(

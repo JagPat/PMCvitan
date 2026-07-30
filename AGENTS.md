@@ -100,7 +100,9 @@ so directly rather than framing it as a suggestion.
   current-head finding — and the deferral ledger in the convergence packet records
   each question with the probe that will adjudicate it. The GATE checks only that the
   trailer names a real task — shape plus a phase `docs/STATUS.md` shows still has work
-  ahead of it, though not the task index; the ledger itself is the author's obligation and the
+  ahead of it (and it fails closed when that cannot be established: STATUS unparsable, or the
+  PR itself editing STATUS so the default-branch copy is not its phase truth), though not the
+  task index; the ledger itself is the author's obligation and the
   REVIEWER's to judge — deliberately not machine-checked, because telling a question
   from a probe list needs meaning. Flag a deferral whose ledger is absent, whose
   questions are not the open ones, or whose probes are not actually in the plan.
