@@ -225,36 +225,56 @@ async function handOffConflict(
   );
 }
 
-async function authoritativeStatusForDrift(client, defaultBranchStatus, openPullRequests) {
-  if (!openPullRequests?.length) return defaultBranchStatus;
-  const primary = openPullRequests[openPullRequests.length - 1];
-  const headRef = primary?.head?.sha;
-  if (!headRef) return defaultBranchStatus;
-  try {
-    const markdown = await client.fileContent('docs/STATUS.md', headRef);
-    const headNow = parseStatusNow(markdown ?? '');
-    if (headNow) return headNow;
-  } catch (error) {
-    console.warn(
-      `Could not read STATUS from PR #${primary.number} head: ${error.message}`,
-    );
-  }
-  return defaultBranchStatus;
+// Read every open autonomous PR head's STATUS. These are the in-flight
+// corrections: the default branch legitimately lags a draft PR that already set
+// `open_pr` in its own head, and that lag must not be reported as drift. A head
+// whose STATUS is unreadable or unparsable contributes `now: null` and simply
+// cannot suppress anything.
+async function openHeadStatuses(client, openPullRequests) {
+  return Promise.all(
+    (openPullRequests ?? []).map(async (pullRequest) => {
+      const headSha = pullRequest?.head?.sha;
+      if (!headSha) return { number: pullRequest?.number ?? null, now: null };
+      try {
+        const markdown = await client.fileContent('docs/STATUS.md', headSha);
+        return {
+          number: pullRequest.number,
+          now: parseStatusNow(markdown ?? ''),
+        };
+      } catch (error) {
+        console.warn(
+          `Could not read STATUS from PR #${pullRequest.number} head: ${error.message}`,
+        );
+        return { number: pullRequest.number, now: null };
+      }
+    }),
+  );
 }
 
-async function loadContinuationContext(client, repository, defaultBranch) {
+// Two questions, two authorities. The post-merge handoff asks "given the STATUS
+// that merged into the default branch, what is next?" — only the default branch
+// answers that. Drift asks "does the default branch disagree with live GitHub
+// state, uncorrected?" — that needs the open heads too. Collapsing them onto one
+// value made an unrelated branch's stale STATUS decide the post-merge next step.
+export async function loadContinuationContext(
+  client,
+  repository,
+  defaultBranch,
+  { loadStatus = loadStatusDocument } = {},
+) {
   const [{ now, maintenanceQueue }, openPullRequests] = await Promise.all([
-    loadStatusDocument(),
+    loadStatus(),
     client.openPullRequests().then((pullRequests) =>
       selectAutonomousOpenPullRequests(pullRequests, repository, defaultBranch),
     ),
   ]);
-  const authoritativeNow = await authoritativeStatusForDrift(
-    client,
-    now,
+  const headStatuses = await openHeadStatuses(client, openPullRequests);
+  return {
+    defaultBranchNow: now,
+    maintenanceQueue,
     openPullRequests,
-  );
-  return { now: authoritativeNow, maintenanceQueue, openPullRequests };
+    headStatuses,
+  };
 }
 
 async function handOffMergedPullRequest(
@@ -289,37 +309,45 @@ async function handOffMergedPullRequest(
     comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
   )) return;
 
-  const { now, maintenanceQueue, openPullRequests } = continuationContext;
+  const { defaultBranchNow, maintenanceQueue, openPullRequests, headStatuses } =
+    continuationContext;
   await client.comment(
     pullRequest.number,
     [
       marker,
       buildPostMergeContinuation({
-        statusNow: now,
+        statusNow: defaultBranchNow,
         maintenanceQueue,
         openPullRequests,
+        headStatuses,
       }),
     ].join('\n'),
   );
 }
 
-async function handOffStatusDrift(
+export async function handOffStatusDrift(
   client,
   repository,
   defaultBranch,
   continuationContext,
 ) {
-  const { now, maintenanceQueue, openPullRequests } = continuationContext;
+  const { defaultBranchNow, maintenanceQueue, openPullRequests, headStatuses } =
+    continuationContext;
   const body = buildDriftHandoff({
-    statusNow: now,
+    statusNow: defaultBranchNow,
     maintenanceQueue,
     openPullRequests,
+    headStatuses,
   });
   if (!body) return;
 
   const primary = openPullRequests.at(-1);
   if (!primary) {
-    const marker = `${DRIFT_MARKER}status-only:`;
+    // Key the marker to the drifting state. A constant marker made this recovery
+    // one-shot for the repository's lifetime: once posted, every LATER drift with
+    // no live PR was silently swallowed and the loop stayed pointed at stale work.
+    const staleOpenPr = String(defaultBranchNow?.open_pr ?? 'none').trim() || 'none';
+    const marker = `${DRIFT_MARKER}status-only:${staleOpenPr} -->`;
     const comments = await client.comments(STATE_ISSUE_NUMBER);
     if (comments.some((comment) =>
       comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)

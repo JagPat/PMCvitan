@@ -83,30 +83,52 @@ export function openPrIsLive(statusNow, openPullRequests) {
   );
 }
 
-export function shouldShepherdOpenPullRequests({
-  statusNow,
-  nextStep,
+// Drift is a property of the STATUS that will exist on the default branch, but a
+// correction already in flight on an open PR head is NOT drift — the default
+// branch legitimately lags until that PR merges. Consult EVERY open head, not
+// just the highest-numbered one: with several autonomous PRs open, the head that
+// records reality is not necessarily the newest.
+export function detectStatusDriftAcrossHeads({
+  defaultBranchNow,
+  headStatuses = [],
   openPullRequests = [],
 }) {
-  const hasOpenPrs = openPullRequests.length > 0;
-  if (!hasOpenPrs) return false;
-  if (openPrIsLive(statusNow, openPullRequests)) return true;
-  if (typeof nextStep === 'string' && nextStep.startsWith('pr:')) {
-    const recorded = nextStep.slice('pr:'.length);
-    return openPullRequests.some(
-      (pullRequest) => String(pullRequest.number) === recorded,
-    );
+  const defaultBranchDrift = detectStatusDrift(defaultBranchNow, openPullRequests);
+  if (!defaultBranchDrift.drift) return defaultBranchDrift;
+
+  const correctingHead = (headStatuses ?? []).find(
+    (entry) => entry?.now && !detectStatusDrift(entry.now, openPullRequests).drift,
+  );
+  if (correctingHead) {
+    return {
+      drift: false,
+      correctedInFlight: true,
+      correctingPullRequest: correctingHead.number ?? null,
+    };
   }
-  return false;
+
+  return defaultBranchDrift;
+}
+
+// The live GitHub PR set is the ONLY authority on whether something exists to
+// shepherd. STATUS disagreeing with it is reported as drift; it is never a
+// reason to instruct the runner to open a competing branch.
+export function shouldShepherdOpenPullRequests({ openPullRequests = [] }) {
+  return openPullRequests.length > 0;
 }
 
 export function buildPostMergeContinuation({
   statusNow,
   maintenanceQueue = [],
   openPullRequests = [],
+  headStatuses = [],
 }) {
   const assessment = assessRunnerState(statusNow, maintenanceQueue);
-  const drift = detectStatusDrift(statusNow, openPullRequests);
+  const drift = detectStatusDriftAcrossHeads({
+    defaultBranchNow: statusNow,
+    headStatuses,
+    openPullRequests,
+  });
   const nextStep = assessment.nextStep ?? 'none';
 
   const lines = [
@@ -125,11 +147,7 @@ export function buildPostMergeContinuation({
     );
   }
 
-  const shouldShepherd = shouldShepherdOpenPullRequests({
-    statusNow,
-    nextStep,
-    openPullRequests,
-  });
+  const shouldShepherd = shouldShepherdOpenPullRequests({ openPullRequests });
   const openPrField = String(statusNow?.open_pr ?? '').trim();
 
   lines.push('');
@@ -156,8 +174,13 @@ export function buildDriftHandoff({
   statusNow,
   maintenanceQueue = [],
   openPullRequests = [],
+  headStatuses = [],
 }) {
-  const drift = detectStatusDrift(statusNow, openPullRequests);
+  const drift = detectStatusDriftAcrossHeads({
+    defaultBranchNow: statusNow,
+    headStatuses,
+    openPullRequests,
+  });
   if (!drift.drift) return null;
 
   const assessment = assessRunnerState(statusNow, maintenanceQueue);

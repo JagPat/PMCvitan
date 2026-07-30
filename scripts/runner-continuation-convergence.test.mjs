@@ -1,0 +1,266 @@
+// Convergence suite for PR #256. Every test here is RED at `baa919a` — the head
+// that answered the five Codex findings with isolated patches — and GREEN after
+// the batched architectural correction. See docs/reviews/pr-256-convergence.md.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  buildDriftHandoff,
+  buildPostMergeContinuation,
+  detectStatusDriftAcrossHeads,
+  shouldShepherdOpenPullRequests,
+} from './runner-continuation.mjs';
+import {
+  handOffStatusDrift,
+  loadContinuationContext,
+} from './autonomous-handoff.mjs';
+
+const repository = 'JagPat/PMCvitan';
+
+function pullRequest(number, overrides = {}) {
+  return {
+    state: 'open',
+    number,
+    draft: true,
+    head: {
+      ref: `claude/work-${number}`,
+      sha: `sha${number}`,
+      repo: { full_name: repository },
+    },
+    base: { ref: 'main', repo: { full_name: repository } },
+    ...overrides,
+  };
+}
+
+// Mirrors the real docs/STATUS.md shape: a `## Now` heading followed by a fenced
+// yaml block, which is what parseStatusNow actually reads.
+function statusMarkdown({ openPr = 'none', taskState = 'merged', nextTask = 'phase-5-planning' }) {
+  return [
+    '# STATUS',
+    '',
+    '## Now',
+    '',
+    '```yaml',
+    'phase: 4',
+    'task: 6',
+    `task_state: ${taskState}`,
+    `open_pr: ${openPr}`,
+    `next_task: ${nextTask}`,
+    'blocking_directive: none',
+    '```',
+    '',
+  ].join('\n');
+}
+
+function fakeClient({ openPrs = [], headStatusBySha = {}, comments = {} } = {}) {
+  const posted = [];
+  return {
+    posted,
+    async openPullRequests() {
+      return openPrs;
+    },
+    async fileContent(path, ref) {
+      assert.equal(path, 'docs/STATUS.md');
+      if (!(ref in headStatusBySha)) throw new Error(`no STATUS at ${ref}`);
+      return headStatusBySha[ref];
+    },
+    async comments(number) {
+      return comments[number] ?? [];
+    },
+    async comment(number, body) {
+      posted.push({ number, body });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Root cause A — one `now` served two authorities with different sources.
+// ---------------------------------------------------------------------------
+
+test('A1: drift is quiet when ANY open head carries the correction, not just the newest', () => {
+  // #252 already records `open_pr: 252` in its own head; #257 (the highest number,
+  // and the only head baa919a consulted) still carries main's `none`. The default
+  // branch legitimately lags until #252 merges — that is not drift.
+  const drift = detectStatusDriftAcrossHeads({
+    defaultBranchNow: { open_pr: 'none', task_state: 'merged' },
+    openPullRequests: [pullRequest(252), pullRequest(257)],
+    headStatuses: [
+      { number: 252, now: { open_pr: '252', task_state: 'in_review' } },
+      { number: 257, now: { open_pr: 'none', task_state: 'merged' } },
+    ],
+  });
+  assert.equal(drift.drift, false);
+  assert.equal(drift.correctedInFlight, true);
+  assert.equal(drift.correctingPullRequest, 252);
+});
+
+test('A1b: buildDriftHandoff posts nothing when a correction is in flight on a non-newest head', () => {
+  const body = buildDriftHandoff({
+    statusNow: { open_pr: 'none', task_state: 'merged', next_task: 'phase-5-planning' },
+    openPullRequests: [pullRequest(252), pullRequest(257)],
+    headStatuses: [
+      { number: 252, now: { open_pr: '252', task_state: 'in_review' } },
+      { number: 257, now: { open_pr: 'none', task_state: 'merged' } },
+    ],
+  });
+  assert.equal(body, null);
+});
+
+test('A1c: drift still fires when NO open head records reality', () => {
+  const body = buildDriftHandoff({
+    statusNow: { open_pr: 'none', task_state: 'merged', next_task: 'phase-5-planning' },
+    openPullRequests: [pullRequest(252), pullRequest(257)],
+    headStatuses: [
+      { number: 252, now: { open_pr: 'none', task_state: 'merged' } },
+      { number: 257, now: null },
+    ],
+  });
+  assert.ok(body, 'uncorrected drift must still be reported');
+  assert.match(body, /open_pr: none while autonomous PR\(s\) are still open/);
+});
+
+test('A2: the post-merge next step comes from the default branch, never a foreign PR head', async () => {
+  // baa919a substituted the newest open head's STATUS for main's and fed it to the
+  // post-merge handoff, so an unrelated in-flight branch decided the next step.
+  const client = fakeClient({
+    openPrs: [pullRequest(257)],
+    headStatusBySha: { sha257: statusMarkdown({ openPr: '999', taskState: 'in_review' }) },
+  });
+  const context = await loadContinuationContext(client, repository, 'main', {
+    loadStatus: async () => ({
+      now: {
+        phase: '4',
+        task_state: 'merged',
+        open_pr: 'none',
+        next_task: 'phase-5-planning',
+        blocking_directive: 'none',
+      },
+      maintenanceQueue: [],
+    }),
+  });
+
+  assert.equal(context.defaultBranchNow.open_pr, 'none');
+  assert.equal(context.headStatuses.length, 1);
+  assert.equal(context.headStatuses[0].now.open_pr, '999');
+
+  const message = buildPostMergeContinuation({
+    statusNow: context.defaultBranchNow,
+    maintenanceQueue: context.maintenanceQueue,
+    openPullRequests: context.openPullRequests,
+    headStatuses: context.headStatuses,
+  });
+  assert.doesNotMatch(
+    message,
+    /Runner next step:\s*`pr:999`/,
+    'the foreign head STATUS must not decide the post-merge next step',
+  );
+});
+
+test('A2b: an unreadable head STATUS degrades to null and cannot suppress drift', async () => {
+  const client = fakeClient({
+    openPrs: [pullRequest(301)],
+    headStatusBySha: {}, // fileContent throws
+  });
+  const context = await loadContinuationContext(client, repository, 'main', {
+    loadStatus: async () => ({
+      now: { task_state: 'merged', open_pr: 'none', next_task: 'phase-5-planning' },
+      maintenanceQueue: [],
+    }),
+  });
+  assert.deepEqual(context.headStatuses, [{ number: 301, now: null }]);
+  assert.equal(context.defaultBranchNow.open_pr, 'none');
+});
+
+// ---------------------------------------------------------------------------
+// Root cause B — the live PR set is the only authority on shepherd-vs-advance.
+// ---------------------------------------------------------------------------
+
+test('B1: shepherd whenever a live autonomous PR exists, whatever STATUS records', () => {
+  assert.equal(shouldShepherdOpenPullRequests({ openPullRequests: [pullRequest(256)] }), true);
+  assert.equal(shouldShepherdOpenPullRequests({ openPullRequests: [] }), false);
+});
+
+test('B1b: a live PR with drifted `open_pr: none` is never answered with a competing branch', () => {
+  // This is Codex finding 2. baa919a made shepherding conditional on STATUS
+  // agreeing, so exactly the drifted case re-emitted "create the next branch".
+  const message = buildPostMergeContinuation({
+    statusNow: { task_state: 'merged', open_pr: 'none', next_task: 'phase-5-planning' },
+    openPullRequests: [pullRequest(256), pullRequest(257)],
+  });
+  assert.match(message, /An autonomous PR is already open — shepherd it/);
+  assert.doesNotMatch(message, /Create the next same-repository/);
+  assert.match(message, /STATUS drift/, 'the disagreement is still reported, as drift');
+});
+
+test('B1c: with no live PR, a stale open_pr still advances and is called out (finding 5)', () => {
+  const message = buildPostMergeContinuation({
+    statusNow: { task_state: 'merged', open_pr: '251', next_task: 'phase-5-planning' },
+    openPullRequests: [],
+  });
+  assert.match(message, /Create the next same-repository `claude\/\*\*` branch/);
+  assert.doesNotMatch(message, /already open — shepherd it/);
+  assert.match(message, /clear stale `open_pr: 251`/);
+});
+
+// ---------------------------------------------------------------------------
+// Root cause C — the no-live-PR recovery was one-shot for the repo's lifetime.
+// ---------------------------------------------------------------------------
+
+test('C1: the status-only drift marker is keyed to the drifting state', async () => {
+  const context = {
+    defaultBranchNow: { task_state: 'merged', open_pr: '251', next_task: 'phase-5-planning' },
+    maintenanceQueue: [],
+    openPullRequests: [],
+    headStatuses: [],
+  };
+  const client = fakeClient({});
+  await handOffStatusDrift(client, repository, 'main', context);
+  assert.equal(client.posted.length, 1);
+  assert.equal(client.posted[0].number, 235);
+  assert.match(client.posted[0].body, /autonomous-status-drift:status-only:251 -->/);
+});
+
+test('C1b: a LATER drift with a different stale value is not swallowed', async () => {
+  const alreadyPosted = {
+    235: [
+      {
+        user: { login: 'github-actions[bot]' },
+        body: '<!-- autonomous-status-drift:status-only:251 -->\nolder shepherd',
+      },
+    ],
+  };
+  // Same stale value → still deduplicated.
+  const repeat = fakeClient({ comments: alreadyPosted });
+  await handOffStatusDrift(repeat, repository, 'main', {
+    defaultBranchNow: { task_state: 'merged', open_pr: '251', next_task: 'phase-5-planning' },
+    maintenanceQueue: [],
+    openPullRequests: [],
+    headStatuses: [],
+  });
+  assert.equal(repeat.posted.length, 0, 'the same drift state must post once');
+
+  // Different stale value → a fresh shepherd. At baa919a the constant marker
+  // matched and this recovery was silently dropped forever.
+  const fresh = fakeClient({ comments: alreadyPosted });
+  await handOffStatusDrift(fresh, repository, 'main', {
+    defaultBranchNow: { task_state: 'merged', open_pr: '263', next_task: 'phase-5-planning' },
+    maintenanceQueue: [],
+    openPullRequests: [],
+    headStatuses: [],
+  });
+  assert.equal(fresh.posted.length, 1);
+  assert.match(fresh.posted[0].body, /autonomous-status-drift:status-only:263 -->/);
+});
+
+test('C1c: drift with a live PR is posted on that PR, keyed to its head SHA (finding 4 path intact)', async () => {
+  const client = fakeClient({});
+  await handOffStatusDrift(client, repository, 'main', {
+    defaultBranchNow: { task_state: 'merged', open_pr: 'none', next_task: 'phase-5-planning' },
+    maintenanceQueue: [],
+    openPullRequests: [pullRequest(256)],
+    headStatuses: [{ number: 256, now: { open_pr: 'none' } }],
+  });
+  assert.equal(client.posted.length, 1);
+  assert.equal(client.posted[0].number, 256);
+  assert.match(client.posted[0].body, /autonomous-status-drift:sha256 -->/);
+});
