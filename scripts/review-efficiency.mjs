@@ -3,6 +3,30 @@ export const STANDARD_MAX_FILES = 20;
 export const STANDARD_MAX_CHANGED_LINES = 1_500;
 export const CONVERGENCE_AFTER_FINDING_HEADS = 2;
 
+// How many finding-bearing heads a DOCS-ONLY review may take before the still-open
+// questions must be handed to probes.
+//
+// The convergence protocol was written for code. On code it terminates, because every
+// finding is answered by a RED→GREEN probe and a fix that either works or does not. A
+// PLAN has no executable surface: a finding on it can only be answered with more prose,
+// and a plan can always be specified further, so the protocol demands a batched audit
+// after two heads and then never says when the review is done.
+//
+// PR #252 is the measurement. Four finding-bearing heads — 8, 8, 7, 7 — every finding
+// correct, none contradicted by a later round, and no declining rate. Every finding in
+// rounds 2-4 was of the form "the plan does not yet say how X is handled", which is
+// always true of a plan at some depth.
+//
+// THIS IS NOT A DISMISSAL MECHANISM. A finding-dismissal engine was built for this
+// repository in PR #250 and withdrawn, because on the first real case it would have
+// suppressed a CORRECT finding. Nothing here discounts, filters, or downgrades a finding,
+// and the `codex-current-head` status still fails closed on every current-head finding.
+// What this bounds is only WHERE the remaining questions get verified: past the cap the
+// author must convert each one into a named probe in the plan and name the task whose
+// review stop will settle it. The finding is kept and its verification is moved to the
+// one place a verification can exist.
+export const PLAN_REVIEW_ROUND_CAP = 3;
+
 export const REQUIRED_INVARIANTS = [
   'authorization-tenancy',
   'civil-time-lifecycle',
@@ -112,6 +136,53 @@ function changedFilename(file) {
   return typeof file === 'string' ? file : file?.filename;
 }
 
+// Documentation, for the purpose of "can a finding on this be proven?". Anything that
+// runs — a script, a schema, a migration, a test, a workflow, application source — makes
+// the diff provable and puts it back under the ordinary code protocol. An empty diff is
+// not a plan review; it is a broken read, and it fails toward the strict path.
+const DOCS_PATH = /^(?:docs\/.+|[^/]+\.md|\.github\/[^/]*\.md)$/u;
+
+export function isDocsOnlyDiff(changedFiles) {
+  const names = (changedFiles ?? [])
+    .filter((file) => file?.status !== 'removed')
+    .map((file) => changedFilename(file))
+    .filter((name) => typeof name === 'string' && name.length > 0);
+  return names.length > 0 && names.every((name) => DOCS_PATH.test(name));
+}
+
+// The deferral names the TASK that will settle the deferred findings, so the handoff is
+// schedulable rather than an assertion that the review is over. A bare marker ("yes",
+// "complete", "done") schedules nothing and is refused.
+const DEFERRAL_TRAILER = 'review-deferred-to-probes';
+const BARE_DEFERRAL = new Set(['yes', 'true', 'complete', 'done', 'ok', 'n/a', 'none']);
+
+function messageTrailers(message) {
+  const blocks = String(message ?? '').trimEnd().split(/\n[\t ]*\n/u);
+  if (blocks.length < 2) return [];
+  const trailers = [];
+  for (const line of blocks.at(-1).split('\n')) {
+    if (/^[\t ]+\S/u.test(line)) {
+      if (trailers.length === 0) return [];
+      trailers.at(-1)[1] += ` ${line.trim()}`;
+      continue;
+    }
+    const trailer = /^([A-Za-z0-9][A-Za-z0-9-]*):[\t ]+(.+)$/u.exec(line);
+    if (!trailer) return [];
+    trailers.push([trailer[1].toLowerCase(), trailer[2].trim()]);
+  }
+  return trailers;
+}
+
+export function deferredToProbes(message) {
+  for (const [key, value] of messageTrailers(message)) {
+    if (key !== DEFERRAL_TRAILER) continue;
+    const target = value.trim();
+    if (target.length === 0 || BARE_DEFERRAL.has(target.toLowerCase())) return null;
+    return target;
+  }
+  return undefined;
+}
+
 const CONVERGENCE_MARKER = /^[\t ]*review-convergence:[\t ]+complete[\t ]*$/imu;
 
 function hasConvergenceTrailer(message) {
@@ -172,9 +243,25 @@ export function assessConvergence({ comments, reviews, headMessage, changedFiles
         && typeof filename === 'string'
         && CONVERGENCE_PACKET.test(filename);
     });
+  // Past the cap, a docs-only review also owes the probe deferral: each still-open
+  // question named, with the probe and the task that will settle it. See
+  // PLAN_REVIEW_ROUND_CAP — this adds an obligation, it never removes one.
+  const deferralRequired = isDocsOnlyDiff(changedFiles)
+    && findingHeadCount >= PLAN_REVIEW_ROUND_CAP;
+  const deferral = deferralRequired ? deferredToProbes(headMessage) : undefined;
+
   const missing = [
     ...(!hasTrailer ? [convergenceTrailerHint(headMessage)] : []),
     ...(!hasPacket ? ['packet'] : []),
+    ...(deferralRequired && deferral === undefined
+      ? [`a "Review-Deferred-To-Probes: <task>" trailer — after ${PLAN_REVIEW_ROUND_CAP} `
+        + 'finding-bearing heads a docs-only review must hand its remaining open '
+        + 'questions to named probes instead of answering them with more prose']
+      : []),
+    ...(deferralRequired && deferral === null
+      ? ['the Review-Deferred-To-Probes value must name the task that will settle the '
+        + 'deferred findings; a bare marker schedules nothing']
+      : []),
   ];
   return {
     required: true,
@@ -183,6 +270,8 @@ export function assessConvergence({ comments, reviews, headMessage, changedFiles
     findingHeads,
     hasTrailer,
     hasPacket,
+    deferralRequired,
+    deferredTo: deferral ?? null,
     missing,
   };
 }

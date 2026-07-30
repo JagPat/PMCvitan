@@ -14,6 +14,12 @@ the required `codex-current-head` status and queues auto-merge. Never start the
 next task while STATUS keeps the current task open. No human technical approval
 is required, but the exact-head GitHub gate is mandatory and fails closed.
 
+Plan review is bounded. After 3 finding-bearing heads on a docs-only diff, the next
+head converts each still-open question into a named probe and carries
+`Review-Deferred-To-Probes: <task>`; nothing is dismissed and the exact-head gate still
+fails closed on every current-head finding — only the place of verification moves, from
+prose to probes. See `docs/AUTONOMOUS_LOOP.md`.
+
 Review efficiency is also mandatory. Keep one PR to one user workflow or one
 architectural concern; the standard budget is 20 files and 1,500 changed lines.
 Complete the PR template's six-row invariant matrix before the first review. Read

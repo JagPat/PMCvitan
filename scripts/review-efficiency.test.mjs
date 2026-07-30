@@ -8,6 +8,8 @@ import {
   assessConvergence,
   assessReviewScope,
   codexFindingHeads,
+  isDocsOnlyDiff,
+  PLAN_REVIEW_ROUND_CAP,
   REQUIRED_INVARIANTS,
 } from './review-efficiency.mjs';
 import { run as runScope } from './review-scope.mjs';
@@ -336,4 +338,119 @@ test('the dependency-free scope CLI returns success or failure from the PR event
     process.exitCode = previousExitCode;
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('a docs-only diff is recognised, and any code file disqualifies it', () => {
+  assert.equal(isDocsOnlyDiff([
+    'docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md',
+    'docs/STATUS.md',
+    { filename: 'docs/reviews/pr-252-convergence.md', status: 'modified' },
+    'README.md',
+  ]), true);
+
+  // one script, schema, test or workflow file and it is no longer a plan review
+  for (const code of [
+    'scripts/review-efficiency.mjs',
+    'apps/api/prisma/schema.prisma',
+    'apps/web/tests/labour.test.ts',
+    '.github/workflows/ci.yml',
+  ]) {
+    assert.equal(
+      isDocsOnlyDiff(['docs/STATUS.md', code]),
+      false,
+      `${code} must disqualify a docs-only claim`,
+    );
+  }
+  assert.equal(isDocsOnlyDiff([]), false, 'an empty diff is not a plan review');
+});
+
+// A plan has no executable surface, so a finding on it can never be answered
+// with a RED→GREEN proof — only with more prose. PR #252 ran four finding-bearing
+// heads (8/8/7/7, every finding correct) with no declining rate, because the
+// convergence protocol demands a batched audit after two heads and never says
+// when a DOCS-ONLY review is finished. This bounds it.
+test('a docs-only review past the round cap must record a probe deferral', () => {
+  const codexHeads = (n) => Array.from({ length: n }, (_, i) => ({
+    user: { login: CODEX },
+    commit_id: String.fromCharCode(97 + i).repeat(40),
+  }));
+  const packet = { filename: 'docs/reviews/pr-252-convergence.md', status: 'modified' };
+  const docsOnly = ['docs/superpowers/plans/2026-07-29-phase-5.md', packet];
+
+  // below the cap nothing changes: convergence trailer + packet is enough
+  const withinCap = assessConvergence({
+    comments: [],
+    reviews: codexHeads(PLAN_REVIEW_ROUND_CAP - 1),
+    headMessage: 'fix: correction\n\nReview-Convergence: complete',
+    changedFiles: docsOnly,
+  });
+  assert.equal(withinCap.allowed, true);
+  assert.equal(withinCap.deferralRequired, false);
+
+  // at the cap, the same head is no longer sufficient — the still-open
+  // architectural questions must be named, with the probe and task that settle
+  // each. This does NOT dismiss a finding; it moves its verification to where a
+  // verification can exist.
+  const atCap = assessConvergence({
+    comments: [],
+    reviews: codexHeads(PLAN_REVIEW_ROUND_CAP),
+    headMessage: 'fix: correction\n\nReview-Convergence: complete',
+    changedFiles: docsOnly,
+  });
+  assert.equal(atCap.deferralRequired, true);
+  assert.equal(atCap.allowed, false);
+  assert.match(atCap.missing.join(' '), /Review-Deferred-To-Probes/u);
+
+  const deferred = assessConvergence({
+    comments: [],
+    reviews: codexHeads(PLAN_REVIEW_ROUND_CAP),
+    headMessage: [
+      'fix: plan convergence, remainder deferred to probes',
+      '',
+      'Review-Convergence: complete',
+      'Review-Deferred-To-Probes: phase-5-task-1',
+    ].join('\n'),
+    changedFiles: docsOnly,
+  });
+  assert.equal(deferred.allowed, true);
+  assert.equal(deferred.deferredTo, 'phase-5-task-1');
+
+  // the cap is for documents only: a CODE PR past the same round count still
+  // owes an ordinary convergence head, because its findings ARE provable.
+  const codePr = assessConvergence({
+    comments: [],
+    reviews: codexHeads(PLAN_REVIEW_ROUND_CAP),
+    headMessage: 'fix: correction\n\nReview-Convergence: complete',
+    changedFiles: ['scripts/review-efficiency.mjs', packet],
+  });
+  assert.equal(codePr.deferralRequired, false);
+  assert.equal(codePr.allowed, true);
+});
+
+test('a probe deferral must name the task that will settle it', () => {
+  const reviews = Array.from({ length: PLAN_REVIEW_ROUND_CAP }, (_, i) => ({
+    user: { login: CODEX },
+    commit_id: String.fromCharCode(97 + i).repeat(40),
+  }));
+  const changedFiles = [
+    'docs/superpowers/plans/plan.md',
+    { filename: 'docs/reviews/pr-252-convergence.md', status: 'modified' },
+  ];
+  const bare = assessConvergence({
+    comments: [],
+    reviews,
+    headMessage: [
+      'fix: correction',
+      '',
+      'Review-Convergence: complete',
+      'Review-Deferred-To-Probes: yes',
+    ].join('\n'),
+    changedFiles,
+  });
+  assert.equal(
+    bare.allowed,
+    false,
+    '"yes" names no task, so nothing is scheduled to settle the deferred findings',
+  );
+  assert.match(bare.missing.join(' '), /name the task/u);
 });

@@ -185,3 +185,23 @@ subscriptions; GitHub stores no AI API key. Claude Auto-fix must be enabled on t
 PR before the laptop is unavailable. If that subscription-backed session stops,
 the GitHub gate deliberately leaves the PR unmerged rather than silently falling
 back to an unreviewed path.
+
+## Bounded plan review (`Review-Deferred-To-Probes`)
+
+The convergence protocol terminates on code because every finding is answered by a
+RED→GREEN probe. A plan has no executable surface, so a finding on it can only be
+answered with more prose — and a plan can always be specified further. PR #252 ran
+four finding-bearing heads (8, 8, 7, 7; every finding correct, no declining rate)
+before this was written down.
+
+So: after **3 finding-bearing heads on a docs-only diff**, the next head must
+convert each still-open question into a named probe in the plan and carry
+`Review-Deferred-To-Probes: <task>`, naming the task whose review stop will settle
+them. `assessConvergence` enforces it; a bare value that names no task is refused.
+
+This is not a dismissal mechanism. A finding-dismissal engine was built in PR #250
+and withdrawn because it would have suppressed a correct finding on its first real
+case. Every finding is kept, `codex-current-head` still fails closed on every
+current-head finding, and the only thing that moves is WHERE the remaining
+questions get verified — from prose, where they cannot be, to probes, where they
+can.

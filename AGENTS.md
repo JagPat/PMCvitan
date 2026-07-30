@@ -89,6 +89,18 @@ so directly rather than framing it as a suggestion.
   must carry the PR template's `justified-large` marker and complete all six
   invariant-matrix rows. Missing large-unit evidence is a blocking scope finding,
   not a reason to spend a full product CI run.
+- **A plan is not an implementation, and a docs-only review is bounded.** After 3
+  finding-bearing heads on a diff that contains only documentation, the author must
+  stop answering findings with more prose: each still-open question is converted
+  into a named probe in the plan, and the head carries
+  `Review-Deferred-To-Probes: <task>` naming the task whose review stop settles
+  them. Nothing is dismissed — `codex-current-head` still fails closed on every
+  current-head finding — and the deferral ledger in the convergence packet records
+  each question with the probe that will adjudicate it.
+  On such a head, a finding whose remedy is "the plan should also specify X" is
+  answered by that ledger when X already has a named probe. Report it if the
+  DECISION is wrong; a missing level of mechanism detail belongs to the task that
+  implements it, where a RED probe can prove the point instead of arguing it.
 - After two distinct heads receive Codex findings, ordinary patching stops. The
   next head must be one batched architectural convergence correction with a
   changed `docs/reviews/*convergence*.md` packet and the commit trailer
