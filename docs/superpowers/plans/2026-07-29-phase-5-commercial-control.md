@@ -174,6 +174,12 @@ licence to write a local filter.
   Because that code is the SCOPE KEY every budget line and attribution groups under, its
   `code` and `name` carry the repo's complete non-blank discipline at PostgreSQL —
   `CHECK (btrim(code, E' \t\n\x0B\f\r') <> '')`, same for `name` — not merely `NOT NULL`.
+  **And it is UNIQUE per project: `UNIQUE (projectId, code)` at PostgreSQL.** A scope key that
+  can repeat is not a key: two `CIVIL` heads let a ₹100 budget sit on one while a ₹100 PO
+  attribution sits on the other, so the budget exception compares a commitment against the wrong
+  budget and the forecast shows two heads nobody can tell apart — while every non-blank and
+  freeze check still passes. Non-blank, frozen and unique are three separate obligations on the
+  same column and all three are needed for it to be a scope key.
   A cost head coded `'   '` would otherwise satisfy every planned check while collecting
   budget and commitment facts under a key no one can select, report or reconcile. Same rule
   as the reason columns; see §0b.
@@ -385,9 +391,12 @@ certificates leaves the pre-certification window open: 100 accepted, a submitted
 allows it, and `BILLED_QTY = 100` stands live against `ACCEPTED = 0`, breaking bound 2 with no
 transition to notice. But REFUSING here would be wrong: no money has been promised, and a store
 user correcting a genuine mis-acceptance must not be blocked by a vendor's claim. So the
-participant, in the reversal's own transaction, moves every live uncertified claim on that PO
-line to `disputed` with a `qty-over-accepted` exception — which §0 excludes from the live folds,
-so bound 2 holds by construction and the vendor is told why. Refuse when money is committed
+participant, in the reversal's own transaction, RE-DERIVES `ACCEPTED(poLine)` with the reversal
+applied and moves to `disputed` (with a `qty-over-accepted` exception, which §0 excludes from the
+live folds) only those live uncertified claims the reversal actually makes over-bound. Not every
+claim on the line: accept 100, bill 80, reverse 20 leaves `ACCEPTED = 80` and `BILLED_QTY = 80`,
+which satisfies bound 2 — disputing that bill would stall an honest vendor over a correction that
+did not affect them. Bound 2 holds by construction either way, and the vendor is told why. Refuse when money is committed
 (a live certificate); dispute when only a claim is. An aggregate check would let the evidence be
 swapped after the fact: certify 100 against acceptance A recorded by store user X, accept
 another 100 by user Y, then reverse A — the aggregate is still 100 so the reversal passes, and
@@ -406,10 +415,13 @@ an `ActivityWorkOutput` and rests on a closing sign-off, and both can move after
 certification: Activities can supersede the cited output, and `revertSignOff` can withdraw the
 sign-off when a closing inspection is rejected. Either would leave an append-only certificate
 payable against evidence that no longer stands. So `activities.workflowParticipants` gains
-`commercial` too, and superseding a cited output or reverting a sign-off asks
-`CommercialParticipant.assertWorkEvidenceRevisable(tx, activityId, outputIds)`, which refuses
-while a live certificate consumes that evidence and names the certificate. The frozen
-consumption set covers cited outputs exactly as it covers acceptance rows — one rule, both
+`commercial` too, and **reverting a sign-off** asks
+`CommercialParticipant.assertWorkEvidenceRevisable(tx, activityId)`, which refuses while a live
+certificate rests on that sign-off and names the certificate. **Output supersession is NOT one of
+these paths**: `ActivityWorkOutput` is append-only in Phase 4 with no supersession transition
+(§0), so guarding one would require Phase 5 to add an out-of-scope Activities lifecycle purely so
+commercial could guard it. An earlier revision of this sentence listed it; the cited output is
+evidence that cannot be withdrawn, which needs no guard. The frozen consumption set covers
 sides. Fixing the material direction alone was the omission this finding names.
 
 **That order is not a free choice — it must match what inventory already does.** Every
@@ -454,11 +466,14 @@ definitions rather than by prose an implementer has to remember:
   holds, and the ₹50 needs a fresh attributable approval. The ₹100 approval row survives as
   history attached to the superseded certificate — it records what was authorised then, which
   is exactly what an audit needs.
-- **Payments.** `PAID(bill)` nets payment rows against payment-REVERSAL rows (§0). Where cash
-  moved, the same transaction appends a reversal for the excess; it is its own row type
-  because every append-only money row here is strictly positive with the TYPE carrying
-  direction (§H). A positive ₹50 "reversing payment" would read ₹150 paid and a negative one
-  is refused by the CHECK — neither is a reversal.
+- **Payments.** `PAID(bill)` nets payment rows against payment-REVERSAL rows (§0), and the
+  reversal is its own row type because every append-only money row here is strictly positive
+  with the TYPE carrying direction (§H): a positive ₹50 "reversing payment" would read ₹150
+  paid and a negative one is refused by the CHECK — neither is a reversal. **Where cash moved,
+  the FULL paid amount is reversed BEFORE the supersession, per the ordering stated below — not
+  "the excess".** An earlier revision of this bullet said excess-only, which contradicts that
+  ordering: reverse ₹50 of ₹100, supersede to ₹50, and `APPROVED` is ₹0 while `PAID` is ₹50, so
+  the guard refuses the very correction it is meant to permit.
 
 **Ordering, because the obvious rule deadlocks.** Stating only "refused if it would leave
 `PAID > APPROVED`" makes the intended correction impossible: reverse ₹50 of a ₹100 payment,
@@ -502,8 +517,15 @@ false. The refusal names the outstanding `PAID` so the operator knows exactly wh
   retired claim.
 - `certified`, `approved-for-payment` and every payment row are **append-only at PG**, with
   the same trigger discipline the §C ledger and the promise registers already use.
-- A bill line is FK-bound to its PO line by a composite FK carrying **both `projectId` and
-  `vendorId`**. A same-project FK alone only stops a cross-project line: both PO roots carry
+- A bill line is bound to its PO line so that **PostgreSQL** refuses a cross-vendor claim. The
+  obvious spelling does not work: `PurchaseOrderLine` and `LabourPurchaseOrderLine` carry no
+  `vendorId` — the vendor lives on the PO ROOT — and PG cannot express a transitive join as a
+  FK, so a composite FK "carrying `vendorId` to the line" is unimplementable as written and would
+  silently degrade to a service check. So Task 4 adds a FROZEN `vendorId` (and `purchaseOrderId`)
+  to the PO-LINE snapshot, copied at issuance under the existing column-freeze discipline, and
+  the bill line then carries a real composite FK to `(projectId, id, vendorId)` on the line. That
+  is a procurement schema change and it is scheduled IN Task 4 rather than assumed to exist. A
+  same-project FK alone only stops a cross-project line: both PO roots carry
   their own `vendorId`, so within one project Vendor A's bill could name Vendor B's PO line,
   pass the ordered and accepted checks, and attribute a payable amount to the wrong
   counterparty. Binding the vendor makes that unrepresentable rather than merely unlikely.
@@ -574,8 +596,13 @@ bill for material that never arrived or work never measured.
   after `btrim` alone let whitespace through. Presence is not justification: a deduction of
   type `other` with `reason = '   '`, or a whitespace bill rejection, would otherwise satisfy
   every stated check and leave append-only evidence with no usable reason. This applies to
-  deduction reasons, rejection reasons, budget revision reasons, attribution reasons and
-  override reasons alike.
+  deduction reasons, rejection reasons, budget revision reasons, attribution reasons, override
+  reasons, **measurement-correction reasons (§D), certificate-supersession reasons (§F) and
+  payment-reversal reasons (§H)** alike — every reason column this phase introduces, not the
+  subset that existed when the row was first written. Three of those were added by later
+  revisions of this plan and were missing here, which is the §0b closure failure that row exists
+  to prevent: a `-50` measurement correction or a ₹50 reversal justified by `'\t'` would satisfy
+  every other stated check.
 - **A payment reversal is a row type on the same footing**, append-only, strictly positive,
   attributable, reason-bearing, authored under `commercial.record-payment` — the same authority
   that recorded the payment it reverses, because reversing cash is the same kind of act as
@@ -947,6 +974,19 @@ SECTION is right and the probe is the defect.
 5al. §I write authority: a member holding only `commercial.read` is REFUSED on cost-head
    creation, budget-line create/revise and re-attribution; `commercial.budget` /
    `commercial.attribute` permit their own routes and nothing else.
+5am. §B cost-head key: PG refuses a SECOND `CostHead` with the same `(projectId, code)`; two
+   projects may each hold `CIVIL`; a budget line and an attribution under one project's `CIVIL`
+   always meet in the same head, so the budget exception compares like with like.
+5an. §E reversal disposition is per-claim, not per-line: accept 100, bill 80, reverse 20 leaves
+   that bill LIVE (bound 2 still satisfied); reverse 30 disputes it; a second claim on the same
+   line that is still covered is untouched. RED against a path that disputes every claim.
+5ao. §F vendor pinning is PG-enforced: after Task 4 freezes `vendorId` on the PO-line snapshot,
+   Vendor A's bill line naming Vendor B's PO line in the SAME project is rejected by PostgreSQL,
+   not by the service.
+5ap. §0b reason coverage is COMPLETE: a whitespace-only reason is rejected by PG on every reason
+   column this phase introduces — deduction, rejection, budget revision, attribution, override,
+   measurement correction, certificate supersession and payment reversal — enumerated from the
+   schema rather than from a list written by hand.
 5g. §0 set identity: for EVERY row of the §0 table (no count is written here — a count is one
    more thing that goes stale when a set is added, which is how round 8 happened), the
    "must NOT be" column is a probe — the

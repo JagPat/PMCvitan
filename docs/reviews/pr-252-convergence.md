@@ -517,11 +517,16 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Does certifying a LABOUR bill take the labour PO-line lock, and does a labour PO attribute atomically? | probe 5aj | phase-5-task-2 |
 | Do the dispute transition and acceptance-withdrawal guard exist in the task that first creates a live bill? | probe 5ak | phase-5-task-4 |
 | Can a read-only commercial member mutate budget or attribution? | probe 5al | phase-5-task-1 |
+| Is `CostHead.code` unique per project, so a budget and its attribution meet in one head? | probe 5am | phase-5-task-1 |
+| Does an acceptance reversal dispute only the claims it actually makes over-bound? | probe 5an | phase-5-task-4 |
+| Is cross-vendor bill-to-PO-line pinning refused by PostgreSQL, not the service? | probe 5ao | phase-5-task-4 |
+| Is every reason column this phase adds non-blank at PG, enumerated from the schema? | probe 5ap | phase-5-task-5 |
 
 ## Termination, and what happens next
 
-Ten finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11 — **seventy-nine** findings, every one
-correct and none contradicted by a later round. (The round-7 packet said "sixty-six" for the
+Eleven finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7, 11, 7 — **eighty-six** findings. Eighty-five
+were correct; round 10's scope-evidence P1 is the FIRST verifiably false one, dismissed above with
+the passing check-run cited. (The round-7 packet said "sixty-six" for the
 first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
 forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
 the recommendation to hand the remainder to probes; the owner approved it and asked for the
