@@ -1302,8 +1302,35 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   assert.ok(convergence > checks);
   assert.ok(review > convergence);
   assert.match(gate, /client\.commit\(expectedHead\)/u);
+  // The packet obligation is per-HEAD: `changedFiles` must stay the head commit's own
+  // files, so a packet added on an earlier head never satisfies the current one. (The
+  // behaviour is exercised directly in the stale-packet case below; this pins the wiring
+  // so a future edit cannot quietly widen it to the cumulative diff.) The cumulative
+  // read exists for a different question — whether the review unit is provable at all —
+  // and must never be the source of `changedFiles`.
   assert.match(gate, /changedFiles: commit\.files/u);
-  assert.doesNotMatch(gate, /client\.pullRequestFiles\(pullRequest\.number\)/u);
+  assert.doesNotMatch(gate, /changedFiles: pullRequestFiles/u);
+  assert.match(gate, /pullRequestFiles = await client\.pullRequestFiles\(pullRequest\.number\)/u);
+  // The deferral LEDGER is deliberately not gate-verified — see the note in
+  // review-efficiency.mjs. Four rounds of prose parsing were withdrawn because telling a
+  // question from a probe list, or a probe declaration from a numbered task heading, needs
+  // MEANING, and because a deferral buys an author nothing a clean review would not (the
+  // current-head finding guard runs after this and fails closed regardless). Pin the absence
+  // so it is not quietly reintroduced.
+  assert.doesNotMatch(gate, /packetText/u);
+  assert.doesNotMatch(gate, /planText/u);
+  assert.doesNotMatch(gate, /fileText/u);
+  // The one thing the gate DOES read beyond the API: docs/STATUS.md, from its own trusted
+  // checkout, to bound which phases a deferral may name. A structured-field read of a
+  // machine-readable state file is the class of check that belongs in a gate.
+  assert.match(gate, /loadStatusDocument\(\)/u);
+  assert.match(gate, /deferralPhases\(status\?\.now\)/u);
+  assert.match(gate, /activePhases,/u);
+  // The phase check needs the FILE LIST too, so it can notice when the PR itself edits
+  // STATUS and main's copy is therefore not the PR's phase truth (#253 round 10). The
+  // gate still reads only the trusted default branch — no PR content is fetched.
+  assert.match(gate, /pullRequestFiles,\n\s+activePhases,/u);
+  assert.doesNotMatch(gate, /refs\/pull\/\S+\/head/u);
   assert.match(gate, /state: 'convergence_required'/u);
   assert.match(gate, /Review-Convergence: complete/u);
   assert.match(gate, /assessReviewScope\(pullRequest\)/u);
@@ -1530,6 +1557,18 @@ test('convergence enforcement fails closed until the batched packet and trailer 
   assert.equal(allowed.allowed, true);
   assert.deepEqual(statuses, []);
   assert.deepEqual(sticky, []);
+
+  // An unreadable cumulative diff must not stall a head. The docs-only cap is the only
+  // thing it feeds, and with no evidence that the review unit is unprovable the gate
+  // holds the ordinary code protocol: this head carries trailer + packet, so it passes.
+  delete client.pullRequestFiles;
+  const unreadable = await reviewGate.enforceReviewConvergence(
+    client,
+    pullRequest,
+    head,
+  );
+  assert.equal(unreadable.allowed, true);
+  assert.equal(unreadable.deferralRequired, false);
 });
 
 test('one polled Codex invocation owns terminal success and merge completion', async () => {

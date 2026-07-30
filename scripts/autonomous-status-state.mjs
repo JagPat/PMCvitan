@@ -12,8 +12,11 @@
 // always has one, so a future edit that empties the state fails CI.
 import { readFile } from 'node:fs/promises';
 
-// The state values that mean a task still has work attached to it.
-const OPEN_TASK_STATES = new Set([
+// The state values that mean a task still has work attached to it. Exported because the
+// review gate's deferral-phase check needs the SAME vocabulary: a phase counts as having
+// work ahead of it only in one of these states, and an unrecognized state is unverified
+// rather than open (this module's own assessRunnerState already refuses to resolve one).
+export const OPEN_TASK_STATES = new Set([
   'not_started',
   'correction_required',
   'in_progress',
