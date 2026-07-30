@@ -14,12 +14,12 @@ phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
 task: 6
 task_state: merged
-work_item: none
-reviewed_merge: 67e7a00
-open_pr: none
+work_item: phase-5-planning
+reviewed_merge: 809f659
+open_pr: 252
 next_task: phase-5-planning
 blocking_directive: none
-updated: 2026-07-29
+updated: 2026-07-30
 ```
 
 **PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
@@ -71,10 +71,10 @@ item. Queue items are already-authorized upkeep of delivered scope (never
 new product scope), and each rides the same draft → CI → exact-head Codex
 gate as feature work. Work them top-down, one focused PR per item:
 
-1. `dependabot-security-updates` — GitHub reports open vulnerability alerts
-   on the default branch (5 as of 2026-07-29: 3 high, 1 moderate, 1 low).
-   Raise the affected dependencies with the full gate battery; one PR per
-   coherent dependency group.
+1. `dependabot-security-updates` — one high advisory remains on the default branch
+   as of 2026-07-30 (`react-router` CSRF, transitive via `react-router-dom`; PR #254
+   closed four others via ranged pnpm overrides). Raise the affected dependency with
+   the full gate battery; one PR per coherent dependency group.
 2. `e2e-flake-burndown` — the documented flake families the review packets
    record honestly (`daily-log-lost-response` visibility, the
    timing-sensitive `pillar-chain` inspection steps,

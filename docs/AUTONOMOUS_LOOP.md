@@ -9,6 +9,7 @@ This repository is designed to progress without the owner's laptop or technical 
 | Cloud runner | Read `docs/STATUS.md`, start the current work item, and never skip ahead |
 | Claude Code web | Author code, tests, migrations, packets, and corrections on `claude/**`; keep Auto-fix subscribed until the PR reaches a terminal state |
 | Codex Cloud | Independently review every PR head using `AGENTS.md`; never implement its own findings |
+| Cursor Cloud | Maintenance queue, planning research, finding reproduction, convergence drafts, and owner advisory on `cursor/**`; see `CURSOR.md` |
 | GitHub | Hold drafts, run required CI, trigger Codex by moving CI-green drafts to ready, enforce an exact-head review status, and merge |
 | Coolify | Deploy merged `main` |
 
