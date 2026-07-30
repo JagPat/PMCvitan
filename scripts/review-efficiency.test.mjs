@@ -383,6 +383,7 @@ test('a docs-only review past the round cap must record a probe deferral', () =>
     reviews: codexHeads(PLAN_REVIEW_ROUND_CAP - 1),
     headMessage: 'fix: correction\n\nReview-Convergence: complete',
     changedFiles: docsOnly,
+    pullRequestFiles: docsOnly,
   });
   assert.equal(withinCap.allowed, true);
   assert.equal(withinCap.deferralRequired, false);
@@ -396,6 +397,7 @@ test('a docs-only review past the round cap must record a probe deferral', () =>
     reviews: codexHeads(PLAN_REVIEW_ROUND_CAP),
     headMessage: 'fix: correction\n\nReview-Convergence: complete',
     changedFiles: docsOnly,
+    pullRequestFiles: docsOnly,
   });
   assert.equal(atCap.deferralRequired, true);
   assert.equal(atCap.allowed, false);
@@ -411,6 +413,7 @@ test('a docs-only review past the round cap must record a probe deferral', () =>
       'Review-Deferred-To-Probes: phase-5-task-1',
     ].join('\n'),
     changedFiles: docsOnly,
+    pullRequestFiles: docsOnly,
   });
   assert.equal(deferred.allowed, true);
   assert.equal(deferred.deferredTo, 'phase-5-task-1');
@@ -422,6 +425,7 @@ test('a docs-only review past the round cap must record a probe deferral', () =>
     reviews: codexHeads(PLAN_REVIEW_ROUND_CAP),
     headMessage: 'fix: correction\n\nReview-Convergence: complete',
     changedFiles: ['scripts/review-efficiency.mjs', packet],
+    pullRequestFiles: ['scripts/review-efficiency.mjs', packet],
   });
   assert.equal(codePr.deferralRequired, false);
   assert.equal(codePr.allowed, true);
@@ -446,6 +450,7 @@ test('a probe deferral must name the task that will settle it', () => {
       'Review-Deferred-To-Probes: yes',
     ].join('\n'),
     changedFiles,
+    pullRequestFiles: changedFiles,
   });
   assert.equal(
     bare.allowed,
@@ -453,4 +458,89 @@ test('a probe deferral must name the task that will settle it', () => {
     '"yes" names no task, so nothing is scheduled to settle the deferred findings',
   );
   assert.match(bare.missing.join(' '), /name the task/u);
+});
+
+// FINDING (#253 round 1 P2 ×3) — three ways isDocsOnlyDiff misclassified a diff.
+test('runnable and schema files never count as documentation, wherever they live', () => {
+  for (const runnable of [
+    'docs/probes/foo.test.mjs',
+    'docs/schema.prisma',
+    'docs/tools/repair.ts',
+    'docs/ci/deploy.yml',
+    'docs/migrations/20270101_x/migration.sql',
+    'docs/scripts/gen.py',
+  ]) {
+    assert.equal(
+      isDocsOnlyDiff(['docs/STATUS.md', runnable]),
+      false,
+      `${runnable} runs, so it is provable and not a plan review`,
+    );
+  }
+  // real documentation under docs/ still qualifies
+  assert.equal(isDocsOnlyDiff(['docs/a.md', 'docs/reviews/b.md', 'docs/img/c.svg']), true);
+});
+
+test('a deleted code file disqualifies a docs-only diff', () => {
+  assert.equal(
+    isDocsOnlyDiff([
+      { filename: 'docs/STATUS.md', status: 'modified' },
+      { filename: 'scripts/old-gate.mjs', status: 'removed' },
+    ]),
+    false,
+    'deleting a script is a provable change, not a plan edit',
+  );
+  // a removed DOC is still documentation
+  assert.equal(
+    isDocsOnlyDiff([
+      { filename: 'docs/STATUS.md', status: 'modified' },
+      { filename: 'docs/old-plan.md', status: 'removed' },
+    ]),
+    true,
+  );
+});
+
+// The gate passes the HEAD COMMIT's files as changedFiles. A code PR whose fourth
+// head is a convergence-packet-only commit would therefore look docs-only and be
+// blocked pending a deferral trailer that means nothing for it — this fix must not
+// break the ordinary code convergence flow it is meant to leave alone.
+test('the docs-only cap reads the whole PR, not just the convergence commit', () => {
+  const reviews = Array.from({ length: PLAN_REVIEW_ROUND_CAP }, (_, i) => ({
+    user: { login: CODEX },
+    commit_id: String.fromCharCode(97 + i).repeat(40),
+  }));
+  const packetOnlyHead = [
+    { filename: 'docs/reviews/pr-249-convergence.md', status: 'modified' },
+  ];
+  const headMessage = 'fix: batched correction\n\nReview-Convergence: complete';
+
+  // a CODE pr: the cumulative diff carries scripts, so no deferral is owed even
+  // though this head touched only the packet
+  const codePr = assessConvergence({
+    comments: [],
+    reviews,
+    headMessage,
+    changedFiles: packetOnlyHead,
+    pullRequestFiles: ['scripts/check-run-coverage.mjs', 'docs/reviews/pr-249-convergence.md'],
+  });
+  assert.equal(codePr.deferralRequired, false, 'a code PR keeps the ordinary protocol');
+  assert.equal(codePr.allowed, true);
+
+  // a genuine plan pr: the cumulative diff is documentation only
+  const planPr = assessConvergence({
+    comments: [],
+    reviews,
+    headMessage,
+    changedFiles: packetOnlyHead,
+    pullRequestFiles: ['docs/superpowers/plans/plan.md', 'docs/reviews/pr-252-convergence.md'],
+  });
+  assert.equal(planPr.deferralRequired, true);
+  assert.equal(planPr.allowed, false);
+
+  // unknown cumulative diff: fail toward the CODE path, which asks for an
+  // ordinary convergence head rather than a deferral it cannot justify
+  const unknown = assessConvergence({
+    comments: [], reviews, headMessage, changedFiles: packetOnlyHead,
+  });
+  assert.equal(unknown.deferralRequired, false);
+  assert.equal(unknown.allowed, true);
 });

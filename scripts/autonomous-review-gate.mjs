@@ -556,6 +556,14 @@ export class GitHubClient {
     );
   }
 
+  // The PR's CUMULATIVE diff against its base — every file the review unit touches,
+  // not just the files of the current head commit.
+  pullRequestFiles(number) {
+    return this.paginated(
+      `/repos/${this.repository}/pulls/${number}/files`,
+    );
+  }
+
   reactions(number) {
     return this.request(
       `/repos/${this.repository}/issues/${number}/reactions?per_page=100`,
@@ -936,11 +944,22 @@ export async function enforceReviewConvergence(
   if (!preliminary.required) return preliminary;
 
   const commit = await client.commit(expectedHead);
+  // The head commit answers "does THIS head carry the audit?". Whether the review unit
+  // is provable at all is a question about the PR's CUMULATIVE diff — a code PR's
+  // convergence head is very often the packet alone. An unreadable list is left
+  // undefined, which assessConvergence resolves toward the ordinary code protocol.
+  let pullRequestFiles;
+  try {
+    pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
+  } catch {
+    pullRequestFiles = undefined;
+  }
   const result = assessConvergence({
     comments,
     reviews,
     headMessage: commit.commit?.message,
     changedFiles: commit.files ?? [],
+    pullRequestFiles,
   });
   if (result.allowed) return result;
 

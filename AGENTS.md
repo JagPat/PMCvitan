@@ -90,7 +90,9 @@ so directly rather than framing it as a suggestion.
   invariant-matrix rows. Missing large-unit evidence is a blocking scope finding,
   not a reason to spend a full product CI run.
 - **A plan is not an implementation, and a docs-only review is bounded.** After 3
-  finding-bearing heads on a diff that contains only documentation, the author must
+  finding-bearing heads on a PR whose CUMULATIVE diff contains only documentation
+  (by extension and location — anything that runs keeps the ordinary code protocol;
+  see `docs/AUTONOMOUS_LOOP.md`), the author must
   stop answering findings with more prose: each still-open question is converted
   into a named probe in the plan, and the head carries
   `Review-Deferred-To-Probes: <task>` naming the task whose review stop settles

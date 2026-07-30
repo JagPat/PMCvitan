@@ -138,16 +138,36 @@ function changedFilename(file) {
 
 // Documentation, for the purpose of "can a finding on this be proven?". Anything that
 // runs — a script, a schema, a migration, a test, a workflow, application source — makes
-// the diff provable and puts it back under the ordinary code protocol. An empty diff is
-// not a plan review; it is a broken read, and it fails toward the strict path.
-const DOCS_PATH = /^(?:docs\/.+|[^/]+\.md|\.github\/[^/]*\.md)$/u;
+// the diff provable and puts it back under the ordinary code protocol.
+//
+// A directory name cannot decide that. `docs/probes/x.test.mjs`, `docs/schema.prisma` and
+// `docs/ci/deploy.yml` run exactly as they would anywhere else, and a rule that admitted
+// everything under `docs/` would hand the deferral escape to a diff whose findings are
+// perfectly provable. So a file is documentation only when BOTH its extension and its
+// location say so.
+//
+// The extension test is an ALLOWLIST, deliberately. A blocklist of runnable extensions
+// has to anticipate every one that exists and silently admits the ones it missed; an
+// allowlist treats an unrecognised extension as code, which is the direction that fails
+// closed. An empty diff is not a plan review either; it is a broken read, and it also
+// fails toward the strict path.
+const DOCS_EXTENSION = /\.(?:md|mdx|txt|rst|svg|png|jpe?g|gif|webp|pdf)$/iu;
+const DOCS_LOCATION = /^(?:docs\/.+|\.github\/.+|[^/]+)$/u;
+
+function isDocumentation(name) {
+  return DOCS_EXTENSION.test(name) && DOCS_LOCATION.test(name);
+}
 
 export function isDocsOnlyDiff(changedFiles) {
+  // Every entry, INCLUDING removals. Deleting `scripts/old-gate.mjs` changes what runs
+  // just as surely as editing it, so a diff that deletes code is provable and is not a
+  // plan review. (The convergence-PACKET check below keeps its own `removed` filter:
+  // there the question is whether the head ADDS the audit, and a deleted packet is not
+  // an audit.)
   const names = (changedFiles ?? [])
-    .filter((file) => file?.status !== 'removed')
     .map((file) => changedFilename(file))
     .filter((name) => typeof name === 'string' && name.length > 0);
-  return names.length > 0 && names.every((name) => DOCS_PATH.test(name));
+  return names.length > 0 && names.every((name) => isDocumentation(name));
 }
 
 // The deferral names the TASK that will settle the deferred findings, so the handoff is
@@ -222,7 +242,13 @@ export function convergenceTrailerHint(message) {
     : 'trailer';
 }
 
-export function assessConvergence({ comments, reviews, headMessage, changedFiles }) {
+export function assessConvergence({
+  comments,
+  reviews,
+  headMessage,
+  changedFiles,
+  pullRequestFiles,
+}) {
   const findingHeads = codexFindingHeads(comments, reviews);
   const findingHeadCount = findingHeads.length;
   if (findingHeadCount < CONVERGENCE_AFTER_FINDING_HEADS) {
@@ -246,7 +272,18 @@ export function assessConvergence({ comments, reviews, headMessage, changedFiles
   // Past the cap, a docs-only review also owes the probe deferral: each still-open
   // question named, with the probe and the task that will settle it. See
   // PLAN_REVIEW_ROUND_CAP — this adds an obligation, it never removes one.
-  const deferralRequired = isDocsOnlyDiff(changedFiles)
+  //
+  // Judged on the PR's CUMULATIVE diff, not on `changedFiles` (this head's commit). A
+  // code PR's convergence head is very often the packet alone, and reading that one
+  // commit would classify the whole review as a plan review and block it pending a
+  // deferral trailer that means nothing for it. `changedFiles` keeps its own meaning
+  // above — whether THIS head carries the audit — which is a per-head question.
+  //
+  // A cumulative diff we could not read is not evidence of anything, so it falls to the
+  // CODE path: the ordinary convergence obligations stand and no deferral is demanded on
+  // a review that may well be provable.
+  const deferralRequired = Array.isArray(pullRequestFiles)
+    && isDocsOnlyDiff(pullRequestFiles)
     && findingHeadCount >= PLAN_REVIEW_ROUND_CAP;
   const deferral = deferralRequired ? deferredToProbes(headMessage) : undefined;
 

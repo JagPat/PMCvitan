@@ -199,6 +199,17 @@ convert each still-open question into a named probe in the plan and carry
 `Review-Deferred-To-Probes: <task>`, naming the task whose review stop will settle
 them. `assessConvergence` enforces it; a bare value that names no task is refused.
 
+**"Docs-only" is a narrow, deliberately strict test.** It is judged on the PR's
+CUMULATIVE diff, not on the current head's commit — a code PR's convergence head is
+usually the packet alone, and reading that one commit would classify a provable review
+as a plan review. Within that diff every file must be documentation by BOTH extension
+(an allowlist: `.md`, `.mdx`, `.txt`, `.rst`, and image/PDF assets) and location
+(`docs/`, `.github/`, or the repository root). A directory name alone decides nothing:
+`docs/probes/x.test.mjs`, `docs/schema.prisma` and `docs/ci/deploy.yml` run, so a diff
+carrying them is provable and stays under the ordinary code protocol. Deletions count
+too — removing a script changes what runs. An empty diff, an unrecognised extension, or
+a cumulative list the gate could not read all fail toward the code path.
+
 This is not a dismissal mechanism. A finding-dismissal engine was built in PR #250
 and withdrawn because it would have suppressed a correct finding on its first real
 case. Every finding is kept, `codex-current-head` still fails closed on every
