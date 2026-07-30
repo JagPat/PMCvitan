@@ -365,6 +365,67 @@ a failure whose cause is my recall: I wrote the closure table and, in the same d
 to close four rules. Prose has no compiler, so the only mechanism that closes a rule over its
 sites is an executable probe. That is the #253 thesis, arrived at the hard way.
 
+## Round 8 (head `b612f69`) — the recurrence has a name now: a second declaration
+
+Seven findings, all correct. **Four are the same failure and it is not a recall failure — it is
+a structural one I can point at.** Round 7 concluded that prose has no compiler and only probes
+close a rule over its sites. That was right about VERIFICATION and wrong about the cause. This
+round shows the cause precisely: in each of the four, the rule was stated TWICE, one statement
+was updated and the other was not, and both continued to look authoritative.
+
+- **§K.** The section OPENED with `workflowParticipants: ['inventory', 'activities']` and CLOSED
+  with `['inventory', 'activities', 'procurement']`. Round 7's own correction added
+  `procurement` to the closing list only. Two declarations, one section, disagreeing — and the
+  opening one is what Task 1 would have read, leaving certification with no transaction-bound
+  procurement participant and free to certify against ordered authority `closeShort` has moved.
+  A THIRD copy sat in §0b's closure row.
+- **Probe 5c.** §D removed output-priced labour in round 7; the probe still demanded both
+  contract shapes and output-priced same-UOM checks. An implementer following it would have
+  built a shape the plan forbids, or carried a permanently failing test.
+- **Probe 4.** §0/§E chose to record an over-bound claim as a `qty-over-accepted` DISPUTE so the
+  vendor's real claim stays readable; the probe still said "refused". Satisfying the probe would
+  have destroyed the evidence probe 5ac depends on and made the resolution path untestable.
+- **`OUTPUT(poLine)`.** Still "consumable exactly once across all lines", a rule whose ONLY
+  justification was two output-priced lines sharing one output — the shape round 7 removed. Left
+  in, it breaks honest work: a mason line and a helper line both worked to produce the same
+  100 sqm, each capped by its own `EFFORT`, and drawing the output down for the first blocks the
+  second or pushes a team to fabricate a duplicate output row to bill real attendance. An
+  accounting artefact that makes people invent evidence.
+
+The other three are genuine new gaps, not recurrences: `CostHead.code` was non-blank but
+EDITABLE, so renaming `CIVIL` to `MEP` moves every recorded budget and commitment fact with no
+revision and no evidence it moved; a superseding certificate lowered `CERTIFIED` while the
+append-only APPROVAL rows stayed at the old amount (certify ₹100, approve ₹100, supersede to
+₹50 → approved ₹100 against a ₹50 net payable, in breach the instant the correction lands); and
+"a reversing payment record" is unimplementable under this plan's own rules — payments are
+strictly positive so a ₹50 reversal reads ₹150 paid and a negative one is refused by the CHECK.
+
+**The remedy is subtraction, not another list.** Every fix here removes a statement rather than
+adding one:
+
+- §K's opening list and §0b's copy are DELETED. The §K edge table is the only declaration, now
+  explicit — one row per manifest field, both directions. Probe 5x asserts against the table
+  instead of carrying its own subset.
+- The probe list gains a rule at the top: **a probe names a SCENARIO and cites the section whose
+  rule it exercises; it does not restate the rule.** If a probe and its section disagree, the
+  section is right and the probe is the defect. Probes 4, 5c, 5i, 5x are rewritten that way, and
+  5g's hard-coded "six sets" becomes "every row of the §0 table" — a count is one more thing
+  that goes stale when a set is added.
+- The three new gaps are fixed where their rule already lives, so nothing is restated: `PAID` and
+  `APPROVED` become §0 SETS (netting reversals; scoped to the live certificate), so bounds 4–5
+  and the deduction-insertion guard reference them and no fold restates the netting. `CostHead.code`
+  gains a column freeze next to its existing non-blank rule. §F states supersession-carries-its-
+  children ONCE and every other mention points at it.
+- §0b gains three rows, one of which is the meta-rule: **a rule is stated at exactly one site;
+  every other place references it.** A second statement of a rule is a fact with two owners —
+  the one thing this project's architecture forbids everywhere else, applied to the plan document
+  itself.
+
+**Where this leaves round 7's conclusion.** Probes are still the right verification instrument;
+that is unchanged and #253 still stands. But probes could not have caught these four, because
+three of the four defects were IN THE PROBES. What catches a second declaration is not testing
+it — it is not having one. New probes 5ad/5ae/5af cover the three genuine gaps.
+
 ## Deferral ledger
 
 Each still-open question, the probe that adjudicates it, and the task whose review stop settles
@@ -384,13 +445,19 @@ it. This is the mapping the deferral requires — not a pointer at the probe lis
 | Does every declared deduction type reduce the approval cap? | probe 5m, 5ab | phase-5-task-6 |
 | Do the certification locks match inventory's and procurement's existing order without deadlock? | probe 5b, 5j | phase-5-task-5 |
 | Is `live == projection == rebuild` for the cash forecast? | probe 10 | phase-5-task-7 |
+| Does superseding a certificate carry its approvals and reverse paid cash, atomically? | probe 5ad | phase-5-task-6 |
+| Does `PAID` net reversals, and does PG refuse negative payment and reversal rows? | probe 5ae | phase-5-task-6 |
+| Is `CostHead.code` frozen after write, with reclassification only via a new head? | probe 5af | phase-5-task-1 |
+| Is `OUTPUT` a predicate — do two lines measure against one output, each capped by its own `EFFORT`? | probe 5i, 5c | phase-5-task-3 |
 
 ## Termination, and what happens next
 
-Eight finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7 — sixty-six findings, every one correct and
-none contradicted by a later round. Round 3's packet recorded the recommendation to hand the
-remainder to probes; the owner approved it and asked for the process to be fixed so this does
-not recur.
+Nine finding-bearing heads: 8, 8, 7, 7, 9, 5, 10, 7, 7 — **sixty-eight** findings, every one
+correct and none contradicted by a later round. (The round-7 packet said "sixty-six" for the
+first eight heads; that list sums to 61. My arithmetic, corrected here rather than carried
+forward — a packet that miscounts its own evidence is not evidence.) Round 3's packet recorded
+the recommendation to hand the remainder to probes; the owner approved it and asked for the
+process to be fixed so this does not recur.
 
 That fix is **PR #253** (`Review-Deferred-To-Probes`), which bounds a docs-only review at
 `PLAN_REVIEW_ROUND_CAP = 3` finding-bearing heads and requires the remaining questions to be
@@ -412,14 +479,22 @@ do is invoke it against a round of real defects because the round number matches
 while fixing everything would misdescribe what happened.
 
 An honest note on the trend, since the earlier rounds' framing was about an unbounded review:
-the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10) but their KIND has narrowed, from
-"which rows count?" architecture in round 1 to a wrong sign on a deduction column in round 6.
-Round 6's real content is not ten separate problems; it is one problem — I fix instances, not
-classes — and §0b is the structural answer. Whether that holds is a question the next round
-answers, not this packet.
+the finding counts have not fallen (8, 8, 7, 7, 9, 5, 10, 7, 7) but their KIND has narrowed and
+round 8 finally names the mechanism. Rounds 1–6 read as "I fix instances, not classes." Round 7
+read as "prose has no compiler." Round 8 is more specific and more actionable than either: **the
+recurring defect is a rule with two written statements, and every one of them was created by a
+previous correction adding a copy instead of moving the single source.** §0b's new meta-rule
+targets exactly that, and unlike §0b's original rows it is enforced by SUBTRACTION — this head
+deletes three duplicate declarations rather than adding a fourth checklist.
+
+Whether that holds is for the next round to say, not this packet. What I will record now is the
+falsifiable prediction, because a claim that cannot fail is not worth making: **if round 9 again
+contains a stale-copy finding, the meta-rule failed too, and the next step is not another
+document change — it is to stop correcting the plan in prose and let Task 1's probes settle the
+remainder through `Review-Deferred-To-Probes`.**
 
 `origin/main` was merged into this branch on the round-5 head (PR #254, ranged pnpm
-overrides); the branch was `behind`, not conflicted.
+overrides); the branch was `behind`, not conflicted, and is up to date at this head.
 
 Gates: `pnpm test:automation` 111/111 — the count is unchanged from round 4 because #253's
 probes live on its own branch and have not merged. Docs-only diff, so no product surface is
