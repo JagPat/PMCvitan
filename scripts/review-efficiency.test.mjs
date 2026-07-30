@@ -417,6 +417,7 @@ test('a docs-only review past the round cap must record a probe deferral', () =>
     // the trailer asserts the handoff; the packet is where it is written down
     packetText: '## Deferral ledger\n| Question | Probe | Settled by |\n'
       + '| --- | --- | --- |\n| does overage clamp? | probe 5w | phase-5-task-1 |\n',
+    planText: '## Required plan probes\n5w. §0 COMMITTED close-short behaviour.\n',
   });
   assert.equal(deferred.allowed, true);
   assert.equal(deferred.deferredTo, 'phase-5-task-1');
@@ -460,7 +461,46 @@ test('a probe deferral must name the task that will settle it', () => {
     false,
     '"yes" names no task, so nothing is scheduled to settle the deferred findings',
   );
-  assert.match(bare.missing.join(' '), /name the task/u);
+  assert.match(bare.missing.join(' '), /name the TASK/u);
+
+  // FINDING (#253 round 6 P2) — the check was a BLOCKLIST of bare words, so any value the
+  // list had not anticipated was accepted as a scheduled handoff. An allowlist of this
+  // repository's own task vocabulary treats an unrecognised value as no task at all.
+  for (const value of ['later', 'the next task', 'TBD', 'phase-5', 'task-1', 'soon']) {
+    const notATask = assessConvergence({
+      comments: [],
+      reviews,
+      headMessage: [
+        'fix: correction',
+        '',
+        'Review-Convergence: complete',
+        `Review-Deferred-To-Probes: ${value}`,
+      ].join('\n'),
+      changedFiles,
+      pullRequestFiles: changedFiles,
+    });
+    assert.equal(notATask.allowed, false, `"${value}" is not a task reference`);
+    assert.match(notATask.missing.join(' '), /name the TASK/u);
+  }
+  // the two real shapes are accepted (given a ledger + plan, tested below)
+  for (const value of ['phase-5-task-1', 'phase-6-planning']) {
+    const real = assessConvergence({
+      comments: [],
+      reviews,
+      headMessage: [
+        'fix: correction',
+        '',
+        'Review-Convergence: complete',
+        `Review-Deferred-To-Probes: ${value}`,
+      ].join('\n'),
+      changedFiles,
+      pullRequestFiles: changedFiles,
+      packetText: `## Deferral ledger\n| q? | probe 5w | ${value} |\n`,
+      planText: '5w. §0 COMMITTED close-short behaviour.\n',
+    });
+    assert.equal(real.allowed, true, `${value} is a task reference`);
+    assert.equal(real.deferredTo, value);
+  }
 });
 
 // FINDING (#253 round 1 P2 ×3) — three ways isDocsOnlyDiff misclassified a diff.
@@ -498,6 +538,8 @@ test('a deferral needs the packet ledger, not just the trailer', () => {
   ].join('\n');
   const base = {
     comments: [], reviews, headMessage, changedFiles: docsOnly, pullRequestFiles: docsOnly,
+    // the plan the ledger's probes must actually be defined in
+    planText: '## Required plan probes\n5w. §0 COMMITTED close-short behaviour.\n',
   };
 
   // a packet that says nothing about the handoff the trailer claims
@@ -543,6 +585,71 @@ test('a deferral needs the packet ledger, not just the trailer', () => {
     });
     assert.equal(listLedger.allowed, true, `${entry} is a ledger entry`);
   }
+
+  // FINDING (#253 round 6 P2) — scanning the WHOLE packet let an ordinary `## Probes`
+  // list stand in for a ledger. A list of probes is not a mapping from questions to probes,
+  // so entries only count inside the deferral-ledger section.
+  const probeListElsewhere = assessConvergence({
+    ...base,
+    packetText: '## Termination\nphase-5-task-1 settles the remainder.\n\n'
+      + '## Probes\n- probe 5w exercises the close-short fold.\n',
+  });
+  assert.equal(
+    probeListElsewhere.allowed,
+    false,
+    'a probe list outside a deferral ledger records no question-to-probe mapping',
+  );
+
+  // ...and a ledger section ENDS at the next same-or-higher heading, so entries after it
+  // do not leak in.
+  const entryAfterSection = assessConvergence({
+    ...base,
+    packetText: '## Deferral ledger\nphase-5-task-1 settles these.\n\n'
+      + '## Probes\n- probe 5w exercises the close-short fold.\n',
+  });
+  assert.equal(entryAfterSection.allowed, false, 'the ledger section itself carries no entry');
+
+  // a DEEPER heading inside the ledger is still part of it
+  const nestedHeading = assessConvergence({
+    ...base,
+    packetText: '## Deferral ledger\n### Open questions\n'
+      + '| q? | probe 5w | phase-5-task-1 |\n',
+  });
+  assert.equal(nestedHeading.allowed, true, 'a subsection of the ledger is inside the ledger');
+
+  // FINDING (#253 round 6 P2) — a ledger row can cite a probe the plan never defines, which
+  // schedules nothing. The rule is that the question becomes a NAMED PROBE IN THE PLAN.
+  const probeNotInPlan = assessConvergence({
+    ...base,
+    packetText: '## Deferral ledger\n| q? | probe 9z | phase-5-task-1 |\n',
+  });
+  assert.equal(probeNotInPlan.allowed, false, 'probe 9z is not defined in the plan');
+  assert.match(probeNotInPlan.missing.join(' '), /DEFINED in\s+the plan/u);
+
+  // EVERY cited probe must exist, not just one of them
+  const onePresentOneMissing = assessConvergence({
+    ...base,
+    packetText: '## Deferral ledger\n| a? | probe 5w | phase-5-task-1 |\n'
+      + '| b? | probe 9z | phase-5-task-1 |\n',
+  });
+  assert.equal(onePresentOneMissing.allowed, false, 'a partly-scheduled ledger is not scheduled');
+
+  // a MENTION in the plan is not a definition — the probe must be declared where it runs
+  const mentionedNotDefined = assessConvergence({
+    ...base,
+    planText: 'The close-short case (see probe 5w) matters.\n',
+    packetText: '## Deferral ledger\n| q? | probe 5w | phase-5-task-1 |\n',
+  });
+  assert.equal(mentionedNotDefined.allowed, false, 'a passing mention defines no probe');
+
+  // an unreadable plan is UNVERIFIED, not absent — same self-healing rule as the packet
+  const planUnreadable = assessConvergence({
+    ...base,
+    planText: undefined,
+    packetText: '## Deferral ledger\n| q? | probe 5w | phase-5-task-1 |\n',
+  });
+  assert.equal(planUnreadable.allowed, false);
+  assert.match(planUnreadable.missing.join(' '), /plan could not be read/u);
 
   // FINDING (#253 round 5 P2 ×2) — a header is not an entry, and a prefix is not a token.
   const headerOnly = assessConvergence({

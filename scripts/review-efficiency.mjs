@@ -183,7 +183,15 @@ export function isDocsOnlyDiff(changedFiles) {
 // schedulable rather than an assertion that the review is over. A bare marker ("yes",
 // "complete", "done") schedules nothing and is refused.
 const DEFERRAL_TRAILER = 'review-deferred-to-probes';
-const BARE_DEFERRAL = new Set(['yes', 'true', 'complete', 'done', 'ok', 'n/a', 'none']);
+// The trailer names THE TASK whose review stop settles the deferred questions, so the value
+// must be a task reference. This was a BLOCKLIST of bare words, which is the exact mistake
+// this PR's own round-2 remedy argued against for file extensions: a blocklist has to
+// anticipate every placeholder that exists and silently admits the ones it missed, so
+// `Review-Deferred-To-Probes: later` was accepted as a scheduled handoff. An ALLOWLIST treats
+// an unrecognised value as no task at all — the direction that fails closed. The two shapes
+// are this repository's own task vocabulary, the same strings `docs/STATUS.md` uses for
+// `next_task`/`work_item`.
+const TASK_REFERENCE = /^phase-\d+-(?:task-\d+|planning)$/iu;
 
 function messageTrailers(message) {
   const blocks = String(message ?? '').trimEnd().split(/\n[\t ]*\n/u);
@@ -206,7 +214,7 @@ export function deferredToProbes(message) {
   for (const [key, value] of messageTrailers(message)) {
     if (key !== DEFERRAL_TRAILER) continue;
     const target = value.trim();
-    if (target.length === 0 || BARE_DEFERRAL.has(target.toLowerCase())) return null;
+    if (!TASK_REFERENCE.test(target)) return null;
     return target;
   }
   return undefined;
@@ -218,60 +226,117 @@ export function deferredToProbes(message) {
 // packet ledger is the assertion's content. Accepting the trailer alone made the deferral
 // exactly the bare marker the bare-marker rule refuses — a task name and nothing scheduled.
 //
-// TWO things are required, and both are syntax:
-//   1. the packet names the task the trailer defers to — the two artifacts must describe the
-//      same handoff;
-//   2. it carries at least one LEDGER ENTRY: a table row or list item that names a probe.
+// This check was rebuilt three times by ADDING an exclusion — a keyword, then a row shape,
+// then a header exclusion — and each time a new input slipped through, because each version
+// tested a weaker PROXY for the artifact instead of the artifact. So the artifact is defined
+// once, completely, straight from the rule in AGENTS.md ("each still-open question is
+// converted into a named probe IN THE PLAN … the deferral LEDGER in the convergence packet
+// records each question with the probe that will adjudicate it"):
 //
-// (2) is the difference between a ledger and a sentence. A ledger is a MAPPING — one entry
-// per deferred question, each pointing at the probe that adjudicates it — so "phase-5-task-1
-// has probes elsewhere" satisfies the vocabulary and records no mapping at all. Requiring an
-// ENTRY rather than a keyword is still purely structural: distinguishing a row from a
-// paragraph needs no opinion about what the row says.
+//   A deferral ledger is a SECTION of the packet whose heading names it, containing at least
+//   one ENTRY (table row, bullet, or numbered item) that names a probe by IDENTIFIER, where
+//   every identifier so named is DEFINED in the plan at this head. The section, or the packet
+//   around it, names the task the trailer defers to.
+//
+// Each clause answers a way the previous versions failed:
+//   - SECTION, because scanning the whole packet let an ordinary `## Probes` bullet stand in
+//     for a ledger — a list of probes is not a mapping from questions to probes.
+//   - ENTRY, because prose naming the task and the word "probes" records no mapping.
+//   - IDENTIFIER, because `| Question | Probe | Settled by |` is a row that mentions the word
+//     and labels a column rather than naming anything.
+//   - DEFINED IN THE PLAN, because the rule requires the probe to exist where it will run.
+//     `| open question | probe 5w | phase-5-task-1 |` next to a plan with no 5w schedules
+//     nothing.
+//   - the TASK as a token, because `phase-5-task-1` is a prefix of `phase-5-task-10` and the
+//     two artifacts must describe the SAME review stop.
 //
 // What this deliberately does NOT do is judge whether the ledger is adequate — whether the
 // questions are the right questions, or the probes really settle them. That is the whole
 // lesson of PR #250, where a mechanism that scored SUBSTANCE would have suppressed a correct
-// finding on its first real case. Structure is mechanical; adequacy is the reviewer's.
+// finding on its first real case. Every clause above is a question about the document's shape
+// and cross-references, answerable without an opinion. Structure is mechanical; adequacy is
+// the reviewer's.
 //
-// Table, bullet, or numbered entries all count. Pinning one markdown format would block an
+// Table, bullet, and numbered entries all count. Pinning one markdown format would block an
 // author who wrote a perfectly good ledger the other way, which is a false refusal and the
 // same class of defect as this PR's first finding.
-// An entry NAMES a probe; a header LABELS the column. `| Question | Probe | Settled by |`
-// is structurally a row and mentions the word, and accepting it let a table of nothing but a
-// header and a separator satisfy the ledger. So the probe reference must carry an IDENTIFIER:
-// strip the word from the cell that mentions it and something must remain (`probe 5w` → `5w`;
-// a bare `Probe` → nothing). Separator rows (`|---|---|`) are excluded for the same reason.
+const LEDGER_HEADING = /^(?<hashes>#{1,6})[\t ]*(?<title>.*)$/u;
+const LEDGER_TITLE = /\bdeferral[\t ]+ledger\b/iu;
 const LEDGER_ROW = /^[\t ]*(?:\|(?<cells>.*)\||(?:[-*+]|\d+[.)])[\t ]+(?<item>\S.*))$/u;
-const PROBE_WORD = /\bprobes?\b/iu;
+// The identifier is the token following the word — a bare `Probe` matches nothing and so
+// names no probe. A ledger row often cites several (`probe 5y, 5u`), so a comma list
+// continues, but ONLY while the next token starts with a DIGIT: `probe 5w, settled by
+// phase-5-task-1` is prose after the identifier, and swallowing `settled` as a second probe
+// made a perfectly good bulleted ledger fail. Every probe in this repo's plans is numbered,
+// and no English continuation starts with a digit, so the digit is what separates the two.
+const PROBE_REF = /\bprobes?[\t ]+(?<first>[\p{L}\p{N}]+)(?<rest>(?:[\t ]*,[\t ]*\d[\p{L}\p{N}]*)*)/giu;
 const SEPARATOR_CELL = /^[\t :|-]*$/u;
 
-function namesAProbe(text) {
-  return PROBE_WORD.test(text) && text.replace(PROBE_WORD, '').replace(/[^\p{L}\p{N}]/gu, '')
-    .length > 0;
+// The ledger section: from its heading to the next heading at the same or a higher level.
+function deferralLedgerSection(packetText) {
+  const lines = String(packetText).split(/\r?\n/u);
+  let level = 0;
+  const section = [];
+  for (const line of lines) {
+    const heading = LEDGER_HEADING.exec(line);
+    if (heading) {
+      const depth = heading.groups.hashes.length;
+      if (level > 0 && depth <= level) break;
+      if (level === 0 && LEDGER_TITLE.test(heading.groups.title)) {
+        level = depth;
+        continue;
+      }
+    }
+    if (level > 0) section.push(line);
+  }
+  return level > 0 ? section : null;
 }
 
-function isLedgerEntry(line) {
+function probeIdsIn(text) {
+  const ids = [];
+  for (const match of String(text).matchAll(PROBE_REF)) {
+    ids.push(match.groups.first);
+    for (const id of (match.groups.rest ?? '').split(',')) {
+      const trimmed = id.trim();
+      if (trimmed.length > 0) ids.push(trimmed);
+    }
+  }
+  return ids;
+}
+
+// A ledger entry is a row/bullet that names at least one probe identifier. Separator rows
+// (`|---|---|`) carry no cells and are not entries.
+function entryProbeIds(line) {
   const row = LEDGER_ROW.exec(line);
-  if (!row) return false;
-  if (row.groups.item !== undefined) return namesAProbe(row.groups.item);
+  if (!row) return [];
+  if (row.groups.item !== undefined) return probeIdsIn(row.groups.item);
   const cells = row.groups.cells.split('|');
-  if (cells.every((cell) => SEPARATOR_CELL.test(cell))) return false;
-  return cells.some((cell) => namesAProbe(cell));
+  if (cells.every((cell) => SEPARATOR_CELL.test(cell))) return [];
+  return cells.flatMap((cell) => probeIdsIn(cell));
 }
 
-// The trailer's task must appear as its own TOKEN, not as a substring: `phase-5-task-1` is a
-// prefix of `phase-5-task-10`, so a substring test let the packet name a different review stop
-// than the trailer while still passing.
-function namesTarget(packetText, target) {
-  const token = String(target).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-  return new RegExp(`(?<![\\p{L}\\p{N}_-])${token}(?![\\p{L}\\p{N}_-])`, 'iu').test(packetText);
+function tokenPattern(value) {
+  const token = String(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return new RegExp(`(?<![\\p{L}\\p{N}_-])${token}(?![\\p{L}\\p{N}_-])`, 'iu');
 }
 
-function packetRecordsDeferral(packetText, target) {
+// The plan DEFINES a probe when a line starts with its identifier as a list marker — the form
+// the plans already use (`5w. §0 COMMITTED close-short: …`). A passing mention elsewhere is
+// not a definition, which is the whole point of the rule.
+function planDefinesProbe(planText, id) {
+  const token = String(id).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return new RegExp(`^[\\t ]*${token}[.)][\\t ]`, 'imu').test(planText);
+}
+
+function packetRecordsDeferral(packetText, target, planText) {
   if (typeof packetText !== 'string' || packetText.length === 0) return false;
-  if (!namesTarget(packetText, target)) return false;
-  return packetText.split(/\r?\n/u).some((line) => isLedgerEntry(line));
+  if (!tokenPattern(target).test(packetText)) return false;
+  const section = deferralLedgerSection(packetText);
+  if (!section) return false;
+  const ids = section.flatMap((line) => entryProbeIds(line));
+  if (ids.length === 0) return false;
+  if (typeof planText !== 'string' || planText.length === 0) return false;
+  return ids.every((id) => planDefinesProbe(planText, id));
 }
 
 const CONVERGENCE_MARKER = /^[\t ]*review-convergence:[\t ]+complete[\t ]*$/imu;
@@ -320,6 +385,7 @@ export function assessConvergence({
   changedFiles,
   pullRequestFiles,
   packetText,
+  planText,
 }) {
   const findingHeads = codexFindingHeads(comments, reviews);
   const findingHeadCount = findingHeads.length;
@@ -368,22 +434,30 @@ export function assessConvergence({
         + 'questions to named probes instead of answering them with more prose']
       : []),
     ...(deferralRequired && deferral === null
-      ? ['the Review-Deferred-To-Probes value must name the task that will settle the '
-        + 'deferred findings; a bare marker schedules nothing']
+      ? ['the Review-Deferred-To-Probes value must name the TASK that will settle the '
+        + 'deferred findings, in this repository\'s own task vocabulary '
+        + '("phase-<n>-task-<m>" or "phase-<n>-planning"); a bare marker or a word like '
+        + '"later" schedules nothing']
       : []),
     // A trailer naming a task, with a packet that records no handoff, is the bare marker
     // wearing a task name: nothing is actually scheduled. The obligation has always been
     // trailer AND ledger (AGENTS.md, and this repo's own packets say so); only the trailer
     // half was enforced.
     ...(deferralRequired && typeof deferral === 'string'
-      && !packetRecordsDeferral(packetText, deferral)
-      ? [typeof packetText === 'string' && packetText.length > 0
-        ? `the convergence packet must record the deferral ledger it claims — name "${deferral}" `
-          + 'and the probes each still-open question hands to. The trailer asserts a handoff; '
-          + 'the packet is where the handoff is written down'
-        : 'the convergence packet could not be read, so the deferral ledger it must contain '
+      && !packetRecordsDeferral(packetText, deferral, planText)
+      ? [!(typeof packetText === 'string' && packetText.length > 0)
+        ? 'the convergence packet could not be read, so the deferral ledger it must contain '
           + 'is unverified. This is not evidence that the ledger is missing — re-run once the '
-          + 'packet is readable']
+          + 'packet is readable'
+        : !(typeof planText === 'string' && planText.length > 0)
+          ? 'the plan could not be read, so whether the ledger\'s probes are actually defined '
+            + 'in it is unverified. This is not evidence that they are missing — re-run once '
+            + 'the plan is readable'
+          : `the convergence packet must record the deferral ledger it claims: a section named `
+            + `"deferral ledger" whose entries name "${deferral}" and, per still-open question, `
+            + 'the probe that adjudicates it — and every probe named there must be DEFINED in '
+            + 'the plan at this head. The trailer asserts a handoff; the ledger and the plan '
+            + 'are where the handoff is written down']
       : []),
   ];
   return {

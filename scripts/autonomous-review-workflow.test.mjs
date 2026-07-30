@@ -1315,6 +1315,12 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   // at the exact head — a filename cannot evidence a ledger.
   assert.match(gate, /client\.fileText\(packetPath, expectedHead\)/u);
   assert.match(gate, /async fileText\(path, ref\)[\s\S]*?base64/u);
+  // The ledger's probes must be DEFINED in the plan, so the gate reads the plan's content at
+  // the exact head too — from the CUMULATIVE file list, because the probe may have been added
+  // by an earlier head of the same review.
+  assert.match(gate, /client\.fileText\(path, expectedHead\)/u);
+  assert.match(gate, /docs\\\/superpowers\\\/plans\\\//u);
+  assert.match(gate, /planText,/u);
   assert.match(gate, /state: 'convergence_required'/u);
   assert.match(gate, /Review-Convergence: complete/u);
   assert.match(gate, /assessReviewScope\(pullRequest\)/u);

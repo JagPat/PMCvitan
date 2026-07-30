@@ -991,6 +991,28 @@ export async function enforceReviewConvergence(
       packetText = undefined;
     }
   }
+  // The PLAN's content at this head. The rule is that each deferred question becomes a NAMED
+  // PROBE IN THE PLAN, so a ledger row citing `probe 5w` proves nothing unless 5w is actually
+  // defined where it will run. Read from the PR's cumulative file list, not this commit: the
+  // probe may have been added by an earlier head of the same review, and what matters is that
+  // it exists in the plan as the head stands. Unreadable stays undefined → UNVERIFIED.
+  let planText;
+  const planPaths = (pullRequestFiles ?? [])
+    .map((file) => file?.filename)
+    .filter((name) => typeof name === 'string'
+      && /^docs\/superpowers\/plans\/[^/]+\.md$/iu.test(name));
+  if (planPaths.length > 0) {
+    const bodies = [];
+    for (const path of planPaths) {
+      try {
+        const body = await client.fileText(path, expectedHead);
+        if (typeof body === 'string') bodies.push(body);
+      } catch {
+        // one unreadable plan is not evidence about the others
+      }
+    }
+    if (bodies.length > 0) planText = bodies.join('\n');
+  }
   const result = assessConvergence({
     comments,
     reviews,
@@ -998,6 +1020,7 @@ export async function enforceReviewConvergence(
     changedFiles: commit.files ?? [],
     pullRequestFiles,
     packetText,
+    planText,
   });
   if (result.allowed) return result;
 

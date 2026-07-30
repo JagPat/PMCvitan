@@ -197,7 +197,29 @@ before this was written down.
 So: after **3 finding-bearing heads on a docs-only diff**, the next head must
 convert each still-open question into a named probe in the plan and carry
 `Review-Deferred-To-Probes: <task>`, naming the task whose review stop will settle
-them. `assessConvergence` enforces it; a bare value that names no task is refused.
+them. `assessConvergence` enforces it.
+
+**What the gate actually verifies, stated once.** The trailer is the author's assertion;
+the evidence is three cross-references, all structural:
+
+1. the trailer value is a TASK — `phase-<n>-task-<m>` or `phase-<n>-planning`, this
+   repository's own vocabulary. An allowlist, not a list of rejected placeholders: a
+   value like `later` names no task and schedules nothing.
+2. the convergence packet contains a section whose heading says **deferral ledger**, with
+   at least one ENTRY (table row, bullet, or numbered item) naming a probe by identifier.
+   A probe list under some other heading is not a ledger — a ledger maps QUESTIONS to
+   probes — and a table header (`| Question | Probe | Settled by |`) labels a column
+   rather than naming anything. The packet also names the trailer's task as a whole token,
+   so `phase-5-task-10` cannot satisfy `phase-5-task-1`.
+3. every probe the ledger names is DEFINED in the plan at that head — a line beginning
+   with the identifier, the form the plans already use (`5w. …`). A citation of a probe
+   the plan never declares schedules nothing.
+
+None of this scores the ledger's ADEQUACY: whether the questions are the right ones, or
+whether those probes really settle them, stays with the reviewer. That line was drawn
+after PR #250, where a mechanism that judged substance would have suppressed a correct
+finding on its first real case. An unreadable packet or plan reports **unverified**, not
+missing, and the gate re-runs on the next event.
 
 **"Docs-only" is a narrow, deliberately strict test.** It is judged on the PR's
 CUMULATIVE diff, not on the current head's commit — a code PR's convergence head is

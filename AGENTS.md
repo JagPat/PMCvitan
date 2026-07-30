@@ -98,7 +98,10 @@ so directly rather than framing it as a suggestion.
   `Review-Deferred-To-Probes: <task>` naming the task whose review stop settles
   them. Nothing is dismissed — `codex-current-head` still fails closed on every
   current-head finding — and the deferral ledger in the convergence packet records
-  each question with the probe that will adjudicate it.
+  each question with the probe that will adjudicate it. The gate checks all three
+  cross-references (task-shaped trailer · a "deferral ledger" section with real
+  entries · every probe it names DEFINED in the plan) and never the ledger's
+  adequacy; see `docs/AUTONOMOUS_LOOP.md`.
   On such a head, a finding whose remedy is "the plan should also specify X" is
   answered by that ledger when X already has a named probe. Report it if the
   DECISION is wrong; a missing level of mechanism detail belongs to the task that

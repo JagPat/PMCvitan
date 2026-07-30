@@ -1,6 +1,6 @@
 # PR #253 — convergence audit
 
-Bounded docs-only review (`Review-Deferred-To-Probes`). Five finding-bearing heads, nine
+Bounded docs-only review (`Review-Deferred-To-Probes`). Six finding-bearing heads, twelve
 findings, all correct.
 
 | Head | Finding | The question it was really asking |
@@ -14,6 +14,9 @@ findings, all correct.
 | `9ef1d0c` | P2 a table HEADER satisfied the ledger | is a ROW an entry, or a LABEL? |
 | `9ef1d0c` | P2 `phase-5-task-10` satisfied `phase-5-task-1` | where does a task NAME end? |
 | `9ef1d0c` | P2 the first convergence file on the head was verified | WHOSE packet evidences this PR? |
+| `f299476` | P2 any probe-shaped line anywhere in the packet counted | WHERE does a ledger live? |
+| `f299476` | P2 `Review-Deferred-To-Probes: later` was accepted | what makes a value a TASK? |
+| `f299476` | P2 a ledger could cite a probe the plan never defines | where must a probe EXIST? |
 
 ## Architectural cause
 
@@ -166,6 +169,64 @@ than the round-2 remedy and worth stating separately: **a structural check must 
 every side it is claimed to bound.** Structure was the right line to draw; drawing it loosely
 is not a licence to move to substance, it is an obligation to draw it exactly.
 
+## Round 6 — stop testing proxies; define the artifact
+
+Three findings, all correct, and one of them is a mistake this PR's own round-2 remedy argued
+against in as many words. That is the useful fact in this round, so it goes first.
+
+**The blocklist I warned about, in my own code.** Round 2 replaced a runnable-extension
+blocklist with a documentation allowlist and the packet says why: *"a blocklist of runnable
+extensions has to anticipate every one that exists and silently admits the ones it missed,
+whereas an allowlist treats an unrecognised extension as code — the direction that fails
+closed."* The deferral trailer's value was validated by a blocklist of seven bare words, so
+`Review-Deferred-To-Probes: later` passed as a scheduled handoff. Same defect, same PR, four
+rounds apart, and the argument against it was already written down. It is now an allowlist of
+this repository's task vocabulary (`phase-<n>-task-<m>` / `phase-<n>-planning`); an
+unrecognised value names no task.
+
+**The other two are one thing: I kept testing a PROXY for the ledger instead of the ledger.**
+Round 3 checked that a packet FILE existed. Round 4, that it named the task and the word
+"probe". Round 5, that a structural entry existed anywhere in it and the task matched as a
+token. Each round a new input walked through, because each version measured something
+adjacent to the artifact:
+
+- an ordinary `## Probes` bullet (`- probe 5w exercises …`) satisfied round 5's check. A LIST
+  of probes is not a ledger; a ledger maps QUESTIONS to probes, and the rule says so.
+- a row could cite `probe 9z` while the plan defined no 9z. AGENTS.md requires each question
+  to become *a named probe **in the plan***, so a citation with nothing behind it schedules
+  nothing — the bare marker again, two levels down.
+
+**So the artifact is defined once, completely, from the rule text**, and the check is that
+definition rather than another exclusion:
+
+> A deferral ledger is a SECTION of the packet whose heading names it, containing at least one
+> ENTRY (table row, bullet, or numbered item) that names a probe by IDENTIFIER, where every
+> identifier so named is DEFINED in the plan at this head. The section, or the packet around
+> it, names the trailer's task as a whole token.
+
+The gate now reads the plan at the exact head as well as the packet — from the PR's cumulative
+file list, because the probe may have been added by an earlier head of the same review and
+what matters is that it exists as the head stands. An unreadable plan is UNVERIFIED with its
+own message, never "missing", the same self-healing rule the packet already had.
+
+**The line held.** Every clause is a question about the document's shape or its
+cross-references — is this a section, is this a row, does this identifier appear as a
+definition — answerable without an opinion about whether the ledger is any good. Whether the
+questions are the right questions, and whether those probes actually settle them, stays with
+the reviewer. That is the PR #250 boundary and this round does not move it.
+
+One thing worth recording because it nearly caused a false block: extracting a comma list
+after the word (`probe 5y, 5u`) initially swallowed prose (`probe 5w, settled by
+phase-5-task-1` → an id `settled`), which failed a perfectly good bulleted ledger. A
+continuation now only counts while the next token starts with a digit — every probe in these
+plans is numbered, and no English continuation begins with one. Caught by the existing
+list-format probe, which is what that probe was written for.
+
+**Verified against the real artifact:** `docs/reviews/pr-252-convergence.md` and the Phase-5
+plan at `origin/claude/phase5-planning` pass the strictest version — every one of the ledger's
+seventeen rows names a probe the plan defines. The check bites where it should and not where it
+should not.
+
 ## Probes
 
 Reproduce-first, each RED at the head that carried the finding:
@@ -187,6 +248,14 @@ Reproduce-first, each RED at the head that carried the finding:
   that names no probe is refused; table, bullet and numbered ledger entries all pass.
 - a table of header + separator only is REFUSED (a header labels a column, it records no
   mapping); `phase-5-task-10` does not satisfy a trailer deferring to `phase-5-task-1`.
+- a probe list under any other heading is REFUSED, and a ledger section ENDS at the next
+  same-or-higher heading (an entry after it does not leak in) while a deeper subsection stays
+  inside it.
+- `later`, `TBD`, `the next task`, `phase-5` and `task-1` are all refused as trailer values;
+  `phase-5-task-1` and `phase-6-planning` are accepted.
+- a ledger citing `probe 9z` with no 9z in the plan is refused; so is a ledger where one of two
+  cited probes is missing; a passing MENTION in the plan is not a definition; an unreadable
+  plan is refused as UNVERIFIED with that word in the message.
 - gate wiring: the packet's content is fetched at the exact head via `fileText`, and
   `changedFiles` remains `commit.files`.
 
@@ -200,6 +269,6 @@ suppressed a correct finding; this is deliberately not that, which is also why #
 findings were fixed rather than deferred even though its head count was past the cap.
 
 Gates (re-run at this head): `pnpm test:automation` 119/119; `pnpm check` EXIT 0 (web 543/543,
-API 680/680). The suite count is unchanged because round 5's two new probes are assertions
-inside the existing deferral-ledger test, not new test blocks.
+API 680/680). The suite count is unchanged across rounds 5 and 6 because their new probes are
+assertions inside the existing deferral-ledger and trailer tests, not new test blocks.
 `origin/main` (PR #254) is merged into this branch; the branch was behind, not conflicted.
