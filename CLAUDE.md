@@ -14,6 +14,12 @@ the required `codex-current-head` status and queues auto-merge. Never start the
 next task while STATUS keeps the current task open. No human technical approval
 is required, but the exact-head GitHub gate is mandatory and fails closed.
 
+When you open or resume an autonomous `claude/**` draft PR, update `docs/STATUS.md`
+in the same change: set `open_pr` to that PR number and align `task_state` with
+whether the PR is still being built (`in_progress`) or waiting on Codex (`in_review`).
+The hourly handoff cron posts a drift shepherd when live open PRs disagree with
+`open_pr: none`.
+
 Plan review is bounded. After 3 finding-bearing heads on a docs-only diff, the next
 head converts each still-open question into a named probe and carries
 `Review-Deferred-To-Probes: <task>`; nothing is dismissed and the exact-head gate still

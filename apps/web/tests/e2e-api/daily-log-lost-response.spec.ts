@@ -33,6 +33,10 @@ test('a lost response after the server commits does NOT double-apply — the wri
   await signIn(page, 'test-eng@vitan.in');
   await expect(page.getByTestId('project-switcher')).toContainText('Residence at Ambli');
   await page.getByRole('button', { name: /Daily Site Log/i }).click();
+  // Wait for the seeded daily log to settle before interacting — add-material can
+  // render before the module read finishes, which flakes the lost-response probe.
+  await expect(page.getByText('Italian Marble (Botticino)')).toBeVisible();
+  await expect(page.getByTestId('crew-total')).toBeVisible();
   await expect(page.getByTestId('add-material')).toBeVisible();
 
   // the FIRST addMaterial POST reaches the server (which COMMITS it) but its RESPONSE is dropped —

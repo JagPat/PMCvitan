@@ -1,9 +1,20 @@
+export { isAutonomousPullRequest } from './runner-continuation.mjs';
+
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+
+import {
+  buildDriftHandoff,
+  buildPostMergeContinuation,
+  isAutonomousPullRequest,
+  selectAutonomousOpenPullRequests,
+} from './runner-continuation.mjs';
+import { loadStatusDocument } from './autonomous-status-state.mjs';
 
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
 const MERGE_MARKER = '<!-- autonomous-post-merge:';
+const DRIFT_MARKER = '<!-- autonomous-status-drift:';
 const STATE_ISSUE_NUMBER = 235;
 const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 // The backlog starts after this workflow was introduced, so historical Claude
@@ -26,20 +37,6 @@ function requiredEnvironment(name) {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
   return value;
-}
-
-export function isAutonomousPullRequest(
-  pullRequest,
-  repository,
-  defaultBranch,
-) {
-  return (
-    pullRequest?.state === 'open' &&
-    pullRequest?.head?.repo?.full_name === repository &&
-    pullRequest?.base?.repo?.full_name === repository &&
-    pullRequest?.base?.ref === defaultBranch &&
-    pullRequest?.head?.ref?.startsWith('claude/')
-  );
 }
 
 class GitHubClient {
@@ -220,11 +217,22 @@ async function handOffConflict(
   );
 }
 
+async function loadContinuationContext(client, repository, defaultBranch) {
+  const [{ now, maintenanceQueue }, openPullRequests] = await Promise.all([
+    loadStatusDocument(),
+    client.openPullRequests().then((pullRequests) =>
+      selectAutonomousOpenPullRequests(pullRequests, repository, defaultBranch),
+    ),
+  ]);
+  return { now, maintenanceQueue, openPullRequests };
+}
+
 async function handOffMergedPullRequest(
   client,
   pullRequest,
   repository,
   defaultBranch,
+  continuationContext,
 ) {
   if (
     !pullRequest?.merged ||
@@ -251,15 +259,42 @@ async function handOffMergedPullRequest(
     comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
   )) return;
 
+  const { now, maintenanceQueue, openPullRequests } = continuationContext;
   await client.comment(
     pullRequest.number,
     [
       marker,
-      '@claude This exact-head reviewed PR has merged into `main`.',
-      '',
-      'Continue the autonomous runner from the new `main`: verify the merge, advance `docs/STATUS.md` according to its state machine, and start only the next permitted roadmap task or named correction. Create the next same-repository `claude/**` branch and draft PR with Auto-fix enabled. If the merged result or state file is inconsistent, open a focused correction instead of advancing.',
+      buildPostMergeContinuation({
+        statusNow: now,
+        maintenanceQueue,
+        openPullRequests,
+      }),
     ].join('\n'),
   );
+}
+
+async function handOffStatusDrift(
+  client,
+  repository,
+  defaultBranch,
+  continuationContext,
+) {
+  const { now, maintenanceQueue, openPullRequests } = continuationContext;
+  const body = buildDriftHandoff({
+    statusNow: now,
+    maintenanceQueue,
+    openPullRequests,
+  });
+  if (!body) return;
+
+  const primary = openPullRequests[openPullRequests.length - 1];
+  const marker = `${DRIFT_MARKER}${primary.head.sha} -->`;
+  const comments = await client.comments(primary.number);
+  if (comments.some((comment) =>
+    comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
+  )) return;
+
+  await client.comment(primary.number, [marker, body].join('\n'));
 }
 
 export async function run() {
@@ -287,6 +322,12 @@ export async function run() {
 
   // Drain the durable merge backlog on every surviving event. GitHub may replace
   // a pending concurrency run, so correctness cannot depend on one closed event.
+  const continuationContext = await loadContinuationContext(
+    client,
+    repository,
+    defaultBranch,
+  );
+
   const cursor = await client.runnerCursor();
   const mergedBacklog = await client.mergedPullRequestsAfter(cursor);
   mergedBacklog.sort((left, right) =>
@@ -302,10 +343,20 @@ export async function run() {
       liveMergedPullRequest,
       repository,
       defaultBranch,
+      continuationContext,
     );
     await client.setRunnerCursor(
       mergedPullRequest.merged_at,
       mergedPullRequest.number,
+    );
+  }
+
+  if (eventName === 'schedule') {
+    await handOffStatusDrift(
+      client,
+      repository,
+      defaultBranch,
+      continuationContext,
     );
   }
 
