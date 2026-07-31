@@ -282,6 +282,122 @@ test('R19: a battery-plan skip cannot mask a RED head', () => {
   assert.equal(assessQualityGate(allSkipped).passed, true);
 });
 
+test('R20: in-flight product evidence is PENDING, never a terminal failure', async () => {
+  // The head-3 finding, and it is the same distinction `assessQualityGate` was
+  // built around: "never reached a verdict" is not "failed". battery-plan also
+  // skips the products when the first battery for this head is still queued or
+  // running; a two-state reader called that "no completed run" and the gate
+  // published a TERMINAL failure while those jobs were still going green.
+  const { assessPriorEvidence } = await import('./ci-prior-evidence.mjs');
+  const all = (f) => ['web', 'e2e', 'api', 'api-e2e', 'upgrade-proof'].map(f);
+  const green = (n) => ({ name: n, status: 'completed', conclusion: 'success' });
+
+  assert.deepEqual(
+    assessPriorEvidence(all(green)),
+    { ok: true, pending: false, detail: 'every product check is green on this head' },
+  );
+
+  for (const status of ['queued', 'in_progress']) {
+    const flying = assessPriorEvidence(all((n) => (n === 'web' ? { name: n, status } : green(n))));
+    assert.equal(flying.ok, false, 'in flight is not a pass');
+    assert.equal(flying.pending, true, `${status} must be PENDING, not a verdict`);
+    assert.match(flying.detail, /still running: web/u);
+  }
+
+  // A real failure decides IMMEDIATELY — waiting for a sibling cannot turn an
+  // already-red check green, and reporting pending would delay a knowable answer.
+  const red = assessPriorEvidence(all((n) => (n === 'api'
+    ? { name: n, status: 'completed', conclusion: 'failure' }
+    : (n === 'web' ? { name: n, status: 'queued' } : green(n)))));
+  assert.equal(red.pending, false, 'a red check decides now, even with a sibling in flight');
+  assert.match(red.detail, /api: failure/u);
+
+  // Unreadable history is still not a pass, and not pending either.
+  assert.deepEqual(
+    assessPriorEvidence(null),
+    { ok: false, pending: false, detail: 'check history unavailable' },
+  );
+});
+
+test('R20b: the runner WAITS out pending evidence instead of publishing a verdict', async () => {
+  // Polls until the battery lands, then reports what it actually concluded.
+  const { run } = await import('./ci-prior-evidence.mjs');
+  const names = ['web', 'e2e', 'api', 'api-e2e', 'upgrade-proof'];
+  let call = 0;
+  const fetchImpl = async () => {
+    call += 1;
+    // First two reads: web still running. Third: it landed green.
+    const web = call < 3
+      ? { name: 'web', status: 'in_progress' }
+      : { name: 'web', status: 'completed', conclusion: 'success' };
+    return {
+      ok: true,
+      json: async () => ({
+        check_runs: [
+          web,
+          ...names.slice(1).map((n) => ({ name: n, status: 'completed', conclusion: 'success' })),
+        ],
+      }),
+    };
+  };
+
+  const { writeFile, mkdtemp } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const dir = await mkdtemp(join(tmpdir(), 'evidence-'));
+  const eventPath = join(dir, 'event.json');
+  await writeFile(eventPath, JSON.stringify({ pull_request: { head: { sha: 'abc' } } }));
+
+  const verdict = await run({
+    eventPath,
+    repository: 'o/r',
+    token: 't',
+    outputPath: '',
+    fetchImpl,
+    waitMs: 60_000,
+    pollMs: 0,
+    sleep: async () => {},
+  });
+  assert.equal(verdict.ok, true, 'the battery landed green, so the gate may pass');
+  assert.equal(verdict.pending, false);
+  assert.ok(call >= 3, 'it polled rather than deciding on the first read');
+});
+
+test('R20c: a bounded wait that never resolves fails CLOSED, and says so', async () => {
+  const { run } = await import('./ci-prior-evidence.mjs');
+  const fetchImpl = async () => ({
+    ok: true,
+    // ALL five in flight — a partial list would make the absent ones read as
+    // "no completed run", which decides immediately and would not exercise the
+    // wait at all.
+    json: async () => ({
+      check_runs: ['web', 'e2e', 'api', 'api-e2e', 'upgrade-proof']
+        .map((name) => ({ name, status: 'in_progress' })),
+    }),
+  });
+  const { writeFile, mkdtemp } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const dir = await mkdtemp(join(tmpdir(), 'evidence2-'));
+  const eventPath = join(dir, 'event.json');
+  await writeFile(eventPath, JSON.stringify({ pull_request: { head: { sha: 'abc' } } }));
+
+  let clock = 0;
+  const verdict = await run({
+    eventPath,
+    repository: 'o/r',
+    token: 't',
+    outputPath: '',
+    fetchImpl,
+    waitMs: 100,
+    pollMs: 0,
+    now: () => (clock += 60),
+    sleep: async () => {},
+  });
+  assert.equal(verdict.ok, false, 'undecided is never a pass');
+  assert.match(verdict.detail, /still undecided after the wait/u);
+});
+
 test('R15: every product job is gated on the classification and feeds the gate', async () => {
   const workflow = await readFile(
     new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8',

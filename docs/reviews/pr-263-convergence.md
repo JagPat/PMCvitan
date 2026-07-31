@@ -97,3 +97,52 @@ been finding-free since it was introduced.
 
 Each of the three new fixes reverted in turn fails its own probe (`R17`, `R18`,
 `R19`); the five from round 1 remain discriminated.
+
+---
+
+## Head 3 (`e55f17f`) — one finding, and it belongs to root cause B
+
+| Head | Findings |
+| --- | --- |
+| `13135fc` | 7 |
+| `50ef5e0` | 3 |
+| `e55f17f` | **1** |
+
+The finding is in `ci-prior-evidence.mjs` — code introduced by the round-2 fix
+for N2. `battery-plan` also skips the products when the first battery for this
+head is still QUEUED or IN PROGRESS ("coverage already in flight"). The reader
+filtered to completed runs only, reported `no completed run`, and the gate
+published a **terminal failure** while those very jobs were still going green —
+blocking exact-head review until some unrelated event fired.
+
+**This is root cause B again, and it is a pointed one.** `assessQualityGate`
+exists precisely to separate *never reached a verdict* from *failed* — that
+distinction is the reason `cancelled` blocks and `skipped` does not. I then
+wrote its evidence reader, in the same change, with a two-state model that
+collapses exactly that distinction. The principle was stated correctly one file
+away from where it was violated.
+
+**Fix:** `pending` is a first-class outcome, and the runner WAITS it out rather
+than converting it into a verdict:
+
+| Evidence | Outcome |
+| --- | --- |
+| every product green | pass |
+| any product red | **fail immediately** — a sibling finishing cannot turn a red check green |
+| any product queued/in-progress (none red) | **pending** → poll until it lands |
+| still pending after the bounded wait | fail closed, saying it is undecided |
+| history unreadable | fail, not pending |
+
+Probes `R20` (three-state), `R20b` (polls, then reports what the battery
+actually concluded), `R20c` (bounded wait fails closed). Each of the three
+mechanisms reverted in turn fails its own probe.
+
+### Trend
+
+Findings per head: **7 → 3 → 1**, with the root causes now closed by enforcement
+rather than by inspection (`R18` for A; `R16`/`R17`/`R19`/`R20` for B). The rate
+is declining and each round has been strictly narrower than the last, which is
+the convergence signal the protocol looks for. The abandonment condition
+recorded above — a finding against the classifier's *safety* rather than its
+plumbing — has not triggered: head 3's finding is in the gate's evidence
+plumbing, not in path classification.
