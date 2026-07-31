@@ -46,7 +46,101 @@ const REPLACES = /^[\t ]*replaces:[\t ]*#(?<number>\d+)[\t ]*$/imu;
 
 // Machine-readable metrics carried on the sticky comment. The recorded count is a
 // FLOOR, never a fresh reading: see `mergeFindingHeadCount`.
-const METRICS_MARKER = '<!-- autonomous-review-metrics:';
+export const METRICS_MARKER = '<!-- autonomous-review-metrics:';
+
+// ---------------------------------------------------------------------------
+// The durable floor.
+//
+// Part 1 made the finding count a floor that only ever RISES. That is a property
+// of the ASSESSMENT; on its own it is worth nothing, because a floor that is
+// never written down has nothing to raise. These two functions are what make it
+// durable, and they exist because the floor has more than one source and more
+// than one writer.
+//
+//   - MANY WRITERS. The sticky comment is written from more than a dozen places
+//     in the gate, and only the lifecycle one has any reason to know about
+//     metrics. If preserving the block were each writer's job, the first
+//     `changes_required` update after a lifecycle verdict would erase it — and
+//     the next writer added would erase it again. So preservation is structural:
+//     a body carrying no metrics inherits them.
+//
+//   - MANY SOURCES. The gate assesses more than once per run, and each
+//     assessment reads the sticky comment. Against a comment with no metrics
+//     block yet, every one of those reads starts from nothing, so a later
+//     partial read of the findings API can replace an earlier, larger
+//     observation. Merging rather than replacing means no read can lower it.
+// ---------------------------------------------------------------------------
+
+// Keep the floor attached to the sticky comment no matter which writer touches it.
+export function preserveMetrics(nextBody, previousBody, runMetrics) {
+  const body = typeof nextBody === 'string' ? nextBody : '';
+  // The caller composed its own block — the most specific thing available.
+  if (body.includes(METRICS_MARKER)) return body;
+
+  // This run's own assessment beats whatever the comment recorded earlier: the
+  // count only ever rises, so the fresher reading is never the smaller one.
+  const carried = runMetrics ? renderMetrics(runMetrics) : metricsBlockOf(previousBody);
+  if (!carried) return body;
+
+  const lines = body.split('\n');
+  // Match the rendered layout so a comment reads identically whether its block
+  // was composed by the lifecycle writer or inherited from the previous one.
+  const anchor = lines.findIndex((line) => line.startsWith('- **Head:**'));
+  if (anchor < 0) return [carried, '', ...lines].join('\n');
+  lines.splice(anchor, 0, carried, '');
+  return lines.join('\n');
+}
+
+function metricsBlockOf(source) {
+  const text = typeof source === 'string' ? source : '';
+  const start = text.indexOf(METRICS_MARKER);
+  if (start === -1) return null;
+  const end = text.indexOf('-->', start);
+  return end === -1 ? null : text.slice(start, end + 3);
+}
+
+// Combine several RECORDED floors into one. Everything that is a floor
+// accumulates; scalars describing the LATEST assessment take the last value.
+export function mergeRecordedMetrics(...records) {
+  const present = records.filter((record) => record && typeof record === 'object');
+  if (present.length === 0) return null;
+
+  const ids = new Set();
+  let legacyFloor = 0;
+  let firstSeenAt;
+  let findingsPerHead = {};
+  const latest = {};
+
+  for (const record of present) {
+    for (const id of Array.isArray(record.findingHeadIds) ? record.findingHeadIds : []) {
+      if (typeof id === 'string' && id.length > 0) ids.add(id);
+    }
+    // A record written before identities were stored carries only a count. It
+    // cannot be unioned, so it still applies numerically — otherwise upgrading
+    // the gate would silently forgive every unit already in flight.
+    if (Number.isInteger(record.findingHeads) && record.findingHeads > legacyFloor) {
+      legacyFloor = record.findingHeads;
+    }
+    // Earliest start: elapsed time must not restart because a later record
+    // stamped itself.
+    if (typeof record.firstSeenAt === 'string'
+      && (firstSeenAt === undefined || record.firstSeenAt < firstSeenAt)) {
+      firstSeenAt = record.firstSeenAt;
+    }
+    findingsPerHead = { ...findingsPerHead, ...(record.findingsPerHead ?? {}) };
+    for (const key of ['state', 'threshold', 'elapsedMinutes', 'replaces']) {
+      if (record[key] !== undefined && record[key] !== null) latest[key] = record[key];
+    }
+  }
+
+  return {
+    ...latest,
+    findingHeads: Math.max(ids.size, legacyFloor),
+    findingHeadIds: [...ids],
+    findingsPerHead,
+    ...(firstSeenAt ? { firstSeenAt } : {}),
+  };
+}
 
 export function replacementSource(body) {
   const match = REPLACES.exec(typeof body === 'string' ? body : '');

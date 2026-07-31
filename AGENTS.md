@@ -193,3 +193,12 @@ so directly rather than framing it as a suggestion.
   squash auto-merge. No human tags anyone and no human technical approval is
   involved. The runner continues only after the reviewed PR merges and
   `docs/STATUS.md` advances.
+
+Repeating the convergence audit is not a fixed point. After **five finding-bearing
+heads** a review unit is `restructure_required`: the gate fails the required status,
+returns the head to draft, and no further correction head may clear it. The remedy is
+ONE replacement pull request whose body declares `Replaces: #<n>`. Restructuring
+DISMISSES NOTHING — every open finding stays open and moves with the work, and the
+replacement is bound by the same limit on its own findings. A docs-only unit at its
+cap keeps the existing bounded probe-deferral protocol; this limit does not replace it.
+

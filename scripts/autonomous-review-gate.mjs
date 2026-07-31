@@ -14,6 +14,14 @@ import {
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
 import {
+  assessRestructure,
+  mergeRecordedMetrics,
+  nextMetrics,
+  preserveMetrics,
+  readMetrics,
+  renderMetrics,
+} from './review-lifecycle.mjs';
+import {
   PRODUCT_CHECKS,
   attemptGateStamps,
   attemptsWithPassingGates,
@@ -358,6 +366,11 @@ export function isRetryableTerminalReviewFailure(status) {
   }
   const description = status.description ?? '';
   return description.includes('Codex review timed out')
+    // TRANSIENT by construction: it means the recorded floor could not be read,
+    // and its own instruction says to re-run once it can be. Latching it as
+    // persistent would make that instruction unreachable on the same head — a
+    // permanent block on a temporary failure.
+    || description === 'review: restructure check undecided'
     || description.includes('Codex evidence changed during final verification')
     || description === 'review: Required CI changed during current-head Codex review'
     || description === 'review: bootstrap exact-head review requested';
@@ -711,16 +724,47 @@ export class GitHubClient {
     return ids.length;
   }
 
+  // PAGINATED. The lifecycle floor is read from this comment, and on a long PR it
+  // is not on page one. A missed read returns "no record", which a partial live
+  // reading could then walk below a limit the unit had already crossed.
+  async stickyComment(number) {
+    const comments = await this.paginated(
+      `/repos/${this.repository}/issues/${number}/comments`,
+    );
+    return comments.find(
+      (comment) =>
+        comment.user?.login === 'github-actions[bot]' &&
+        comment.body?.includes(COMMENT_MARKER),
+    )?.body ?? null;
+  }
+
+  // The lifecycle floor observed by THIS run. MONOTONIC: the precondition runs
+  // more than once per run, and a later partial read must not replace an earlier,
+  // larger observation. Merging rather than assigning means no caller — present
+  // or future — can lower it.
+  setLifecycleMetrics(metrics) {
+    this.lifecycleMetrics = mergeRecordedMetrics(this.lifecycleMetrics, metrics);
+  }
+
   async updateStickyComment(number, body) {
-    const comments = await this.request(
-      `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
+    // Paginated for the same reason as the reader: finding the comment past page
+    // one is what stops a DUPLICATE being posted, which would split the record.
+    const comments = await this.paginated(
+      `/repos/${this.repository}/issues/${number}/comments`,
     );
     const existing = comments.find(
       (comment) =>
         comment.user?.login === 'github-actions[bot]' &&
         comment.body?.includes(COMMENT_MARKER),
     );
-    const fullBody = `${COMMENT_MARKER}\n${body}`;
+    // Structural, so none of the sticky writers has to know the lifecycle exists.
+    // Falls back to the previous comment's block when this run never reached the
+    // precondition, so an early-error path still cannot erase a recorded floor.
+    const fullBody = `${COMMENT_MARKER}\n${preserveMetrics(
+      body,
+      existing?.body,
+      this.lifecycleMetrics,
+    )}`;
     if (existing) {
       await this.request(
         `/repos/${this.repository}/issues/comments/${existing.id}`,
@@ -744,10 +788,14 @@ function eligibleShape(pullRequest) {
   };
 }
 
-function statusBody({ state, head, detail, attempt, next }) {
+function statusBody({ state, head, detail, attempt, next, metrics }) {
   return [
     '## Autonomous review state',
     '',
+    // Machine-readable and sticky. The finding-head count recorded here is a
+    // FLOOR (see review-lifecycle.mjs), so a rerun that reads fewer findings —
+    // or a rewritten branch — cannot walk a unit back below a crossed limit.
+    ...(metrics ? [renderMetrics(metrics), ''] : []),
     `- **Head:** \`${head}\``,
     `- **State:** \`${state}\``,
     `- **Codex attempt:** ${attempt}/${MAX_REVIEW_ATTEMPTS}`,
@@ -1007,6 +1055,120 @@ export async function enforceReviewConvergence(
   return result;
 }
 
+// The review unit itself can be the defect.
+//
+// `enforceReviewConvergence` stops ORDINARY PATCHING after two finding-bearing
+// heads and demands one batched architectural audit. That is the right move once,
+// and it is not a fixed point — PR #257 produced findings on five consecutive
+// heads while dutifully batching each time. This gate stops the AUDITS once
+// repeating them has stopped converging.
+//
+// It runs on the same seam and with the same authority as the convergence gate,
+// and its only outcomes are "carry on" and "stop". It never resolves a thread,
+// never dismisses a finding, and has no branch that publishes success.
+const FLOOR_UNREADABLE = Symbol('floor-unreadable');
+
+async function readStickyComment(client, number) {
+  try {
+    return await client.stickyComment(number);
+  } catch {
+    // UNREADABLE is not ABSENT. Once a unit has crossed its limit the durable
+    // record is the only thing carrying that forward — the failing status belongs
+    // to the previous SHA. Reporting "no record" here would let a partial live
+    // read continue the unit, which is the walk-back the floor rule forbids, so
+    // this is distinguishable and the assessment blocks on it.
+    return FLOOR_UNREADABLE;
+  }
+}
+
+function restructureBlockReason(restructure) {
+  return restructure.undecided
+    ? 'restructure check undecided: the recorded lifecycle floor was unreadable'
+    : `${restructure.findingHeadCount} finding heads reach the `
+      + `${restructure.threshold}-head limit; open a declared replacement instead `
+      + 'of another correction head';
+}
+
+export async function enforceRestructure(client, pullRequest, expectedHead) {
+  const [comments, reviews] = await Promise.all([
+    client.reviewComments(pullRequest.number),
+    client.reviews(pullRequest.number),
+  ]);
+  const sticky = await readStickyComment(client, pullRequest.number);
+  const floorUnreadable = sticky === FLOOR_UNREADABLE;
+  // The floor has TWO durable sources: the sticky comment, and whatever this run
+  // has already observed. Reading only the comment means a second precondition
+  // call against a metrics-less sticky starts from nothing and can assess a
+  // partial live read as the whole truth. Both are unioned, so the VERDICT — not
+  // merely the value stored afterwards — is taken against the higher floor.
+  const recordedMetrics = floorUnreadable
+    ? null
+    : mergeRecordedMetrics(readMetrics(sticky), client.lifecycleMetrics);
+
+  const result = assessRestructure({
+    comments,
+    reviews,
+    body: pullRequest.body,
+    recordedMetrics,
+    floorUnreadable,
+  });
+
+  // Record the floor BEFORE branching, on every path.
+  //
+  // Writing it only where the unit is blocked records it only once the unit has
+  // ALREADY crossed — exactly when a floor can no longer do anything. Its purpose
+  // is to carry the count while the unit is still UNDER the limit, so the head
+  // that crosses it plus a partial live read cannot read as under. An unreadable
+  // floor is the one case with nothing trustworthy to record.
+  const metrics = floorUnreadable ? null : nextMetrics({
+    recordedMetrics,
+    assessment: { ...result, head: expectedHead },
+    nowIso: new Date().toISOString(),
+  });
+  // NOT optional-chained: a client without this method would silently drop the
+  // floor, which is the defect this gate exists to prevent. Fail loudly.
+  if (metrics) client.setLifecycleMetrics(metrics);
+
+  if (result.allowed) return result;
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return { ...result, superseded: true };
+
+  // Failure, always. An undecided unit blocks for a different reason than one
+  // that has crossed its limit, but neither may be published as green.
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `review: ${result.undecided ? 'restructure check undecided' : 'restructure required'}`,
+    pullRequest.html_url,
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: result.undecided ? 'reviewing' : 'restructure_required',
+      head: expectedHead,
+      detail: result.reason,
+      attempt: 0,
+      next: result.undecided
+        ? 'Re-run once the recorded lifecycle floor is readable; whether this unit '
+          + 'has already crossed its limit is unverified.'
+        : `Do not push another correction head. Open ONE replacement pull request `
+          + `whose body declares "Replaces: #${pullRequest.number}", carrying the same `
+          + 'work as a review unit that can be reviewed in a few rounds. Every open '
+          + 'finding stays open and moves with the work; none is dismissed by '
+          + 'restructuring.',
+      // The SAME value already recorded above, not a second computation.
+      metrics,
+    }),
+  );
+  return result;
+}
+
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
   const result = assessReviewScope(pullRequest);
   if (result.allowed) return result;
@@ -1046,6 +1208,14 @@ export async function revalidateFinalReviewPolicy(
   if (!pullRequest) {
     return { state: 'superseded', allowed: false, superseded: true };
   }
+
+  // HOISTED to a run-level precondition. The gate writes a blocking state from a
+  // dozen places, each of which invites another correction head; asking every one
+  // of them to remember the lifecycle is how a cross-cutting rule gets missed at
+  // the one site nobody looked at. It runs ONCE, first, so none of them has to.
+  const preRestructure = await enforceRestructure(client, pullRequest, expectedHead);
+  if (preRestructure.superseded) return { ...preRestructure, state: 'superseded' };
+  if (!preRestructure.allowed) return { ...preRestructure, state: 'restructure_required' };
 
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return { ...scope, state: 'superseded' };
@@ -1312,6 +1482,14 @@ export async function run() {
     );
     return;
   }
+
+  // HOISTED to a run-level precondition. The gate writes a blocking state from a
+  // dozen places, each of which invites another correction head; asking every one
+  // of them to remember the lifecycle is how a cross-cutting rule gets missed at
+  // the one site nobody looked at. It runs ONCE, first, so none of them has to.
+  const preRestructure = await enforceRestructure(client, pullRequest, expectedHead);
+  if (preRestructure.superseded) return;
+  if (!preRestructure.allowed) throw new Error(restructureBlockReason(preRestructure));
 
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return;
