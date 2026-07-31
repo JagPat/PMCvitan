@@ -13,13 +13,13 @@ narrative and may lag behind reality.
 phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
 task: 6
-task_state: merged
-work_item: none
-reviewed_merge: 67e7a00
-open_pr: none
+task_state: in_review
+work_item: review-lifecycle
+reviewed_merge: 3849f5c
+open_pr: 257
 next_task: phase-5-planning
 blocking_directive: none
-updated: 2026-07-29
+updated: 2026-07-31
 ```
 
 **PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head

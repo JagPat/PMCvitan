@@ -14,6 +14,12 @@ import {
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
 import {
+  assessRestructure,
+  nextMetrics,
+  readMetrics,
+  renderMetrics,
+} from './review-lifecycle.mjs';
+import {
   PRODUCT_CHECKS,
   attemptGateStamps,
   attemptsWithPassingGates,
@@ -711,6 +717,17 @@ export class GitHubClient {
     return ids.length;
   }
 
+  async stickyComment(number) {
+    const comments = await this.request(
+      `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
+    );
+    return comments.find(
+      (comment) =>
+        comment.user?.login === 'github-actions[bot]' &&
+        comment.body?.includes(COMMENT_MARKER),
+    )?.body ?? null;
+  }
+
   async updateStickyComment(number, body) {
     const comments = await this.request(
       `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
@@ -744,10 +761,14 @@ function eligibleShape(pullRequest) {
   };
 }
 
-function statusBody({ state, head, detail, attempt, next }) {
+function statusBody({ state, head, detail, attempt, next, metrics }) {
   return [
     '## Autonomous review state',
     '',
+    // Machine-readable and sticky. The finding-head count recorded here is a FLOOR
+    // (see review-lifecycle.mjs), so a rerun that reads fewer findings — or a
+    // rewritten branch — cannot walk a unit back below a limit it has crossed.
+    ...(metrics ? [renderMetrics(metrics), ''] : []),
     `- **Head:** \`${head}\``,
     `- **State:** \`${state}\``,
     `- **Codex attempt:** ${attempt}/${MAX_REVIEW_ATTEMPTS}`,
@@ -1007,6 +1028,84 @@ export async function enforceReviewConvergence(
   return result;
 }
 
+// The review unit itself can be the defect. `enforceReviewConvergence` stops
+// ordinary patching after two finding-bearing heads and demands one batched audit;
+// this stops the AUDITS once repeating them has stopped converging. It runs on the
+// same seam and with the same authority, and — like the convergence gate — its only
+// outcomes are "carry on" and "stop". It never resolves a thread, never dismisses a
+// finding, and has no branch that publishes success.
+async function readStickyComment(client, number) {
+  try {
+    return await client.stickyComment(number);
+  } catch {
+    // Unreadable metrics are treated as ABSENT, never as zero-with-authority: the
+    // live finding count still applies, and the floor simply cannot raise it.
+    return null;
+  }
+}
+
+export async function enforceRestructure(client, pullRequest, expectedHead) {
+  const [comments, reviews] = await Promise.all([
+    client.reviewComments(pullRequest.number),
+    client.reviews(pullRequest.number),
+  ]);
+  let pullRequestFiles;
+  try {
+    pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
+  } catch {
+    pullRequestFiles = undefined;
+  }
+  const recordedMetrics = readMetrics(
+    await readStickyComment(client, pullRequest.number),
+  );
+  const result = assessRestructure({
+    comments,
+    reviews,
+    pullRequestFiles,
+    body: pullRequest.body,
+    recordedMetrics,
+  });
+  if (result.allowed) return result;
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return { ...result, superseded: true };
+
+  // Failure, always. An undecided unit blocks for a different reason than one that
+  // has crossed its limit, but neither may be published as green.
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `review: ${result.undecided ? 'restructure check undecided' : 'restructure required'}`,
+    pullRequest.html_url,
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: result.undecided ? 'reviewing' : 'restructure_required',
+      head: expectedHead,
+      detail: result.reason,
+      attempt: 0,
+      next: result.undecided
+        ? 'Re-run once the cumulative diff is readable; the limit that applies is unverified.'
+        : `Do not push another correction head. Open ONE replacement pull request whose body `
+          + `declares "Replaces: #${pullRequest.number}", carrying the same work as a review `
+          + 'unit that can be reviewed in a few rounds. Every open finding stays open and '
+          + 'moves with the work; none is dismissed by restructuring.',
+      metrics: nextMetrics({
+        recordedMetrics,
+        assessment: { ...result, head: expectedHead },
+        nowIso: new Date().toISOString(),
+      }),
+    }),
+  );
+  return result;
+}
+
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
   const result = assessReviewScope(pullRequest);
   if (result.allowed) return result;
@@ -1061,6 +1160,15 @@ export async function revalidateFinalReviewPolicy(
   }
   if (!convergence.allowed) {
     return { ...convergence, state: 'convergence_required' };
+  }
+
+  // After convergence, and before anything can be published: has this unit spent
+  // so many rounds that another correction head is the wrong instrument? A unit in
+  // `restructure_required` is never allowed, so no later branch can reach success.
+  const restructure = await enforceRestructure(client, pullRequest, expectedHead);
+  if (restructure.superseded) return { ...restructure, state: 'superseded' };
+  if (!restructure.allowed) {
+    return { ...restructure, state: restructure.state };
   }
 
   const finding = await guardAgainstCurrentHeadFinding(
@@ -1477,6 +1585,20 @@ export async function run() {
   if (!convergence.allowed) {
     throw new Error(
       `${convergence.findingHeadCount} finding heads require a consolidated convergence audit`,
+    );
+  }
+
+  // Same question on the driver, so a red workflow run is the fail-closed signal
+  // here exactly as it is for convergence. Throwing keeps the head unpublished.
+  const restructure = await enforceRestructure(client, pullRequest, expectedHead);
+  if (restructure.superseded) return;
+  if (!restructure.allowed) {
+    throw new Error(
+      restructure.undecided
+        ? 'restructure check undecided: the cumulative diff was unreadable'
+        : `${restructure.findingHeadCount} finding heads exceed the ${restructure.kind} `
+          + `limit of ${restructure.threshold}; open a declared replacement instead of `
+          + 'another correction head',
     );
   }
 

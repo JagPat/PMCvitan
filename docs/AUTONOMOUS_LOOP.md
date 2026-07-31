@@ -42,6 +42,32 @@ This repository is designed to progress without the owner's laptop or technical 
 - A justified large PR uses the PR template's marker and completes all six risk
   rows: authorization/tenancy, civil time/lifecycle, concurrency/idempotency,
   data integrity/conservation, offline/reconciliation, and UI/server parity.
+
+### Review lifecycle
+
+A review unit moves through four states. The first two are the existing
+protocol; the last two are the exit when it stops converging.
+
+| State | Enters when | Effect |
+| --- | --- | --- |
+| `reviewing` | default | ordinary correction heads |
+| `convergence_audit` | 2 finding-bearing heads | next head must be ONE batched audit with a `*convergence*.md` packet and `Review-Convergence: complete` |
+| `restructure_required` | 3 finding heads (docs-only) or 5 (ordinary code) | no further correction head is accepted; `codex-current-head` is never published successful; findings are NOT dismissed |
+| `replacement_reviewing` | the PR body declares `Replaces: #<n>` | fresh review history, declared lineage, same limits on its own findings |
+
+- Repeating the audit cannot fix a unit whose defect is its own shape. PR #257
+  produced findings on five consecutive heads, three of them regressions
+  introduced by the previous correction, because one concept spread across six
+  call sites was being corrected two sites at a time. That is the shape these
+  limits exist to stop.
+- The count lives on the sticky comment as a floor, so a branch reset or a
+  partial API read cannot lower it. Elapsed time is recorded beside it as
+  **telemetry** — visible cost, never a gate. Only the finding-head count gates.
+- When the cumulative diff cannot be read, the applicable limit is unknown. If
+  the count is below both limits the unit keeps reviewing; if it is past both it
+  restructures regardless; in between the check reports `undecided` and BLOCKS,
+  because guessing a limit is how a unit gets cleared or condemned on no
+  evidence. An undecided unit cannot merge either.
 - The PR-side scope check is fast feedback. The trusted default-branch owner
   re-evaluates the PR metadata and every evidence cell before review promotion,
   so editing the PR's policy script cannot bypass the merge boundary.

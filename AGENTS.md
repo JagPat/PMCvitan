@@ -116,6 +116,23 @@ so directly rather than framing it as a suggestion.
   changed `docs/reviews/*convergence*.md` packet and the commit trailer
   `Review-Convergence: complete`. Never evade this by splitting one fix into
   multiple commits or by resetting review history.
+- The convergence audit is not a fixed point. A review unit that keeps drawing
+  findings is telling you the UNIT is wrong, not that the next patch was too
+  small. After **3** finding-bearing heads on a docs-only unit, or **5** on an
+  ordinary-code unit, the gate moves the PR to `restructure_required`: no further
+  correction head is accepted, and the required `codex-current-head` status is
+  never published successful for it. Restructuring dismisses nothing — every open
+  finding stays open and moves with the work.
+  - The remedy is ONE replacement pull request whose body declares
+    `Replaces: #<number>`. The declaration is what makes a fresh review history
+    legitimate; the lineage stays visible and the replaced unit's metrics are
+    preserved. A replacement is bound by the same limits on its own findings.
+  - The finding-head count recorded on the sticky comment is a FLOOR. Rewriting a
+    branch, force-pushing, or a rerun that happens to read fewer findings can
+    never walk a unit back below a limit it has already crossed.
+  - Signals that the unit — not the patch — is the problem: consecutive findings
+    in the same file or concept; a correction that introduces the next finding;
+    the same invariant restated at a new call site each round.
 - To verify that trailer, resolve the PR HEAD first: in a synthetic-merge
   checkout the head is `HEAD^2` (`git show -s --format='%(trailers)' HEAD^2`),
   or fetch `refs/pull/<number>/head`. The merge commit's own auto-generated
