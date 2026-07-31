@@ -15,11 +15,11 @@ phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
 task: 6
 task_state: in_review
 work_item: none
-reviewed_merge: 67e7a00
-open_pr: 259
+reviewed_merge: 503b10c
+open_pr: 260
 next_task: phase-5-planning
 blocking_directive: none
-updated: 2026-07-29
+updated: 2026-07-31
 ```
 
 **PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
