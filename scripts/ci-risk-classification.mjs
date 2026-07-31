@@ -26,6 +26,16 @@
 // The product suites, named exactly as the CI jobs are.
 export const SUITES = ['web', 'e2e', 'api', 'api-e2e', 'upgrade-proof'];
 
+// Documentation files that a PRODUCT test actually reads, and the suite that
+// reads them. This is the register root cause A kept violating: a path was
+// called safe because of where it lives, when something consumed it. The
+// enforcement probe scans the real product test sources and fails if any docs
+// path is read that is not listed here — so instance five fails CI instead of
+// shipping.
+export const DOCS_CONSUMERS = new Map([
+  ['docs/RUNBOOK.md', ['api']],
+]);
+
 // Path → the suites that path can break. Ordered most specific first; the
 // first matching rule wins, so `apps/web/tests/e2e` never falls through to the
 // generic `apps/web` rule by accident.
@@ -44,6 +54,13 @@ const RULES = [
   { prefix: 'apps/api/', suites: ['api', 'api-e2e'] },
   { prefix: 'apps/web/', suites: ['web', 'e2e', 'api-e2e'] },
   { prefix: 'packages/shared/', suites: SUITES },
+  // `docs/RUNBOOK.md` is NOT just prose to CI: an API integration test reads it
+  // and asserts the operator-repair sections never instruct a destructive
+  // DELETE of attendance evidence. Unsafe operator guidance could otherwise
+  // merge with the only probe that checks it skipped. DOCS_CONSUMERS below is
+  // enforced against the real test sources, so a future consumer cannot be
+  // added silently.
+  { prefix: 'docs/RUNBOOK.md', suites: ['api'] },
   { prefix: 'docs/', suites: [] },
 ];
 
@@ -84,9 +101,13 @@ function machineryRule(file) {
 
 function ruleFor(file) {
   if (ROOT_FILES.has(file)) return { suites: ROOT_FILES.get(file) };
-  // A Markdown file ANYWHERE is documentation. `docs/` already covers most of
-  // them; this catches `apps/api/README.md` and friends, which cannot change
-  // behaviour but would otherwise pull in the whole API battery.
+  // A documentation file WITH A KNOWN CONSUMER is checked first. The blanket
+  // Markdown rule below would otherwise swallow it — which is precisely how
+  // `docs/RUNBOOK.md` came to skip the API suite that reads it.
+  if (DOCS_CONSUMERS.has(file)) return { suites: DOCS_CONSUMERS.get(file) };
+  // A Markdown file ANYWHERE is otherwise documentation. `docs/` already covers
+  // most of them; this catches `apps/api/README.md` and friends, which cannot
+  // change behaviour but would otherwise pull in the whole API battery.
   if (file.endsWith('.md')) return { suites: [] };
   if (file.startsWith('scripts/') || file.startsWith('.github/')) {
     return machineryRule(file);
@@ -188,7 +209,32 @@ export function classifyChangedFiles(files) {
 // So the rule is a whitelist, not a blacklist: anything that is not an
 // explicit success or an explicit skip fails the gate. A result GitHub adds
 // later that this code has never seen is therefore a failure, not a pass.
-export function assessQualityGate(results) {
+// When `battery-plan` decides this head is already covered, every product job
+// AND every twin skips — so the gate sees nothing but skips and would go green
+// off the current run alone. But battery-plan deliberately counts a FAILED
+// product run as coverage: a title/body edit after a red run produces exactly
+// that shape. Once `quality-gate` is the single required status, that would let
+// a metadata edit mask failed CI without a new commit.
+//
+// So a battery-plan skip is only acceptable when the PRESERVED evidence for
+// this head is actually green. `priorEvidence` carries that verdict; absent or
+// unreadable evidence is not a pass.
+export function assessQualityGate(results, { productsSkippedAsCovered = false,
+  priorEvidence = null } = {}) {
+  if (productsSkippedAsCovered) {
+    if (!priorEvidence || priorEvidence.ok !== true) {
+      return {
+        passed: false,
+        reason: 'the product jobs were skipped as already-covered, but the '
+          + `preserved evidence for this head is not green (${
+            priorEvidence?.detail ?? 'no evidence could be read'})`,
+      };
+    }
+  }
+  return assessResults(results);
+}
+
+function assessResults(results) {
   const entries = Object.entries(results ?? {});
   if (entries.length === 0) {
     return { passed: false, reason: 'no job results were reported to the gate' };

@@ -40,6 +40,7 @@ jobs:
       checks: read
     outputs:
       run_products: ${{ steps.plan.outputs.run_products }}
+      force_all: ${{ steps.plan.outputs.force_all }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Decide whether this event needs the product battery
@@ -90,7 +91,8 @@ jobs:
     needs: [review-scope, battery-plan, classify]
     if: >-
       needs.battery-plan.outputs.run_products == 'true'
-      && contains(needs.classify.outputs.suites, ',web,')
+      && (needs.battery-plan.outputs.force_all == 'true'
+        || contains(needs.classify.outputs.suites, ',web,'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -117,7 +119,8 @@ jobs:
     needs: [review-scope, battery-plan, classify]
     if: >-
       needs.battery-plan.outputs.run_products == 'true'
-      && contains(needs.classify.outputs.suites, ',e2e,')
+      && (needs.battery-plan.outputs.force_all == 'true'
+        || contains(needs.classify.outputs.suites, ',e2e,'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -142,7 +145,8 @@ jobs:
     needs: [review-scope, battery-plan, classify]
     if: >-
       needs.battery-plan.outputs.run_products == 'true'
-      && contains(needs.classify.outputs.suites, ',api-e2e,')
+      && (needs.battery-plan.outputs.force_all == 'true'
+        || contains(needs.classify.outputs.suites, ',api-e2e,'))
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -200,7 +204,8 @@ jobs:
     needs: [review-scope, battery-plan, classify]
     if: >-
       needs.battery-plan.outputs.run_products == 'true'
-      && contains(needs.classify.outputs.suites, ',upgrade-proof,')
+      && (needs.battery-plan.outputs.force_all == 'true'
+        || contains(needs.classify.outputs.suites, ',upgrade-proof,'))
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -225,7 +230,8 @@ jobs:
     needs: [review-scope, battery-plan, classify]
     if: >-
       needs.battery-plan.outputs.run_products == 'true'
-      && contains(needs.classify.outputs.suites, ',api,')
+      && (needs.battery-plan.outputs.force_all == 'true'
+        || contains(needs.classify.outputs.suites, ',api,'))
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -290,6 +296,7 @@ jobs:
     needs: [review-scope, battery-plan, classify]
     if: >-
       needs.battery-plan.outputs.run_products == 'true'
+      && needs.battery-plan.outputs.force_all != 'true'
       && !contains(needs.classify.outputs.suites, ',web,')
     runs-on: ubuntu-latest
     steps:
@@ -319,6 +326,7 @@ jobs:
     needs: [review-scope, battery-plan, classify]
     if: >-
       needs.battery-plan.outputs.run_products == 'true'
+      && needs.battery-plan.outputs.force_all != 'true'
       && !contains(needs.classify.outputs.suites, ',e2e,')
     runs-on: ubuntu-latest
     steps:
@@ -348,6 +356,7 @@ jobs:
     needs: [review-scope, battery-plan, classify]
     if: >-
       needs.battery-plan.outputs.run_products == 'true'
+      && needs.battery-plan.outputs.force_all != 'true'
       && !contains(needs.classify.outputs.suites, ',api-e2e,')
     runs-on: ubuntu-latest
     steps:
@@ -377,6 +386,7 @@ jobs:
     needs: [review-scope, battery-plan, classify]
     if: >-
       needs.battery-plan.outputs.run_products == 'true'
+      && needs.battery-plan.outputs.force_all != 'true'
       && !contains(needs.classify.outputs.suites, ',upgrade-proof,')
     runs-on: ubuntu-latest
     steps:
@@ -406,6 +416,7 @@ jobs:
     needs: [review-scope, battery-plan, classify]
     if: >-
       needs.battery-plan.outputs.run_products == 'true'
+      && needs.battery-plan.outputs.force_all != 'true'
       && !contains(needs.classify.outputs.suites, ',api,')
     runs-on: ubuntu-latest
     steps:
@@ -441,10 +452,24 @@ jobs:
       - api-e2e-not-applicable
       - upgrade-proof-not-applicable
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Only consulted when battery-plan skipped the products as already
+      # covered. That decision counts a FAILED run as coverage, so the gate has
+      # to look at what the earlier run actually concluded.
+      - name: Read the preserved product evidence for this head
+        id: evidence
+        if: needs.battery-plan.outputs.run_products == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci-prior-evidence.mjs
       - name: Summarize every required check into one verdict
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
           CLASSIFY_REASON: ${{ needs.classify.outputs.reason }}
+          RUN_PRODUCTS: ${{ needs.battery-plan.outputs.run_products }}
+          PRIOR_EVIDENCE: ${{ steps.evidence.outputs.verdict }}
         run: node scripts/ci-quality-gate.mjs

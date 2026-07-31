@@ -10,6 +10,8 @@ import { assessQualityGate } from './ci-risk-classification.mjs';
 export function run({
   raw = process.env.JOB_RESULTS,
   classifyReason = process.env.CLASSIFY_REASON,
+  runProducts = process.env.RUN_PRODUCTS,
+  priorEvidence = process.env.PRIOR_EVIDENCE,
   log = console.log,
 } = {}) {
   let results;
@@ -25,7 +27,22 @@ export function run({
     return { passed: false };
   }
 
-  const verdict = assessQualityGate(results);
+  // `battery-plan` said this head is already covered, so every product job and
+  // every twin skipped. That decision counts a FAILED earlier run as coverage,
+  // so the gate must check the preserved evidence rather than read all-skips as
+  // success — otherwise a title/body edit turns a red head green with no new
+  // commit. Unparseable or absent evidence is not a pass.
+  const productsSkippedAsCovered = runProducts === 'false';
+  let evidence = null;
+  if (productsSkippedAsCovered) {
+    try {
+      evidence = JSON.parse(priorEvidence ?? '');
+    } catch {
+      evidence = null;
+    }
+  }
+
+  const verdict = assessQualityGate(results, { productsSkippedAsCovered, priorEvidence: evidence });
   if (classifyReason) log(`quality-gate: classification — ${classifyReason}`);
   log(`quality-gate: ${verdict.passed ? 'PASSED' : 'FAILED'} — ${verdict.reason}`);
   return verdict;

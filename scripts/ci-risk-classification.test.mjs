@@ -21,8 +21,11 @@ const classify = (...files) => classifyChangedFiles(files);
 // R1–R5: each class of change reaches the suites that can break, and no more.
 // ---------------------------------------------------------------------------
 
-test('R1: a docs-only change runs no product suite', () => {
-  const plan = classify('docs/STATUS.md', 'docs/RUNBOOK.md', 'README.md');
+test('R1: a docs-only change with no consumer runs no product suite', () => {
+  // NOT `docs/RUNBOOK.md` — an API integration test reads that one, and using
+  // it here as an example of inert prose was exactly the wrong belief. R18
+  // enforces the register of docs files that really do have consumers.
+  const plan = classify('docs/STATUS.md', 'docs/ARCHITECTURE.md', 'README.md');
   assert.deepEqual(plan.suites, []);
   assert.equal(plan.confident, true);
   assert.match(plan.reason, /no changed path can affect a product suite/u);
@@ -240,6 +243,45 @@ test('R14: an unrecognised result is a FAILURE, not a pass', () => {
 // asserted here before it can repeat.
 // ---------------------------------------------------------------------------
 
+test('R19: a battery-plan skip cannot mask a RED head', () => {
+  // N2. battery-plan counts a failed product run as coverage, so a later
+  // title/body edit skips every job and twin. Judged on the current run alone
+  // the gate is all-skips and would go green while the real `api` failure for
+  // the same head is still red — a metadata edit masking failed CI with no new
+  // commit. Only genuinely green preserved evidence may justify the skip.
+  const allSkipped = { web: 'skipped', api: 'skipped', 'api-e2e': 'skipped' };
+
+  const red = assessQualityGate(allSkipped, {
+    productsSkippedAsCovered: true,
+    priorEvidence: { ok: false, detail: 'api failed on the first run' },
+  });
+  assert.equal(red.passed, false, 'a red head must not be masked by an edit');
+  assert.match(red.reason, /api failed/u);
+
+  // Absent or unreadable evidence is NOT a pass.
+  for (const evidence of [null, undefined, {}, { ok: 'yes' }]) {
+    assert.equal(
+      assessQualityGate(allSkipped, {
+        productsSkippedAsCovered: true, priorEvidence: evidence,
+      }).passed,
+      false,
+      'unverifiable evidence must block',
+    );
+  }
+
+  // Genuinely green preserved evidence justifies the skip.
+  assert.equal(
+    assessQualityGate(allSkipped, {
+      productsSkippedAsCovered: true, priorEvidence: { ok: true },
+    }).passed,
+    true,
+  );
+
+  // And when the products were NOT skipped as covered, the ordinary rules apply
+  // — a classification skip still passes with no evidence lookup at all.
+  assert.equal(assessQualityGate(allSkipped).passed, true);
+});
+
 test('R15: every product job is gated on the classification and feeds the gate', async () => {
   const workflow = await readFile(
     new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8',
@@ -288,7 +330,7 @@ test('R16: every product suite has a compatibility twin publishing its name', as
     // The two must be mutually exclusive on the SAME condition, or a suite
     // would either run twice or not report at all.
     const real = new RegExp(
-      `\\n  ${suite}:\\n(?:.|\\n)*?&& contains\\(needs\\.classify\\.outputs\\.suites, ',${suite},'\\)`, 'u',
+      `\\n  ${suite}:\\n(?:.|\\n)*?\\|\\| contains\\(needs\\.classify\\.outputs\\.suites, ',${suite},'\\)`, 'u',
     );
     const negated = new RegExp(
       `\\n  ${suite}-not-applicable:\\n(?:.|\\n)*?&& !contains\\(needs\\.classify\\.outputs\\.suites, ',${suite},'\\)`, 'u',
@@ -301,6 +343,86 @@ test('R16: every product suite has a compatibility twin publishing its name', as
   const gate = workflow.slice(workflow.indexOf('  quality-gate:'));
   for (const suite of SUITES) {
     assert.ok(gate.includes(`- ${suite}-not-applicable`), `gate must need ${suite}'s twin`);
+  }
+});
+
+test('R17: a base RETARGET forces every suite, bypassing the classifier', async () => {
+  // N1. battery-plan's retarget branch exists to re-verify the whole battery
+  // against the NEW merge result. The classifier reads the PR's own changed
+  // paths, which say nothing about what moved in the base — letting it narrow
+  // this rerun defeats the check that requested the battery.
+  const { assessBatteryPlan } = await import('./ci-battery-plan.mjs');
+  const retarget = assessBatteryPlan({ action: 'edited', baseChanged: true, checkRuns: [] });
+  assert.equal(retarget.runProducts, true);
+  assert.equal(retarget.forceAll, true, 'a retarget must force ALL suites');
+
+  // An ordinary code event runs the products but does NOT force-all: the
+  // classifier is still allowed to narrow there, which is the whole feature.
+  const ordinary = assessBatteryPlan({ action: 'synchronize', baseChanged: false });
+  assert.equal(ordinary.runProducts, true);
+  assert.ok(!ordinary.forceAll, 'a normal code event stays classifiable');
+
+  // An errored plan fails toward BOTH running and forcing.
+  const workflow = await readFile(
+    new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8',
+  );
+  for (const suite of SUITES) {
+    const block = workflow.slice(workflow.indexOf(`\n  ${suite}:\n`));
+    assert.match(
+      block.slice(0, 400), /force_all == 'true'/u,
+      `${suite} must run when the plan forces all`,
+    );
+    const twin = workflow.slice(workflow.indexOf(`\n  ${suite}-not-applicable:\n`));
+    assert.match(
+      twin.slice(0, 500), /force_all != 'true'/u,
+      `${suite}'s twin must stand down when the plan forces all`,
+    );
+  }
+});
+
+test('R18: every docs path a PRODUCT test reads is mapped to that suite', async () => {
+  // N3 was the FOURTH instance of "safe by location, not by consumer". This is
+  // the structural fix: the register is checked against the real test sources,
+  // so a new consumer fails here instead of silently skipping the only probe
+  // that guards it.
+  const { DOCS_CONSUMERS } = await import('./ci-risk-classification.mjs');
+  const { readdirSync, readFileSync, statSync } = await import('node:fs');
+  const { join } = await import('node:path');
+
+  const roots = [
+    new URL('../apps/api/test', import.meta.url).pathname,
+    new URL('../apps/web/src', import.meta.url).pathname,
+  ];
+  const walk = (dir) => {
+    let out = [];
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) out = out.concat(walk(full));
+      else if (/\.(test|spec)\.[cm]?tsx?$/u.test(entry)) out.push(full);
+    }
+    return out;
+  };
+
+  const unmapped = [];
+  for (const root of roots) {
+    for (const file of walk(root)) {
+      const source = readFileSync(file, 'utf8');
+      for (const [, path] of source.matchAll(/['"`](docs\/[A-Za-z0-9_./-]+)['"`]/gu)) {
+        if (!DOCS_CONSUMERS.has(path)) unmapped.push(`${file} reads ${path}`);
+      }
+    }
+  }
+
+  assert.deepEqual(
+    unmapped, [],
+    'a product test reads a docs path that the classifier calls safe. Either add '
+      + 'it to DOCS_CONSUMERS with the suite that reads it, or move the probe '
+      + 'into pnpm test:automation (which always runs).',
+  );
+
+  // And the mapping is honoured by the classifier.
+  for (const [path, suites] of DOCS_CONSUMERS) {
+    assert.deepEqual(classify(path).suites, suites, `${path} must reach ${suites}`);
   }
 });
 
