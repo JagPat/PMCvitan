@@ -9,7 +9,7 @@ import {
   isAutonomousPullRequest,
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
-import { loadStatusDocument, parseStatusNow } from './autonomous-status-state.mjs';
+import { loadStatusDocument, parseStatusNow, parseMaintenanceQueue } from './autonomous-status-state.mjs';
 
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
@@ -290,6 +290,20 @@ export async function statusAtCommit(client, ref) {
   }
 }
 
+// Maintenance queue as it exists at one commit. Mirrors statusAtCommit so the
+// post-merge continuation reads both STATUS fields from the same merge tree
+// instead of leaving the queue on the pre-merge checkout while statusNow moves.
+export async function maintenanceQueueAtCommit(client, ref) {
+  if (!ref) return null;
+  try {
+    const markdown = await client.fileContent('docs/STATUS.md', ref);
+    return parseMaintenanceQueue(markdown ?? '');
+  } catch (error) {
+    console.warn(`Could not read maintenance queue at ${ref}: ${error.message}`);
+    return null;
+  }
+}
+
 async function handOffMergedPullRequest(
   client,
   pullRequest,
@@ -334,13 +348,16 @@ async function handOffMergedPullRequest(
   // commit is the exact post-merge tree for this PR, so read STATUS there.
   const mergedNow = await statusAtCommit(client, pullRequest.merge_commit_sha)
     ?? defaultBranchNow;
+const mergedMaintenanceQueue =
+  (await maintenanceQueueAtCommit(client, pullRequest.merge_commit_sha)) ??
+  maintenanceQueue;
   await client.comment(
     pullRequest.number,
     [
       marker,
       buildPostMergeContinuation({
         statusNow: mergedNow,
-        maintenanceQueue,
+      maintenanceQueue: mergedMaintenanceQueue,
         openPullRequests,
         headStatuses,
       }),
