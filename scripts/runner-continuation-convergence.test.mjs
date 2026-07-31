@@ -10,10 +10,19 @@ import {
   detectStatusDriftAcrossHeads,
   shouldShepherdOpenPullRequests,
 } from './runner-continuation.mjs';
+import { startInstruction } from './autonomous-work-lease.mjs';
 import {
   handOffStatusDrift,
   loadContinuationContext,
 } from './autonomous-handoff.mjs';
+
+// A permitted start authorization. `buildPostMergeContinuation` now FAILS CLOSED
+// without one — a handoff built with no lease verdict must not print the words
+// that begin a unit — so any probe asserting the start text has to supply it.
+const PERMITTED_START = startInstruction({
+  verdict: { allowed: true, reason: 'test: lease free' },
+  claimId: 'test-claim',
+});
 
 const repository = 'JagPat/PMCvitan';
 
@@ -211,6 +220,7 @@ test('D1: a stale open_pr with no live PR does not publish the stale next step',
   const message = buildPostMergeContinuation({
     statusNow: { task_state: 'merged', open_pr: '251', next_task: 'phase-5-planning' },
     openPullRequests: [],
+    start: PERMITTED_START,
   });
   assert.match(
     message,
@@ -263,6 +273,7 @@ test('D2: the drift handoff also derives its step from the corrected state', () 
   const body = buildDriftHandoff({
     statusNow: { task_state: 'merged', open_pr: '251', next_task: 'phase-5-planning' },
     openPullRequests: [],
+    start: PERMITTED_START,
   });
   assert.match(body, /\*\*Next step after correcting STATUS:\*\* `next_task:phase-5-planning`/);
   assert.match(body, /\*\*Recorded in STATUS \(STALE — do not act on it\):\*\* `pr:251`/);
@@ -277,6 +288,7 @@ test('B1c: with no live PR, a stale open_pr still advances and is called out (fi
   const message = buildPostMergeContinuation({
     statusNow: { task_state: 'merged', open_pr: '251', next_task: 'phase-5-planning' },
     openPullRequests: [],
+    start: PERMITTED_START,
   });
   assert.match(message, /Create the next same-repository `claude\/\*\*` branch/);
   assert.doesNotMatch(message, /already open — shepherd it/);
@@ -293,6 +305,8 @@ test('C1: the status-only drift marker is keyed to the drifting state', async ()
     maintenanceQueue: [],
     openPullRequests: [],
     headStatuses: [],
+    leaseFor: () => ({ allowed: true, reason: 'test: lease free' }),
+    acquire: async () => {},
   };
   const client = fakeClient({});
   await handOffStatusDrift(client, repository, 'main', context);
@@ -317,6 +331,11 @@ test('C1b: a LATER drift with a different stale value is not swallowed', async (
     maintenanceQueue: [],
     openPullRequests: [],
     headStatuses: [],
+    // A literal context still has to answer "may the runner start?" — the
+    // accessor is not optional-chained in production precisely so a context
+    // that cannot answer fails loudly instead of silently skipping the check.
+    leaseFor: () => ({ allowed: true, reason: 'test: lease free' }),
+    acquire: async () => {},
   });
   assert.equal(repeat.posted.length, 0, 'the same drift state must post once');
 
@@ -328,6 +347,11 @@ test('C1b: a LATER drift with a different stale value is not swallowed', async (
     maintenanceQueue: [],
     openPullRequests: [],
     headStatuses: [],
+    // A literal context still has to answer "may the runner start?" — the
+    // accessor is not optional-chained in production precisely so a context
+    // that cannot answer fails loudly instead of silently skipping the check.
+    leaseFor: () => ({ allowed: true, reason: 'test: lease free' }),
+    acquire: async () => {},
   });
   assert.equal(fresh.posted.length, 1);
   assert.match(fresh.posted[0].body, /autonomous-status-drift:status-only:263 -->/);
@@ -340,6 +364,11 @@ test('C1c: drift with a live PR is posted on that PR, keyed to its head SHA (fin
     maintenanceQueue: [],
     openPullRequests: [pullRequest(256)],
     headStatuses: [{ number: 256, now: { open_pr: 'none' } }],
+    // A literal context still has to answer "may the runner start?" — the
+    // accessor is not optional-chained in production precisely so a context
+    // that cannot answer fails loudly instead of silently skipping the check.
+    leaseFor: () => ({ allowed: true, reason: 'test: lease free' }),
+    acquire: async () => {},
   });
   assert.equal(client.posted.length, 1);
   assert.equal(client.posted[0].number, 256);

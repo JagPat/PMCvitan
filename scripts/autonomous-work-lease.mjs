@@ -12,20 +12,34 @@
 // (and a CI run, and a merge) for every transition. Durable facts stay in
 // docs/STATUS.md; live facts live here.
 //
-// ── The one thing this module refuses to do ────────────────────────────────
+// ── Two things this module refuses to do ───────────────────────────────────
 //
-// It does not expose a way to write the lease alone. `renderRunnerState` takes
-// the WHOLE state — cursor and lease together — and returns the whole body.
-// That is deliberate: the issue body has two writers with different concerns,
-// and the failure mode of "each writer preserves the other's block" is a bug
-// waiting for the next writer. Rendering from one state object means dropping
-// the cursor while writing the lease is not something a caller can get wrong;
-// it is not expressible.
+// 1. It does not expose a way to write the lease alone. `renderRunnerState`
+//    takes the WHOLE state — cursor and lease together — and returns the whole
+//    body. The failure mode of "each writer preserves the other's block" is a
+//    bug waiting for the next writer; here, dropping the cursor while writing
+//    the lease is not expressible.
+//
+// 2. It does not expose the START instruction as text a caller can print.
+//    `startInstruction` returns the words and the lease that must be persisted
+//    to earn them, as ONE value. The first version of this module assessed the
+//    lease and let callers decide what to do with the verdict; every caller
+//    that forgot became a way to start a second unit, and the verdict ended up
+//    decorating an instruction instead of gating it. A caller cannot now obtain
+//    the words without also receiving the obligation.
 
 export const STATE_ISSUE_NUMBER = 235;
 
 const CURSOR_LINE = /Last processed merge: `([^`]+)` \(#(\d+)\)/u;
-const LEASE_LINE = /^Active work: #(?<pr>\d+) `(?<head>[^`]*)` (?<state>[a-z_]+)$/mu;
+
+// Every line that CLAIMS to be a lease, however malformed. Counting these is
+// what makes a duplicated or corrupted block fail closed instead of matching
+// whichever line happens to parse.
+const LEASE_ANY_LINE = /^[\t ]*Active work:.*$/gmu;
+const LEASE_FREE_LINE = /^[\t ]*Active work: none[\t ]*$/u;
+const LEASE_HELD_LINE =
+  /^[\t ]*Active work: (?:#(?<pr>\d+)|pending:(?<claimId>[A-Za-z0-9._-]+)) `(?<head>[^`]*)` (?<state>[a-z_]+)[\t ]*$/u;
+
 const LEASE_NONE = 'Active work: none';
 
 // A replacement declares its source, the same declaration the review lifecycle
@@ -35,23 +49,52 @@ const REPLACES = /^[\t ]*replaces:[\t ]*#(?<number>\d+)[\t ]*$/imu;
 
 export const LEASE_STATES = ['building', 'reviewing', 'correcting'];
 
+// The ONE wording that tells the runner to begin a new unit. It lives here,
+// beside the acquisition, so that a grep for it finds exactly one site.
+const START_TEXT =
+  'Create the next same-repository `claude/**` branch and draft PR with Auto-fix '
+  + 'enabled. If the merged result or state file is inconsistent, open a focused '
+  + 'correction instead of advancing.';
+
 export function readCursor(body, fallbackMergedAt) {
   const match = CURSOR_LINE.exec(typeof body === 'string' ? body : '');
   if (!match) return { mergedAt: fallbackMergedAt, number: 0 };
   return { mergedAt: Date.parse(match[1]), number: Number(match[2]) };
 }
 
-// `null` means the lease is FREE. An unparseable line is not free — see
-// `assessLease`: this returns `undefined` for "there is a lease line but it does
-// not parse", which the assessment refuses rather than treating as available.
+// `null` means FREE, `undefined` means "there is a lease line but it cannot be
+// trusted". The distinction matters because `assessLease` refuses the second
+// rather than treating it as available.
+//
+// Parsing is line-EXACT and counts candidates first. A substring search for
+// "Active work: none" read `Active work: nonee` as free, and read a body
+// carrying BOTH a stale `none` line and a held line as free — the two shapes a
+// half-written update actually produces. The rule this module states about
+// unreadable leases has to hold for its own reader first.
 export function readLease(body) {
   const source = typeof body === 'string' ? body : '';
-  if (source.includes(LEASE_NONE)) return null;
-  const match = LEASE_LINE.exec(source);
-  if (!match) return source.includes('Active work:') ? undefined : null;
-  const pr = Number(match.groups.pr);
-  if (!Number.isInteger(pr) || pr <= 0) return undefined;
-  return { pr, head: match.groups.head || null, state: match.groups.state };
+  const candidates = source.match(LEASE_ANY_LINE) ?? [];
+  if (candidates.length === 0) return null;
+  // Two lease lines is a half-finished write, not a state. Which one is current
+  // is exactly what cannot be known, so neither is believed.
+  if (candidates.length > 1) return undefined;
+
+  const [line] = candidates;
+  if (LEASE_FREE_LINE.test(line)) return null;
+
+  const match = LEASE_HELD_LINE.exec(line);
+  if (!match) return undefined;
+
+  const { pr, claimId, head, state } = match.groups;
+  // An unknown state is an unreadable lease: the runner would not know whether
+  // the unit is being built, reviewed or corrected.
+  if (!LEASE_STATES.includes(state)) return undefined;
+
+  if (claimId) return { pr: null, claimId, head: head || null, state };
+
+  const number = Number(pr);
+  if (!Number.isInteger(number) || number <= 0) return undefined;
+  return { pr: number, claimId: null, head: head || null, state };
 }
 
 // ONE renderer for the WHOLE body. There is no `renderLease`, deliberately: a
@@ -70,11 +113,17 @@ export function renderRunnerState({ cursor, lease }) {
       ? `Last processed merge: \`${cursorAt}\` (#${cursor.number ?? 0})`
       : 'Last processed merge: none',
     '',
-    lease
-      ? `Active work: #${lease.pr} \`${lease.head ?? ''}\` ${lease.state}`
-      : LEASE_NONE,
+    lease ? `Active work: ${leaseRef(lease)} \`${lease.head ?? ''}\` ${lease.state}` : LEASE_NONE,
     ...(lease?.replaces ? ['', `Replaces: #${lease.replaces}`] : []),
   ].join('\n');
+}
+
+// A lease claimed before its pull request exists names the claim instead of a
+// number. Without this the window between "start this unit" and "the PR is
+// open" is unprotected — which is the window two backlog drains both walked
+// through.
+function leaseRef(lease) {
+  return lease.pr ? `#${lease.pr}` : `pending:${lease.claimId}`;
 }
 
 export function replacementSource(body) {
@@ -127,7 +176,7 @@ export function assessLease({ lease, intent, openPullRequests }) {
 
   // Continuing the SAME unit is always allowed — that is shepherding, not
   // starting. The lease exists to stop a SECOND unit, never to strand the first.
-  if (intent?.pr === lease.pr) {
+  if (intent?.pr && lease.pr === intent.pr) {
     return {
       allowed: true,
       held: lease,
@@ -135,14 +184,35 @@ export function assessLease({ lease, intent, openPullRequests }) {
     };
   }
 
+  // A pending claim is fulfilled by whichever PR the runner then opened: the
+  // claim exists precisely to reserve the lease for that PR before it had a
+  // number. Adopting it is the claim closing, not a second unit starting.
+  if (lease.pr === null && intent?.pr) {
+    return {
+      allowed: true,
+      held: lease,
+      adopts: intent.pr,
+      reason: `pull request #${intent.pr} fulfils the pending claim \`${lease.claimId}\``,
+    };
+  }
+
   // A declared replacement may take the lease from the unit it replaces — the
   // review lifecycle's own handover rule, enforced here rather than trusted.
-  if (intent?.replaces === lease.pr) {
+  if (intent?.replaces && intent.replaces === lease.pr) {
     return {
       allowed: true,
       held: lease,
       replaces: lease.pr,
       reason: `declared replacement of #${lease.pr}; close it and take the lease`,
+    };
+  }
+
+  if (lease.pr === null) {
+    return {
+      allowed: false,
+      held: lease,
+      reason: `a start was already issued (claim \`${lease.claimId}\`) and no pull request `
+        + 'has been opened for it yet; open that unit rather than starting a second',
     };
   }
 
@@ -153,4 +223,35 @@ export function assessLease({ lease, intent, openPullRequests }) {
       + 'finish it, or declare "Replaces: #' + lease.pr + '" to supersede it. '
       + 'A second concurrent unit is what this lease exists to prevent',
   };
+}
+
+// The words that start a unit, and the lease that must be written to earn them.
+//
+// Returned together on purpose. A caller can print `text` only by receiving
+// `acquire` in the same value, so "told the runner to start but never recorded
+// it" is not a thing a caller can forget — it is a thing a caller must
+// deliberately discard. The publishers persist `acquire` BEFORE posting, so a
+// failed post leaves the lease held (blocking, recoverable) rather than free
+// (duplicating, not).
+export function startInstruction({ verdict, claimId, head = null }) {
+  if (!verdict?.allowed) {
+    return {
+      permitted: false,
+      acquire: null,
+      text: `**Work lease: BLOCKED — do not start new work.** ${verdict?.reason ?? 'the lease could not be assessed'}`,
+    };
+  }
+  return {
+    permitted: true,
+    acquire: { pr: null, claimId, head, state: 'building' },
+    text: START_TEXT,
+  };
+}
+
+// Does processing `pullRequestNumber` as merged end the lease it holds?
+//
+// A merged unit is finished, so continuing to record it as active makes the
+// next start look blocked by work that no longer exists.
+export function releaseOnMerge(lease, pullRequestNumber) {
+  return Boolean(lease && lease.pr && lease.pr === pullRequestNumber);
 }

@@ -15,7 +15,9 @@ import {
   assessLease,
   readCursor,
   readLease,
+  releaseOnMerge,
   renderRunnerState,
+  startInstruction,
 } from './autonomous-work-lease.mjs';
 
 const API_ROOT = 'https://api.github.com';
@@ -276,23 +278,32 @@ export async function loadContinuationContext(
     client.runnerState(),
   ]);
   const headStatuses = await openHeadStatuses(client, openPullRequests);
-  // Whether the runner may START anything, decided here because this is where
-  // the two inputs already meet: what the lease CLAIMS is active, and what
-  // GitHub says is OPEN. Computed once and carried, so no downstream caller
-  // re-derives availability from an absence — which is how four pull requests
-  // ended up open at the same time.
-  const lease = assessLease({
-    lease: runnerState.lease,
-    intent: {},
-    openPullRequests,
-  });
-  return {
+  const context = {
     defaultBranchNow: now,
     maintenanceQueue,
     openPullRequests,
     headStatuses,
-    lease,
+    runnerState,
+    // ONE accessor, and no bare pre-computed verdict beside it. The first
+    // version carried a single verdict assessed with an EMPTY intent, so a
+    // handoff shepherding the lease's own pull request was told it was blocked
+    // by itself. Each consumer now states who it is; nothing can read a verdict
+    // without saying what it wants to do.
+    leaseFor: (intent = {}) => assessLease({
+      lease: context.runnerState.lease,
+      intent,
+      openPullRequests,
+    }),
+    // Persist a claim and keep the in-run copy in step. Reading through
+    // `context.runnerState` above means a SECOND backlog drain in the same run
+    // sees the lease the first one took — two merged PRs draining from one free
+    // state was how two units could both be started in good faith.
+    async acquire(lease) {
+      context.runnerState = { ...context.runnerState, lease };
+      await client.setRunnerState(context.runnerState);
+    },
   };
+  return context;
 }
 
 // STATUS as it exists at one commit, or null when it cannot be read or parsed.
@@ -322,7 +333,11 @@ export async function maintenanceQueueAtCommit(client, ref) {
   }
 }
 
-async function handOffMergedPullRequest(
+// Exported so the lease lifecycle can be driven directly in tests, the same way
+// `handOffStatusDrift` already is. The acquire-before-publish ordering and the
+// release-on-merge rule are behaviour, and behaviour that only `run()` can reach
+// is behaviour a probe can only assert structurally.
+export async function handOffMergedPullRequest(
   client,
   pullRequest,
   repository,
@@ -366,18 +381,33 @@ async function handOffMergedPullRequest(
   // commit is the exact post-merge tree for this PR, so read STATUS there.
   const mergedNow = await statusAtCommit(client, pullRequest.merge_commit_sha)
     ?? defaultBranchNow;
-const mergedMaintenanceQueue =
-  (await maintenanceQueueAtCommit(client, pullRequest.merge_commit_sha)) ??
-  maintenanceQueue;
+  const mergedMaintenanceQueue =
+    (await maintenanceQueueAtCommit(client, pullRequest.merge_commit_sha)) ??
+    maintenanceQueue;
+
+  // A post-merge continuation may tell the runner to START the next unit, so it
+  // is subject to the lease like any other start. The claim is keyed to this
+  // merge commit: deterministic, traceable, and identical if the same merge is
+  // processed twice.
+  const start = startInstruction({
+    verdict: continuationContext.leaseFor({}),
+    claimId: `merge-${String(pullRequest.merge_commit_sha).slice(0, 12)}`,
+  });
+  // Acquire BEFORE publishing. A failed comment then leaves the lease held,
+  // which blocks and is recoverable; publishing first and failing to record
+  // would leave it free, which duplicates and is not.
+  if (start.permitted) await continuationContext.acquire(start.acquire);
+
   await client.comment(
     pullRequest.number,
     [
       marker,
       buildPostMergeContinuation({
         statusNow: mergedNow,
-      maintenanceQueue: mergedMaintenanceQueue,
+        maintenanceQueue: mergedMaintenanceQueue,
         openPullRequests,
         headStatuses,
+        start,
       }),
     ].join('\n'),
   );
@@ -391,21 +421,36 @@ export async function handOffStatusDrift(
 ) {
   const { defaultBranchNow, maintenanceQueue, openPullRequests, headStatuses } =
     continuationContext;
+
+  // The drift handoff is posted TO the primary open pull request when there is
+  // one, so that pull request is the unit it is asking about — not an anonymous
+  // request to start something new. Naming it is what lets the lease holder
+  // shepherd its own work instead of being told it is blocked by itself.
+  const primary = openPullRequests.at(-1);
+  const staleOpenPr = String(defaultBranchNow?.open_pr ?? 'none').trim() || 'none';
+  const start = startInstruction({
+    verdict: continuationContext.leaseFor(primary ? { pr: primary.number } : {}),
+    claimId: `drift-${staleOpenPr}`,
+  });
+
   const body = buildDriftHandoff({
     statusNow: defaultBranchNow,
     maintenanceQueue,
     openPullRequests,
     headStatuses,
-    lease: continuationContext.lease,
+    start,
   });
   if (!body) return;
 
-  const primary = openPullRequests.at(-1);
+  // Only the no-open-PR branch can issue a start, and only then is a claim owed.
+  // With a live pull request the instruction is to shepherd it, which is the
+  // lease being used rather than taken.
+  if (!primary && start.permitted) await continuationContext.acquire(start.acquire);
+
   if (!primary) {
     // Key the marker to the drifting state. A constant marker made this recovery
     // one-shot for the repository's lifetime: once posted, every LATER drift with
     // no live PR was silently swallowed and the loop stayed pointed at stale work.
-    const staleOpenPr = String(defaultBranchNow?.open_pr ?? 'none').trim() || 'none';
     const marker = `${DRIFT_MARKER}status-only:${staleOpenPr} -->`;
     const comments = await client.comments(STATE_ISSUE_NUMBER);
     if (comments.some((comment) =>
@@ -455,8 +500,12 @@ export async function run() {
     defaultBranch,
   );
 
-  const runnerState = await client.runnerState();
-  const mergedBacklog = await client.mergedPullRequestsAfter(runnerState.cursor);
+  // The cursor comes from the run's ONE state copy — the same object the loop
+  // below advances and the handoffs may claim a lease on. A second independent
+  // read here would let a claim taken during this run be written back over.
+  const mergedBacklog = await client.mergedPullRequestsAfter(
+    continuationContext.runnerState.cursor,
+  );
   mergedBacklog.sort((left, right) =>
     Date.parse(left.merged_at) - Date.parse(right.merged_at) ||
     left.number - right.number
@@ -472,13 +521,19 @@ export async function run() {
       defaultBranch,
       continuationContext,
     );
-    // Advance the cursor WITHIN the state that was read, so the lease recorded
-    // beside it is carried forward rather than overwritten.
-    runnerState.cursor = {
+    // Advance the cursor WITHIN the run's live state, so the lease recorded
+    // beside it — including any claim the handoff above just took — is carried
+    // forward rather than overwritten by a stale copy.
+    const state = continuationContext.runnerState;
+    state.cursor = {
       mergedAt: Date.parse(mergedPullRequest.merged_at),
       number: mergedPullRequest.number,
     };
-    await client.setRunnerState(runnerState);
+    // A merged unit is finished. Leaving it recorded as active makes the next
+    // start look blocked by work that no longer exists, and the runner would
+    // wait on a pull request nobody is going to touch again.
+    if (releaseOnMerge(state.lease, mergedPullRequest.number)) state.lease = null;
+    await client.setRunnerState(state);
   }
 
   if (eventName === 'schedule') {

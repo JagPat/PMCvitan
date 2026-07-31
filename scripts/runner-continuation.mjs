@@ -163,11 +163,26 @@ function assessDriftCorrected(statusNow, maintenanceQueue, drift) {
     : { assessment: corrected, recorded: assessment };
 }
 
+// Fail closed. A handoff built without a lease verdict must not print the words
+// that begin a unit — "no authorization" and "authorized" are different states,
+// and only one of them may start work.
+const NO_START_AUTHORIZATION =
+  '**Work lease: NOT ASSESSED — do not start new work.** This handoff was built '
+  + 'without a lease verdict. Repair the runner state in issue #235 and re-run.';
+
+// The start sentence NEVER comes from a builder's own string literal — it comes
+// from `startInstruction`, which hands it over together with the lease that must
+// be recorded. See `scripts/autonomous-work-lease.mjs`.
+function startSentence(start) {
+  return start?.text ?? NO_START_AUTHORIZATION;
+}
+
 export function buildPostMergeContinuation({
   statusNow,
   maintenanceQueue = [],
   openPullRequests = [],
   headStatuses = [],
+  start = null,
 }) {
   const drift = detectStatusDriftAcrossHeads({
     defaultBranchNow: statusNow,
@@ -212,10 +227,8 @@ export function buildPostMergeContinuation({
       'An autonomous PR is already open — shepherd it to completion instead of opening a competing branch. If the merged result or state file is inconsistent, open a focused correction instead of advancing.',
     );
   } else {
-    lines.push(
-      'Create the next same-repository `claude/**` branch and draft PR with Auto-fix enabled. If the merged result or state file is inconsistent, open a focused correction instead of advancing.',
-    );
-    if (!isNone(openPrField) && !openPrIsLive(statusNow, openPullRequests)) {
+    lines.push(startSentence(start));
+    if (start?.permitted && !isNone(openPrField) && !openPrIsLive(statusNow, openPullRequests)) {
       lines.push(
         '',
         `**Note:** clear stale \`open_pr: ${openPrField}\` in STATUS before starting new work.`,
@@ -231,7 +244,7 @@ export function buildDriftHandoff({
   maintenanceQueue = [],
   openPullRequests = [],
   headStatuses = [],
-  lease = null,
+  start = null,
 }) {
   const drift = detectStatusDriftAcrossHeads({
     defaultBranchNow: statusNow,
@@ -259,15 +272,22 @@ export function buildDriftHandoff({
       ? [`**Recorded in STATUS (STALE — do not act on it):** \`${recorded.nextStep ?? 'none'}\` — ${recorded.reason}`]
       : []),
     `**Open autonomous PRs:** ${formatOpenPullRequestList(openPullRequests)}`,
-    // The lease verdict travels WITH the instruction. A handoff that names the
-    // next step without saying whether the runner may start it is how a second
-    // concurrent unit gets opened in good faith.
-    ...(lease && lease.allowed === false
-      ? ['', `**Work lease: BLOCKED.** ${lease.reason}`]
-      : []),
     '',
-    (openPullRequests ?? []).length > 0
-      ? `Update \`open_pr\` to \`${drift.suggestedOpenPr}\` (or the correct current PR), align \`task_state\`, and shepherd the open PR. Do not open a competing branch for the same work item.`
-      : `Update \`open_pr\` to \`${drift.suggestedOpenPr}\`, align \`task_state\`, and start the next permitted work item. There is no live autonomous PR to shepherd.`,
+    // The lease GATES the instruction rather than annotating it. Previously the
+    // blocked verdict was appended beside "start the next permitted work item",
+    // which reads as a warning next to a command — and in an autonomous loop the
+    // command is what gets obeyed.
+    //
+    // On the shepherd branch there is no start to gate, but the verdict is still
+    // worth reporting when it refuses: assessed AS the pull request being
+    // shepherded, a refusal means the lease names a DIFFERENT unit (or cannot be
+    // read), which is a disagreement the runner should not resolve on its own.
+    // Assessed as the holder, it is permitted and says nothing.
+    ...((openPullRequests ?? []).length > 0
+      ? [
+        `Update \`open_pr\` to \`${drift.suggestedOpenPr}\` (or the correct current PR), align \`task_state\`, and shepherd the open PR. Do not open a competing branch for the same work item.`,
+        ...(start?.permitted === false ? ['', start.text] : []),
+      ]
+      : [`Update \`open_pr\` to \`${drift.suggestedOpenPr}\` and align \`task_state\`. There is no live autonomous PR to shepherd. ${startSentence(start)}`]),
   ].join('\n');
 }

@@ -8,6 +8,7 @@ import {
   formatOpenPullRequestList,
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
+import { startInstruction } from './autonomous-work-lease.mjs';
 
 const repository = 'JagPat/PMCvitan';
 
@@ -147,6 +148,12 @@ test('buildPostMergeContinuation advances after merge when open_pr is stale', ()
     },
     maintenanceQueue: [],
     openPullRequests: [],
+    // The builder now FAILS CLOSED without a lease verdict: a handoff with no
+    // authorization must not print the words that begin a unit.
+    start: startInstruction({
+      verdict: { allowed: true, reason: 'test: lease free' },
+      claimId: 'test-claim',
+    }),
   });
 
   assert.match(message, /Create the next same-repository/u);
