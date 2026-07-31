@@ -324,3 +324,4 @@ heads are unchanged and were not the subject of any finding.
 - **Evidence:** `pnpm test:automation` — `autonomous-handoff.test.mjs` / `runner-continuation.test.mjs` unchanged suites still pass; no assertion in this PR's suite previously pinned `maintenanceQueue` to the pre-merge checkout, so no test contradicted the stale behavior before this fix. This commit also re-verifies the trailer format against `git interpret-trailers` to close the earlier parse failure.
 
 Review-Convergence: complete
+ (2)
