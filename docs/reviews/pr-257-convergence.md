@@ -288,3 +288,113 @@ widens the `test:automation` glob. No product code, no schema, no migration. The
 CI workflow, `ci-battery-plan.mjs`, `check-run-coverage.mjs`, `review-scope.mjs`
 and `review-efficiency.mjs` are unchanged from `752968f` — their findings are
 closed and re-verified, not re-touched.
+
+---
+
+## Round 3 — the two P1 findings on `bd58504`
+
+Both land in `scripts/autonomous-review-gate.mjs`, and both are one concept at two
+places: **a battery is named by the merge result it was computed for, and only from
+evidence that a job of that battery really ran.** They are corrected together
+because fixing either alone leaves the other reachable.
+
+### Finding 11 — P1: the classification cache was keyed by head, not by merge result
+
+*Codex:* "Include the base SHA in the classification cache… a head classified
+docs-only on base A can be retargeted to base B where the cumulative diff now
+includes code; the old owner run still sees the same `number@head`, keeps requiring
+only `automation`."
+
+- **Root cause.** `pullRequestFiles` returns the cumulative diff against the
+  *current base*, so the classification identifies a `(base, head)` pair. The cache
+  key was `number@head`, which is not that pair.
+- **Correction, at both its sites.**
+  1. `classifyHead` keys on `number@base..head`, so a retarget is a cache MISS and
+     the head is re-classified against the base that now applies.
+  2. `waitForRequiredChecks` resolves the battery ONCE before polling, so the base
+     it resolved against is part of what that run committed to. It now treats a
+     base change exactly as it treats a head change — `superseded`, letting the
+     retarget's own event re-evaluate from a fresh client.
+- **Site audit.** The other `classifyHead` consumers (`enforceReviewScope`,
+  `enforceReviewConvergence`) pass a refreshed pull request, so the widened key
+  re-fetches for them without further change. Fixing only the cache would have left
+  the wait loop polling with a battery resolved for a base that no longer exists.
+- **Evidence.** `G1` (same head, two bases → two classifications; docs-fast against
+  A, product battery against B), `G1b` (one merge result is still classified exactly
+  once — the widened key does not defeat the one-classification rule), `G1c` (a
+  retarget mid-wait returns `superseded`).
+
+### Finding 12 — P1: docs-fast was inferred from product skips alone
+
+*Codex:* "Don't infer docs-fast from product skips alone… skipped product jobs do
+not prove the current attempt is docs-fast: a code PR metadata edit… sets both
+`run_products=false` and `docs_fast_path=false`, so this workflow creates skipped
+product jobs and a skipped `automation` job."
+
+- **Root cause.** `ci.yml` runs `automation` only when `docs_fast_path == 'true'`
+  and the products only when `run_products == 'true'`, and `ci-battery-plan.mjs`
+  has metadata-edit branches emitting **both false**. Such an attempt skips
+  everything, so "products were skipped" is true of it — and the inference read
+  that as docs-fast, requiring only `automation` for a head carrying code. Because
+  `summarizeRequiredChecks` lets an INTENTIONAL skip defer to older evidence, an
+  `automation` run from earlier in the head's life then satisfied it.
+- **A false claim in the prior comment, corrected.** That code asserted the
+  automation watermark would supersede the older evidence. It does not: the
+  watermark comparison is guarded by `isBatteryProductCheck(name)`, and
+  `automation` is not a product check, so it never applied. The protection existed
+  in the comment only. The comment is now accurate.
+- **Correction.** The inference walks the gate-passing attempts newest-first and
+  adopts the battery of the first one that actually RAN a job — a real product run
+  means the product battery, a real `automation` run means docs-fast, and an
+  all-skipped attempt declares nothing and is walked past. If no attempt on the
+  head ever ran a battery job, the products are required and the gate waits.
+- **Evidence.** `G2` (a head with real product runs plus a later all-skipped
+  metadata attempt selects the product battery, and `automation` is not in the
+  required set), `G2b` (a head that really ran `automation` still selects docs-fast
+  — the fix is precise, not merely strict), `G2c` (no real product evidence on the
+  current attempt stays pending).
+
+### Two assertions revised, and why — not edited to fit
+
+`E1` previously asserted this fixture selects `DOCS_FAST_CHECKS`: gates green,
+products skipped, `automation` absent. That is **exactly** the shape a metadata edit
+on a code PR produces, so the assertion was identifying a battery the evidence does
+not establish — the defect itself, pinned. `E1` now asserts the product battery and
+adds the property that actually holds: `automation` alone can never answer a code
+head. Its original safety concern is preserved in `G2c`, where the current attempt
+produced no product run of any name and the watermark keeps the head pending.
+
+A first draft of `G2` also asserted the head "must not go green". That was my
+over-reach and is removed rather than softened: attempt 600's product jobs really
+ran on that exact SHA and passed, and the metadata attempt skipped its own only
+after its plan verified that coverage — so green is correct once the *product*
+battery is the one required. The hole finding 12 names is the opposite direction,
+requiring the lesser battery for a head that owes the greater one.
+
+### Reproduce-first transcripts
+
+`G1`/`G2` with the inference and the cache key reverted to `bd58504` (the export
+kept so the suite still loads):
+
+```
+not ok 19 - G1: a retarget re-classifies — the cache is keyed by base AND head (finding 11)
+not ok 22 - G2: skipped products alone do NOT name the docs-fast battery (finding 12)
+# tests 24 / # pass 21 / # fail 3
+```
+
+`G1c` with only the wait-loop base check reverted (`CHECK_TIMEOUT_MS=0`, so the poll
+exits immediately instead of running out its ten-minute deadline):
+
+```
+not ok 21 - G1c: a retarget mid-wait is superseded, not answered from the old base (finding 11)
+# tests 24 / # pass 23 / # fail 1
+```
+
+Restored, the suite is 24/24.
+
+### Merge with `main`
+
+`origin/main` (`3849f5c`, carrying merged PR #256) is merged into this branch. One
+conflict, in `package.json`: both sides had extended the `test:automation` glob —
+this PR with `loop-efficiency*`, #256 with `runner-continuation*`. Resolved as the
+UNION of both, because dropping either silently stops running that suite.

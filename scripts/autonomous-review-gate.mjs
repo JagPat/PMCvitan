@@ -124,23 +124,33 @@ export function inferRequiredChecksFromRuns(pullRequestNumber, checkRuns) {
   // attempt rather than reading an older one's successes as coverage.
   if (!attempt) return productChecksForPullRequest(pullRequestNumber);
 
-  const current = runs.filter((run) => attemptOf(run) === attempt);
-  const hasRealProduct = PRODUCT_CHECKS.some((name) =>
-    current.some((run) => run?.name === name && !isSkipped(run)));
-  if (hasRealProduct) return productChecksForPullRequest(pullRequestNumber);
+  // Walk the gate-passing attempts NEWEST FIRST and adopt the battery of the
+  // first one that actually RAN something. "Ran something" is the whole point:
+  // an attempt is only evidence of a battery when a job of that battery really
+  // executed on it.
+  const stamps = attemptGateStamps(runs);
+  const passing = attemptsWithPassingGates(runs);
+  const declaring = [...stamps.entries()]
+    .filter(([id]) => passing.has(id))
+    .sort(([, left], [, right]) => (left < right ? 1 : left > right ? -1 : 0));
 
-  // The CURRENT attempt skipped its products, so its plan chose the docs-fast
-  // path. This holds whether or not its `automation` run has appeared yet: when
-  // it has not, `automation` is a required check whose only runs belong to older
-  // attempts, which the automation watermark supersedes — the summary reports
-  // pending and the gate waits for this attempt's own evidence.
-  const productsSkipped = PRODUCT_CHECKS.some((name) =>
-    current.some((run) => run?.name === name && isSkipped(run)));
-  if (productsSkipped) return DOCS_FAST_CHECKS;
+  for (const [id] of declaring) {
+    const scope = runs.filter((run) => attemptOf(run) === id);
+    const ranProduct = PRODUCT_CHECKS.some((name) =>
+      scope.some((entry) => entry?.name === name && !isSkipped(entry)));
+    if (ranProduct) return productChecksForPullRequest(pullRequestNumber);
+    const ranAutomation = scope.some(
+      (entry) => entry?.name === AUTOMATION_CHECK && !isSkipped(entry),
+    );
+    if (ranAutomation) return DOCS_FAST_CHECKS;
+    // This attempt skipped everything — a metadata edit, which plans
+    // `run_products=false` AND `docs_fast_path=false` and so skips its products
+    // and its `automation` alike. It declares NO battery; keep walking back to
+    // the attempt that does.
+  }
 
-  // The current attempt has produced no product run at all — the retarget window.
-  // Requiring products makes its gate stamp the watermark, so an older attempt's
-  // successes are superseded and the head stays pending.
+  // No attempt on this head ever ran a battery job. Requiring the products keeps
+  // the gate waiting rather than guessing.
   return productChecksForPullRequest(pullRequestNumber);
 }
 
@@ -1019,7 +1029,13 @@ export async function ensureTerminalReviewState(
 const headClassifications = new WeakMap();
 
 export async function classifyHead(client, pullRequest) {
-  const key = `${pullRequest?.number}@${pullRequest?.head?.sha ?? ''}`;
+  // The classification identifies a MERGE RESULT, not a head. `pullRequestFiles`
+  // returns the cumulative diff against the CURRENT base, so the same head is
+  // docs-only against base A and code-bearing against base B. Keying on
+  // `number@head` alone let a retarget reuse the pre-retarget answer: a head
+  // classified docs-only kept requiring only `automation` after its base moved to
+  // one where the cumulative diff includes runtime code.
+  const key = `${pullRequest?.number}@${pullRequest?.base?.sha ?? ''}..${pullRequest?.head?.sha ?? ''}`;
   let perClient = headClassifications.get(client);
   if (!perClient) {
     perClient = new Map();
@@ -1053,12 +1069,24 @@ async function resolveRequiredChecks(client, pullRequest) {
   );
 }
 
-async function waitForRequiredChecks(client, pullRequest, expectedHead) {
+export async function waitForRequiredChecks(client, pullRequest, expectedHead) {
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
+  // The battery is resolved ONCE, from the diff against the base this run started
+  // with — so the base is part of what this run committed to, exactly as the head
+  // is. Fixing only the classification cache would leave this loop polling with a
+  // battery resolved for a base that no longer exists.
+  const expectedBase = pullRequest.base?.sha;
   const requiredChecks = await resolveRequiredChecks(client, pullRequest);
   while (true) {
     const live = await client.pullRequest(pullRequest.number);
     if (live.head.sha !== expectedHead) return { state: 'superseded' };
+    // A retarget changes the cumulative diff WITHOUT changing the head. The merge
+    // result this run was asked about no longer exists, so it bows out the same
+    // way it does for a new head; the retarget's own event re-evaluates from a
+    // fresh client, and the new base's gates decide.
+    if (expectedBase && live.base?.sha && live.base.sha !== expectedBase) {
+      return { state: 'superseded' };
+    }
 
     const summary = summarizeRequiredChecks(
       await client.checkRuns(expectedHead),

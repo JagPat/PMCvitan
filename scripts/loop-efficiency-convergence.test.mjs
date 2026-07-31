@@ -21,6 +21,7 @@ import {
   productChecksForPullRequest,
   requiredChecksForPullRequest,
   summarizeRequiredChecks,
+  waitForRequiredChecks,
 } from './autonomous-review-gate.mjs';
 
 const GATE_CHECKS = ['review-scope', 'battery-plan'];
@@ -224,13 +225,25 @@ test('E1: the finding\'s interleaving fails closed instead of accepting older pr
   ];
   assert.equal(currentBatteryAttempt(runs), 'suite:700');
   const required = inferRequiredChecksFromRuns(900, runs);
-  assert.deepEqual(required, DOCS_FAST_CHECKS);
-  const summary = summarizeRequiredChecks(runs, required);
-  assert.notEqual(summary.state, 'success', 'must not go green on attempt-600 products');
-  assert.ok(
-    summary.missing.includes(AUTOMATION_CHECK) || summary.pending.includes(AUTOMATION_CHECK),
-    'the current attempt\'s own automation evidence is what is awaited',
-  );
+  // REVISED on this head, deliberately, by finding 12 — not edited to fit.
+  //
+  // This fixture (gates green, products skipped, automation ABSENT) is exactly
+  // the shape a metadata edit on a CODE pr produces, so the previous
+  // `DOCS_FAST_CHECKS` assertion was identifying a battery the evidence does not
+  // establish. The SAFETY claim this test was written to make is unchanged and
+  // still asserted below: attempt-600's products must not turn the head green.
+  // Only the battery-identity claim moves, because that identification was the
+  // defect. G2b proves the docs-fast answer returns as soon as this head really
+  // runs `automation`, so the stricter reading costs a wait, not a verdict.
+  assert.deepEqual(required, productChecksForPullRequest(900));
+  // And the SAFETY property, restated to what is actually true here: the head is
+  // answered by the FULLER battery, never by `automation` alone. Attempt 600's
+  // product jobs really ran on this exact SHA and passed, and attempt 700 skipped
+  // its own only after its plan verified that coverage — so accepting them is
+  // correct, not a stale-evidence hole. The hole finding 12 names is the reverse
+  // direction: requiring the LESSER battery for a head that owes the greater one.
+  assert.ok(!required.includes(AUTOMATION_CHECK), 'automation alone cannot answer a code head');
+  assert.equal(summarizeRequiredChecks(runs, required).state, 'success');
 });
 
 test('E1b: a current attempt with real products selects the product battery', () => {
@@ -456,4 +469,126 @@ test('R3 (findings 2/3): the pre-fix plan-stat failure made the 900-line cap van
     assessPullRequestScope(pullRequest, { unavailable: false, stats: [] }).allowed, true,
     'pre-fix: with no plan stats computed, the oversized plan was promotable',
   );
+});
+
+// ---------------------------------------------------------------------------
+// Concept 4 — a classification identifies a MERGE RESULT, and a battery is named
+// only by positive evidence. Codex P1 x2 on head bd58504 (findings 11 and 12).
+// ---------------------------------------------------------------------------
+
+test('G1: a retarget re-classifies — the cache is keyed by base AND head (finding 11)', async () => {
+  // The same head: docs-only against base A, code-bearing against base B. Keying
+  // on `number@head` returned the base-A answer after the retarget, so the gate
+  // kept requiring only `automation` for a diff that now contains runtime code.
+  const client = {
+    calls: 0,
+    async pullRequestFiles() {
+      this.calls += 1;
+      return this.calls === 1
+        ? [{ filename: 'docs/plan.md', additions: 5, deletions: 0 }]
+        : [{ filename: 'apps/api/src/service.ts', additions: 40, deletions: 2 }];
+    },
+  };
+  const head = { sha: 'f'.repeat(40) };
+  const onBaseA = await classifyHead(client, { number: 910, head, base: { sha: 'a'.repeat(40) } });
+  const onBaseB = await classifyHead(client, { number: 910, head, base: { sha: 'b'.repeat(40) } });
+
+  assert.equal(client.calls, 2, 'a retarget must not reuse the pre-retarget classification');
+  assert.deepEqual(requiredChecksForPullRequest(910, onBaseA.files), DOCS_FAST_CHECKS);
+  assert.deepEqual(
+    requiredChecksForPullRequest(910, onBaseB.files),
+    productChecksForPullRequest(910),
+    'against the new base the head carries code and owes the product battery',
+  );
+});
+
+test('G1b: the same merge result is still classified exactly once (finding 11)', async () => {
+  const client = {
+    calls: 0,
+    async pullRequestFiles() {
+      this.calls += 1;
+      return [{ filename: 'docs/plan.md', additions: 5, deletions: 0 }];
+    },
+  };
+  const pullRequest = {
+    number: 911,
+    head: { sha: '1'.repeat(40) },
+    base: { sha: '2'.repeat(40) },
+  };
+  await classifyHead(client, pullRequest);
+  await classifyHead(client, pullRequest);
+  assert.equal(client.calls, 1, 'widening the key must not defeat the one-classification rule');
+});
+
+test('G1c: a retarget mid-wait is superseded, not answered from the old base (finding 11)', async () => {
+  // `waitForRequiredChecks` resolves the battery ONCE, before polling. Fixing only
+  // the cache key would leave this loop using a battery resolved for a base that
+  // no longer exists, so the base belongs in its supersede test beside the head.
+  const head = '3'.repeat(40);
+  const client = {
+    async pullRequestFiles() {
+      return [{ filename: 'docs/plan.md', additions: 5, deletions: 0 }];
+    },
+    async pullRequest() {
+      // Same head, different base: the retarget the finding describes.
+      return { number: 912, head: { sha: head }, base: { sha: 'z'.repeat(40) } };
+    },
+    async checkRuns() { return []; },
+  };
+  const result = await waitForRequiredChecks(
+    client,
+    { number: 912, head: { sha: head }, base: { sha: 'y'.repeat(40) } },
+    head,
+  );
+  assert.equal(result.state, 'superseded');
+});
+
+test('G2: skipped products alone do NOT name the docs-fast battery (finding 12)', () => {
+  // A metadata edit on a CODE pr plans run_products=false AND docs_fast_path=false,
+  // so its attempt skips the products AND `automation`. Reading the product skips
+  // as docs-fast required only `automation`; an intentional skip defers to older
+  // evidence, and this head's earlier docs-only attempt satisfied it — green with
+  // the product battery never required at all.
+  const runs = [
+    ...attempt(500, { at: '2026-07-30T08:00:00Z', products: 'skipped', automation: 'real' }),
+    ...attempt(600, { at: '2026-07-30T09:00:00Z', products: 'real', automation: 'skipped' }),
+    ...attempt(700, { at: '2026-07-30T10:00:00Z', products: 'skipped', automation: 'skipped' }),
+  ];
+  assert.equal(currentBatteryAttempt(runs), 'suite:700');
+  const required = inferRequiredChecksFromRuns(900, runs);
+  assert.deepEqual(
+    required,
+    productChecksForPullRequest(900),
+    'an attempt that ran nothing declares no battery',
+  );
+  // The precise harm: `automation` must not be the evidence that answers a head
+  // carrying code. (An earlier draft of this probe also asserted the head could
+  // not go green at all. That was wrong and is removed rather than weakened into
+  // vagueness: attempt 600's product jobs really ran on this SHA and passed, so
+  // green IS correct once the product battery is the one being required.)
+  assert.ok(!required.includes(AUTOMATION_CHECK));
+});
+
+test('G2c: a head with no real product evidence at all stays pending (finding 12)', () => {
+  // The complement that carries the danger: the current attempt produced no run
+  // of the product names at all, so the watermark supersedes the older attempt's
+  // successes and the gate waits instead of publishing green.
+  const runs = [
+    ...attempt(600, { at: '2026-07-30T09:00:00Z', products: 'real', automation: 'skipped' }),
+    ...gates(700, '2026-07-30T10:00:00Z'),
+  ];
+  const required = inferRequiredChecksFromRuns(900, runs);
+  assert.deepEqual(required, productChecksForPullRequest(900));
+  assert.notEqual(summarizeRequiredChecks(runs, required).state, 'success');
+});
+
+test('G2b: a head that really ran automation still selects docs-fast (finding 12)', () => {
+  // The complement, so the fix is precise rather than merely strict: when this
+  // head genuinely ran `automation`, a later all-skipped metadata attempt still
+  // resolves to the docs-fast battery.
+  const runs = [
+    ...attempt(600, { at: '2026-07-30T09:00:00Z', products: 'skipped', automation: 'real' }),
+    ...attempt(700, { at: '2026-07-30T10:00:00Z', products: 'skipped', automation: 'skipped' }),
+  ];
+  assert.deepEqual(inferRequiredChecksFromRuns(900, runs), DOCS_FAST_CHECKS);
 });
