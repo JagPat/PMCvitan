@@ -13,13 +13,24 @@
 // prove that another correction head is the wrong instrument? It never dismisses
 // a finding and never clears a head. Its only outcomes are "keep reviewing" and
 // "stop; restructure".
-import { codexFindingHeads, isDocsOnlyDiff } from './review-efficiency.mjs';
+import { codexFindingHeads } from './review-efficiency.mjs';
 
-// A docs-only unit is cheap to re-cut, and prose that has drawn findings three
-// times is arguing rather than converging. Ordinary code carries real structural
-// cost, so it gets the longer leash — but not an unlimited one.
-export const RESTRUCTURE_AFTER_DOCS_FINDING_HEADS = 3;
-export const RESTRUCTURE_AFTER_CODE_FINDING_HEADS = 5;
+// ONE cap, deliberately.
+//
+// An earlier draft carried a shorter docs-only cap and classified each unit as
+// docs or code. That classification produced findings in four separate rounds,
+// and the last two showed why: the repository ALREADY has a rule for a docs-only
+// unit at its cap — bounded deferral to named probes via
+// `Review-Deferred-To-Probes:`, enforced in review-efficiency.mjs. A second,
+// shorter cap here did not reinforce that rule, it collided with it, and would
+// have blocked a valid probe handoff by declaring the unit unreviewable instead.
+//
+// So the classification is GONE rather than corrected again. Docs-only units keep
+// the protocol that owns them; this module governs the case that had no rule —
+// a unit still drawing findings after five heads. Nothing to classify means
+// nothing to misclassify, and an unreadable file list can no longer leave the
+// threshold undecided, because the threshold no longer depends on it.
+export const RESTRUCTURE_AFTER_FINDING_HEADS = 5;
 
 export const LIFECYCLE_STATES = [
   'reviewing',
@@ -123,7 +134,6 @@ export function assessRestructure({
       findingHeadCount,
       findingHeadIds: merged.ids,
       findingHeads: liveHeads,
-      kind: 'unknown',
       threshold: undefined,
       replaces,
       state: 'reviewing',
@@ -136,99 +146,24 @@ export function assessRestructure({
     };
   }
 
-  const readable = Array.isArray(pullRequestFiles);
-  const docsOnly = readable ? isDocsOnlyDiff(pullRequestFiles) : undefined;
-  const liveKind = readable ? (docsOnly ? 'docs' : 'code') : 'unknown';
-
-  // Which cap applies is decided by the CURRENT cumulative diff. The repository
-  // rule scopes the docs-only cap to units whose cumulative diff contains only
-  // documentation, so a unit that has legitimately grown a runnable file belongs on
-  // the ordinary five-head code protocol — blocking it at three would stop it two
-  // heads early for work the code protocol explicitly allows.
-  //
-  // There is exactly one exception, and it is narrow: a unit that had ALREADY
-  // REACHED the docs cap while still docs-only cannot lift itself onto the longer
-  // leash by adding a runnable file afterwards. That is evasion. The RECORDED count
-  // is what distinguishes it from honest growth, and it is read at the kind it was
-  // recorded AT — a unit sitting at two docs heads that becomes code on its third
-  // has crossed nothing.
-  const recordedKind = recordedMetrics?.kind === 'docs' || recordedMetrics?.kind === 'code'
-    ? recordedMetrics.kind
-    : undefined;
-  const crossedWhileDocsOnly = recordedKind === 'docs'
-    && Number.isInteger(recordedMetrics?.findingHeads)
-    && recordedMetrics.findingHeads >= RESTRUCTURE_AFTER_DOCS_FINDING_HEADS;
-  const kind = crossedWhileDocsOnly
-    ? 'docs'
-    : liveKind !== 'unknown'
-      ? liveKind
-      : recordedKind ?? 'unknown';
-  const threshold = kind === 'docs'
-    ? RESTRUCTURE_AFTER_DOCS_FINDING_HEADS
-    : kind === 'code'
-      ? RESTRUCTURE_AFTER_CODE_FINDING_HEADS
-      : undefined;
-
   const base = {
     findingHeadCount,
     findingHeadIds: merged.ids,
     findingHeads: liveHeads,
-    kind,
-    threshold,
+    threshold: RESTRUCTURE_AFTER_FINDING_HEADS,
     replaces,
   };
 
-  // An unreadable cumulative diff leaves the THRESHOLD unknown, and picking one
-  // silently is the defect this repository keeps rediscovering. Two of the three
-  // cases are still decidable without it:
-  //
-  //   - below the docs threshold, neither threshold is crossed — keep reviewing;
-  //   - at or above the code threshold, BOTH are crossed — restructure, certainly.
-  //
-  // Only the band between them genuinely depends on the answer, and there this
-  // reports `undecided` and blocks so the next event re-reads the file list. That
-  // is a stop, never a clearance: an undecided unit cannot merge either.
-  if (kind === 'unknown') {
-    if (findingHeadCount < RESTRUCTURE_AFTER_DOCS_FINDING_HEADS) {
-      return { ...base, state: 'reviewing', required: false, allowed: true, undecided: false };
-    }
-    if (findingHeadCount >= RESTRUCTURE_AFTER_CODE_FINDING_HEADS) {
-      return {
-        ...base,
-        state: 'restructure_required',
-        required: true,
-        allowed: false,
-        undecided: false,
-        reason: `${findingHeadCount} finding-bearing heads exceeds both the docs `
-          + `(${RESTRUCTURE_AFTER_DOCS_FINDING_HEADS}) and code `
-          + `(${RESTRUCTURE_AFTER_CODE_FINDING_HEADS}) limits, so the review unit must be `
-          + 'restructured regardless of which applies',
-      };
-    }
-    return {
-      ...base,
-      state: 'reviewing',
-      required: false,
-      allowed: false,
-      undecided: true,
-      reason: `${findingHeadCount} finding-bearing heads is past the docs limit `
-        + `(${RESTRUCTURE_AFTER_DOCS_FINDING_HEADS}) but not the code limit `
-        + `(${RESTRUCTURE_AFTER_CODE_FINDING_HEADS}), and the cumulative diff could not be `
-        + 'read, so which limit applies is unverified. This is not evidence either way; '
-        + 're-run once the file list is readable',
-    };
-  }
-
-  if (findingHeadCount >= threshold) {
+  if (findingHeadCount >= RESTRUCTURE_AFTER_FINDING_HEADS) {
     return {
       ...base,
       state: 'restructure_required',
       required: true,
       allowed: false,
       undecided: false,
-      reason: `${findingHeadCount} finding-bearing heads on a ${kind} review unit reaches the `
-        + `${threshold}-head limit; further correction heads are not the remedy — the unit `
-        + 'must be restructured and replaced',
+      reason: `${findingHeadCount} finding-bearing heads reaches the `
+        + `${RESTRUCTURE_AFTER_FINDING_HEADS}-head limit; further correction heads are not `
+        + 'the remedy — the unit must be restructured and replaced',
     };
   }
 
@@ -262,7 +197,6 @@ export function nextMetrics({
     findingHeads: assessment.findingHeadCount,
     findingHeadIds: assessment.findingHeadIds ?? [],
     findingsPerHead: perHead,
-    kind: assessment.kind,
     threshold: assessment.threshold ?? null,
     state: assessment.state,
     // Telemetry only — see above. Recorded so the cost of a long review is visible

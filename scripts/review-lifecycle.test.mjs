@@ -9,8 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  RESTRUCTURE_AFTER_CODE_FINDING_HEADS,
-  RESTRUCTURE_AFTER_DOCS_FINDING_HEADS,
+  RESTRUCTURE_AFTER_FINDING_HEADS,
   assessRestructure,
   mergeFindingHeadCount,
   mergeFindingHeads,
@@ -38,37 +37,6 @@ const CODE = [{ filename: 'scripts/autonomous-review-gate.mjs', additions: 40, d
 // Threshold: docs-only units restructure at three finding-bearing heads.
 // ---------------------------------------------------------------------------
 
-test('L1: a docs-only unit keeps reviewing below the docs threshold', () => {
-  const result = assessRestructure({
-    comments: findingsOn('a1', 'b2'),
-    reviews: [],
-    pullRequestFiles: DOCS,
-    body: '',
-  });
-  assert.equal(result.kind, 'docs');
-  assert.equal(result.threshold, RESTRUCTURE_AFTER_DOCS_FINDING_HEADS);
-  assert.equal(result.findingHeadCount, 2);
-  assert.equal(result.state, 'reviewing');
-  assert.equal(result.allowed, true);
-});
-
-test('L2: a docs-only unit requires restructuring at the third finding head', () => {
-  const result = assessRestructure({
-    comments: findingsOn('a1', 'b2', 'c3'),
-    reviews: [],
-    pullRequestFiles: DOCS,
-    body: '',
-  });
-  assert.equal(result.state, 'restructure_required');
-  assert.equal(result.required, true);
-  assert.equal(result.allowed, false);
-  assert.match(result.reason, /must be restructured and replaced/u);
-});
-
-// ---------------------------------------------------------------------------
-// Threshold: ordinary code units get five.
-// ---------------------------------------------------------------------------
-
 test('L3: a code unit still reviews at four finding heads', () => {
   const result = assessRestructure({
     comments: findingsOn('a1', 'b2', 'c3', 'd4'),
@@ -76,8 +44,7 @@ test('L3: a code unit still reviews at four finding heads', () => {
     pullRequestFiles: CODE,
     body: '',
   });
-  assert.equal(result.kind, 'code');
-  assert.equal(result.threshold, RESTRUCTURE_AFTER_CODE_FINDING_HEADS);
+  assert.equal(result.threshold, RESTRUCTURE_AFTER_FINDING_HEADS);
   assert.equal(result.state, 'reviewing');
   assert.equal(result.allowed, true);
 });
@@ -94,22 +61,6 @@ test('L4: a code unit requires restructuring at the fifth finding head', () => {
   assert.equal(result.allowed, false);
 });
 
-test('L4b: PR #257\'s real shape — five code heads — is restructure_required', () => {
-  // The case this lifecycle was written for, using the actual head SHAs.
-  const result = assessRestructure({
-    comments: findingsOn('c7913a9', '596fa99', 'e9feaf7', 'bd58504', 'd5e8f61'),
-    reviews: [],
-    pullRequestFiles: CODE,
-    body: '',
-  });
-  assert.equal(result.findingHeadCount, 5);
-  assert.equal(result.state, 'restructure_required');
-});
-
-// ---------------------------------------------------------------------------
-// An unreadable diff never silently picks a threshold.
-// ---------------------------------------------------------------------------
-
 test('L5: unreadable diff below both limits keeps reviewing', () => {
   const result = assessRestructure({
     comments: findingsOn('a1', 'b2'),
@@ -117,40 +68,10 @@ test('L5: unreadable diff below both limits keeps reviewing', () => {
     pullRequestFiles: undefined,
     body: '',
   });
-  assert.equal(result.kind, 'unknown');
   assert.equal(result.state, 'reviewing');
   assert.equal(result.allowed, true);
   assert.equal(result.undecided, false);
 });
-
-test('L5b: unreadable diff between the limits is undecided and blocks, not clears', () => {
-  const result = assessRestructure({
-    comments: findingsOn('a1', 'b2', 'c3'),
-    reviews: [],
-    pullRequestFiles: undefined,
-    body: '',
-  });
-  assert.equal(result.undecided, true);
-  assert.equal(result.allowed, false, 'an undecided unit must not be clearable');
-  assert.equal(result.required, false, 'nor may it be declared restructure-required on a guess');
-  assert.match(result.reason, /not evidence either way/u);
-});
-
-test('L5c: unreadable diff past BOTH limits is restructure_required regardless', () => {
-  const result = assessRestructure({
-    comments: findingsOn('a1', 'b2', 'c3', 'd4', 'e5'),
-    reviews: [],
-    pullRequestFiles: undefined,
-    body: '',
-  });
-  assert.equal(result.state, 'restructure_required');
-  assert.equal(result.allowed, false);
-  assert.equal(result.undecided, false);
-});
-
-// ---------------------------------------------------------------------------
-// State persistence across reruns, and history reset as an evasion.
-// ---------------------------------------------------------------------------
 
 test('L6: the recorded count is a floor — a rerun seeing fewer heads cannot walk it back', () => {
   const recordedMetrics = { findingHeads: 5 };
@@ -174,7 +95,7 @@ test('L6b: rewriting the branch does not evade the threshold', () => {
     reviews: [],
     pullRequestFiles: CODE,
     body: '',
-    recordedMetrics: { findingHeads: RESTRUCTURE_AFTER_CODE_FINDING_HEADS },
+    recordedMetrics: { findingHeads: RESTRUCTURE_AFTER_FINDING_HEADS },
   });
   assert.equal(afterReset.state, 'restructure_required');
   assert.equal(afterReset.allowed, false);
@@ -365,65 +286,36 @@ test('N1c: the identity floor drives the verdict', () => {
   assert.equal(result.state, 'restructure_required');
 });
 
-test('N2b: a code unit is not retroactively made docs-only', () => {
-  // The complement: monotonicity tightens, it never loosens, and it never
-  // invents strictness a unit never had.
-  const result = assessRestructure({
-    comments: findingsOn('c1', 'c2', 'c3'),
-    reviews: [],
-    pullRequestFiles: CODE,
-    body: '',
-    recordedMetrics: { findingHeads: 3, findingHeadIds: ['c1', 'c2', 'c3'], kind: 'code' },
+
+test('S1: an unreadable file list no longer leaves the threshold undecided', () => {
+  // F2 dissolved rather than patched. With no docs/code classification there is
+  // nothing for an unreadable diff to make ambiguous — the one cap applies either
+  // way, so the verdict is decided from the finding count alone.
+  const under = assessRestructure({
+    comments: findingsOn('a', 'b', 'c', 'd'),
+    reviews: [], pullRequestFiles: undefined, body: '',
   });
-  assert.equal(result.kind, 'code');
-  assert.equal(result.state, 'reviewing', 'three heads is still under the code limit');
+  assert.equal(under.state, 'reviewing');
+  assert.equal(under.allowed, true);
+  assert.equal(under.undecided, false, 'no threshold ambiguity remains');
+
+  const over = assessRestructure({
+    comments: findingsOn('a', 'b', 'c', 'd', 'e'),
+    reviews: [], pullRequestFiles: undefined, body: '',
+  });
+  assert.equal(over.state, 'restructure_required');
+  assert.equal(over.allowed, false);
 });
 
-// ---------------------------------------------------------------------------
-// The cap is chosen by the CURRENT diff, with one narrow anti-evasion exception.
-// This is the finding carried over from PR #258 (head `dae808f`), fixed here.
-// ---------------------------------------------------------------------------
-
-test('K1: a docs unit that grows a runnable file moves to the CODE protocol', () => {
-  // Two docs-only finding heads, then a correction adds a script and draws a
-  // third. The cumulative diff is no longer docs-only, so the ordinary five-head
-  // code protocol applies — blocking at three would stop it two heads early.
-  const result = assessRestructure({
-    comments: findingsOn('d1', 'd2', 'c3'),
-    reviews: [],
-    pullRequestFiles: CODE,
-    body: '',
-    recordedMetrics: { findingHeads: 2, findingHeadIds: ['d1', 'd2'], kind: 'docs' },
-  });
-  assert.equal(result.kind, 'code', 'the current cumulative diff decides');
-  assert.equal(result.threshold, RESTRUCTURE_AFTER_CODE_FINDING_HEADS);
-  assert.equal(result.state, 'reviewing');
-  assert.equal(result.allowed, true);
-});
-
-test('K2: a unit that ALREADY crossed the docs cap cannot buy the longer leash', () => {
-  // The anti-evasion half. Three docs-only heads is already over the docs cap;
-  // adding a runnable file afterwards must not reopen it at five.
-  const result = assessRestructure({
-    comments: findingsOn('d1', 'd2', 'd3', 'c4'),
-    reviews: [],
-    pullRequestFiles: CODE,
-    body: '',
-    recordedMetrics: { findingHeads: 3, findingHeadIds: ['d1', 'd2', 'd3'], kind: 'docs' },
-  });
-  assert.equal(result.kind, 'docs', 'it crossed while docs-only; that is recorded');
-  assert.equal(result.state, 'restructure_required');
-  assert.equal(result.allowed, false);
-});
-
-test('K3: a still-docs-only unit keeps the docs cap', () => {
-  const result = assessRestructure({
+test('S2: a docs-only unit is NOT capped here — probe deferral owns that case', () => {
+  // F3. review-efficiency.mjs already governs a docs-only unit at its cap via
+  // `Review-Deferred-To-Probes:`. A second, shorter cap here would have blocked
+  // that valid handoff, so this module does not classify diffs at all.
+  const docs = assessRestructure({
     comments: findingsOn('d1', 'd2', 'd3'),
-    reviews: [],
-    pullRequestFiles: DOCS,
-    body: '',
-    recordedMetrics: { findingHeads: 2, findingHeadIds: ['d1', 'd2'], kind: 'docs' },
+    reviews: [], pullRequestFiles: DOCS, body: '',
   });
-  assert.equal(result.kind, 'docs');
-  assert.equal(result.state, 'restructure_required');
+  assert.equal(docs.state, 'reviewing', 'three docs heads is not this gate\'s business');
+  assert.equal(docs.allowed, true);
+  assert.equal(docs.threshold, RESTRUCTURE_AFTER_FINDING_HEADS);
 });
