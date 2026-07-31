@@ -16,6 +16,7 @@ import {
 import {
   assessRestructure,
   nextMetrics,
+  preserveMetrics,
   readMetrics,
   renderMetrics,
 } from './review-lifecycle.mjs';
@@ -358,20 +359,36 @@ export function recoveryRequestTerminal(statuses, request) {
     : null;
 }
 
+// The terminal review failures a same-head recovery may retry.
+//
+// This is DATA, not an inline `||` chain, because the runbook's recovery `jq` in
+// docs/AUTONOMOUS_LOOP.md is a hand-maintained duplicate of it. Round 2 added the
+// undecided-restructure description here and the jq kept the older four, so an
+// operator following the runbook on that block got an empty TERMINAL_STATUS_ID
+// and could not dispatch a recovery at all — a transient failure became a
+// hand-edit. Patching the missing string would fix today and leave the sixth
+// status free to drift the same way, so `review-lifecycle.test.mjs` (O1) pins
+// every entry against the runbook instead.
+export const RETRYABLE_REVIEW_FAILURES = [
+  { match: 'Codex review timed out', kind: 'contains' },
+  // TRANSIENT by construction: it means the cumulative diff or the sticky floor
+  // could not be read, and its own instruction says to re-run once it can be.
+  // Latching it as persistent would make that instruction unreachable on the same
+  // head — a permanent block on a temporary failure.
+  { match: 'review: restructure check undecided', kind: 'exact' },
+  { match: 'Codex evidence changed during final verification', kind: 'contains' },
+  { match: 'review: Required CI changed during current-head Codex review', kind: 'exact' },
+  { match: 'review: bootstrap exact-head review requested', kind: 'exact' },
+];
+
 export function isRetryableTerminalReviewFailure(status) {
   if (!status || status.state !== 'failure' || !isTerminalReviewStatus(status)) {
     return false;
   }
   const description = status.description ?? '';
-  return description.includes('Codex review timed out')
-    // The undecided restructure check is TRANSIENT by construction: it means the
-    // cumulative diff could not be read, and its own instruction says to re-run
-    // once it can be. Latching it as persistent would make that instruction
-    // unreachable on the same head — a permanent block on a temporary failure.
-    || description === 'review: restructure check undecided'
-    || description.includes('Codex evidence changed during final verification')
-    || description === 'review: Required CI changed during current-head Codex review'
-    || description === 'review: bootstrap exact-head review requested';
+  return RETRYABLE_REVIEW_FAILURES.some((entry) => (entry.kind === 'exact'
+    ? description === entry.match
+    : description.includes(entry.match)));
 }
 
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
@@ -739,6 +756,12 @@ export class GitHubClient {
     )?.body ?? null;
   }
 
+  // The lifecycle floor for THIS run, recorded by the precondition before any
+  // verdict is written. Every sticky write inherits it — see `preserveMetrics`.
+  setLifecycleMetrics(metrics) {
+    this.lifecycleMetrics = metrics ?? null;
+  }
+
   async updateStickyComment(number, body) {
     const comments = await this.paginated(
       `/repos/${this.repository}/issues/${number}/comments`,
@@ -748,7 +771,14 @@ export class GitHubClient {
         comment.user?.login === 'github-actions[bot]' &&
         comment.body?.includes(COMMENT_MARKER),
     );
-    const fullBody = `${COMMENT_MARKER}\n${body}`;
+    // Structural, so none of the sixteen writers has to know the lifecycle exists.
+    // Falls back to the previous comment's block when this run never reached the
+    // precondition, so an early-error path still cannot erase a recorded floor.
+    const fullBody = `${COMMENT_MARKER}\n${preserveMetrics(
+      body,
+      existing?.body,
+      this.lifecycleMetrics,
+    )}`;
     if (existing) {
       await this.request(
         `/repos/${this.repository}/issues/comments/${existing.id}`,
@@ -1090,6 +1120,25 @@ export async function enforceRestructure(client, pullRequest, expectedHead) {
     recordedMetrics,
     floorUnreadable,
   });
+
+  // Record the floor BEFORE branching, on every path.
+  //
+  // Writing it only where the unit is blocked records it only once the unit has
+  // ALREADY crossed its limit — exactly when a floor can no longer do anything.
+  // Its purpose is to carry the count while the unit is still UNDER the limit, so
+  // that the head which crosses it plus a partial live read cannot read as under.
+  // An unreadable floor is the one case with nothing trustworthy to record: the
+  // assessment blocks on it, and overwriting the durable record with a reading
+  // taken without it is the walk-back this whole rule forbids.
+  const metrics = floorUnreadable ? null : nextMetrics({
+    recordedMetrics,
+    assessment: { ...result, head: expectedHead },
+    nowIso: new Date().toISOString(),
+  });
+  // NOT optional-chained. A client without this method would silently drop the
+  // floor, which is the exact defect being corrected; failing loudly is the point.
+  if (metrics) client.setLifecycleMetrics(metrics);
+
   if (result.allowed) return result;
 
   const live = await setDraftForCurrentHead(
@@ -1121,11 +1170,10 @@ export async function enforceRestructure(client, pullRequest, expectedHead) {
           + `declares "Replaces: #${pullRequest.number}", carrying the same work as a review `
           + 'unit that can be reviewed in a few rounds. Every open finding stays open and '
           + 'moves with the work; none is dismissed by restructuring.',
-      metrics: nextMetrics({
-        recordedMetrics,
-        assessment: { ...result, head: expectedHead },
-        nowIso: new Date().toISOString(),
-      }),
+      // The SAME value already recorded above, not a second computation: two
+      // `new Date()` calls would give the block a different elapsed reading than
+      // the floor this run actually recorded.
+      metrics,
     }),
   );
   return result;

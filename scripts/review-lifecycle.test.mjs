@@ -16,14 +16,18 @@ import {
   mergeFindingHeadCount,
   mergeFindingHeads,
   nextMetrics,
+  preserveMetrics,
   readMetrics,
   renderMetrics,
   replacementSource,
 } from './review-lifecycle.mjs';
 import {
+  RETRYABLE_REVIEW_FAILURES,
+  enforceRestructure,
   isRetryableTerminalReviewFailure,
   isTerminalReviewStatus,
 } from './autonomous-review-gate.mjs';
+import * as reviewGate from './autonomous-review-gate.mjs';
 
 const CODEX = { login: 'chatgpt-codex-connector[bot]' };
 
@@ -532,4 +536,212 @@ test('N3b: the unreadable-floor block is the retryable status, so it self-heals'
     }),
     true,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Round 4. Two P2 findings on head `da70792`, both about the floor being SOUND
+// but never DURABLE, and both audited to their full site set before fixing.
+// ---------------------------------------------------------------------------
+
+test('O1: the runbook recovery command emits every status the code retries', async () => {
+  // The runbook's jq is a hand-maintained DUPLICATE of
+  // `isRetryableTerminalReviewFailure`. Round 2 added a fifth retryable
+  // description and the jq kept four, so an operator following the runbook on an
+  // undecided lifecycle block gets an empty TERMINAL_STATUS_ID and cannot
+  // dispatch a same-head recovery — a transient block becomes a hand-edit.
+  //
+  // Pinning the LIST rather than the one missing string is the point: a sixth
+  // retryable status added later fails here instead of stranding the next
+  // operator.
+  const runbook = await readFile('docs/AUTONOMOUS_LOOP.md', 'utf8');
+  const missing = RETRYABLE_REVIEW_FAILURES
+    .map((entry) => entry.match)
+    .filter((description) => !runbook.includes(description));
+  assert.deepEqual(
+    missing,
+    [],
+    'every retryable description must appear in the runbook recovery command',
+  );
+});
+
+test('O1b: the retryable predicate is driven by that same list', () => {
+  // The list is only a real pin if it is what the predicate reads; a parallel
+  // literal chain would drift from it exactly as the runbook did.
+  for (const entry of RETRYABLE_REVIEW_FAILURES) {
+    assert.equal(
+      isRetryableTerminalReviewFailure({
+        state: 'failure',
+        description: entry.match,
+      }),
+      true,
+      `${entry.match} must be retryable`,
+    );
+  }
+  assert.equal(
+    isRetryableTerminalReviewFailure({
+      state: 'failure',
+      description: 'review: 2 current-head Codex findings',
+    }),
+    false,
+    'an ordinary finding failure is still persistent',
+  );
+});
+
+test('O2: a sticky write that carries no metrics preserves the recorded floor', () => {
+  // THE DURABILITY DEFECT. Sixteen call sites write the sticky comment and
+  // exactly one passed a metrics block, so the floor recorded by the lifecycle
+  // precondition was erased by the very next `changes_required` update. The
+  // floor was sound (round 3) and never survived to be read.
+  const recorded = renderMetrics({
+    findingHeads: 4,
+    findingHeadIds: ['h1', 'h2', 'h3', 'h4'],
+    kind: 'code',
+  });
+  const previous = `## Autonomous review state\n\n${recorded}\n\n- **Head:** \`old\`\n`;
+  const next = '## Autonomous review state\n\n- **Head:** `new`\n- **State:** `changes_required`\n';
+
+  const merged = preserveMetrics(next, previous, null);
+  assert.equal(
+    readMetrics(merged)?.findingHeads,
+    4,
+    'the recorded floor survives a metrics-free sticky write',
+  );
+  assert.deepEqual(readMetrics(merged)?.findingHeadIds, ['h1', 'h2', 'h3', 'h4']);
+  assert.match(merged, /- \*\*Head:\*\* `new`/u, 'and the new state is still written');
+});
+
+test('O2b: fresher run metrics win over the previous block', () => {
+  // Preservation must never freeze the floor: a run that has just assessed the
+  // unit supplies the newer count, and that is what gets written.
+  const previous = `## Autonomous review state\n\n${renderMetrics({
+    findingHeads: 2,
+    findingHeadIds: ['h1', 'h2'],
+    kind: 'code',
+  })}\n\n- **Head:** \`old\`\n`;
+  const next = '## Autonomous review state\n\n- **Head:** `new`\n';
+
+  const merged = preserveMetrics(next, previous, {
+    findingHeads: 3,
+    findingHeadIds: ['h1', 'h2', 'h3'],
+    kind: 'code',
+  });
+  assert.equal(readMetrics(merged)?.findingHeads, 3, 'the run"s own assessment wins');
+});
+
+test('O2c: a body that already carries metrics is left exactly as written', () => {
+  // The blocking path composes its own metrics through `statusBody`; preservation
+  // must not second-guess a caller that supplied them.
+  const body = `## Autonomous review state\n\n${renderMetrics({
+    findingHeads: 5,
+    findingHeadIds: ['a', 'b', 'c', 'd', 'e'],
+    kind: 'code',
+  })}\n\n- **Head:** \`x\`\n`;
+  assert.equal(preserveMetrics(body, 'irrelevant', { findingHeads: 1 }), body);
+});
+
+test('O3: the floor VALUE an allowed assessment would record is the real count', () => {
+  // HONESTY NOTE: this probe passes at `da70792`. It pins the model, which round
+  // 3 already made correct — the value is right and the union works. It does NOT
+  // reproduce the round-4 defect, which is that nothing CALLS `nextMetrics` on
+  // the allowed path. That reproduction has to be at the wiring level and is
+  // `O3b`, which is RED. This one is kept because it establishes what `O3b` is
+  // entitled to expect, not because it demonstrates the bug.
+  const assessment = assessRestructure({
+    comments: findingsOn('h1', 'h2', 'h3', 'h4'),
+    reviews: [],
+    pullRequestFiles: CODE,
+    body: '',
+    recordedMetrics: null,
+  });
+  assert.equal(assessment.allowed, true, 'four code heads is still under the limit');
+
+  const metrics = nextMetrics({
+    recordedMetrics: null,
+    assessment,
+    nowIso: '2026-07-31T06:00:00.000Z',
+  });
+  assert.equal(metrics.findingHeads, 4, 'and the floor it would record is the real count');
+  assert.deepEqual(metrics.findingHeadIds, ['h1', 'h2', 'h3', 'h4']);
+
+  // The fifth head lands while a partial live read omits an older one. Without
+  // the recorded floor this reads as 4 and the unit stays under the limit.
+  const partial = assessRestructure({
+    comments: findingsOn('h2', 'h3', 'h4', 'h5'),
+    reviews: [],
+    pullRequestFiles: CODE,
+    body: '',
+    recordedMetrics: metrics,
+  });
+  assert.equal(partial.findingHeadCount, 5, 'the union with the recorded floor sees five');
+  assert.equal(partial.state, 'restructure_required');
+});
+
+test('O3b: the lifecycle precondition RECORDS the floor when it lets a head through', async () => {
+  // THE WIRING RED. `enforceRestructure` returned at `if (result.allowed) return`
+  // before any metrics were written, so the floor existed only once the unit had
+  // already crossed its limit — exactly when it can no longer do its job.
+  //
+  // Four code finding heads: under the limit, so the head is allowed to proceed.
+  // The run must still leave the count behind, because the fifth head plus a
+  // partial live read is the scenario the floor exists for.
+  const recorded = [];
+  const client = {
+    async reviewComments() { return findingsOn('h1', 'h2', 'h3', 'h4'); },
+    async reviews() { return []; },
+    async pullRequestFiles() { return CODE; },
+    async stickyComment() { return null; },
+    async updateStickyComment(number, body) { recorded.push(body); },
+    async setStatus() {},
+    async setDraft() {},
+    setLifecycleMetrics(metrics) { this.lifecycleMetrics = metrics; },
+  };
+
+  const result = await enforceRestructure(
+    client,
+    { number: 258, body: '', html_url: 'https://example.invalid/pr/258' },
+    'head-4',
+  );
+  assert.equal(result.allowed, true, 'four code heads still proceeds');
+
+  const floor = client.lifecycleMetrics;
+  assert.ok(floor, 'the run records the lifecycle floor even when it proceeds');
+  assert.equal(floor.findingHeads, 4);
+  assert.deepEqual(floor.findingHeadIds, ['h1', 'h2', 'h3', 'h4']);
+});
+
+test('O3c: a later metrics-free sticky write still carries that floor', async () => {
+  // The other half of the same defect: recording the floor is worthless if the
+  // next of the sixteen sticky writers overwrites it. The run-scoped metrics are
+  // injected structurally, so no call site has to remember.
+  const written = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (init?.method === 'PATCH' || init?.method === 'POST') {
+      written.push(JSON.parse(init.body).body);
+      return new Response('{}');
+    }
+    return new Response(JSON.stringify([{
+      id: 1,
+      user: { login: 'github-actions[bot]' },
+      body: '<!-- autonomous-review-state -->\n## Autonomous review state\n\n- **Head:** `old`\n',
+    }]));
+  };
+  try {
+    const client = new reviewGate.GitHubClient({ repository: 'o/r', token: 't' });
+    client.setLifecycleMetrics({
+      findingHeads: 4,
+      findingHeadIds: ['h1', 'h2', 'h3', 'h4'],
+      kind: 'code',
+    });
+    // A plain `changes_required` update — the shape fifteen of the sixteen writers use.
+    await client.updateStickyComment(258, '## Autonomous review state\n\n- **Head:** `new`\n');
+    assert.equal(written.length, 1);
+    assert.equal(
+      readMetrics(written[0])?.findingHeads,
+      4,
+      'the floor survives a sticky write that knows nothing about the lifecycle',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -35,7 +35,48 @@ const REPLACES = /^[\t ]*replaces:[\t ]*#(?<number>\d+)[\t ]*$/imu;
 
 // Machine-readable metrics carried on the sticky comment. The recorded count is a
 // FLOOR, never a fresh reading: see `mergeFindingHeadCount`.
-const METRICS_MARKER = '<!-- autonomous-review-metrics:';
+export const METRICS_MARKER = '<!-- autonomous-review-metrics:';
+
+// Keep the floor attached to the sticky comment no matter which writer touches it.
+//
+// The comment has sixteen writers and exactly one of them ever composed a metrics
+// block, so the floor recorded by the lifecycle precondition was erased by the
+// very next `changes_required` update. Round 3 made the floor SOUND; it was never
+// DURABLE, which meant the union had nothing to union with in precisely the case
+// it exists for.
+//
+// Asking all sixteen call sites to remember the lifecycle is what produced rounds
+// 1 and 2 of this PR's findings. So preservation is structural instead: a body
+// that carries no metrics inherits them, and a writer that has fresher ones wins.
+// A seventeenth writer is correct without knowing this function exists.
+export function preserveMetrics(nextBody, previousBody, runMetrics) {
+  const body = typeof nextBody === 'string' ? nextBody : '';
+  // The caller composed its own block — it is the most specific thing available.
+  if (body.includes(METRICS_MARKER)) return body;
+
+  // The run's own assessment beats whatever the comment recorded earlier: the
+  // count only ever rises, so the fresher reading is never the smaller one.
+  const carried = runMetrics
+    ? renderMetrics(runMetrics)
+    : metricsBlockOf(previousBody);
+  if (!carried) return body;
+
+  const lines = body.split('\n');
+  // Match `statusBody`'s layout so the rendered comment reads identically whether
+  // the block was composed or inherited.
+  const anchor = lines.findIndex((line) => line.startsWith('- **Head:**'));
+  if (anchor < 0) return [carried, '', ...lines].join('\n');
+  lines.splice(anchor, 0, carried, '');
+  return lines.join('\n');
+}
+
+function metricsBlockOf(source) {
+  const text = typeof source === 'string' ? source : '';
+  const start = text.indexOf(METRICS_MARKER);
+  if (start === -1) return null;
+  const end = text.indexOf('-->', start);
+  return end === -1 ? null : text.slice(start, end + 3);
+}
 
 export function replacementSource(body) {
   const match = REPLACES.exec(typeof body === 'string' ? body : '');

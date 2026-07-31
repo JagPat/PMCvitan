@@ -305,3 +305,117 @@ read it. No assertion was changed.
 
 The round-1 validation table above showed 20/20 and 171/171 after round 2 had made
 them 25/25 and 176/176. It is corrected in this head and labelled with both.
+
+---
+
+## Round 4 — head `da70792` → this head
+
+Two P2 findings. Both said the same thing about the same mechanism: the floor
+round 3 made **sound** was never made **durable**.
+
+| # | Codex finding | Where it actually lived |
+| --- | --- | --- |
+| 1 | the runbook recovery `jq` does not emit the new retryable status | `docs/AUTONOMOUS_LOOP.md`, a hand-maintained duplicate of the predicate |
+| 2 | the lifecycle floor is not recorded when the assessment is allowed | `enforceRestructure`'s early return — **and** all sixteen sticky writers |
+
+### The audit, before the fix
+
+Round 2's lesson was that fixing the sites Codex names leaves the sites it did not
+look at. So both findings were enumerated first.
+
+**Finding 1 — enumerated, and it is genuinely one gap.** The predicate accepts five
+descriptions; the runbook's `jq` emitted four. The missing one is exactly the one
+named. But the two lists are *duplicates of each other*, which is why they drifted,
+so the fix is not the missing string: `isRetryableTerminalReviewFailure` is now
+driven by an exported `RETRYABLE_REVIEW_FAILURES` table, and `O1` asserts every
+entry appears in the runbook. A sixth status added later fails a test instead of
+stranding the next operator at 3 a.m.
+
+**Finding 2 — enumerated, and it is much wider than the anchored line.** Codex
+anchored at `if (result.allowed) return result;`. That is real: the floor was
+written only on the blocking path, i.e. only once the unit had *already* crossed
+its limit — precisely when a floor can no longer do anything, since its whole
+purpose is to carry the count while the unit is still under. But the enumeration
+found the other half:
+
+```
+updateStickyComment call sites : 16
+... that pass a metrics block  :  1
+```
+
+So even on the blocking path where the floor *was* written, the next
+`changes_required` update erased it. The floor was unreachable in both directions.
+
+### The correction
+
+This is the same shape as round 3 — a cross-cutting obligation sprinkled across
+call sites — on a different axis: persistence rather than control flow. So it gets
+the same kind of answer, not another sprinkle.
+
+1. **Record on every path.** `enforceRestructure` computes the metrics once and
+   records them *before* branching, so allowed, superseded and blocking all leave
+   the floor behind. The unreadable-floor case is the sole exception and is
+   deliberate: overwriting a durable record with a reading taken without it is the
+   walk-back the rule forbids.
+2. **Preserve structurally.** `updateStickyComment` runs every body through
+   `preserveMetrics`, which inherits the run's metrics (or, failing that, the
+   previous comment's block) whenever the body carries none. All sixteen writers
+   are now correct without knowing the lifecycle exists, and so is the seventeenth.
+
+Neither half works alone: recording without preservation is erased by the next
+write; preservation without recording has nothing to preserve.
+
+`client.setLifecycleMetrics(metrics)` is deliberately **not** optional-chained. A
+client without the method would silently drop the floor, which is the defect being
+corrected; it must fail loudly. It did — two workflow fakes threw, and gained the
+method, exactly as five of them gained `stickyComment` in round 2. Fixtures
+correcting to reality; no assertion weakened.
+
+### Evidence
+
+RED at `da70792`, before any fix (`O1`–`O3c` added, module unchanged):
+
+```
+not ok 33 - O1: the runbook recovery command emits every status the code retries
+not ok 34 - O1b: the retryable predicate is driven by that same list
+not ok 35 - O2: a sticky write that carries no metrics preserves the recorded floor
+not ok 36 - O2b: fresher run metrics win over the previous block
+not ok 37 - O2c: a body that already carries metrics is left exactly as written
+not ok 39 - O3b: the lifecycle precondition RECORDS the floor when it lets a head through
+not ok 40 - O3c: a later metrics-free sticky write still carries that floor
+# tests 40 / # pass 33 / # fail 7
+```
+
+Discriminating check — the three wiring fixes reverted, tests untouched:
+
+```
+not ok 33 - O1: the runbook recovery command emits every status the code retries
+not ok 39 - O3b: the lifecycle precondition RECORDS the floor when it lets a head through
+not ok 40 - O3c: a later metrics-free sticky write still carries that floor
+# tests 40 / # pass 37 / # fail 3
+```
+
+Restored: **40/40**. `pnpm test:automation` **191/191**.
+
+### Honesty note on `O3`
+
+`O3` passes at `da70792` and is kept anyway, relabelled. It pins the floor *value*
+an allowed assessment would record — which round 3 already made correct — and it
+does **not** reproduce this round's defect. The defect is that nothing *called*
+`nextMetrics` on that path, so its reproduction is `O3b`, at the wiring level,
+which is RED. `O3` earns its place by establishing what `O3b` is entitled to
+expect, not by demonstrating the bug. Recorded here rather than left to look like
+a seventh reproduction.
+
+### Why this is a fourth head and not a restructure
+
+Under this PR's own rule a code unit gets five finding-bearing heads; this is the
+third. Applying a stricter standard to itself than it asks of anything else would
+be theatre, and would leave the repository with no lifecycle at all.
+
+The trajectory also argues against it: 4 findings → 5 → 2, all P2, and both of
+these live in one function written in round 3 plus one document — not a concept
+spread thin across a large surface. And there is no honest seam to cut: the model
+without the wiring is dead code, and the wiring without the model has nothing to
+wire. `restructure_required` is for a unit whose *shape* is wrong. This one's shape
+is fine; its persistence was missing.
