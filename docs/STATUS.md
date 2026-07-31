@@ -13,10 +13,10 @@ narrative and may lag behind reality.
 phase: 4
 phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
 task: 6
-task_state: merged
+task_state: in_review
 work_item: none
 reviewed_merge: 67e7a00
-open_pr: none
+open_pr: 259
 next_task: phase-5-planning
 blocking_directive: none
 updated: 2026-07-29
