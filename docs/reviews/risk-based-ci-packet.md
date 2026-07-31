@@ -1,5 +1,26 @@
 # Review packet — risk-based CI and the single required gate
 
+> ## STATUS: the classifier described below was WITHDRAWN
+>
+> Everything from "The change" to "What this deliberately does not do" describes
+> the risk-based path classifier as it stood at head 1 (`13135fc`). It is kept as
+> the historical record of what was attempted and why.
+>
+> **It is not what ships.** After 14 findings across five heads — seven of them in
+> the evidence plumbing that existed only to make skipping safe — the classifier
+> was withdrawn and only `quality-gate` remains.
+>
+> For what actually ships, read `docs/reviews/pr-263-convergence.md`, which also
+> records the blocking precondition for step 5: withdrawing the classifier removed
+> the mitigation for finding N2, so branch protection must NOT narrow to
+> `quality-gate` alone without first choosing one of the three options set out
+> there.
+>
+> Claims below that are now false, and are retained only as history: that
+> `classify` gates the product jobs; that the compatibility twins exist; the
+> `R1`–`R22b` probe counts; and "this pull request runs the full battery because
+> it touches `package.json`" (there is no classifier to widen).
+
 **Replaces #257.** That pull request carried this concern together with review-unit
 size limits; three correction rounds went by without either closing. This is the
 first of its two replacements.
