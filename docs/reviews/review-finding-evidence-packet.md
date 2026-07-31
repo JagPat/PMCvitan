@@ -173,3 +173,35 @@ answered, never whether it is.
   directive replaces it with a three-head code rule; that reconciliation belongs to
   that PR, and leaving two caps disagreeing is exactly the collision part 1 removed
   the docs/code classifier to avoid.
+
+## Correction round 1 — head `7fd1a7e`, five findings
+
+All five real. Four are the invariant not yet reaching a consumer; one is my own
+over-application of it.
+
+| # | Fix | Probe |
+| --- | --- | --- |
+| 1 | The deferral is consulted on **every** blocking outcome, not only `restructure_required`. An unreadable floor also blocks, and for a unit holding an accepted handoff the hidden record is irrelevant either way — the right rule sat behind the wrong condition | `W4` |
+| 2 | `currentHeadHasFindings` reflects whether **this outcome** is a finding. `pending` and `timed_out` reach the funnel too and carry no finding; asserting one manufactured a fifth head from a timeout | `W3`, `W3b` |
+| 3 | `enforceReviewConvergence` receives the run's floor. It was re-deriving from one live read, so a partial read of a unit past two finding heads reported `required: false` and the next head reached Codex with no packet | `W5`, `W5b` |
+| 4 | A **legacy** count-only floor admits the crossing head. `max(ids, count)` absorbed a fresh fifth head into an old four; a legacy floor now counts it as additional, exactly once, self-limiting because this run records identities | `W2` |
+| 5 | The sticky reader returns **every** matching comment and the caller unions them. First-wins let a stale record hide a later, larger one | `W1` |
+
+Discrimination, each reverted in turn: `W1`, `W2`, `W3b`, `W4`, `W5b` — one
+distinct failure each, restored 33/33.
+
+**`W3b` exists because `W3` was not discriminating.** `W3` passes the flag itself,
+so reverting the call site left it green. That is the third time in this lineage a
+probe has tested its own fixture instead of the code; it is written down each
+time rather than quietly repaired. `W3b` is a **structural** pin — the branch is
+reachable only through the full review pipeline, so it asserts the call as written,
+not as executed, and says so.
+
+One pre-existing workflow pin needed updating: it matched
+`pullRequestFiles,\n\s+activePhases,` by adjacency, and the new argument sits
+between those lines. It now selects the full-evidence `assessConvergence` call and
+asserts both arguments are present, which is what it meant to protect — a stronger
+pin than the one it replaces.
+
+Round-1 gates: focused **33/33**; `pnpm test:automation` **204/204**; `pnpm check`
+**EXIT 0** (web 543/543, API 680/680).

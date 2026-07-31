@@ -232,20 +232,37 @@ export function findingEvidence({
   currentHeadHasFindings = false,
   floorUnreadable = false,
 }) {
-  const merged = mergeFindingHeads(recorded, live);
-  const ids = new Set(merged.ids);
-  if (currentHeadHasFindings && typeof currentHead === 'string' && currentHead.length > 0) {
-    ids.add(currentHead);
-  }
-  const count = Math.max(ids.size, merged.count);
+  const recordedIds = (Array.isArray(recorded?.findingHeadIds) ? recorded.findingHeadIds : [])
+    .filter((id) => typeof id === 'string' && id.length > 0);
+  const ids = new Set([...recordedIds, ...(live ?? []).filter(Boolean)]);
+  const knownHead = currentHeadHasFindings
+    && typeof currentHead === 'string'
+    && currentHead.length > 0;
+  const headIsNew = knownHead && !ids.has(currentHead);
+  if (knownHead) ids.add(currentHead);
+
+  const legacyFloor = Number.isInteger(recorded?.findingHeads) && recorded.findingHeads >= 0
+    ? recorded.findingHeads
+    : 0;
+
+  // A LEGACY record carries a count with no identities, so this head cannot be
+  // checked against it — and taking max(ids, count) then silently absorbs the new
+  // head into the old number: a legacy floor of four plus a partial live read plus
+  // a fresh fifth head reads as four, and the head that crosses buys another round.
+  //
+  // So a legacy floor admits this head as ADDITIONAL, exactly once. It is
+  // self-limiting: this run records identities (including this head), so the very
+  // next read is no longer identity-less and cannot count it twice.
+  const legacyOnly = legacyFloor > 0 && recordedIds.length === 0;
+  const floor = legacyOnly && headIsNew ? legacyFloor + 1 : legacyFloor;
+  const count = Math.max(ids.size, floor);
+
   return {
     ids: [...ids],
     count,
     // Blind ONLY where the union cannot already decide. An unreadable floor is a
     // missing LOWER bound, and a lower bound cannot lower anything: once the
-    // sources in hand reach the limit, the hidden record could only agree. This
-    // is why the caller never has to ask "unreadable?" separately — the view
-    // reports whether the gap can still change the answer.
+    // sources in hand reach the limit, the hidden record could only agree.
     blind: floorUnreadable && count < RESTRUCTURE_AFTER_FINDING_HEADS,
   };
 }

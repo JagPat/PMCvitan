@@ -1333,7 +1333,20 @@ test('the trusted owner enforces convergence after CI and before Codex promotion
   // The phase check needs the FILE LIST too, so it can notice when the PR itself edits
   // STATUS and main's copy is therefore not the PR's phase truth (#253 round 10). The
   // gate still reads only the trusted default branch — no PR content is fetched.
-  assert.match(gate, /pullRequestFiles,\n\s+activePhases,/u);
+  // Both arguments reach the SAME `assessConvergence` call. Pinned by presence in
+  // that call rather than by adjacency: the two lines happened to sit next to each
+  // other, and a later argument inserted between them broke the pin without
+  // changing anything it meant to protect.
+  // The full-evidence call — the one carrying `headMessage`; the other is the
+  // cheap preliminary count check.
+  // Selected by `changedFiles: commit.files` — the per-head source pinned just
+  // above; the other call is the cheap preliminary count check with empty inputs.
+  const convergenceCall = gate
+    .split('assessConvergence({')
+    .map((chunk) => chunk.split('});')[0])
+    .find((chunk) => chunk.includes('changedFiles: commit.files')) ?? '';
+  assert.match(convergenceCall, /pullRequestFiles,/u);
+  assert.match(convergenceCall, /activePhases,/u);
   assert.doesNotMatch(gate, /refs\/pull\/\S+\/head/u);
   assert.match(gate, /state: 'convergence_required'/u);
   assert.match(gate, /Review-Convergence: complete/u);

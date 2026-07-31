@@ -731,11 +731,21 @@ export class GitHubClient {
     const comments = await this.paginated(
       `/repos/${this.repository}/issues/${number}/comments`,
     );
-    return comments.find(
-      (comment) =>
-        comment.user?.login === 'github-actions[bot]' &&
-        comment.body?.includes(COMMENT_MARKER),
-    )?.body ?? null;
+    // EVERY matching comment, not the first.
+    //
+    // There should only be one, and `updateStickyComment` edits the first — but
+    // "should" is not an invariant, and a duplicate is exactly what a missed
+    // paginated write used to create. Taking the first then reads a stale record
+    // and ignores a later, larger one, which combined with a partial live read
+    // lets an over-limit unit buy another head. Returning all of them lets the
+    // caller union the floors, so a duplicate degrades the display, never the count.
+    return comments
+      .filter(
+        (comment) =>
+          comment.user?.login === 'github-actions[bot]' &&
+          comment.body?.includes(COMMENT_MARKER),
+      )
+      .map((comment) => comment.body);
   }
 
   // The lifecycle floor observed by THIS run. MONOTONIC: the precondition runs
@@ -1024,6 +1034,13 @@ export async function enforceReviewConvergence(
     headMessage: commit.commit?.message,
     changedFiles: commit.files ?? [],
     pullRequestFiles,
+    // The floor this run already observed — the restructure precondition runs
+    // first and records it. Without it this gate re-derives the count from one
+    // fresh live read, so a partial read of a unit already past two finding heads
+    // reports `required: false` and the next head reaches Codex with no
+    // convergence packet. `assessConvergence` takes the max, so this can only
+    // raise the obligation.
+    findingHeadCount: client.lifecycleMetrics?.findingHeads,
     activePhases,
   });
   if (result.allowed) return result;
@@ -1162,6 +1179,10 @@ export async function enforceRestructure(
   ]);
   const sticky = await readStickyComment(client, pullRequest.number);
   const floorUnreadable = sticky === FLOOR_UNREADABLE;
+  // Union of every sticky record found — see `GitHubClient.stickyComment`.
+  const stickyMetrics = floorUnreadable
+    ? null
+    : mergeRecordedMetrics(...[sticky].flat().map((body) => readMetrics(body)));
   // The floor has TWO durable sources: the sticky comment, and whatever this run
   // has already observed. Reading only the comment means a second precondition
   // call against a metrics-less sticky starts from nothing and can assess a
@@ -1169,7 +1190,7 @@ export async function enforceRestructure(
   // merely the value stored afterwards — is taken against the higher floor.
   const recordedMetrics = floorUnreadable
     ? null
-    : mergeRecordedMetrics(readMetrics(sticky), client.lifecycleMetrics);
+    : mergeRecordedMetrics(stickyMetrics, client.lifecycleMetrics);
 
   const inputs = {
     comments,
@@ -1188,7 +1209,14 @@ export async function enforceRestructure(
   //
   // The deferral consult is handed the SAME evidence the cap was measured against, so
   // it cannot see a smaller unit than the assessment did.
-  if (result.state === 'restructure_required'
+  //
+  // Asked on EVERY blocking outcome, not only `restructure_required`. An
+  // unreadable floor also blocks, and for a unit holding an accepted handoff the
+  // hidden record is irrelevant either way — under the cap there is nothing to
+  // exempt, over it the deferral governs. Consulting only on one of the two
+  // blocking states put the right rule behind the wrong condition: the policy
+  // exempted the unit and the wiring never asked.
+  if (!result.allowed
     && await acceptedDeferral(client, pullRequest, expectedHead, {
       count: result.findingHeadCount,
     })) {
@@ -1269,13 +1297,18 @@ export async function publishFindingOutcome(
   client,
   pullRequest,
   expectedHead,
-  { detail, attempt, next, recoveryRequest, recoveryReason },
+  { detail, attempt, next, recoveryRequest, recoveryReason, currentHeadHasFindings = true },
 ) {
   const restructure = await enforceRestructure(client, pullRequest, expectedHead, {
-    // The caller has ALREADY classified a current-head finding — that is why this
-    // function was called. Saying so beats hoping a second API read rediscovers it:
-    // if that read comes back partial, the head it drops is the one that crosses.
-    currentHeadHasFindings: true,
+    // Whether THIS outcome is a finding, not whether this function was called.
+    //
+    // Callers reach here for a finding (the usual case) AND for evidence that
+    // merely stopped being clear — a review still pending, or one that timed out
+    // during final verification. Those carry no current-head finding at all, and
+    // asserting one invents a finding-bearing head: four real ones plus a
+    // transiently missing clean reaction would block a unit that had never
+    // crossed. The floor must only ever rise on evidence, never on a timeout.
+    currentHeadHasFindings,
   });
   if (restructure.superseded) return { superseded: true };
   if (!restructure.allowed) {
@@ -1847,6 +1880,8 @@ export async function run() {
             next: 'Claude Auto-fix handles the latest review evidence and pushes a new head.',
             recoveryRequest,
             recoveryReason: 'changed review evidence',
+            // `pending` and `timed_out` reach here too, and neither is a finding.
+            currentHeadHasFindings: verifiedResult.state === 'changes_required',
           },
         );
         if (outcome.superseded) return;

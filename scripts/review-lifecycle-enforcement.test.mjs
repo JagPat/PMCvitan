@@ -201,8 +201,11 @@ test('E4: both sticky paths paginate, so a long thread cannot hide the floor', a
   };
   try {
     const client = new reviewGate.GitHubClient({ repository: 'o/r', token: 't' });
-    const body = await client.stickyComment(900);
-    assert.equal(readMetrics(body)?.findingHeads, 4, 'the floor is found on page two');
+    const bodies = await client.stickyComment(900);
+    assert.equal(
+      mergeRecordedMetrics(...bodies.map((body) => readMetrics(body)))?.findingHeads, 4,
+      'the floor is found on page two',
+    );
     assert.ok(urls.some((url) => url.includes('page=2')), 'the reader paginated');
   } finally {
     globalThis.fetch = originalFetch;
@@ -646,4 +649,173 @@ test('V5c: the GATE passes the floor to the deferral consult, not just the abili
   );
   assert.equal(result.deferred, true);
   assert.deepEqual(client.statuses, [], 'nothing is published against the head');
+});
+
+// ===========================================================================
+// Round 1 on #261. Five findings, all "the invariant does not yet reach here".
+// ===========================================================================
+
+test('W1: duplicate sticky comments are UNIONED, not first-wins', async () => {
+  // There should be one; a missed paginated write is exactly what makes two. A
+  // stale first with four heads plus a later one with five must read as five.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (init?.method && init.method !== 'GET') return new Response('{}');
+    const page = /[?&]page=(\d+)/u.exec(String(url))?.[1] ?? '1';
+    if (page !== '1') return new Response('[]');
+    return new Response(JSON.stringify([
+      {
+        id: 1,
+        user: { login: 'github-actions[bot]' },
+        body: `<!-- autonomous-review-state -->\n${renderMetrics({
+          findingHeads: 4, findingHeadIds: ['h1', 'h2', 'h3', 'h4'],
+        })}`,
+      },
+      {
+        id: 2,
+        user: { login: 'github-actions[bot]' },
+        body: `<!-- autonomous-review-state -->\n${renderMetrics({
+          findingHeads: 5, findingHeadIds: ['h1', 'h2', 'h3', 'h4', 'h5'],
+        })}`,
+      },
+    ]));
+  };
+  try {
+    const client = new reviewGate.GitHubClient({ repository: 'o/r', token: 't' });
+    const bodies = await client.stickyComment(900);
+    assert.equal(bodies.length, 2, 'every matching comment is returned');
+    const merged = mergeRecordedMetrics(...bodies.map((body) => readMetrics(body)));
+    assert.equal(merged.findingHeads, 5, 'the later, larger record is not ignored');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('W2: a LEGACY count-only floor still admits the crossing head', async () => {
+  const { findingEvidence } = await import('./review-lifecycle.mjs');
+  // Legacy record: four heads, no identities. Live read partial. This head is new.
+  const view = findingEvidence({
+    recorded: { findingHeads: 4 },
+    live: [],
+    currentHead: 'h5',
+    currentHeadHasFindings: true,
+  });
+  assert.equal(view.count, 5, 'max(ids, floor) would silently absorb the fifth head into four');
+
+  // Self-limiting: once identities are recorded, the same head cannot count twice.
+  const rerun = findingEvidence({
+    recorded: { findingHeads: 5, findingHeadIds: ['h1', 'h2', 'h3', 'h4', 'h5'] },
+    live: [],
+    currentHead: 'h5',
+    currentHeadHasFindings: true,
+  });
+  assert.equal(rerun.count, 5, 'a rerun on the same head does not inflate the floor');
+});
+
+test('W3: non-finding evidence does not manufacture a finding-bearing head', async () => {
+  // Four prior heads and a transiently missing clean reaction. `pending` and
+  // `timed_out` are not findings; counting them blocks a unit that never crossed.
+  const client = gateClient({ reads: [findingsOn('h1', 'h2', 'h3', 'h4')] });
+  const outcome = await reviewGate.publishFindingOutcome(client, PR, 'head-x', {
+    detail: 'Codex evidence changed during final verification',
+    attempt: 1,
+    next: 'Claude Auto-fix handles the latest review evidence and pushes a new head.',
+    currentHeadHasFindings: false,
+  });
+  assert.match(client.sticky.join('\n'), /changes_required/u, 'it is still published as blocking');
+  assert.doesNotMatch(
+    client.sticky.join('\n'), /restructure_required/u,
+    'but a timeout is not a fifth finding-bearing head',
+  );
+  assert.equal(outcome.detail, 'Codex evidence changed during final verification');
+});
+
+test('W4: the deferral is consulted on the UNDECIDED block too, not only restructure', async () => {
+  const { loadStatusDocument } = await import('./autonomous-status-state.mjs');
+  const { deferralPhases } = await import('./review-efficiency.mjs');
+  const phase = deferralPhases((await loadStatusDocument())?.now)?.[0];
+  assert.ok(Number.isInteger(phase));
+
+  // Sticky read fails; the live read is UNDER the cap, so the policy would block
+  // as `undecided` — but this unit holds an accepted handoff, which makes the
+  // hidden record irrelevant either way.
+  const client = gateClient({ reads: [findingsOn('h1', 'h2', 'h3')] });
+  client.stickyComment = async () => { throw new Error('502'); };
+  client.commit = async () => ({
+    commit: {
+      message: 'Docs head\n\nBody.\n\n'
+        + `Review-Convergence: complete\nReview-Deferred-To-Probes: phase-${phase}-task-1\n`,
+    },
+    files: [{ filename: 'docs/reviews/pr-900-convergence.md', status: 'added' }],
+  });
+  client.pullRequestFiles = async () => [
+    { filename: 'docs/superpowers/plans/p.md', status: 'modified' },
+  ];
+
+  const result = await enforceRestructure(client, PR, 'head-x');
+  assert.equal(result.allowed, true, 'the accepted deferral is honoured on the undecided path');
+  assert.equal(result.deferred, true);
+  assert.deepEqual(client.statuses, [], 'nothing is drafted or failed');
+});
+
+test('W5: the convergence gate takes the run floor, not only its own live read', async () => {
+  const { assessConvergence } = await import('./review-efficiency.mjs');
+  // The precondition saw h1,h2; the convergence read returns only h2.
+  const partial = assessConvergence({
+    comments: findingsOn('h2'),
+    reviews: [],
+    headMessage: 'Head\n\nNo convergence trailer.\n',
+    changedFiles: [],
+  });
+  assert.equal(partial.required, false, 'one live head reads below the convergence cap');
+
+  const withFloor = assessConvergence({
+    comments: findingsOn('h2'),
+    reviews: [],
+    headMessage: 'Head\n\nNo convergence trailer.\n',
+    changedFiles: [],
+    findingHeadCount: 2,
+  });
+  assert.equal(withFloor.required, true, 'the run floor restores the crossed threshold');
+  assert.equal(withFloor.allowed, false, 'so the head owes convergence evidence');
+});
+
+test('W5b: the GATE hands the convergence check its recorded floor', async () => {
+  // Not just that assessConvergence CAN take one — that enforceReviewConvergence
+  // passes it. Same discrimination lesson as V5c.
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+  const fn = source.slice(source.indexOf('export async function enforceReviewConvergence'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(
+    body, /findingHeadCount:\s*client\.lifecycleMetrics\?\.findingHeads/u,
+    'the convergence assessment receives the floor this run already observed',
+  );
+});
+
+test('W3b: the final-verification CALL SITE passes the conditional, not a constant', async () => {
+  // W3 proves the parameter works; it passes `false` itself, so reverting the call
+  // site leaves it green — the same non-discriminating shape as V5c, caught again.
+  // This is a STRUCTURAL pin: the branch is reached only through the full review
+  // pipeline, so it asserts the call as written rather than as executed. Recorded
+  // that way rather than described as an end-to-end proof.
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8');
+
+  const marker = "recoveryReason: 'changed review evidence',";
+  const at = source.indexOf(marker);
+  assert.ok(at > 0, 'the final-verification publication still exists');
+  const call = source.slice(at, at + 400);
+  assert.match(
+    call, /currentHeadHasFindings:\s*verifiedResult\.state === 'changes_required'/u,
+    'a pending or timed-out verification must not assert a current-head finding',
+  );
+
+  // And the ordinary finding path keeps the default, which IS a finding.
+  const findingPath = source.indexOf("recoveryReason: 'review finding',");
+  assert.ok(findingPath > 0);
+  assert.doesNotMatch(
+    source.slice(findingPath - 400, findingPath), /currentHeadHasFindings:\s*false/u,
+    'the real finding path still counts its head',
+  );
 });
