@@ -271,6 +271,151 @@ jobs:
       - name: Build
         run: pnpm --filter api build
 
+  # Compatibility twin for `web`. Exactly one of the two runs, and both
+  # publish a check named `web`.
+  #
+  # Without this the classification would SKIP the job, and a skipped product
+  # check is not what the orchestrator's `summarizeRequiredChecks` waits for:
+  # `intentionalSkip` is true (this attempt's gates passed), so no decider is
+  # found and the check counts as MISSING. The head would then sit pending until
+  # timeout and never reach the exact-head Codex review — a docs-only change
+  # would never merge. Emitting the name with an honest verdict keeps every
+  # existing waiter working unchanged.
+  #
+  # This reports "not applicable", NOT "the suite passed": the job did not run
+  # web, and says so in its own output. Narrowing branch protection to
+  # `quality-gate` alone is a separate change; when that lands these twins can go.
+  web-not-applicable:
+    name: web
+    needs: [review-scope, battery-plan, classify]
+    if: >-
+      needs.battery-plan.outputs.run_products == 'true'
+      && !contains(needs.classify.outputs.suites, ',web,')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Not applicable to this change
+        run: |
+          echo "The `web` suite did NOT run: no changed path can affect it."
+          echo "Classification: $REASON"
+        env:
+          REASON: ${{ needs.classify.outputs.reason }}
+
+  # Compatibility twin for `e2e`. Exactly one of the two runs, and both
+  # publish a check named `e2e`.
+  #
+  # Without this the classification would SKIP the job, and a skipped product
+  # check is not what the orchestrator's `summarizeRequiredChecks` waits for:
+  # `intentionalSkip` is true (this attempt's gates passed), so no decider is
+  # found and the check counts as MISSING. The head would then sit pending until
+  # timeout and never reach the exact-head Codex review — a docs-only change
+  # would never merge. Emitting the name with an honest verdict keeps every
+  # existing waiter working unchanged.
+  #
+  # This reports "not applicable", NOT "the suite passed": the job did not run
+  # e2e, and says so in its own output. Narrowing branch protection to
+  # `quality-gate` alone is a separate change; when that lands these twins can go.
+  e2e-not-applicable:
+    name: e2e
+    needs: [review-scope, battery-plan, classify]
+    if: >-
+      needs.battery-plan.outputs.run_products == 'true'
+      && !contains(needs.classify.outputs.suites, ',e2e,')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Not applicable to this change
+        run: |
+          echo "The `e2e` suite did NOT run: no changed path can affect it."
+          echo "Classification: $REASON"
+        env:
+          REASON: ${{ needs.classify.outputs.reason }}
+
+  # Compatibility twin for `api-e2e`. Exactly one of the two runs, and both
+  # publish a check named `api-e2e`.
+  #
+  # Without this the classification would SKIP the job, and a skipped product
+  # check is not what the orchestrator's `summarizeRequiredChecks` waits for:
+  # `intentionalSkip` is true (this attempt's gates passed), so no decider is
+  # found and the check counts as MISSING. The head would then sit pending until
+  # timeout and never reach the exact-head Codex review — a docs-only change
+  # would never merge. Emitting the name with an honest verdict keeps every
+  # existing waiter working unchanged.
+  #
+  # This reports "not applicable", NOT "the suite passed": the job did not run
+  # api-e2e, and says so in its own output. Narrowing branch protection to
+  # `quality-gate` alone is a separate change; when that lands these twins can go.
+  api-e2e-not-applicable:
+    name: api-e2e
+    needs: [review-scope, battery-plan, classify]
+    if: >-
+      needs.battery-plan.outputs.run_products == 'true'
+      && !contains(needs.classify.outputs.suites, ',api-e2e,')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Not applicable to this change
+        run: |
+          echo "The `api-e2e` suite did NOT run: no changed path can affect it."
+          echo "Classification: $REASON"
+        env:
+          REASON: ${{ needs.classify.outputs.reason }}
+
+  # Compatibility twin for `upgrade-proof`. Exactly one of the two runs, and both
+  # publish a check named `upgrade-proof`.
+  #
+  # Without this the classification would SKIP the job, and a skipped product
+  # check is not what the orchestrator's `summarizeRequiredChecks` waits for:
+  # `intentionalSkip` is true (this attempt's gates passed), so no decider is
+  # found and the check counts as MISSING. The head would then sit pending until
+  # timeout and never reach the exact-head Codex review — a docs-only change
+  # would never merge. Emitting the name with an honest verdict keeps every
+  # existing waiter working unchanged.
+  #
+  # This reports "not applicable", NOT "the suite passed": the job did not run
+  # upgrade-proof, and says so in its own output. Narrowing branch protection to
+  # `quality-gate` alone is a separate change; when that lands these twins can go.
+  upgrade-proof-not-applicable:
+    name: upgrade-proof
+    needs: [review-scope, battery-plan, classify]
+    if: >-
+      needs.battery-plan.outputs.run_products == 'true'
+      && !contains(needs.classify.outputs.suites, ',upgrade-proof,')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Not applicable to this change
+        run: |
+          echo "The `upgrade-proof` suite did NOT run: no changed path can affect it."
+          echo "Classification: $REASON"
+        env:
+          REASON: ${{ needs.classify.outputs.reason }}
+
+  # Compatibility twin for `api`. Exactly one of the two runs, and both
+  # publish a check named `api`.
+  #
+  # Without this the classification would SKIP the job, and a skipped product
+  # check is not what the orchestrator's `summarizeRequiredChecks` waits for:
+  # `intentionalSkip` is true (this attempt's gates passed), so no decider is
+  # found and the check counts as MISSING. The head would then sit pending until
+  # timeout and never reach the exact-head Codex review — a docs-only change
+  # would never merge. Emitting the name with an honest verdict keeps every
+  # existing waiter working unchanged.
+  #
+  # This reports "not applicable", NOT "the suite passed": the job did not run
+  # api, and says so in its own output. Narrowing branch protection to
+  # `quality-gate` alone is a separate change; when that lands these twins can go.
+  api-not-applicable:
+    name: api
+    needs: [review-scope, battery-plan, classify]
+    if: >-
+      needs.battery-plan.outputs.run_products == 'true'
+      && !contains(needs.classify.outputs.suites, ',api,')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Not applicable to this change
+        run: |
+          echo "The `api` suite did NOT run: no changed path can affect it."
+          echo "Classification: $REASON"
+        env:
+          REASON: ${{ needs.classify.outputs.reason }}
+
   # The ONE required status.
   #
   # `always()` is load-bearing: without it a failing job would SKIP this gate,
@@ -290,6 +435,11 @@ jobs:
       - api
       - api-e2e
       - upgrade-proof
+      - web-not-applicable
+      - e2e-not-applicable
+      - api-not-applicable
+      - api-e2e-not-applicable
+      - upgrade-proof-not-applicable
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

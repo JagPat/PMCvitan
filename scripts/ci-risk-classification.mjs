@@ -35,15 +35,31 @@ export const SUITES = ['web', 'e2e', 'api', 'api-e2e', 'upgrade-proof'];
 // as "web" was the first draft and it was wrong — a shared contract edit is
 // exactly the kind of change that breaks the API's typecheck.
 const RULES = [
+  // Runner scripts live OUTSIDE the tree they drive, so the specific rules must
+  // come first. Codex found three separate cases where a generic rule called a
+  // runner safe; each one could have merged a broken runner with its own job
+  // skipped and the gate green.
+  { prefix: 'apps/api/scripts/', suites: ['api', 'api-e2e', 'upgrade-proof'] },
   { prefix: 'apps/api/prisma/', suites: ['api', 'api-e2e', 'upgrade-proof'] },
   { prefix: 'apps/api/', suites: ['api', 'api-e2e'] },
   { prefix: 'apps/web/', suites: ['web', 'e2e', 'api-e2e'] },
   { prefix: 'packages/shared/', suites: SUITES },
   { prefix: 'docs/', suites: [] },
-  { prefix: 'scripts/', suites: [] },
-  { prefix: '.github/', suites: [] },
 ];
 
+// `scripts/` and `.github/` are NOT blanket-safe, which was the original
+// mistake. Both directories mix the loop's own machinery with files that drive
+// the product jobs — `scripts/test-api-e2e.sh` IS the api-e2e runner, and
+// `.github/workflows/ci.yml` defines every product job's commands and setup.
+// Calling either directory safe let a broken runner or a broken job body merge
+// with the job that would have caught it skipped.
+//
+// So safety here is an ALLOWLIST of what is provably covered elsewhere, and
+// everything else falls through to unknown and widens:
+//
+//   - a `scripts/*.mjs` file is loop machinery, covered by `pnpm test:automation`
+//     (which is never gated on the classification). A `.sh` is a product runner.
+//   - a Markdown file under `.github/` is documentation. A workflow is not.
 // Repository-root files that are classified individually. A root file NOT in
 // this list is unknown and widens to the full battery — `package.json` and the
 // lockfile change what every suite installs, and a new root config could do
@@ -55,12 +71,26 @@ const ROOT_FILES = new Map([
   ['.gitignore', []],
 ]);
 
+function machineryRule(file) {
+  if (file.startsWith('scripts/')) {
+    const rest = file.slice('scripts/'.length);
+    return rest.endsWith('.mjs') && !rest.includes('/') ? { suites: [] } : null;
+  }
+  if (file.startsWith('.github/')) {
+    return file.endsWith('.md') ? { suites: [] } : null;
+  }
+  return null;
+}
+
 function ruleFor(file) {
   if (ROOT_FILES.has(file)) return { suites: ROOT_FILES.get(file) };
   // A Markdown file ANYWHERE is documentation. `docs/` already covers most of
   // them; this catches `apps/api/README.md` and friends, which cannot change
   // behaviour but would otherwise pull in the whole API battery.
   if (file.endsWith('.md')) return { suites: [] };
+  if (file.startsWith('scripts/') || file.startsWith('.github/')) {
+    return machineryRule(file);
+  }
   return RULES.find((rule) => file.startsWith(rule.prefix)) ?? null;
 }
 
@@ -80,11 +110,29 @@ export function classifyChangedFiles(files) {
     };
   }
 
-  const paths = files
-    .map((file) => (typeof file === 'string' ? file : file?.filename))
-    .filter((file) => typeof file === 'string' && file.length > 0);
+  // A RENAME reports the new `filename` and keeps the old path in
+  // `previous_filename`. Both sides matter: renaming `apps/api/src/foo.ts` to
+  // `docs/foo.md` REMOVES API source, and classifying only the destination
+  // would skip the very suites that would notice.
+  const paths = [];
+  let readable = true;
+  for (const file of files) {
+    if (typeof file === 'string' && file.length > 0) {
+      paths.push(file);
+      continue;
+    }
+    const name = file?.filename;
+    if (typeof name !== 'string' || name.length === 0) {
+      readable = false;
+      break;
+    }
+    paths.push(name);
+    if (typeof file.previous_filename === 'string' && file.previous_filename.length > 0) {
+      paths.push(file.previous_filename);
+    }
+  }
 
-  if (paths.length !== files.length) {
+  if (!readable) {
     return {
       suites: [...SUITES],
       confident: false,

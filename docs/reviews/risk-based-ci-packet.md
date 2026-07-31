@@ -141,3 +141,80 @@ re-anchoring is the fix, not a workaround.
 - Does **not** implement review-unit size limits. That is the second replacement
   for #257, and it must reconcile the 3-head code rule with the already-merged
   `RESTRUCTURE_AFTER_FINDING_HEADS = 5` rather than leaving two disagreeing caps.
+
+
+---
+
+# Correction round 1 — seven Codex findings on head `13135fc`
+
+All seven confirmed. Reproduced before fixing; each fix discriminated by reverting it.
+
+## What the findings say collectively
+
+Three of them — F1 (`scripts/test-api-e2e.sh`), F3 (`.github/workflows/ci.yml`),
+F5 (`apps/api/scripts/upgrade-proof.sh`) — are **one defect found three times**:
+I hand-wrote a path→suite map from an unverified model of the build graph, and
+it is wrong wherever a RUNNER lives outside the tree it drives.
+
+That materially weakens the safety argument the first version led with. "Unknown
+widens" is only as strong as the *known* set, and the known set was wrong in
+three places. Worse, F2 showed the widening path itself was a narrowing
+primitive: the unknown-path branch embeds a filename in an output, and a
+filename containing a newline could redefine `suites`. **The exact case that must
+run everything was the case that could be made to run nothing.**
+
+## The fixes
+
+| # | P | Finding | Fix |
+| --- | --- | --- | --- |
+| F1 | P1 | `scripts/` blanket-safe, but `test-api-e2e.sh` IS the api-e2e runner | Safety is now an ALLOWLIST: only `scripts/*.mjs` (covered by `test:automation`) is safe. Every `.sh` widens. |
+| F3 | P2 | `.github/` blanket-safe, but `ci.yml` defines every product job | Only `.github/**/*.md` is safe. Workflows widen. |
+| F5 | P1 | `apps/api/scripts/upgrade-proof.sh` missed `upgrade-proof` | Specific rule before the generic one; API scripts reach all three API suites. |
+| F4 | P1 | Renames dropped `previous_filename` | Both sides classified — renaming API source to docs REMOVES API source. |
+| F2 | P1 | Filename with newline could redefine `suites` in `$GITHUB_OUTPUT` | `reason` reduced to a safe alphabet, capped, emitted last. A filename cannot introduce a line break or an `=` at all. |
+| F7 | P2 | >3000 files: the API cap looks like a short final page | Compared against the PR's declared `changed_files`; a short listing throws and widens. |
+| F6 | P1 | A classification skip reads as MISSING to the orchestrator | Compatibility twins (below). |
+
+F1/F3 are fixed **by subtraction**: two directory-wide safety claims removed and
+replaced with the narrow claims I can actually prove.
+
+## F6 — the one that blocked the whole change
+
+`summarizeRequiredChecks` finds a `decider` — the newest completed run that is
+not a deliberate skip. A classification skip HAS passing gates, so
+`intentionalSkip` is true, no decider is found, and the check counts as
+**missing**. The head then sits pending until timeout and never reaches the
+exact-head Codex review: **a docs-only pull request could never merge.**
+
+This means the unit boundary in the original packet was wrong. I wrote that not
+touching the orchestrator kept the change small; in fact you cannot introduce
+skips without teaching the waiter about skips.
+
+Fixed with a **compatibility twin** per suite: a second job carrying
+`name: <suite>`, running on exactly the negated condition. One of the two always
+runs, so the check name is always published and every existing waiter is
+unaffected — no orchestrator edit, no second rollout watermark, and narrowing
+branch protection stays a separate change that can delete these twins.
+
+The twin reports **"the suite did NOT run"** and prints the classification
+reason. It does not claim the suite passed — that would be the dishonest version
+of this fix, and `R16b` pins the wording.
+
+## Verification
+
+| Gate | Result |
+| --- | --- |
+| focused suite | **26/26** (was 20; +6 for the findings) |
+| `pnpm test:automation` | **197/197** |
+| `pnpm check` | **EXIT 0** (web 543/543, API 680/680) |
+
+### Discrimination — each new fix reverted in turn
+
+| Reverted to the defect | Probe that failed |
+| --- | --- |
+| `scripts/` blanket-safe (F1) | `R2a` |
+| `.github/` blanket-safe (F3) | `R2b` |
+| API scripts fall through to the generic rule (F5) | `R2c` |
+| renames drop `previous_filename` (F4) | `R2d` |
+| compatibility twin stops publishing the suite name (F6) | `R16` |
+| — restored — | **26/26** |

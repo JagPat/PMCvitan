@@ -28,12 +28,70 @@ test('R1: a docs-only change runs no product suite', () => {
   assert.match(plan.reason, /no changed path can affect a product suite/u);
 });
 
-test('R2: an automation-only change runs no product suite', () => {
-  // `scripts/` and `.github/` are the loop's own machinery. Their tests are
-  // `pnpm test:automation`, which runs unconditionally — see R9.
-  const plan = classify('scripts/review-scope.mjs', '.github/workflows/ci.yml');
+test('R2: loop-machinery .mjs runs no product suite', () => {
+  // A `scripts/*.mjs` file is loop machinery, covered by `pnpm test:automation`
+  // — which is never gated on the classification, so it always runs.
+  const plan = classify('scripts/review-scope.mjs', 'scripts/ci-battery-plan.mjs');
   assert.deepEqual(plan.suites, []);
   assert.equal(plan.confident, true);
+});
+
+// ---------------------------------------------------------------------------
+// The three map errors. Each is a file that DRIVES a product job while living
+// outside the tree that job tests — the shape the first version got wrong three
+// separate times. Blanket-trusting a directory is what made all three possible.
+// ---------------------------------------------------------------------------
+
+test('R2a: a product RUNNER script in scripts/ is not machinery — it widens', () => {
+  // `scripts/test-api-e2e.sh` IS the api-e2e runner: package.json routes the
+  // acceptance scripts through it and the api-e2e job calls those scripts.
+  // `pnpm test:automation` never executes it, so calling it safe let a broken
+  // acceptance runner merge with api-e2e skipped and the gate green.
+  for (const file of ['scripts/test-api-e2e.sh', 'scripts/validate-live.sh',
+    'scripts/lockdown-check.sh']) {
+    const plan = classify(file);
+    assert.deepEqual(plan.suites, SUITES, `${file} must widen`);
+    assert.equal(plan.confident, false, `${file} must be unconfident`);
+  }
+});
+
+test('R2b: a workflow file widens — it defines the product jobs themselves', () => {
+  // The automation tests pin selected workflow invariants; they do not execute
+  // the web/api/api-e2e/e2e/upgrade-proof job bodies. An edit that breaks a
+  // job's commands or setup must not skip that job.
+  const plan = classify('.github/workflows/ci.yml');
+  assert.deepEqual(plan.suites, SUITES);
+  assert.equal(plan.confident, false);
+
+  // Markdown under .github/ is still documentation.
+  assert.deepEqual(classify('.github/PULL_REQUEST_TEMPLATE.md').suites, []);
+});
+
+test('R2c: the upgrade-proof RUNNER reaches the upgrade-proof suite', () => {
+  // The upgrade-proof job executes `apps/api/scripts/upgrade-proof.sh`. The
+  // generic `apps/api/` rule gave api + api-e2e only, so a broken legacy-upgrade
+  // proof runner could merge with its own proof job skipped.
+  assert.deepEqual(classify('apps/api/scripts/upgrade-proof.sh').suites, [
+    'api', 'api-e2e', 'upgrade-proof',
+  ]);
+});
+
+test('R2d: a RENAME classifies both the old and the new path', () => {
+  // GitHub reports the new `filename` and keeps the old in `previous_filename`.
+  // Renaming API source to a docs path REMOVES API source; classifying only the
+  // destination would skip the suites that would notice.
+  const plan = classifyChangedFiles([
+    { filename: 'docs/foo.md', previous_filename: 'apps/api/src/foo.ts' },
+  ]);
+  assert.deepEqual(plan.suites, ['api', 'api-e2e']);
+  assert.equal(plan.confident, true);
+
+  // And a rename OUT of an unknown path still widens.
+  const widened = classifyChangedFiles([
+    { filename: 'docs/x.md', previous_filename: 'Makefile' },
+  ]);
+  assert.deepEqual(widened.suites, SUITES);
+  assert.equal(widened.confident, false);
 });
 
 test('R3: a web-only change runs web, e2e and the browser acceptance chain', () => {
@@ -209,6 +267,55 @@ test('R15: every product job is gated on the classification and feeds the gate',
       `the gate must depend on ${suite}`,
     );
   }
+});
+
+test('R16: every product suite has a compatibility twin publishing its name', async () => {
+  // F6: a classification SKIP is not what the orchestrator waits for. Its
+  // `intentionalSkip` is true (this attempt's gates passed), so
+  // `summarizeRequiredChecks` finds no decider and counts the check MISSING —
+  // the head sits pending until timeout and never reaches the exact-head Codex
+  // review. A docs-only change would never merge. The twin emits the check name
+  // with an honest "not applicable" verdict so every existing waiter is
+  // unaffected.
+  const workflow = await readFile(
+    new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8',
+  );
+
+  for (const suite of SUITES) {
+    const twin = new RegExp(`  ${suite}-not-applicable:\\n    name: ${suite}\\n`, 'u');
+    assert.match(workflow, twin, `${suite} needs a twin publishing its own name`);
+
+    // The two must be mutually exclusive on the SAME condition, or a suite
+    // would either run twice or not report at all.
+    const real = new RegExp(
+      `\\n  ${suite}:\\n(?:.|\\n)*?&& contains\\(needs\\.classify\\.outputs\\.suites, ',${suite},'\\)`, 'u',
+    );
+    const negated = new RegExp(
+      `\\n  ${suite}-not-applicable:\\n(?:.|\\n)*?&& !contains\\(needs\\.classify\\.outputs\\.suites, ',${suite},'\\)`, 'u',
+    );
+    assert.match(workflow, real, `${suite} runs when selected`);
+    assert.match(workflow, negated, `${suite} twin runs when NOT selected`);
+  }
+
+  // Both arms feed the gate, so neither can be forgotten.
+  const gate = workflow.slice(workflow.indexOf('  quality-gate:'));
+  for (const suite of SUITES) {
+    assert.ok(gate.includes(`- ${suite}-not-applicable`), `gate must need ${suite}'s twin`);
+  }
+});
+
+test('R16b: the twin does NOT claim the suite passed', async () => {
+  // It reports that the suite was not applicable and names the reason. A green
+  // check that silently implied "api passed" when api never ran would be the
+  // dishonest version of this fix.
+  const workflow = await readFile(
+    new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8',
+  );
+  const block = workflow.slice(
+    workflow.indexOf('  web-not-applicable:'), workflow.indexOf('  e2e-not-applicable:'),
+  );
+  assert.match(block, /did NOT run/u);
+  assert.match(block, /needs\.classify\.outputs\.reason/u, 'the reason is surfaced');
 });
 
 test('R15b: the automation suite is NOT gated on the classification', async () => {
