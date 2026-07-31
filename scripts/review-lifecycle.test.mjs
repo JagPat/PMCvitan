@@ -7,6 +7,7 @@
 // behavioural RED — see docs/reviews/pr-lifecycle-convergence.md.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 import {
   RESTRUCTURE_AFTER_CODE_FINDING_HEADS,
@@ -18,6 +19,10 @@ import {
   renderMetrics,
   replacementSource,
 } from './review-lifecycle.mjs';
+import {
+  isRetryableTerminalReviewFailure,
+  isTerminalReviewStatus,
+} from './autonomous-review-gate.mjs';
 
 const CODEX = { login: 'chatgpt-codex-connector[bot]' };
 
@@ -326,4 +331,106 @@ test('L11b: elapsed time is null rather than negative when the clock disagrees',
     nowIso: '2026-07-01T00:00:00Z',
   });
   assert.equal(metrics.elapsedMinutes, null);
+});
+
+// ---------------------------------------------------------------------------
+// Round 2 — the gate wiring. Four findings on `a65398d`, all one concept: the
+// restructure assessment must be FIRST, re-evaluated wherever the count can
+// change, durably recorded, and retryable when undecided.
+// ---------------------------------------------------------------------------
+
+test('M1: the undecided restructure failure is retryable, not persistent', () => {
+  // Its own instruction says "re-run once the file list is readable". Latching it
+  // as a persistent terminal failure makes that instruction unreachable on the
+  // same head — a permanent block on a transient condition.
+  const undecided = {
+    state: 'failure',
+    description: 'review: restructure check undecided',
+  };
+  assert.equal(isTerminalReviewStatus(undecided), true, 'still terminal for this run');
+  assert.equal(
+    isRetryableTerminalReviewFailure(undecided),
+    true,
+    'but a later run must re-read the diff instead of restoring the failure',
+  );
+});
+
+test('M1b: a real restructure block stays persistent', () => {
+  // The complement, so the fix is precise rather than blanket: a unit that has
+  // genuinely crossed its limit must NOT be retried into a pass.
+  const blocked = {
+    state: 'failure',
+    description: 'review: restructure required',
+  };
+  assert.equal(isTerminalReviewStatus(blocked), true);
+  assert.equal(
+    isRetryableTerminalReviewFailure(blocked),
+    false,
+    'crossing the limit is a decision, not a transient failure',
+  );
+});
+
+test('M2: both sticky-comment paths paginate', async () => {
+  // The floor is read from this comment. Reading only page one loses it on a
+  // long-running PR — and the WRITE path has the same defect, which would post a
+  // duplicate sticky and split the record the floor is read from.
+  const source = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const stickyRead = source.slice(source.indexOf('async stickyComment('));
+  const stickyWrite = source.slice(source.indexOf('async updateStickyComment('));
+  for (const [name, body] of [['read', stickyRead], ['write', stickyWrite]]) {
+    const head = body.slice(0, body.indexOf('}\n\n'));
+    assert.match(head, /this\.paginated\(/u, `sticky ${name} must paginate`);
+    assert.doesNotMatch(
+      head,
+      /per_page=100`/u,
+      `sticky ${name} must not stop at the first page`,
+    );
+  }
+});
+
+test('M3: the restructure gate is consulted BEFORE the convergence gate', async () => {
+  // Restructuring supersedes convergence. Checking convergence first tells a unit
+  // that has already crossed its limit to push another convergence correction —
+  // the exact round the limit refuses.
+  const source = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const calls = [...source.matchAll(/enforce(Restructure|ReviewConvergence)\(/gu)]
+    .map((match) => match[1])
+    // Drop the declarations themselves; keep call sites in the flow.
+    .filter((_, index, all) => all.length > 0);
+  const declarationsRemoved = calls.filter((_, i) => i >= 2);
+  assert.ok(declarationsRemoved.length >= 4, 'both flows call both gates');
+  for (let i = 0; i < declarationsRemoved.length; i += 2) {
+    assert.equal(
+      declarationsRemoved[i],
+      'Restructure',
+      'each flow must consult the restructure gate first',
+    );
+  }
+});
+
+test('M4: a finding on this head re-assesses the lifecycle before inviting a fix', async () => {
+  // The pre-review check ran when the count was one lower. A finding landing NOW
+  // is the transition the limit exists to catch, so the changes_required branch
+  // must re-assess before telling anyone to push a correction.
+  const source = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const branch = source.slice(
+    source.indexOf("if (result.state === 'changes_required') {"),
+  );
+  const body = branch.slice(0, branch.indexOf('throw new Error(result.detail);'));
+  const reassess = body.indexOf('enforceRestructure(');
+  const invite = body.indexOf('Claude Auto-fix handles the review comments');
+  assert.notEqual(reassess, -1, 'the branch must re-assess the lifecycle');
+  assert.ok(
+    reassess < invite,
+    're-assessment must precede the instruction to push another correction',
+  );
 });

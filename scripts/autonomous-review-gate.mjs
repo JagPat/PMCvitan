@@ -364,6 +364,11 @@ export function isRetryableTerminalReviewFailure(status) {
   }
   const description = status.description ?? '';
   return description.includes('Codex review timed out')
+    // The undecided restructure check is TRANSIENT by construction: it means the
+    // cumulative diff could not be read, and its own instruction says to re-run
+    // once it can be. Latching it as persistent would make that instruction
+    // unreachable on the same head — a permanent block on a temporary failure.
+    || description === 'review: restructure check undecided'
     || description.includes('Codex evidence changed during final verification')
     || description === 'review: Required CI changed during current-head Codex review'
     || description === 'review: bootstrap exact-head review requested';
@@ -718,8 +723,14 @@ export class GitHubClient {
   }
 
   async stickyComment(number) {
-    const comments = await this.request(
-      `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
+    // PAGINATED. The lifecycle floor depends on finding this comment: reading
+    // only the first page loses it on a long-running PR, `readMetrics` returns
+    // null, and a partial live reading could then walk the unit below a limit it
+    // had already crossed. Its sibling below paginates for the same reason —
+    // otherwise a sticky comment past page one is never found and a DUPLICATE is
+    // posted, splitting the record the floor is read from.
+    const comments = await this.paginated(
+      `/repos/${this.repository}/issues/${number}/comments`,
     );
     return comments.find(
       (comment) =>
@@ -729,8 +740,8 @@ export class GitHubClient {
   }
 
   async updateStickyComment(number, body) {
-    const comments = await this.request(
-      `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
+    const comments = await this.paginated(
+      `/repos/${this.repository}/issues/${number}/comments`,
     );
     const existing = comments.find(
       (comment) =>
@@ -1034,6 +1045,14 @@ export async function enforceReviewConvergence(
 // same seam and with the same authority, and — like the convergence gate — its only
 // outcomes are "carry on" and "stop". It never resolves a thread, never dismisses a
 // finding, and has no branch that publishes success.
+function restructureBlockReason(restructure) {
+  return restructure.undecided
+    ? 'restructure check undecided: the cumulative diff was unreadable'
+    : `${restructure.findingHeadCount} finding heads exceed the ${restructure.kind} `
+      + `limit of ${restructure.threshold}; open a declared replacement instead of `
+      + 'another correction head';
+}
+
 async function readStickyComment(client, number) {
   try {
     return await client.stickyComment(number);
@@ -1150,6 +1169,17 @@ export async function revalidateFinalReviewPolicy(
   if (scope.superseded) return { ...scope, state: 'superseded' };
   if (!scope.allowed) return { ...scope, state: 'scope_required' };
 
+  // BEFORE convergence, not after. Restructuring SUPERSEDES the convergence
+  // obligation: a unit that has already crossed its limit must not be told to
+  // push another convergence correction just because this head happens to be
+  // missing the trailer or packet. Asking for a correction head at that point
+  // invites exactly the round the limit exists to refuse.
+  const restructure = await enforceRestructure(client, pullRequest, expectedHead);
+  if (restructure.superseded) return { ...restructure, state: 'superseded' };
+  if (!restructure.allowed) {
+    return { ...restructure, state: restructure.state };
+  }
+
   const convergence = await enforceReviewConvergence(
     client,
     pullRequest,
@@ -1160,15 +1190,6 @@ export async function revalidateFinalReviewPolicy(
   }
   if (!convergence.allowed) {
     return { ...convergence, state: 'convergence_required' };
-  }
-
-  // After convergence, and before anything can be published: has this unit spent
-  // so many rounds that another correction head is the wrong instrument? A unit in
-  // `restructure_required` is never allowed, so no later branch can reach success.
-  const restructure = await enforceRestructure(client, pullRequest, expectedHead);
-  if (restructure.superseded) return { ...restructure, state: 'superseded' };
-  if (!restructure.allowed) {
-    return { ...restructure, state: restructure.state };
   }
 
   const finding = await guardAgainstCurrentHeadFinding(
@@ -1576,6 +1597,13 @@ export async function run() {
     throw new Error(detail);
   }
 
+  // Restructuring supersedes convergence here too — same reason, same order.
+  const restructure = await enforceRestructure(client, pullRequest, expectedHead);
+  if (restructure.superseded) return;
+  if (!restructure.allowed) {
+    throw new Error(restructureBlockReason(restructure));
+  }
+
   const convergence = await enforceReviewConvergence(
     client,
     pullRequest,
@@ -1585,20 +1613,6 @@ export async function run() {
   if (!convergence.allowed) {
     throw new Error(
       `${convergence.findingHeadCount} finding heads require a consolidated convergence audit`,
-    );
-  }
-
-  // Same question on the driver, so a red workflow run is the fail-closed signal
-  // here exactly as it is for convergence. Throwing keeps the head unpublished.
-  const restructure = await enforceRestructure(client, pullRequest, expectedHead);
-  if (restructure.superseded) return;
-  if (!restructure.allowed) {
-    throw new Error(
-      restructure.undecided
-        ? 'restructure check undecided: the cumulative diff was unreadable'
-        : `${restructure.findingHeadCount} finding heads exceed the ${restructure.kind} `
-          + `limit of ${restructure.threshold}; open a declared replacement instead of `
-          + 'another correction head',
     );
   }
 
@@ -1634,6 +1648,17 @@ export async function run() {
         recoveryRequest,
         'review finding',
       );
+      // Codex has just ADDED a finding-bearing head, so the count is different
+      // from the one the pre-review check read. This is the exact transition the
+      // limit exists to catch: at four prior code heads (or two docs heads) the
+      // check above allowed the review, and the finding now lands makes it five
+      // (or three). Re-assess here, before instructing anyone to push a
+      // correction, so the floor is recorded and the unit is told to restructure
+      // rather than invited into one more round.
+      const after = await enforceRestructure(client, pullRequest, expectedHead);
+      if (after.superseded) return;
+      if (!after.allowed) throw new Error(restructureBlockReason(after));
+
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({

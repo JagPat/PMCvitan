@@ -125,3 +125,88 @@ What it does is make the declared path the easy one and keep the lineage visible
 when it is taken. Detecting laundering by content similarity was considered and
 rejected: it would guess, and a gate that guesses is the defect this module exists
 to stop.
+
+---
+
+## Round 2 — four findings on `a65398d`
+
+All four are P2, all four are correct, and all four are the same concept at four
+places: **the restructure assessment must be the FIRST gate, re-evaluated wherever
+the finding count can change, durably recorded, and retryable when undecided.**
+None of them contradicts the lifecycle model; every one is about the new gate
+being reachable and durable at the right moments.
+
+They are corrected together, with a site audit first, because fixing four facets
+of one concept one at a time is precisely the cascade this PR exists to stop. It
+would have been an embarrassing way to prove the point.
+
+### F1 — check restructuring before convergence remediation
+
+*Codex:* a PR that already has five code finding heads but whose current head is
+missing the trailer/packet stops as `convergence_required` and is told to push
+another convergence correction, when the gate should move it to
+`restructure_required`.
+
+Correct. Restructuring **supersedes** convergence: a unit past its limit must not
+be asked for another correction head just because this head lacks a trailer.
+`enforceRestructure` now runs BEFORE `enforceReviewConvergence` at **both** call
+sites — the policy revalidation path and the review driver. Pinned by `M3`, which
+fails when the order is swapped back.
+
+### F2 — recheck the lifecycle after Codex returns a finding
+
+*Codex:* at four prior code heads the pre-review check allows the review; if Codex
+then posts findings on this head, the flow goes to `changes_required` and invites
+another correction without ever re-running the assessment or recording the floor —
+missing the exact transition where the gate must move to `restructure_required`.
+
+Correct, and the sharpest of the four: the pre-review check necessarily read a
+count one lower than the truth. The `changes_required` branch now re-assesses
+before instructing anyone to push a correction, so the transition is caught and
+the floor recorded. Pinned by `M4`, which fails when the re-assessment is removed.
+
+### F3 — keep undecided restructure failures retryable
+
+*Codex:* `isTerminalReviewStatus` treats any `review:` failure as terminal and
+`isRetryableTerminalReviewFailure` does not include the undecided description, so
+`persistentReviewFailure` latches it and later runs restore the same failure
+instead of re-reading the file list.
+
+Correct, and it made my own claim false: the sticky instruction says "re-run once
+the file list is readable", and the status made that unreachable on the same head
+— a permanent block on a transient condition. The undecided description is now
+retryable. `M1b` pins the complement: a *real* restructure block stays persistent,
+because crossing the limit is a decision, not a transient failure.
+
+### F4 — page through sticky comments for the metrics floor
+
+*Codex:* the sticky read takes only the first 100 issue comments; on a long PR the
+comment is missed, `readMetrics` returns `null`, and a partial live reading can
+walk the unit below a threshold it had crossed.
+
+Correct — and the site audit found the same defect in its sibling. The **write**
+path `updateStickyComment` also read only page one, so on a long PR it would fail
+to find the existing comment and post a DUPLICATE, splitting the very record the
+floor is read from. Fixing only the read would have left the floor unreliable for
+a different reason. Both now use the existing `paginated` helper. `M2` pins both.
+
+### Evidence
+
+| Probe | Discriminates |
+| --- | --- |
+| `M1` / `M1b` | the undecided description is retryable; a real block is not |
+| `M2` | both sticky paths paginate; neither stops at page one |
+| `M3` | RED when the gate order is swapped back |
+| `M4` | RED when the re-assessment is removed |
+
+RED verification, with the ordering and the re-assessment reverted and everything
+else left in place:
+
+```
+ok 23 - M2: both sticky-comment paths paginate
+not ok 24 - M3: the restructure gate is consulted BEFORE the convergence gate
+not ok 25 - M4: a finding on this head re-assesses the lifecycle before inviting a fix
+# tests 25 / # pass 23 / # fail 2
+```
+
+Restored: 25/25. `pnpm test:automation` 176/176. `pnpm check` EXIT 0.
