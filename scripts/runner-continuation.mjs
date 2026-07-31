@@ -109,7 +109,12 @@ export function detectStatusDriftAcrossHeads({
       drift: false,
       correctedInFlight: true,
       correctingPullRequest: correctingHead.number ?? null,
-      suggestedOpenPr: defaultBranchDrift.suggestedOpenPr,
+      // The correction comes from the HEAD THAT CORRECTED IT, not from the
+      // default drift computation — which suggests the highest-numbered live PR.
+      // With #252 correcting and #257 also open, the default suggestion is `257`,
+      // so the continuation rendered `Runner next step: pr:257` with no drift
+      // warning and sent the runner to the wrong branch after merge.
+      suggestedOpenPr: String(correctingHead.now?.open_pr ?? '').trim() || 'none',
     };
   }
 

@@ -302,8 +302,8 @@ now exported for that purpose; no production call site changed.
 
 | Gate | Result |
 | --- | --- |
-| `pnpm test:automation` | see PR body — includes the 11 new assertions |
-| `pnpm check` | EXIT 0 |
+| `pnpm test:automation` | 151/151 (includes the convergence suite, 21/21) |
+| `pnpm check` | EXIT 0 — web 543/543 (42 files), API 680/680 (55 files), builds clean |
 | Migrations | none in this PR |
 
 ## Scope
@@ -323,6 +323,52 @@ heads are unchanged and were not the subject of any finding.
 - **Correction:** `maintenanceQueueAtCommit(client, ref)` mirrors `statusAtCommit` — reads `docs/STATUS.md` at the given ref and parses it with the existing `parseMaintenanceQueue`, returning `null` on a missing/unreadable ref exactly as its sibling does. `handOffMergedPullRequest` now computes `mergedMaintenanceQueue = (await maintenanceQueueAtCommit(client, pullRequest.merge_commit_sha)) ?? maintenanceQueue` and passes that into `buildPostMergeContinuation`, so both fields of the continuation are read from the same post-merge tree. `buildDriftHandoff`'s call is untouched: drift detection is deliberately answered from the default-branch checkout plus live open heads, not from one exact merge commit.
 - **Evidence:** `pnpm test:automation` — `autonomous-handoff.test.mjs` / `runner-continuation.test.mjs` unchanged suites still pass; no assertion in this PR's suite previously pinned `maintenanceQueue` to the pre-merge checkout, so no test contradicted the stale behavior before this fix. This commit also re-verifies the trailer format against `git interpret-trailers` to close the earlier parse failure.
 
-Review-Convergence: complete
- (2)
- (3)
+### Finding 10 — P2, `0175c01`: the suppressed correction named the wrong PR
+
+*Codex:* when the correction is on a non-newest open head, the suppressed branch
+carried over the default drift suggestion (the highest-numbered live PR) instead
+of the PR that actually corrected STATUS. With #252 and #257 open, #252's head
+recording `open_pr: 252` and #257 still recording `none`, the branch suppressed
+drift as `correctingPullRequest: 252` but returned `suggestedOpenPr: '257'`;
+`buildPostMergeContinuation` then rendered `Runner next step: pr:257` with no
+drift warning, sending the runner to the wrong branch after merge.
+
+- **Root cause — mine, from the previous round.** Finding 8's fix correctly
+  decided that a correction must be carried through the suppressed branch, then
+  took the value from the wrong place. `defaultBranchDrift.suggestedOpenPr` is
+  computed by `detectStatusDrift` from the live PR list alone — it is a *guess*
+  (`openPullRequests[length - 1]`) made precisely because no head was known to
+  record reality. In the suppressed branch a head IS known to record reality, so
+  the guess is superseded and must not be used. This is root cause A once more:
+  two authorities (the fallback guess, the correcting head) collapsed into one
+  field. The silent failure mode is the dangerous one — the suggestion is
+  *plausible* (a real open PR number), so nothing downstream can detect it.
+- **Correction:** the suppressed branch reads the correction from the head that
+  made it — `suggestedOpenPr: String(correctingHead.now?.open_pr ?? '').trim() ||
+  'none'`. A correcting head that legitimately records `none` (its own PR is the
+  last one and it is about to merge) yields `'none'`, never a phantom PR number.
+  `defaultBranchDrift.suggestedOpenPr` is still returned unchanged on the
+  *unsuppressed* path, where it is the correct fallback.
+- **Site audit.** `suggestedOpenPr` has three consumers: `assessDriftCorrected`
+  (runner-continuation.mjs:153/156), the post-merge drift note (:202) and the
+  drift handoff (:263/264). The latter two are inside `if (drift.drift)` /
+  `if (!drift.drift) return null` branches that by construction do not execute in
+  the suppressed case, so correcting the value at its single source closes every
+  reachable path. No other call site derives a next step from the live PR list.
+- **Evidence:** `F1` (correction on the non-newest head ⇒ `suggestedOpenPr:
+  '252'`, `buildPostMergeContinuation` renders `pr:252` not `pr:257`, and no
+  `**STATUS drift:**` section appears so the shepherd stays suppressed), `F1b`
+  (a correcting head recording `none` ⇒ `'none'`, and the continuation does not
+  render a phantom `pr:257`). Reproduction with the source stashed back to
+  `0175c01`:
+
+```
+not ok 1 - F1: the suppressed correction names the correcting head's PR, not the newest
+ok 2 - F1b: a correcting head recording `none` yields `none`, not a phantom PR
+# tests 2 / # pass 1 / # fail 1
+```
+
+  `F1b` is a control, not a second RED proof: with no live PRs the fallback guess
+  is already `none`, so base and corrected agree there. It pins that the fix does
+  not regress the empty case into a phantom number. After the correction both
+  pass, and the suite is 21/21.

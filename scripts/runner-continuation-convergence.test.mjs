@@ -402,3 +402,48 @@ test('E2: the merged handoff reads STATUS at the merge commit, not the run check
   assert.equal(await statusAtCommit(client, 'nope'), null);
   assert.equal(await statusAtCommit(client, ''), null);
 });
+
+// ---------------------------------------------------------------------------
+// Root cause F — the in-flight correction must come from the head that MADE it.
+// Codex finding on head 0175c01.
+// ---------------------------------------------------------------------------
+
+test('F1: the suppressed correction names the correcting head\'s PR, not the newest', () => {
+  // #252 and #257 both open; #252's head records `open_pr: 252`, #257 still says
+  // `none`. The default drift suggestion is the highest live PR (257), so the
+  // continuation rendered `pr:257` — with no drift warning, because the drift was
+  // suppressed — and sent the runner to the wrong branch.
+  const drift = detectStatusDriftAcrossHeads({
+    defaultBranchNow: { open_pr: 'none', task_state: 'merged' },
+    openPullRequests: [pullRequest(252), pullRequest(257)],
+    headStatuses: [
+      { number: 252, now: { open_pr: '252', task_state: 'in_review' } },
+      { number: 257, now: { open_pr: 'none', task_state: 'merged' } },
+    ],
+  });
+  assert.equal(drift.drift, false);
+  assert.equal(drift.correctingPullRequest, 252);
+  assert.equal(drift.suggestedOpenPr, '252', 'the correcting head decides the correction');
+
+  const message = buildPostMergeContinuation({
+    statusNow: { open_pr: 'none', task_state: 'merged', next_task: 'phase-5-planning' },
+    openPullRequests: [pullRequest(252), pullRequest(257)],
+    headStatuses: [
+      { number: 252, now: { open_pr: '252', task_state: 'in_review' } },
+      { number: 257, now: { open_pr: 'none', task_state: 'merged' } },
+    ],
+  });
+  assert.match(message, /\*\*Runner next step:\*\* `pr:252`/);
+  assert.doesNotMatch(message, /\*\*Runner next step:\*\* `pr:257`/);
+  assert.doesNotMatch(message, /\*\*STATUS drift:\*\*/, 'the shepherd stays suppressed');
+});
+
+test('F1b: a correcting head recording `none` yields `none`, not a phantom PR', () => {
+  const drift = detectStatusDriftAcrossHeads({
+    defaultBranchNow: { open_pr: '251', task_state: 'merged' },
+    openPullRequests: [],
+    headStatuses: [{ number: 260, now: { open_pr: 'none', task_state: 'merged' } }],
+  });
+  assert.equal(drift.drift, false);
+  assert.equal(drift.suggestedOpenPr, 'none');
+});
