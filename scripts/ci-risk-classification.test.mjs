@@ -398,6 +398,110 @@ test('R20c: a bounded wait that never resolves fails CLOSED, and says so', async
   assert.match(verdict.detail, /still undecided after the wait/u);
 });
 
+test('R21: a stale hung run from a SUPERSEDED attempt is not pending', async () => {
+  // Head-4 finding. Asking "is any run unfinished?" BEFORE ordering by attempt
+  // currency let one hung `api` job from an old attempt pin the suite to
+  // pending forever, even after a newer attempt completed all five green — the
+  // gate then failed the wait on evidence that was already good.
+  const { assessPriorEvidence } = await import('./ci-prior-evidence.mjs');
+  const names = ['web', 'e2e', 'api', 'api-e2e', 'upgrade-proof'];
+  const gate = (suite, at) => ({
+    name: 'review-scope', status: 'completed', conclusion: 'success',
+    check_suite: { id: suite }, completed_at: at,
+  });
+  const product = (name, suite, status, conclusion, at) => ({
+    name, status, conclusion, check_suite: { id: suite }, completed_at: at,
+  });
+
+  const runs = [
+    // OLD attempt: its gate passed, and its `api` job is still hung.
+    gate(1, '2026-01-01T00:00:00Z'),
+    product('api', 1, 'in_progress', null, null),
+    // NEW attempt: gate passed later, all five products completed green.
+    gate(2, '2026-01-02T00:00:00Z'),
+    ...names.map((n) => product(n, 2, 'completed', 'success', '2026-01-02T01:00:00Z')),
+  ];
+
+  const verdict = assessPriorEvidence(runs);
+  assert.equal(verdict.pending, false, 'a superseded hung run must not pin it pending');
+  assert.equal(verdict.ok, true, 'the current attempt is green');
+});
+
+test('R21b: an unfinished run in the CURRENT attempt still counts as pending', async () => {
+  // The other direction — currency must not become an excuse to ignore live work.
+  const { assessPriorEvidence } = await import('./ci-prior-evidence.mjs');
+  const names = ['web', 'e2e', 'api', 'api-e2e', 'upgrade-proof'];
+  const gate = (suite, at) => ({
+    name: 'review-scope', status: 'completed', conclusion: 'success',
+    check_suite: { id: suite }, completed_at: at,
+  });
+  const runs = [
+    gate(1, '2026-01-01T00:00:00Z'),
+    ...names.map((n) => ({
+      name: n, status: 'completed', conclusion: 'success',
+      check_suite: { id: 1 }, completed_at: '2026-01-01T01:00:00Z',
+    })),
+    // A NEWER attempt is running now.
+    gate(2, '2026-01-02T00:00:00Z'),
+    { name: 'api', status: 'in_progress', check_suite: { id: 2 } },
+  ];
+  const verdict = assessPriorEvidence(runs);
+  assert.equal(verdict.pending, true, 'a newer in-flight run supersedes older green');
+  assert.match(verdict.detail, /still running: api/u);
+});
+
+test('R22: classify is a GATE in the shared coverage model', async () => {
+  // Head-4 P1. `classify` gates every product job in the workflow, but the
+  // coverage model knew only review-scope and battery-plan. An attempt where
+  // classify FAILED still counted as "gates passed", so its skipped products
+  // read as a deliberate covered-head skip and a later metadata edit accepted
+  // the OLD base's successes as preserved evidence — green without the five
+  // product jobs ever passing on the new merge result.
+  const { GATE_CHECKS, attemptsWithPassingGates } = await import('./check-run-coverage.mjs');
+  assert.ok(GATE_CHECKS.includes('classify'), 'classify must be a registered gate');
+
+  const run = (name, conclusion, suite) => ({
+    name, status: 'completed', conclusion, check_suite: { id: suite },
+  });
+
+  // classify FAILED -> the attempt aborted, so its skips are not deliberate.
+  const failed = attemptsWithPassingGates([
+    run('review-scope', 'success', 7),
+    run('battery-plan', 'success', 7),
+    run('classify', 'failure', 7),
+  ]);
+  assert.equal(failed.has('suite:7'), false, 'a failed classify aborts the attempt');
+
+  // classify CANCELLED is likewise not a pass.
+  const cancelled = attemptsWithPassingGates([
+    run('review-scope', 'success', 8),
+    run('battery-plan', 'success', 8),
+    run('classify', 'cancelled', 8),
+  ]);
+  assert.equal(cancelled.has('suite:8'), false, 'a cancelled classify aborts the attempt');
+
+  // All three green -> passing.
+  const green = attemptsWithPassingGates([
+    run('review-scope', 'success', 9),
+    run('battery-plan', 'success', 9),
+    run('classify', 'success', 9),
+  ]);
+  assert.equal(green.has('suite:9'), true);
+});
+
+test('R22b: an attempt older than classify is NOT stranded by its absence', async () => {
+  // Presence-tolerance is the rollout half of R22. Requiring every gate to be
+  // PRESENT would mark every pre-classify attempt aborted, discarding evidence
+  // that is perfectly good — the same stranding shape that kept the new jobs
+  // out of REQUIRED_CHECKS.
+  const { attemptsWithPassingGates } = await import('./check-run-coverage.mjs');
+  const legacy = attemptsWithPassingGates([
+    { name: 'review-scope', status: 'completed', conclusion: 'success', check_suite: { id: 5 } },
+    { name: 'battery-plan', status: 'completed', conclusion: 'success', check_suite: { id: 5 } },
+  ]);
+  assert.equal(legacy.has('suite:5'), true, 'a gate that never ran must not veto');
+});
+
 test('R15: every product job is gated on the classification and feeds the gate', async () => {
   const workflow = await readFile(
     new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8',

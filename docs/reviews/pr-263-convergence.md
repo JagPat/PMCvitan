@@ -146,3 +146,48 @@ the convergence signal the protocol looks for. The abandonment condition
 recorded above — a finding against the classifier's *safety* rather than its
 plumbing — has not triggered: head 3's finding is in the gate's evidence
 plumbing, not in path classification.
+
+---
+
+## Head 4 (`31aa615`) — two findings, one omission
+
+Findings per head: **7 → 3 → 1 → 2**. The "declining" trend I asserted after
+head 3 was premature, and this section corrects it.
+
+Both findings are the same omission: `classify` became a third upstream gate in
+the workflow, and I never registered it in the shared coverage model
+(`check-run-coverage.mjs`).
+
+| # | P | Defect | Fix |
+| --- | --- | --- | --- |
+| N5 | P1 | `GATE_CHECKS` knew only `review-scope`/`battery-plan`, so an attempt where **classify failed** still counted as "gates passed" — its skipped products read as a deliberate covered-head skip, and a later metadata edit accepted the OLD base's successes as evidence | `classify` registered as a gate |
+| N4 | P2 | `assessPriorEvidence` asked "is any run unfinished?" *before* ordering by attempt currency, so one hung job from a superseded attempt pinned the suite `pending` forever | decider chosen by `coverageOrder` first; only unfinished runs from the decider's attempt or newer count |
+
+Registering the gate surfaced a **third defect that neither finding named**:
+`attemptsWithPassingGates` required every gate to be *present* (`=== true`), so
+adding `classify` marked every pre-classify attempt aborted — five existing
+tests failed, and they were right to. The invariant its own comment states is
+"a gate that FAILED aborts the attempt", so the check is now `!== false`:
+presence-tolerant, failure-strict. Same stranding shape that kept the new jobs
+out of `REQUIRED_CHECKS`, caught here by the existing suite rather than in
+production.
+
+Probes `R21`/`R21b` (currency both directions), `R22` (classify gates,
+fail/cancel/green), `R22b` (legacy attempt not stranded). Each of the three
+mechanisms reverted in turn fails its own probe.
+
+### Where this leaves the abandonment question
+
+The condition recorded above — a finding against the classifier's *safety*
+rather than its plumbing — still has not triggered. But the honest pattern is
+now visible: **six of the last seven findings are in the evidence/gate plumbing
+that exists only to make skipping safe**, and that plumbing is being fitted to a
+coverage model written before skips existed. Each round has found another seam.
+
+This head closes the seam at its source: `classify` is now a first-class gate in
+the shared model rather than a workflow-only condition, which is what made N4,
+N5 and the presence regression all expressible at once. If the next round finds
+another plumbing seam, the recommendation flips to shipping `quality-gate`
+alone — it has drawn zero findings as a summariser across four heads — and
+dropping the classification skip until it can be built against a coverage model
+that understands it.

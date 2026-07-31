@@ -12,7 +12,12 @@ import { readFile, appendFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
 import { PRODUCT_CHECKS } from './ci-battery-plan.mjs';
-import { coverageOrder, attemptGateStamps, isSkipped } from './check-run-coverage.mjs';
+import {
+  attemptGateStamps,
+  attemptOf,
+  coverageOrder,
+  isSkipped,
+} from './check-run-coverage.mjs';
 
 // THREE outcomes, not two.
 //
@@ -35,18 +40,30 @@ export function assessPriorEvidence(checkRuns) {
   const inFlight = [];
   for (const name of PRODUCT_CHECKS) {
     const mine = checkRuns.filter((run) => run.name === name && !isSkipped(run));
-    if (mine.some((run) => run.status !== 'completed')) {
-      inFlight.push(name);
+    // Order by ATTEMPT CURRENCY first, then ask about unfinished runs. Asking
+    // first meant one hung job from a SUPERSEDED attempt pinned the suite to
+    // `pending` forever, even after a newer attempt had completed all five
+    // green — the gate then failed the wait on evidence that was already good.
+    const decider = mine
+      .filter((run) => run.status === 'completed')
+      .sort(coverageOrder(stamps))[0];
+    const deciderStamp = decider ? (stamps.get(attemptOf(decider)) ?? '') : '';
+
+    // An unfinished run only matters when it belongs to the decider's attempt
+    // or a NEWER one. Older unfinished runs are stale and cannot change what
+    // the current attempt already concluded.
+    const current = mine.some((run) => run.status !== 'completed'
+      && (stamps.get(attemptOf(run)) ?? '') >= deciderStamp);
+
+    if (!decider) {
+      (current ? inFlight : bad).push(current ? name : `${name}: no completed run`);
       continue;
     }
-    const runs = mine.filter((run) => run.status === 'completed').sort(coverageOrder(stamps));
-    if (runs.length === 0) {
-      bad.push(`${name}: no completed run`);
+    if (decider.conclusion !== 'success') {
+      bad.push(`${name}: ${decider.conclusion}`);
       continue;
     }
-    if (runs[0].conclusion !== 'success') {
-      bad.push(`${name}: ${runs[0].conclusion}`);
-    }
+    if (current) inFlight.push(name);
   }
 
   // A REAL failure decides immediately — waiting for a sibling to finish cannot
