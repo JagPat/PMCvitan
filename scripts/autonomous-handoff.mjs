@@ -10,12 +10,18 @@ import {
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
 import { loadStatusDocument, parseStatusNow, parseMaintenanceQueue } from './autonomous-status-state.mjs';
+import {
+  STATE_ISSUE_NUMBER,
+  assessLease,
+  readCursor,
+  readLease,
+  renderRunnerState,
+} from './autonomous-work-lease.mjs';
 
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
 const MERGE_MARKER = '<!-- autonomous-post-merge:';
 const DRIFT_MARKER = '<!-- autonomous-status-drift:';
-const STATE_ISSUE_NUMBER = 235;
 const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 // The backlog starts after this workflow was introduced, so historical Claude
 // merges cannot accidentally start competing continuation runners.
@@ -99,31 +105,31 @@ class GitHubClient {
     }
   }
 
-  async runnerCursor() {
+  // The WHOLE runner state, read together. The cursor and the lease live in one
+  // issue body and are read in one request, so no caller can hold a fresh
+  // cursor beside a stale lease.
+  async runnerState() {
     const issue = await this.request(
       `/repos/${this.repository}/issues/${STATE_ISSUE_NUMBER}`,
     );
-    const match = issue.body?.match(
-      /Last processed merge: `([^`]+)` \(#(\d+)\)/,
-    );
-    if (!match) return { mergedAt: HANDOFF_ENABLED_AT, number: 0 };
-    return { mergedAt: Date.parse(match[1]), number: Number(match[2]) };
+    return {
+      cursor: readCursor(issue.body, HANDOFF_ENABLED_AT),
+      lease: readLease(issue.body),
+    };
   }
 
-  setRunnerCursor(mergedAt, number) {
+  async runnerCursor() {
+    return (await this.runnerState()).cursor;
+  }
+
+  // Writes the WHOLE state. There is deliberately no cursor-only or lease-only
+  // writer: this body has two concerns, and a partial writer would eventually
+  // drop the block it does not know about. Callers advance one field of the
+  // state they already read, and hand the state back.
+  setRunnerState(state) {
     return this.request(
       `/repos/${this.repository}/issues/${STATE_ISSUE_NUMBER}`,
-      {
-        method: 'PATCH',
-        body: {
-          body: [
-            '<!-- autonomous-runner-state -->',
-            'This issue stores the durable cursor for the repository automation. GitHub Actions maintains it; do not close or edit it manually.',
-            '',
-            `Last processed merge: \`${mergedAt}\` (#${number})`,
-          ].join('\n'),
-        },
-      },
+      { method: 'PATCH', body: { body: renderRunnerState(state) } },
     );
   }
 
@@ -262,18 +268,30 @@ export async function loadContinuationContext(
   defaultBranch,
   { loadStatus = loadStatusDocument } = {},
 ) {
-  const [{ now, maintenanceQueue }, openPullRequests] = await Promise.all([
+  const [{ now, maintenanceQueue }, openPullRequests, runnerState] = await Promise.all([
     loadStatus(),
     client.openPullRequests().then((pullRequests) =>
       selectAutonomousOpenPullRequests(pullRequests, repository, defaultBranch),
     ),
+    client.runnerState(),
   ]);
   const headStatuses = await openHeadStatuses(client, openPullRequests);
+  // Whether the runner may START anything, decided here because this is where
+  // the two inputs already meet: what the lease CLAIMS is active, and what
+  // GitHub says is OPEN. Computed once and carried, so no downstream caller
+  // re-derives availability from an absence — which is how four pull requests
+  // ended up open at the same time.
+  const lease = assessLease({
+    lease: runnerState.lease,
+    intent: {},
+    openPullRequests,
+  });
   return {
     defaultBranchNow: now,
     maintenanceQueue,
     openPullRequests,
     headStatuses,
+    lease,
   };
 }
 
@@ -378,6 +396,7 @@ export async function handOffStatusDrift(
     maintenanceQueue,
     openPullRequests,
     headStatuses,
+    lease: continuationContext.lease,
   });
   if (!body) return;
 
@@ -436,8 +455,8 @@ export async function run() {
     defaultBranch,
   );
 
-  const cursor = await client.runnerCursor();
-  const mergedBacklog = await client.mergedPullRequestsAfter(cursor);
+  const runnerState = await client.runnerState();
+  const mergedBacklog = await client.mergedPullRequestsAfter(runnerState.cursor);
   mergedBacklog.sort((left, right) =>
     Date.parse(left.merged_at) - Date.parse(right.merged_at) ||
     left.number - right.number
@@ -453,10 +472,13 @@ export async function run() {
       defaultBranch,
       continuationContext,
     );
-    await client.setRunnerCursor(
-      mergedPullRequest.merged_at,
-      mergedPullRequest.number,
-    );
+    // Advance the cursor WITHIN the state that was read, so the lease recorded
+    // beside it is carried forward rather than overwritten.
+    runnerState.cursor = {
+      mergedAt: Date.parse(mergedPullRequest.merged_at),
+      number: mergedPullRequest.number,
+    };
+    await client.setRunnerState(runnerState);
   }
 
   if (eventName === 'schedule') {

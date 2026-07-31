@@ -231,6 +231,7 @@ export function buildDriftHandoff({
   maintenanceQueue = [],
   openPullRequests = [],
   headStatuses = [],
+  lease = null,
 }) {
   const drift = detectStatusDriftAcrossHeads({
     defaultBranchNow: statusNow,
@@ -258,6 +259,12 @@ export function buildDriftHandoff({
       ? [`**Recorded in STATUS (STALE — do not act on it):** \`${recorded.nextStep ?? 'none'}\` — ${recorded.reason}`]
       : []),
     `**Open autonomous PRs:** ${formatOpenPullRequestList(openPullRequests)}`,
+    // The lease verdict travels WITH the instruction. A handoff that names the
+    // next step without saying whether the runner may start it is how a second
+    // concurrent unit gets opened in good faith.
+    ...(lease && lease.allowed === false
+      ? ['', `**Work lease: BLOCKED.** ${lease.reason}`]
+      : []),
     '',
     (openPullRequests ?? []).length > 0
       ? `Update \`open_pr\` to \`${drift.suggestedOpenPr}\` (or the correct current PR), align \`task_state\`, and shepherd the open PR. Do not open a competing branch for the same work item.`

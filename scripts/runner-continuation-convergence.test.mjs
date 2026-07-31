@@ -59,6 +59,12 @@ function fakeClient({ openPrs = [], headStatusBySha = {}, comments = {} } = {}) 
     async openPullRequests() {
       return openPrs;
     },
+    // The lease is read as part of the continuation context. Deliberately NOT
+    // optional-chained in the implementation: a client without this method must
+    // fail loudly rather than silently skip the one-active-PR check.
+    async runnerState() {
+      return { cursor: { mergedAt: 0, number: 0 }, lease: null };
+    },
     async fileContent(path, ref) {
       assert.equal(path, 'docs/STATUS.md');
       if (!(ref in headStatusBySha)) throw new Error(`no STATUS at ${ref}`);

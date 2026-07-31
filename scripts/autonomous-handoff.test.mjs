@@ -103,8 +103,11 @@ test('an open queued-merge wait drains durable work before it reschedules', asyn
   const waitStart = implementation.indexOf(
     'const waitForPullRequest = Number',
   );
+  // Anchored on the backlog DRAIN itself rather than on the name of the variable
+  // holding the cursor: this pin is about ordering, and it broke once because a
+  // rename moved the line it happened to match.
   const backlogStart = implementation.indexOf(
-    'const cursor = await client.runnerCursor()',
+    'await client.mergedPullRequestsAfter(',
   );
   const retryStart = implementation.indexOf(
     'if (retryWaitForPullRequest || retryNeeded)',
