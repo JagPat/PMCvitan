@@ -247,6 +247,15 @@ test('rollout cannot require the new scope check from pre-policy PR branches', (
 });
 
 test('review scope runs before every expensive product gate', async () => {
+  // NOT extended with classify/automation/quality-gate. This is the
+  // ORCHESTRATOR's wait list, and adding names an older branch cannot emit
+  // strands it. `quality-gate` becomes the required check through branch
+  // protection, which is a separate change; until then the orchestrator waits
+  // on the products, and quality-gate cannot be green unless they are.
+  //
+  // Honest gap while that is pending: the orchestrator does not wait for the
+  // `automation` job, so a head could reach Codex with those tests still
+  // running. They are seconds, and they gate nothing the products do not.
   assert.deepEqual(REQUIRED_CHECKS, [
     'review-scope',
     'battery-plan',
@@ -262,20 +271,41 @@ test('review scope runs before every expensive product gate', async () => {
     workflow,
     /pull_request:\s*\n\s+types:\s*\[opened, synchronize, reopened, edited\]/u,
   );
+  // Scoped to the review-scope job ITSELF, and to the dependency every
+  // expensive job declares on it. The earlier form asserted "nothing between
+  // review-scope and web installs anything", which is a property of a REGION —
+  // it failed the moment a correctly-gated job was added in that region, while
+  // the ordering it protects was untouched.
   const scopeStart = workflow.indexOf('  review-scope:');
-  const webStart = workflow.indexOf('  web:');
   assert.ok(scopeStart >= 0);
-  assert.ok(webStart > scopeStart);
-  const scopeJob = workflow.slice(scopeStart, webStart);
+  const scopeJob = workflow.slice(scopeStart, workflow.indexOf('  battery-plan:'));
   assert.match(scopeJob, /node scripts\/review-scope\.mjs/u);
   assert.doesNotMatch(scopeJob, /pnpm install|setup-node|postgres/u);
 
-  for (const job of ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof']) {
-    const pattern = new RegExp(
-      `  ${job}:[\\s\\S]*?needs: \\[review-scope, battery-plan\\]`,
-      'u',
+  // The ordering itself: every job that installs dependencies or starts a
+  // database must declare review-scope as a dependency, wherever it sits.
+  for (const job of ['automation', 'web', 'e2e', 'api', 'api-e2e', 'upgrade-proof']) {
+    const start = workflow.indexOf(`\n  ${job}:\n`);
+    assert.ok(start >= 0, `${job} must exist`);
+    const declared = workflow.slice(start, start + 400);
+    assert.match(
+      declared, /needs:\s*\[[^\]]*review-scope[^\]]*\]/u,
+      `${job} must run only after review-scope`,
     );
-    assert.match(workflow, pattern);
+  }
+
+  // Every product job depends on BOTH gates. Matched as set membership rather
+  // than as the literal array text, so adding a third dependency (the risk
+  // classification) does not fail a pin about the first two.
+  for (const job of ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof']) {
+    const start = workflow.indexOf(`\n  ${job}:\n`);
+    assert.ok(start >= 0, `${job} must exist`);
+    const needs = /needs:\s*\[([^\]]*)\]/u.exec(workflow.slice(start, start + 400));
+    assert.ok(needs, `${job} must declare needs`);
+    const declared = needs[1].split(',').map((name) => name.trim());
+    for (const gate of ['review-scope', 'battery-plan']) {
+      assert.ok(declared.includes(gate), `${job} must depend on ${gate}`);
+    }
   }
 });
 
