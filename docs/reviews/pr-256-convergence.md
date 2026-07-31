@@ -1,0 +1,374 @@
+# PR #256 — architectural convergence
+
+**PR:** #256 · *Autonomous handoff hygiene: runner continuation + daily-log flake fix*
+**Branch:** `claude/runner-handoff-hygiene` · **Base:** `main` `a16e68c`
+**Finding-bearing heads:** `b967f29` (findings 1–3), `2919e32` (findings 4–5), `ab7f4dc` (finding 6), `d9372c9` (findings 7–8)
+**Convergence head:** this commit, from `d9372c9`
+
+Two finding-bearing heads answered five Codex findings with isolated patches.
+Per `AGENTS.md`, ordinary patching stops there: this head is ONE batched
+architectural correction. Nothing is dismissed — all five findings were
+verified against the code at `baa919a` rather than taken from the fix commits'
+claims, and three of them turned out to be incompletely closed.
+
+## What the isolated patches got wrong, structurally
+
+Three root causes account for every open item. Each is a case of a rule being
+applied at one site while the concept it belongs to lives at several.
+
+**Root cause A — one `now` served two authorities with different sources.**
+`loadContinuationContext` substituted the *last* open PR head's STATUS for the
+default branch's and handed that single value to both the post-merge handoff and
+the drift detector. These are different questions: the post-merge handoff asks
+"given the STATUS that merged into `main`, what is next?" (only the default
+branch answers that); drift asks "does the default branch disagree with live
+GitHub state, uncorrected?" (that needs the open heads too). Collapsing them left
+finding 1 half-closed and introduced a new defect in the post-merge path.
+
+**Root cause B — the live PR set and STATUS were confused as the shepherd
+authority.** Findings 2 and 5 were patched in opposite directions. Finding 5's
+remedy (`!hasOpenPrs → false`) is correct and sufficient on its own; the extra
+`open_pr`-must-match condition re-opened finding 2 for exactly the drifted case.
+
+**Root cause C — a recovery path keyed to nothing.** Finding 4's fix used a
+constant marker, making the no-live-PR shepherd one-shot for the repository's
+lifetime.
+
+## Finding-by-finding
+
+### Finding 1 — P2, `b967f29`: drift flagged from default-branch STATUS only
+
+*Codex:* the hourly `schedule` checkout is pinned to the default branch, so it
+cannot see the STATUS update the open PR's own head already contains; a draft PR
+that sets `open_pr` in its head while `main` still says `none` produces a false
+drift shepherd, repeated after each pushed fix.
+
+- **Root cause:** A. The correction at `baa919a` read STATUS from the PR head —
+  but only from `openPullRequests[length - 1]`, the highest-numbered PR. With
+  #252, #256 and #257 all open, a STATUS fix in flight on #252 is invisible and
+  the cron still posts false drift. The finding's *example* (one open PR) became
+  the specification; the rule it exemplified (the default branch legitimately lags
+  in-flight work) was not applied generally.
+- **Correction:** `detectStatusDriftAcrossHeads({ defaultBranchNow, headStatuses,
+  openPullRequests })` evaluates the default branch first, then suppresses the
+  drift if **any** open head's STATUS already records reality, reporting which PR
+  carries the correction. `openHeadStatuses` reads every open head, not one.
+- **Evidence:** `A1` (three-PR case, correction on the non-newest head, asserts
+  `drift: false` + `correctingPullRequest: 252`), `A1b` (`buildDriftHandoff`
+  returns `null`), `A1c` (drift still fires when no head records reality — the
+  fix suppresses false positives without going blind).
+
+### Finding 2 — P2, `b967f29`: do not request a new branch when a PR is already active
+
+*Codex:* with `openPullRequests` non-empty the post-merge comment reports an open
+PR and then unconditionally tells Claude to create the next `claude/**` branch,
+which can start a competing branch instead of shepherding the active PR.
+
+- **Root cause:** B. `baa919a` gated shepherding on STATUS agreeing with the live
+  set, so when `open_pr` drifts to `none` while PRs are live — precisely the state
+  the drift detector exists to catch — the message still said "create the next
+  branch". The fix removed the competing-branch instruction for the coherent case
+  and left it for the incoherent one.
+- **Correction:** `shouldShepherdOpenPullRequests({ openPullRequests })` returns
+  true iff at least one live open autonomous PR exists. The live PR set is the
+  only authority on whether something exists to shepherd; STATUS disagreement is
+  reported as drift, never as a reason to open a competing branch.
+- **Evidence:** `B1` (predicate), `B1b` (live PRs + `open_pr: none` ⇒ shepherd
+  text present, "Create the next same-repository" absent, drift still reported).
+
+### Finding 3 — P2, `b967f29`: detect stale non-none `open_pr` values
+
+*Codex:* the drift check exited "no drift" for any non-empty `open_pr` without
+checking it is one of the live autonomous PRs, so `open_pr: 251` after #251 closed
+kept the shepherd silent and post-merge messages resolving to `pr:251`.
+
+- **Root cause:** the original omission; correctly closed at `2919e32`.
+- **Correction:** none needed. `detectStatusDrift` compares `open_pr` against the
+  live PR numbers and reports staleness. Retained unchanged and now composed
+  inside `detectStatusDriftAcrossHeads`, so the same comparison governs both the
+  default branch and every head.
+- **Evidence:** the pre-existing `detectStatusDrift flags stale non-none open_pr
+  values` test still passes; `A1c` exercises the composed path.
+
+### Finding 4 — P2, `2919e32`: handle stale `open_pr` when no PR is live
+
+*Codex:* with a closed PR recorded and no live `claude/**` PRs, `buildDriftHandoff`
+returns a body while `openPullRequests` is empty, then `primary.head.sha` is
+dereferenced and the hourly workflow crashes before posting any correction.
+
+- **Root cause:** the crash itself was closed at `baa919a` (`if (!primary)` posts
+  to the state issue instead). Root cause C remained: the marker was the constant
+  `<!-- autonomous-status-drift:status-only:`, so the dedupe matched on *any*
+  prior status-only shepherd. The first occurrence in the repository's life
+  silenced every later one, including a different stale value months later. The
+  loop would stay pointed at stale work with no recovery — the same class of
+  failure the finding was about, one step downstream.
+- **Correction:** the marker is keyed to the drifting state
+  (`status-only:<stale open_pr>`), matching the discipline the live-PR path already
+  used (keyed to head SHA). Same state ⇒ one shepherd; different state ⇒ a fresh one.
+- **Evidence:** `C1` (marker contains `status-only:251`), `C1b` (same value
+  deduplicated; a later `263` drift posts rather than being swallowed), `C1c`
+  (the live-PR path still posts on the PR keyed to its head SHA).
+
+### Finding 5 — P2, `2919e32`: do not treat stale `open_pr` as a live branch
+
+*Codex:* after a clean merge the just-merged STATUS can still say `open_pr: <that
+PR>` while `openPullRequests` is empty; `assessRunnerState` returns `pr:<that PR>`
+and the message says "shepherd it" though its own open-PR list is `none`,
+stalling the runner instead of advancing.
+
+- **Root cause:** the original omission; closed at `baa919a` by the `!hasOpenPrs`
+  guard, which the new predicate preserves as its whole body.
+- **Correction:** behaviour retained. The stale-`open_pr` note in the
+  advance branch is kept, so the runner is told to clear it before starting work.
+- **Evidence:** `B1c` (no live PRs + `open_pr: 251` ⇒ advance text, no shepherd
+  text, explicit "clear stale `open_pr: 251`").
+
+### Additional defect found by the audit (not Codex-reported)
+
+**The post-merge next step could be computed from an unrelated branch's STATUS.**
+Introduced by finding 1's patch: because `authoritativeStatusForDrift` replaced
+`now` wholesale, a merged PR's continuation comment derived its next step from
+whatever the newest open PR's head happened to say. After #252 merged with #257
+open, the runner could be handed a next step that never merged.
+
+- **Correction:** root cause A's split. `loadContinuationContext` returns
+  `defaultBranchNow` (used by the post-merge handoff) alongside `headStatuses`
+  (used only for drift suppression).
+- **Evidence:** `A2` (main says `open_pr: none`/`merged`, head #257 says
+  `open_pr: 999`; asserts `defaultBranchNow.open_pr === 'none'`, the head status is
+  captured separately, and the rendered message does **not** carry
+  `Runner next step: pr:999`), `A2b` (an unreadable head degrades to `now: null`
+  and cannot suppress drift — the fail-safe direction).
+
+### Finding 6 — P2, `ab7f4dc`: derive the next step after clearing stale `open_pr`
+
+*Codex:* with `open_pr: 251` recorded and no live autonomous PRs,
+`assessRunnerState()` still returns `pr:251`, so the handoff publishes
+`Runner next step: pr:251` even though the same comment says the open-PR list is
+`none` and to create the next branch — sending the runner back to a closed PR
+instead of advancing STATUS after a clean merge.
+
+- **Root cause: D — the displayed next step was assessed from a record the drift
+  detector had just declared wrong.** The convergence head made the drift
+  *detection* authoritative and the shepherd *decision* authoritative, but left
+  the next-step *display* reading raw `statusNow`. `assessRunnerState` checks
+  `open_pr` before anything else, so a stale value wins there regardless of what
+  the rest of the comment concludes. One message then carried two contradictory
+  instructions, and the contradictory one was the actionable line.
+- **Reproduced at `ab7f4dc`** before fixing, rendering the real message:
+
+  ```
+  **Runner next step:** `pr:251` — an open PR is the current work item until it merges or closes
+  **Open autonomous PRs:** none
+  **STATUS drift:** docs/STATUS.md records open_pr: 251 but that PR is not among the live autonomous PRs.
+  Create the next same-repository `claude/**` branch and draft PR with Auto-fix enabled.
+  **Note:** clear stale `open_pr: 251` in STATUS before starting new work.
+  ```
+
+- **Correction:** `assessDriftCorrected(statusNow, maintenanceQueue, drift)` assesses
+  from `{ ...statusNow, open_pr: drift.suggestedOpenPr }` — the value the drift
+  correction already computed — and returns the raw assessment separately so it can
+  be shown, explicitly labelled stale, without being the instruction. The finding
+  offered either remedy ("compute from the drift-corrected state **or** label this
+  value as stale"); both are applied, because an operator still needs to see what
+  STATUS currently claims. The label is emitted only when correcting actually
+  changes the answer, so it is never noise. Applied to `buildDriftHandoff` too,
+  where drift is true by construction and the same contradiction existed under the
+  softer `Recorded next step:` heading.
+- **The corrected state gives the right answer in all three shapes**, verified
+  directly against `assessRunnerState`: stale-cleared + `merged` →
+  `next_task:phase-5-planning` (agrees with "create the next branch"); correction
+  pointing at a live PR → `pr:<that PR>` (agrees with "shepherd it"); `in_review`
+  with no PR → not actionable, with the honest reason that STATUS defines that
+  state by its open PR. The last case matters: the record IS broken there, and the
+  comment now says so instead of naming phantom work.
+- **Evidence:** `D1` (stale + no live PR: corrected step published, `pr:251`
+  absent from the instruction, present as stale, consistent with the branch
+  advice), `D1b` (correction points at a live PR), `D1c` (no drift ⇒ assessment
+  untouched, nothing labelled stale), `D1d` (broken record reported honestly),
+  `D2` (the drift handoff derives the same way and the old unqualified
+  `Recorded next step:` label is gone).
+
+### Finding 7 — P2, `d9372c9`: refresh STATUS after queued auto-merge
+
+*Codex:* `completeReviewedPullRequest()` enables auto-merge and dispatches the
+handoff before the PR has closed; when the merge finally lands, the continuation
+still uses the STATUS the run read at start-up, so a PR that just merged
+`open_pr: 252 / in_review` into `merged / next_task: …` receives a continuation
+derived from the state it replaced.
+
+- **Root cause:** the run's checkout is a snapshot taken before the work it is
+  reporting on. It is the right source for "what does the default branch say now"
+  and the wrong one for "what does the default branch say *after this merge*".
+- **Correction:** `statusAtCommit(client, ref)` reads `docs/STATUS.md` at a
+  commit; `handOffMergedPullRequest` reads it at `pullRequest.merge_commit_sha` —
+  the exact post-merge tree for that PR — and falls back to the checkout only
+  when it cannot be read. Unreadable returns `null`, never an empty state.
+- **Evidence:** `E2` (reads at the merge commit; unknown ref and empty ref both
+  degrade to `null`).
+
+### Finding 8 — P2, `d9372c9`: correct in-flight next steps while suppressing drift
+
+*Codex:* when an open PR head records `open_pr`, `drift: false` suppresses the
+hourly false positive — but `buildPostMergeContinuation` then runs that value
+through `assessDriftCorrected` as if there were no disagreement, so the comment
+renders conflicting instructions.
+
+- **Root cause — mine, from the previous round.** Finding 6's fix keyed the
+  correction on `drift.drift`. Suppressing the *shepherd* is not a claim that the
+  *record* is right: it only says a fix is already in flight. The record being
+  assessed is still the stale default-branch one, so the message said "shepherd
+  the open PR" beside a next step computed from an `open_pr` that predates it.
+  Same conflation as finding 6, one level along: reporting and correcting are
+  different questions.
+- **Correction:** `detectStatusDriftAcrossHeads` carries `suggestedOpenPr` in the
+  suppressed case too, and `assessDriftCorrected` keys on whether a correction
+  EXISTS rather than on whether drift is REPORTED. The shepherd stays quiet.
+- **Evidence:** `E1` (live PR + in-flight correction ⇒ `pr:256` as the next step,
+  agreeing with the shepherd line, and no drift section), `E1b` (no correction ⇒
+  assessment untouched).
+
+## Reproduce-first evidence
+
+`scripts/runner-continuation-convergence.test.mjs`, 19 tests, all GREEN on this
+head.
+
+### Findings 7–8 (this round)
+
+Run against `d9372c9` with both changed sources stashed to that head:
+
+```
+not ok 1 - E1: an in-flight correction still corrects the post-merge next step
+ok   2 - E1b: with no correction available the assessment is untouched
+not ok 3 - E2: the merged handoff reads STATUS at the merge commit, not the run checkout
+# tests 3 / # pass 1 / # fail 2
+```
+
+`E1b` passes at base — the no-correction control, which was already right.
+
+### Finding 6 (this round)
+
+The five `D*` assertions were run against `ab7f4dc` with
+`scripts/runner-continuation.mjs` stashed back to that head:
+
+```
+not ok 1 - D1: a stale open_pr with no live PR does not publish the stale next step
+not ok 2 - D1b: the corrected step names a live PR when the drift correction points at one
+ok   3 - D1c: with no drift the assessment is untouched and nothing is labelled stale
+not ok 4 - D1d: correcting a broken record reports it honestly rather than inventing a step
+not ok 5 - D2: the drift handoff also derives its step from the corrected state
+# tests 5 / # pass 1 / # fail 4
+```
+
+`D1c` passing at base is correct and is stated rather than hidden: it is the
+no-drift control, which was already right and must stay right — the fix must not
+start labelling things stale when nothing drifted.
+
+### Findings 1–5 (earlier rounds)
+
+Three assertions use only surfaces that exist at `baa919a`, so they run against
+the base source unmodified and are genuinely RED there. Reproduction, with the
+two changed sources stashed back to `baa919a`:
+
+```
+not ok 1 - A1b: correction in flight on a non-newest head is not drift
+not ok 2 - B1: shepherd whenever a live autonomous PR exists
+not ok 3 - B1b: a live PR with drifted open_pr:none is never answered with a competing branch
+# tests 3 / # pass 0 / # fail 3
+```
+
+and after restoring the correction, the same three assertions:
+
+```
+ok 1 - A1b: correction in flight on a non-newest head is not drift
+ok 2 - B1: shepherd whenever a live autonomous PR exists
+ok 3 - B1b: a live PR with drifted open_pr:none is never answered with a competing branch
+# tests 3 / # pass 3 / # fail 0
+```
+
+The remaining eight assertions exercise capabilities that do not exist at
+`baa919a` at all (`detectStatusDriftAcrossHeads`, and `loadContinuationContext` /
+`handOffStatusDrift` as testable seams). Their reproduction is the absence of the
+surface: at base the module cannot answer the question, which is the defect. This
+is stated rather than dressed up as a behavioural RED.
+
+`loadContinuationContext` gained one narrow seam — an injectable `loadStatus` — so
+the default-branch-versus-head authority is testable without reading the real
+`docs/STATUS.md` from disk. `handOffStatusDrift` and `loadContinuationContext` are
+now exported for that purpose; no production call site changed.
+
+## Validation
+
+| Gate | Result |
+| --- | --- |
+| `pnpm test:automation` | 151/151 (includes the convergence suite, 21/21) |
+| `pnpm check` | EXIT 0 — web 543/543 (42 files), API 680/680 (55 files), builds clean |
+| Migrations | none in this PR |
+
+## Scope
+
+8 files changed at `baa919a`; this head adds the convergence packet, the
+convergence suite, and edits two automation scripts plus the `test:automation`
+glob. No product code, no schema, no migration. The `daily-log-lost-response`
+e2e settle-wait and the CLAUDE.md / AUTONOMOUS_LOOP.md documentation from earlier
+heads are unchanged and were not the subject of any finding.
+
+
+### Finding 9 — P2, this commit: post-merge continuation read maintenanceQueue from the pre-merge checkout
+
+*Codex:* `handOffMergedPullRequest` re-read `statusNow` from the merge commit (`statusAtCommit`) but passed `maintenanceQueue` straight through from `loadContinuationContext`, which reflects the workflow's checkout at run start. On the queued auto-merge path the run enables auto-merge and only later observes the merge, so a queue drained or reordered by this exact merge would be handed to `buildPostMergeContinuation` unrefreshed — the same class of staleness Finding 1's root cause (A) already named for `statusNow`, just left open on the sibling field.
+
+- **Root cause:** A, recurring. `statusNow` and `maintenanceQueue` are two fields of the same STATUS document and must be read from the same tree; only one was re-pointed at the merge commit.
+- **Correction:** `maintenanceQueueAtCommit(client, ref)` mirrors `statusAtCommit` — reads `docs/STATUS.md` at the given ref and parses it with the existing `parseMaintenanceQueue`, returning `null` on a missing/unreadable ref exactly as its sibling does. `handOffMergedPullRequest` now computes `mergedMaintenanceQueue = (await maintenanceQueueAtCommit(client, pullRequest.merge_commit_sha)) ?? maintenanceQueue` and passes that into `buildPostMergeContinuation`, so both fields of the continuation are read from the same post-merge tree. `buildDriftHandoff`'s call is untouched: drift detection is deliberately answered from the default-branch checkout plus live open heads, not from one exact merge commit.
+- **Evidence:** `pnpm test:automation` — `autonomous-handoff.test.mjs` / `runner-continuation.test.mjs` unchanged suites still pass; no assertion in this PR's suite previously pinned `maintenanceQueue` to the pre-merge checkout, so no test contradicted the stale behavior before this fix. This commit also re-verifies the trailer format against `git interpret-trailers` to close the earlier parse failure.
+
+### Finding 10 — P2, `0175c01`: the suppressed correction named the wrong PR
+
+*Codex:* when the correction is on a non-newest open head, the suppressed branch
+carried over the default drift suggestion (the highest-numbered live PR) instead
+of the PR that actually corrected STATUS. With #252 and #257 open, #252's head
+recording `open_pr: 252` and #257 still recording `none`, the branch suppressed
+drift as `correctingPullRequest: 252` but returned `suggestedOpenPr: '257'`;
+`buildPostMergeContinuation` then rendered `Runner next step: pr:257` with no
+drift warning, sending the runner to the wrong branch after merge.
+
+- **Root cause — mine, from the previous round.** Finding 8's fix correctly
+  decided that a correction must be carried through the suppressed branch, then
+  took the value from the wrong place. `defaultBranchDrift.suggestedOpenPr` is
+  computed by `detectStatusDrift` from the live PR list alone — it is a *guess*
+  (`openPullRequests[length - 1]`) made precisely because no head was known to
+  record reality. In the suppressed branch a head IS known to record reality, so
+  the guess is superseded and must not be used. This is root cause A once more:
+  two authorities (the fallback guess, the correcting head) collapsed into one
+  field. The silent failure mode is the dangerous one — the suggestion is
+  *plausible* (a real open PR number), so nothing downstream can detect it.
+- **Correction:** the suppressed branch reads the correction from the head that
+  made it — `suggestedOpenPr: String(correctingHead.now?.open_pr ?? '').trim() ||
+  'none'`. A correcting head that legitimately records `none` (its own PR is the
+  last one and it is about to merge) yields `'none'`, never a phantom PR number.
+  `defaultBranchDrift.suggestedOpenPr` is still returned unchanged on the
+  *unsuppressed* path, where it is the correct fallback.
+- **Site audit.** `suggestedOpenPr` has three consumers: `assessDriftCorrected`
+  (runner-continuation.mjs:153/156), the post-merge drift note (:202) and the
+  drift handoff (:263/264). The latter two are inside `if (drift.drift)` /
+  `if (!drift.drift) return null` branches that by construction do not execute in
+  the suppressed case, so correcting the value at its single source closes every
+  reachable path. No other call site derives a next step from the live PR list.
+- **Evidence:** `F1` (correction on the non-newest head ⇒ `suggestedOpenPr:
+  '252'`, `buildPostMergeContinuation` renders `pr:252` not `pr:257`, and no
+  `**STATUS drift:**` section appears so the shepherd stays suppressed), `F1b`
+  (a correcting head recording `none` ⇒ `'none'`, and the continuation does not
+  render a phantom `pr:257`). Reproduction with the source stashed back to
+  `0175c01`:
+
+```
+not ok 1 - F1: the suppressed correction names the correcting head's PR, not the newest
+ok 2 - F1b: a correcting head recording `none` yields `none`, not a phantom PR
+# tests 2 / # pass 1 / # fail 1
+```
+
+  `F1b` is a control, not a second RED proof: with no live PRs the fallback guess
+  is already `none`, so base and corrected agree there. It pins that the fix does
+  not regress the empty case into a phantom number. After the correction both
+  pass, and the suite is 21/21.
