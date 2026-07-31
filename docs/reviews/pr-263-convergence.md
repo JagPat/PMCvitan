@@ -258,3 +258,47 @@ each one is a separate patch and the next is always one round away.
 The work is preserved in this branch's history (`13135fc`..`c1a9426`) and in the
 probes `R1`–`R22b`, which remain a correct specification of what a classifier
 must satisfy.
+
+---
+
+## Blocking precondition for step 5 (branch protection)
+
+The withdrawal removed the evidence check that mitigated finding **N2**, so N2
+is live again in what ships. It is **safe today and unsafe the moment branch
+protection narrows to `quality-gate` alone.**
+
+The mechanism, verified in `ci-battery-plan.mjs`:
+
+```js
+if (decider.status !== 'completed') return true;
+if (decider.conclusion === 'cancelled') return false;
+// a FAILED run falls through here and counts as coverage
+```
+
+`coveredBy` deliberately excludes `cancelled` and deliberately does **not**
+exclude `failure`. So after a red product run, a later title/body edit yields
+`run_products=false`, every product job skips, and `assessQualityGate` — which
+accepts a deliberate skip — reports **green**.
+
+That is coherent **only while the five product checks are individually
+required**: the red `api` check blocks the merge on its own, and re-running it
+would be waste. `battery-plan`'s semantics assume exactly that.
+
+**So step 5 must do one of these, not merely swap the required set:**
+
+1. Keep the five product checks required alongside `quality-gate` — smallest
+   change, keeps `battery-plan`'s assumption true, loses the "one required
+   status" simplification.
+2. Make `coveredBy` treat a FAILED decider as not-covering, so a red head always
+   re-runs. One condition, but it changes behaviour an existing battery test
+   pins deliberately, and costs a full battery on every edit after a failure.
+3. Reinstate an evidence check in `quality-gate`. This is what heads 3–5 kept
+   getting wrong; do not attempt it without the applicability-aware coverage
+   model described above.
+
+Option 1 is the recommendation for step 5 as a standalone change: it is the only
+one that adds no new state, and `quality-gate` still becomes the status the
+orchestrator and humans read.
+
+This is recorded here because the previous head's summary claimed step 5 was
+unaffected. It is not — it is gated on this choice.
