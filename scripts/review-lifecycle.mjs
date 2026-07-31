@@ -211,6 +211,7 @@ export function assessRestructure({
   body,
   recordedMetrics,
   floorUnreadable = false,
+  deferralInForce = false,
 }) {
   const replaces = replacementSource(body);
   const liveHeads = codexFindingHeads(comments, reviews);
@@ -223,7 +224,15 @@ export function assessRestructure({
   // lets a partial live read continue the unit, which is exactly the walk-back
   // the floor rule forbids. `floorUnreadable` is passed in by the caller when the
   // sticky read itself failed, and it blocks rather than guesses.
-  if (floorUnreadable) {
+  //
+  // But it blocks only where it is actually BLIND. The floor is a LOWER bound, and
+  // a lower bound cannot lower anything: if the live reading ALONE already reaches
+  // the limit, then max(unrecorded, live) reaches it too and the verdict is decided
+  // without the record. Publishing a retryable "undecided" there would strand an
+  // already-over-limit unit in recovery instead of issuing the replacement verdict
+  // it has plainly earned — the unreadable-floor rule protecting the very unit it
+  // exists to stop.
+  if (floorUnreadable && liveHeads.length < RESTRUCTURE_AFTER_FINDING_HEADS) {
     return {
       findingHeadCount,
       findingHeadIds: merged.ids,
@@ -249,6 +258,34 @@ export function assessRestructure({
   };
 
   if (findingHeadCount >= RESTRUCTURE_AFTER_FINDING_HEADS) {
+    // A unit that already has a rule keeps it.
+    //
+    // The header above says this module governs "the case that had no rule", and a
+    // docs-only unit that has handed its still-open questions to named probes via
+    // `Review-Deferred-To-Probes:` is not that case — it is following the protocol
+    // that owns it, validated by the convergence gate (trailer parses, names a task
+    // in a phase with a review stop still ahead, packet present). Blocking it here
+    // would REPLACE that protocol for the exact situation the repository wrote it
+    // for, which is what deleting the docs/code classifier was supposed to prevent.
+    //
+    // This is not the classifier coming back. Nothing is inferred and no second
+    // threshold exists: the signal is an explicit, declared, already-validated
+    // handoff, and an invalid one buys nothing, because the caller only reports a
+    // deferral the convergence gate itself accepts.
+    if (deferralInForce) {
+      return {
+        ...base,
+        state: replaces ? 'replacement_reviewing' : 'reviewing',
+        required: false,
+        allowed: true,
+        undecided: false,
+        deferred: true,
+        reason: `${findingHeadCount} finding-bearing heads reaches the `
+          + `${RESTRUCTURE_AFTER_FINDING_HEADS}-head limit, but this unit has an accepted `
+          + 'probe deferral; the deferral protocol owns it and restructuring would '
+          + 'replace a rule it is already following',
+      };
+    }
     return {
       ...base,
       state: 'restructure_required',

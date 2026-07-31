@@ -228,8 +228,8 @@ test('E5: the lifecycle precedes the scope gate at BOTH enforcement seams', asyn
   const preconditions = [...source.matchAll(/await enforceRestructure\(/gu)];
   const scopeGates = [...source.matchAll(/await enforceReviewScope\(/gu)];
   assert.equal(scopeGates.length, 2, 'the gate has exactly two enforcement seams');
-  assert.equal(
-    preconditions.length, 2,
+  assert.ok(
+    preconditions.length >= 2,
     'each seam runs the lifecycle precondition — a seam without one is unguarded',
   );
 
@@ -241,4 +241,181 @@ test('E5: the lifecycle precedes the scope gate at BOTH enforcement seams', asyn
       'every scope gate is preceded by the lifecycle precondition, never followed by it',
     );
   }
+});
+
+// ===========================================================================
+// Round 1 corrections. Three findings on head `4e3644a`, all of them real.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// E6 (P1): the precondition is necessary and NOT sufficient.
+//
+// It runs before Codex has spoken, so it sees the count as of the PREVIOUS head.
+// A unit at four finding-bearing heads passes it; Codex then posts findings on
+// this head, making five; and the plain `changes_required` path answers the fifth
+// head by asking for a sixth. That is exactly the correction round the policy
+// says must not be granted, noticed one head too late.
+// ---------------------------------------------------------------------------
+
+test('E6: a finding that CROSSES the limit is answered with restructure, not another round', async () => {
+  // Four heads when the precondition ran; five once this head drew findings.
+  const client = gateClient({ reads: [findingsOn('h1', 'h2', 'h3', 'h4', 'h5')] });
+  const outcome = await reviewGate.publishFindingOutcome(client, PR, 'head-x', {
+    detail: '3 current-head Codex findings',
+    attempt: 1,
+    next: 'Claude Auto-fix handles the review comments and pushes a new head.',
+  });
+
+  const sticky = client.sticky.join('\n');
+  assert.match(sticky, /restructure_required/u, 'the crossing head gets the replacement verdict');
+  assert.doesNotMatch(
+    sticky, /State:\D+`changes_required`/u,
+    'and is NOT told to push another correction head',
+  );
+  assert.deepEqual(
+    client.statuses.map((entry) => entry.description),
+    ['review: restructure required'],
+    'exactly one verdict is published for one head',
+  );
+  assert.match(outcome.detail, /open a declared replacement/u);
+});
+
+test('E6b: a finding BELOW the limit still asks for an ordinary correction head', async () => {
+  const client = gateClient({ reads: [findingsOn('h1', 'h2', 'h3')] });
+  const outcome = await reviewGate.publishFindingOutcome(client, PR, 'head-x', {
+    detail: '2 current-head Codex findings',
+    attempt: 1,
+    next: 'Claude Auto-fix handles the review comments and pushes a new head.',
+  });
+
+  assert.match(client.sticky.join('\n'), /changes_required/u);
+  assert.deepEqual(
+    client.statuses.map((entry) => entry.description),
+    ['review: 2 current-head Codex findings'],
+  );
+  assert.equal(outcome.detail, '2 current-head Codex findings');
+});
+
+// ---------------------------------------------------------------------------
+// E7 (P2): an unreadable floor blocks only where it is actually BLIND.
+//
+// The floor is a LOWER bound and a lower bound cannot lower anything. If the live
+// reading alone already reaches the limit, the verdict is decided without the
+// record — and publishing a retryable `undecided` there would strand an
+// already-over-limit unit in recovery instead of issuing the verdict it earned.
+// ---------------------------------------------------------------------------
+
+test('E7: an unreadable floor does not rescue a unit the LIVE evidence already convicts', async () => {
+  const client = gateClient({ reads: [findingsOn('h1', 'h2', 'h3', 'h4', 'h5')] });
+  client.stickyComment = async () => { throw new Error('comments API unavailable'); };
+
+  const result = await enforceRestructure(client, PR, 'head-x');
+  assert.equal(result.allowed, false);
+  assert.equal(result.undecided, false, 'five live heads decide it without the record');
+  assert.equal(result.state, 'restructure_required');
+  assert.deepEqual(
+    client.statuses.map((entry) => entry.description),
+    ['review: restructure required'],
+    'the replacement verdict is published, not a retryable "undecided"',
+  );
+});
+
+test('E7b: an unreadable floor still blocks as undecided when the live reading is UNDER the limit', async () => {
+  const client = gateClient({ reads: [findingsOn('h1', 'h2')] });
+  client.stickyComment = async () => { throw new Error('comments API unavailable'); };
+
+  const result = await enforceRestructure(client, PR, 'head-x');
+  assert.equal(result.allowed, false, 'blind about a possible crossing still fails closed');
+  assert.equal(result.undecided, true);
+  assert.deepEqual(
+    client.statuses.map((entry) => entry.description),
+    ['review: restructure check undecided'],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// E8 (P2): a unit that already HAS a rule keeps it.
+//
+// This module's own header says it governs "the case that had no rule". A
+// docs-only unit that has handed its still-open questions to named probes via
+// `Review-Deferred-To-Probes:` is not that case — it is following the protocol
+// the repository wrote for exactly this situation. Blocking it here would replace
+// that protocol, which is what deleting the docs/code classifier was meant to
+// prevent. Part 2 shipped the cap without honouring the rule part 1 wrote down.
+// ---------------------------------------------------------------------------
+
+test('E8: the policy stands down for a unit holding an accepted probe deferral', async () => {
+  const { assessRestructure } = await import('./review-lifecycle.mjs');
+  const inputs = {
+    comments: findingsOn('h1', 'h2', 'h3', 'h4', 'h5'),
+    reviews: [],
+    body: '',
+  };
+
+  const blocked = assessRestructure(inputs);
+  assert.equal(blocked.state, 'restructure_required', 'without a deferral the cap applies');
+
+  const deferred = assessRestructure({ ...inputs, deferralInForce: true });
+  assert.equal(deferred.allowed, true, 'with one, the deferral protocol owns the unit');
+  assert.equal(deferred.deferred, true);
+  assert.match(deferred.reason, /deferral protocol owns it/u);
+});
+
+test('E8b: the gate RECOGNISES an accepted deferral through the convergence contract', async () => {
+  // Derived from the same source the gate reads, so this tracks docs/STATUS.md
+  // instead of pinning a phase number that legitimately changes.
+  const { loadStatusDocument } = await import('./autonomous-status-state.mjs');
+  const { deferralPhases } = await import('./review-efficiency.mjs');
+  const phase = deferralPhases((await loadStatusDocument())?.now)?.[0];
+  assert.ok(Number.isInteger(phase), 'STATUS must name a phase with open work');
+
+  const docsOnly = [{ filename: 'docs/superpowers/plans/some-plan.md', status: 'modified' }];
+  const client = gateClient({ reads: [findingsOn('h1', 'h2', 'h3', 'h4', 'h5')] });
+  client.commit = async () => ({
+    commit: {
+      message: 'Bound docs-only review\n\nBody.\n\n'
+        + `Review-Convergence: complete\nReview-Deferred-To-Probes: phase-${phase}-task-1\n`,
+    },
+    files: [{ filename: 'docs/reviews/pr-900-convergence.md', status: 'added' }],
+  });
+  client.pullRequestFiles = async () => docsOnly;
+
+  const result = await enforceRestructure(client, PR, 'head-x');
+  assert.equal(result.allowed, true, 'the accepted deferral stands the restructure cap down');
+  assert.equal(result.deferred, true);
+  assert.deepEqual(client.statuses, [], 'nothing is published against the head');
+  assert.deepEqual(client.drafted, [], 'and it is not drafted');
+});
+
+test('E8c: an INVALID deferral buys nothing — the cap still applies', async () => {
+  // The exemption is granted only on a deferral the convergence gate itself
+  // accepts. "later" schedules nothing, so it must not launder past the cap.
+  const client = gateClient({ reads: [findingsOn('h1', 'h2', 'h3', 'h4', 'h5')] });
+  client.commit = async () => ({
+    commit: {
+      message: 'Docs head\n\nBody.\n\n'
+        + 'Review-Convergence: complete\nReview-Deferred-To-Probes: later\n',
+    },
+    files: [{ filename: 'docs/reviews/pr-900-convergence.md', status: 'added' }],
+  });
+  client.pullRequestFiles = async () => [
+    { filename: 'docs/superpowers/plans/some-plan.md', status: 'modified' },
+  ];
+
+  const result = await enforceRestructure(client, PR, 'head-x');
+  assert.equal(result.allowed, false, 'a deferral that schedules nothing exempts nothing');
+  assert.equal(result.state, 'restructure_required');
+});
+
+test('E8d: a CODE unit at the limit is still blocked — the deferral is docs-only', async () => {
+  const client = gateClient({ reads: [findingsOn('h1', 'h2', 'h3', 'h4', 'h5')] });
+  client.commit = async () => ({
+    commit: { message: 'Code head\n\nBody.\n\nReview-Convergence: complete\n' },
+    files: [{ filename: 'docs/reviews/pr-900-convergence.md', status: 'added' }],
+  });
+  client.pullRequestFiles = async () => [{ filename: 'scripts/thing.mjs', status: 'modified' }];
+
+  const result = await enforceRestructure(client, PR, 'head-x');
+  assert.equal(result.allowed, false, 'no deferral is owed or held by a code unit');
+  assert.equal(result.state, 'restructure_required');
 });

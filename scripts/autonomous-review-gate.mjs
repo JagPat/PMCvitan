@@ -1081,6 +1081,55 @@ async function readStickyComment(client, number) {
   }
 }
 
+// Does this unit hold an ACCEPTED probe deferral?
+//
+// Asked only when the restructure cap would otherwise block, because that is the only
+// moment the answer changes anything — and it costs three reads, which a precondition
+// running on every event should not pay for nothing.
+//
+// The answer comes from `assessConvergence` on the SAME inputs the convergence gate
+// uses, not from re-deriving "is this docs-only" here. Re-deriving it is precisely how
+// a cross-cutting rule ends up with two implementations that disagree; and `allowed`
+// already folds in every validity condition — trailer parses, names a task, the phase
+// still has a review stop ahead, STATUS is not in the diff, packet present. A deferral
+// the convergence gate would reject therefore buys nothing here either.
+async function acceptedDeferral(client, pullRequest, expectedHead) {
+  try {
+    const [commit, comments, reviews] = await Promise.all([
+      client.commit(expectedHead),
+      client.reviewComments(pullRequest.number),
+      client.reviews(pullRequest.number),
+    ]);
+    let pullRequestFiles;
+    try {
+      pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
+    } catch {
+      pullRequestFiles = undefined;
+    }
+    let activePhases;
+    try {
+      const status = await loadStatusDocument();
+      activePhases = deferralPhases(status?.now);
+    } catch {
+      activePhases = undefined;
+    }
+    const convergence = assessConvergence({
+      comments,
+      reviews,
+      headMessage: commit.commit?.message,
+      changedFiles: commit.files ?? [],
+      pullRequestFiles,
+      activePhases,
+    });
+    return convergence.deferralRequired === true && convergence.allowed === true;
+  } catch {
+    // Unverifiable is not accepted. A deferral is an EXEMPTION from the cap, and an
+    // exemption that cannot be proven must not be granted — failing the other way
+    // would let an unreadable API turn every over-limit unit into an exempt one.
+    return false;
+  }
+}
+
 function restructureBlockReason(restructure) {
   return restructure.undecided
     ? 'restructure check undecided: the recorded lifecycle floor was unreadable'
@@ -1105,13 +1154,28 @@ export async function enforceRestructure(client, pullRequest, expectedHead) {
     ? null
     : mergeRecordedMetrics(readMetrics(sticky), client.lifecycleMetrics);
 
-  const result = assessRestructure({
+  let result = assessRestructure({
     comments,
     reviews,
     body: pullRequest.body,
     recordedMetrics,
     floorUnreadable,
   });
+
+  // Only a unit that would otherwise be BLOCKED needs the deferral question answered,
+  // so it is asked here rather than in the assessment's inputs. Re-assessing with the
+  // answer (instead of patching the verdict) keeps one function deciding the verdict.
+  if (result.state === 'restructure_required'
+    && await acceptedDeferral(client, pullRequest, expectedHead)) {
+    result = assessRestructure({
+      comments,
+      reviews,
+      body: pullRequest.body,
+      recordedMetrics,
+      floorUnreadable,
+      deferralInForce: true,
+    });
+  }
 
   // Record the floor BEFORE branching, on every path.
   //
@@ -1167,6 +1231,72 @@ export async function enforceRestructure(client, pullRequest, expectedHead) {
     }),
   );
   return result;
+}
+
+// Publish a current-head finding — but re-ask the cap first.
+//
+// The run-level precondition is necessary and NOT sufficient. It runs before Codex has
+// spoken, so it sees the count as of the PREVIOUS head: a unit at four finding-bearing
+// heads passes it, Codex then posts findings on this head making five, and the plain
+// `changes_required` path would answer the fifth head by asking for a sixth. That is
+// exactly the extra correction round the policy says must not be granted, and the gate
+// would only notice on the head after it.
+//
+// So the finding outcome funnels through here. `enforceRestructure` re-reads the live
+// evidence — which now INCLUDES this head's findings — and if the cap is reached it has
+// already drafted, set the failing status and written the sticky comment, so there is
+// nothing left to publish and the caller simply reports it. Returning the reason rather
+// than a second publication is what keeps one head from carrying two verdicts.
+export async function publishFindingOutcome(
+  client,
+  pullRequest,
+  expectedHead,
+  { detail, attempt, next, recoveryRequest, recoveryReason },
+) {
+  const restructure = await enforceRestructure(client, pullRequest, expectedHead);
+  if (restructure.superseded) return { superseded: true };
+  if (!restructure.allowed) {
+    await settleRecoveryRequest(
+      client,
+      expectedHead,
+      pullRequest,
+      recoveryRequest,
+      recoveryReason,
+    );
+    return { detail: restructureBlockReason(restructure), restructure };
+  }
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return { superseded: true };
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `review: ${detail}`,
+    live.html_url,
+  );
+  await settleRecoveryRequest(
+    client,
+    expectedHead,
+    live,
+    recoveryRequest,
+    recoveryReason,
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'changes_required',
+      head: expectedHead,
+      detail,
+      attempt,
+      next,
+    }),
+  );
+  return { detail, pullRequest: live };
 }
 
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
@@ -1356,37 +1486,14 @@ export async function guardAgainstCurrentHeadFinding(
   });
   if (result.state !== 'changes_required') return null;
 
-  const live = await setDraftForCurrentHead(
-    client,
-    pullRequest.number,
-    expectedHead,
-    true,
-  );
-  if (!live) return result.detail;
-  await client.setStatus(
-    expectedHead,
-    'failure',
-    `review: ${result.detail}`,
-    pullRequest.html_url,
-  );
-  await settleRecoveryRequest(
-    client,
-    expectedHead,
-    pullRequest,
+  const outcome = await publishFindingOutcome(client, pullRequest, expectedHead, {
+    detail: result.detail,
+    attempt: 0,
+    next: 'Claude Auto-fix handles the review comments and pushes a new head.',
     recoveryRequest,
-    'current-head finding observed before recovery',
-  );
-  await client.updateStickyComment(
-    pullRequest.number,
-    statusBody({
-      state: 'changes_required',
-      head: expectedHead,
-      detail: result.detail,
-      attempt: 0,
-      next: 'Claude Auto-fix handles the review comments and pushes a new head.',
-    }),
-  );
-  return result.detail;
+    recoveryReason: 'current-head finding observed before recovery',
+  });
+  return outcome.superseded ? result.detail : outcome.detail;
 }
 
 export function contextForEvent(eventName, event, dispatchNumber) {
@@ -1670,37 +1777,20 @@ export async function run() {
     if (result.state === 'superseded') return;
 
     if (result.state === 'changes_required') {
-      pullRequest = await setDraftForCurrentHead(
+      const outcome = await publishFindingOutcome(
         client,
-        pullRequest.number,
-        expectedHead,
-        true,
-      );
-      if (!pullRequest) return;
-      await client.setStatus(
-        expectedHead,
-        'failure',
-        `review: ${result.detail}`,
-        pullRequest.html_url,
-      );
-      await settleRecoveryRequest(
-        client,
-        expectedHead,
         pullRequest,
-        recoveryRequest,
-        'review finding',
-      );
-      await client.updateStickyComment(
-        pullRequest.number,
-        statusBody({
-          state: 'changes_required',
-          head: expectedHead,
+        expectedHead,
+        {
           detail: result.detail,
           attempt,
           next: 'Claude Auto-fix handles the review comments and pushes a new head.',
-        }),
+          recoveryRequest,
+          recoveryReason: 'review finding',
+        },
       );
-      throw new Error(result.detail);
+      if (outcome.superseded) return;
+      throw new Error(outcome.detail);
     }
 
     if (result.state === 'clear') {
@@ -1721,40 +1811,23 @@ export async function run() {
         reviewNotBefore,
       );
       if (verifiedResult.state !== 'clear') {
-        pullRequest = await setDraftForCurrentHead(
-          client,
-          pullRequest.number,
-          expectedHead,
-          true,
-        );
-        if (!pullRequest) return;
         const detail = verifiedResult.state === 'changes_required'
           ? verifiedResult.detail
           : 'Codex evidence changed during final verification';
-        await client.setStatus(
-          expectedHead,
-          'failure',
-          `review: ${detail}`,
-          pullRequest.html_url,
-        );
-        await settleRecoveryRequest(
+        const outcome = await publishFindingOutcome(
           client,
-          expectedHead,
           pullRequest,
-          recoveryRequest,
-          'changed review evidence',
-        );
-        await client.updateStickyComment(
-          pullRequest.number,
-          statusBody({
-            state: 'changes_required',
-            head: expectedHead,
+          expectedHead,
+          {
             detail,
             attempt,
             next: 'Claude Auto-fix handles the latest review evidence and pushes a new head.',
-          }),
+            recoveryRequest,
+            recoveryReason: 'changed review evidence',
+          },
         );
-        throw new Error(detail);
+        if (outcome.superseded) return;
+        throw new Error(outcome.detail);
       }
       const finalStatuses = await client.statuses(expectedHead);
       const finalCheckSummary = summarizeRequiredChecks(

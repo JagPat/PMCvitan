@@ -193,6 +193,94 @@ preservation half.
 | `pnpm check` | **EXIT 0** (web 543/543, API 680/680, build clean) |
 | Migrations | none — `upgrade-proof.sh` not applicable |
 
+## Correction round 1 — head `4e3644a`, three findings
+
+All three were real. Two were gaps in the enforcement; the third held this PR to a
+rule part 1 had already written down and part 2 then failed to honour.
+
+### P1 — the precondition is necessary, not sufficient
+
+The lifecycle check ran only as a run-level precondition, *before* Codex is
+promoted. So it sees the count as of the PREVIOUS head: a unit at four
+finding-bearing heads passes it, Codex posts findings on this head making five,
+and the plain `changes_required` branch answers the fifth head by asking for a
+sixth. The gate would only notice on the head after the one that crossed.
+
+**Fix.** The finding outcome now funnels through one `publishFindingOutcome`,
+which re-asks the cap against live evidence that *includes* this head's findings.
+When the cap is reached, `enforceRestructure` has already drafted, failed the
+status and written the sticky comment, so the caller reports it rather than
+publishing a second verdict — one head, one verdict. Three `changes_required`
+publication sites now share it, so a fourth added later inherits the re-check.
+
+### P2 — an unreadable floor must not rescue a unit the live evidence convicts
+
+The unreadable-floor rule took the retryable `undecided` path unconditionally,
+even when the successfully-read comments already showed five finding-bearing
+heads. The floor is a **lower bound**, and a lower bound cannot lower anything:
+if the live reading alone reaches the limit, `max(unrecorded, live)` reaches it
+too. Publishing `undecided` there stranded an already-over-limit unit in recovery
+instead of issuing the replacement verdict it had earned.
+
+**Fix.** `assessRestructure` blocks as `undecided` only where it is actually
+blind — floor unreadable **and** the live reading under the limit.
+
+### P2 — preserve docs-only probe deferrals at the cap
+
+This module's own header says it governs "the case that had no rule", and part 1
+deleted the docs/code classifier precisely so a second, shorter cap could not
+collide with the bounded `Review-Deferred-To-Probes` protocol. But the
+enforcement then ran ahead of `enforceReviewConvergence` and blocked a docs-only
+unit that had *already made* that handoff — replacing the protocol for the exact
+case the repository wrote it for. The subtraction went one step too far: removing
+the classifier also removed the awareness that a deferred unit is already handled.
+
+**Fix.** When the cap would otherwise block, the gate asks whether an **accepted**
+deferral is in force, and stands down if so. Deliberately:
+
+- the answer comes from `assessConvergence` on the same inputs the convergence
+  gate uses — not from re-deriving "is this docs-only" here, which is how one rule
+  ends up with two implementations that disagree;
+- `allowed === true` already folds in every validity condition, so a deferral the
+  convergence gate would reject buys nothing here either (`E8c`);
+- an unverifiable answer is **not** an exemption — failing the other way would let
+  an unreadable API turn every over-limit unit into an exempt one;
+- it is not the classifier returning: nothing is inferred and no second threshold
+  exists. The signal is an explicit, declared, already-validated handoff.
+
+### Correction probes
+
+| Probe | What it pins |
+| --- | --- |
+| `E6` | a finding that CROSSES the limit gets the replacement verdict, not another round |
+| `E6b` | a finding below the limit still gets an ordinary correction head |
+| `E7` | an unreadable floor does not rescue a unit five live heads already convict |
+| `E7b` | it still blocks as `undecided` when the live reading is under the limit |
+| `E8` | the policy stands down for an accepted deferral (pure) |
+| `E8b` | the gate recognises one through the convergence contract (wiring) |
+| `E8c` | an invalid deferral (`later`) exempts nothing |
+| `E8d` | a code unit at the limit is still blocked |
+
+Discrimination, each mechanism reverted in turn:
+
+| Reverted mechanism | Probe that failed |
+| --- | --- |
+| the post-review re-check inside `publishFindingOutcome` | `E6` |
+| the live-evidence exception on an unreadable floor | `E7` |
+| the deferral stand-down (policy) | `E8` **and** `E8b` |
+| the deferral consult (gate wiring only) | `E8b` only |
+
+The last two rows are the useful ones: reverting the policy breaks both probes,
+reverting only the wiring breaks only the wiring probe. Policy and wiring are
+independently pinned rather than jointly covered by one passing assertion.
+
+`E8b` derives its phase from `deferralPhases(loadStatusDocument())` — the same
+source the gate reads — so it tracks `docs/STATUS.md` instead of pinning a phase
+number that legitimately changes.
+
+Round-1 gates: focused suite **17/17**; `pnpm test:automation` **188/188**;
+`pnpm check` **EXIT 0** (web 543/543, API 680/680).
+
 ## What this deliberately does not do
 
 - Does **not** change the threshold. Five finding-bearing heads is part 1's
