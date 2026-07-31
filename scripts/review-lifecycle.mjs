@@ -131,6 +131,65 @@ export function mergeFindingHeads(recorded, liveHeads) {
   return { ids: [...union], count: Math.max(union.size, legacyFloor) };
 }
 
+// Combine several RECORDED floors into one. The floor has more than one source —
+// the sticky comment, and the value this run has already observed in memory — and
+// every source must be UNIONED, never replaced.
+//
+// Round 4 made the floor durable across sticky writes but not across repeated
+// lifecycle checks inside a single run. `enforceRestructure` runs twice (the
+// driver's precondition and the pre-Codex revalidation), and each seeded itself
+// from the sticky comment alone. With a metrics-less sticky both saw `null`, so a
+// partial second read of three heads replaced a first observation of four — and
+// when the fifth head landed, a partial read could still total four and invite
+// another correction head on a unit that had already crossed.
+//
+// Scalars that describe the LATEST assessment (state, threshold, elapsed) take the
+// last value; everything that is a floor accumulates.
+export function mergeRecordedMetrics(...records) {
+  const present = records.filter((record) => record && typeof record === 'object');
+  if (present.length === 0) return null;
+
+  const ids = new Set();
+  let legacyFloor = 0;
+  let kind;
+  let firstSeenAt;
+  let findingsPerHead = {};
+  const latest = {};
+
+  for (const record of present) {
+    for (const id of Array.isArray(record.findingHeadIds) ? record.findingHeadIds : []) {
+      if (typeof id === 'string' && id.length > 0) ids.add(id);
+    }
+    // A legacy record carries only a count and cannot be unioned, so it still
+    // applies numerically — otherwise upgrading forgives every unit in flight.
+    if (Number.isInteger(record.findingHeads) && record.findingHeads > legacyFloor) {
+      legacyFloor = record.findingHeads;
+    }
+    // Strictest kind ever presented wins, exactly as in `assessRestructure`.
+    if (record.kind === 'docs') kind = 'docs';
+    else if (record.kind === 'code' && kind !== 'docs') kind = 'code';
+    // Earliest start: elapsed time should not restart because a later record
+    // stamped itself.
+    if (typeof record.firstSeenAt === 'string'
+      && (firstSeenAt === undefined || record.firstSeenAt < firstSeenAt)) {
+      firstSeenAt = record.firstSeenAt;
+    }
+    findingsPerHead = { ...findingsPerHead, ...(record.findingsPerHead ?? {}) };
+    for (const key of ['state', 'threshold', 'elapsedMinutes', 'replaces']) {
+      if (record[key] !== undefined && record[key] !== null) latest[key] = record[key];
+    }
+  }
+
+  return {
+    ...latest,
+    findingHeads: Math.max(ids.size, legacyFloor),
+    findingHeadIds: [...ids],
+    findingsPerHead,
+    ...(kind ? { kind } : {}),
+    ...(firstSeenAt ? { firstSeenAt } : {}),
+  };
+}
+
 // Retained as the numeric view of the same rule, for callers that only need the
 // count. Implemented ON TOP of the identity union so the two cannot disagree.
 export function mergeFindingHeadCount(recorded, live) {

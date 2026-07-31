@@ -15,6 +15,7 @@ import {
   assessRestructure,
   mergeFindingHeadCount,
   mergeFindingHeads,
+  mergeRecordedMetrics,
   nextMetrics,
   preserveMetrics,
   readMetrics,
@@ -744,4 +745,118 @@ test('O3c: a later metrics-free sticky write still carries that floor', async ()
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Round 5. One P2 finding on head `9bd21ca`: the floor was durable across sticky
+// writes but not across REPEATED lifecycle checks inside one run.
+// ---------------------------------------------------------------------------
+
+test('P1: a second lifecycle check in the same run cannot lower the floor', async () => {
+  // enforceRestructure runs twice per run (driver precondition + pre-Codex
+  // revalidation). Each seeded recordedMetrics from the sticky comment ALONE, so
+  // against a metrics-less sticky both started from null and the second call's
+  // partial read replaced the first call's larger observation.
+  const reads = [
+    findingsOn('h1', 'h2', 'h3', 'h4'),   // first check: sees all four
+    findingsOn('h2', 'h3', 'h4'),         // second check: partial, one omitted
+  ];
+  let call = 0;
+  const client = {
+    async reviewComments() { return reads[call++] ?? []; },
+    async reviews() { return []; },
+    async pullRequestFiles() { return CODE; },
+    async stickyComment() { return null; },   // metrics-less sticky
+    async updateStickyComment() {},
+    async setStatus() {},
+    async setDraft() {},
+    // DELIBERATELY NAIVE — a plain assignment, so this probe measures the
+    // SEEDING fix in enforceRestructure and nothing else. A fake that merged
+    // internally would pass with the production fix reverted, i.e. it would be
+    // testing the fixture. The monotonic setter is isolated by `P1b`.
+    setLifecycleMetrics(metrics) { this.lifecycleMetrics = metrics ?? null; },
+  };
+  const pr = { number: 258, body: '', html_url: 'https://example.invalid/pr/258' };
+
+  await enforceRestructure(client, pr, 'head-4');
+  assert.equal(client.lifecycleMetrics.findingHeads, 4, 'first check observes four');
+
+  await enforceRestructure(client, pr, 'head-4');
+  assert.equal(
+    client.lifecycleMetrics.findingHeads,
+    4,
+    'the partial second read must not walk the run floor back to three',
+  );
+  assert.deepEqual(
+    [...client.lifecycleMetrics.findingHeadIds].sort(),
+    ['h1', 'h2', 'h3', 'h4'],
+    'and it keeps the identity that the partial read omitted',
+  );
+});
+
+test('P2: the preserved floor still catches the fifth head under a partial read', () => {
+  // Why P1 matters. Codex adds h5; the live read is partial and omits h1. With the
+  // floor intact the union is five and the unit must restructure. Had the floor
+  // been walked back to three, the union would be four and the gate would invite
+  // yet another correction head on a unit that had already crossed.
+  const preserved = {
+    findingHeads: 4,
+    findingHeadIds: ['h1', 'h2', 'h3', 'h4'],
+    kind: 'code',
+  };
+  const crossed = assessRestructure({
+    comments: findingsOn('h2', 'h3', 'h4', 'h5'),
+    reviews: [],
+    pullRequestFiles: CODE,
+    body: '',
+    recordedMetrics: preserved,
+  });
+  assert.equal(crossed.findingHeadCount, 5);
+  assert.equal(crossed.state, 'restructure_required');
+
+  const walkedBack = assessRestructure({
+    comments: findingsOn('h2', 'h3', 'h4', 'h5'),
+    reviews: [],
+    pullRequestFiles: CODE,
+    body: '',
+    recordedMetrics: { findingHeads: 3, findingHeadIds: ['h2', 'h3', 'h4'], kind: 'code' },
+  });
+  assert.equal(walkedBack.findingHeadCount, 4, 'the defect this prevents, stated exactly');
+  assert.equal(walkedBack.state, 'reviewing');
+});
+
+test('P3: mergeRecordedMetrics accumulates floors and keeps the latest assessment', () => {
+  const merged = mergeRecordedMetrics(
+    { findingHeads: 4, findingHeadIds: ['h1', 'h2', 'h3', 'h4'], kind: 'docs', firstSeenAt: '2026-07-01T00:00:00.000Z', state: 'reviewing' },
+    { findingHeads: 3, findingHeadIds: ['h2', 'h3', 'h5'], kind: 'code', firstSeenAt: '2026-07-30T00:00:00.000Z', state: 'restructure_required', threshold: 3 },
+  );
+  assert.equal(merged.findingHeads, 5, 'identities union, they do not replace');
+  assert.deepEqual([...merged.findingHeadIds].sort(), ['h1', 'h2', 'h3', 'h4', 'h5']);
+  assert.equal(merged.kind, 'docs', 'strictest kind ever presented governs');
+  assert.equal(merged.firstSeenAt, '2026-07-01T00:00:00.000Z', 'elapsed does not restart');
+  assert.equal(merged.state, 'restructure_required', 'latest assessment scalars win');
+  assert.equal(merged.threshold, 3);
+  assert.equal(mergeRecordedMetrics(null, undefined), null, 'nothing recorded stays nothing');
+});
+
+test('P1b: the real client setter is monotonic on its own', () => {
+  // The other half, isolated: even a caller that hands over a smaller reading
+  // cannot lower the stored floor. `P1` proves the seeding; this proves the
+  // setter, so neither fix can silently regress behind the other.
+  const client = new reviewGate.GitHubClient({ repository: 'o/r', token: 't' });
+  client.setLifecycleMetrics({
+    findingHeads: 4,
+    findingHeadIds: ['h1', 'h2', 'h3', 'h4'],
+    kind: 'code',
+  });
+  client.setLifecycleMetrics({
+    findingHeads: 3,
+    findingHeadIds: ['h2', 'h3', 'h4'],
+    kind: 'code',
+  });
+  assert.equal(client.lifecycleMetrics.findingHeads, 4, 'a smaller reading cannot lower it');
+  assert.deepEqual(
+    [...client.lifecycleMetrics.findingHeadIds].sort(),
+    ['h1', 'h2', 'h3', 'h4'],
+  );
 });

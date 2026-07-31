@@ -419,3 +419,65 @@ spread thin across a large surface. And there is no honest seam to cut: the mode
 without the wiring is dead code, and the wiring without the model has nothing to
 wire. `restructure_required` is for a unit whose *shape* is wrong. This one's shape
 is fine; its persistence was missing.
+
+---
+
+## Round 5 — head `9bd21ca` → this head
+
+One P2 finding, and it is a real gap in round 4's own fix.
+
+Round 4 made the floor durable **across sticky writes**. It did not make it durable
+**across repeated lifecycle checks inside one run**. `enforceRestructure` runs twice
+— the driver's precondition and the pre-Codex revalidation — and each seeded
+`recordedMetrics` from the sticky comment *alone*. Against a metrics-less sticky
+both start from `null`, so a partial second read of three heads replaces a first
+observation of four. When Codex then adds the fifth head, a partial read totals
+four, the unit reads as still under the limit, and the gate invites another
+correction head on a unit that has already crossed.
+
+The floor has **two** durable sources — the sticky comment and what this run has
+already observed — and round 4 only unioned one of them with the live read.
+
+### The correction, in two independently-testable halves
+
+1. **Seed the assessment from the in-memory floor.**
+   `mergeRecordedMetrics(readMetrics(sticky), client.lifecycleMetrics)` is what the
+   assessment runs against, so the *verdict* — not merely the value stored
+   afterwards — is taken against the higher floor.
+2. **Make the setter monotonic.** `setLifecycleMetrics` merges rather than assigns,
+   so no caller, present or future, can lower the floor even if it forgets to seed.
+
+`mergeRecordedMetrics` accumulates what is a floor (identity union, legacy numeric
+max, strictest kind ever presented, earliest `firstSeenAt`) and takes last-wins on
+what describes the latest assessment (`state`, `threshold`, `elapsedMinutes`).
+
+### Evidence — and a fixture defect caught in passing
+
+The first version of `P1` **passed with both halves reverted**. Its fake client's
+`setLifecycleMetrics` called `mergeRecordedMetrics` itself, so the probe measured
+the fixture rather than the code. That is precisely the hollow-probe failure this
+packet has been calling out elsewhere, and it is recorded here rather than quietly
+repaired.
+
+The fixture is now deliberately naive — a plain assignment — so `P1` measures the
+seeding fix and nothing else, and `P1b` drives the **real** `GitHubClient` setter to
+measure the other half. Each half is now independently discriminating:
+
+```
+A) seeding reverted only        →  not ok 41 - P1   (43 pass / 1 fail)
+B) monotonic setter reverted    →  not ok 44 - P1b  (43 pass / 1 fail)
+C) restored                     →  44/44
+```
+
+`P2` states the consequence exactly: with the floor preserved, a partial read that
+omits `h1` but includes the new `h5` still totals five and restructures; with the
+floor walked back to three, the same read totals four and keeps reviewing.
+
+`pnpm test:automation` **195/195**.
+
+### Head count
+
+This is the fourth finding-bearing head; the code limit is five. Findings by head:
+4 → 5 → 2 → 1. The next head is the last one this unit is entitled to under its own
+rule, and if it draws findings the honest move is to restructure rather than argue
+for an exception.

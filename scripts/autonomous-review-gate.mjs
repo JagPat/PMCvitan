@@ -15,6 +15,7 @@ import {
 } from './review-efficiency.mjs';
 import {
   assessRestructure,
+  mergeRecordedMetrics,
   nextMetrics,
   preserveMetrics,
   readMetrics,
@@ -758,8 +759,12 @@ export class GitHubClient {
 
   // The lifecycle floor for THIS run, recorded by the precondition before any
   // verdict is written. Every sticky write inherits it — see `preserveMetrics`.
+  //
+  // MONOTONIC. The precondition runs more than once per run, and a later partial
+  // read must not replace an earlier, larger observation. Merging rather than
+  // assigning means no caller — present or future — can lower the floor.
   setLifecycleMetrics(metrics) {
-    this.lifecycleMetrics = metrics ?? null;
+    this.lifecycleMetrics = mergeRecordedMetrics(this.lifecycleMetrics, metrics);
   }
 
   async updateStickyComment(number, body) {
@@ -1111,7 +1116,14 @@ export async function enforceRestructure(client, pullRequest, expectedHead) {
   }
   const sticky = await readStickyComment(client, pullRequest.number);
   const floorUnreadable = sticky === FLOOR_UNREADABLE;
-  const recordedMetrics = floorUnreadable ? null : readMetrics(sticky);
+  // The floor has TWO durable sources: the sticky comment, and whatever this run
+  // has already observed. Reading only the comment meant a second precondition
+  // call against a metrics-less sticky started from nothing and could assess a
+  // partial live read as the whole truth. Both are unioned, so the verdict itself
+  // — not merely the value stored afterwards — is taken against the higher floor.
+  const recordedMetrics = floorUnreadable
+    ? null
+    : mergeRecordedMetrics(readMetrics(sticky), client.lifecycleMetrics);
   const result = assessRestructure({
     comments,
     reviews,
