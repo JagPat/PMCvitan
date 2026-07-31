@@ -1,13 +1,21 @@
 name: CI
 
 # One workflow handles every PR event, so a completed CI run always wakes the
-# trusted default-branch owner. The five product jobs run once per SHA: the
-# battery-plan job skips them for a metadata-only body/title edit whose head
-# already has real product runs, and launches them when the merge result under
-# test changed (a base retarget) or when this head's product jobs never really
-# ran (a large PR whose first run failed review-scope — the body edit that
-# fixes the scope evidence is exactly when the battery must finally launch).
-# scripts/autonomous-ci-battery.test.mjs pins this design.
+# trusted default-branch owner.
+#
+# `battery-plan` decides whether this exact head still needs the five product
+# jobs: it skips a metadata-only body/title edit whose head already has real
+# product runs, and launches when the merge result changed (a base retarget) or
+# when the products never really ran. scripts/autonomous-ci-battery.test.mjs
+# pins that design.
+#
+# `quality-gate` is the single required status: it depends on every job above
+# and passes only when each is an explicit success or an explicit skip. A
+# cancelled job — one that never reached a verdict — blocks.
+#
+# A path-based risk classifier was attempted here and withdrawn; see
+# docs/reviews/pr-263-convergence.md for why, and what it would need to return.
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
@@ -37,6 +45,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/ci-battery-plan.mjs
+
+  # The loop's own machinery. NOT gated on the classification: `docs/STATUS.md`
+  # is parsed by the runner state machine, so even a Markdown-only change can
+  # break these. They are seconds, not minutes.
+  automation:
+    needs: [review-scope]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Autonomous review state tests
+        run: pnpm test:automation
 
   web:
     needs: [review-scope, battery-plan]
@@ -212,3 +239,30 @@ jobs:
         run: pnpm --filter api typecheck
       - name: Build
         run: pnpm --filter api build
+
+  # The ONE required status.
+  #
+  # `always()` is load-bearing: without it a failing job would SKIP this gate,
+  # and a skipped required check is not a failing one — the pull request would
+  # sit forever rather than being refused. With it, every job's result reaches
+  # `assessQualityGate`, which passes only on an explicit success or an explicit
+  # skip. A cancelled job never reached a verdict and blocks.
+  quality-gate:
+    if: always()
+    needs:
+      - review-scope
+      - battery-plan
+      - automation
+      - web
+      - e2e
+      - api
+      - api-e2e
+      - upgrade-proof
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Summarize every required check into one verdict
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          RUN_PRODUCTS: ${{ needs.battery-plan.outputs.run_products }}
+        run: node scripts/ci-quality-gate.mjs

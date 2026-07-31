@@ -127,7 +127,7 @@ export function attemptsWithPassingGates(checkRuns) {
   }
   const passing = new Set();
   for (const [attempt, gates] of byAttempt) {
-    if (GATE_CHECKS.every((gate) => gates.get(gate) === true)) passing.add(attempt);
+if (GATE_CHECKS.every((gate) => gates.get(gate) === true)) passing.add(attempt);
   }
   return passing;
 }

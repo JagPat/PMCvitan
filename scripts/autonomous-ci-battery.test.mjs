@@ -37,6 +37,16 @@ function pullRequestTypes(workflow) {
   return match[2].split(',').map((type) => type.trim()).filter(Boolean);
 }
 
+// The source of ONE job: from its key to the next job key. Lets a pin assert
+// what a job declares without depending on where the job sits in the file.
+function jobBlock(workflow, job) {
+  const start = workflow.indexOf(`\n  ${job}:\n`);
+  if (start < 0) return '';
+  const rest = workflow.slice(start + 1);
+  const next = rest.search(/\n {2}[a-zA-Z][a-zA-Z0-9_-]*:\n/u);
+  return next < 0 ? rest : rest.slice(0, next);
+}
+
 function jobNames(workflow) {
   const jobsStart = workflow.search(/(^|\n)jobs:\s*\n/u);
   assert.ok(jobsStart >= 0, 'workflow has a jobs: block');
@@ -58,19 +68,31 @@ test('ci.yml handles every PR event and gates the battery on the plan', async ()
   assert.ok(jobs.includes('battery-plan'), 'ci.yml plans the battery');
   for (const job of PRODUCT_JOBS) {
     assert.ok(jobs.includes(job), `ci.yml defines the product job ${job}`);
-    const gated = new RegExp(
-      `\\n {2}${job}:\\n {4}needs: \\[review-scope, battery-plan\\]`
-        + `\\n {4}if: needs\\.battery-plan\\.outputs\\.run_products == 'true'`,
-      'u',
+    // Anchored on the DEPENDENCY, not on the exact one-line `if:`. The earlier
+    // form matched the whole block verbatim and broke the moment a second
+    // condition (the risk classification) made the expression multi-line —
+    // even though the battery-plan gate it protects was still intact. What
+    // matters is that the job needs the plan AND consults its output.
+    const block = jobBlock(workflow, job);
+    assert.match(
+      block, /needs:\s*\[[^\]]*battery-plan[^\]]*\]/u,
+      `${job} must depend on the battery plan`,
     );
-    assert.match(workflow, gated, `${job} must be gated on the battery plan`);
+    assert.match(
+      block, /needs\.battery-plan\.outputs\.run_products == 'true'/u,
+      `${job} must be gated on the battery plan verdict`,
+    );
   }
 
-  // the plan job itself stays cheap: no dependency install, no database
-  const planStart = workflow.indexOf('  battery-plan:');
-  const webStart = workflow.indexOf('  web:');
-  assert.ok(planStart >= 0 && webStart > planStart);
-  const planJob = workflow.slice(planStart, webStart);
+  // The plan job itself stays cheap: no dependency install, no database.
+  //
+  // Scoped to the battery-plan job ALONE, not to everything between it and the
+  // first product job. The positional form asserted a property of a REGION,
+  // so adding any job in that region — here the automation suite, which does
+  // install dependencies and is correctly gated on review-scope — failed a pin
+  // about battery-plan's cost. What is being protected is that THIS job is
+  // cheap, and that is what it now reads.
+  const planJob = jobBlock(workflow, 'battery-plan');
   assert.match(planJob, /node scripts\/ci-battery-plan\.mjs/u);
   assert.doesNotMatch(planJob, /pnpm install|setup-node|postgres/u);
 });
