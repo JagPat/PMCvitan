@@ -149,3 +149,44 @@ test('G9: the CLI the workflow runs actually EXECUTES', async () => {
     },
   );
 });
+
+test('G10: when products were not re-run, the gate DECLARES it is deferring', async () => {
+  // Codex found that all-skipped products read as an unqualified pass even when
+  // the preserved evidence for the head is red. battery-plan deliberately counts
+  // a failed run as coverage — "the fix for red products is a new SHA, not a
+  // metadata edit" — so the skips are real, and re-running is not the answer.
+  //
+  // Reading the preserved evidence to resolve it is what cost heads 3-5. The
+  // gate instead states the authority it is standing on, so nobody can read a
+  // pass as "the product suites were verified on this event".
+  const covered = assessQualityGate(
+    { 'review-scope': 'success', web: 'skipped', api: 'skipped' },
+    { productsRerun: false },
+  );
+  assert.equal(covered.passed, true, 'the standing product checks still block a red head');
+  assert.equal(covered.deferred, true, 'and the gate must mark itself as deferring');
+  assert.match(covered.reason, /standing product checks remain the authority/u);
+  assert.match(covered.reason, /has NOT verified them/u);
+
+  // When the products DID run, the gate speaks for itself.
+  const own = assessQualityGate({ web: 'success', api: 'success' });
+  assert.equal(own.deferred, false);
+  assert.match(own.reason, /all 2 required checks passed/u);
+
+  // Deferral never rescues a real failure reported in THIS run.
+  const red = assessQualityGate({ web: 'failure' }, { productsRerun: false });
+  assert.equal(red.passed, false, 'a failure in this run still blocks');
+
+  // And the CLI surfaces it, since the log is what a human reads on the PR.
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const cli = new URL('./ci-quality-gate.mjs', import.meta.url).pathname;
+  const out = await promisify(execFile)(process.execPath, [cli], {
+    env: {
+      ...process.env,
+      RUN_PRODUCTS: 'false',
+      JOB_RESULTS: '{"review-scope":{"result":"success"},"web":{"result":"skipped"}}',
+    },
+  });
+  assert.match(out.stdout, /has NOT verified them/u);
+});

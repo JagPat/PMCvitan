@@ -7,7 +7,11 @@ import { pathToFileURL } from 'node:url';
 
 import { assessQualityGate } from './ci-quality-verdict.mjs';
 
-export function run({ raw = process.env.JOB_RESULTS, log = console.log } = {}) {
+export function run({
+  raw = process.env.JOB_RESULTS,
+  productsRerun = process.env.RUN_PRODUCTS !== 'false',
+  log = console.log,
+} = {}) {
   let results;
   try {
     const parsed = JSON.parse(raw ?? '');
@@ -21,7 +25,7 @@ export function run({ raw = process.env.JOB_RESULTS, log = console.log } = {}) {
     return { passed: false };
   }
 
-  const verdict = assessQualityGate(results);
+  const verdict = assessQualityGate(results, { productsRerun });
   log(`quality-gate: ${verdict.passed ? 'PASSED' : 'FAILED'} — ${verdict.reason}`);
   return verdict;
 }

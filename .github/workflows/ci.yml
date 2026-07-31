@@ -264,4 +264,5 @@ jobs:
       - name: Summarize every required check into one verdict
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
+          RUN_PRODUCTS: ${{ needs.battery-plan.outputs.run_products }}
         run: node scripts/ci-quality-gate.mjs

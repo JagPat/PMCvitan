@@ -1,4 +1,4 @@
-// The ONE required status: does this head pass?
+// The SUMMARY status: does this head pass, and on whose authority?
 //
 // This file is what survived the risk-based CI attempt. A path-based classifier
 // that skipped product suites was built here across five heads and withdrawn
@@ -36,7 +36,24 @@
 // So a battery-plan skip is only acceptable when the PRESERVED evidence for
 // this head is actually green. `priorEvidence` carries that verdict; absent or
 // unreadable evidence is not a pass.
-export function assessQualityGate(results) {
+// `productsRerun` is battery-plan's `run_products`. When it is false the five
+// product jobs were skipped because this exact head is ALREADY COVERED — and
+// battery-plan deliberately counts a FAILED earlier run as coverage ("failed
+// runs are still REAL runs; the fix for red products is a new SHA, not a
+// metadata edit"). Judged on the current run alone that is five skips, which
+// this whitelist would read as an unqualified pass over a red head.
+//
+// It does not read the preserved evidence to resolve that — three heads of this
+// pull request were lost trying, because the coverage model has no word for
+// applicability. It does the honest thing instead: it PASSES, because the
+// standing product checks are the authority and a red one of those still blocks
+// the merge on its own, and it SAYS SO in the reason rather than implying it
+// verified anything.
+//
+// That is why this is a summary status and not yet a sufficient one. Narrowing
+// branch protection to this check alone would remove the very authority it is
+// deferring to — see docs/reviews/pr-263-convergence.md.
+export function assessQualityGate(results, { productsRerun = true } = {}) {
   const entries = Object.entries(results ?? {});
   if (entries.length === 0) {
     return { passed: false, reason: 'no job results were reported to the gate' };
@@ -56,8 +73,18 @@ export function assessQualityGate(results) {
 
   const ran = entries.filter(([, result]) => result === 'success').map(([job]) => job);
   const skipped = entries.filter(([, result]) => result === 'skipped').map(([job]) => job);
+  if (!productsRerun) {
+    return {
+      passed: true,
+      deferred: true,
+      reason: `${ran.length} passed (${ran.join(', ')}); the product jobs were not `
+        + 're-run because this head is already covered, so the standing product '
+        + 'checks remain the authority — this gate has NOT verified them',
+    };
+  }
   return {
     passed: true,
+    deferred: false,
     reason: skipped.length === 0
       ? `all ${ran.length} required checks passed`
       : `${ran.length} passed (${ran.join(', ')}); `

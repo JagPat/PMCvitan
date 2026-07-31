@@ -302,3 +302,47 @@ orchestrator and humans read.
 
 This is recorded here because the previous head's summary claimed step 5 was
 unaffected. It is not — it is gated on this choice.
+
+
+---
+
+## Head 8 (`0f480c1`) — Codex independently reaches the same N2 exposure
+
+Codex found the exposure the previous head had already documented, and proposed
+the gate verify preserved evidence or force a rerun. Both remedies were examined
+against the code rather than accepted or dismissed on principle.
+
+**Force a rerun** contradicts a deliberate, well-reasoned pin in
+`autonomous-ci-battery.test.mjs`:
+
+> failed runs are still REAL runs — a body edit re-runs nothing; the fix for red
+> products is a new SHA (with its own battery), not a metadata edit
+
+That reasoning is correct: re-running an unchanged tree reproduces the same red.
+Changing it would burn a full battery on every metadata edit after a failure.
+
+**Verify preserved evidence** is what heads 3, 4 and 5 attempted; three
+consecutive rounds where each fix caused the next finding. Not re-attempted
+without the applicability-aware coverage model.
+
+**What Codex is right about** is narrower and real: the pull request advertised
+this check as *"the ONE required status"* while it cannot safely be that. The
+defect is in the CLAIM, so the claim is what changed — in the code, not only in
+the docs.
+
+The gate is now a SUMMARY status. When `run_products` is false it still passes,
+because the standing product checks are the authority and a red one blocks the
+merge on its own — but it says exactly that:
+
+> `the product jobs were not re-run because this head is already covered, so the
+> standing product checks remain the authority — this gate has NOT verified them`
+
+Nobody reading a pass can now take it as "the suites were verified on this
+event", and the deferral is a first-class field (`deferred`) rather than prose,
+so a future consumer can branch on it. `G10` pins the message, the field, that a
+failure in the current run still blocks regardless, and that the CLI surfaces it.
+
+This does not make the check sufficient on its own. It makes it honest about not
+being sufficient, which is the most that is available without the coverage model.
+The step-5 precondition above is unchanged and is now also enforced by what the
+gate prints on every deferred run.
