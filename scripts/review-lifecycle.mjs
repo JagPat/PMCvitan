@@ -46,7 +46,101 @@ const REPLACES = /^[\t ]*replaces:[\t ]*#(?<number>\d+)[\t ]*$/imu;
 
 // Machine-readable metrics carried on the sticky comment. The recorded count is a
 // FLOOR, never a fresh reading: see `mergeFindingHeadCount`.
-const METRICS_MARKER = '<!-- autonomous-review-metrics:';
+export const METRICS_MARKER = '<!-- autonomous-review-metrics:';
+
+// ---------------------------------------------------------------------------
+// The durable floor.
+//
+// Part 1 made the finding count a floor that only ever RISES. That is a property
+// of the ASSESSMENT; on its own it is worth nothing, because a floor that is
+// never written down has nothing to raise. These two functions are what make it
+// durable, and they exist because the floor has more than one source and more
+// than one writer.
+//
+//   - MANY WRITERS. The sticky comment is written from more than a dozen places
+//     in the gate, and only the lifecycle one has any reason to know about
+//     metrics. If preserving the block were each writer's job, the first
+//     `changes_required` update after a lifecycle verdict would erase it — and
+//     the next writer added would erase it again. So preservation is structural:
+//     a body carrying no metrics inherits them.
+//
+//   - MANY SOURCES. The gate assesses more than once per run, and each
+//     assessment reads the sticky comment. Against a comment with no metrics
+//     block yet, every one of those reads starts from nothing, so a later
+//     partial read of the findings API can replace an earlier, larger
+//     observation. Merging rather than replacing means no read can lower it.
+// ---------------------------------------------------------------------------
+
+// Keep the floor attached to the sticky comment no matter which writer touches it.
+export function preserveMetrics(nextBody, previousBody, runMetrics) {
+  const body = typeof nextBody === 'string' ? nextBody : '';
+  // The caller composed its own block — the most specific thing available.
+  if (body.includes(METRICS_MARKER)) return body;
+
+  // MERGE the two records; do not prefer either.
+  //
+  // An earlier draft preferred this run's metrics, reasoning that "the count only
+  // ever rises, so the fresher reading is never the smaller one". That reasoning
+  // assumed both reads see the same thing — which is exactly what the floor exists
+  // to reject. When the precondition's sticky read misses a recorded floor of four
+  // and the live read returns two, the run's own metrics ARE the smaller number,
+  // and preferring them rewrites four down to two. This module already unions
+  // everywhere else; preferring here was the one site that broke its own rule.
+  const merged = mergeRecordedMetrics(readMetrics(previousBody), runMetrics);
+  const carried = merged ? renderMetrics(merged) : null;
+  if (!carried) return body;
+
+  const lines = body.split('\n');
+  // Match the rendered layout so a comment reads identically whether its block
+  // was composed by the lifecycle writer or inherited from the previous one.
+  const anchor = lines.findIndex((line) => line.startsWith('- **Head:**'));
+  if (anchor < 0) return [carried, '', ...lines].join('\n');
+  lines.splice(anchor, 0, carried, '');
+  return lines.join('\n');
+}
+
+// Combine several RECORDED floors into one. Everything that is a floor
+// accumulates; scalars describing the LATEST assessment take the last value.
+export function mergeRecordedMetrics(...records) {
+  const present = records.filter((record) => record && typeof record === 'object');
+  if (present.length === 0) return null;
+
+  const ids = new Set();
+  let legacyFloor = 0;
+  let firstSeenAt;
+  let findingsPerHead = {};
+  const latest = {};
+
+  for (const record of present) {
+    for (const id of Array.isArray(record.findingHeadIds) ? record.findingHeadIds : []) {
+      if (typeof id === 'string' && id.length > 0) ids.add(id);
+    }
+    // A record written before identities were stored carries only a count. It
+    // cannot be unioned, so it still applies numerically — otherwise upgrading
+    // the gate would silently forgive every unit already in flight.
+    if (Number.isInteger(record.findingHeads) && record.findingHeads > legacyFloor) {
+      legacyFloor = record.findingHeads;
+    }
+    // Earliest start: elapsed time must not restart because a later record
+    // stamped itself.
+    if (typeof record.firstSeenAt === 'string'
+      && (firstSeenAt === undefined || record.firstSeenAt < firstSeenAt)) {
+      firstSeenAt = record.firstSeenAt;
+    }
+    findingsPerHead = { ...findingsPerHead, ...(record.findingsPerHead ?? {}) };
+    for (const key of ['state', 'threshold', 'elapsedMinutes', 'replaces']) {
+      if (record[key] !== undefined && record[key] !== null) latest[key] = record[key];
+    }
+  }
+
+  return {
+    ...latest,
+    findingHeads: Math.max(ids.size, legacyFloor),
+    findingHeadIds: [...ids],
+    findingsPerHead,
+    ...(firstSeenAt ? { firstSeenAt } : {}),
+  };
+}
 
 export function replacementSource(body) {
   const match = REPLACES.exec(typeof body === 'string' ? body : '');
@@ -110,32 +204,130 @@ export function mergeFindingHeadCount(recorded, live) {
   return mergeFindingHeads(recorded, liveIds).count;
 }
 
+// ---------------------------------------------------------------------------
+// ONE evidence view, computed once, taken by every consumer.
+//
+// The question "how many finding-bearing heads has this unit had?" was being
+// answered independently in four places — the assessment, the sticky-comment
+// writer, the post-review funnel, and the deferral consult — each from its own
+// possibly-partial read. Every one of them was individually defensible and the
+// set of them was not: a partial read at ANY site silently lowered the answer,
+// and each round of review found a different site.
+//
+// So the answer is produced once, from every source available at that moment,
+// and passed down. Three sources, unioned:
+//
+//   - the RECORDED floor, which survives partial reads by construction;
+//   - the LIVE read, which is the only thing that sees a head just reviewed;
+//   - the CURRENT head, when the caller already knows it bears findings.
+//
+// That last one matters more than it looks. A caller inside the finding path has
+// just classified a current-head finding; re-reading the API to rediscover that
+// fact can lose it, and the head it loses is precisely the one that crosses the
+// cap. Evidence you already hold should never be re-fetched to be believed.
+export function findingEvidence({
+  recorded,
+  live,
+  currentHead,
+  currentHeadHasFindings = false,
+  floorUnreadable = false,
+}) {
+  const merged = mergeFindingHeads(recorded, live);
+  const ids = new Set(merged.ids);
+  if (currentHeadHasFindings && typeof currentHead === 'string' && currentHead.length > 0) {
+    ids.add(currentHead);
+  }
+  const count = Math.max(ids.size, merged.count);
+  return {
+    ids: [...ids],
+    count,
+    // Blind ONLY where the union cannot already decide. An unreadable floor is a
+    // missing LOWER bound, and a lower bound cannot lower anything: once the
+    // sources in hand reach the limit, the hidden record could only agree. This
+    // is why the caller never has to ask "unreadable?" separately — the view
+    // reports whether the gap can still change the answer.
+    blind: floorUnreadable && count < RESTRUCTURE_AFTER_FINDING_HEADS,
+  };
+}
+
 export function assessRestructure({
   comments,
   reviews,
   pullRequestFiles,
   body,
   recordedMetrics,
+  currentHead,
+  currentHeadHasFindings = false,
   floorUnreadable = false,
+  deferralInForce = false,
 }) {
   const replaces = replacementSource(body);
   const liveHeads = codexFindingHeads(comments, reviews);
-  const merged = mergeFindingHeads(recordedMetrics, liveHeads);
-  const findingHeadCount = merged.count;
+  // ONE view, from every source available. No branch below re-derives the count.
+  const evidence = findingEvidence({
+    recorded: recordedMetrics,
+    live: liveHeads,
+    currentHead,
+    currentHeadHasFindings,
+    floorUnreadable,
+  });
 
-  // An UNREADABLE floor is not an absent one. Once a unit has crossed its limit
-  // the durable record is the only thing carrying that fact forward — the failing
-  // status belongs to the previous SHA. Treating a failed read as "no record"
-  // lets a partial live read continue the unit, which is exactly the walk-back
-  // the floor rule forbids. `floorUnreadable` is passed in by the caller when the
-  // sticky read itself failed, and it blocks rather than guesses.
-  if (floorUnreadable) {
+  const base = {
+    findingHeadCount: evidence.count,
+    findingHeadIds: evidence.ids,
+    findingHeads: liveHeads,
+    threshold: RESTRUCTURE_AFTER_FINDING_HEADS,
+    replaces,
+  };
+
+  const proceeding = (extra) => ({
+    ...base,
+    state: replaces ? 'replacement_reviewing' : 'reviewing',
+    required: false,
+    allowed: true,
+    undecided: false,
+    ...extra,
+  });
+
+  // The deferral is asked FIRST, before anything about the floor.
+  //
+  // A unit that already has a rule keeps it. This module's header says it governs
+  // "the case that had no rule", and a docs-only unit that has handed its still-open
+  // questions to named probes via `Review-Deferred-To-Probes:` is not that case — it
+  // is following the protocol that owns it, validated by the convergence gate.
+  // Blocking it here would REPLACE that protocol for the exact situation the
+  // repository wrote it for, which is what deleting the docs/code classifier was
+  // supposed to prevent.
+  //
+  // Asking first is what makes an unreadable floor irrelevant to a deferred unit.
+  // The exemption holds on BOTH sides of the cap — under it there is nothing to
+  // exempt, over it the deferral governs — so no hidden record can change the
+  // answer, and there is nothing to be blind about. An earlier ordering let the
+  // blind branch fire first and drafted a head whose outcome was never in doubt.
+  //
+  // This is not the classifier returning. Nothing is inferred and no second
+  // threshold exists: the signal is an explicit, declared, already-validated
+  // handoff, and an invalid one buys nothing, because the caller only reports a
+  // deferral the convergence gate itself accepts.
+  if (deferralInForce) {
+    return proceeding(evidence.count >= RESTRUCTURE_AFTER_FINDING_HEADS
+      ? {
+        deferred: true,
+        reason: `${evidence.count} finding-bearing heads reaches the `
+          + `${RESTRUCTURE_AFTER_FINDING_HEADS}-head limit, but this unit has an accepted `
+          + 'probe deferral; the deferral protocol owns it and restructuring would '
+          + 'replace a rule it is already following',
+      }
+      : { deferred: true });
+  }
+
+  // Blind only where the gap can still change the answer — see `findingEvidence`.
+  // The floor is a LOWER bound: once the sources in hand reach the limit, the
+  // hidden record could only agree, so the verdict is decided without it.
+  if (evidence.blind) {
     return {
-      findingHeadCount,
-      findingHeadIds: merged.ids,
-      findingHeads: liveHeads,
+      ...base,
       threshold: undefined,
-      replaces,
       state: 'reviewing',
       required: false,
       allowed: false,
@@ -146,34 +338,20 @@ export function assessRestructure({
     };
   }
 
-  const base = {
-    findingHeadCount,
-    findingHeadIds: merged.ids,
-    findingHeads: liveHeads,
-    threshold: RESTRUCTURE_AFTER_FINDING_HEADS,
-    replaces,
-  };
-
-  if (findingHeadCount >= RESTRUCTURE_AFTER_FINDING_HEADS) {
+  if (evidence.count >= RESTRUCTURE_AFTER_FINDING_HEADS) {
     return {
       ...base,
       state: 'restructure_required',
       required: true,
       allowed: false,
       undecided: false,
-      reason: `${findingHeadCount} finding-bearing heads reaches the `
+      reason: `${evidence.count} finding-bearing heads reaches the `
         + `${RESTRUCTURE_AFTER_FINDING_HEADS}-head limit; further correction heads are not `
         + 'the remedy — the unit must be restructured and replaced',
     };
   }
 
-  return {
-    ...base,
-    state: replaces ? 'replacement_reviewing' : 'reviewing',
-    required: false,
-    allowed: true,
-    undecided: false,
-  };
+  return proceeding();
 }
 
 // What the sticky comment carries forward. Elapsed time is TELEMETRY: it describes

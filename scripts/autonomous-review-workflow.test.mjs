@@ -600,6 +600,8 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
       return { commit: { message: 'fix: ordinary head' }, files: [] };
     },
     async updateStickyComment() {},
+    async stickyComment() { return null; },
+    setLifecycleMetrics(metrics) { this.lifecycleMetrics = metrics; },
     async mergeExactHead() {
       return { merged: false, message: 'Not ready to merge' };
     },
@@ -1006,6 +1008,8 @@ test('live current-head findings stop recovery before another ready transition',
       statusWrites.push({ head, state, description });
     },
     async updateStickyComment() {},
+    async stickyComment() { return null; },
+    setLifecycleMetrics(metrics) { this.lifecycleMetrics = metrics; },
   };
 
   const result = await reviewGate.guardAgainstCurrentHeadFinding(
@@ -1362,6 +1366,8 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
     async updateStickyComment(...args) { sticky.push(args); },
+    async stickyComment() { return null; },
+    setLifecycleMetrics(metrics) { this.lifecycleMetrics = metrics; },
   };
 
   const result = await reviewGate.enforceReviewScope(
@@ -1394,6 +1400,8 @@ test('final admission revalidates live scope and late convergence evidence', asy
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
     async updateStickyComment(...args) { sticky.push(args); },
+    async stickyComment() { return null; },
+    setLifecycleMetrics(metrics) { this.lifecycleMetrics = metrics; },
     async reviewComments() { return []; },
     async reviews() { return []; },
     async commit() { return { commit: { message: 'fix: no convergence' }, files: [] }; },
@@ -1513,6 +1521,8 @@ test('convergence enforcement fails closed until the batched packet and trailer 
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
     async updateStickyComment(...args) { sticky.push(args); },
+    async stickyComment() { return null; },
+    setLifecycleMetrics(metrics) { this.lifecycleMetrics = metrics; },
   };
 
   const blocked = await reviewGate.enforceReviewConvergence(

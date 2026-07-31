@@ -100,7 +100,7 @@ PR=230
 HEAD_SHA=$(gh pr view "$PR" --repo JagPat/PMCvitan --json headRefOid --jq .headRefOid)
 TERMINAL_STATUS_ID=$(gh api --paginate --slurp \
   "repos/JagPat/PMCvitan/commits/$HEAD_SHA/statuses?per_page=100" \
-  --jq 'def active_pending: .state == "pending" and ((.description // "") | startswith("review: pending") or startswith("Waiting for required CI")); def retryable: .state == "failure" and ((.description // "") as $description | ($description | contains("Codex review timed out")) or ($description | contains("Codex evidence changed during final verification")) or $description == "review: Required CI changed during current-head Codex review" or $description == "review: bootstrap exact-head review requested"); def persistent: .state == "failure" and (((.description // "") | startswith("review:") or contains("current-head Codex finding") or contains("Codex submitted a current-head review")) and (retryable | not)); add | map(select(.context == "codex-current-head")) as $statuses | ($statuses[0] // {}) as $latest | if any($statuses[]; persistent) then empty elif ($latest | active_pending) then $latest.id else ($statuses | map(select(retryable)) | (.[0].id // empty)) end')
+  --jq 'def active_pending: .state == "pending" and ((.description // "") | startswith("review: pending") or startswith("Waiting for required CI")); def retryable: .state == "failure" and ((.description // "") as $description | ($description | contains("Codex review timed out")) or ($description | contains("Codex evidence changed during final verification")) or $description == "review: Required CI changed during current-head Codex review" or $description == "review: bootstrap exact-head review requested" or $description == "review: restructure check undecided"); def persistent: .state == "failure" and (((.description // "") | startswith("review:") or contains("current-head Codex finding") or contains("Codex submitted a current-head review")) and (retryable | not)); add | map(select(.context == "codex-current-head")) as $statuses | ($statuses[0] // {}) as $latest | if any($statuses[]; persistent) then empty elif ($latest | active_pending) then $latest.id else ($statuses | map(select(retryable)) | (.[0].id // empty)) end')
 test -n "$TERMINAL_STATUS_ID"
 gh workflow run auto-merge.yml --repo JagPat/PMCvitan \
   -f pr_number="$PR" -f head_sha="$HEAD_SHA" \
@@ -244,3 +244,47 @@ case. Every finding is kept, `codex-current-head` still fails closed on every
 current-head finding, and the only thing that moves is WHERE the remaining
 questions get verified — from prose, where they cannot be, to probes, where they
 can.
+
+## Review lifecycle: when the unit itself is the defect
+
+The convergence audit stops ordinary patching after two finding-bearing heads and
+demands one batched architectural correction. That is right once, and it is not a
+fixed point — a unit can dutifully batch and still draw findings every round, because
+the *review unit* is wrong rather than the corrections.
+
+| State | Enters when | Effect |
+| --- | --- | --- |
+| `reviewing` | default | ordinary correction heads |
+| `convergence_audit` | 2 finding heads | the existing batched-audit obligation, **unchanged** |
+| `restructure_required` | **5** finding heads | no further correction head; the required status FAILS; the head returns to draft |
+| `replacement_reviewing` | body declares `Replaces: #<n>` | fresh history, declared lineage, same limit on its own findings |
+
+**Restructuring dismisses nothing.** No branch publishes success, no path resolves a
+thread. Every open finding stays open and moves with the work into the replacement,
+whose body must declare `Replaces: #<n>` so the lineage stays visible.
+
+**One cap, deliberately.** A docs-only unit at its cap already has an owner — the
+bounded probe-deferral protocol (`Review-Deferred-To-Probes:`). This limit governs the
+case that had no rule: a unit still drawing findings after five heads.
+
+**The count is a floor, and the floor is durable.** Findings live on the pull request,
+so rewriting the branch does not erase them; the count is recorded on the sticky
+comment and only ever rises. Two properties make that real:
+
+- every sticky writer inherits the block, so a `changes_required` update cannot erase
+  a floor recorded moments earlier;
+- the gate assesses more than once per run, and each assessment unions the recorded
+  floor with what this run has already observed, so a partial findings read cannot
+  lower it.
+
+**Unreadable is not absent.** If the recorded floor cannot be read, the gate publishes
+`review: restructure check undecided` — a FAILURE, never a clearance. That description
+is in the retryable set, so a same-head recovery can re-run it once the read succeeds;
+fail-closed does not become fail-forever.
+
+### If a head is blocked as `restructure_required`
+
+1. Do **not** push another correction head — it cannot clear the gate.
+2. Open ONE replacement PR from current `main` whose body declares `Replaces: #<n>`.
+3. Carry every open finding into the replacement and fix it there.
+4. Close the source PR with a comment naming the replacement.

@@ -355,9 +355,17 @@ export function assessConvergence({
   changedFiles,
   pullRequestFiles,
   activePhases,
+  // A caller that already holds a DURABLE count may pass it. The live read below
+  // is a fresh observation and a partial one reads low; the recorded floor never
+  // does. Taking the max means this can only ever raise the obligation, never
+  // excuse a head from one — so no caller can weaken convergence by supplying it.
+  findingHeadCount: recordedFloor,
 }) {
   const findingHeads = codexFindingHeads(comments, reviews);
-  const findingHeadCount = findingHeads.length;
+  const findingHeadCount = Math.max(
+    findingHeads.length,
+    Number.isInteger(recordedFloor) ? recordedFloor : 0,
+  );
   if (findingHeadCount < CONVERGENCE_AFTER_FINDING_HEADS) {
     return {
       required: false,
