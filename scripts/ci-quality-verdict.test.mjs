@@ -109,3 +109,43 @@ test('G8: no classifier remains — the withdrawal is complete', async () => {
     assert.ok(!scripts.includes(gone), `${gone} must be removed, not orphaned`);
   }
 });
+
+test('G9: the CLI the workflow runs actually EXECUTES', async () => {
+  // This exists because it did not. A rename left `ci-quality-gate.mjs`
+  // importing a module that no longer existed, and the suite stayed green at
+  // 179/179 because every probe imported the verdict module DIRECTLY and
+  // nothing ran the entry point. The workflow found it instead of the tests —
+  // a test that does not cover the thing that runs proves nothing about it.
+  //
+  // So this spawns the real file the workflow invokes, and asserts the exit
+  // code, which is the only signal the job actually consumes.
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  const cli = new URL('./ci-quality-gate.mjs', import.meta.url).pathname;
+
+  const pass = await run(process.execPath, [cli], {
+    env: { ...process.env, JOB_RESULTS: '{"web":{"result":"success"},"api":{"result":"skipped"}}' },
+  });
+  assert.match(pass.stdout, /PASSED/u);
+
+  await assert.rejects(
+    run(process.execPath, [cli], {
+      env: { ...process.env, JOB_RESULTS: '{"web":{"result":"failure"}}' },
+    }),
+    (error) => {
+      assert.equal(error.code, 1, 'a failing gate must exit non-zero');
+      assert.match(error.stdout, /FAILED — web: failure/u);
+      return true;
+    },
+  );
+
+  // Unreadable input is not a pass either — the gate cannot see the run at all.
+  await assert.rejects(
+    run(process.execPath, [cli], { env: { ...process.env, JOB_RESULTS: 'not json' } }),
+    (error) => {
+      assert.equal(error.code, 1);
+      return true;
+    },
+  );
+});
