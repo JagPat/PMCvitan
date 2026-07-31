@@ -112,8 +112,8 @@ detected on live state. Riding it along avoids opening a third PR for two lines.
 
 | Gate | Result |
 | --- | --- |
-| `node --test scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | 171/171 (the new suite joins the glob) |
+| `node --test scripts/review-lifecycle.test.mjs` | 32/32 (current head; 20/20 at round 1) |
+| `pnpm test:automation` | 176/176 (the new suite joins the glob) |
 | `pnpm check` | EXIT 0 |
 | Migrations | none |
 
@@ -210,3 +210,98 @@ not ok 25 - M4: a finding on this head re-assesses the lifecycle before inviting
 ```
 
 Restored: 25/25. `pnpm test:automation` 176/176. `pnpm check` EXIT 0.
+
+---
+
+## Round 3 — the convergence audit
+
+Five findings on `34e2152`. This is the second finding-bearing head, so under the
+protocol this PR is itself defining, ordinary patching stops here: what follows is
+ONE batched architectural correction, not a third round of call-site edits.
+
+### The audit
+
+Four of the five findings are the round-2 concepts at sites my round-2 "site
+audit" did not reach. I said I had audited; I audited the sites Codex named plus
+one sibling, and stopped. The enumeration I should have run first:
+
+```
+$ grep -n "state: '(changes_required|scope_required|convergence_required|blocked|ci_retry)'"
+13 writers of a blocking state
+```
+
+**Thirteen** places write a blocking state and invite another correction head.
+Round 2 added the lifecycle check before one of them. Codex named two more. At
+that rate the remaining ten arrive as findings over the next five rounds — which
+is precisely the failure mode this PR exists to stop, reproduced inside the PR
+that stops it.
+
+So the correction is not "add the check before ten more callers". It is to stop
+asking callers to remember.
+
+### The architectural change
+
+**The lifecycle is now a run-level precondition.** `enforceRestructure` runs ONCE,
+first — before the scope gate, before the CI branch, before convergence — in both
+the driver and the policy revalidation path. The question "is another correction
+head even permitted?" is answered before any code can invite one. No later exit
+can bypass a check that has already run.
+
+That subsumes G1 and G4 as a class rather than as two more sites.
+
+### The model fixes
+
+**G3 — the floor keeps identities, not a count.** A count-only `max` walks
+backward when a partial live read ADDS the new head and OMITS an older one: floor
+4, live read of three old heads plus the new fifth, `max(4, 4) = 4`, and the unit
+sits below five having actually crossed it. `mergeFindingHeads` unions head SHAs,
+which cannot lose a head either side has seen. A legacy count-only record still
+binds as a numeric floor, so upgrading the gate forgives nothing already in
+flight.
+
+**G2 — the threshold is monotonic.** A docs-only unit that crossed three heads
+could push a correction adding any runnable file, become `code`, have its
+threshold rise to five, and return to `reviewing`. The strictest kind the unit has
+ever presented now governs. Monotonicity only tightens: `N2b` pins that a code
+unit is not retroactively made docs-only.
+
+**G5 — an unreadable floor blocks.** Once a unit has crossed its limit the durable
+record is the only thing carrying that forward; the failing status belongs to the
+previous SHA. My comment said unreadable metrics are "treated as ABSENT, never as
+zero-with-authority" — but absent means the floor cannot raise, which IS the
+walk-back. `readStickyComment` now reports unreadable distinctly, and the
+assessment blocks as `undecided`. Because `undecided` carries the retryable
+description from round 2, fail-closed does not become fail-forever.
+
+### Evidence
+
+| Probe | Discriminates |
+| --- | --- |
+| `N1` | union is five where a count-only max reads four |
+| `N1b` | a legacy count-only record still binds |
+| `N1c` | the identity floor drives the verdict |
+| `N2` / `N2b` | monotonic kind; tightens only |
+| `N3` / `N3b` | unreadable floor blocks, and self-heals via the retryable status |
+| `M3` | the lifecycle precedes scope AND convergence in both flows |
+
+RED with the three model fixes reverted and everything else in place:
+
+```
+not ok 26 - N1: the floor unions head IDENTITIES, so a partial read cannot walk it back
+not ok 28 - N1c: the identity floor drives the verdict
+not ok 29 - N2: a crossed docs-only unit cannot raise its threshold by adding code
+not ok 31 - N3: an unreadable floor blocks rather than continuing on the live count
+# tests 32 / # pass 28 / # fail 4
+```
+
+Restored: 32/32. `pnpm test:automation` 176/176.
+
+Five fake clients in `autonomous-review-workflow.test.mjs` gained a `stickyComment`
+reader. That is a fixture correcting to reality, not a weakened assertion: the gate
+now reads the floor from that comment, and a fake that can write it must be able to
+read it. No assertion was changed.
+
+### Carried debt, stated
+
+The round-1 validation table above showed 20/20 and 171/171 after round 2 had made
+them 25/25 and 176/176. It is corrected in this head and labelled with both.

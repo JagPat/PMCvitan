@@ -71,11 +71,32 @@ export function renderMetrics(metrics) {
 // history rewrite can walk a PR back below a threshold it has already crossed.
 // A genuinely fresh unit gets a fresh count by being a DECLARED replacement, which
 // is a different pull request with its own comment and its own floor.
-export function mergeFindingHeadCount(recorded, live) {
-  const floor = Number.isInteger(recorded?.findingHeads) && recorded.findingHeads >= 0
+export function mergeFindingHeads(recorded, liveHeads) {
+  // IDENTITIES, not counts. A count-only max still walks backward when a partial
+  // live read ADDS the new head and OMITS an older one: a recorded floor of four
+  // plus a live read of three old heads and the new fifth gives max(4, 4) = 4, and
+  // the unit sits below the five-head limit while actually having crossed it.
+  // Unioning the identities cannot lose a head that either side has seen.
+  const recordedIds = Array.isArray(recorded?.findingHeadIds)
+    ? recorded.findingHeadIds.filter((id) => typeof id === 'string' && id.length > 0)
+    : [];
+  const union = new Set([...recordedIds, ...(liveHeads ?? []).filter(Boolean)]);
+  // A legacy record written before identities were stored carries only a count.
+  // It cannot be unioned, so it still applies as a numeric floor — otherwise
+  // upgrading the gate would silently forgive every unit already in flight.
+  const legacyFloor = Number.isInteger(recorded?.findingHeads) && recorded.findingHeads >= 0
     ? recorded.findingHeads
     : 0;
-  return Math.max(floor, live);
+  return { ids: [...union], count: Math.max(union.size, legacyFloor) };
+}
+
+// Retained as the numeric view of the same rule, for callers that only need the
+// count. Implemented ON TOP of the identity union so the two cannot disagree.
+export function mergeFindingHeadCount(recorded, live) {
+  const liveIds = Array.isArray(live)
+    ? live
+    : Array.from({ length: Number(live) || 0 }, (_, index) => `live:${index}`);
+  return mergeFindingHeads(recorded, liveIds).count;
 }
 
 export function assessRestructure({
@@ -84,14 +105,54 @@ export function assessRestructure({
   pullRequestFiles,
   body,
   recordedMetrics,
+  floorUnreadable = false,
 }) {
   const replaces = replacementSource(body);
   const liveHeads = codexFindingHeads(comments, reviews);
-  const findingHeadCount = mergeFindingHeadCount(recordedMetrics, liveHeads.length);
+  const merged = mergeFindingHeads(recordedMetrics, liveHeads);
+  const findingHeadCount = merged.count;
+
+  // An UNREADABLE floor is not an absent one. Once a unit has crossed its limit
+  // the durable record is the only thing carrying that fact forward — the failing
+  // status belongs to the previous SHA. Treating a failed read as "no record"
+  // lets a partial live read continue the unit, which is exactly the walk-back
+  // the floor rule forbids. `floorUnreadable` is passed in by the caller when the
+  // sticky read itself failed, and it blocks rather than guesses.
+  if (floorUnreadable) {
+    return {
+      findingHeadCount,
+      findingHeadIds: merged.ids,
+      findingHeads: liveHeads,
+      kind: 'unknown',
+      threshold: undefined,
+      replaces,
+      state: 'reviewing',
+      required: false,
+      allowed: false,
+      undecided: true,
+      reason: 'the recorded lifecycle floor could not be read, so whether this unit has '
+        + 'already crossed its limit is unverified. This is not evidence either way; '
+        + 're-run once the sticky comment is readable',
+    };
+  }
 
   const readable = Array.isArray(pullRequestFiles);
   const docsOnly = readable ? isDocsOnlyDiff(pullRequestFiles) : undefined;
-  const kind = readable ? (docsOnly ? 'docs' : 'code') : 'unknown';
+  const liveKind = readable ? (docsOnly ? 'docs' : 'code') : 'unknown';
+
+  // MONOTONIC. Once a unit has been assessed as docs-only, adding a runnable file
+  // in a later correction must not raise its threshold from three to five and
+  // return it to `reviewing`. The strictest kind this unit has ever presented is
+  // the one that governs: a docs-only unit that crossed three heads stays
+  // restructure-required whatever it pushes next.
+  const recordedKind = recordedMetrics?.kind === 'docs' || recordedMetrics?.kind === 'code'
+    ? recordedMetrics.kind
+    : undefined;
+  const kind = recordedKind === 'docs' || liveKind === 'docs'
+    ? 'docs'
+    : recordedKind === 'code' || liveKind === 'code'
+      ? 'code'
+      : 'unknown';
   const threshold = kind === 'docs'
     ? RESTRUCTURE_AFTER_DOCS_FINDING_HEADS
     : kind === 'code'
@@ -100,6 +161,7 @@ export function assessRestructure({
 
   const base = {
     findingHeadCount,
+    findingHeadIds: merged.ids,
     findingHeads: liveHeads,
     kind,
     threshold,
@@ -188,6 +250,7 @@ export function nextMetrics({
   const started = recordedMetrics?.firstSeenAt ?? firstSeenAt ?? nowIso;
   return {
     findingHeads: assessment.findingHeadCount,
+    findingHeadIds: assessment.findingHeadIds ?? [],
     findingsPerHead: perHead,
     kind: assessment.kind,
     threshold: assessment.threshold ?? null,

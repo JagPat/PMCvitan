@@ -14,6 +14,7 @@ import {
   RESTRUCTURE_AFTER_DOCS_FINDING_HEADS,
   assessRestructure,
   mergeFindingHeadCount,
+  mergeFindingHeads,
   nextMetrics,
   readMetrics,
   renderMetrics,
@@ -391,26 +392,30 @@ test('M2: both sticky-comment paths paginate', async () => {
   }
 });
 
-test('M3: the restructure gate is consulted BEFORE the convergence gate', async () => {
-  // Restructuring supersedes convergence. Checking convergence first tells a unit
-  // that has already crossed its limit to push another convergence correction —
-  // the exact round the limit refuses.
+test('M3: the restructure gate is the FIRST gate in every flow', async () => {
+  // Not "before convergence" — before EVERY gate. Thirteen places write a blocking
+  // state and invite another correction head; the question "is another head even
+  // permitted?" is answered once, first, so no earlier exit can invite one.
   const source = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
     'utf8',
   );
-  const calls = [...source.matchAll(/enforce(Restructure|ReviewConvergence)\(/gu)]
-    .map((match) => match[1])
-    // Drop the declarations themselves; keep call sites in the flow.
-    .filter((_, index, all) => all.length > 0);
-  const declarationsRemoved = calls.filter((_, i) => i >= 2);
-  assert.ok(declarationsRemoved.length >= 4, 'both flows call both gates');
-  for (let i = 0; i < declarationsRemoved.length; i += 2) {
-    assert.equal(
-      declarationsRemoved[i],
-      'Restructure',
-      'each flow must consult the restructure gate first',
-    );
+  const flows = ['async function revalidateFinalPolicy', 'async function run('];
+  for (const marker of flows) {
+    const at = source.indexOf(marker);
+    if (at === -1) continue;
+    const body = source.slice(at, source.indexOf('\n}\n', at));
+    const restructure = body.indexOf('enforceRestructure(');
+    const scope = body.indexOf('enforceReviewScope(');
+    const convergence = body.indexOf('enforceReviewConvergence(');
+    assert.notEqual(restructure, -1, `${marker} must consult the lifecycle`);
+    for (const [name, at2] of [['scope', scope], ['convergence', convergence]]) {
+      if (at2 === -1) continue;
+      assert.ok(
+        restructure < at2,
+        `${marker}: restructure must precede ${name}`,
+      );
+    }
   }
 });
 
@@ -432,5 +437,99 @@ test('M4: a finding on this head re-assesses the lifecycle before inviting a fix
   assert.ok(
     reassess < invite,
     're-assessment must precede the instruction to push another correction',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Round 3 — the floor keeps identities, the threshold is monotonic, and an
+// unreadable floor blocks. Codex on `34e2152`.
+// ---------------------------------------------------------------------------
+
+test('N1: the floor unions head IDENTITIES, so a partial read cannot walk it back', () => {
+  // The exact shape a count-only max misses: the live read ADDS the new fifth head
+  // and OMITS an older one, so both sides count four and the unit sits below five
+  // while having actually crossed it.
+  const merged = mergeFindingHeads(
+    { findingHeadIds: ['h1', 'h2', 'h3', 'h4'] },
+    ['h2', 'h3', 'h4', 'h5'],
+  );
+  assert.equal(merged.count, 5, 'the union is five, not the max of two fours');
+  assert.deepEqual([...merged.ids].sort(), ['h1', 'h2', 'h3', 'h4', 'h5']);
+});
+
+test('N1b: a legacy count-only record still applies as a numeric floor', () => {
+  // Records written before identities were stored must not be forgiven by the
+  // upgrade: they cannot be unioned, so the count still binds.
+  assert.equal(mergeFindingHeads({ findingHeads: 5 }, ['h1']).count, 5);
+});
+
+test('N1c: the identity floor drives the verdict', () => {
+  const result = assessRestructure({
+    comments: findingsOn('h2', 'h3', 'h4', 'h5'),
+    reviews: [],
+    pullRequestFiles: CODE,
+    body: '',
+    recordedMetrics: { findingHeadIds: ['h1', 'h2', 'h3', 'h4'] },
+  });
+  assert.equal(result.findingHeadCount, 5);
+  assert.equal(result.state, 'restructure_required');
+});
+
+test('N2: a crossed docs-only unit cannot raise its threshold by adding code', () => {
+  // Push a correction that adds any runnable file and the live kind becomes
+  // `code`, the threshold rises 3 → 5, and the unit returns to `reviewing`.
+  // The strictest kind the unit has ever presented governs.
+  const result = assessRestructure({
+    comments: findingsOn('d1', 'd2', 'd3'),
+    reviews: [],
+    pullRequestFiles: CODE,
+    body: '',
+    recordedMetrics: { findingHeads: 3, findingHeadIds: ['d1', 'd2', 'd3'], kind: 'docs' },
+  });
+  assert.equal(result.kind, 'docs', 'the recorded docs kind is sticky');
+  assert.equal(result.threshold, RESTRUCTURE_AFTER_DOCS_FINDING_HEADS);
+  assert.equal(result.state, 'restructure_required');
+});
+
+test('N2b: a code unit is not retroactively made docs-only', () => {
+  // The complement: monotonicity tightens, it never loosens, and it never
+  // invents strictness a unit never had.
+  const result = assessRestructure({
+    comments: findingsOn('c1', 'c2', 'c3'),
+    reviews: [],
+    pullRequestFiles: CODE,
+    body: '',
+    recordedMetrics: { findingHeads: 3, findingHeadIds: ['c1', 'c2', 'c3'], kind: 'code' },
+  });
+  assert.equal(result.kind, 'code');
+  assert.equal(result.state, 'reviewing', 'three heads is still under the code limit');
+});
+
+test('N3: an unreadable floor blocks rather than continuing on the live count', () => {
+  // The durable record is the only thing carrying a crossed limit forward — the
+  // failing status belongs to the previous SHA. "Could not read" must not mean
+  // "no record", or a partial live read continues a unit that already crossed.
+  const result = assessRestructure({
+    comments: findingsOn('h1'),
+    reviews: [],
+    pullRequestFiles: CODE,
+    body: '',
+    recordedMetrics: null,
+    floorUnreadable: true,
+  });
+  assert.equal(result.allowed, false, 'an unverifiable floor cannot clear a head');
+  assert.equal(result.undecided, true, 'and it is undecided, not a restructure verdict');
+  assert.match(result.reason, /not evidence either way/u);
+});
+
+test('N3b: the unreadable-floor block is the retryable status, so it self-heals', () => {
+  // It reports as `undecided`, which the gate publishes with the retryable
+  // description — otherwise fail-closed would become fail-forever.
+  assert.equal(
+    isRetryableTerminalReviewFailure({
+      state: 'failure',
+      description: 'review: restructure check undecided',
+    }),
+    true,
   );
 });

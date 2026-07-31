@@ -599,6 +599,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async commit() {
       return { commit: { message: 'fix: ordinary head' }, files: [] };
     },
+    async stickyComment() { return null; },
     async updateStickyComment() {},
     async mergeExactHead() {
       return { merged: false, message: 'Not ready to merge' };
@@ -1005,6 +1006,7 @@ test('live current-head findings stop recovery before another ready transition',
     async setStatus(head, state, description) {
       statusWrites.push({ head, state, description });
     },
+    async stickyComment() { return null; },
     async updateStickyComment() {},
   };
 
@@ -1361,6 +1363,7 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
     async pullRequest() { return pullRequest; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
+    async stickyComment() { return null; },
     async updateStickyComment(...args) { sticky.push(args); },
   };
 
@@ -1393,6 +1396,7 @@ test('final admission revalidates live scope and late convergence evidence', asy
     async pullRequest() { return pullRequest; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
+    async stickyComment() { return null; },
     async updateStickyComment(...args) { sticky.push(args); },
     async reviewComments() { return []; },
     async reviews() { return []; },
@@ -1512,6 +1516,7 @@ test('convergence enforcement fails closed until the batched packet and trailer 
     async pullRequest() { return pullRequest; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
+    async stickyComment() { return null; },
     async updateStickyComment(...args) { sticky.push(args); },
   };
 

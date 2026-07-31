@@ -1053,13 +1053,18 @@ function restructureBlockReason(restructure) {
       + 'another correction head';
 }
 
+const FLOOR_UNREADABLE = Symbol('floor-unreadable');
+
 async function readStickyComment(client, number) {
   try {
     return await client.stickyComment(number);
   } catch {
-    // Unreadable metrics are treated as ABSENT, never as zero-with-authority: the
-    // live finding count still applies, and the floor simply cannot raise it.
-    return null;
+    // UNREADABLE is not ABSENT. Once a unit has crossed its limit, the durable
+    // record is the only thing carrying that forward — the failing status belongs
+    // to the previous SHA. Reporting "no record" here would let a partial live
+    // read continue the unit, which is the walk-back the floor rule forbids, so
+    // this is distinguishable and the assessment blocks on it.
+    return FLOOR_UNREADABLE;
   }
 }
 
@@ -1074,15 +1079,16 @@ export async function enforceRestructure(client, pullRequest, expectedHead) {
   } catch {
     pullRequestFiles = undefined;
   }
-  const recordedMetrics = readMetrics(
-    await readStickyComment(client, pullRequest.number),
-  );
+  const sticky = await readStickyComment(client, pullRequest.number);
+  const floorUnreadable = sticky === FLOOR_UNREADABLE;
+  const recordedMetrics = floorUnreadable ? null : readMetrics(sticky);
   const result = assessRestructure({
     comments,
     reviews,
     pullRequestFiles,
     body: pullRequest.body,
     recordedMetrics,
+    floorUnreadable,
   });
   if (result.allowed) return result;
 
@@ -1165,21 +1171,24 @@ export async function revalidateFinalReviewPolicy(
     return { state: 'superseded', allowed: false, superseded: true };
   }
 
-  const scope = await enforceReviewScope(client, pullRequest, expectedHead);
-  if (scope.superseded) return { ...scope, state: 'superseded' };
-  if (!scope.allowed) return { ...scope, state: 'scope_required' };
-
-  // BEFORE convergence, not after. Restructuring SUPERSEDES the convergence
-  // obligation: a unit that has already crossed its limit must not be told to
-  // push another convergence correction just because this head happens to be
-  // missing the trailer or packet. Asking for a correction head at that point
-  // invites exactly the round the limit exists to refuse.
+  // FIRST, before scope and before convergence: a unit past its limit must not be
+  // answered with `scope_required` or `convergence_required` either — every one of
+  // those replies invites another correction head.
   const restructure = await enforceRestructure(client, pullRequest, expectedHead);
   if (restructure.superseded) return { ...restructure, state: 'superseded' };
   if (!restructure.allowed) {
     return { ...restructure, state: restructure.state };
   }
 
+  const scope = await enforceReviewScope(client, pullRequest, expectedHead);
+  if (scope.superseded) return { ...scope, state: 'superseded' };
+  if (!scope.allowed) return { ...scope, state: 'scope_required' };
+
+  // Convergence follows. Restructuring SUPERSEDES the convergence
+  // obligation: a unit that has already crossed its limit must not be told to
+  // push another convergence correction just because this head happens to be
+  // missing the trailer or packet. Asking for a correction head at that point
+  // invites exactly the round the limit exists to refuse.
   const convergence = await enforceReviewConvergence(
     client,
     pullRequest,
@@ -1441,6 +1450,16 @@ export async function run() {
     );
     return;
   }
+
+  // HOISTED to a run-level precondition. There are thirteen places that write a
+  // blocking state and invite another correction head; asking each of them to
+  // remember the lifecycle is how the last two rounds of findings happened. The
+  // question "is another correction head even permitted?" is answered ONCE, before
+  // the scope gate and before the CI branch, so no earlier exit can invite a head
+  // the limit refuses.
+  const preRestructure = await enforceRestructure(client, pullRequest, expectedHead);
+  if (preRestructure.superseded) return;
+  if (!preRestructure.allowed) throw new Error(restructureBlockReason(preRestructure));
 
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return;
