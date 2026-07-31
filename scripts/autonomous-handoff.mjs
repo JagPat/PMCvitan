@@ -1,9 +1,20 @@
+export { isAutonomousPullRequest } from './runner-continuation.mjs';
+
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+
+import {
+  buildDriftHandoff,
+  buildPostMergeContinuation,
+  isAutonomousPullRequest,
+  selectAutonomousOpenPullRequests,
+} from './runner-continuation.mjs';
+import { loadStatusDocument, parseStatusNow, parseMaintenanceQueue } from './autonomous-status-state.mjs';
 
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
 const MERGE_MARKER = '<!-- autonomous-post-merge:';
+const DRIFT_MARKER = '<!-- autonomous-status-drift:';
 const STATE_ISSUE_NUMBER = 235;
 const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 // The backlog starts after this workflow was introduced, so historical Claude
@@ -26,20 +37,6 @@ function requiredEnvironment(name) {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required`);
   return value;
-}
-
-export function isAutonomousPullRequest(
-  pullRequest,
-  repository,
-  defaultBranch,
-) {
-  return (
-    pullRequest?.state === 'open' &&
-    pullRequest?.head?.repo?.full_name === repository &&
-    pullRequest?.base?.repo?.full_name === repository &&
-    pullRequest?.base?.ref === defaultBranch &&
-    pullRequest?.head?.ref?.startsWith('claude/')
-  );
 }
 
 class GitHubClient {
@@ -166,6 +163,14 @@ class GitHubClient {
       body: { body },
     });
   }
+
+  async fileContent(path, ref) {
+    const payload = await this.request(
+      `/repos/${this.repository}/contents/${path}?ref=${encodeURIComponent(ref)}`,
+    );
+    if (!payload?.content) return null;
+    return Buffer.from(payload.content, payload.encoding ?? 'base64').toString('utf8');
+  }
 }
 
 async function refreshedMergeability(client, pullRequest) {
@@ -220,11 +225,91 @@ async function handOffConflict(
   );
 }
 
+// Read every open autonomous PR head's STATUS. These are the in-flight
+// corrections: the default branch legitimately lags a draft PR that already set
+// `open_pr` in its own head, and that lag must not be reported as drift. A head
+// whose STATUS is unreadable or unparsable contributes `now: null` and simply
+// cannot suppress anything.
+async function openHeadStatuses(client, openPullRequests) {
+  return Promise.all(
+    (openPullRequests ?? []).map(async (pullRequest) => {
+      const headSha = pullRequest?.head?.sha;
+      if (!headSha) return { number: pullRequest?.number ?? null, now: null };
+      try {
+        const markdown = await client.fileContent('docs/STATUS.md', headSha);
+        return {
+          number: pullRequest.number,
+          now: parseStatusNow(markdown ?? ''),
+        };
+      } catch (error) {
+        console.warn(
+          `Could not read STATUS from PR #${pullRequest.number} head: ${error.message}`,
+        );
+        return { number: pullRequest.number, now: null };
+      }
+    }),
+  );
+}
+
+// Two questions, two authorities. The post-merge handoff asks "given the STATUS
+// that merged into the default branch, what is next?" — only the default branch
+// answers that. Drift asks "does the default branch disagree with live GitHub
+// state, uncorrected?" — that needs the open heads too. Collapsing them onto one
+// value made an unrelated branch's stale STATUS decide the post-merge next step.
+export async function loadContinuationContext(
+  client,
+  repository,
+  defaultBranch,
+  { loadStatus = loadStatusDocument } = {},
+) {
+  const [{ now, maintenanceQueue }, openPullRequests] = await Promise.all([
+    loadStatus(),
+    client.openPullRequests().then((pullRequests) =>
+      selectAutonomousOpenPullRequests(pullRequests, repository, defaultBranch),
+    ),
+  ]);
+  const headStatuses = await openHeadStatuses(client, openPullRequests);
+  return {
+    defaultBranchNow: now,
+    maintenanceQueue,
+    openPullRequests,
+    headStatuses,
+  };
+}
+
+// STATUS as it exists at one commit, or null when it cannot be read or parsed.
+// Null is a signal to fall back, never a silent empty state.
+export async function statusAtCommit(client, ref) {
+  if (!ref) return null;
+  try {
+    const markdown = await client.fileContent('docs/STATUS.md', ref);
+    return parseStatusNow(markdown ?? '');
+  } catch (error) {
+    console.warn(`Could not read STATUS at ${ref}: ${error.message}`);
+    return null;
+  }
+}
+
+// Maintenance queue as it exists at one commit. Mirrors statusAtCommit so the
+// post-merge continuation reads both STATUS fields from the same merge tree
+// instead of leaving the queue on the pre-merge checkout while statusNow moves.
+export async function maintenanceQueueAtCommit(client, ref) {
+  if (!ref) return null;
+  try {
+    const markdown = await client.fileContent('docs/STATUS.md', ref);
+    return parseMaintenanceQueue(markdown ?? '');
+  } catch (error) {
+    console.warn(`Could not read maintenance queue at ${ref}: ${error.message}`);
+    return null;
+  }
+}
+
 async function handOffMergedPullRequest(
   client,
   pullRequest,
   repository,
   defaultBranch,
+  continuationContext,
 ) {
   if (
     !pullRequest?.merged ||
@@ -251,15 +336,73 @@ async function handOffMergedPullRequest(
     comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
   )) return;
 
+  const { defaultBranchNow, maintenanceQueue, openPullRequests, headStatuses } =
+    continuationContext;
+  // STATUS as of THIS merge, not as of the run's checkout.
+  //
+  // `loadContinuationContext` reads the workflow's own checkout, which is taken
+  // when the run starts. On the queued auto-merge path the run enables
+  // auto-merge and only later observes the merge, so that copy predates it: a PR
+  // that merged `open_pr: 252 / in_review` into `merged / next_task: …` would be
+  // handed a continuation derived from the state it just replaced. The merge
+  // commit is the exact post-merge tree for this PR, so read STATUS there.
+  const mergedNow = await statusAtCommit(client, pullRequest.merge_commit_sha)
+    ?? defaultBranchNow;
+const mergedMaintenanceQueue =
+  (await maintenanceQueueAtCommit(client, pullRequest.merge_commit_sha)) ??
+  maintenanceQueue;
   await client.comment(
     pullRequest.number,
     [
       marker,
-      '@claude This exact-head reviewed PR has merged into `main`.',
-      '',
-      'Continue the autonomous runner from the new `main`: verify the merge, advance `docs/STATUS.md` according to its state machine, and start only the next permitted roadmap task or named correction. Create the next same-repository `claude/**` branch and draft PR with Auto-fix enabled. If the merged result or state file is inconsistent, open a focused correction instead of advancing.',
+      buildPostMergeContinuation({
+        statusNow: mergedNow,
+      maintenanceQueue: mergedMaintenanceQueue,
+        openPullRequests,
+        headStatuses,
+      }),
     ].join('\n'),
   );
+}
+
+export async function handOffStatusDrift(
+  client,
+  repository,
+  defaultBranch,
+  continuationContext,
+) {
+  const { defaultBranchNow, maintenanceQueue, openPullRequests, headStatuses } =
+    continuationContext;
+  const body = buildDriftHandoff({
+    statusNow: defaultBranchNow,
+    maintenanceQueue,
+    openPullRequests,
+    headStatuses,
+  });
+  if (!body) return;
+
+  const primary = openPullRequests.at(-1);
+  if (!primary) {
+    // Key the marker to the drifting state. A constant marker made this recovery
+    // one-shot for the repository's lifetime: once posted, every LATER drift with
+    // no live PR was silently swallowed and the loop stayed pointed at stale work.
+    const staleOpenPr = String(defaultBranchNow?.open_pr ?? 'none').trim() || 'none';
+    const marker = `${DRIFT_MARKER}status-only:${staleOpenPr} -->`;
+    const comments = await client.comments(STATE_ISSUE_NUMBER);
+    if (comments.some((comment) =>
+      comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
+    )) return;
+    await client.comment(STATE_ISSUE_NUMBER, [marker, body].join('\n'));
+    return;
+  }
+
+  const marker = `${DRIFT_MARKER}${primary.head.sha} -->`;
+  const comments = await client.comments(primary.number);
+  if (comments.some((comment) =>
+    comment.user?.login === ACTIONS_BOT_LOGIN && comment.body?.includes(marker)
+  )) return;
+
+  await client.comment(primary.number, [marker, body].join('\n'));
 }
 
 export async function run() {
@@ -287,6 +430,12 @@ export async function run() {
 
   // Drain the durable merge backlog on every surviving event. GitHub may replace
   // a pending concurrency run, so correctness cannot depend on one closed event.
+  const continuationContext = await loadContinuationContext(
+    client,
+    repository,
+    defaultBranch,
+  );
+
   const cursor = await client.runnerCursor();
   const mergedBacklog = await client.mergedPullRequestsAfter(cursor);
   mergedBacklog.sort((left, right) =>
@@ -302,10 +451,20 @@ export async function run() {
       liveMergedPullRequest,
       repository,
       defaultBranch,
+      continuationContext,
     );
     await client.setRunnerCursor(
       mergedPullRequest.merged_at,
       mergedPullRequest.number,
+    );
+  }
+
+  if (eventName === 'schedule') {
+    await handOffStatusDrift(
+      client,
+      repository,
+      defaultBranch,
+      continuationContext,
     );
   }
 

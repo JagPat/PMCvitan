@@ -88,6 +88,10 @@ test('handoff implementation covers both conflicts and behind-base states', asyn
   assert.match(implementation, /combinedStatus/);
   assert.match(implementation, /codex-current-head/);
   assert.match(implementation, /comments\?per_page=100&page=\$\{page\}/);
+  assert.match(implementation, /buildPostMergeContinuation/);
+  assert.match(implementation, /handOffStatusDrift/);
+  assert.match(implementation, /eventName === 'schedule'/);
+  assert.match(implementation, /DRIFT_MARKER/);
   assert.doesNotMatch(implementation, /if \(eventName === 'pull_request_target'\)/);
 });
 
