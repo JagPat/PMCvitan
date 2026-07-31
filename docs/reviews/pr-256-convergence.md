@@ -313,3 +313,14 @@ convergence suite, and edits two automation scripts plus the `test:automation`
 glob. No product code, no schema, no migration. The `daily-log-lost-response`
 e2e settle-wait and the CLAUDE.md / AUTONOMOUS_LOOP.md documentation from earlier
 heads are unchanged and were not the subject of any finding.
+
+
+### Finding 9 — P2, this commit: post-merge continuation read maintenanceQueue from the pre-merge checkout
+
+*Codex:* `handOffMergedPullRequest` re-read `statusNow` from the merge commit (`statusAtCommit`) but passed `maintenanceQueue` straight through from `loadContinuationContext`, which reflects the workflow's checkout at run start. On the queued auto-merge path the run enables auto-merge and only later observes the merge, so a queue drained or reordered by this exact merge would be handed to `buildPostMergeContinuation` unrefreshed — the same class of staleness Finding 1's root cause (A) already named for `statusNow`, just left open on the sibling field.
+
+- **Root cause:** A, recurring. `statusNow` and `maintenanceQueue` are two fields of the same STATUS document and must be read from the same tree; only one was re-pointed at the merge commit.
+- **Correction:** `maintenanceQueueAtCommit(client, ref)` mirrors `statusAtCommit` — reads `docs/STATUS.md` at the given ref and parses it with the existing `parseMaintenanceQueue`, returning `null` on a missing/unreadable ref exactly as its sibling does. `handOffMergedPullRequest` now computes `mergedMaintenanceQueue = (await maintenanceQueueAtCommit(client, pullRequest.merge_commit_sha)) ?? maintenanceQueue` and passes that into `buildPostMergeContinuation`, so both fields of the continuation are read from the same post-merge tree. `buildDriftHandoff`'s call is untouched: drift detection is deliberately answered from the default-branch checkout plus live open heads, not from one exact merge commit.
+- **Evidence:** `pnpm test:automation` — `autonomous-handoff.test.mjs` / `runner-continuation.test.mjs` unchanged suites still pass; no assertion in this PR's suite previously pinned `maintenanceQueue` to the pre-merge checkout, so no test contradicted the stale behavior before this fix.
+
+Review-Convergence: complete
