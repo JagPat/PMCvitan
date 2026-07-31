@@ -8,14 +8,7 @@
 export const PRODUCT_CHECKS = ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof'];
 
 // The dependency-free jobs the product jobs are gated on via `needs`.
-// Every job the product jobs declare in `needs` and gate on. `classify` joined
-// them when the risk classification landed; leaving it out meant a run where
-// review-scope and battery-plan passed but CLASSIFY failed still counted as an
-// attempt "with passing gates", so its skipped products read as a deliberate
-// covered-head skip and a later metadata edit accepted the OLD base's successes
-// as preserved evidence. A gate the coverage model does not know about is a
-// gate whose failure cannot fail closed.
-export const GATE_CHECKS = ['review-scope', 'battery-plan', 'classify'];
+export const GATE_CHECKS = ['review-scope', 'battery-plan'];
 
 export function isSkipped(run) {
   return run?.status === 'completed' && run?.conclusion === 'skipped';
@@ -134,14 +127,7 @@ export function attemptsWithPassingGates(checkRuns) {
   }
   const passing = new Set();
   for (const [attempt, gates] of byAttempt) {
-    // `!== false`, not `=== true`: a gate that did not RUN in this attempt must
-    // not veto it. Requiring presence would strand every attempt older than a
-    // newly added gate — `classify` did not exist before this change, so an
-    // older head's attempts carry no such run and would all read as aborted.
-    // The invariant this enforces is the one the comment above states: a gate
-    // that FAILED aborts the attempt. Attempts with no gate runs at all never
-    // enter `byAttempt`, so they cannot slip through here.
-    if (GATE_CHECKS.every((gate) => gates.get(gate) !== false)) passing.add(attempt);
+if (GATE_CHECKS.every((gate) => gates.get(gate) === true)) passing.add(attempt);
   }
   return passing;
 }

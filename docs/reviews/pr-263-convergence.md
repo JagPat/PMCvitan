@@ -191,3 +191,70 @@ another plumbing seam, the recommendation flips to shipping `quality-gate`
 alone — it has drawn zero findings as a summariser across four heads — and
 dropping the classification skip until it can be built against a coverage model
 that understands it.
+
+---
+
+## Head 5 (`c1a9426`) — the pre-registered rule fires; the classifier is withdrawn
+
+| Head | Findings | |
+| --- | --- | --- |
+| `13135fc` | 7 | classifier map + input pipeline + gate composition |
+| `50ef5e0` | 3 | classifier map + gate composition |
+| `e55f17f` | 1 | evidence plumbing |
+| `31aa615` | 2 | evidence plumbing |
+| `c1a9426` | **1** | evidence plumbing |
+| **total** | **14** | **7 in plumbing that exists only to make skipping safe** |
+
+Head 5's finding: a newer in-flight RERUN of a failed check is treated as
+coverage by `battery-plan`, but the reader picks the completed decider and
+finalises the old failure. It is the direct consequence of head 5's own fix,
+which moved the currency check ahead of the in-flight check.
+
+That is the third consecutive round where **my previous round's fix caused the
+next finding**. The condition recorded after head 4 — "if the next round finds
+another plumbing seam, ship `quality-gate` alone" — is met exactly, so it is
+executed rather than re-argued. Re-arguing is what the pre-registration exists
+to prevent: "the remaining fix is small" was equally true at heads 3, 4 and 5.
+
+### What ships
+
+`quality-gate`, the single required status. **Zero findings across five heads.**
+It has no classifier, no evidence reader and no notion of a suite that cannot be
+affected — it summarises what the jobs actually reported, on a whitelist where
+anything that is not an explicit success or explicit skip blocks. This is the
+half of step 4a that step 5 (narrowing branch protection) actually depends on.
+
+Also kept: the `automation` job, and four pre-existing pins re-anchored from
+text position onto the dependency they protect.
+
+### What is withdrawn
+
+`classify`, the five compatibility twins, `ci-risk-classify.mjs`,
+`ci-prior-evidence.mjs`, the `force_all` retarget override, and the `classify`
+entry in `GATE_CHECKS` — reverted to its original two, since the third gate no
+longer exists. `G8` asserts the removal is real: a leftover reference fails,
+because half-removed plumbing that is still reachable while its probes are gone
+is worse than either shipping or removing it.
+
+**All seven plumbing findings become inexpressible rather than fixed.**
+
+### Why this is not simply "it was too hard"
+
+The classifier's own findings (F1/F3/F5/N3 — safe-by-location) were closed
+properly, and `R18`'s enforced consumer scan was a real structural fix. What did
+not converge is the *seam*: skipping is being fitted to a coverage model
+(`check-run-coverage.mjs`) that predates it and encodes "a product check either
+ran or did not". Every plumbing finding is a state that model has no word for —
+in-flight, superseded, rerun-in-progress.
+
+### What a future attempt needs
+
+Not a better path map. A coverage model that carries per-suite *applicability*
+as a first-class state alongside ran/skipped/failed, so "not applicable to this
+change" is expressible in the same vocabulary the orchestrator already reasons
+in. Built there, the seven findings above do not arise. Built on top, as here,
+each one is a separate patch and the next is always one round away.
+
+The work is preserved in this branch's history (`13135fc`..`c1a9426`) and in the
+probes `R1`–`R22b`, which remain a correct specification of what a classifier
+must satisfy.

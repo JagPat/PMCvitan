@@ -91,16 +91,7 @@ export function assessBatteryPlan({ action, baseChanged, checkRuns }) {
     return { runProducts: true, reason: `code event (${action ?? 'no pull_request action'})` };
   }
   if (baseChanged) {
-    // forceAll: a retarget changes the MERGE RESULT, and this branch exists to
-    // re-verify the whole battery against it. The risk classifier reads the
-    // PR's own changed paths, which say nothing about what moved in the new
-    // base — letting it narrow this rerun would silently defeat the retarget
-    // check that requested the full battery in the first place.
-    return {
-      runProducts: true,
-      forceAll: true,
-      reason: 'base retarget changes the merge result under test',
-    };
+    return { runProducts: true, reason: 'base retarget changes the merge result under test' };
   }
   if (!Array.isArray(checkRuns)) {
     return { runProducts: true, reason: 'check history unavailable; failing toward a full run' };
@@ -235,20 +226,13 @@ export async function run({
   } catch (error) {
     plan = {
       runProducts: true,
-      forceAll: true,
       reason: `battery plan errored (${error.message}); failing toward a full run`,
     };
   }
 
-  console.log(
-    `battery-plan: run_products=${plan.runProducts}; `
-      + `force_all=${Boolean(plan.forceAll)}; ${plan.reason}`,
-  );
+  console.log(`battery-plan: run_products=${plan.runProducts}; ${plan.reason}`);
   if (outputPath) {
-    await appendFile(
-      outputPath,
-      `run_products=${plan.runProducts}\nforce_all=${Boolean(plan.forceAll)}\n`,
-    );
+    await appendFile(outputPath, `run_products=${plan.runProducts}\n`);
   }
   return plan;
 }

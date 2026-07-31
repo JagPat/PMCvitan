@@ -3,21 +3,19 @@ name: CI
 # One workflow handles every PR event, so a completed CI run always wakes the
 # trusted default-branch owner.
 #
-# Two INDEPENDENT questions gate the five product jobs, and they compose by AND:
-#
-#   1. Has this exact head already been tested? — `battery-plan`, which skips a
-#      metadata-only body/title edit whose head already has real product runs,
-#      and launches when the merge result changed (a base retarget) or when the
-#      products never really ran (a first run that failed review-scope).
-#      scripts/autonomous-ci-battery.test.mjs pins that design.
-#   2. Can this CHANGE break the suite at all? — `classify`, which reads the
-#      changed paths. Any unrecognised path widens to the full battery, so
-#      cheaper CI never means weaker CI.
-#      scripts/ci-risk-classification.test.mjs pins that design.
+# `battery-plan` decides whether this exact head still needs the five product
+# jobs: it skips a metadata-only body/title edit whose head already has real
+# product runs, and launches when the merge result changed (a base retarget) or
+# when the products never really ran. scripts/autonomous-ci-battery.test.mjs
+# pins that design.
 #
 # `quality-gate` is the single required status: it depends on every job above
 # and passes only when each is an explicit success or an explicit skip. A
-# cancelled job — a run that never reached a verdict — blocks.
+# cancelled job — one that never reached a verdict — blocks.
+#
+# A path-based risk classifier was attempted here and withdrawn; see
+# docs/reviews/pr-263-convergence.md for why, and what it would need to return.
+
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
@@ -40,7 +38,6 @@ jobs:
       checks: read
     outputs:
       run_products: ${{ steps.plan.outputs.run_products }}
-      force_all: ${{ steps.plan.outputs.force_all }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Decide whether this event needs the product battery
@@ -48,25 +45,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/ci-battery-plan.mjs
-
-  # Cheap by construction: one checkout, one changed-files API read, one pure
-  # function. Fails toward running everything.
-  classify:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      suites: ${{ steps.plan.outputs.suites }}
-      confident: ${{ steps.plan.outputs.confident }}
-      reason: ${{ steps.plan.outputs.reason }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Decide which product suites this change can break
-        id: plan
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/ci-risk-classify.mjs
 
   # The loop's own machinery. NOT gated on the classification: `docs/STATUS.md`
   # is parsed by the runner state machine, so even a Markdown-only change can
@@ -88,11 +66,8 @@ jobs:
         run: pnpm test:automation
 
   web:
-    needs: [review-scope, battery-plan, classify]
-    if: >-
-      needs.battery-plan.outputs.run_products == 'true'
-      && (needs.battery-plan.outputs.force_all == 'true'
-        || contains(needs.classify.outputs.suites, ',web,'))
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -116,11 +91,8 @@ jobs:
         run: pnpm --filter web build
 
   e2e:
-    needs: [review-scope, battery-plan, classify]
-    if: >-
-      needs.battery-plan.outputs.run_products == 'true'
-      && (needs.battery-plan.outputs.force_all == 'true'
-        || contains(needs.classify.outputs.suites, ',e2e,'))
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -142,11 +114,8 @@ jobs:
   # complete only when this job is green — unit tests or the seeded demo alone
   # are insufficient evidence (docs/ROADMAP.md).
   api-e2e:
-    needs: [review-scope, battery-plan, classify]
-    if: >-
-      needs.battery-plan.outputs.run_products == 'true'
-      && (needs.battery-plan.outputs.force_all == 'true'
-        || contains(needs.classify.outputs.suites, ',api-e2e,'))
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -201,11 +170,8 @@ jobs:
   # upgraded through ALL Phase 1 migrations the way Prisma applies them, and
   # asserted to keep every legacy meaning intact. Pure psql — no build needed.
   upgrade-proof:
-    needs: [review-scope, battery-plan, classify]
-    if: >-
-      needs.battery-plan.outputs.run_products == 'true'
-      && (needs.battery-plan.outputs.force_all == 'true'
-        || contains(needs.classify.outputs.suites, ',upgrade-proof,'))
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -227,11 +193,8 @@ jobs:
         run: bash apps/api/scripts/upgrade-proof.sh
 
   api:
-    needs: [review-scope, battery-plan, classify]
-    if: >-
-      needs.battery-plan.outputs.run_products == 'true'
-      && (needs.battery-plan.outputs.force_all == 'true'
-        || contains(needs.classify.outputs.suites, ',api,'))
+    needs: [review-scope, battery-plan]
+    if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -277,199 +240,28 @@ jobs:
       - name: Build
         run: pnpm --filter api build
 
-  # Compatibility twin for `web`. Exactly one of the two runs, and both
-  # publish a check named `web`.
-  #
-  # Without this the classification would SKIP the job, and a skipped product
-  # check is not what the orchestrator's `summarizeRequiredChecks` waits for:
-  # `intentionalSkip` is true (this attempt's gates passed), so no decider is
-  # found and the check counts as MISSING. The head would then sit pending until
-  # timeout and never reach the exact-head Codex review — a docs-only change
-  # would never merge. Emitting the name with an honest verdict keeps every
-  # existing waiter working unchanged.
-  #
-  # This reports "not applicable", NOT "the suite passed": the job did not run
-  # web, and says so in its own output. Narrowing branch protection to
-  # `quality-gate` alone is a separate change; when that lands these twins can go.
-  web-not-applicable:
-    name: web
-    needs: [review-scope, battery-plan, classify]
-    if: >-
-      needs.battery-plan.outputs.run_products == 'true'
-      && needs.battery-plan.outputs.force_all != 'true'
-      && !contains(needs.classify.outputs.suites, ',web,')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Not applicable to this change
-        run: |
-          echo "The `web` suite did NOT run: no changed path can affect it."
-          echo "Classification: $REASON"
-        env:
-          REASON: ${{ needs.classify.outputs.reason }}
-
-  # Compatibility twin for `e2e`. Exactly one of the two runs, and both
-  # publish a check named `e2e`.
-  #
-  # Without this the classification would SKIP the job, and a skipped product
-  # check is not what the orchestrator's `summarizeRequiredChecks` waits for:
-  # `intentionalSkip` is true (this attempt's gates passed), so no decider is
-  # found and the check counts as MISSING. The head would then sit pending until
-  # timeout and never reach the exact-head Codex review — a docs-only change
-  # would never merge. Emitting the name with an honest verdict keeps every
-  # existing waiter working unchanged.
-  #
-  # This reports "not applicable", NOT "the suite passed": the job did not run
-  # e2e, and says so in its own output. Narrowing branch protection to
-  # `quality-gate` alone is a separate change; when that lands these twins can go.
-  e2e-not-applicable:
-    name: e2e
-    needs: [review-scope, battery-plan, classify]
-    if: >-
-      needs.battery-plan.outputs.run_products == 'true'
-      && needs.battery-plan.outputs.force_all != 'true'
-      && !contains(needs.classify.outputs.suites, ',e2e,')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Not applicable to this change
-        run: |
-          echo "The `e2e` suite did NOT run: no changed path can affect it."
-          echo "Classification: $REASON"
-        env:
-          REASON: ${{ needs.classify.outputs.reason }}
-
-  # Compatibility twin for `api-e2e`. Exactly one of the two runs, and both
-  # publish a check named `api-e2e`.
-  #
-  # Without this the classification would SKIP the job, and a skipped product
-  # check is not what the orchestrator's `summarizeRequiredChecks` waits for:
-  # `intentionalSkip` is true (this attempt's gates passed), so no decider is
-  # found and the check counts as MISSING. The head would then sit pending until
-  # timeout and never reach the exact-head Codex review — a docs-only change
-  # would never merge. Emitting the name with an honest verdict keeps every
-  # existing waiter working unchanged.
-  #
-  # This reports "not applicable", NOT "the suite passed": the job did not run
-  # api-e2e, and says so in its own output. Narrowing branch protection to
-  # `quality-gate` alone is a separate change; when that lands these twins can go.
-  api-e2e-not-applicable:
-    name: api-e2e
-    needs: [review-scope, battery-plan, classify]
-    if: >-
-      needs.battery-plan.outputs.run_products == 'true'
-      && needs.battery-plan.outputs.force_all != 'true'
-      && !contains(needs.classify.outputs.suites, ',api-e2e,')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Not applicable to this change
-        run: |
-          echo "The `api-e2e` suite did NOT run: no changed path can affect it."
-          echo "Classification: $REASON"
-        env:
-          REASON: ${{ needs.classify.outputs.reason }}
-
-  # Compatibility twin for `upgrade-proof`. Exactly one of the two runs, and both
-  # publish a check named `upgrade-proof`.
-  #
-  # Without this the classification would SKIP the job, and a skipped product
-  # check is not what the orchestrator's `summarizeRequiredChecks` waits for:
-  # `intentionalSkip` is true (this attempt's gates passed), so no decider is
-  # found and the check counts as MISSING. The head would then sit pending until
-  # timeout and never reach the exact-head Codex review — a docs-only change
-  # would never merge. Emitting the name with an honest verdict keeps every
-  # existing waiter working unchanged.
-  #
-  # This reports "not applicable", NOT "the suite passed": the job did not run
-  # upgrade-proof, and says so in its own output. Narrowing branch protection to
-  # `quality-gate` alone is a separate change; when that lands these twins can go.
-  upgrade-proof-not-applicable:
-    name: upgrade-proof
-    needs: [review-scope, battery-plan, classify]
-    if: >-
-      needs.battery-plan.outputs.run_products == 'true'
-      && needs.battery-plan.outputs.force_all != 'true'
-      && !contains(needs.classify.outputs.suites, ',upgrade-proof,')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Not applicable to this change
-        run: |
-          echo "The `upgrade-proof` suite did NOT run: no changed path can affect it."
-          echo "Classification: $REASON"
-        env:
-          REASON: ${{ needs.classify.outputs.reason }}
-
-  # Compatibility twin for `api`. Exactly one of the two runs, and both
-  # publish a check named `api`.
-  #
-  # Without this the classification would SKIP the job, and a skipped product
-  # check is not what the orchestrator's `summarizeRequiredChecks` waits for:
-  # `intentionalSkip` is true (this attempt's gates passed), so no decider is
-  # found and the check counts as MISSING. The head would then sit pending until
-  # timeout and never reach the exact-head Codex review — a docs-only change
-  # would never merge. Emitting the name with an honest verdict keeps every
-  # existing waiter working unchanged.
-  #
-  # This reports "not applicable", NOT "the suite passed": the job did not run
-  # api, and says so in its own output. Narrowing branch protection to
-  # `quality-gate` alone is a separate change; when that lands these twins can go.
-  api-not-applicable:
-    name: api
-    needs: [review-scope, battery-plan, classify]
-    if: >-
-      needs.battery-plan.outputs.run_products == 'true'
-      && needs.battery-plan.outputs.force_all != 'true'
-      && !contains(needs.classify.outputs.suites, ',api,')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Not applicable to this change
-        run: |
-          echo "The `api` suite did NOT run: no changed path can affect it."
-          echo "Classification: $REASON"
-        env:
-          REASON: ${{ needs.classify.outputs.reason }}
-
   # The ONE required status.
   #
   # `always()` is load-bearing: without it a failing job would SKIP this gate,
   # and a skipped required check is not a failing one — the pull request would
   # sit forever rather than being refused. With it, every job's result reaches
-  # `assessQualityGate`, which passes only on an explicit success or an
-  # explicit skip. A cancelled job never reached a verdict and blocks.
+  # `assessQualityGate`, which passes only on an explicit success or an explicit
+  # skip. A cancelled job never reached a verdict and blocks.
   quality-gate:
     if: always()
     needs:
       - review-scope
       - battery-plan
-      - classify
       - automation
       - web
       - e2e
       - api
       - api-e2e
       - upgrade-proof
-      - web-not-applicable
-      - e2e-not-applicable
-      - api-not-applicable
-      - api-e2e-not-applicable
-      - upgrade-proof-not-applicable
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # Only consulted when battery-plan skipped the products as already
-      # covered. That decision counts a FAILED run as coverage, so the gate has
-      # to look at what the earlier run actually concluded.
-      - name: Read the preserved product evidence for this head
-        id: evidence
-        if: needs.battery-plan.outputs.run_products == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/ci-prior-evidence.mjs
       - name: Summarize every required check into one verdict
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
-          CLASSIFY_REASON: ${{ needs.classify.outputs.reason }}
-          RUN_PRODUCTS: ${{ needs.battery-plan.outputs.run_products }}
-          PRIOR_EVIDENCE: ${{ steps.evidence.outputs.verdict }}
         run: node scripts/ci-quality-gate.mjs
