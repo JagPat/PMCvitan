@@ -79,7 +79,7 @@ const REPLACES = /^[\t ]*replaces:[\t ]*#(?<number>\d+)[\t ]*$/imu;
 
 // Machine-readable metrics carried on the sticky comment. The recorded count is a
 // FLOOR, never a fresh reading: see `mergeFindingHeadCount`.
-const METRICS_MARKER = '<!-- autonomous-review-metrics:';
+export const METRICS_MARKER = '<!-- autonomous-review-metrics:';
 
 export function replacementSource(body) {
   const match = REPLACES.exec(typeof body === 'string' ? body : '');
@@ -204,8 +204,18 @@ export function assessRestructure({
     // makes the gate wait longer for a human, never less.
     const severity = findingHeadSeverity(comments, reviews);
     const criticalHeads = merged.ids.filter((id) => severity.get(id) !== 'minor');
-    const critical = criticalHeads.length > 0;
-    const tier = criticalHeads.some((id) => severity.get(id) !== 'critical')
+
+    // A LEGACY floor carries a count but no identities, and identities are what
+    // severity is keyed by. If the live read no longer returns those old
+    // comments, `criticalHeads` comes back empty and the unit reads as minor —
+    // forgiving a unit that had already crossed the limit, on the strength of
+    // evidence we cannot see. Heads we know exist but cannot classify count as
+    // unknown, which is critical.
+    const unclassified = Math.max(0, findingHeadCount - merged.ids.length);
+    const critical = criticalHeads.length > 0 || unclassified > 0;
+    // An unclassifiable head is unknown severity, which takes the longest window.
+    const tier = unclassified > 0
+      || criticalHeads.some((id) => severity.get(id) !== 'critical')
       ? 'very-critical'
       : 'critical';
     const window = declarationWindowMinutes ?? declarationWindowFor(tier);

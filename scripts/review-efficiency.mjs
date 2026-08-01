@@ -163,21 +163,25 @@ const BADGE = /!\[P(\d) Badge\]|badge\/P(\d)-/gu;
 // gate permissive exactly when it had lost the ability to see. Callers treat
 // unknown as at least as serious as the worst known tier.
 export function findingHeadSeverity(comments, reviews = []) {
-  const worst = new Map(); // head -> lowest P-number seen, or null when unbadged
+  // Per head: the lowest severity seen, AND whether any finding on it was
+  // unreadable. Tracking only "was a badge seen anywhere" let one badged comment
+  // vouch for an unbadged sibling on the same head — the head came back minor
+  // while carrying a finding of unknown severity, which is the opposite of the
+  // rule. Any unreadable finding taints its whole head.
+  const worst = new Map(); // head -> { lowest: number|null, unreadable: boolean }
   const note = (head, body) => {
     if (typeof head !== 'string' || head.length === 0) return;
     const found = [...String(body ?? '').matchAll(BADGE)]
       .map((match) => Number(match[1] ?? match[2]))
       .filter((n) => Number.isInteger(n));
-    const prior = worst.has(head) ? worst.get(head) : undefined;
+    const entry = worst.get(head) ?? { lowest: null, unreadable: false };
     if (found.length === 0) {
-      if (prior === undefined) worst.set(head, null);
-      return;
+      entry.unreadable = true;
+    } else {
+      const lowest = Math.min(...found);
+      entry.lowest = entry.lowest === null ? lowest : Math.min(entry.lowest, lowest);
     }
-    const lowest = Math.min(...found);
-    worst.set(head, prior === undefined || prior === null
-      ? lowest
-      : Math.min(prior, lowest));
+    worst.set(head, entry);
   };
   for (const comment of comments ?? []) {
     if (comment?.user?.login !== CODEX_LOGIN) continue;
@@ -189,10 +193,13 @@ export function findingHeadSeverity(comments, reviews = []) {
   }
 
   const severity = new Map();
-  for (const [head, lowest] of worst) {
-    if (lowest === null) severity.set(head, 'unknown');
-    else if (lowest === 0) severity.set(head, 'very-critical');
-    else if (lowest === 1) severity.set(head, 'critical');
+  for (const [head, entry] of worst) {
+    // A P0 or P1 is already at least as serious as "unknown", so a readable
+    // critical finding decides. Otherwise any unreadable finding wins over an
+    // apparently-minor one.
+    if (entry.lowest === 0) severity.set(head, 'very-critical');
+    else if (entry.lowest === 1) severity.set(head, 'critical');
+    else if (entry.unreadable || entry.lowest === null) severity.set(head, 'unknown');
     else severity.set(head, 'minor');
   }
   return severity;

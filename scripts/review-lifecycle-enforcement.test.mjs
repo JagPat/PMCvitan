@@ -181,3 +181,94 @@ test('W9: the window is TIERED by severity — 6h very critical, 3h critical', a
   assert.equal(minor.tier, null);
   assert.equal(minor.windowMinutes, null);
 });
+
+test('W10: the gate runs BEFORE Codex promotion, not only at final admission', async () => {
+  // F3. With the check only in revalidateFinalReviewPolicy, a unit already at
+  // five critical heads was promoted for ANOTHER review, and a finding from it
+  // drafted the head without the lifecycle gate ever running — producing the
+  // sixth finding-bearing head this wiring exists to prevent.
+  const source = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url), 'utf8',
+  );
+  const promotion = source.slice(
+    source.lastIndexOf('const convergence = await enforceReviewConvergence('),
+    source.lastIndexOf('const reviewNotBefore'),
+  );
+  assert.match(
+    promotion, /enforceReviewLifecycle\(/u,
+    'the promotion path must consult the lifecycle gate before requesting a review',
+  );
+});
+
+test('W11: a legacy count-only floor fails CLOSED', async () => {
+  // F5. An old record carries a count but no identities, and severity is keyed
+  // by identity. If the live read no longer returns those comments, the unit
+  // would read as minor and be forgiven despite having crossed the limit.
+  const client = fakeClient({
+    comments: [],
+    sticky: `<!-- autonomous-review-metrics: ${JSON.stringify({ findingHeads: 5 })} -->`,
+  });
+  const result = await enforceReviewLifecycle(client, pr, 'h');
+  assert.equal(result.allowed, false, 'an unclassifiable crossed unit must not be forgiven');
+  assert.equal(result.tier, 'very-critical', 'unclassifiable means unknown, the longest window');
+});
+
+test('W12: an unreadable finding taints its whole head', async () => {
+  // F2. One badged comment must not vouch for an unbadged sibling on the same
+  // head — that returned "minor" for a head carrying unknown severity.
+  const { findingHeadSeverity } = await import('./review-efficiency.mjs');
+  const at = (head, body) => ({ user: { login: CODEX }, commit_id: head, body });
+  const badge = (n) => `![P${n} Badge](https://img.shields.io/badge/P${n}-x?style=flat)`;
+
+  const severity = findingHeadSeverity([
+    at('mixed', badge(2)), at('mixed', 'a finding with no badge'),
+    at('clean', badge(2)),
+  ]);
+  assert.equal(severity.get('mixed'), 'unknown', 'an unbadged sibling taints the head');
+  assert.equal(severity.get('clean'), 'minor', 'a fully badged minor head stays minor');
+});
+
+test('W13: the metrics block survives OTHER sticky writes', async () => {
+  // F6. Sixteen call sites write this comment with a plain status body. Any one
+  // of them would have erased the lifecycle floor and the reply deadline.
+  //
+  // This EXERCISES the writer rather than grepping for a variable name. The
+  // first version of this probe asserted the source mentioned `priorMetrics`,
+  // which still passed when the value was computed and then never used — a test
+  // of a mention, not of a behaviour, and it failed to discriminate.
+  const { GitHubClient } = await import('./autonomous-review-gate.mjs');
+  const metrics = '<!-- autonomous-review-metrics: {"findingHeads":5,'
+    + '"declarationRequestedAt":"2026-08-01T00:00:00Z"} -->';
+
+  const written = [];
+  const client = Object.create(GitHubClient.prototype);
+  client.repository = 'o/r';
+  client.request = async (path, options) => {
+    if (!options) {
+      return [{
+        id: 7,
+        user: { login: 'github-actions[bot]' },
+        body: `<!-- autonomous-review-state -->\nold status\n${metrics}`,
+      }];
+    }
+    written.push(options.body.body);
+    return {};
+  };
+
+  // A status-only write, exactly as the other fifteen call sites make it.
+  await client.updateStickyComment(1, 'a plain status body with no metrics');
+  assert.equal(written.length, 1);
+  assert.match(
+    written[0], /declarationRequestedAt/u,
+    'a status-only write must not erase the recorded deadline',
+  );
+  assert.match(written[0], /findingHeads/u, 'nor the finding-head floor');
+
+  // A writer supplying its OWN metrics replaces rather than duplicates.
+  written.length = 0;
+  await client.updateStickyComment(1, `fresh status\n${metrics.replace('5', '6')}`);
+  assert.equal(
+    written[0].match(/autonomous-review-metrics/gu).length, 1,
+    'a supplied block replaces the old one rather than stacking',
+  );
+});

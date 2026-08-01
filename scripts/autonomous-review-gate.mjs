@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { loadStatusDocument } from './autonomous-status-state.mjs';
 import {
+  METRICS_MARKER,
   assessRestructure,
   readMetrics,
   renderMetrics,
@@ -742,7 +743,18 @@ export class GitHubClient {
         comment.user?.login === 'github-actions[bot]' &&
         comment.body?.includes(COMMENT_MARKER),
     );
-    const fullBody = `${COMMENT_MARKER}\n${body}`;
+    // The lifecycle floor and the declaration deadline live in a metrics block
+    // inside this comment, and sixteen other call sites write it with a plain
+    // status body. Every one of those would erase the record — resetting the
+    // finding-head floor and the reply window — so the carry-forward is done
+    // HERE rather than by remembering to append metrics at sixteen call sites.
+    // A writer that supplies its own block replaces it; a writer that does not
+    // preserves what was already there.
+    const priorMetrics = existing?.body?.includes(METRICS_MARKER)
+      && !body.includes(METRICS_MARKER)
+      ? existing.body.slice(existing.body.indexOf(METRICS_MARKER)).split('-->')[0] + '-->'
+      : null;
+    const fullBody = `${COMMENT_MARKER}\n${body}${priorMetrics ? `\n${priorMetrics}` : ''}`;
     if (existing) {
       await this.request(
         `/repos/${this.repository}/issues/comments/${existing.id}`,
@@ -1596,6 +1608,20 @@ export async function run() {
     throw new Error(
       `${convergence.findingHeadCount} finding heads require a consolidated convergence audit`,
     );
+  }
+
+  // BEFORE promotion, not only at final admission.
+  //
+  // Placing this check solely in `revalidateFinalReviewPolicy` left the normal
+  // path running from convergence straight into `reviewAttempt`: a unit already
+  // at five critical heads would be promoted for ANOTHER Codex review, and a
+  // finding from that review would draft the head without the lifecycle gate
+  // ever running. The sixth finding-bearing head is exactly what this wiring
+  // exists to prevent, so it has to run before the review is requested.
+  const lifecycle = await enforceReviewLifecycle(client, pullRequest, expectedHead);
+  if (lifecycle.superseded) return;
+  if (!lifecycle.allowed) {
+    throw new Error(`lifecycle: ${lifecycle.reason}`);
   }
 
   const reviewNotBefore = new Date(Date.now() - 1_000).toISOString();
