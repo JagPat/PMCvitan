@@ -113,7 +113,7 @@ describe('Phase 4 Task 2 correction R3 — coherent requisition terminal state (
   type Comparison = Awaited<ReturnType<typeof approvedComparison>>;
   const issuePoFor = async (c: Comparison, lines: Array<{ requisitionLineId: string; personShiftQty: number }>) => {
     const po = await commercial.createPo(c.projectId, { comparisonId: c.comparisonId, lines }, pmc(c.projectId));
-    await commercial.issuePo(c.projectId, po.id, pmc(c.projectId));
+    await commercial.issuePo(c.projectId, po.id, {}, pmc(c.projectId));
     const poLines = (await commercial.readPo(c.projectId, po.id, pmc(c.projectId))).currentVersion.lines;
     return { poId: po.id, poLines };
   };

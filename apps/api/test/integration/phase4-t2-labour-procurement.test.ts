@@ -177,7 +177,7 @@ describe('Phase 4 Task 2 — labour commercial chain (live PG)', () => {
     // ordering the line flips the requisition line 'open' → 'ordered'
     expect((await commercial.listRequisitions(projectId, pmc(projectId))).requisitions[0]!.lines[0]!.status).toBe('ordered');
 
-    const issued = await commercial.issuePo(projectId, po.id, pmc(projectId));
+    const issued = await commercial.issuePo(projectId, po.id, {}, pmc(projectId));
     expect(issued.currentVersion.status).toBe('issued');
     expect(await t.prisma.domainEvent.count({ where: { projectId, eventType: 'labour.po.issued' } })).toBe(1);
 
@@ -323,7 +323,7 @@ describe('Phase 4 Task 2 — labour commercial chain (live PG)', () => {
     const line = requisition.lines[0]!;
     const { comparisonId } = await approvedComparison(projectId, requisition.id, line.id, vendorId);
     const po = await commercial.createPo(projectId, { comparisonId, lines: [{ requisitionLineId: line.id, personShiftQty: 8 }] }, pmc(projectId));
-    await commercial.issuePo(projectId, po.id, pmc(projectId));
+    await commercial.issuePo(projectId, po.id, {}, pmc(projectId));
 
     const amended = await commercial.amendPo(projectId, po.id, { reason: 'reduce to 6', lines: [{ requisitionLineId: line.id, personShiftQty: 6 }] }, pmc(projectId));
     expect(amended.currentVersion.version).toBe(2);

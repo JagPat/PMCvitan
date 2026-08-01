@@ -56,12 +56,18 @@ export class CommercialActivationService {
 
       // The operator identity is a real User row: every attribution is attributable to a person,
       // and the FK makes an invented operator string unrepresentable rather than merely unusual.
-      const actorUser = await tx.user.findUnique({ where: { email: operator }, select: { id: true, role: true } });
+      // The CLI passes an email, a programmatic caller a user id — both resolve to the same row.
+      const actorUser = await tx.user.findFirst({
+        where: { OR: [{ id: operator }, { email: operator }] },
+        select: { id: true, role: true },
+      });
       if (!actorUser) {
         throw new BadRequestException(
           `Operator "${operator}" is not a user in this deployment — activation attributes rows to a real identity`,
         );
       }
+      // §I: the operator turning the pilot on is authoring the initial attributions, so the
+      // participant's `commercial.attribute` check applies to THEM. Activation is not a side door.
       const actor = { actorId: actorUser.id, role: actorUser.role };
 
       for (const head of plan.costHeads) {
@@ -106,7 +112,7 @@ export class CommercialActivationService {
 
       await tx.projectCapability.upsert({
         where: { projectId_capability: { projectId, capability: COMMERCIAL_CAPABILITY } },
-        create: { projectId, capability: COMMERCIAL_CAPABILITY, enabledById: operator },
+        create: { projectId, capability: COMMERCIAL_CAPABILITY, enabledById: actorUser.id },
         update: {},
       });
       await recordAudit(tx, {

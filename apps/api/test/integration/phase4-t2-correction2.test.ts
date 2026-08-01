@@ -119,7 +119,7 @@ describe('Phase 4 Task 2 correction R2 — requisition lifecycle consistency (li
   /** Create + issue ONE PO for a comparison over the given `(requisitionLineId, personShiftQty)` lines. */
   const issuePoFor = async (c: Comparison, lines: Array<{ requisitionLineId: string; personShiftQty: number }>) => {
     const po = await commercial.createPo(c.projectId, { comparisonId: c.comparisonId, lines }, pmc(c.projectId));
-    await commercial.issuePo(c.projectId, po.id, pmc(c.projectId));
+    await commercial.issuePo(c.projectId, po.id, {}, pmc(c.projectId));
     const poLines = (await commercial.readPo(c.projectId, po.id, pmc(c.projectId))).currentVersion.lines;
     return { poId: po.id, poLines };
   };

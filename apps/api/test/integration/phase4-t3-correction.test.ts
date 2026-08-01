@@ -142,7 +142,7 @@ describe('Phase 4 Task 3 correction — the four review findings (live PG)', () 
     const comparisonId = (await commercial.readRfq(projectId, rfq.id, pmc(projectId))).comparison!.id;
     const po = await commercial.createPo(projectId, { comparisonId, lines: [{ requisitionLineId: line.id, personShiftQty: qty }] }, pmc(projectId));
     const poLine = po.currentVersion.lines[0]!;
-    await commercial.issuePo(projectId, po.id, pmc(projectId));
+    await commercial.issuePo(projectId, po.id, {}, pmc(projectId));
     return (await commercial.commitCapacity(projectId, { poLineId: poLine.id, promisedDate: civilDate }, pmc(projectId))).id;
   };
 
