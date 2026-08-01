@@ -5,6 +5,7 @@ import {
   METRICS_MARKER,
   assessRestructure,
   expiredWindow,
+  humanDeclaration,
   readMetrics,
   recordedWindowMinutes,
   renderMetrics,
@@ -192,6 +193,28 @@ export function summarizeRequiredChecks(checkRuns, requiredChecks = REQUIRED_CHE
   };
 }
 
+// WHICH sticky comment is the durable record.
+//
+// A pull request can carry more than one: the earlier single-page writer bug
+// could POST a second `autonomous-review-state` comment past the hundredth
+// comment while the original stayed at the top. `find()` over the ascending list
+// then returns the STALE first marker and ignores the newer one actually holding
+// the floor — so a recorded five-head crossing reads as absent and the gate
+// promotes another review instead of failing closed.
+//
+// The newest comment CARRYING the record wins; only if none carries one does the
+// newest bare sticky win. The writer picks the same comment, which consolidates
+// a duplicated pair back onto the record-bearing one instead of forking further.
+export function pickSticky(comments) {
+  const stickies = (comments ?? []).filter(
+    (comment) => comment?.user?.login === 'github-actions[bot]'
+      && comment?.body?.includes(COMMENT_MARKER),
+  );
+  if (stickies.length === 0) return null;
+  const bearing = stickies.filter((comment) => comment.body.includes(METRICS_MARKER));
+  return (bearing.length > 0 ? bearing : stickies).at(-1);
+}
+
 export function isTerminalReviewStatus(status) {
   if (!status || status.state === 'pending') return false;
   if (status.state === 'success') return true;
@@ -375,7 +398,8 @@ export function isRetryableTerminalReviewFailure(status) {
     // actually expired blocks a second time (`W24`). Without this the fallback
     // sweep could see an expired window and have no way to act on it, which is
     // the whole of finding F3.
-    || description.startsWith('review: lifecycle —');
+    || description.startsWith('review: lifecycle —')
+    || description.startsWith('review: lifecycle unreadable —');
 }
 
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
@@ -782,13 +806,7 @@ export class GitHubClient {
   }
 
   async stickyComment(number) {
-    const comments = await this.issueComments(number);
-    const existing = comments.find(
-      (comment) =>
-        comment.user?.login === 'github-actions[bot]' &&
-        comment.body?.includes(COMMENT_MARKER),
-    );
-    return existing?.body ?? null;
+    return pickSticky(await this.issueComments(number))?.body ?? null;
   }
 
   async updateStickyComment(number, body) {
@@ -799,11 +817,7 @@ export class GitHubClient {
     // returning the original. The floor and the reply deadline would be written
     // to a comment nothing reads, and the window could be reset or replayed.
     const comments = await this.issueComments(number);
-    const existing = comments.find(
-      (comment) =>
-        comment.user?.login === 'github-actions[bot]' &&
-        comment.body?.includes(COMMENT_MARKER),
-    );
+    const existing = pickSticky(comments);
     // The lifecycle floor and the declaration deadline live in a metrics block
     // inside this comment, and sixteen other call sites write it with a plain
     // status body. Every one of those would erase the record — resetting the
@@ -1145,17 +1159,46 @@ export async function sweepExpiredWindows(client, {
       continue;
     }
 
-    const expired = expiredWindow(metrics, nowIso);
-    if (!expired) continue;
-
     const statuses = await client.statuses(pullRequest.head.sha);
     const terminal = statuses.find((status) => status.context === STATUS_CONTEXT);
     if (!isRetryableTerminalReviewFailure(terminal)) {
-      // The window is spent but this head is not sitting on a lifecycle block —
-      // something else already moved it on. Nothing to wake.
-      skipped.push({ number: pullRequest.number, reason: 'no resumable lifecycle block' });
+      // Either nothing is blocking this head, or the block is a DECLARED
+      // restructure — terminal by decision, and re-dispatching it every quarter
+      // hour would only pile up recovery requests while everyone waits for the
+      // replacement pull request.
       continue;
     }
+
+    // Three ways a blocked unit becomes actionable, and the sweep must catch all
+    // of them. Only the first is about time.
+    const expired = expiredWindow(metrics, nowIso);
+    const unreadable = String(terminal.description ?? '')
+      .startsWith('review: lifecycle unreadable —');
+    // A maintainer ANSWERING is an event, and the issue_comment trigger reacts to
+    // it immediately. This is the fallback for the answer that arrives while the
+    // event path is unavailable — a webhook dropped, the workflow disabled — so
+    // the unit is never left sitting on a decision that was already made.
+    let answered = null;
+    if (!expired && !unreadable && metrics?.declarationRequestedAt) {
+      try {
+        answered = humanDeclaration(
+          await client.issueComments(pullRequest.number),
+          metrics.declarationRequestedAt,
+        );
+      } catch {
+        answered = null;
+      }
+    }
+
+    const why = expired
+      ? `the ${expired.minutes}-minute window closed `
+        + `${expired.elapsedMinutes - expired.minutes} minutes ago`
+      : unreadable
+        ? 'the previous run could not read its own evidence, which is transient'
+        : answered
+          ? `${answered.by ?? 'a maintainer'} answered "${answered.declared}"`
+          : null;
+    if (!why) continue;
 
     await client.dispatchReviewRecovery({
       pullRequestNumber: pullRequest.number,
@@ -1163,22 +1206,14 @@ export async function sweepExpiredWindows(client, {
       terminalStatusId: terminal.id,
       ref,
     });
-    woken.push({
-      number: pullRequest.number,
-      head: pullRequest.head.sha,
-      waitedMinutes: expired.elapsedMinutes,
-      windowMinutes: expired.minutes,
-    });
-    log(
-      `sweep: woke #${pullRequest.number} — the ${expired.minutes}-minute window `
-      + `closed ${expired.elapsedMinutes - expired.minutes} minutes ago`,
-    );
+    woken.push({ number: pullRequest.number, head: pullRequest.head.sha, why });
+    log(`sweep: woke #${pullRequest.number} — ${why}`);
   }
 
   for (const entry of skipped) {
     log(`sweep: skipped #${entry.number} — ${entry.reason}`);
   }
-  if (!woken.length) log(`sweep: no expired declaration window across ${open.length} open units`);
+  if (!woken.length) log(`sweep: nothing actionable across ${open.length} open units`);
   return { woken, skipped, scanned: open.length };
 }
 
@@ -1319,9 +1354,15 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     // the same declaration and fail again, and each pass would leave another
     // pending recovery request while everyone waits for a replacement PR. Only a
     // unit still WAITING on an answer is resumable.
+    // Three distinct kinds of lifecycle block, and the sweep treats them
+    // differently: a DECLARED restructure is terminal by decision and must never
+    // be retried; an UNREADABLE-evidence block is transient and should be retried
+    // as soon as possible; a plain wait is resumable only once its window runs out.
     (result.state === 'restructure_required'
       ? `review: lifecycle restructure — ${result.reason}`
-      : `review: lifecycle — ${result.reason}`).slice(0, 140),
+      : result.undecided
+        ? `review: lifecycle unreadable — ${result.reason}`
+        : `review: lifecycle — ${result.reason}`).slice(0, 140),
     pullRequest.html_url,
   );
   await client.updateStickyComment(

@@ -20,6 +20,15 @@ on:
   # and writes nothing when no window has run out.
   schedule:
     - cron: '*/15 * * * *'
+  # The EVENT path for a maintainer's answer.
+  #
+  # A declaration being posted IS an event, and events must react immediately —
+  # the timer above is only for the case nothing announces. Without this, a
+  # maintainer who answers "continue" two minutes after being asked would still
+  # watch the unit sit draft for the rest of the three-hour window, which is the
+  # timer behaving as a driver instead of a fallback.
+  issue_comment:
+    types: [created, edited]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -45,10 +54,22 @@ permissions:
 jobs:
   # Cheap by construction: one pull-request list plus one comment read per open
   # autonomous unit. It never decides anything — it re-dispatches the ordinary
-  # gate for a unit whose window has run out, so the exact-head gate stays the
-  # only authority and still fails closed.
+  # gate for a unit that has become actionable (its window ran out, a maintainer
+  # answered, or the previous run could not read its own evidence), so the
+  # exact-head gate stays the only authority and still fails closed. A DECLARED
+  # restructure is never woken: it is terminal by decision.
   window-sweep:
-    if: github.event_name == 'schedule'
+    # Both paths run the SAME sweep: it re-dispatches the ordinary gate for any
+    # unit that has become actionable, and does nothing otherwise. The comment
+    # path is filtered down to pull-request comments that actually carry the
+    # marker, so ordinary discussion costs nothing.
+    if: >-
+      github.event_name == 'schedule' ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        contains(github.event.comment.body, 'review-restructure:')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -65,7 +86,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - name: Wake any unit whose declaration window has expired
+      - name: Wake any unit that has become actionable
         env:
           AUTONOMOUS_REVIEW_MODE: window-sweep
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

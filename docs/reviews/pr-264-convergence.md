@@ -1,7 +1,7 @@
 # Convergence audit — PR #264 (wiring the five-head restructure rule)
 
 Required by `CLAUDE.md` after two distinct finding-bearing heads. This is an
-architectural audit of all eighteen findings together, not a series of isolated
+architectural audit of all twenty-one findings together, not a series of isolated
 patches. Round 3 matters most: it is the audit's own root cause, reproduced by
 the fix written for it.
 
@@ -12,6 +12,7 @@ the fix written for it.
 | `e2941ab` | 4 — R1 (P1), R2 (P1), R3 (P1), R4 (P2) |
 | `0a7589a` | 4 — two already in progress (F3, the unclassifiable status), two new (P2, P2) |
 | `ad290cc` | 3 — all P2, all durable-record handling |
+| `1c6cdaa` | 3 — all P2; one a direct miss against the owner's stated design |
 
 ## The finding that is not like the others
 
@@ -284,6 +285,45 @@ unclassifiable lifecycle status above. Two were new and real:
   probes missed it because every one of them passed `reviews: []`; `W27` uses the
   real container shape, including the end-to-end five-P2-heads case.
 
+## Round 6 — the timer was doing a job the event should have done
+
+Three more P2s. The one that matters is a **direct miss against the owner's own
+instruction**, and it is worth stating plainly because I had the design in
+writing and implemented only half of it.
+
+The owner's words were: *events should trigger the reaction… it is a fallback way,
+so if there is no activity happening, then you trigger the manual scan.* I built
+the fallback scan and never wired the event. So a maintainer who answered
+`continue` two minutes after being asked would still have watched the unit sit
+draft for the remaining 178 minutes — **the timer behaving as the driver, which
+is exactly what the instruction ruled out.** `issue_comment` now wakes the gate
+the moment an answer is posted; the sweep remains the fallback for when that
+event never arrives.
+
+That is the third time in this unit I have written a principle down and then
+under-applied it (F1 wired one of two call sites; R1 fail-open one function after
+the fail-closed rule). The habit is real: **I stop at the first correct instance
+rather than enumerating every place the principle applies.**
+
+The other two:
+
+- **The sticky picker took the first match.** `find()` over an ascending list
+  returns the STALE original when the earlier one-page writer bug left a second,
+  record-bearing comment behind. A five-head crossing then reads as absent. The
+  newest record-bearing sticky now wins for BOTH the reader and the writer, which
+  also consolidates a duplicated pair instead of forking it further (`W32`).
+- **The sweep woke only on expiry.** A `floorUnreadable` block — a transient API
+  failure — had no autonomous recovery at all: one CI event failed and the unit
+  sat until a push. The status vocabulary now distinguishes three kinds of
+  lifecycle block (wait, unreadable, declared restructure) and the sweep wakes the
+  first two while never touching the third (`W33`).
+
+**`W26` broke on a legitimate edit** — it matched `if: github.event_name ==
+'schedule'` verbatim and the second trigger made the condition multi-line. That is
+the fifth position-coupled pin in this workstream to fail on a change that did not
+touch its subject. Re-anchored on the signals the condition must carry, not its
+text.
+
 ## The original F3 record — superseded, kept for the reasoning
 
 > `auto-merge.yml` triggers on `workflow_run` and `workflow_dispatch` only. There
@@ -337,9 +377,9 @@ because it does not.
 
 | Gate | Result |
 | --- | --- |
-| `scripts/review-lifecycle-enforcement.test.mjs` | **31/31** |
+| `scripts/review-lifecycle-enforcement.test.mjs` | **33/33** |
 | `scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | **212/212** |
+| `pnpm test:automation` | **214/214** |
 | `pnpm check` | **EXIT 0** |
 
 ### Discrimination — each mechanism reverted in turn

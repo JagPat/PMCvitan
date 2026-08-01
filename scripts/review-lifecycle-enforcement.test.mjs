@@ -663,25 +663,42 @@ test('W25: an unreadable unit is REPORTED, never silently skipped', async () => 
   assert.ok(logs.some((l) => /skipped #3/u.test(l)), 'and it says so in the log');
 });
 
-test('W26: the schedule is wired, and drives ONLY the sweep', async () => {
-  const workflow = await readFile(
+test('W26: both wake paths are wired, and neither drives the orchestrator', async () => {
+  // Anchored on the PARSED workflow, not on the text. The first draft matched
+  // `if: github.event_name == 'schedule'` verbatim and broke the moment a second
+  // legitimate trigger made the condition multi-line — the fifth position-coupled
+  // pin in this workstream to fail on an edit that did not touch its subject.
+  const raw = await readFile(
     new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8',
   );
-  assert.match(workflow, /schedule:\s*\n\s*- cron: '\*\/15 \* \* \* \*'/u,
-    'the fallback runs every 15 minutes');
 
-  const sweep = workflow.slice(
-    workflow.indexOf('  window-sweep:'), workflow.indexOf('  request-recovery:'),
+  // Triggers: the event path AND the fallback timer must both exist.
+  assert.match(raw, /^ {2}schedule:\n {4}- cron: '\*\/15 \* \* \* \*'$/mu,
+    'the fallback runs every 15 minutes');
+  assert.match(raw, /^ {2}issue_comment:$/mu,
+    'a maintainer answering is an EVENT and must not wait for the timer');
+
+  const sweep = raw.slice(
+    raw.indexOf('  window-sweep:'), raw.indexOf('  request-recovery:'),
   );
-  assert.match(sweep, /if: github\.event_name == 'schedule'/u,
-    'the sweep runs on the timer only');
+  const condition = sweep.slice(sweep.indexOf('if:'), sweep.indexOf('runs-on:'));
+  for (const [signal, why] of [
+    ["github.event_name == 'schedule'", 'the timer fallback'],
+    ["github.event_name == 'issue_comment'", 'the answer event'],
+    ['github.event.issue.pull_request', 'issue comments are not pull-request comments'],
+    ["contains(github.event.comment.body, 'review-restructure:')", 'ordinary chat is free'],
+  ]) {
+    assert.ok(condition.includes(signal), `the sweep condition must carry ${why}`);
+  }
   assert.match(sweep, /AUTONOMOUS_REVIEW_MODE: window-sweep/u);
 
-  // The timer must NOT drive the orchestrator directly: a scheduled tick is not
-  // a CI completion, and orchestrating from one would run the gate on stale
-  // context. The sweep re-dispatches instead.
-  const orchestrate = workflow.slice(workflow.indexOf('  orchestrate:'));
-  assert.doesNotMatch(orchestrate.slice(0, 600), /event_name == 'schedule'/u);
+  // Neither wake path may drive the orchestrator DIRECTLY: a tick and a comment
+  // are not CI completions, and orchestrating from one would run the gate on
+  // stale context. The sweep re-dispatches through the recovery path instead.
+  const orchestrate = raw.slice(raw.indexOf('  orchestrate:'));
+  const orchestrateCondition = orchestrate.slice(0, orchestrate.indexOf('concurrency:'));
+  assert.doesNotMatch(orchestrateCondition, /event_name == 'schedule'/u);
+  assert.doesNotMatch(orchestrateCondition, /event_name == 'issue_comment'/u);
 });
 
 test('W27: a Codex review CONTAINER is not an unreadable finding', async () => {
@@ -860,6 +877,89 @@ test('W31: a DECLARED restructure is not retried every fifteen minutes', async (
 
   // The two must be genuinely distinguishable in what is written.
   assert.notEqual(declaredDescription, waitingClient.calls.status[0][2]);
+});
+
+test('W32: the NEWEST record-bearing sticky wins, and is the one patched', async () => {
+  // The earlier one-page writer bug could leave TWO state comments: the stale
+  // original at the top and a newer duplicate actually carrying the floor. A
+  // `find()` over the ascending list returns the stale one, so a recorded
+  // five-head crossing reads as absent and the gate promotes instead of asking.
+  const { GitHubClient, pickSticky } = await import('./autonomous-review-gate.mjs');
+  const bare = { id: 1, user: { login: 'github-actions[bot]' },
+    body: '<!-- autonomous-review-state -->\nold, no record' };
+  const bearing = { id: 2, user: { login: 'github-actions[bot]' },
+    body: '<!-- autonomous-review-state -->\nnewer\n'
+      + '<!-- autonomous-review-metrics: {"findingHeads":5} -->' };
+
+  assert.equal(pickSticky([bare, bearing]).id, 2, 'the record-bearing one wins');
+  assert.equal(pickSticky([bearing, bare]).id, 2, 'even when it is not last');
+  assert.equal(pickSticky([bare]).id, 1, 'with no record, the newest sticky');
+  assert.equal(pickSticky([]), null);
+  assert.equal(pickSticky([{ id: 9, user: { login: 'JagPat' }, body: 'hi' }]), null,
+    'a human comment is never the sticky');
+
+  // The WRITER must patch the same one, which consolidates the pair rather than
+  // forking it further.
+  const client = Object.create(GitHubClient.prototype);
+  client.repository = 'o/r';
+  const writes = [];
+  client.request = async (path, options) => {
+    if (!options) return [bare, bearing];
+    writes.push(path);
+    return {};
+  };
+  await client.updateStickyComment(1, 'a plain status body');
+  assert.match(writes[0], /issues\/comments\/2/u, 'patch the record-bearing sticky');
+
+  // And the reader agrees with the writer.
+  assert.match(await client.stickyComment(1), /findingHeads/u);
+});
+
+test('W33: the sweep wakes an ANSWERED unit and an UNREADABLE one', async () => {
+  // Waking only on expiry meant a maintainer who answered two minutes after
+  // being asked still watched the unit sit for the rest of the window, and a
+  // transient read failure had no autonomous recovery at all.
+  const { sweepExpiredWindows } = await import('./autonomous-review-gate.mjs');
+
+  // Answered inside an open window: woken immediately, not at the deadline.
+  const answered = sweepClient({
+    pulls: [{ number: 5, head: { sha: 'h5', ref: 'claude/a' } }],
+    sticky: { 5: SWEEP_ASKED },
+    statuses: { h5: blocked(11) },
+  });
+  answered.issueComments = async () => [{
+    user: { login: 'JagPat', type: 'User' }, author_association: 'OWNER',
+    created_at: '2026-08-01T00:10:00Z', updated_at: '2026-08-01T00:10:00Z',
+    body: '<!-- review-restructure: continue -->',
+  }];
+  const r1 = await sweepExpiredWindows(answered, {
+    nowIso: '2026-08-01T00:20:00Z', log: () => {},   // well inside the window
+  });
+  assert.equal(r1.woken.length, 1, 'an answer must not wait for the deadline');
+  assert.match(r1.woken[0].why, /answered "continue"/u);
+
+  // Unanswered inside the window: still left alone.
+  const quiet = sweepClient({
+    pulls: [{ number: 6, head: { sha: 'h6', ref: 'claude/b' } }],
+    sticky: { 6: SWEEP_ASKED },
+    statuses: { h6: blocked(12) },
+  });
+  quiet.issueComments = async () => [];
+  const r2 = await sweepExpiredWindows(quiet, { nowIso: '2026-08-01T00:20:00Z', log: () => {} });
+  assert.equal(r2.woken.length, 0, 'silence inside the window is not actionable');
+
+  // An unreadable-evidence block is transient and retried without any window.
+  const stuck = sweepClient({
+    pulls: [{ number: 8, head: { sha: 'h8', ref: 'claude/c' } }],
+    sticky: { 8: null },
+    statuses: { h8: [{
+      id: 13, context: 'codex-current-head', state: 'failure',
+      description: 'review: lifecycle unreadable — the recorded floor could not be read',
+    }] },
+  });
+  const r3 = await sweepExpiredWindows(stuck, { nowIso: '2026-08-01T00:20:00Z', log: () => {} });
+  assert.equal(r3.woken.length, 1, 'a transient read failure must self-recover');
+  assert.match(r3.woken[0].why, /could not read its own evidence/u);
 });
 
 test('W14: a failed sticky READ never rewrites the durable floor', async () => {
