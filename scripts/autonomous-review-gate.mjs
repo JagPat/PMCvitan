@@ -6,6 +6,7 @@ import {
   assessRestructure,
   expiredWindow,
   readMetrics,
+  recordedWindowMinutes,
   renderMetrics,
 } from './review-lifecycle.mjs';
 
@@ -1230,6 +1231,17 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     floorUnreadable,
     nowIso,
     requestedAt: recordedMetrics?.declarationRequestedAt ?? null,
+    // The recorded window, fed BACK. It was written for the sweep and then never
+    // read here, so the assessment recomputed it from current severity every
+    // run. A unit first blocked on unclassified evidence records 360 minutes;
+    // once the heads become classifiable as P1 the recompute yields 180, and a
+    // run at 3h01 proceeds autonomously while the durable record still says the
+    // human has six hours. A window is a promise made at request time.
+    //
+    // The LONGER of the two wins, so the promise cannot shrink and a
+    // reclassification to something more serious still extends it — the same
+    // fail-closed direction as unknown severity taking the longest window.
+    declarationWindowMinutes: recordedWindowMinutes(recordedMetrics),
   });
 
   // Proceeding UNANSWERED is the one permissive outcome nobody authorised, and
@@ -1261,6 +1273,31 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     );
     return result;
   }
+
+  // A crossed-but-minor unit CONTINUES, and used to return here without writing
+  // anything — so the five-head crossing left no durable trace. The floor exists
+  // precisely to survive a partial read: if a later sixth head carries a P1 while
+  // the live read happens to expose only that head, the gate would count one head
+  // instead of six and promote another review rather than asking. Crossing the
+  // threshold is the fact worth recording, whatever the verdict on it was.
+  if (result.allowed && result.thresholdCrossed) {
+    await client.updateStickyComment(
+      pullRequest.number,
+      `${statusBody({
+        state: 'lifecycle_crossed',
+        head: expectedHead,
+        detail: result.reason,
+        attempt: 0,
+        next: 'The unit continues — no finding head carries a P1. The crossing is '
+          + 'recorded so a later critical head is judged against it.',
+      })}\n${renderMetrics({
+        ...(recordedMetrics ?? {}),
+        findingHeads: result.findingHeadCount,
+        findingHeadIds: result.findingHeadIds ?? [],
+      })}`,
+    );
+    return result;
+  }
   if (result.allowed) return result;
 
   const live = await setDraftForCurrentHead(
@@ -1277,7 +1314,14 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     // as a bare `lifecycle:` this status was not classified as terminal at all,
     // so the state machine could neither see the block nor resume from it — the
     // fallback sweep had nothing to act on even once a window had expired.
-    `review: lifecycle — ${result.reason}`.slice(0, 140),
+    // A declared restructure is terminal BY DECISION and must not be retried: the
+    // sweep would dispatch recovery every fifteen minutes, the gate would re-read
+    // the same declaration and fail again, and each pass would leave another
+    // pending recovery request while everyone waits for a replacement PR. Only a
+    // unit still WAITING on an answer is resumable.
+    (result.state === 'restructure_required'
+      ? `review: lifecycle restructure — ${result.reason}`
+      : `review: lifecycle — ${result.reason}`).slice(0, 140),
     pullRequest.html_url,
   );
   await client.updateStickyComment(

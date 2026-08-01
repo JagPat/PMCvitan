@@ -1,7 +1,7 @@
 # Convergence audit — PR #264 (wiring the five-head restructure rule)
 
 Required by `CLAUDE.md` after two distinct finding-bearing heads. This is an
-architectural audit of all fifteen findings together, not a series of isolated
+architectural audit of all eighteen findings together, not a series of isolated
 patches. Round 3 matters most: it is the audit's own root cause, reproduced by
 the fix written for it.
 
@@ -11,6 +11,7 @@ the fix written for it.
 | `77117e4` | 1 — F7 (P1) |
 | `e2941ab` | 4 — R1 (P1), R2 (P1), R3 (P1), R4 (P2) |
 | `0a7589a` | 4 — two already in progress (F3, the unclassifiable status), two new (P2, P2) |
+| `ad290cc` | 3 — all P2, all durable-record handling |
 
 ## The finding that is not like the others
 
@@ -336,9 +337,9 @@ because it does not.
 
 | Gate | Result |
 | --- | --- |
-| `scripts/review-lifecycle-enforcement.test.mjs` | **28/28** |
+| `scripts/review-lifecycle-enforcement.test.mjs` | **31/31** |
 | `scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | **209/209** |
+| `pnpm test:automation` | **212/212** |
 | `pnpm check` | **EXIT 0** |
 
 ### Discrimination — each mechanism reverted in turn

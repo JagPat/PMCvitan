@@ -49,6 +49,18 @@ export function declarationWindowFor(tier) {
   return tier === 'critical' ? CRITICAL_WINDOW_MINUTES : VERY_CRITICAL_WINDOW_MINUTES;
 }
 
+// The window a human was already promised, read back off the durable record.
+//
+// Returns null when nothing usable was recorded, which lets the assessment fall
+// through to computing one from current severity. A recorded window is never
+// allowed to SHRINK on a later run — see the `Math.max` at the call site — so a
+// unit first blocked on unclassified evidence keeps its six hours even once the
+// heads become classifiable as merely P1.
+export function recordedWindowMinutes(metrics) {
+  const recorded = Number(metrics?.declarationWindowMinutes);
+  return Number.isFinite(recorded) && recorded > 0 ? recorded : null;
+}
+
 // The declaration a human posts as a COMMENT to answer the request:
 //   <!-- review-restructure: continue -->   keep correcting this unit
 //   <!-- review-restructure: restructure --> split and replace it
@@ -322,7 +334,15 @@ export function assessRestructure({
       || criticalHeads.some((id) => severity.get(id) !== 'critical')
       ? 'very-critical'
       : 'critical';
-    const window = declarationWindowMinutes ?? declarationWindowFor(tier);
+    // The LONGER of the promise already made and the one this severity warrants.
+    // Never shrink: a human told they had six hours must still have six hours
+    // when a later run reclassifies the evidence as merely P1. Never cap either:
+    // a reclassification to something MORE serious extends the wait, which is
+    // the same fail-closed direction as unknown severity taking the longest.
+    const computed = declarationWindowFor(tier);
+    const window = declarationWindowMinutes
+      ? Math.max(declarationWindowMinutes, computed)
+      : computed;
     if (!critical) {
       return {
         ...base,

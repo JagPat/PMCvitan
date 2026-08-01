@@ -27,9 +27,20 @@ const heads = (n, body) => Array.from({ length: n }, (_, i) => ({
 
 // The gate stamps `declarationRequestedAt` when it first asks, and an answer
 // only counts if it POSTDATES that request.
-const ASKED_AT = '2026-08-01T00:00:00Z';
-const AFTER = '2026-08-01T00:30:00Z';
-const BEFORE = '2026-07-01T00:00:00Z';
+//
+// RELATIVE to now, not fixed. An earlier draft pinned these to absolute dates
+// while `enforceReviewLifecycle` reads the REAL clock, so the window silently
+// expired as the session ran: the same probes passed at 01:00 and failed at
+// 03:10, because 190 minutes had elapsed against a 180-minute window. A test
+// whose verdict depends on what time it is run is worse than no test — it goes
+// red in CI for a reason that has nothing to do with the change.
+//
+// The SWEEP probes are unaffected and stay on fixed timestamps: they inject
+// `nowIso` explicitly, so they are deterministic by construction.
+const ago = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+const ASKED_AT = ago(2);      // asked two minutes ago: every window still open
+const AFTER = ago(1);         // answered after the request
+const BEFORE = ago(90 * 24 * 60);  // written three months before it
 
 // A recorded request, so a declaration has something to answer.
 const asked = (extra = {}) => `<!-- autonomous-review-metrics: ${
@@ -221,7 +232,7 @@ test('W17: the LATEST maintainer answer wins', async () => {
     comments: heads(5, P1), sticky: asked(),
     issueComments: [
       says('continue', null, AFTER),
-      says('restructure', null, '2026-08-01T01:00:00Z'),
+      says('restructure', null, ago(0)),
     ],
   });
   const result = await enforceReviewLifecycle(client, pr, 'h');
@@ -548,6 +559,12 @@ function sweepClient({ pulls = [], sticky = {}, statuses = {}, stickyThrowsFor =
   };
 }
 
+// Fixed, because every sweep probe injects `nowIso` — deterministic regardless
+// of when the suite runs.
+const SWEEP_ASKED_AT = '2026-08-01T00:00:00Z';
+const SWEEP_ASKED = `<!-- autonomous-review-metrics: ${
+  JSON.stringify({ declarationRequestedAt: SWEEP_ASKED_AT })} -->`;
+
 const blocked = (id = 55) => [{
   id, context: 'codex-current-head', state: 'failure',
   description: 'review: lifecycle — 5 finding-bearing heads still drawing P1 findings',
@@ -559,7 +576,7 @@ test('W22: with nothing expired the sweep writes NOTHING', async () => {
   const { sweepExpiredWindows } = await import('./autonomous-review-gate.mjs');
   const client = sweepClient({
     pulls: [{ number: 1, head: { sha: 'h1', ref: 'claude/x' } }],
-    sticky: { 1: asked() },   // a window, but only 30 minutes old
+    sticky: { 1: SWEEP_ASKED },   // a window, but only 30 minutes old
     statuses: { h1: blocked() },
   });
   const result = await sweepExpiredWindows(client, {
@@ -576,7 +593,8 @@ test('W23: an EXPIRED window wakes the ordinary gate — nothing else', async ()
     pulls: [{ number: 7, head: { sha: 'h7', ref: 'claude/y' } }],
     sticky: {
       7: `<!-- autonomous-review-metrics: ${JSON.stringify({
-        declarationRequestedAt: ASKED_AT, declarationWindowMinutes: CRITICAL_WINDOW_MINUTES,
+        declarationRequestedAt: SWEEP_ASKED_AT,
+        declarationWindowMinutes: CRITICAL_WINDOW_MINUTES,
       })} -->`,
     },
     statuses: { h7: blocked(99) },
@@ -597,7 +615,7 @@ test('W23: an EXPIRED window wakes the ordinary gate — nothing else', async ()
     pulls: [{ number: 7, head: { sha: 'h7', ref: 'claude/y' } }],
     sticky: {
       7: `<!-- autonomous-review-metrics: ${JSON.stringify({
-        declarationRequestedAt: ASKED_AT,
+        declarationRequestedAt: SWEEP_ASKED_AT,
         declarationWindowMinutes: CRITICAL_WINDOW_MINUTES,
         autonomousAt: '2026-08-01T03:15:00Z',
       })} -->`,
@@ -639,7 +657,7 @@ test('W25: an unreadable unit is REPORTED, never silently skipped', async () => 
     pulls: [{ number: 3, head: { sha: 'h3', ref: 'claude/z' } }],
     stickyThrowsFor: [3],
   });
-  const result = await sweepExpiredWindows(client, { nowIso: ASKED_AT, log: (m) => logs.push(m) });
+  const result = await sweepExpiredWindows(client, { nowIso: SWEEP_ASKED_AT, log: (m) => logs.push(m) });
   assert.equal(result.skipped.length, 1);
   assert.match(result.skipped[0].reason, /unreadable/u);
   assert.ok(logs.some((l) => /skipped #3/u.test(l)), 'and it says so in the log');
@@ -745,6 +763,103 @@ test('W28: the sticky WRITER pages the same way the reader does', async () => {
   assert.equal(writes[0].method, 'PATCH', 'it must PATCH the existing sticky, not POST a second');
   assert.match(writes[0].path, /issues\/comments\/4242/u, 'and patch the one it found');
   assert.match(writes[0].body, /declarationRequestedAt/u, 'carrying the record forward');
+});
+
+test('W29: a recorded window is a PROMISE and never shrinks', async () => {
+  // I wrote declarationWindowMinutes for the sweep and never read it back, so
+  // the assessment recomputed the window from current severity on every run. A
+  // unit first blocked on unclassified evidence records 360 minutes; once the
+  // heads become classifiable as merely P1 the recompute yields 180, and a run
+  // at 3h01 proceeds autonomously while the durable record still promises six
+  // hours to a human who is inside it.
+  const fourHoursAgo = ago(4 * 60);
+  const client = fakeClient({
+    comments: heads(5, P1),   // classifies as 'critical' -> would recompute 180
+    sticky: `<!-- autonomous-review-metrics: ${JSON.stringify({
+      declarationRequestedAt: fourHoursAgo,
+      declarationWindowMinutes: VERY_CRITICAL_WINDOW_MINUTES,
+    })} -->`,
+  });
+  const result = await enforceReviewLifecycle(client, pr, 'h');
+  assert.equal(result.allowed, false, 'the promised 6-hour window is still open at 4h');
+  assert.equal(result.windowMinutes, VERY_CRITICAL_WINDOW_MINUTES);
+
+  // It never CAPS either: a reclassification to something more serious extends
+  // the wait, the same fail-closed direction as unknown severity.
+  const worse = fakeClient({
+    comments: heads(5, '![P0 Badge](https://img.shields.io/badge/P0-red?style=flat) x'),
+    sticky: `<!-- autonomous-review-metrics: ${JSON.stringify({
+      declarationRequestedAt: ago(200),
+      declarationWindowMinutes: CRITICAL_WINDOW_MINUTES,   // 180 recorded
+    })} -->`,
+  });
+  const extended = await enforceReviewLifecycle(worse, pr, 'h');
+  assert.equal(extended.windowMinutes, VERY_CRITICAL_WINDOW_MINUTES, 'P0 extends to 360');
+  assert.equal(extended.allowed, false, 'and 200 minutes is inside the extended window');
+});
+
+test('W30: a crossed-but-MINOR unit still records its floor', async () => {
+  // The P2-only path continues, and used to return without writing anything, so
+  // the crossing left no durable trace. The floor exists to survive a partial
+  // read: if a later sixth head carries a P1 while the live read exposes only
+  // that head, the gate would count one instead of six and promote another
+  // review rather than asking.
+  const client = fakeClient({ comments: heads(5, P2) });
+  const result = await enforceReviewLifecycle(client, pr, 'h');
+
+  assert.equal(result.allowed, true, 'a converging unit is not interrupted');
+  assert.equal(client.calls.status.length, 0, 'and nothing is failed');
+  assert.equal(client.calls.sticky.length, 1, 'but the crossing IS written down');
+  assert.match(client.calls.sticky[0], /"findingHeads":5/u);
+  assert.match(client.calls.sticky[0], /lifecycle_crossed/u);
+
+  // Below the threshold there is no crossing to record and nothing is written.
+  const under = fakeClient({ comments: heads(3, P2) });
+  await enforceReviewLifecycle(under, pr, 'h');
+  assert.equal(under.calls.sticky.length, 0, 'an uncrossed unit stays untouched');
+});
+
+test('W31: a DECLARED restructure is not retried every fifteen minutes', async () => {
+  // The sweep resumes any `review: lifecycle —` block. A block that exists
+  // because a maintainer SAID "restructure" is terminal by decision, not a wait:
+  // resuming it re-reads the same declaration, fails again, and leaves another
+  // pending recovery request — every quarter of an hour, forever, while everyone
+  // waits for the replacement PR.
+  const { isRetryableTerminalReviewFailure } = await import('./autonomous-review-gate.mjs');
+
+  // Read the description the gate ACTUALLY WROTE, not one this test composes.
+  // The first draft of this probe built the string itself, so reverting the fix
+  // left it green — it tested its own fixture rather than the code.
+  const declaredClient = fakeClient({
+    comments: heads(5, P1), sticky: asked(), issueComments: [says('restructure')],
+  });
+  const declared = await enforceReviewLifecycle(declaredClient, pr, 'h');
+  assert.equal(declared.state, 'restructure_required');
+  const declaredDescription = declaredClient.calls.status[0][2];
+  assert.equal(
+    isRetryableTerminalReviewFailure({
+      id: 1, context: 'codex-current-head', state: 'failure',
+      description: declaredDescription,
+    }),
+    false,
+    'a declared restructure must not be resumable',
+  );
+
+  // A unit still WAITING on an answer stays resumable — that is what makes an
+  // expired window reachable at all. Also read from a real run.
+  const waitingClient = fakeClient({ comments: heads(5, P1) });
+  await enforceReviewLifecycle(waitingClient, pr, 'h');
+  assert.equal(
+    isRetryableTerminalReviewFailure({
+      id: 2, context: 'codex-current-head', state: 'failure',
+      description: waitingClient.calls.status[0][2],
+    }),
+    true,
+    'a unit awaiting an answer must stay resumable',
+  );
+
+  // The two must be genuinely distinguishable in what is written.
+  assert.notEqual(declaredDescription, waitingClient.calls.status[0][2]);
 });
 
 test('W14: a failed sticky READ never rewrites the durable floor', async () => {
