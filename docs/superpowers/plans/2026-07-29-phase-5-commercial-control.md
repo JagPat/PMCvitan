@@ -163,15 +163,15 @@ a row owes every site in that row, and the row is the acceptance criterion.
 | Rule | Every site that must obey it |
 |---|---|
 | Exactly one live attribution per live PO line version | `pos.issue` **and** labour PO issue (atomic with the version becoming live) · amend · cancel · close-short — all four through `CommercialParticipant`, none deferred to a later commercial command |
-| A status a guard depends on is read under that row's lock | measurement (activity/root **and** the labour PO line — see below) · certification (**the bill version FIRST**, then activity/root **and** the contributing lots **and** the PO line) · payment approval (the bill). **Certification's own subject was the missing site:** certification depends on the bill still being certifiable, so reading a `verified` status without locking that row lets a concurrent amend supersede the version and commit, after which certification locks only the operational evidence and certifies a superseded claim. Probe 5z requires exactly one of certify/amend to commit, which is unachievable unless the bill row is in the lock order — and it is taken FIRST, before any foreign row, so the order stays total and deadlock-free. |
+| A status a guard depends on is read under that row's lock | measurement (activity/root **and** the labour PO line — see below) · certification (**the bill version FIRST**, then activity/root **and** the contributing lots **and** the PO line) · payment approval (the bill) · **payment insertion AND payment reversal (the bill) — the writes, not only the authorisation.** Bound 5 (`PAID ≤ APPROVED`) is a fold read at write time, so under READ COMMITTED two concurrent `pay ₹100` commands against a ₹100-approved bill each read `PAID = 0`, each pass the bound, and both commit: ₹200 paid against ₹100 approved, with both rows append-only so nothing walks it back. Concurrent reversals over-release `PAID` by the identical shape. Approval alone is not the serialization point — every command that MOVES `PAID` takes the bill lock (§0b: same rule, every site). **Certification's own subject was the missing site:** certification depends on the bill still being certifiable, so reading a `verified` status without locking that row lets a concurrent amend supersede the version and commit, after which certification locks only the operational evidence and certifies a superseded claim. Probe 5z requires exactly one of certify/amend to commit, which is unachievable unless the bill row is in the lock order — and it is taken FIRST, before any foreign row, so the order stays total and deadlock-free. |
 | Evidence cannot be withdrawn while a live payable fact consumes it | acceptance reversal (refuse vs a live certificate, DISPUTE a live uncertified claim) · sign-off revert · measurement correction · **deduction insertion after approval** — every one asks the commercial participant, or serializes on the bill, first. **These are the withdrawal paths that EXIST, and the list is exhaustive by construction.** An earlier revision also named `ActivityWorkOutput` supersession, which is not a path: §D verified against `20270305000000_phase4_t5_reconciliation` that the table is append-only (`ActivityWorkOutput_append_only`, BEFORE UPDATE OR DELETE) with no supersession transition, and §K's edge row says the participant edge is NOT for it. Keeping the row would have made this closure row the acceptance criterion for a guard that cannot be written — forcing either an out-of-scope Activities lifecycle added for Phase 5's benefit, or a permanently unsatisfiable check in a required participant surface. A closure list naming an impossible site is worse than a short one: it cannot be closed, so it silently converts the row from a criterion into an excuse |
 | A fold that consumes a frozen amount is clamped and overage-aware | `COMMITTED` (clamp at 0) · `BILLED_TAX`/`BILLED_FREIGHT` pro-rata cap (never scale past the frozen authority) |
 | An append-only amount column is constrained to its sign — **positive where a zero is meaningless, NON-NEGATIVE where the ordered side permits zero** | STRICTLY POSITIVE: certification · **approval** · payment · payment reversal · every deduction and release row · a claim line's QUANTITY. Approvals were the missed site of this very rule: `APPROVED(bill)` is an append-only money fold, so a negative approval could offset a later over-limit positive row under the cumulative-limit guard, or be appended after payment to drop `APPROVED` below `PAID` and break bound 5 with immutable evidence on both sides. NON-NEGATIVE (`>= 0`): a claim line's TAX and FREIGHT, because `PurchaseOrderLine`'s own CHECK is `"taxAmount" >= 0 AND "freightAmount" >= 0` — a zero-tax or zero-freight PO is legitimate, and a strictly-positive claim check would refuse a bill that matches the ordered evidence EXACTLY. Verified against `20261220000000_phase3_purchase_orders`; an earlier revision of this row said positive for all three, which would have made honest bills unrepresentable. What the sign rule actually forbids is a NEGATIVE amount: the row TYPE carries direction, so a live −100-unit claim plus a 200-unit bill would leave cumulative `BILLED_QTY` at 100 and pass bounds 1–2 against 100 accepted while the second bill certifies against its own bill-scoped amount. A credit is a separate document with its own semantics, NOT a negative line inside a conservation fold; Phase 5 has no credit note, so a negative claim is refused. |
 | A participant edge is declared in BOTH directions it is used | §K's edge table is the single source and this row deliberately does NOT copy it — a copy here would be a second declaration to keep in sync, which is exactly how round 8's §K disagreement happened. Any §-section that describes a transaction-bound call adds its row to that table in the same change. |
 | Every declared enum member appears in the fold that uses it | `NET_PAYABLE` covers retention · advance-recovery · penalty · **`other`** |
-| Non-blank text discipline | every reason column **and** `CostHead.code`/`name`, with the complete ASCII set `btrim(x, E' \t\n\x0B\f\r')` |
+| Non-blank text discipline | every reason column **and** `CostHead.code`/`name` **and `VendorBill.vendorBillNumber`**, with the complete ASCII set `btrim(x, E' \t\n\x0B\f\r')`. The bill number was the missed site of this row and it is the one that matters most: probe 5bg makes it the duplicate-claim key, so a whitespace-only number groups every blank-numbered claim from a vendor into one bucket — or none, depending on the comparison — and duplicate detection stops resting on immutable vendor evidence |
 | A rule and the record that authorises its exception ship together | §I SoD **and** `SodException` both in Task 5 for certification; Task 6 adds only the payment-approval half |
-| A key that groups facts is FROZEN after write | `CostHead.code` (a column-freeze trigger, not merely non-blank) · **`CommitmentAttribution` — append-only, superseded rather than edited, `reason` frozen after write (§C)** · every frozen PO-line snapshot column Phase 3/4 already seals. Reclassification is a NEW head plus an attributable superseded attribution and a budget revision — never an in-place edit, which moves recorded history with no evidence that it moved. |
+| A key that groups facts is FROZEN after write | **`VendorBill.vendorBillNumber` — probe 5bg makes it the duplicate-claim key, so an editable number lets a vendor re-submit the same claim under a new number after the first is verified, and duplicate detection stops resting on immutable vendor evidence** · `CostHead.code` (a column-freeze trigger, not merely non-blank) · **`CommitmentAttribution` — append-only, superseded rather than edited, `reason` frozen after write (§C)** · every frozen PO-line snapshot column Phase 3/4 already seals. Reclassification is a NEW head plus an attributable superseded attribution and a budget revision — never an in-place edit, which moves recorded history with no evidence that it moved. |
 | Superseding a fact carries its downstream facts, in the same transaction | a superseded certificate takes its approvals out of `APPROVED(bill)` and requires the reduced amount to be RE-approved · **cash already paid is NOT touched — supersession never appends a payment reversal.** `PAID` records money that actually left the practice, so a supersede command that reverses it would make the fold drop with no cash recovered and hide a real outflow behind a lower payable. Probes 5ad/5ah already state the correct rule and this row contradicted them: superseding a paid certificate is REFUSED until a real, separately-authorised full payment reversal exists. Recovering money is its own attributable act, never a side effect of correcting a certificate · a superseded PO version takes its attribution (row 1) · a superseded bill version takes its claim lines out of the billed sets. Lowering a parent without its children leaves an authorisation or a payment standing at an amount nobody certified. |
 | **A rule is stated at exactly ONE site; every other place REFERENCES it** | §K's edge list lives only in the §K table (not in §0b, not in a §K prose bullet, not in probe 5x) · a §0 set's definition lives only in the §0 table (no fold restates its filter) · a probe names a scenario and cites its section, never restating the rule · no count of anything is written twice. This row is the meta-rule the other rows depend on, and it is here because round 8's §K disagreement, its stale output-priced probes and its refuse-vs-dispute probe were ALL second declarations that went stale while looking authoritative. A second statement of a rule is not redundancy — it is a fact with two owners, which is the one thing this project's architecture forbids everywhere else. |
 
@@ -197,6 +197,55 @@ licence to write a local filter.
   float64 demonstrably corrupts is required on BOTH sides.
 - Rounding is stated once: half-up at 2 decimals, applied only where a value is persisted,
   never mid-computation.
+
+### §I. Authority, segregation of duties, approval limits
+
+- New permissions: `commercial.read`, **`commercial.budget`** (create a `CostHead`, create or
+  revise a `BudgetLine`), **`commercial.attribute`** (choose or re-attribute a cost head for a
+  PO line), `commercial.measure`, `commercial.verify`, `commercial.certify`,
+  **`commercial.deduct`** (record or re-state a deduction row) and **`commercial.release`**
+  (release a retained balance — a separate authority because releasing withheld money is not the
+  same act as withholding it), `commercial.approve-payment`, `commercial.record-payment`. The
+  deduction pair is named explicitly because §H makes those rows attributable: without them the
+  Task-5/6 routes are either uncallable through `RolesFor` or silently borrow
+  `commercial.certify`/`commercial.record-payment`, which would let a certifier or a payer move
+  withheld balances under an authority the plan never granted for it. Certification and payment approval
+  are deliberately separate. The two write permissions are listed because Tasks 1–2 add those
+  routes: without them the endpoints are either uncallable through `RolesFor`, or they borrow
+  `commercial.read`/a generic PMC check — which would let a read-only commercial user mutate the
+  budget and forecast evidence every later bound is measured against, with no manifest test
+  covering the authorization. A permission a route needs and the manifest does not declare is
+  not a gap in the docs; it is an unauthorized write path.
+- **SoD is a rule, evaluated server-side, with a named exception path** (spec §422). The
+  rule ships as: the actor who took a measurement may not certify the bill that consumes it,
+  and the actor who certified may not approve payment. **For a material bill there is no
+  `Measurement` row (§D), so the ACCEPTANCE actor is the measurer** — the store user who
+  recorded `receipts.accept` for a delivery may not certify the bill consuming that
+  acceptance. Without this the rule would bind labour bills and silently exempt material
+  ones, which is the larger spend. An exception requires a stronger
+  authority (org admin) AND writes an attributable `SodException` record naming the rule,
+  the actor, the approver and the reason. Silently allowing it is not an option; silently
+  banning it is not either, because a two-person practice must still be able to operate.
+- **A `SodException` is trusted evidence, so it carries the trusted-evidence seals**, not
+  merely a requirement that the row be written. It IS the thing that makes an otherwise
+  forbidden certification or payment approval valid, and an override whose justification can
+  be rewritten afterwards is indistinguishable from no override at all. So: append-only at PG
+  (UPDATE and DELETE both rejected, the same trigger discipline as the certificate and payment
+  rows); `rule`, `actorId`, `approverId` and `reason` immutable after write with `reason`
+  under the complete non-blank CHECK (`btrim(x, E' \t\n\x0B\f\r')`); written in the SAME
+  transaction as the override it authorizes; and bound to that exact fact by a composite FK
+  carrying `projectId` — an exception is authority for ONE certificate or ONE approval, never
+  a standing waiver a later override can point at. Without these, the material case is:
+  the acceptance actor certifies under an override, then the approver or reason is edited or
+  the row deleted, and the append-only certificate stays payable with no immutable authority
+  evidence behind it — the exact shape the Phase-4 `T3CRepairAction` seals exist to prevent.
+- Approval limits are per-membership amount ceilings applied to the **cumulative** approved
+  total for the bill, not to each approval row. A per-row check lets a ₹50-limit approver
+  authorize a ₹100 payable as two ₹50 rows — each within limit, bound 4 satisfied, the
+  ceiling defeated. The guard serializes on the bill, folds what is already approved, and
+  compares the actor's limit to the resulting total; crossing it escalates to a higher-limit
+  holder and never silently succeeds.
+- Every route enforces authorization server-side. UI visibility is convenience (spec §18).
 
 ### §J. Cash forecast — the EIGHTH rebuildable projection
 
@@ -424,6 +473,15 @@ probe 5be literally requires the table to PARSE — so Task 7 would have had no 
 authority for which cash-forecast buckets to build. A probe whose section is absent is
 not a deferral; it is a dangling reference. The rule this head adopts: **a section stays
 in the plan if any retained probe cites it.**
+
+That rule was stated a round before it was fully applied: the sentence above said "§I and
+§J", and only §J came back. Probes 5m/5aa/5al/9 cite §I for approval limits, segregation
+of duties, write authority and override seals, and the probe preamble makes the SECTION
+authoritative — so with §I absent an implementer had to either re-derive the authority
+rules or follow probe prose the plan itself says is not the rule source. §I is now
+present. **A claim that a section is kept is checkable by grep, and this one was false
+when written** — the same defect class as the "two inbound edges" count, in my own prose,
+which is why the rule is phrased as a mechanical check rather than an intention.
 
 Task 4 deliberately stops SHORT of `verified`. `verified` is the state whose safety is the
 §E verdict, so shipping the transition in Task 4 while §E lands in Task 5 would let a bill

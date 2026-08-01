@@ -6,14 +6,15 @@ Required by `CLAUDE.md` after two finding-bearing heads.
 | --- | --- | --- |
 | `1bd04ca` | 4 | 2×P1 — probe list outside the tree; STATUS strands the runner |
 | `55d65e0` | 6 | 4×P1 — §J dangling; `resolved` counted live; bill unlocked at certification; measurement/close-short race |
+| `6afb58e` | 3 | 2×P1 — §I still absent while claimed kept; payment WRITES outside the bill lock |
 
-The count rose, 4 → 6. That needs an honest answer rather than a third round of
-patches, because it is the exact trajectory of the two units this PR exists to
-avoid repeating.
+The count rose 4 → 6, then FELL to 3 — the first decline this unit has seen, and the
+first in either of the two units this PR exists to avoid repeating (#252 ran twenty
+rounds without one; #264 ran twelve).
 
-## The two findings that are mine, and the one rule that closes them
+## The findings that are mine, and the one rule that closes them
 
-Both of my findings across the two heads are the SAME mistake in two forms:
+Every finding of mine across the three heads is the SAME mistake:
 **I moved text out of the reviewed tree and broke a reference into it.**
 
 | Head | What I moved | What broke |
@@ -51,13 +52,41 @@ sequential case but not the concurrent one** (certification vs amend; measuremen
 vs close-short). Both are answered by putting the contended row in the lock order,
 which is a rule a probe can enforce and prose cannot.
 
+## Round 3 — the cap engaged, and changed nothing
+
+`PLAN_REVIEW_ROUND_CAP = 3` engaged on `6afb58e`. The commitment made in the previous
+section — before the findings were known — was that *"the plan should also specify X"*
+findings convert to named probes, while concrete defects are still fixed.
+
+**All three were concrete defects, so all three are fixed.** The cap changed nothing,
+which is the correct outcome and worth recording: a cap that fires on finding COUNT
+rather than finding KIND would have deferred two P1s here, one of them a payment
+double-spend.
+
+| # | P | Finding | Origin |
+| --- | --- | --- | --- |
+| 1 | P1 | §I absent while the plan CLAIMED it was kept; probes 5m/5aa/5al/9 cite it | **mine** |
+| 2 | P1 | payment and reversal WRITES outside the bill lock — two concurrent ₹100 payments each read `PAID = 0`, both pass bound 5, ₹200 commits against ₹100 approved | pre-existing |
+| 3 | P2 | `vendorBillNumber` missing from the non-blank AND frozen-key closure rows though probe 5bg makes it the duplicate-claim key | pre-existing |
+
+Finding 1 is the third instance of my one mistake in this PR, and the most embarrassing
+form of it: I wrote the rule (*a section stays if a probe cites it*), wrote "§I and §J are
+kept HERE", and then restored only §J. **The claim was false the moment it was written and
+a grep would have caught it.** That is exactly why the rule is now phrased as a mechanical
+check rather than an intention — an intention is what failed.
+
+Finding 2 is the same shape as round 2's certification-lock finding: a bound that is a
+FOLD read at write time is not enforced by locking one participant in the flow. Approval
+took the bill lock; the writes that actually move `PAID` did not. Under READ COMMITTED
+that is a double-spend with both rows append-only, so nothing walks it back.
+
 ## Where this leaves the review
 
-This is head 3 of a docs-only plan. `PLAN_REVIEW_ROUND_CAP = 3` exists precisely
-for this case and #252 used it from round 11.
+This is head 4 of a docs-only plan, past `PLAN_REVIEW_ROUND_CAP = 3`. The cap has
+now engaged once and changed nothing, because it gates KIND rather than COUNT.
 
-**The commitment for the next round, stated before seeing it:** if head 3 draws
-findings that are *"the plan should also specify X"*, they are converted into
+**The commitment stands unchanged for every further round:** findings that are
+*"the plan should also specify X"* are converted into
 NAMED PROBES carrying `Review-Deferred-To-Probes: phase-5-task-1` rather than
 answered with more prose — the mechanism the repository already has for the case
 where a plan can always be specified further. If head 3 draws findings that are
