@@ -1,7 +1,7 @@
 # Convergence audit — PR #264 (wiring the five-head restructure rule)
 
 Required by `CLAUDE.md` after two distinct finding-bearing heads. This is an
-architectural audit of all twenty-six findings together, not a series of isolated
+architectural audit of all twenty-eight findings together, not a series of isolated
 patches. Round 3 matters most: it is the audit's own root cause, reproduced by
 the fix written for it.
 
@@ -16,6 +16,7 @@ the fix written for it.
 | `af81b9b` | 1 — P2, write ordering |
 | `442759b` | 2 — **one P1**, caused by the previous round's fix |
 | `651c58f` | 2 — **one P1**; the owner chose RESTRUCTURE over a fifth patch |
+| `81ce79e` | 2 — **one P1**; the restructure modelled one of two request endings |
 
 ## The finding that is not like the others
 
@@ -450,6 +451,48 @@ And after changing the shape I updated two of three readers, leaving
 `requestedAt` on the flat field — the same under-application again. The fix was to
 enumerate every reader with a grep rather than fix them as tests failed.
 
+## Round 10 — the restructure modelled ONE of two endings
+
+A third consecutive P1. The round-9 restructure was right and it closed the
+family it targeted, but it defined how a request ENDS with a single stamp:
+
+| Ending | Stamp | Modelled in round 9? |
+| --- | --- | --- |
+| the window ran out and the loop overrode it | `autonomousAt` | yes |
+| **a maintainer answered it** | — | **no** |
+
+So an answered request stayed live. The same comment kept postdating it, and on
+the next correction head the gate re-read that one old `continue` and admitted
+the head without a fresh decision. **One answer authorised unlimited future
+critical heads** — the exact opposite of what asking a human is for.
+
+`consumedAt` is now the second ending, and `liveLifecycleRequest` treats either
+stamp as over. The next block opens a fresh request, so old evidence fails closed
+on a new head while a new answer still works — the gate is closed, not welded
+shut (`W39`).
+
+The second finding is the round-8 P2 again, on the paths I did not scope: I
+guarded `incomplete` and left `expired` and `answered` open, so an ordinary
+`review: Codex review timed out after two attempts` could still be woken whenever
+a lifecycle request happened to be recorded — re-running the review loop every
+fifteen minutes and bypassing the two-attempt cap. **Scoping one of three reasons
+was the same miss as scoping none.** The guard is now singular and above all of
+them (`W40`).
+
+### The pattern, now unmistakable
+
+| Round | Shape |
+| --- | --- |
+| 1–7 | a principle stated, applied in ONE place |
+| 8 | a problem fixed TWICE, the second fix creating a new failure |
+| 9 | a shape restructured, with two of three readers updated |
+| 10 | a lifetime modelled, with one of two endings covered |
+
+Every one is the same error: **I stop at the first correct instance instead of
+enumerating the complete set.** The remedy that has actually worked, twice now, is
+mechanical — grep for every reader before changing a shape; list every way a
+state can end before modelling one. Where I have done that, the fix has held.
+
 ## The original F3 record — superseded, kept for the reasoning
 
 > `auto-merge.yml` triggers on `workflow_run` and `workflow_dispatch` only. There
@@ -503,9 +546,9 @@ because it does not.
 
 | Gate | Result |
 | --- | --- |
-| `scripts/review-lifecycle-enforcement.test.mjs` | **38/38** |
+| `scripts/review-lifecycle-enforcement.test.mjs` | **40/40** |
 | `scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | **219/219** |
+| `pnpm test:automation` | **221/221** |
 | `pnpm check` | **EXIT 0** |
 
 ### Discrimination — each mechanism reverted in turn

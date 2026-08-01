@@ -1155,6 +1155,113 @@ test('W38: EVERY lifecycle path survives a failed record write', async () => {
   }
 });
 
+test('W39: one "continue" authorises ONE head, not every head after it', async () => {
+  // Round 9 modelled one way a request ends — the window running out — and
+  // missed the other: a maintainer ANSWERING it. An answered request stayed
+  // live, so the same comment kept postdating it. On the next correction head
+  // the gate re-read that one old `continue` and admitted the head without a
+  // fresh decision, which is the opposite of what asking a human is for.
+  const answer = says('continue');
+
+  // Head 1: the answer is obeyed AND the request it answered is closed.
+  const first = fakeClient({
+    comments: heads(5, P1), sticky: asked(), issueComments: [answer],
+  });
+  const admitted = await enforceReviewLifecycle(first, pr, 'h');
+  assert.equal(admitted.allowed, true);
+  assert.equal(admitted.declared, 'continue');
+
+  const recorded = JSON.parse(
+    /autonomous-review-metrics:\s*(\{.*\})\s*-->/u.exec(first.calls.sticky[0])[1],
+  );
+  assert.ok(recorded.lifecycleRequest.consumedAt, 'the answered request is closed');
+  assert.match(first.calls.sticky[0], /lifecycle_declared/u);
+
+  // Head 2: the SAME comment must not admit a second critical head.
+  const second = fakeClient({
+    comments: heads(6, P1),
+    sticky: `<!-- autonomous-review-metrics: ${JSON.stringify(recorded)} -->`,
+    issueComments: [answer],
+  });
+  const again = await enforceReviewLifecycle(second, pr, 'h');
+  assert.equal(again.allowed, false, 'a spent answer cannot authorise the next head');
+  assert.equal(again.state, 'restructure_declaration_required');
+
+  // A NEW answer, posted after the fresh request, works normally.
+  const reopened = JSON.parse(
+    /autonomous-review-metrics:\s*(\{.*\})\s*-->/u.exec(second.calls.sticky[0])[1],
+  );
+  const third = fakeClient({
+    comments: heads(6, P1),
+    sticky: `<!-- autonomous-review-metrics: ${JSON.stringify(reopened)} -->`,
+    issueComments: [answer, says('continue', null, new Date().toISOString())],
+  });
+  assert.equal((await enforceReviewLifecycle(third, pr, 'h')).allowed, true,
+    'answering the new request works — the gate is closed, not welded shut');
+});
+
+test('W40: the sweep touches ONLY lifecycle blocks', async () => {
+  // Round 8 scoped `incomplete` and left `expired` and `answered` unscoped, so
+  // an ordinary `review: Codex review timed out after two attempts` could still
+  // be woken whenever a lifecycle request happened to be recorded — re-running
+  // the whole review loop every fifteen minutes and bypassing the two-attempt
+  // cap. Scoping one of three reasons was the same miss as scoping none.
+  const { sweepExpiredWindows } = await import('./autonomous-review-gate.mjs');
+  const timedOut = [{
+    id: 51, context: 'codex-current-head', state: 'failure',
+    description: 'review: Codex review timed out after two attempts',
+  }];
+
+  // An EXPIRED window on a non-lifecycle failure: not the sweep's to re-run.
+  const expired = sweepClient({
+    pulls: [{ number: 11, head: { sha: 'h11', ref: 'claude/h' } }],
+    sticky: { 11: `<!-- autonomous-review-metrics: ${JSON.stringify({
+      lifecycleRequest: { at: '2026-08-01T00:00:00Z', windowMinutes: 180, tier: 'critical' },
+    })} -->` },
+    statuses: { h11: timedOut },
+  });
+  expired.issueComments = async () => [];
+  assert.equal(
+    (await sweepExpiredWindows(expired, { nowIso: '2026-08-01T09:00:00Z', log: () => {} }))
+      .woken.length,
+    0, 'an expired window does not license re-running a timed-out review',
+  );
+
+  // An ANSWER on a non-lifecycle failure: likewise.
+  const answered = sweepClient({
+    pulls: [{ number: 12, head: { sha: 'h12', ref: 'claude/i' } }],
+    sticky: { 12: SWEEP_ASKED },
+    statuses: { h12: timedOut },
+  });
+  answered.issueComments = async () => [{
+    user: { login: 'JagPat', type: 'User' }, author_association: 'OWNER',
+    created_at: '2026-08-01T00:10:00Z', updated_at: '2026-08-01T00:10:00Z',
+    body: '<!-- review-restructure: continue -->',
+  }];
+  assert.equal(
+    (await sweepExpiredWindows(answered, { nowIso: '2026-08-01T00:20:00Z', log: () => {} }))
+      .woken.length,
+    0, 'nor does an answer, when the block is not a lifecycle wait',
+  );
+
+  // The same two signals on a real lifecycle wait ARE still woken.
+  const real = sweepClient({
+    pulls: [{ number: 13, head: { sha: 'h13', ref: 'claude/j' } }],
+    sticky: { 13: SWEEP_ASKED },
+    statuses: { h13: blocked(52) },
+  });
+  real.issueComments = async () => [{
+    user: { login: 'JagPat', type: 'User' }, author_association: 'OWNER',
+    created_at: '2026-08-01T00:10:00Z', updated_at: '2026-08-01T00:10:00Z',
+    body: '<!-- review-restructure: continue -->',
+  }];
+  assert.equal(
+    (await sweepExpiredWindows(real, { nowIso: '2026-08-01T00:20:00Z', log: () => {} }))
+      .woken.length,
+    1, 'scoping removed the false positives without losing the fix',
+  );
+});
+
 test('W14: a failed sticky READ never rewrites the durable floor', async () => {
   // A transient read failure left this run's counts computed WITHOUT the floor.
   // Writing them patched a recorded five-head floor down to however many heads

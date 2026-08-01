@@ -87,24 +87,36 @@ export function lifecycleRequestOf(metrics) {
 
 // The recorded request ONLY while it is still live.
 //
-// A request carrying `autonomousAt` is SPENT: the loop already overrode it and
-// proceeded. Its stamp and window must not govern the NEXT request — reading
-// them is how a fresh 360-minute window came out already expired, because it was
-// measured from a stamp four hundred minutes old. Every consumer that asks "what
-// are we currently waiting on" wants this, not the raw record.
+// A request ends in exactly TWO ways, and round 9 modelled only the first:
+//
+//   `autonomousAt` — the window ran out and the loop overrode it.
+//   `consumedAt`   — a maintainer ANSWERED it.
+//
+// Missing the second was a P1. An answered request stayed live, so the same
+// comment kept postdating it: on the next correction head the gate re-read that
+// one old `continue` and admitted the head without a fresh decision. A single
+// answer authorised unlimited future critical heads, which is the opposite of
+// what asking a human is for.
+//
+// Either stamp ends the request. The next block opens a FRESH one, and an answer
+// must postdate THAT — so old evidence fails closed on a new head.
 export function liveLifecycleRequest(metrics) {
   const request = lifecycleRequestOf(metrics);
-  return request && !request.autonomousAt ? request : null;
+  if (!request) return null;
+  return request.autonomousAt || request.consumedAt ? null : request;
 }
 
 // Build the request to RECORD. Callers pass the whole thing, never a spread of
 // the old one, which is what keeps a stale field from surviving.
-export function lifecycleRequest({ at, windowMinutes, tier, autonomousAt = null }) {
+export function lifecycleRequest({
+  at, windowMinutes, tier, autonomousAt = null, consumedAt = null,
+}) {
   return {
     at,
     windowMinutes,
     tier,
     ...(autonomousAt ? { autonomousAt } : {}),
+    ...(consumedAt ? { consumedAt } : {}),
   };
 }
 
@@ -264,9 +276,10 @@ export function expiredWindow(metrics, nowIso) {
   const requested = Date.parse(request?.at ?? '');
   const now = Date.parse(nowIso ?? '');
   if (!Number.isFinite(requested) || !Number.isFinite(now)) return null;
-  // Spent: this REQUEST was already overridden. Scoped to the request object, so
-  // opening a new one clears it by construction rather than by remembering to.
-  if (request.autonomousAt) return null;
+  // Over: this REQUEST already ended, by override or by an answer. Scoped to the
+  // request object, so opening a new one clears it by construction rather than
+  // by remembering to.
+  if (request.autonomousAt || request.consumedAt) return null;
 
   // A window recorded without its length is not assumed to be the short one:
   // the wait is what protects a human's chance to answer, so an unreadable

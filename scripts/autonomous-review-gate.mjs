@@ -1226,9 +1226,10 @@ export async function sweepExpiredWindows(client, {
 
     // Three ways a blocked unit becomes actionable, and the sweep must catch all
     // of them. Only the first is about time.
+    const description = String(terminal.description ?? '');
+    const lifecycleWait = description.startsWith('review: lifecycle —');
+    const unreadable = description.startsWith('review: lifecycle unreadable —');
     const expired = expiredWindow(metrics, nowIso);
-    const unreadable = String(terminal.description ?? '')
-      .startsWith('review: lifecycle unreadable —');
     // A maintainer ANSWERING is an event, and the issue_comment trigger reacts to
     // it immediately. This is the fallback for the answer that arrives while the
     // event path is unavailable — a webhook dropped, the workflow disabled — so
@@ -1246,20 +1247,25 @@ export async function sweepExpiredWindows(client, {
       }
     }
 
+    // EVERY wake reason is scoped to a lifecycle block, not just this one.
+    //
+    // Round 8 scoped `incomplete` and left `expired` and `answered` unscoped, so
+    // an ordinary retryable failure — `review: Codex review timed out after two
+    // attempts` — could still be woken whenever a lifecycle request happened to
+    // be recorded. The sweep then re-ran the whole review loop every fifteen
+    // minutes while Codex was unhealthy, bypassing the two-attempt cap. That cap
+    // is a safety limit this sweep has no business overriding, and scoping one
+    // of three reasons was the same under-application as scoping none.
+    //
+    // The guard is now singular and above them all: if this head is not sitting
+    // on a lifecycle block, there is nothing here to wake.
+    if (!lifecycleWait && !unreadable) continue;
+
     // A LIFECYCLE WAIT with no recorded request is an INCOMPLETE record, not a
     // patient one: no window to expire and no request for an answer to postdate,
-    // so nothing else here would ever find it actionable and it would sit draft
+    // so nothing here would ever find it actionable and it would sit draft
     // forever. Waking it costs one dispatch and lets the gate write what is
     // missing.
-    //
-    // Scoped to lifecycle waits DELIBERATELY. An ordinary retryable failure —
-    // `review: Codex review timed out after two attempts` — also carries no
-    // lifecycle metrics, so an unscoped check treated every one of them as an
-    // unrecorded request and re-ran the whole review loop every fifteen minutes
-    // while Codex was unhealthy. That bypasses the two-attempt cap, which is a
-    // safety limit this sweep has no business overriding.
-    const lifecycleWait = String(terminal.description ?? '')
-      .startsWith('review: lifecycle —');
     const incomplete = lifecycleWait && !request?.at;
 
     const why = expired
@@ -1396,21 +1402,36 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
   // instead of six and promote another review rather than asking. Crossing the
   // threshold is the fact worth recording, whatever the verdict on it was.
   if (result.allowed && result.thresholdCrossed) {
+    const consuming = result.declared ? liveLifecycleRequest(recordedMetrics) : null;
     await recordLifecycle(client, pullRequest, statusBody({
-      state: 'lifecycle_crossed',
+      state: result.declared ? 'lifecycle_declared' : 'lifecycle_crossed',
       head: expectedHead,
       detail: result.reason,
       attempt: 0,
-      next: 'The unit continues — no finding head carries a P1. The crossing is '
-        + 'recorded so a later critical head is judged against it.',
+      next: result.declared
+        ? `${result.declaredBy ?? 'A maintainer'} answered "${result.declared}". That `
+          + 'request is now closed: a later critical head asks again rather than '
+          + 'reusing this answer.'
+        : 'The unit continues — no finding head carries a P1. The crossing is '
+          + 'recorded so a later critical head is judged against it.',
     }), {
       carry: recordedMetrics,
       floor: {
         findingHeads: result.findingHeadCount,
         findingHeadIds: result.findingHeadIds ?? [],
       },
-      // No `request` key: this path opens none and must not disturb a live one.
-      request: lifecycleRequestOf(recordedMetrics) ?? undefined,
+      // A DECLARATION was acted on here, so the request it answered is over.
+      // Leaving it live let the same comment keep postdating it: on the next
+      // correction head the gate re-read that one old `continue` and admitted
+      // the head without a fresh decision, so a single answer authorised
+      // unlimited future critical heads. Stamping it consumed means the next
+      // block opens a fresh request and old evidence fails closed.
+      //
+      // Without a declaration this path opens nothing and must not disturb a
+      // live request — a crossed-but-minor unit is not waiting on anybody.
+      request: consuming
+        ? lifecycleRequest({ ...consuming, consumedAt: nowIso })
+        : (lifecycleRequestOf(recordedMetrics) ?? undefined),
     });
     return result;
   }
