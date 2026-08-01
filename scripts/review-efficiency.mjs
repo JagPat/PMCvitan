@@ -124,6 +124,74 @@ export function assessReviewScope(
   };
 }
 
+// Which finding heads carry a CRITICAL finding.
+//
+// Codex tags every finding with a severity badge. Matching the BADGE markup is
+// structural; matching a bare "P1" would fire on any prose that mentions it,
+// including a comment explaining the rule itself.
+const BADGE = /!\[P(\d) Badge\]|badge\/P(\d)-/gu;
+
+// Severity per finding head, as one of:
+//   'very-critical' — a P0 finding
+//   'critical'      — a P1 finding
+//   'minor'         — findings present, all badged, none P0/P1
+//   'unknown'       — a finding whose severity could not be read
+//
+// 'unknown' is a first-class outcome, not a synonym for 'minor'. The obvious
+// shape — "critical means some head shows a P1" — silently reclassifies an
+// unparseable head as harmless, so a badge format change would turn a safety
+// signal permissive exactly when it had lost the ability to see.
+export function findingHeadSeverity(comments, reviews = []) {
+  // Per head: the lowest severity seen, AND whether any finding on it was
+  // unreadable. Tracking only "was a badge seen anywhere" let one badged comment
+  // vouch for an unbadged sibling on the same head — the head came back minor
+  // while carrying a finding of unknown severity. Any unreadable finding taints
+  // its whole head.
+  const worst = new Map(); // head -> { lowest: number|null, unreadable: boolean }
+
+  const note = (head, body, { container = false } = {}) => {
+    if (typeof head !== 'string' || head.length === 0) return;
+    const entry = worst.get(head) ?? { lowest: null, unreadable: false };
+    const text = String(body ?? '');
+    let lowest = null;
+    for (const match of text.matchAll(BADGE)) {
+      const level = Number(match[1] ?? match[2]);
+      if (Number.isFinite(level)) lowest = lowest === null ? level : Math.min(lowest, level);
+    }
+    if (lowest !== null) {
+      entry.lowest = entry.lowest === null ? lowest : Math.min(entry.lowest, lowest);
+    } else if (!container) {
+      // A Codex REVIEW is posted as a container — "here are some automated review
+      // suggestions" — with the findings themselves as inline review comments, so
+      // its body never carries a badge. Counting that as an unreadable finding
+      // would taint every reviewed head as unknown.
+      entry.unreadable = true;
+    }
+    worst.set(head, entry);
+  };
+
+  for (const comment of comments ?? []) {
+    if (comment?.user?.login !== CODEX_LOGIN) continue;
+    note(comment.original_commit_id ?? comment.commit_id, comment.body);
+  }
+  for (const review of reviews ?? []) {
+    if (review?.user?.login !== CODEX_LOGIN) continue;
+    note(review.commit_id, review.body, { container: true });
+  }
+
+  const severity = new Map();
+  for (const [head, entry] of worst) {
+    // UNREADABLE outranks a readable P1. Ordering the P1 check first classified a
+    // head carrying both a P1 and an unbadged finding as merely `critical`, which
+    // understates it. P0 stays first only for accurate reporting.
+    if (entry.lowest === 0) severity.set(head, 'very-critical');
+    else if (entry.unreadable || entry.lowest === null) severity.set(head, 'unknown');
+    else if (entry.lowest === 1) severity.set(head, 'critical');
+    else severity.set(head, 'minor');
+  }
+  return severity;
+}
+
 export function codexFindingHeads(comments, reviews = []) {
   const heads = new Set();
   for (const comment of comments ?? []) {

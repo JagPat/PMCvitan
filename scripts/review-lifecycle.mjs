@@ -13,7 +13,7 @@
 // prove that another correction head is the wrong instrument? It never dismisses
 // a finding and never clears a head. Its only outcomes are "keep reviewing" and
 // "stop; restructure".
-import { codexFindingHeads } from './review-efficiency.mjs';
+import { codexFindingHeads, findingHeadSeverity } from './review-efficiency.mjs';
 
 // ONE cap, deliberately.
 //
@@ -212,4 +212,73 @@ function elapsedMinutes(fromIso, toIso) {
   const to = Date.parse(typeof toIso === 'string' ? toIso : '');
   if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return null;
   return Math.round((to - from) / 60_000);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The OBSERVATION — the part of this rule that is wired.
+//
+// `RESTRUCTURE_AFTER_FINDING_HEADS` shipped in #259 as a policy model imported by
+// nothing but its own tests. It never fired, and PR #263 ran to six
+// finding-bearing heads without it triggering once. The policy was never wrong;
+// it was never asked.
+//
+// This function is what asks it. It DECIDES NOTHING and BLOCKS NOTHING.
+//
+// That restraint is the design, not a shortcut. AGENTS.md is explicit: *do not
+// block on human sign-off — no one is standing by to give it.* A gate that stops
+// an over-limit unit until a human answers needs a whole apparatus to stay
+// non-blocking: an attributable declaration channel, a reply window, a durable
+// request record that survives every other writer, a timer that reaches the
+// deadline no event announces, and a recovery path. Each of those is real work
+// with real failure modes, and carrying them alongside the wiring is what turned
+// the first attempt at this change into twelve review rounds.
+//
+// So the split is by what each half needs to be SAFE. Reporting a crossing needs
+// nothing durable — it is recomputed from live evidence every run, and if the
+// read fails it reports nothing rather than reporting wrongly. Acting on a
+// crossing needs all of the above, and lands as its own unit.
+//
+// What this buys today: the threshold is finally computed on both paths that
+// reach a review, and a unit that has spent five heads still turning up P1s says
+// so, in the place a human is already looking. That is the signal the owner used
+// to decide to split this very pull request.
+export function observeReviewLifecycle({
+  comments,
+  reviews,
+  threshold = RESTRUCTURE_AFTER_FINDING_HEADS,
+}) {
+  const findingHeads = codexFindingHeads(comments, reviews);
+  const severity = findingHeadSeverity(comments, reviews);
+
+  // Worst-wins, and an unreadable head is never treated as merely minor.
+  const RANK = { 'very-critical': 0, unknown: 1, critical: 2, minor: 3 };
+  let tier = null;
+  for (const head of findingHeads) {
+    const seen = severity.get(head) ?? 'unknown';
+    if (tier === null || RANK[seen] < RANK[tier]) tier = seen;
+  }
+
+  const crossed = findingHeads.length >= threshold;
+  return {
+    findingHeadCount: findingHeads.length,
+    findingHeadIds: findingHeads,
+    threshold,
+    tier,
+    crossed,
+    // The advisory itself: this unit is past the limit AND still producing
+    // findings that are not provably minor.
+    restructureAdvised: crossed && tier !== null && tier !== 'minor',
+  };
+}
+
+// One line for the status comment a human is already reading. Null when there is
+// nothing to say, so the ordinary case is unchanged.
+export function lifecycleAdvisory(observation) {
+  if (!observation?.restructureAdvised) return null;
+  const tier = observation.tier === 'unknown'
+    ? 'of unread severity'
+    : `up to ${observation.tier.replace('-', ' ')}`;
+  return `This unit has ${observation.findingHeadCount} finding-bearing heads `
+    + `(limit ${observation.threshold}), with findings ${tier}. `
+    + 'Consider splitting it into a smaller review unit.';
 }

@@ -7,8 +7,10 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
+import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
 import {
   assessConvergence,
+  findingHeadSeverity,
   assessReviewScope,
   deferralPhases,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
@@ -744,6 +746,33 @@ function eligibleShape(pullRequest) {
   };
 }
 
+// Report the lifecycle observation. NEVER blocks, NEVER throws.
+//
+// Called on BOTH paths that reach a review. The first attempt at this change
+// wired only the final-admission path, so a unit already at five critical heads
+// was promoted for yet another Codex review and the finding path drafted the
+// head without the rule ever running — the exact sixth finding-bearing head the
+// rule exists to notice. `L2` slices the source between the promotion-path
+// convergence call and `reviewNotBefore` and requires this call inside that
+// region, so a future path that promotes without it fails CI.
+export async function reportReviewLifecycle(client, pullRequest, log = console.log) {
+  let observation = null;
+  try {
+    const [comments, reviews] = await Promise.all([
+      client.reviewComments(pullRequest.number),
+      client.reviews(pullRequest.number),
+    ]);
+    observation = observeReviewLifecycle({ comments, reviews });
+  } catch {
+    // Evidence unreadable. This path reports; it does not decide, so there is
+    // nothing to fail closed ON — it says nothing rather than something wrong.
+    return null;
+  }
+  const advisory = lifecycleAdvisory(observation);
+  if (advisory) log(`lifecycle: ${advisory}`);
+  return observation;
+}
+
 function statusBody({ state, head, detail, attempt, next }) {
   return [
     '## Autonomous review state',
@@ -1046,6 +1075,10 @@ export async function revalidateFinalReviewPolicy(
   if (!pullRequest) {
     return { state: 'superseded', allowed: false, superseded: true };
   }
+
+  // And at final admission, so a clean head is also measured — after the head is
+  // confirmed current, so a superseded one is never reported on.
+  await reportReviewLifecycle(client, pullRequest);
 
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return { ...scope, state: 'superseded' };
@@ -1479,6 +1512,10 @@ export async function run() {
       `${convergence.findingHeadCount} finding heads require a consolidated convergence audit`,
     );
   }
+
+  // Observe the lifecycle BEFORE promoting for another review — this is the
+  // path the first attempt missed.
+  await reportReviewLifecycle(client, pullRequest);
 
   const reviewNotBefore = new Date(Date.now() - 1_000).toISOString();
   for (let attempt = 1; attempt <= MAX_REVIEW_ATTEMPTS; attempt += 1) {
