@@ -1,7 +1,7 @@
 # Convergence audit — PR #264 (wiring the five-head restructure rule)
 
 Required by `CLAUDE.md` after two distinct finding-bearing heads. This is an
-architectural audit of all twenty-four findings together, not a series of isolated
+architectural audit of all twenty-six findings together, not a series of isolated
 patches. Round 3 matters most: it is the audit's own root cause, reproduced by
 the fix written for it.
 
@@ -15,6 +15,7 @@ the fix written for it.
 | `1c6cdaa` | 3 — all P2; one a direct miss against the owner's stated design |
 | `af81b9b` | 1 — P2, write ordering |
 | `442759b` | 2 — **one P1**, caused by the previous round's fix |
+| `651c58f` | 2 — **one P1**; the owner chose RESTRUCTURE over a fifth patch |
 
 ## The finding that is not like the others
 
@@ -390,6 +391,65 @@ The remedy that generalises: **when a fix has two candidate mechanisms, ship the
 one that makes the bad state recoverable, not the one that tries to prevent it.**
 Prevention has to enumerate every path; recovery only has to recognise the state.
 
+## Round 9 — the owner called RESTRUCTURE, and it ends the family
+
+A second consecutive P1, and unlike round 8 the fixes would have been additive.
+I stopped and asked; the owner chose to restructure the record rather than patch
+a fourth instance. That was the right call and this section records why.
+
+### The bug family, stated once
+
+The durable record mixed **two lifetimes in one flat object**:
+
+| Lifetime | Fields | Resets |
+| --- | --- | --- |
+| cumulative | `findingHeads`, `findingHeadIds`, `findingsPerHead`, `firstSeenAt` | never |
+| request-scoped | `declarationRequestedAt`, `declarationWindowMinutes`, `autonomousAt`, `autonomousTier` | every new request |
+
+Three writers each did `{ ...recordedMetrics, ... }`. Every one of them silently
+carried request-scoped fields across request boundaries. That is not four bugs;
+it is one shape found four times:
+
+| Round | Instance |
+| --- | --- |
+| 5 | the recorded window was written and never read back |
+| 7 | the record was written after the block that depends on it |
+| 8 | reverting that left the permissive paths unguarded |
+| 9 | a spent `autonomousAt` survived into a NEW window, so `expiredWindow` returned null forever and the unit sat on a wait nothing could end |
+
+### What changed
+
+**Request-scoped fields now live under one key**, `lifecycleRequest`. Opening a
+request writes that object **whole**, so a field from the previous request cannot
+survive into the next — the mistake is unrepresentable rather than something each
+writer must remember. `W36`.
+
+**`liveLifecycleRequest`** is the one accessor for *"what are we waiting on now"*.
+A request carrying `autonomousAt` is spent, and its stamp and window no longer
+govern the next one. This was the actual P1: I first fixed only the write side, and
+`W36` caught that a fresh 360-minute window still came out expired because it was
+measured from a stamp four hundred minutes old.
+
+**One writer, `recordLifecycle`, and it never throws.** All three paths use it.
+Round 8 guarded the blocking path; round 9 found the other two unguarded — the
+same under-application caught one path at a time. `W38` exercises all three.
+
+**Legacy flat records normalise on read.** A pull request mid-flight when this
+ships carries the old shape; discarding it would drop a live window and re-ask a
+human already asked. The flat copies are dropped on write so they cannot shadow
+the nested one. `W37`.
+
+### Two things the probes caught that I had wrong
+
+`W14` caught a **real regression**: wrapping the write in `if (!floorUnreadable)`
+skipped it entirely, so a unit with an unreadable floor stopped reporting why it
+was blocked. Writing no *record* and writing *nothing* are different, and only one
+is correct.
+
+And after changing the shape I updated two of three readers, leaving
+`requestedAt` on the flat field — the same under-application again. The fix was to
+enumerate every reader with a grep rather than fix them as tests failed.
+
 ## The original F3 record — superseded, kept for the reasoning
 
 > `auto-merge.yml` triggers on `workflow_run` and `workflow_dispatch` only. There
@@ -443,9 +503,9 @@ because it does not.
 
 | Gate | Result |
 | --- | --- |
-| `scripts/review-lifecycle-enforcement.test.mjs` | **35/35** |
+| `scripts/review-lifecycle-enforcement.test.mjs` | **38/38** |
 | `scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | **216/216** |
+| `pnpm test:automation` | **219/219** |
 | `pnpm check` | **EXIT 0** |
 
 ### Discrimination — each mechanism reverted in turn

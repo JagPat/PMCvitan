@@ -49,6 +49,65 @@ export function declarationWindowFor(tier) {
   return tier === 'critical' ? CRITICAL_WINDOW_MINUTES : VERY_CRITICAL_WINDOW_MINUTES;
 }
 
+// ONE request, under ONE key.
+//
+// The durable record mixes two lifetimes. `findingHeads`, `findingsPerHead` and
+// `firstSeenAt` are CUMULATIVE — they describe the unit and never reset. The
+// request fields describe a SINGLE declaration request and are meaningless once
+// the next one opens.
+//
+// Held flat, every writer did `{ ...recordedMetrics, ...}` and silently carried
+// request-scoped fields across request boundaries. That is not one bug: it was
+// found four times (rounds 5, 7, 8, 9), most recently as a stale `autonomousAt`
+// surviving into a NEW window, which made `expiredWindow` return null forever and
+// stranded the unit on a wait nothing could end.
+//
+// Nesting them makes the mistake UNREPRESENTABLE rather than something each
+// writer must remember: opening a request replaces this object wholesale, so a
+// field from the previous request cannot survive into the next one.
+export const LIFECYCLE_REQUEST_KEY = 'lifecycleRequest';
+
+// A request opened before this key existed stored its fields flat. Reading one
+// is a legitimate upgrade path — a pull request mid-flight when this ships — so
+// a legacy shape is normalised rather than discarded, which would silently drop
+// a live window and re-ask a human who has already been asked.
+export function lifecycleRequestOf(metrics) {
+  const nested = metrics?.[LIFECYCLE_REQUEST_KEY];
+  if (nested && typeof nested === 'object') return nested;
+  if (typeof metrics?.declarationRequestedAt === 'string') {
+    return {
+      at: metrics.declarationRequestedAt,
+      windowMinutes: metrics.declarationWindowMinutes,
+      tier: metrics.autonomousTier ?? null,
+      ...(metrics.autonomousAt ? { autonomousAt: metrics.autonomousAt } : {}),
+    };
+  }
+  return null;
+}
+
+// The recorded request ONLY while it is still live.
+//
+// A request carrying `autonomousAt` is SPENT: the loop already overrode it and
+// proceeded. Its stamp and window must not govern the NEXT request — reading
+// them is how a fresh 360-minute window came out already expired, because it was
+// measured from a stamp four hundred minutes old. Every consumer that asks "what
+// are we currently waiting on" wants this, not the raw record.
+export function liveLifecycleRequest(metrics) {
+  const request = lifecycleRequestOf(metrics);
+  return request && !request.autonomousAt ? request : null;
+}
+
+// Build the request to RECORD. Callers pass the whole thing, never a spread of
+// the old one, which is what keeps a stale field from surviving.
+export function lifecycleRequest({ at, windowMinutes, tier, autonomousAt = null }) {
+  return {
+    at,
+    windowMinutes,
+    tier,
+    ...(autonomousAt ? { autonomousAt } : {}),
+  };
+}
+
 // The window a human was already promised, read back off the durable record.
 //
 // Returns null when nothing usable was recorded, which lets the assessment fall
@@ -57,7 +116,7 @@ export function declarationWindowFor(tier) {
 // unit first blocked on unclassified evidence keeps its six hours even once the
 // heads become classifiable as merely P1.
 export function recordedWindowMinutes(metrics) {
-  const recorded = Number(metrics?.declarationWindowMinutes);
+  const recorded = Number(liveLifecycleRequest(metrics)?.windowMinutes);
   return Number.isFinite(recorded) && recorded > 0 ? recorded : null;
 }
 
@@ -201,22 +260,25 @@ export function renderMetrics(metrics) {
 // `autonomousAt` is what stops the sweep firing forever: once the override is
 // recorded, the window is spent and this returns false.
 export function expiredWindow(metrics, nowIso) {
-  const requested = Date.parse(metrics?.declarationRequestedAt ?? '');
+  const request = lifecycleRequestOf(metrics);
+  const requested = Date.parse(request?.at ?? '');
   const now = Date.parse(nowIso ?? '');
   if (!Number.isFinite(requested) || !Number.isFinite(now)) return null;
-  if (metrics?.autonomousAt) return null;
+  // Spent: this REQUEST was already overridden. Scoped to the request object, so
+  // opening a new one clears it by construction rather than by remembering to.
+  if (request.autonomousAt) return null;
 
   // A window recorded without its length is not assumed to be the short one:
   // the wait is what protects a human's chance to answer, so an unreadable
   // length waits the LONGEST, the same instinct as unknown severity.
-  const minutes = Number.isFinite(Number(metrics?.declarationWindowMinutes))
-    && Number(metrics.declarationWindowMinutes) > 0
-    ? Number(metrics.declarationWindowMinutes)
+  const minutes = Number.isFinite(Number(request.windowMinutes))
+    && Number(request.windowMinutes) > 0
+    ? Number(request.windowMinutes)
     : VERY_CRITICAL_WINDOW_MINUTES;
 
   const elapsed = now - requested;
   return elapsed >= minutes * 60_000
-    ? { requestedAt: metrics.declarationRequestedAt, minutes, elapsedMinutes: Math.floor(elapsed / 60_000) }
+    ? { requestedAt: request.at, minutes, elapsedMinutes: Math.floor(elapsed / 60_000) }
     : null;
 }
 

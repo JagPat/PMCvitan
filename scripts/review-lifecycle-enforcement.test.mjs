@@ -42,8 +42,14 @@ const ASKED_AT = ago(2);      // asked two minutes ago: every window still open
 const AFTER = ago(1);         // answered after the request
 const BEFORE = ago(90 * 24 * 60);  // written three months before it
 
-// A recorded request, so a declaration has something to answer.
-const asked = (extra = {}) => `<!-- autonomous-review-metrics: ${
+// A recorded request, so a declaration has something to answer. Request-scoped
+// fields live under ONE key so a spent request cannot leak into its successor.
+const asked = (request = {}) => `<!-- autonomous-review-metrics: ${
+  JSON.stringify({ lifecycleRequest: { at: ASKED_AT, ...request } })} -->`;
+
+// The FLAT shape written before the nesting. A pull request mid-flight when this
+// ships carries one, so reading it must still work.
+const askedLegacy = (extra = {}) => `<!-- autonomous-review-metrics: ${
   JSON.stringify({ declarationRequestedAt: ASKED_AT, ...extra })} -->`;
 
 // A maintainer's answer, on the only channel that carries one: a comment with a
@@ -121,7 +127,7 @@ test('W3: at the limit with a P1 and no answer, a human is ASKED and the unit bl
   assert.match(posted, /review-restructure: continue/u, 'the comment must say how to answer');
   assert.match(posted, new RegExp(String(CRITICAL_WINDOW_MINUTES), 'u'),
     'the P1 request must quote the 3-hour critical window');
-  assert.match(posted, /declarationRequestedAt/u, 'the window start must be recorded');
+  assert.match(posted, /"lifecycleRequest":\{"at":/u, 'the window start must be recorded');
 });
 
 test('W4: at the limit with only P2 findings, the loop CONTINUES without asking', async () => {
@@ -502,7 +508,7 @@ test('W20: proceeding unanswered leaves a DURABLE record of the override', async
   const written = client.calls.sticky[0];
   assert.match(written, /autonomousAt/u, 'when the loop overrode the request');
   assert.match(written, /lifecycle_autonomous/u, 'and that it is what happened');
-  assert.match(written, /declarationRequestedAt/u, 'without dropping the request stamp');
+  assert.match(written, /"lifecycleRequest":\{"at":/u, 'without dropping the request stamp');
 
   // The unit is NOT drafted or failed — it proceeds. The record is the point.
   assert.equal(client.calls.status.length, 0);
@@ -1038,6 +1044,115 @@ test('W35: the sweep never overrides the Codex attempt cap', async () => {
       .woken.length,
     1,
   );
+});
+
+test('W36: a SPENT request cannot leak into the one that replaces it', async () => {
+  // The bug family this restructure exists to end, found four times in four
+  // rounds. Held flat, every writer did `{ ...recordedMetrics, ... }` and carried
+  // request-scoped fields across request boundaries.
+  //
+  // The worst instance: a 180-minute P1 request times out and records
+  // `autonomousAt`. A later P0 head opens a NEW 360-minute window — and inherited
+  // the old `autonomousAt`, so `expiredWindow` returned null forever and the
+  // sweep never re-dispatched. The unit sat on a wait nothing could end.
+  const { sweepExpiredWindows } = await import('./autonomous-review-gate.mjs');
+  const spent = {
+    at: ago(400), windowMinutes: CRITICAL_WINDOW_MINUTES,
+    tier: 'critical', autonomousAt: ago(220),
+  };
+  const client = fakeClient({
+    comments: heads(5, '![P0 Badge](https://img.shields.io/badge/P0-red?style=flat) x'),
+    sticky: `<!-- autonomous-review-metrics: ${
+      JSON.stringify({ findingHeads: 5, lifecycleRequest: spent })} -->`,
+  });
+  const result = await enforceReviewLifecycle(client, pr, 'h');
+  assert.equal(result.allowed, false, 'a P0 unit opens a new wait');
+
+  const written = JSON.parse(
+    /autonomous-review-metrics:\s*(\{.*\})\s*-->/u.exec(client.calls.sticky[0])[1],
+  );
+  assert.equal(written.lifecycleRequest.autonomousAt, undefined,
+    'the NEW request must not inherit the old override stamp');
+  assert.equal(written.lifecycleRequest.windowMinutes, VERY_CRITICAL_WINDOW_MINUTES);
+  assert.notEqual(written.lifecycleRequest.at, spent.at, 'and it is a fresh stamp');
+  assert.equal(written.findingHeads, 5, 'while the CUMULATIVE floor is carried');
+
+  // And the sweep can now see that new window expire, which it could not before.
+  const fresh = sweepClient({
+    pulls: [{ number: 2, head: { sha: 'h2', ref: 'claude/g' } }],
+    sticky: { 2: `<!-- autonomous-review-metrics: ${JSON.stringify({
+      lifecycleRequest: {
+        at: '2026-08-01T00:00:00Z',
+        windowMinutes: VERY_CRITICAL_WINDOW_MINUTES,
+        tier: 'very-critical',
+      },
+    })} -->` },
+    statuses: { h2: blocked(41) },
+  });
+  fresh.issueComments = async () => [];
+  const swept = await sweepExpiredWindows(fresh, {
+    nowIso: '2026-08-01T07:00:00Z', log: () => {},
+  });
+  assert.equal(swept.woken.length, 1, 'the replacement window expires normally');
+});
+
+test('W37: a LEGACY flat record still works', async () => {
+  // A pull request mid-flight when this ships carries the old flat shape.
+  // Discarding it would silently drop a live window and re-ask a human who has
+  // already been asked, so it is normalised on read instead.
+  const { lifecycleRequestOf, expiredWindow } = await import('./review-lifecycle.mjs');
+
+  const legacy = {
+    findingHeads: 5,
+    declarationRequestedAt: '2026-08-01T00:00:00Z',
+    declarationWindowMinutes: CRITICAL_WINDOW_MINUTES,
+    autonomousTier: 'critical',
+  };
+  assert.equal(lifecycleRequestOf(legacy).at, '2026-08-01T00:00:00Z');
+  assert.equal(lifecycleRequestOf(legacy).windowMinutes, CRITICAL_WINDOW_MINUTES);
+  assert.ok(expiredWindow(legacy, '2026-08-01T04:00:00Z'), 'a legacy window still expires');
+  assert.equal(expiredWindow(legacy, '2026-08-01T01:00:00Z'), null, 'and still waits');
+
+  // A legacy record that already recorded its override is still spent.
+  assert.equal(
+    expiredWindow({ ...legacy, autonomousAt: '2026-08-01T03:00:00Z' }, '2026-08-01T09:00:00Z'),
+    null,
+  );
+
+  // The gate reads one end to end, and the flat fields do not survive the write
+  // — leaving both would let the stale copy shadow the nested one on next read.
+  const client = fakeClient({ comments: heads(5, P1), sticky: askedLegacy() });
+  await enforceReviewLifecycle(client, pr, 'h');
+  const written = JSON.parse(
+    /autonomous-review-metrics:\s*(\{.*\})\s*-->/u.exec(client.calls.sticky[0])[1],
+  );
+  assert.equal(written.declarationRequestedAt, undefined, 'the flat copy is dropped');
+  assert.equal(written.lifecycleRequest.at, ASKED_AT, 'and the live window is preserved');
+});
+
+test('W38: EVERY lifecycle path survives a failed record write', async () => {
+  // Round 8 guarded the blocking path; round 9 found the other two unguarded —
+  // the same under-application, caught one path at a time. One writer now owns
+  // all three, so a transient failure can never fail the run and strand a unit
+  // on a `pending` status the sweep does not wake.
+  const paths = [
+    ['autonomous timeout', {
+      comments: heads(5, P1),
+      sticky: `<!-- autonomous-review-metrics: ${JSON.stringify({
+        lifecycleRequest: { at: ago(400), windowMinutes: CRITICAL_WINDOW_MINUTES, tier: 'critical' },
+      })} -->`,
+    }],
+    ['crossed but minor', { comments: heads(5, P2) }],
+    ['blocking request', { comments: heads(5, P1) }],
+  ];
+  for (const [name, options] of paths) {
+    const client = fakeClient(options);
+    client.updateStickyComment = async () => { throw new Error('transport'); };
+    await assert.doesNotReject(
+      () => enforceReviewLifecycle(client, pr, 'h'),
+      `${name} must not fail the run when its record cannot be written`,
+    );
+  }
 });
 
 test('W14: a failed sticky READ never rewrites the durable floor', async () => {

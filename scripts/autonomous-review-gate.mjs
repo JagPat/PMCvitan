@@ -2,10 +2,14 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { loadStatusDocument } from './autonomous-status-state.mjs';
 import {
+  LIFECYCLE_REQUEST_KEY,
   METRICS_MARKER,
   assessRestructure,
   expiredWindow,
   humanDeclaration,
+  lifecycleRequest,
+  lifecycleRequestOf,
+  liveLifecycleRequest,
   readMetrics,
   recordedWindowMinutes,
   renderMetrics,
@@ -1125,6 +1129,57 @@ export async function enforceReviewConvergence(
 //
 // The owner's shape: ask a human only when it is CRITICAL, and if nobody answers
 // inside the window, proceed and record that it proceeded unanswered.
+// The ONE way this function writes its record, and it never throws.
+//
+// Three paths write it — the autonomous override, a crossed-but-minor
+// continuation, and the blocking request — and each was guarded (or not) on its
+// own. Round 8 guarded the blocking path; round 9 found the other two unguarded,
+// which is the same under-application caught one path at a time. A failure here
+// costs at most one sweep cycle, because the sweep recovers a block whose record
+// is missing; letting it throw costs the whole run and can strand the unit on a
+// `pending` status the sweep does not wake.
+//
+// The CUMULATIVE fields are carried forward; the REQUEST is passed whole or not
+// at all. `undefined` leaves any recorded request untouched, `null` clears it.
+async function recordLifecycle(client, pullRequest, body, { carry, floor, request } = {}) {
+  // No floor to write is a MODE, not an omission: on the floor-unreadable path
+  // this run's counts were computed without the durable floor, so writing them
+  // would patch a recorded five-head crossing down to whatever is visible now.
+  // The unit must still say why it is blocked, so the body is posted with no
+  // metrics block at all and `updateStickyComment` carries the existing record
+  // forward untouched. Skipping the whole write instead left the unit blocked
+  // and silent, which a probe caught.
+  if (floor === undefined) {
+    try {
+      await client.updateStickyComment(pullRequest.number, body);
+    } catch (error) {
+      console.log(`lifecycle: could not report the block (${error.message})`);
+    }
+    return;
+  }
+
+  const metrics = {
+    ...(carry ?? {}),
+    ...floor,
+    ...(request === undefined ? {} : { [LIFECYCLE_REQUEST_KEY]: request }),
+  };
+  // A legacy flat record is carried forward as-is EXCEPT for its request fields,
+  // which now live under the nested key — leaving both would let the flat copy
+  // shadow the nested one on the next read.
+  for (const legacy of ['declarationRequestedAt', 'declarationWindowMinutes',
+    'autonomousAt', 'autonomousTier']) {
+    delete metrics[legacy];
+  }
+  try {
+    await client.updateStickyComment(pullRequest.number, `${body}\n${renderMetrics(metrics)}`);
+  } catch (error) {
+    console.log(
+      `lifecycle: the record could not be written (${error.message}); `
+      + 'the sweep will recover this unit',
+    );
+  }
+}
+
 // The FALLBACK, and only the fallback.
 //
 // Every other transition in this loop is event-driven and reacts the moment it
@@ -1179,11 +1234,12 @@ export async function sweepExpiredWindows(client, {
     // event path is unavailable — a webhook dropped, the workflow disabled — so
     // the unit is never left sitting on a decision that was already made.
     let answered = null;
-    if (!expired && !unreadable && metrics?.declarationRequestedAt) {
+    const request = lifecycleRequestOf(metrics);
+    if (!expired && !unreadable && request?.at) {
       try {
         answered = humanDeclaration(
           await client.issueComments(pullRequest.number),
-          metrics.declarationRequestedAt,
+          request.at,
         );
       } catch {
         answered = null;
@@ -1204,7 +1260,7 @@ export async function sweepExpiredWindows(client, {
     // safety limit this sweep has no business overriding.
     const lifecycleWait = String(terminal.description ?? '')
       .startsWith('review: lifecycle —');
-    const incomplete = lifecycleWait && !metrics?.declarationRequestedAt;
+    const incomplete = lifecycleWait && !request?.at;
 
     const why = expired
       ? `the ${expired.minutes}-minute window closed `
@@ -1284,7 +1340,7 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     recordedMetrics,
     floorUnreadable,
     nowIso,
-    requestedAt: recordedMetrics?.declarationRequestedAt ?? null,
+    requestedAt: liveLifecycleRequest(recordedMetrics)?.at ?? null,
     // The recorded window, fed BACK. It was written for the sweep and then never
     // read here, so the assessment recomputed it from current severity every
     // run. A unit first blocked on unclassified evidence records 360 minutes;
@@ -1306,25 +1362,30 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
   // when it IS the only record. So it is written before returning, and stamped
   // once — `autonomousAt` is preserved if an earlier run already recorded it.
   if (result.allowed && result.autonomous) {
-    await client.updateStickyComment(
-      pullRequest.number,
-      `${statusBody({
-        state: 'lifecycle_autonomous',
-        head: expectedHead,
-        detail: result.reason,
-        attempt: 0,
-        next: `No maintainer answered within the ${result.windowMinutes}-minute `
-          + `${result.tier} window, so the loop proceeded on its own judgement. `
-          + 'This is the durable record of that override.',
-      })}\n${renderMetrics({
-        ...(recordedMetrics ?? {}),
+    const open = lifecycleRequestOf(recordedMetrics);
+    await recordLifecycle(client, pullRequest, statusBody({
+      state: 'lifecycle_autonomous',
+      head: expectedHead,
+      detail: result.reason,
+      attempt: 0,
+      next: `No maintainer answered within the ${result.windowMinutes}-minute `
+        + `${result.tier} window, so the loop proceeded on its own judgement. `
+        + 'This is the durable record of that override.',
+    }), {
+      carry: recordedMetrics,
+      floor: {
         findingHeads: result.findingHeadCount,
         findingHeadIds: result.findingHeadIds ?? [],
-        declarationRequestedAt: recordedMetrics?.declarationRequestedAt ?? nowIso,
-        autonomousAt: recordedMetrics?.autonomousAt ?? nowIso,
-        autonomousTier: recordedMetrics?.autonomousTier ?? result.tier,
-      })}`,
-    );
+      },
+      // Stamps THIS request as spent. Written whole, so it can never merge with
+      // a previous request's fields.
+      request: lifecycleRequest({
+        at: open?.at ?? nowIso,
+        windowMinutes: open?.windowMinutes ?? result.windowMinutes,
+        tier: open?.tier ?? result.tier,
+        autonomousAt: open?.autonomousAt ?? nowIso,
+      }),
+    });
     return result;
   }
 
@@ -1335,21 +1396,22 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
   // instead of six and promote another review rather than asking. Crossing the
   // threshold is the fact worth recording, whatever the verdict on it was.
   if (result.allowed && result.thresholdCrossed) {
-    await client.updateStickyComment(
-      pullRequest.number,
-      `${statusBody({
-        state: 'lifecycle_crossed',
-        head: expectedHead,
-        detail: result.reason,
-        attempt: 0,
-        next: 'The unit continues — no finding head carries a P1. The crossing is '
-          + 'recorded so a later critical head is judged against it.',
-      })}\n${renderMetrics({
-        ...(recordedMetrics ?? {}),
+    await recordLifecycle(client, pullRequest, statusBody({
+      state: 'lifecycle_crossed',
+      head: expectedHead,
+      detail: result.reason,
+      attempt: 0,
+      next: 'The unit continues — no finding head carries a P1. The crossing is '
+        + 'recorded so a later critical head is judged against it.',
+    }), {
+      carry: recordedMetrics,
+      floor: {
         findingHeads: result.findingHeadCount,
         findingHeadIds: result.findingHeadIds ?? [],
-      })}`,
-    );
+      },
+      // No `request` key: this path opens none and must not disturb a live one.
+      request: lifecycleRequestOf(recordedMetrics) ?? undefined,
+    });
     return result;
   }
   if (result.allowed) return result;
@@ -1385,60 +1447,57 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
   // Round 7 moved this write first, reasoning that the sweep reads the record to
   // decide whether a blocked unit is actionable. That was an over-fix: the same
   // round taught the sweep to self-heal a block whose record is missing, which
-  // already solved it. Writing first only moved the failure — a throw here left
+  // already solved it. Writing first only moved the failure — a throw there left
   // the earlier `pending` status as the latest one, and the sweep ignores a
   // pending status, so the unit sat exactly as before.
   //
   // Publishing the block first means the worst case is a block the sweep KNOWS
-  // how to recover. So the write is best-effort and its failure is reported
-  // rather than thrown: losing the record costs one extra sweep cycle; losing
-  // the block costs the unit.
-  try {
-    await client.updateStickyComment(
-      pullRequest.number,
-      // When the floor could NOT be read, this run's counts were computed without
-      // it — writing them would patch a recorded five-head floor down to however
-      // many heads happen to be visible now, and the next run would read the
-      // lowered value and pass a unit that had already crossed the limit. So the
-      // metrics block is omitted entirely on that path and `updateStickyComment`
-      // carries the existing one forward untouched. A durable floor is only ever
-      // rewritten from a reading that actually saw it.
-      `${statusBody({
-        state: result.state,
-        head: expectedHead,
-        detail: result.reason,
-        attempt: 0,
-        next: result.state === 'restructure_required'
-          ? 'A human declared RESTRUCTURE: split this unit and open a replacement that declares Replaces: #'
-            + `${pullRequest.number}.`
-          // The markers are shown in code spans, and the answer is read from a
-          // maintainer's COMMENT rather than the body: quoting the instructions
-          // must never count as obeying them, and the decision has to be
-          // attributable to a person rather than to a document the loop writes.
-          : 'A maintainer decides, by posting a COMMENT on this pull request containing '
-            + '`<!-- review-restructure: continue -->` to keep correcting this unit, or '
-            + '`<!-- review-restructure: restructure -->` to split and replace it. If '
-            + `nobody answers within ${result.windowMinutes} minutes (the ${result.tier} `
-            + 'window) the loop proceeds on its own judgement and records that it did.',
-      })}${floorUnreadable ? '' : `\n${renderMetrics({
-        ...(recordedMetrics ?? {}),
+  // how to recover, and `recordLifecycle` never throws.
+  //
+  // When the floor could NOT be read, this run's counts were computed without it,
+  // so writing them would patch a recorded five-head floor down to however many
+  // heads are visible now. That path writes nothing at all and lets
+  // `updateStickyComment` carry the existing record forward untouched.
+  {
+    // The request this block is waiting on. A live request is CARRIED (the stamp
+    // measures the human's reply, not the age of the newest head); otherwise a
+    // FRESH one opens.
+    //
+    // The freshness is the point. Held flat, a new window inherited the previous
+    // request's `autonomousAt` through the carry-forward spread, so
+    // `expiredWindow` returned null forever and the sweep never re-dispatched —
+    // the unit sat on a wait nothing could end. Written whole, a spent request
+    // cannot leak into the one that replaces it.
+    const live = liveLifecycleRequest(recordedMetrics);
+    await recordLifecycle(client, pullRequest, statusBody({
+      state: result.state,
+      head: expectedHead,
+      detail: result.reason,
+      attempt: 0,
+      next: result.state === 'restructure_required'
+        ? 'A human declared RESTRUCTURE: split this unit and open a replacement that declares Replaces: #'
+          + `${pullRequest.number}.`
+        // The markers are shown in code spans, and the answer is read from a
+        // maintainer's COMMENT rather than the body: quoting the instructions
+        // must never count as obeying them, and the decision has to be
+        // attributable to a person rather than to a document the loop writes.
+        : 'A maintainer decides, by posting a COMMENT on this pull request containing '
+          + '`<!-- review-restructure: continue -->` to keep correcting this unit, or '
+          + '`<!-- review-restructure: restructure -->` to split and replace it. If '
+          + `nobody answers within ${result.windowMinutes} minutes (the ${result.tier} `
+          + 'window) the loop proceeds on its own judgement and records that it did.',
+    }), floorUnreadable ? {} : {
+      carry: recordedMetrics,
+      floor: {
         findingHeads: result.findingHeadCount,
         findingHeadIds: result.findingHeadIds ?? [],
-        // Stamped ONCE, when the request is first made, so the window measures the
-        // human's reply and not the age of the newest head.
-        declarationRequestedAt: recordedMetrics?.declarationRequestedAt ?? nowIso,
-        // Recorded WITH the stamp so the fallback sweep can tell when this window
-        // runs out from the sticky comment alone — no review re-read, no severity
-        // recomputation, on every open pull request every fifteen minutes.
-        declarationWindowMinutes:
-          recordedMetrics?.declarationWindowMinutes ?? result.windowMinutes,
-      })}`}`,
-    );
-  } catch (error) {
-    console.log(
-      `lifecycle: the block is published but its record could not be written `
-      + `(${error.message}); the sweep will recover it`,
-    );
+      },
+      request: live ?? lifecycleRequest({
+        at: nowIso,
+        windowMinutes: result.windowMinutes,
+        tier: result.tier,
+      }),
+    });
   }
   return result;
 }
