@@ -160,6 +160,56 @@ test('L4: unknown severity is never treated as minor', () => {
   assert.equal(container.get('h'), 'minor');
 });
 
+test('L7: the advisory reaches a PR-VISIBLE channel, not only the Actions log', async () => {
+  // The first head of this unit wrote the advisory to `console.log` and stopped.
+  // The loop's actors — and humans — read PR comments and statuses; a workflow
+  // log is neither, so the signal was real but unreachable, and the sticky went
+  // on saying "Auto-fix handles the review comments" with no hint that the unit
+  // had already spent its head budget.
+  //
+  // It rides the sticky beside `Next:` because `Next:` is exactly what it
+  // qualifies.
+  const client = fakeClient({ comments: heads(5, badge(1)) });
+  const observed = await reportReviewLifecycle(client, { number: 1 }, client.log);
+
+  assert.ok(observed.advisory, 'the advisory is RETURNED for the caller to publish');
+  assert.match(observed.advisory, /5 finding-bearing heads/u);
+
+  // And the sticky renderer puts it in the comment body.
+  const source = readFileSync(GATE, 'utf8');
+  const renderer = source.slice(
+    source.indexOf('function statusBody({'),
+    source.indexOf('export async function settleRecoveryRequest'),
+  );
+  assert.match(renderer, /advisory \? \[/u, 'statusBody renders it when present');
+  assert.match(renderer, /Review lifecycle/u, 'under a label a reader can find');
+
+  // The states that tell the loop to KEEP CORRECTING must carry it — those are
+  // the ones the advisory contradicts. Scoped to actual sticky writes: a bare
+  // `return { state: 'changes_required' }` is a verdict, not a comment.
+  const stickyWrites = [...source.matchAll(/statusBody\(\{[\s\S]*?\n\s*\}\)/gu)]
+    .map((m) => m[0]);
+  assert.ok(stickyWrites.length >= 10, 'the sticky writers must still be locatable');
+
+  const keepCorrecting = stickyWrites.filter(
+    (w) => /state: '(review_pending|changes_required)'/u.test(w),
+  );
+  assert.ok(keepCorrecting.length >= 4, 'found the keep-correcting sticky writes');
+  for (const write of keepCorrecting) {
+    assert.match(
+      write,
+      /\badvisory\b/u,
+      `a keep-correcting sticky must carry the lifecycle advisory:\n${write.slice(0, 120)}`,
+    );
+  }
+
+  // Nothing to say stays silent — the ordinary case is unchanged.
+  const quiet = fakeClient({ comments: heads(2, badge(2)) });
+  const none = await reportReviewLifecycle(quiet, { number: 1 }, quiet.log);
+  assert.equal(none.advisory, null);
+  assert.deepEqual(quiet.calls.logs, []);
+});
+
 test('L5: unreadable evidence reports NOTHING rather than something wrong', async () => {
   // This path reports and does not decide, so there is no verdict to fail closed
   // on. Silence is the honest outcome; a fabricated "all clear" would not be.

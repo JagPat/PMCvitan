@@ -770,10 +770,13 @@ export async function reportReviewLifecycle(client, pullRequest, log = console.l
   }
   const advisory = lifecycleAdvisory(observation);
   if (advisory) log(`lifecycle: ${advisory}`);
-  return observation;
+  // The caller threads this into the sticky comment. Returned rather than
+  // written here so this helper keeps its one job and cannot race the
+  // status writes it would otherwise be interleaved with.
+  return { ...observation, advisory };
 }
 
-function statusBody({ state, head, detail, attempt, next }) {
+function statusBody({ state, head, detail, attempt, next, advisory = null }) {
   return [
     '## Autonomous review state',
     '',
@@ -782,6 +785,13 @@ function statusBody({ state, head, detail, attempt, next }) {
     `- **Codex attempt:** ${attempt}/${MAX_REVIEW_ATTEMPTS}`,
     `- **Detail:** ${detail}`,
     `- **Next:** ${next}`,
+    // The lifecycle advisory rides the sticky comment, not just the Actions log.
+    // The loop's actors — and humans — read PR comments and statuses; a workflow
+    // log is neither, so an advisory written only there is a signal nobody
+    // receives. It appears beside `Next:` precisely because `Next:` is what it
+    // qualifies: "keep correcting" reads differently when this unit has already
+    // spent its head budget.
+    ...(advisory ? ['', `- **Review lifecycle:** ${advisory}`] : []),
     '',
     'This comment is maintained by GitHub. The required '
       + `\`${STATUS_CONTEXT}\` status on this exact SHA is authoritative.`,
@@ -1078,7 +1088,7 @@ export async function revalidateFinalReviewPolicy(
 
   // And at final admission, so a clean head is also measured — after the head is
   // confirmed current, so a superseded one is never reported on.
-  await reportReviewLifecycle(client, pullRequest);
+  const { advisory = null } = await reportReviewLifecycle(client, pullRequest) ?? {};
 
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return { ...scope, state: 'superseded' };
@@ -1097,7 +1107,7 @@ export async function revalidateFinalReviewPolicy(
   }
 
   const finding = await guardAgainstCurrentHeadFinding(
-    client, pullRequest, expectedHead, null,
+    client, pullRequest, expectedHead, null, advisory,
   );
   if (finding) {
     return { state: 'changes_required', allowed: false, detail: finding };
@@ -1112,6 +1122,7 @@ async function reviewAttempt(
   expectedHead,
   attempt,
   reviewNotBefore,
+  advisory = null,
 ) {
   let live = await refreshCurrentHead(
     client,
@@ -1140,6 +1151,7 @@ async function reviewAttempt(
     pullRequest.number,
     statusBody({
       state: 'review_pending',
+      advisory,
       head: expectedHead,
       detail: 'CI is green; waiting for Codex on the promoted head',
       attempt,
@@ -1202,6 +1214,7 @@ export async function guardAgainstCurrentHeadFinding(
   pullRequest,
   expectedHead,
   recoveryRequest,
+  advisory = null,
 ) {
   const [reviews, comments] = await Promise.all([
     client.reviews(pullRequest.number),
@@ -1243,6 +1256,7 @@ export async function guardAgainstCurrentHeadFinding(
     pullRequest.number,
     statusBody({
       state: 'changes_required',
+      advisory,
       head: expectedHead,
       detail: result.detail,
       attempt: 0,
@@ -1515,7 +1529,7 @@ export async function run() {
 
   // Observe the lifecycle BEFORE promoting for another review — this is the
   // path the first attempt missed.
-  await reportReviewLifecycle(client, pullRequest);
+  const { advisory = null } = await reportReviewLifecycle(client, pullRequest) ?? {};
 
   const reviewNotBefore = new Date(Date.now() - 1_000).toISOString();
   for (let attempt = 1; attempt <= MAX_REVIEW_ATTEMPTS; attempt += 1) {
@@ -1525,6 +1539,7 @@ export async function run() {
       expectedHead,
       attempt,
       reviewNotBefore,
+      advisory,
     );
     if (result.state === 'superseded') return;
 
@@ -1553,6 +1568,7 @@ export async function run() {
         pullRequest.number,
         statusBody({
           state: 'changes_required',
+        advisory,
           head: expectedHead,
           detail: result.detail,
           attempt,
@@ -1607,6 +1623,7 @@ export async function run() {
           pullRequest.number,
           statusBody({
             state: 'changes_required',
+        advisory,
             head: expectedHead,
             detail,
             attempt,
