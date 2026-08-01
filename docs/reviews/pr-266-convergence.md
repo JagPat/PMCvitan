@@ -106,10 +106,38 @@ mechanism is settled across every task, and the last stop that can adjudicate an
 of it is Task 7, not the first one. Both values are shape-valid and phase-eligible,
 so nothing but honesty distinguishes them.
 
+## Correction 2: the deferral could not be verified while this PR moved STATUS
+
+`ed91743` carried the right trailer and was still refused:
+
+> this PR changes `docs/STATUS.md`, so the default-branch copy the gate reads is
+> not this PR's own phase truth and cannot verify the deferral's phase.
+
+The gate resolves a deferral's phase from **`docs/STATUS.md` on the default
+branch**. A PR that edits STATUS gives it two candidate truths and no way to
+choose, so it refuses rather than pick — the same fail-closed instinct as every
+other rule here.
+
+The value was never the problem. `main`'s STATUS already lists phase 5 as
+eligible through `next_task: phase-5-planning`, so `phase-5-task-7` verifies
+cleanly the moment STATUS is not in this diff.
+
+**Remedy taken — the gate's first suggestion: land the STATUS change on its own.**
+`docs/STATUS.md` is reverted to `main`'s copy and this PR is now the plan and this
+audit, nothing else. That is the better split on its own merits: STATUS advancing
+to phase 5 / task 1 belongs with the change that **starts** Phase 5, not with the
+document that plans it. The plan is a description; STATUS is a claim about what
+the runner should do next, and those are different facts with different lifetimes.
+
+Consequence, stated rather than hidden: until this merges, `main`'s STATUS still
+records `open_pr: 265` and the hourly drift shepherd will keep flagging it. That
+is noise on a merged PR, not a stranded runner — `assessRunnerState` still returns
+`pr:265`, and the Task-1 head corrects it.
+
 ## Where this leaves the review
 
-This is head 5 of a docs-only plan, past `PLAN_REVIEW_ROUND_CAP = 3`, and the
-deferral is now declared.
+This is head 6 of a docs-only plan, past `PLAN_REVIEW_ROUND_CAP = 3`, with the
+deferral declared and verifiable.
 
 **The commitment stands unchanged for every further round:** findings that are
 *"the plan should also specify X"* are converted into NAMED PROBES rather than
@@ -124,5 +152,5 @@ still admits only a head Codex returns clean on.
 
 ## Gates
 
-`pnpm test:automation` 189/189 · `autonomous-status-state` 12/12 · review-scope
-standard · docs-only, no product surface, no migration.
+`pnpm test:automation` 189/189 · review-scope standard · docs-only, no product
+surface, no migration, and — from this head — no `docs/STATUS.md` change either.
