@@ -746,6 +746,19 @@ function eligibleShape(pullRequest) {
   };
 }
 
+// The advisory as of RIGHT NOW, for a sticky written after findings landed.
+//
+// The crossing that matters most is the one caused by the review that just
+// finished: four prior finding heads, and the fifth arrives in the poll. An
+// advisory snapshotted before that review is null exactly then, so the
+// `changes_required` sticky would tell auto-fix to push another head at the one
+// moment the split advice is due. Nobody is standing by to notice the omission,
+// so it is recomputed rather than carried.
+async function freshAdvisory(client, pullRequest) {
+  const observed = await reportReviewLifecycle(client, pullRequest, () => {});
+  return observed?.advisory ?? null;
+}
+
 // Report the lifecycle observation. NEVER blocks, NEVER throws.
 //
 // Called on BOTH paths that reach a review. The first attempt at this change
@@ -1107,7 +1120,7 @@ export async function revalidateFinalReviewPolicy(
   }
 
   const finding = await guardAgainstCurrentHeadFinding(
-    client, pullRequest, expectedHead, null, advisory,
+    client, pullRequest, expectedHead, null,
   );
   if (finding) {
     return { state: 'changes_required', allowed: false, detail: finding };
@@ -1214,7 +1227,6 @@ export async function guardAgainstCurrentHeadFinding(
   pullRequest,
   expectedHead,
   recoveryRequest,
-  advisory = null,
 ) {
   const [reviews, comments] = await Promise.all([
     client.reviews(pullRequest.number),
@@ -1256,7 +1268,9 @@ export async function guardAgainstCurrentHeadFinding(
     pullRequest.number,
     statusBody({
       state: 'changes_required',
-      advisory,
+      // Recomputed here, not carried in: the finding that just landed may BE
+      // the crossing.
+      advisory: await freshAdvisory(client, pullRequest),
       head: expectedHead,
       detail: result.detail,
       attempt: 0,
@@ -1568,7 +1582,7 @@ export async function run() {
         pullRequest.number,
         statusBody({
           state: 'changes_required',
-        advisory,
+          advisory: await freshAdvisory(client, pullRequest),
           head: expectedHead,
           detail: result.detail,
           attempt,
@@ -1623,7 +1637,7 @@ export async function run() {
           pullRequest.number,
           statusBody({
             state: 'changes_required',
-        advisory,
+            advisory: await freshAdvisory(client, pullRequest),
             head: expectedHead,
             detail,
             attempt,

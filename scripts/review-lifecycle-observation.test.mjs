@@ -210,6 +210,47 @@ test('L7: the advisory reaches a PR-VISIBLE channel, not only the Actions log', 
   assert.deepEqual(quiet.calls.logs, []);
 });
 
+test('L8: the crossing CAUSED by the current review still reaches the sticky', async () => {
+  // The case that matters most, and the one a snapshot misses. A unit sits at
+  // four finding heads; the review that just ran returns the fifth. An advisory
+  // computed BEFORE that review is null exactly then, so the `changes_required`
+  // sticky would tell auto-fix to push another head at the one moment the split
+  // advice is due — and nobody is standing by to notice it was omitted.
+  //
+  // So every sticky written AFTER findings land recomputes rather than carries.
+  const source = readFileSync(GATE, 'utf8');
+
+  const stickyWrites = [...source.matchAll(/statusBody\(\{[\s\S]*?\n\s*\}\)/gu)].map((m) => m[0]);
+  const afterFindings = stickyWrites.filter((w) => /state: 'changes_required'/u.test(w));
+  assert.ok(afterFindings.length >= 3, 'found the post-finding sticky writes');
+  for (const write of afterFindings) {
+    assert.match(
+      write,
+      /advisory: await freshAdvisory\(/u,
+      `a post-finding sticky must RECOMPUTE the advisory, not carry a stale one:\n${write.slice(0, 140)}`,
+    );
+  }
+
+  // The pre-review sticky is the one case where the snapshot is correct — it is
+  // written before the review that could cross the limit.
+  const beforeReview = stickyWrites.filter((w) => /state: 'review_pending'/u.test(w));
+  assert.equal(beforeReview.length, 1);
+  assert.doesNotMatch(beforeReview[0], /freshAdvisory/u, 'no wasted second read pre-review');
+  assert.match(beforeReview[0], /\badvisory,/u);
+
+  // Behaviourally: four prior heads is silent, and the fifth speaks.
+  const four = await reportReviewLifecycle(
+    fakeClient({ comments: heads(4, badge(1)) }), { number: 1 }, () => {},
+  );
+  assert.equal(four.advisory, null, 'four heads says nothing');
+
+  const fifth = await reportReviewLifecycle(
+    fakeClient({ comments: heads(5, badge(1)) }), { number: 1 }, () => {},
+  );
+  assert.ok(fifth.advisory, 'the fifth head speaks — and it is read after the poll');
+  assert.match(fifth.advisory, /5 finding-bearing heads/u);
+});
+
 test('L5: unreadable evidence reports NOTHING rather than something wrong', async () => {
   // This path reports and does not decide, so there is no verdict to fail closed
   // on. Silence is the honest outcome; a fabricated "all clear" would not be.
