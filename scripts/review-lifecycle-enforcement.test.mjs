@@ -103,7 +103,8 @@ test('W3: at the limit with a P1 and no answer, a human is ASKED and the unit bl
   const result = await enforceReviewLifecycle(client, pr, 'h');
   assert.equal(result.allowed, false);
   assert.equal(result.state, 'restructure_declaration_required');
-  assert.match(client.calls.status[0][2], /lifecycle:/u);
+  assert.match(client.calls.status[0][2], /^review: lifecycle —/u,
+    'the block must speak the vocabulary the status state machine classifies');
 
   const posted = client.calls.sticky[0];
   assert.match(posted, /review-restructure: continue/u, 'the comment must say how to answer');
@@ -526,6 +527,224 @@ test('W21: the comment reader pages through EVERYTHING', async () => {
     return Array.from({ length: 100 }, (_, i) => ({ id: i }));
   };
   await assert.rejects(() => client.issueComments(1), /transport/u);
+});
+
+// ---------------------------------------------------------------------------
+// F3 — the fallback sweep. Events drive this loop; a deadline passing is the one
+// transition no event announces, because it is DEFINED by nothing happening.
+// ---------------------------------------------------------------------------
+
+function sweepClient({ pulls = [], sticky = {}, statuses = {}, stickyThrowsFor = [] } = {}) {
+  const calls = { dispatched: [], logs: [] };
+  return {
+    calls,
+    openAutonomousPullRequests: async () => pulls,
+    stickyComment: async (n) => {
+      if (stickyThrowsFor.includes(n)) throw new Error('transport');
+      return sticky[n] ?? null;
+    },
+    statuses: async (sha) => statuses[sha] ?? [],
+    dispatchReviewRecovery: async (args) => { calls.dispatched.push(args); },
+  };
+}
+
+const blocked = (id = 55) => [{
+  id, context: 'codex-current-head', state: 'failure',
+  description: 'review: lifecycle — 5 finding-bearing heads still drawing P1 findings',
+}];
+
+test('W22: with nothing expired the sweep writes NOTHING', async () => {
+  // It runs every fifteen minutes over every open unit. If an idle tick had side
+  // effects, the fallback would be a source of churn rather than a safety net.
+  const { sweepExpiredWindows } = await import('./autonomous-review-gate.mjs');
+  const client = sweepClient({
+    pulls: [{ number: 1, head: { sha: 'h1', ref: 'claude/x' } }],
+    sticky: { 1: asked() },   // a window, but only 30 minutes old
+    statuses: { h1: blocked() },
+  });
+  const result = await sweepExpiredWindows(client, {
+    nowIso: '2026-08-01T00:30:00Z', log: (m) => client.calls.logs.push(m),
+  });
+  assert.equal(client.calls.dispatched.length, 0, 'an unexpired window is left alone');
+  assert.equal(result.woken.length, 0);
+  assert.equal(result.scanned, 1);
+});
+
+test('W23: an EXPIRED window wakes the ordinary gate — nothing else', async () => {
+  const { sweepExpiredWindows } = await import('./autonomous-review-gate.mjs');
+  const client = sweepClient({
+    pulls: [{ number: 7, head: { sha: 'h7', ref: 'claude/y' } }],
+    sticky: {
+      7: `<!-- autonomous-review-metrics: ${JSON.stringify({
+        declarationRequestedAt: ASKED_AT, declarationWindowMinutes: CRITICAL_WINDOW_MINUTES,
+      })} -->`,
+    },
+    statuses: { h7: blocked(99) },
+  });
+  // Four hours after a three-hour window opened.
+  const result = await sweepExpiredWindows(client, {
+    nowIso: '2026-08-01T04:00:00Z', ref: 'main', log: () => {},
+  });
+
+  assert.equal(result.woken.length, 1);
+  assert.deepEqual(client.calls.dispatched, [{
+    pullRequestNumber: 7, headSha: 'h7', terminalStatusId: 99, ref: 'main',
+  }]);
+
+  // Once the override is RECORDED the window is spent, so the sweep stops firing
+  // — R4's durable record is what makes this fallback terminate.
+  const spent = sweepClient({
+    pulls: [{ number: 7, head: { sha: 'h7', ref: 'claude/y' } }],
+    sticky: {
+      7: `<!-- autonomous-review-metrics: ${JSON.stringify({
+        declarationRequestedAt: ASKED_AT,
+        declarationWindowMinutes: CRITICAL_WINDOW_MINUTES,
+        autonomousAt: '2026-08-01T03:15:00Z',
+      })} -->`,
+    },
+    statuses: { h7: blocked(99) },
+  });
+  await sweepExpiredWindows(spent, { nowIso: '2026-08-01T09:00:00Z', log: () => {} });
+  assert.equal(spent.calls.dispatched.length, 0, 'a spent window is never re-woken');
+});
+
+test('W24: resuming is NOT approving', async () => {
+  // The sweep can only re-dispatch the gate, and the gate re-decides from the
+  // record. So a lifecycle block is resumable — and a window that has not
+  // actually expired blocks again on the next run.
+  const { isRetryableTerminalReviewFailure } = await import('./autonomous-review-gate.mjs');
+  assert.equal(isRetryableTerminalReviewFailure(blocked()[0]), true,
+    'a lifecycle block must be resumable, or an expired window is unreachable');
+
+  // Re-running with an unexpired window blocks a second time.
+  const again = await enforceReviewLifecycle(
+    fakeClient({ comments: heads(5, P1), sticky: asked() }), pr, 'h',
+  );
+  assert.equal(again.allowed, false, 'resumption re-decides; it does not admit');
+  assert.equal(again.state, 'restructure_declaration_required');
+
+  // A non-lifecycle, non-retryable failure stays non-retryable.
+  assert.equal(isRetryableTerminalReviewFailure({
+    id: 1, context: 'codex-current-head', state: 'failure',
+    description: 'review: Codex found issues on this head',
+  }), false, 'widening must not admit a real review failure');
+});
+
+test('W25: an unreadable unit is REPORTED, never silently skipped', async () => {
+  // "The sweep found nothing" and "the sweep could not look" are different
+  // facts, and only one of them means all is well.
+  const { sweepExpiredWindows } = await import('./autonomous-review-gate.mjs');
+  const logs = [];
+  const client = sweepClient({
+    pulls: [{ number: 3, head: { sha: 'h3', ref: 'claude/z' } }],
+    stickyThrowsFor: [3],
+  });
+  const result = await sweepExpiredWindows(client, { nowIso: ASKED_AT, log: (m) => logs.push(m) });
+  assert.equal(result.skipped.length, 1);
+  assert.match(result.skipped[0].reason, /unreadable/u);
+  assert.ok(logs.some((l) => /skipped #3/u.test(l)), 'and it says so in the log');
+});
+
+test('W26: the schedule is wired, and drives ONLY the sweep', async () => {
+  const workflow = await readFile(
+    new URL('../.github/workflows/auto-merge.yml', import.meta.url), 'utf8',
+  );
+  assert.match(workflow, /schedule:\s*\n\s*- cron: '\*\/15 \* \* \* \*'/u,
+    'the fallback runs every 15 minutes');
+
+  const sweep = workflow.slice(
+    workflow.indexOf('  window-sweep:'), workflow.indexOf('  request-recovery:'),
+  );
+  assert.match(sweep, /if: github\.event_name == 'schedule'/u,
+    'the sweep runs on the timer only');
+  assert.match(sweep, /AUTONOMOUS_REVIEW_MODE: window-sweep/u);
+
+  // The timer must NOT drive the orchestrator directly: a scheduled tick is not
+  // a CI completion, and orchestrating from one would run the gate on stale
+  // context. The sweep re-dispatches instead.
+  const orchestrate = workflow.slice(workflow.indexOf('  orchestrate:'));
+  assert.doesNotMatch(orchestrate.slice(0, 600), /event_name == 'schedule'/u);
+});
+
+test('W27: a Codex review CONTAINER is not an unreadable finding', async () => {
+  // Every Codex review is posted as a wrapper whose body carries no badge — the
+  // findings are inline review comments. Counting the wrapper as an unreadable
+  // finding tainted EVERY reviewed head as unknown, so a unit carrying nothing
+  // but P2s would still stop and ask a human. That is the critical-only rule
+  // defeated in the normal case, not an edge case.
+  //
+  // My earlier probes all passed `reviews: []`, which is why they missed it.
+  // This one uses the real shape.
+  const { findingHeadSeverity } = await import('./review-efficiency.mjs');
+  const CONTAINER = '\n### 💡 Codex Review\n\nHere are some automated review '
+    + 'suggestions for this pull request.\n\n**Reviewed commit:** `abc1234`\n';
+  const badge = (n) => `![P${n} Badge](https://img.shields.io/badge/P${n}-x?style=flat)`;
+
+  const severity = findingHeadSeverity(
+    [{ user: { login: CODEX }, commit_id: 'h', body: badge(2) }],
+    [{ user: { login: CODEX }, commit_id: 'h', body: CONTAINER }],
+  );
+  assert.equal(severity.get('h'), 'minor', 'the wrapper must not taint its own head');
+
+  // A container that DOES carry a badge still counts — it is evidence either way.
+  assert.equal(
+    findingHeadSeverity([], [{ user: { login: CODEX }, commit_id: 'h', body: badge(1) }]).get('h'),
+    'critical',
+  );
+
+  // And an inline comment with no badge still taints: only the wrapper is exempt.
+  assert.equal(
+    findingHeadSeverity(
+      [{ user: { login: CODEX }, commit_id: 'h', body: badge(2) },
+        { user: { login: CODEX }, commit_id: 'h', body: 'no badge here' }],
+      [{ user: { login: CODEX }, commit_id: 'h', body: CONTAINER }],
+    ).get('h'),
+    'unknown',
+  );
+
+  // End to end: five P2 heads, each with its container, must NOT ask a human.
+  const client = fakeClient({ comments: heads(5, P2) });
+  client.reviews = async () => Array.from({ length: 5 }, (_, i) => ({
+    user: { login: CODEX }, commit_id: `head${i}`, body: CONTAINER,
+  }));
+  const result = await enforceReviewLifecycle(client, pr, 'h');
+  assert.equal(result.allowed, true, 'a P2-only unit converges without interrupting anyone');
+  assert.equal(client.calls.status.length, 0);
+});
+
+test('W28: the sticky WRITER pages the same way the reader does', async () => {
+  // Paginating the read and leaving the write on one page is worse than
+  // paginating neither: past a hundred comments the writer would not find the
+  // sticky it means to patch, POST a second one, and every lifecycle read —
+  // which does page — would keep returning the original. The floor and the
+  // deadline would be written to a comment nothing reads.
+  const { GitHubClient } = await import('./autonomous-review-gate.mjs');
+  const client = Object.create(GitHubClient.prototype);
+  client.repository = 'o/r';
+
+  const sticky = {
+    id: 4242,
+    user: { login: 'github-actions[bot]' },
+    body: '<!-- autonomous-review-state -->\nold\n<!-- autonomous-review-metrics: '
+      + '{"findingHeads":5,"declarationRequestedAt":"2026-08-01T00:00:00Z"} -->',
+  };
+  const writes = [];
+  client.request = async (path, options) => {
+    if (!options) {
+      // The sticky lives on page 2 — past the first hundred comments.
+      const page = Number(/[?&]page=(\d+)/u.exec(path)?.[1] ?? 1);
+      if (page === 1) return Array.from({ length: 100 }, (_, i) => ({ id: i, user: { login: 'someone' }, body: 'chat' }));
+      return [sticky];
+    }
+    writes.push({ path, method: options.method, body: options.body.body });
+    return {};
+  };
+
+  await client.updateStickyComment(1, 'a plain status body');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].method, 'PATCH', 'it must PATCH the existing sticky, not POST a second');
+  assert.match(writes[0].path, /issues\/comments\/4242/u, 'and patch the one it found');
+  assert.match(writes[0].body, /declarationRequestedAt/u, 'carrying the record forward');
 });
 
 test('W14: a failed sticky READ never rewrites the durable floor', async () => {

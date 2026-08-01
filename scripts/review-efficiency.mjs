@@ -169,11 +169,25 @@ export function findingHeadSeverity(comments, reviews = []) {
   // while carrying a finding of unknown severity, which is the opposite of the
   // rule. Any unreadable finding taints its whole head.
   const worst = new Map(); // head -> { lowest: number|null, unreadable: boolean }
-  const note = (head, body) => {
+  // `container` marks a record that WRAPS findings rather than being one. A
+  // Codex review is posted as a container — "here are some automated review
+  // suggestions" — with the findings themselves as inline review comments, so
+  // its body never carries a badge. Counting that as an unreadable finding
+  // tainted EVERY reviewed head as unknown, which would send a five-head unit
+  // carrying nothing but P2s to a human. That is the exact opposite of the
+  // owner's rule, and it defeated the critical-only path in the normal case, not
+  // an edge case. A container still contributes any badge it does carry; it just
+  // cannot make a head unreadable on its own.
+  //
+  // A head with no readable severity anywhere is absent from the map entirely,
+  // and callers treat an absent head as critical — so dropping the taint here
+  // narrows a false positive without opening a fail-open path.
+  const note = (head, body, { container = false } = {}) => {
     if (typeof head !== 'string' || head.length === 0) return;
     const found = [...String(body ?? '').matchAll(BADGE)]
       .map((match) => Number(match[1] ?? match[2]))
       .filter((n) => Number.isInteger(n));
+    if (found.length === 0 && container) return;
     const entry = worst.get(head) ?? { lowest: null, unreadable: false };
     if (found.length === 0) {
       entry.unreadable = true;
@@ -189,7 +203,7 @@ export function findingHeadSeverity(comments, reviews = []) {
   }
   for (const review of reviews ?? []) {
     if (review?.user?.login !== CODEX_LOGIN) continue;
-    note(review.commit_id, review.body);
+    note(review.commit_id, review.body, { container: true });
   }
 
   const severity = new Map();

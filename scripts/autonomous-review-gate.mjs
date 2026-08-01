@@ -4,6 +4,7 @@ import { loadStatusDocument } from './autonomous-status-state.mjs';
 import {
   METRICS_MARKER,
   assessRestructure,
+  expiredWindow,
   readMetrics,
   renderMetrics,
 } from './review-lifecycle.mjs';
@@ -366,7 +367,14 @@ export function isRetryableTerminalReviewFailure(status) {
   return description.includes('Codex review timed out')
     || description.includes('Codex evidence changed during final verification')
     || description === 'review: Required CI changed during current-head Codex review'
-    || description === 'review: bootstrap exact-head review requested';
+    || description === 'review: bootstrap exact-head review requested'
+    // A lifecycle declaration block is resumable because RESUMING IS NOT
+    // APPROVING. The dispatch only makes the gate run again on the same head;
+    // the gate then re-reads the record and re-decides, so a window that has not
+    // actually expired blocks a second time (`W24`). Without this the fallback
+    // sweep could see an expired window and have no way to act on it, which is
+    // the whole of finding F3.
+    || description.startsWith('review: lifecycle —');
 }
 
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {
@@ -523,6 +531,32 @@ export class GitHubClient {
       }
     }
     throw lastError;
+  }
+
+  // Open autonomous units only. The sweep runs on a timer over every open pull
+  // request, so it stays scoped to the branches this loop owns.
+  async openAutonomousPullRequests() {
+    const open = await this.paginated(
+      `/repos/${this.repository}/pulls?state=open`,
+    );
+    return open.filter((pr) => String(pr?.head?.ref ?? '').startsWith('claude/'));
+  }
+
+  async dispatchReviewRecovery({ pullRequestNumber, headSha, terminalStatusId, ref }) {
+    return this.request(
+      `/repos/${this.repository}/actions/workflows/auto-merge.yml/dispatches`,
+      {
+        method: 'POST',
+        body: {
+          ref,
+          inputs: {
+            pr_number: String(pullRequestNumber),
+            head_sha: String(headSha),
+            terminal_status_id: String(terminalStatusId),
+          },
+        },
+      },
+    );
   }
 
   async statuses(head) {
@@ -757,9 +791,13 @@ export class GitHubClient {
   }
 
   async updateStickyComment(number, body) {
-    const comments = await this.request(
-      `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
-    );
+    // The SAME paged read the finder uses. Paginating the read and leaving the
+    // write on one page is worse than paginating neither: past a hundred
+    // comments the writer would not find the sticky it is meant to patch, POST a
+    // second one, and then every lifecycle read — which does page — would keep
+    // returning the original. The floor and the reply deadline would be written
+    // to a comment nothing reads, and the window could be reset or replayed.
+    const comments = await this.issueComments(number);
     const existing = comments.find(
       (comment) =>
         comment.user?.login === 'github-actions[bot]' &&
@@ -1072,6 +1110,77 @@ export async function enforceReviewConvergence(
 //
 // The owner's shape: ask a human only when it is CRITICAL, and if nobody answers
 // inside the window, proceed and record that it proceeded unanswered.
+// The FALLBACK, and only the fallback.
+//
+// Every other transition in this loop is event-driven and reacts the moment it
+// happens; nothing here waits on a tick to do work an event already announced.
+// A declaration window is the one exception, because its expiry is defined by
+// the absence of activity — nobody pushes, nobody comments, nobody answers — so
+// there is no event to react to. This runs on a timer for that case alone.
+//
+// It is cheap and side-effect-free when idle: one list call plus one comment
+// read per open autonomous unit, and it writes NOTHING unless a window has
+// actually run out. Waking a unit means re-dispatching the normal gate on the
+// same head — this function never decides anything itself, so the exact-head
+// gate stays the only authority and still fails closed.
+export async function sweepExpiredWindows(client, {
+  nowIso = new Date().toISOString(),
+  ref = 'main',
+  log = console.log,
+} = {}) {
+  const open = await client.openAutonomousPullRequests();
+  const woken = [];
+  const skipped = [];
+
+  for (const pullRequest of open) {
+    let metrics = null;
+    try {
+      metrics = readMetrics(await client.stickyComment(pullRequest.number));
+    } catch (error) {
+      // A unit whose record cannot be read is REPORTED, never silently passed
+      // over: "the sweep found nothing" and "the sweep could not look" are
+      // different facts, and only one of them means all is well.
+      skipped.push({ number: pullRequest.number, reason: `sticky unreadable (${error.message})` });
+      continue;
+    }
+
+    const expired = expiredWindow(metrics, nowIso);
+    if (!expired) continue;
+
+    const statuses = await client.statuses(pullRequest.head.sha);
+    const terminal = statuses.find((status) => status.context === STATUS_CONTEXT);
+    if (!isRetryableTerminalReviewFailure(terminal)) {
+      // The window is spent but this head is not sitting on a lifecycle block —
+      // something else already moved it on. Nothing to wake.
+      skipped.push({ number: pullRequest.number, reason: 'no resumable lifecycle block' });
+      continue;
+    }
+
+    await client.dispatchReviewRecovery({
+      pullRequestNumber: pullRequest.number,
+      headSha: pullRequest.head.sha,
+      terminalStatusId: terminal.id,
+      ref,
+    });
+    woken.push({
+      number: pullRequest.number,
+      head: pullRequest.head.sha,
+      waitedMinutes: expired.elapsedMinutes,
+      windowMinutes: expired.minutes,
+    });
+    log(
+      `sweep: woke #${pullRequest.number} — the ${expired.minutes}-minute window `
+      + `closed ${expired.elapsedMinutes - expired.minutes} minutes ago`,
+    );
+  }
+
+  for (const entry of skipped) {
+    log(`sweep: skipped #${entry.number} — ${entry.reason}`);
+  }
+  if (!woken.length) log(`sweep: no expired declaration window across ${open.length} open units`);
+  return { woken, skipped, scanned: open.length };
+}
+
 export async function enforceReviewLifecycle(client, pullRequest, expectedHead) {
   const [comments, reviews] = await Promise.all([
     client.reviewComments(pullRequest.number),
@@ -1164,7 +1273,11 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
   await client.setStatus(
     expectedHead,
     'failure',
-    `lifecycle: ${result.reason}`.slice(0, 140),
+    // `review:` is the vocabulary `isTerminalReviewStatus` recognises. Written
+    // as a bare `lifecycle:` this status was not classified as terminal at all,
+    // so the state machine could neither see the block nor resume from it — the
+    // fallback sweep had nothing to act on even once a window had expired.
+    `review: lifecycle — ${result.reason}`.slice(0, 140),
     pullRequest.html_url,
   );
   await client.updateStickyComment(
@@ -1200,6 +1313,11 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
       // Stamped ONCE, when the request is first made, so the window measures the
       // human's reply and not the age of the newest head.
       declarationRequestedAt: recordedMetrics?.declarationRequestedAt ?? nowIso,
+      // Recorded WITH the stamp so the fallback sweep can tell when this window
+      // runs out from the sticky comment alone — no review re-read, no severity
+      // recomputation, on every open pull request every fifteen minutes.
+      declarationWindowMinutes:
+        recordedMetrics?.declarationWindowMinutes ?? result.windowMinutes,
     })}`}`,
   );
   return result;
@@ -1470,6 +1588,21 @@ async function eventContext() {
 }
 
 export async function run() {
+  // The scheduled fallback runs BEFORE any pull-request context is resolved,
+  // because it has no single pull request: it sweeps every open autonomous unit
+  // looking for the one state no event can announce. It decides nothing itself
+  // and re-dispatches the ordinary gate for anything it finds.
+  if (process.env.AUTONOMOUS_REVIEW_MODE === 'window-sweep') {
+    const client = new GitHubClient({
+      repository: requiredEnvironment('GITHUB_REPOSITORY'),
+      token: requiredEnvironment('GITHUB_TOKEN'),
+    });
+    await sweepExpiredWindows(client, {
+      ref: process.env.GITHUB_REF_NAME || 'main',
+    });
+    return;
+  }
+
   const context = await eventContext();
   if (!context?.number) {
     console.log('No pull request is associated with this workflow event.');

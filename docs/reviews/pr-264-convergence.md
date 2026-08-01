@@ -1,7 +1,7 @@
 # Convergence audit — PR #264 (wiring the five-head restructure rule)
 
 Required by `CLAUDE.md` after two distinct finding-bearing heads. This is an
-architectural audit of all eleven findings together, not a series of isolated
+architectural audit of all fifteen findings together, not a series of isolated
 patches. Round 3 matters most: it is the audit's own root cause, reproduced by
 the fix written for it.
 
@@ -10,6 +10,7 @@ the fix written for it.
 | `ccbdee3` | 6 — F1 (P1), F2 (P1), F3 (P1), F4 (P1), F5 (P2), F6 (P1) |
 | `77117e4` | 1 — F7 (P1) |
 | `e2941ab` | 4 — R1 (P1), R2 (P1), R3 (P1), R4 (P2) |
+| `0a7589a` | 4 — two already in progress (F3, the unclassifiable status), two new (P2, P2) |
 
 ## The finding that is not like the others
 
@@ -57,7 +58,7 @@ being lost, mis-parsed, or overwritten — none of them are about the policy.
 | F4 | P1 | a legacy record carries a count but no identities, and severity is keyed by identity | an already-crossed unit reads as minor and is forgiven |
 | F2 | P1 | `ANY_BADGE` matched a P0 but `P1_BADGE` did not | the **most severe** findings classified as minor — fail-open at the worst moment |
 | F5 | P2 | severity tracked "was a badge seen on this head", not "was every finding readable" | one badged comment vouched for an unbadged sibling |
-| F3 | P1 | the record can be written but nothing re-reads it at the deadline | see below — **not fixed** |
+| F3 | P1 | the record can be written but nothing re-reads it at the deadline | **fixed in round 4** — the `*/15` fallback sweep |
 
 F2 and F5 look like parsing bugs and are really the same thing: severity is read
 from durable evidence spread across many comments, and both defects come from
@@ -219,7 +220,70 @@ follow-ups inside a converged unit are not free, so they are worth batching. The
 alternative (judging the packet on the cumulative diff) would let the audit go
 stale while the head moves, which is the failure this protocol exists to prevent.
 
-## Not fixed, and it needs an owner decision — F3
+## Round 4 — F3 is now FIXED, on the owner's design
+
+The owner rejected my recommendation, and was right to. I had proposed an hourly
+cron and framed the choice as "how often should the merge component wake". That
+framing was wrong: **this loop is event-driven, and a timer must never be the
+driver.** Waiting for a tick to do work an event already announced is pure idle
+time — something finishes, and the loop sits until the next tick.
+
+The correct shape, which is what ships:
+
+> Events drive everything and react immediately. The timer is a **fallback for
+> the silent case only** — and expiry is exactly that case, because a deadline
+> passing is *defined* by nobody doing anything, so there is no event to fire.
+> Fifteen minutes, because noticing a 3-hour deadline an hour late wastes most
+> of a fourth hour.
+
+`schedule: */15` on `auto-merge.yml` runs `window-sweep`, which:
+
+- reads one pull-request list plus one sticky comment per open `claude/**` unit,
+  and **writes nothing** unless a window has actually run out (`W22`);
+- **decides nothing itself** — it re-dispatches the ordinary gate on the same
+  head, so the exact-head gate remains the only authority and still fails closed
+  (`W23`, `W26`);
+- **terminates**, because R4's `autonomousAt` record marks the window spent, so a
+  woken unit is never re-woken (`W23`);
+- **reports** a unit whose record it could not read, rather than passing over it
+  silently — "found nothing" and "could not look" are different facts (`W25`).
+
+`declarationWindowMinutes` is now recorded beside the request stamp, so the sweep
+answers "has this run out?" from the sticky comment alone — no review re-read, no
+severity recomputation, on every open unit every fifteen minutes.
+
+**One thing this exposed that the owner's design surfaced and mine would not
+have:** the lifecycle block wrote its status as `lifecycle: …`, outside the
+`review:` vocabulary that `isTerminalReviewStatus` recognises. So the block was
+never classified as terminal at all — the state machine could neither see it nor
+resume from it, and the sweep would have had nothing to act on even with a
+perfect timer. It is now `review: lifecycle — …` and resumable, because
+**resuming is not approving**: a dispatch only makes the gate run again, and the
+gate re-decides from the record, so an unexpired window blocks a second time
+(`W24`). Codex independently reported this same defect on `0a7589a`.
+
+## Round 4 findings — two already fixed, two new
+
+Codex reviewed `0a7589a` (the head before the sweep) and returned four. Two were
+the work already in progress: the missing wake-up (F3 itself) and the
+unclassifiable lifecycle status above. Two were new and real:
+
+- **Sticky writer pagination (P2).** I paginated `stickyComment` and
+  `issueComments` and left `updateStickyComment` reading one page. That is worse
+  than paginating neither: past a hundred comments the writer would not find the
+  sticky it means to patch, POST a second one, and every lifecycle read — which
+  *does* page — would keep returning the original. The floor and the deadline
+  would be written to a comment nothing reads. `W28`.
+- **Review containers counted as unreadable findings (P2 as rated — worse in
+  practice).** Every Codex review is posted as a wrapper whose body carries no
+  badge, with the findings as inline comments. Counting the wrapper as an
+  unreadable finding tainted **every reviewed head** as unknown, so a unit
+  carrying nothing but P2s would still stop and ask a human. That is the owner's
+  critical-only rule defeated in the **normal** case, not an edge case. My
+  probes missed it because every one of them passed `reviews: []`; `W27` uses the
+  real container shape, including the end-to-end five-P2-heads case.
+
+## The original F3 record — superseded, kept for the reasoning
 
 > `auto-merge.yml` triggers on `workflow_run` and `workflow_dispatch` only. There
 > is **no schedule**, so nothing re-runs at the deadline and an unanswered unit
@@ -272,9 +336,9 @@ because it does not.
 
 | Gate | Result |
 | --- | --- |
-| `scripts/review-lifecycle-enforcement.test.mjs` | **21/21** |
+| `scripts/review-lifecycle-enforcement.test.mjs` | **28/28** |
 | `scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | **202/202** |
+| `pnpm test:automation` | **209/209** |
 | `pnpm check` | **EXIT 0** |
 
 ### Discrimination — each mechanism reverted in turn

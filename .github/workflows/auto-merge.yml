@@ -4,6 +4,22 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
+  # The FALLBACK, not the driver.
+  #
+  # Every transition in this loop is event-driven and reacts the moment it
+  # happens — the `workflow_run` trigger above is what actually moves units
+  # along, and nothing waits on a tick to do work an event already announced.
+  #
+  # A declaration window is the single exception: its expiry is defined by the
+  # ABSENCE of activity, so there is no event to react to. Nobody pushes, nobody
+  # comments, nobody answers — and the deadline passes in silence. This sweep
+  # exists for that case alone.
+  #
+  # Fifteen minutes because the shortest window is three hours, and noticing a
+  # deadline an hour late wastes most of a fourth hour. The sweep does nothing
+  # and writes nothing when no window has run out.
+  schedule:
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -27,6 +43,34 @@ permissions:
   statuses: write
 
 jobs:
+  # Cheap by construction: one pull-request list plus one comment read per open
+  # autonomous unit. It never decides anything — it re-dispatches the ordinary
+  # gate for a unit whose window has run out, so the exact-head gate stays the
+  # only authority and still fails closed.
+  window-sweep:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+      statuses: read
+    steps:
+      - name: Check out trusted default-branch automation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Wake any unit whose declaration window has expired
+        env:
+          AUTONOMOUS_REVIEW_MODE: window-sweep
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/autonomous-review-gate.mjs
+
   request-recovery:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

@@ -176,6 +176,38 @@ export function renderMetrics(metrics) {
   return `${METRICS_MARKER} ${JSON.stringify(metrics)} -->`;
 }
 
+// Is this unit sitting on a declaration window that has already run out?
+//
+// This is the ONE question in the loop that no event can answer. Every other
+// transition has something that fires — a push, a CI run, a review, a comment —
+// and the gate reacts to it immediately. A deadline passing fires nothing,
+// because the thing that defines it is that NOBODY DID ANYTHING. So a timer is
+// not the driver here; it is the fallback for the silent case, and this
+// predicate is what makes that fallback cheap: a sweep can answer it from the
+// sticky comment alone, without re-reading a single review.
+//
+// `autonomousAt` is what stops the sweep firing forever: once the override is
+// recorded, the window is spent and this returns false.
+export function expiredWindow(metrics, nowIso) {
+  const requested = Date.parse(metrics?.declarationRequestedAt ?? '');
+  const now = Date.parse(nowIso ?? '');
+  if (!Number.isFinite(requested) || !Number.isFinite(now)) return null;
+  if (metrics?.autonomousAt) return null;
+
+  // A window recorded without its length is not assumed to be the short one:
+  // the wait is what protects a human's chance to answer, so an unreadable
+  // length waits the LONGEST, the same instinct as unknown severity.
+  const minutes = Number.isFinite(Number(metrics?.declarationWindowMinutes))
+    && Number(metrics.declarationWindowMinutes) > 0
+    ? Number(metrics.declarationWindowMinutes)
+    : VERY_CRITICAL_WINDOW_MINUTES;
+
+  const elapsed = now - requested;
+  return elapsed >= minutes * 60_000
+    ? { requestedAt: metrics.declarationRequestedAt, minutes, elapsedMinutes: Math.floor(elapsed / 60_000) }
+    : null;
+}
+
 // The count only ever RISES for a given review unit.
 //
 // Findings live on the pull request, so rewriting the branch does not erase them —
