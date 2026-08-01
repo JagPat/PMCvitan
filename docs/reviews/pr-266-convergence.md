@@ -7,10 +7,12 @@ Required by `CLAUDE.md` after two finding-bearing heads.
 | `1bd04ca` | 4 | 2×P1 — probe list outside the tree; STATUS strands the runner |
 | `55d65e0` | 6 | 4×P1 — §J dangling; `resolved` counted live; bill unlocked at certification; measurement/close-short race |
 | `6afb58e` | 3 | 2×P1 — §I still absent while claimed kept; payment WRITES outside the bill lock |
+| `b19754a` | 1 | 1×P1 — the deferral named its task but recorded no question→probe ledger |
 
-The count rose 4 → 6, then FELL to 3 — the first decline this unit has seen, and the
-first in either of the two units this PR exists to avoid repeating (#252 ran twenty
-rounds without one; #264 ran twelve).
+The count rose 4 → 6, then fell 3 → 1. **4 → 6 → 3 → 1** is the first sustained
+decline in this workstream: #252 ran twenty rounds without one and #264 ran twelve.
+Two of the four rounds' findings were mine and all of mine are the same mistake,
+which is why the remedy each time was a mechanical check rather than a promise.
 
 ## The findings that are mine, and the one rule that closes them
 
@@ -134,10 +136,45 @@ records `open_pr: 265` and the hourly drift shepherd will keep flagging it. That
 is noise on a merged PR, not a stranded runner — `assessRunnerState` still returns
 `pr:265`, and the Task-1 head corrects it.
 
+## The deferral ledger — question → probe → task
+
+Naming the task where deferred questions settle is not the same as showing WHICH
+probe settles WHICH question, and only the second is auditable. Without this
+table a later task could omit or silently change a probe and no reviewer could
+tell whether the question had been scheduled or dropped — which is the exact
+failure this PR has spent four rounds arguing against, so declaring a deferral
+without it was inconsistent with my own stated principle.
+
+Every row is extracted from the probe list in this PR's own tree, not asserted:
+
+| Deferred section | The question it settles | Adjudicating probes (in this plan) | Settled at task |
+| --- | --- | --- | --- |
+| **§B** | Budget — versioned immutable lines; the `COMMITTED` fold | `5af`, `5am`, `5aq`, `5bm`, `5bq` (5) | 2 |
+| **§C** | Commitment — attribution lifecycle; never an unattributed live line | `5u`, `5x`, `5y`, `5ai`, `5ar`, `5bu`, `5bw`, `5bi` (8) | 1 |
+| **§D** | Measurement — immutability, signed-delta corrections, sign-off gate | `1`, `5c`, `5k`, `5x`, `5as`, `5bd`, `5bo`, `5bl` (8) | 3 |
+| **§E** | Three-way verification; certification; dispute/resolution | `4`, `5b`, `5j`, `5l`, `5q`, `5x`, `5an`, `5at`, `5au`, `5bb`, `5bh`, `5d`, `5e`, `6` (14) | 5 |
+| **§F** | Bill lifecycle — immutable versions, CAS transitions, duplicate claims | `5z`, `5ab`, `5ad`, `5ah`, `5ak`, `5ao`, `5av`, `5aw`, `5ax`, `5ba`, `5bf`, `5bg`, `5bn`, `5bv`, `5bs`, `5bt`, `5bj`, `5bk`, `5f`, `7` (20) | 4 → 5 |
+| **§G** | Conservation bounds 1–5 | `4`, `5`, `5r`, `5ak`, `5bl` (5) | 2, 4, 5, 6 |
+| **§H** | Deductions — retention, advance recovery, variations, tax | `5v`, `5az`, `5bx`, `5br`, `5bp`, `8` (6) | 5 → 6 |
+
+**The mechanical check this table exists to enable:** every deferred section has
+at least one adjudicating probe present in the reviewed plan. That is greppable —
+the same shape as the rule adopted two rounds ago (*a section stays in the plan if
+any retained probe cites it*), applied in the opposite direction. A deferred
+section with zero probes would be a dropped question, and this table would show it
+as an empty cell rather than hide it in prose.
+
+`§F` and `§H` span two tasks because their mechanism does: a bill's lifecycle up
+to `under-verification` lands in Task 4 and `verified` onward in Task 5 (the task
+table explains why `verified` cannot precede §E), and deductions split at
+advance-recovery, which needs the payment half. `§G`'s five bounds land with the
+hand-off each one guards. Those are not vague ranges — each probe names its own
+scenario, and the task table names each task's scope.
+
 ## Where this leaves the review
 
-This is head 6 of a docs-only plan, past `PLAN_REVIEW_ROUND_CAP = 3`, with the
-deferral declared and verifiable.
+This is head 7 of a docs-only plan, past `PLAN_REVIEW_ROUND_CAP = 3`, with the
+deferral declared, phase-verifiable, and now itemised down to the probe.
 
 **The commitment stands unchanged for every further round:** findings that are
 *"the plan should also specify X"* are converted into NAMED PROBES rather than
