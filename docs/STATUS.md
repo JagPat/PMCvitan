@@ -16,10 +16,10 @@ task: 6
 task_state: in_review
 work_item: none
 reviewed_merge: 67e7a00
-open_pr: 263
+open_pr: 265
 next_task: phase-5-planning
 blocking_directive: none
-updated: 2026-07-29
+updated: 2026-08-01
 ```
 
 **PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
@@ -71,11 +71,21 @@ item. Queue items are already-authorized upkeep of delivered scope (never
 new product scope), and each rides the same draft → CI → exact-head Codex
 gate as feature work. Work them top-down, one focused PR per item:
 
-1. `dependabot-security-updates` — GitHub reports open vulnerability alerts
+1. `lifecycle-rule-unit-2` — the five-head restructure rule currently
+   REPORTS a crossing (PR #265) but does not act on one. Unit 2 adds the
+   apparatus that must exist before it may block without stalling the loop:
+   an attributable declaration channel, a reply window, a durable request
+   record, an expiry sweep, and a recovery path. PR #264 attempted this
+   together with the wiring and took twelve review rounds without
+   converging; its 34 findings are preserved as prior art in
+   `docs/reviews/lifecycle-rule-split.md`, including the two unresolved P1s
+   that must be designed in from the start. **Not scheduled ahead of Phase 5
+   — the owner decides the order.**
+2. `dependabot-security-updates` — GitHub reports open vulnerability alerts
    on the default branch (5 as of 2026-07-29: 3 high, 1 moderate, 1 low).
    Raise the affected dependencies with the full gate battery; one PR per
    coherent dependency group.
-2. `e2e-flake-burndown` — the documented flake families the review packets
+3. `e2e-flake-burndown` — the documented flake families the review packets
    record honestly (`daily-log-lost-response` visibility, the
    timing-sensitive `pillar-chain` inspection steps,
    `inspections-module-query`, `project-scope` browser history). Convert

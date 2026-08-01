@@ -7,8 +7,10 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
+import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
 import {
   assessConvergence,
+  findingHeadSeverity,
   assessReviewScope,
   deferralPhases,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
@@ -744,7 +746,50 @@ function eligibleShape(pullRequest) {
   };
 }
 
-function statusBody({ state, head, detail, attempt, next }) {
+// The advisory as of RIGHT NOW, for a sticky written after findings landed.
+//
+// The crossing that matters most is the one caused by the review that just
+// finished: four prior finding heads, and the fifth arrives in the poll. An
+// advisory snapshotted before that review is null exactly then, so the
+// `changes_required` sticky would tell auto-fix to push another head at the one
+// moment the split advice is due. Nobody is standing by to notice the omission,
+// so it is recomputed rather than carried.
+async function freshAdvisory(client, pullRequest) {
+  const observed = await reportReviewLifecycle(client, pullRequest, () => {});
+  return observed?.advisory ?? null;
+}
+
+// Report the lifecycle observation. NEVER blocks, NEVER throws.
+//
+// Called on BOTH paths that reach a review. The first attempt at this change
+// wired only the final-admission path, so a unit already at five critical heads
+// was promoted for yet another Codex review and the finding path drafted the
+// head without the rule ever running — the exact sixth finding-bearing head the
+// rule exists to notice. `L2` slices the source between the promotion-path
+// convergence call and `reviewNotBefore` and requires this call inside that
+// region, so a future path that promotes without it fails CI.
+export async function reportReviewLifecycle(client, pullRequest, log = console.log) {
+  let observation = null;
+  try {
+    const [comments, reviews] = await Promise.all([
+      client.reviewComments(pullRequest.number),
+      client.reviews(pullRequest.number),
+    ]);
+    observation = observeReviewLifecycle({ comments, reviews });
+  } catch {
+    // Evidence unreadable. This path reports; it does not decide, so there is
+    // nothing to fail closed ON — it says nothing rather than something wrong.
+    return null;
+  }
+  const advisory = lifecycleAdvisory(observation);
+  if (advisory) log(`lifecycle: ${advisory}`);
+  // The caller threads this into the sticky comment. Returned rather than
+  // written here so this helper keeps its one job and cannot race the
+  // status writes it would otherwise be interleaved with.
+  return { ...observation, advisory };
+}
+
+function statusBody({ state, head, detail, attempt, next, advisory = null }) {
   return [
     '## Autonomous review state',
     '',
@@ -753,6 +798,13 @@ function statusBody({ state, head, detail, attempt, next }) {
     `- **Codex attempt:** ${attempt}/${MAX_REVIEW_ATTEMPTS}`,
     `- **Detail:** ${detail}`,
     `- **Next:** ${next}`,
+    // The lifecycle advisory rides the sticky comment, not just the Actions log.
+    // The loop's actors — and humans — read PR comments and statuses; a workflow
+    // log is neither, so an advisory written only there is a signal nobody
+    // receives. It appears beside `Next:` precisely because `Next:` is what it
+    // qualifies: "keep correcting" reads differently when this unit has already
+    // spent its head budget.
+    ...(advisory ? ['', `- **Review lifecycle:** ${advisory}`] : []),
     '',
     'This comment is maintained by GitHub. The required '
       + `\`${STATUS_CONTEXT}\` status on this exact SHA is authoritative.`,
@@ -1047,6 +1099,10 @@ export async function revalidateFinalReviewPolicy(
     return { state: 'superseded', allowed: false, superseded: true };
   }
 
+  // And at final admission, so a clean head is also measured — after the head is
+  // confirmed current, so a superseded one is never reported on.
+  const { advisory = null } = await reportReviewLifecycle(client, pullRequest) ?? {};
+
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return { ...scope, state: 'superseded' };
   if (!scope.allowed) return { ...scope, state: 'scope_required' };
@@ -1079,6 +1135,7 @@ async function reviewAttempt(
   expectedHead,
   attempt,
   reviewNotBefore,
+  advisory = null,
 ) {
   let live = await refreshCurrentHead(
     client,
@@ -1107,6 +1164,7 @@ async function reviewAttempt(
     pullRequest.number,
     statusBody({
       state: 'review_pending',
+      advisory,
       head: expectedHead,
       detail: 'CI is green; waiting for Codex on the promoted head',
       attempt,
@@ -1210,6 +1268,9 @@ export async function guardAgainstCurrentHeadFinding(
     pullRequest.number,
     statusBody({
       state: 'changes_required',
+      // Recomputed here, not carried in: the finding that just landed may BE
+      // the crossing.
+      advisory: await freshAdvisory(client, pullRequest),
       head: expectedHead,
       detail: result.detail,
       attempt: 0,
@@ -1480,6 +1541,10 @@ export async function run() {
     );
   }
 
+  // Observe the lifecycle BEFORE promoting for another review — this is the
+  // path the first attempt missed.
+  const { advisory = null } = await reportReviewLifecycle(client, pullRequest) ?? {};
+
   const reviewNotBefore = new Date(Date.now() - 1_000).toISOString();
   for (let attempt = 1; attempt <= MAX_REVIEW_ATTEMPTS; attempt += 1) {
     const result = await reviewAttempt(
@@ -1488,6 +1553,7 @@ export async function run() {
       expectedHead,
       attempt,
       reviewNotBefore,
+      advisory,
     );
     if (result.state === 'superseded') return;
 
@@ -1516,6 +1582,7 @@ export async function run() {
         pullRequest.number,
         statusBody({
           state: 'changes_required',
+          advisory: await freshAdvisory(client, pullRequest),
           head: expectedHead,
           detail: result.detail,
           attempt,
@@ -1570,6 +1637,7 @@ export async function run() {
           pullRequest.number,
           statusBody({
             state: 'changes_required',
+            advisory: await freshAdvisory(client, pullRequest),
             head: expectedHead,
             detail,
             attempt,
