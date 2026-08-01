@@ -1285,6 +1285,86 @@ assert_rejects "labour T5 round-2: a shortfall NAMING a worker (kind<->worker CH
 assert_rejects "labour T5 round-2: a wrong_trade naming NO worker (kind<->worker CHECK)" \
   "INSERT INTO \"LabourMismatch\"(\"id\",\"projectId\",\"activityId\",\"civilDate\",\"shift\",\"kind\",\"note\",\"recordedById\",\"sourceCommandId\") VALUES('UPL-T5MWT','p1','ACT-1','2026-08-13','day','wrong_trade','n','USER-1','UPL-CMD1')"
 
+# ── Phase 5 Task 1 — the COMMERCIAL cost-head catalog + the §C commitment attribution. Both
+#    tables upgrade ROW-FREE over the legacy DB (the pilot has no rows and the migration never
+#    writes data — its closing block ABORTS if it finds any), and the §C seals reject forgeries on
+#    the MIGRATED database. Anchored on the coherent PO lines above: UP45-POL (material) and
+#    UPL-T2POL (labour).
+assert "the 2 Phase-5 Task-1 commercial tables exist and are ROW-FREE over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('CostHead','CommitmentAttribution'))::text || '|' || (SELECT COUNT(*) FROM \"CostHead\")::text || '|' || (SELECT COUNT(*) FROM \"CommitmentAttribution\")::text;" \
+  "2|0|0"
+assert "the Task-1 XOR/supersede CHECKs, per-target partial uniques and immutability triggers are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('CommitmentAttribution_target_xor','CommitmentAttribution_supersede_complete','CommitmentAttribution_text_nonblank','CostHead_text_nonblank'))::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname IN ('CommitmentAttribution_active_poLine_key','CommitmentAttribution_active_labourPoLine_key'))::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('CommitmentAttribution_append_only','CostHead_key_frozen') AND NOT tgisinternal)::text;" \
+  "4|2|2"
+# §C — the attribution carries NO amount column. The absence is load-bearing: a column to copy the
+# frozen committed amount into is exactly how "the amount is not copied" gets broken.
+assert "the §C attribution has NO amount column (a second committed-amount ledger is unrepresentable)" \
+  "SELECT COUNT(*)::text FROM information_schema.columns WHERE table_name='CommitmentAttribution' AND column_name IN ('amount','committedAmountBase','committedAmount');" \
+  "0"
+
+# a coherent §C chain: two cost heads, one material attribution and one labour attribution. Proves
+# the seals are PRECISE (they accept legitimate attribution truth), not merely strict.
+$PSQL >/dev/null <<SQL && printf 'ok      %s\n' "commercial T1: a coherent cost-head + material/labour attribution chain is accepted (seals are precise)" || { printf 'FAILED  %s\n' "commercial T1 coherent chain rejected"; FAIL=1; }
+BEGIN;
+INSERT INTO "CostHead"("projectId","code","name","definedById") VALUES('p1','CIVIL','Civil works','USER-1');
+INSERT INTO "CostHead"("projectId","code","name","definedById") VALUES('p1','MEP','MEP','USER-1');
+INSERT INTO "CommitmentAttribution"("id","projectId","poLineId","costHeadCode","reason","createdById")
+  VALUES('UPL-P5A','p1','UP45-POL','CIVIL','purchase order issued','USER-1');
+INSERT INTO "CommitmentAttribution"("id","projectId","labourPoLineId","costHeadCode","reason","createdById")
+  VALUES('UPL-P5AL','p1','UPL-T2POL','CIVIL','labour purchase order issued','USER-1');
+COMMIT;
+SQL
+
+# §C — EXACTLY ONE target. Both degenerate shapes are unrepresentable.
+assert_rejects "commercial T1 §C: an attribution with NEITHER target (XOR CHECK)" \
+  "INSERT INTO \"CommitmentAttribution\"(\"id\",\"projectId\",\"costHeadCode\",\"reason\",\"createdById\") VALUES('UPL-P5X0','p1','CIVIL','attributes nothing','USER-1')"
+assert_rejects "commercial T1 §C: an attribution with BOTH targets (XOR CHECK)" \
+  "INSERT INTO \"CommitmentAttribution\"(\"id\",\"projectId\",\"poLineId\",\"labourPoLineId\",\"costHeadCode\",\"reason\",\"createdById\") VALUES('UPL-P5X2','p1','UP45-POL','UPL-T2POL','CIVIL','two obligations, one row','USER-1')"
+# §C — exactly ONE active attribution per target
+assert_rejects "commercial T1 §C: a SECOND active attribution for one material line (partial unique)" \
+  "INSERT INTO \"CommitmentAttribution\"(\"id\",\"projectId\",\"poLineId\",\"costHeadCode\",\"reason\",\"createdById\") VALUES('UPL-P5D','p1','UP45-POL','MEP','double-counted','USER-1')"
+assert_rejects "commercial T1 §C: a SECOND active attribution for one labour line (partial unique)" \
+  "INSERT INTO \"CommitmentAttribution\"(\"id\",\"projectId\",\"labourPoLineId\",\"costHeadCode\",\"reason\",\"createdById\") VALUES('UPL-P5DL','p1','UPL-T2POL','MEP','double-counted','USER-1')"
+# §C — the seal is on EVERY row from insertion: the hostile in-place reclassification of the LIVE
+# row is refused, and so is smuggling one inside an otherwise-legitimate supersession stamp
+assert_rejects "commercial T1 §C: the in-place CIVIL->MEP edit of the LIVE attribution" \
+  "UPDATE \"CommitmentAttribution\" SET \"costHeadCode\"='MEP' WHERE \"id\"='UPL-P5A'"
+assert_rejects "commercial T1 §C: rewriting a live attribution's reason" \
+  "UPDATE \"CommitmentAttribution\" SET \"reason\"='rewritten' WHERE \"id\"='UPL-P5A'"
+assert_rejects "commercial T1 §C: DELETING an attribution (append-only)" \
+  "DELETE FROM \"CommitmentAttribution\" WHERE \"id\"='UPL-P5A'"
+assert_rejects "commercial T1 §C: piggybacking a cost-head change onto a supersession stamp" \
+  "UPDATE \"CommitmentAttribution\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='stamp', \"costHeadCode\"='MEP' WHERE \"id\"='UPL-P5A'"
+# §C — a half-stamped supersession would leave the line unattributed with nobody accountable
+assert_rejects "commercial T1 §C: an unattributable half-stamped supersession (supersede-complete CHECK)" \
+  "UPDATE \"CommitmentAttribution\" SET \"supersededAt\"=now() WHERE \"id\"='UPL-P5A'"
+# §C — the ONE permitted transition succeeds, and cannot be repeated
+$PSQL >/dev/null -c "UPDATE \"CommitmentAttribution\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='reclassified' WHERE \"id\"='UPL-P5A'" \
+  && printf 'ok      %s\n' "commercial T1 §C: the ONE permitted transition (stamping an ACTIVE row superseded) is accepted" \
+  || { printf 'FAILED  %s\n' "commercial T1 §C: the permitted supersession was rejected"; FAIL=1; }
+assert_rejects "commercial T1 §C: stamping an ALREADY-superseded row a second time" \
+  "UPDATE \"CommitmentAttribution\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='again' WHERE \"id\"='UPL-P5A'"
+assert_rejects "commercial T1 §C: DELETING a superseded attribution (history is not erasable)" \
+  "DELETE FROM \"CommitmentAttribution\" WHERE \"id\"='UPL-P5A'"
+# …and the freed material line can be re-attributed, so supersession really releases the unique
+$PSQL >/dev/null -c "INSERT INTO \"CommitmentAttribution\"(\"id\",\"projectId\",\"poLineId\",\"costHeadCode\",\"reason\",\"createdById\") VALUES('UPL-P5A2','p1','UP45-POL','MEP','reclassified','USER-1')" \
+  && printf 'ok      %s\n' "commercial T1 §C: the replacement attribution is accepted once the prior is superseded" \
+  || { printf 'FAILED  %s\n' "commercial T1 §C: the replacement attribution was rejected"; FAIL=1; }
+# §0b — a key that groups money is FROZEN after write (the unreferenced rename the FK cannot reach)
+assert_rejects "commercial T1 §0b: re-keying a cost head in place (key-freeze trigger)" \
+  "UPDATE \"CostHead\" SET \"code\"='RENAMED' WHERE \"projectId\"='p1' AND \"code\"='MEP'"
+assert_rejects "commercial T1 §0b: rewriting a cost head's definition provenance" \
+  "UPDATE \"CostHead\" SET \"definedById\"='USER-2' WHERE \"projectId\"='p1' AND \"code\"='MEP'"
+# tenancy + referential truth — a cross-project or invented reference is unrepresentable
+assert_rejects "commercial T1: an attribution naming ANOTHER project's PO line (same-project composite FK)" \
+  "INSERT INTO \"CommitmentAttribution\"(\"id\",\"projectId\",\"poLineId\",\"costHeadCode\",\"reason\",\"createdById\") VALUES('UPL-P5T','p2','UP45-POL','CIVIL','cross-tenant','USER-1')"
+assert_rejects "commercial T1: an attribution citing a cost head that does not exist (composite FK)" \
+  "INSERT INTO \"CommitmentAttribution\"(\"id\",\"projectId\",\"labourPoLineId\",\"costHeadCode\",\"reason\",\"createdById\") VALUES('UPL-P5H','p1','UPL-T2POL2','NOPE','invented head','USER-1')"
+assert_rejects "commercial T1 §0b: a whitespace-only attribution reason (non-blank CHECK)" \
+  "INSERT INTO \"CommitmentAttribution\"(\"id\",\"projectId\",\"poLineId\",\"costHeadCode\",\"reason\",\"createdById\") VALUES('UPL-P5B','p1','UPL-T2POL2','CIVIL',E' \t\n','USER-1')"
+assert_rejects "commercial T1 §0b: a whitespace-only cost-head code (non-blank CHECK)" \
+  "INSERT INTO \"CostHead\"(\"projectId\",\"code\",\"name\",\"definedById\") VALUES('p1',E' \t\n','Blank','USER-1')"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

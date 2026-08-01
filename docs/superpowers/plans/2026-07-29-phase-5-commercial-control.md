@@ -198,6 +198,100 @@ licence to write a local filter.
 - Rounding is stated once: half-up at 2 decimals, applied only where a value is persisted,
   never mid-computation.
 
+### §C. Commitment — consumed, never rebuilt
+
+**Carried forward VERBATIM from `claude/phase5-planning` @ `a4d469b` by the Task-1 PR, per this
+plan's own rule: "a task PR that reaches its section MUST carry that text forward rather than
+re-derive it". Not one word is changed — re-deriving is precisely what produced twenty rounds of
+findings, and §N records why.**
+
+The committed amount for a PO line already exists, frozen, with provenance. Phase 5 reads
+it through `ProcurementQuery` and attributes it to a cost head through a commercial-owned
+`CommitmentAttribution` row: `(poLineId | labourPoLineId) → costHead`, re-attributable with
+an attributable reason — but **never revocable to nothing**. A bare revocation would drop a
+live vendor obligation out of every budget and forecast: revoke Head A as miscoded, and
+`COMMITTED(A)` falls to zero while no other head picks the payable up. Re-attribution is
+therefore an ATOMIC REPLACEMENT in one transaction, and a partial unique enforces exactly
+one active attribution per live PO line version, so a live line can never be unattributed. The attribution is the ONLY new fact; the amount is not copied.
+
+**The row carries NO amount column at all.** "The amount is not copied" is the rule; a column to
+copy it into is how the rule gets broken, and an earlier revision of the freeze list below named
+`amount` among the attribution's frozen columns — which would have created exactly the second
+committed-amount ledger this section forbids, with the freeze trigger then preserving whatever a
+bad issuance wrote. `COMMITTED` reads the frozen amount from the PO-line snapshot **through the OWNING module's query**:
+`ProcurementQuery` for a `PurchaseOrderLine`, `LabourQuery` for a `LabourPurchaseOrderLine`. An
+earlier revision said "through `ProcurementQuery`, always", which contradicts §0 and §K — the labour
+line is labour-owned, and §K already locks it through the labour participant for exactly that reason.
+Following the old sentence leaves Task 2 with two bad options: omit live labour POs from `COMMITTED`
+altogether, or have procurement synchronously read labour-owned rows, which is the cross-module
+synchronous read this repository forbids. One fold, two owners, each read through its own contract. The attribution's columns are the identity ones only:
+the target PO-line reference, `costHead`, `reason`, and the supersession stamp.
+
+**And PostgreSQL enforces EXACTLY ONE attribution target.** `(poLineId | labourPoLineId)` is two
+nullable alternatives, so it needs the same XOR CHECK §F states for a bill line — the identical
+rule at a second site, and stating it there and not here is the propagation failure this review
+keeps finding. Both degenerate shapes are real: a row with BOTH targets is ONE row standing for
+two obligations, so cancelling or re-attributing the material side stamps it superseded and the
+labour line silently loses its live attribution while its obligation stands — `COMMITTED` drops
+for work still owed; a row with NEITHER is an attribution-shaped fact that attributes nothing,
+letting issuance satisfy the "never unattributed" partial unique while the live PO line is in
+fact unattributed. So: `CHECK ((poLineId IS NULL) <> (labourPoLineId IS NULL))`, and the partial
+unique is per target, not per row.
+
+One active attribution per LINE is not sufficient, because a PO amendment retains v1's line
+and issues v2's: both attributions stay active and the committed total reads ₹200 for a
+₹100 order. The fold is `COMMITTED(costHead)` (§0) — restricted to attributions whose PO
+version is live — and an amendment supersedes the prior attribution in the SAME transaction
+that issues the new version, so the two can never both be live.
+
+**Issuance is one of those sites, not a separate later step.** A PO version becomes live at
+`pos.issue` (and at labour PO issue), so if the first attribution is a separate commercial
+command then every newly issued order is a live, unattributed obligation until someone runs
+it: `COMMITTED(costHead)` reads ₹0 for a real ₹100 order, the budget exception never fires and
+the cash forecast is short by the whole amount. The invariant "a live line can never be
+unattributed" has to hold from the first instant the line is live, so the initial attribution
+is written through `CommercialParticipant.attribute` in the issuing transaction. **That
+participant call enforces `commercial.attribute` on the acting actor, exactly as the standalone
+route does** — otherwise a user holding PO-issue authority but not `commercial.attribute` chooses
+the cost head during `pos.issue` and mutates budget evidence through a side door. §I's authority
+is about the WRITE, not about which HTTP route reached it. The cost head
+is therefore an input to issuance when the capability is on. The alternative — keeping the PO
+version non-live until an attribution exists — was rejected: it would change Phase-3/4
+procurement lifecycle semantics for a commercial concern, and §K's whole premise is that money
+never gates operations. All four lifecycle sites (issue · amend · cancel · close-short) go
+through the same channel; see the §0b closure table.
+
+**And the replacement is EVIDENCE, so it is append-only at PostgreSQL with its reason frozen.**
+`CommitmentAttribution` is the fact that explains which cost head carries a vendor obligation,
+which makes it the same kind of thing as `CostHead.code` — a key that groups money — and it was
+specified as "re-attributable with a reason" without ever joining the seals. An in-place UPDATE
+of the active row from `CIVIL` to `MEP`, or an edited reason on an existing replacement, moves a
+historical commitment and every budget exception that fired against it with no immutable record
+that anything was reclassified. So: a re-attribution INSERTS a new row and stamps the prior one
+superseded (never edits it), and `reason` is column-frozen after write — the same discipline the
+§C ledger, the promise registers and the frozen PO snapshots already use. This is the third site
+of the "a key that groups facts is frozen" rule and it is now in that §0b row alongside
+`CostHead.code`.
+
+**The seal is on EVERY row from insertion, not only once superseded.** An earlier revision of
+this section wrote the trigger as "rejects UPDATE and DELETE of a SUPERSEDED row", which is
+narrower than the defect the paragraph above describes: the ACTIVE row is precisely the one an
+in-place `CIVIL → MEP` edit would move, and it is not superseded at the moment of the edit. That
+spelling left the whole attack open — one UPDATE moves the live obligation between cost heads
+with no replacement row, no supersession, no reason and no evidence, and every later check still
+passes because they all inspect frozen columns on rows that were never re-keyed. So the trigger
+is the ordinary append-only shape this repository already uses (AGENTS.md: immutable after write
+except a single explicit permitted transition): **DELETE is refused always, and UPDATE is refused
+always EXCEPT the one controlled transition — stamping an ACTIVE row superseded** (setting
+`supersededAt`/`supersededBy` and nothing else; `costHead`, the PO-line target, `reason` and the
+attribution's own identity columns are rejected on any UPDATE, and a row already superseded
+cannot be stamped again). Reclassification therefore has exactly one representable path, and it
+always leaves two rows. There is no `amount` in that list because there is no `amount` column —
+see above.
+
+This is the Phase-4 §C lesson applied to money: a second ledger holding the same number is
+a second truth, and the two will diverge under amendment.
+
 ### §I. Authority, segregation of duties, approval limits
 
 - New permissions: `commercial.read`, **`commercial.budget`** (create a `CostHead`, create or

@@ -13,18 +13,25 @@ narrative and may lag behind reality.
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
 task: 1
-task_state: not_started
-work_item: none
-reviewed_merge: 0af7f99
+task_state: in_progress
+work_item: phase-5-task-1
+reviewed_merge: 60864b5
 open_pr: none
-next_task: phase-5-task-1
+next_task: phase-5-task-2
 blocking_directive: none
 updated: 2026-08-01
 ```
 
 **PHASE 5 IS THE ACTIVE PHASE.** Its plan is merged and independently cleared
-(PR #266 at `main` `0af7f99`, clean Codex +1 on head `ede5a1a`). No Phase-5 code
-exists yet; Task 1 is the next work item. **PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
+(PR #266 at `main` `0af7f99`, clean Codex +1 on head `ede5a1a`). **Task 1 — the
+`commercial` capability, `CostHead` and the §C `CommitmentAttribution` with its
+XOR/uniqueness/append-only seals, the `CommercialParticipant`, the §L activation
+backfill and all eight forward lifecycle hooks — is DELIVERED on a held draft PR
+from `main` `60864b5`** (branch `claude/phase5-task1`; evidence
+`docs/reviews/phase-5-t1-commercial-packet.md`). It ships NO `BudgetLine`: §L is
+explicit that authority is only meaningful against the obligation it measures, so
+the budget, the `COMMITTED` fold and the over-budget exception land together in
+Task 2. **PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
 `codex-current-head` gate with independent Codex clearance. Task 6 — the FINAL
 Phase-4 review stop — merged as PR #246 at `main` `67e7a00` with a fresh clean
 Codex +1 on the exact head `f098be7`, after fifteen exact-head correction
@@ -55,7 +62,7 @@ deferral ledger — a task PR must carry its section forward rather than re-deri
 
 | Task | Summary | State |
 |---|---|---|
-| 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | not_started |
+| 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | in_progress — delivered on a held draft PR from `main` `60864b5`; evidence `docs/reviews/phase-5-t1-commercial-packet.md` |
 | 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | not_started |
 | 3 | `Measurement` (§D) + the `revertSignOff` withdrawal guard | not_started — **STOP** |
 | 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | not_started |
