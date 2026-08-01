@@ -215,8 +215,12 @@ table row and a new justification bullet, never a second list.
     inspection, the immutable measurement commits anyway). §E adds the same requirement for
     locking cited `ActivityWorkOutput` rows during certification. Declaring only `inventory`
     would leave §D and §E describing calls the manifest forbids.
-- **Two INBOUND participant edges, because two foreign transactions must write commercial
-  facts atomically with their own.** Neither is a `dependsOn` edge — nobody READS commercial
+- **INBOUND participant edges, because foreign transactions must write or check commercial
+  facts atomically with their own.** The COUNT and the exact set are declared ONCE, in the
+  manifest edge table below — this paragraph gives the reasoning per edge and deliberately
+  states no total. An earlier revision said "two" while the table required four; that is
+  §0b's own defect class (a rule with two written statements), and the fix is subtraction.
+  Neither is a `dependsOn` edge — nobody READS commercial
   — and participant channels are cycle-exempt (the cleared `activities → labour`,
   `media → inventory` precedent), so the acyclicity acceptance test still extends without a
   new exemption. `commercial` is a sink in the READ graph; it is not unreachable.
@@ -334,20 +338,30 @@ draft → CI → exact-head Codex gate.
 |---|---|---|
 | 1 | `commercial` capability + module skeleton + `CostHead` + the `CommitmentAttribution` TABLE with its XOR/uniqueness seals + `CommercialParticipant` + the activation backfill AND the forward issue/amend/cancel/close-short hooks with supersession, so no live PO line is ever unattributed while the capability is on (§C/§L) + SINK manifest + acyclicity test + §D/§L inertness proof. **No `BudgetLine`, so no headroom and nothing to except** | — |
 | 2 | Versioned immutable `BudgetLine` + the §C `COMMITTED` fold over the EXISTING frozen committed amounts + the budget-vs-committed exception and its Inbox action, raised from commitments AND budget revisions AND re-attributions (§B) | — |
-| 3 | `Measurement` (§D) — immutable, delta corrections, activity sign-off gate, material lines read acceptance instead | **STOP** — narrow review before any bill can consume a measurement |
+| 3 | `Measurement` (§D) — immutable, delta corrections, activity sign-off gate, material lines read acceptance instead + **the `revertSignOff` withdrawal guard (`activities.workflowParticipants` gains `commercial`, `CommercialParticipant.assertWorkEvidenceRevisable`), because THIS task is the one that first creates a measurement resting on a sign-off.** §K assigns the guard to §E, which lands in Task 5 — but a measurement exists from Task 3, so in the Task-3 tree a closing-inspection rejection can return a signed-off activity to `in_progress` and leave a LIVE measurement whose evidence was withdrawn, with nothing to adjudicate it until two tasks later. The guard ships with the fact that needs it, exactly as Task 4 ships both of its withdrawal guards (§0b: same rule, every site) | **STOP** — narrow review before any bill can consume a measurement |
 | 4 | `VendorBill` + lines + immutable versions + the §F CAS lifecycle **up to `under-verification`** + §G bounds 1–2 + **the `disputed` transition AND both withdrawal guards, because this is the task that first creates a LIVE bill: the acceptance side (`InventoryParticipant`-side `assertAcceptanceReversible`) AND the measurement side — Task 3 ships the signed-delta correction route while no `BILLED_QTY` row can exist, so its guard has only the zero floor; the §D live-claim floor (`MEASURED` may not fall below `BILLED_QTY(poLine)`) has to ship HERE or measure 100 → bill 100 live → correct −50 leaves `BILLED_QTY = 100 > MEASURED = 50`. Same rule, both sites (§0b)** | — |
 | 5 | Three-way verification (§E) — and therefore the `verified` transition itself — + dispute/resolution + certification + §G bound 3 + §H deduction ledger + **the §I measurer/acceptor-vs-certifier SoD rule AND the `SodException` record with its seals** | **STOP** — narrow review before payment authority exists |
 | 6 | Payment approval + payment records + payment reversals + the `advance-recovery` deduction type and its paid-advance fact (§H) + §G bounds 4–5 + the certifier-vs-approver SoD rule and approval limits — the PAYMENT half of §I only | — |
 | 7 | Cash-forecast projection (§J) + frontend hub (§M) + pilot acceptance chain + consolidated Phase-5 packet | **FINAL STOP** |
 
-**Where the per-task mechanism lives.** §B, §C, §D, §E, §F, §G, §H, §I and the
-per-task probe list are NOT deleted — they travel VERBATIM into the PR for the task
-that implements them, per the owner's approved split. Until each task opens, the text
-is the twenty-round-corrected draft at `claude/phase5-planning` commit `a4d469b`
-(`docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md`), also visible as
-the closed PR #252 diff. **A task PR that reaches its section MUST carry that text
-forward rather than re-derive it** — re-deriving is precisely what produced twenty
-rounds of findings, and §N records why.
+**Where the per-task mechanism lives.** §B, §C, §D, §E, §F, §G, §H and §I are NOT
+deleted — they travel VERBATIM into the PR for the task that implements them, per the
+owner's approved split. Until each task opens, that text is the twenty-round-corrected
+draft at `claude/phase5-planning` commit `a4d469b`, also visible as the closed PR #252
+diff. **A task PR that reaches its section MUST carry that text forward rather than
+re-derive it** — re-deriving is precisely what produced twenty rounds of findings, and
+§N records why.
+
+**The probe list stays HERE, and that is a correction to this head's first revision.**
+An earlier revision moved it out with the mechanism sections to hold the plan under the
+owner's 500-line ceiling. That was wrong, for a reason worth recording: the probes are
+the SCHEDULE for the deferred questions. With them outside the reviewed tree and pinned
+only to a closed branch, the plan does not define what adjudicates each still-open
+question, Task 1 could begin with them unmapped, and a reviewer has no way to verify the
+deferred findings are scheduled rather than quietly re-derived or dropped. A deferral
+that cannot be audited is indistinguishable from a deletion. The list is therefore
+restored below, verbatim, and the plan exceeds the 500-line guidance as a consequence —
+stated plainly rather than met by dropping the evidence that makes the deferral honest.
 
 Task 4 deliberately stops SHORT of `verified`. `verified` is the state whose safety is the
 §E verdict, so shipping the transition in Task 4 while §E lands in Task 5 would let a bill
@@ -372,6 +386,435 @@ the same reasoning as `verified` belonging to Task 5.
 
 Task 3 and Task 5 stops are mandatory: measurement is the fact every downstream amount
 rests on, and certification is the last point before money becomes payable.
+
+
+## Required plan probes (reproduce-first, live PG unless noted)
+
+**A probe names a SCENARIO and the section whose rule it exercises; it does not restate the
+rule.** Three of round 8's findings were probes still asserting a rule the sections had
+already changed — an output-priced measurement after §D removed output pricing, a hard refusal
+after §E chose disputes — so a probe that restates a rule becomes a second declaration that
+goes stale silently and, worse, an implementer following it writes behaviour the plan forbids.
+Each probe below therefore points at its authority. If a probe and its section disagree, the
+SECTION is right and the probe is the defect.
+
+1. §D byte-identity: two projects in one org, commercial off on one — response bytes,
+   nav and routes unchanged; the commercial tables hold zero rows.
+2. §K no-gate: enabling the commercial capability changes NO readiness verdict, in either
+   direction, for material or team.
+3. §A decimal: a full-scale `Decimal(18,2)` money chain that float64 provably corrupts.
+4. §G bound 2 with the §E over-bound disposition: a 101-unit claim against 100 accepted is
+   recorded as a `qty-over-accepted` DISPUTE, not refused at submission — the vendor's actual
+   claim stays readable and §0's LIVE rule keeps the unresolved disputed version out of the
+   billed fold, so nothing certifies against it. (A hard rejection would destroy the evidence
+   §0/§E/5ac depend on and make the resolution path untestable; that is the model §E chose and
+   this probe follows it.) An 80-accepted / 20-rejected receipt supports a legitimate 80-unit
+   bill with no dispute — `ACCEPTED` per §0 is the acceptance-event fold, not
+   `accepted − rejected`, which would understate it as 60. Reversing an acceptance after a
+   bill is submitted moves that bill to `disputed` rather than silently passing.
+5. §G bound 2 race: two concurrent bill submissions against one PO line with capacity for
+   one — deterministic barrier, exactly one commits.
+5b. §E certification vs `stock.reverse`, BOTH orderings under a deterministic barrier: a
+   reversal committing mid-certification can never leave a certified bill with no accepted
+   material behind it, and the stated lock order never deadlocks.
+5c. §D measurement bound — person-shift-priced labour only, which is the ONE contract shape
+   §D keeps in scope: a measurement citing no live `ActivityWorkOutput` is refused (the output
+   is required as progress EVIDENCE per §0's `OUTPUT` predicate); one citing a physical-unit
+   output IS accepted with no same-unit cap; the quantity cap is `EFFORT(poLine)` and a
+   measurement beyond it is refused; effort matched to trade A cannot fund a trade-B line on
+   the same activity/day; and the same effort cannot be consumed by two PO lines. NOT
+   "superseding the cited output blocks certification" — `ActivityWorkOutput` is append-only
+   with no supersession path (§0), so that probe could only pass by adding an Activities
+   lifecycle transition this phase declares out of scope. What IS probed is the existence
+   test §0 defines, plus the sign-off withdrawal path that Activities really has
+   (`assertWorkEvidenceRevisable`, probe 5k).
+5h. §0 unit discipline: a ₹10,000 bill for 100 units satisfies bound 1 against
+   `qty + approvedOverage` in UNITS and bound 3 against the certificate in RUPEES — neither
+   comparison ever mixes the two.
+5i. §0 `OUTPUT` is a predicate, not a pool: a mason line and a helper line on the same
+   activity both measure legitimately against ONE 100 sqm output, each bounded by its OWN
+   `EFFORT` — the second is NOT blocked by the first and no duplicate output row is needed.
+   A ₹100 certification with ₹10 retention approves at most ₹90; a certified bill cannot be
+   rejected to free its accepted quantity.
+5j. §E post-certification reversal: after a 100-unit bill is certified, `stock.reverse` of
+   that acceptance is REFUSED naming the certificate; superseding the certificate first
+   permits the reversal. Both orderings under a deterministic barrier.
+5k. §D measurement vs sign-off revert, both orderings under a barrier: a closing-inspection
+   rejection committing mid-measurement can never leave a measurement standing against an
+   activity whose sign-off was withdrawn.
+5l. §E pro-rata: a 50-unit bill of a 100-unit PO with ₹1,800 tax / ₹500 freight passes at
+   ₹900 / ₹250 and is disputed at ₹1,800 / ₹500; two 50-unit bills cannot each claim the
+   full amounts.
+5m. §I cumulative limit: a ₹50-limit approver cannot authorize a ₹100 payable as two ₹50
+   rows; the second escalates.
+5n. §0 `MEASURED` floor: recording 100 then correcting −150 is REFUSED, and the fold stays
+   at 100 so later honest bills still pass.
+5o. §J partition: a received-but-unbilled ₹100 order appears in `received-not-billed` and
+   NOT in `committed`, and the SIX EXPOSURE buckets sum to exactly the total exposure — `budget` is
+   reported separately as authority plus headroom and is never an addend (§J, probes 5bc/5bm). An
+   earlier spelling summed seven buckets "to no more than budget + committed obligations", which
+   both counts budget as exposure and states an inequality where the invariant is an equality.
+5p. §0 `BUDGET`: a ₹100 line revised to ₹120 forecasts ₹120, never ₹220 and never ₹100.
+5q. §E evidence identity: certify 100 against acceptance A, accept another 100, then reverse
+   A — REFUSED naming the certificate, because the frozen consumption set holds A, not a
+   quantity. The same for a sign-off reverted after certification. NOT for output
+   supersession, which PostgreSQL already makes impossible (§0).
+5r. §G bound 3 scope: two live ₹100 bills on one PO line — a ₹150 certificate on either is
+   refused, because the cap is `BILLED_AMOUNT(bill)` and not the ₹200 po-line fold.
+5s. §0 `EFFORT` vendor identity: two vendors with the same `labourSpecFingerprint` on one
+   activity/day — A's work fact cannot support B's bill, and A stays billable.
+5t. §J partition after tax/freight: a ₹1,000 line with ₹100 tax and ₹50 freight fully
+   accepted leaves ₹0 in `COMMITTED`, not ₹150; a fully measured labour line likewise.
+5u. §C attribution: re-attribution moves the whole obligation atomically, and a live PO line
+   version can never be left unattributed (COMMITTED never silently drops to zero).
+5v. §H seals: PG rejects UPDATE and DELETE of a deduction row; a whitespace-only reason is
+   rejected on every reason column named in §H.
+5w. §0 `COMMITTED` close-short: a ₹100 PO closed short before ANY receipt leaves ₹0
+   outstanding — the released remainder is subtracted once and never added back, so no
+   forecast bucket carries a cancelled obligation; a ₹100 PO with ₹40 accepted then closed
+   short leaves ₹0 outstanding and ₹40 in `received-not-billed`, and the buckets still
+   partition. The labour twin behaves identically.
+5x. §K edge set: the Task-1 manifest matches the §K edge table EXACTLY — every row, both
+   directions, asserted against the table rather than against a list repeated here (this probe
+   previously carried its own subset and went stale when the table gained `procurement`; the
+   table is the authority). RED against any strict subset: dropping `activities` forbids §D's
+   locked status read, dropping `procurement` forbids §E's PO-line lock so certification would
+   fall back to an unlocked `ProcurementQuery` read and could certify against ordered authority
+   that `pos.closeShort`/amend has already moved, and dropping any inbound edge forbids §C's
+   atomic re-attribution or §E's withdrawal checks. A topological sort of the `dependsOn` graph
+   still succeeds (participant edges are exempt).
+5y. §C amendment channel: amending a live ₹100 PO through procurement replaces the
+   attribution in the SAME transaction — `COMMITTED` reads ₹100 before and ₹100 after, never
+   ₹0 in between and never ₹200; a cancel and a close-short release through the same channel.
+   Under a deterministic barrier, a concurrent forecast read never observes an unattributed
+   live line.
+5z. §F amendment lifecycle: a `submitted`/`verified`/`disputed` bill amends; a CERTIFIED bill
+   REFUSES to amend, naming the certificate; superseding the certificate first permits the
+   amendment. Under a barrier, concurrent certify-and-amend admits exactly one, and neither
+   ordering leaves a live certificate on a superseded claim version.
+5aa. §I exception seals: PG rejects UPDATE and DELETE of a `SodException`; a whitespace-only
+   reason is rejected; an exception written outside the override's transaction, or pointed at
+   a second certificate, is refused — one exception authorizes one fact.
+5ab. §0b closure — one probe per row, because five of round 6's ten findings were a rule
+   applied at one site with an identical sibling left alone:
+   - **attribution at all four sites**: `pos.issue` and labour PO issue each leave exactly one
+     live attribution and `COMMITTED` equal to the order the instant the version is live
+     (never ₹0 pending a later command); amend/cancel/close-short as probe 5y already covers.
+   - **overage clamps at both sites**: a ₹100 / 100-unit line with 10 overage units accepted
+     leaves `COMMITTED` at ₹0, never −₹10, and no other cost head's obligation moves; the same
+     line's tax cap stays at the frozen ₹1,800, never ₹1,980, and overage tax raises an
+     exception instead of certifying.
+   - **the sign-off lock at both sites**: probe 5k covers measurement; the certification twin
+     runs the same barrier — a rejection committing mid-certification can never leave a
+     certified bill resting on a withdrawn sign-off, and the lock order matches `revertSignOff`
+     so neither ordering deadlocks.
+   - **withdrawal checks at all FOUR paths that exist**: acceptance reversal (5j), sign-off
+     revert (5q), a measurement correction — measure 100, certify 100, then
+     −50 is REFUSED naming the certificate; superseding the certificate first permits it; a
+     −50 with no live claim succeeds and floors at zero (5n) — **and deduction insertion after
+     approval**. That fourth site is named in the §0b row and was missing from this probe, so a
+     Task-5 implementation could pass the closure test while certify ₹100 → approve ₹100 → append
+     a ₹10 penalty left `APPROVED = 100` against `NET_PAYABLE = 90`, both facts append-only and
+     neither correctable: a payable authorised above what the certificate can pay, with immutable
+     evidence on both sides. The probe therefore drives exactly that sequence and asserts the
+     serialized outcome: under the bill lock the ₹10 deduction is REFUSED while an approval that
+     it would invalidate is live, naming the approval; the representable path is to supersede the
+     certificate (which drops the approval with it, per §F), append the deduction on the new
+     certificate, and re-approve the reduced `NET_PAYABLE`; and a deduction appended BEFORE any
+     approval succeeds and lowers the cap, so the guard is precise rather than a blanket ban on
+     late deductions. A concurrent approval and deduction admit exactly one, in both orderings,
+     under a deterministic barrier.
+   - **positive amounts on every append-only money row**: a `-10` deduction and a `-10` release
+     are both rejected by PG; `NET_PAYABLE` on a ₹100 certificate with a ₹10 retention is ₹90,
+     never ₹110.
+   - **every enum member in its fold**: a ₹10 `other` deduction reduces the approval cap to
+     ₹90, exactly like retention, advance-recovery and penalty.
+   - **non-blank at both sites**: a `CostHead` coded `'   '` (and one named `'\t'`) is rejected
+     by PG, alongside the reason columns of 5v.
+   - **rule and exception record in one task**: the Task-5 acceptance test exercises an
+     org-admin override end to end — refusal without authority, success with it, and the sealed
+     `SodException` present — with no Task-6 code in the tree.
+5ac. §0 `disputed`: 100 accepted, a 120-unit bill submitted → `qty-over-accepted` and
+   `disputed`, and that version leaves the live fold, so an honest corrected 100-unit claim
+   submits and passes; the disputed version is still readable as history and its claimed 120
+   is still visible on the dispute.
+5ad. §F supersession carries its downstream facts: certify ₹100, approve ₹100, supersede the
+   certificate to ₹50 with a reason → `APPROVED(bill)` reads ₹0 (the ₹100 row survives on the
+   superseded certificate as history), bound 4 holds, and the ₹50 requires a FRESH attributable
+   approval by someone holding the limit for it. With ₹100 already paid, the same supersession
+   is REFUSED until the FULL ₹100 is reversed — a ₹50 reversal is NOT enough, because
+   supersession takes `APPROVED` to ₹0 while `PAID` would still read ₹50, so bound 5
+   (`PAID ≤ APPROVED`) would be false the instant the correction landed. The complete legal
+   sequence is: reverse ₹100 (`PAID` → ₹0) → supersede to ₹50 → fresh ₹50 approval → pay up
+   to ₹50. This is the §F full-reversal rule, probed here rather than restated.
+5ae. §0 `PAID` netting: a ₹50 payment-reversal on a ₹100-paid bill leaves `PAID` at ₹50, never
+   ₹150; PG rejects a NEGATIVE payment row and a negative reversal row; a reversal exceeding
+   `PAID` is refused; PG rejects UPDATE/DELETE of a reversal.
+5af. §B cost-head key immutability: PG REFUSES an UPDATE of `CostHead.code` on a head that has
+   any budget line or attribution — and refuses it on a bare head too, since the freeze is on
+   the column, not on usage. The legitimate reclassification path works end to end: create the
+   new head, supersede the attribution with a reason, revise the budget — and `BUDGET`/
+   `COMMITTED` move heads with full append-only evidence of both steps. `name` remains editable.
+5ag. §0b sign discipline is per-column: a claim line with `tax = 0` and `freight = 0` against a
+   zero-tax / zero-freight PO is ACCEPTED (the ordered side permits zero, so the claim must
+   too); a NEGATIVE quantity, tax or freight is rejected by PG; a zero QUANTITY is rejected.
+5ah. §F paid-certificate supersession ORDER: with ₹100 certified, approved and paid,
+   superseding to ₹50 is REFUSED and the refusal names the outstanding ₹100 paid; a ₹50
+   reversal alone still refuses (₹50 remains); the FULL ₹100 reversal then permits the
+   supersession, after which `APPROVED` and `PAID` are both ₹0, a fresh ₹50 approval is
+   required, and bound 5 holds at every step.
+5ai. §C attribution seals: PG rejects DELETE of ANY `CommitmentAttribution` and rejects UPDATE
+   of an ACTIVE row's `costHead`/PO-line target/`reason` (there is no `amount` column to update —
+   §C forbids one, so a probe demanding its rejection would force Task 2 to add the very column
+   the plan bans) — the hostile `CIVIL → MEP`
+   in-place edit of the LIVE row is refused, not merely the edit of a superseded one — while the
+   single permitted transition (stamping an ACTIVE row superseded) succeeds and a second stamp of
+   an already-superseded row is refused; a re-attribution from `CIVIL` to `MEP` INSERTS a new row
+   and stamps the prior superseded, and `COMMITTED(CIVIL)` / `COMMITTED(MEP)` move together with
+   immutable evidence of the reclassification. RED against a trigger written to fire only on
+   superseded rows.
+5aj. §K labour edges: certifying a LABOUR bill takes the labour PO-line lock through the
+   labour participant — under a deterministic barrier a concurrent `labour.po.closeShort`
+   cannot move the ordered line mid-certification — and every one of the FOUR labour lifecycle
+   sites writes or supersedes its attribution in the SAME transaction: issue, amend, **cancel**
+   and **close-short**. The §0b attribution row names all four and the labour twin owes all four;
+   an earlier revision of this probe covered issue/amend only, which a Task-2 implementation
+   could pass while `labour.po.closeShort` on a live ₹100 labour order left the attribution
+   active and `COMMITTED` still reporting ₹100 against an obligation that no longer exists.
+   So: cancelling a live labour PO supersedes its attribution and `COMMITTED` returns to ₹0
+   (never −₹100, per the clamp), closing one short to ₹40 supersedes and re-attributes so
+   `COMMITTED` reads ₹40, and `COMMITTED` never reads ₹0 for a still-live labour order. RED
+   against a manifest carrying only the material edges, and RED against a labour implementation
+   that attributes on issue only.
+5ak. §F/§G Task-4 boundary: at the Task-4 tree, a 101-unit claim against 100 accepted lands
+   `disputed` (never live, never refused), and `stock.reverse` of an acceptance under a live
+   uncertified claim moves that claim to `disputed` rather than committing silently — both
+   guards present in the task that first creates a live bill.
+5al. §I write authority: a member holding only `commercial.read` is REFUSED on cost-head
+   creation, budget-line create/revise and re-attribution; `commercial.budget` /
+   `commercial.attribute` permit their own routes and nothing else.
+5am. §B cost-head key: PG refuses a SECOND `CostHead` with the same `(projectId, code)`; two
+   projects may each hold `CIVIL`; a budget line and an attribution under one project's `CIVIL`
+   always meet in the same head, so the budget exception compares like with like.
+5an. §E reversal disposition is driven by the AGGREGATE fold and disputes the minimum needed:
+   accept 100, bill 80, reverse 20 leaves that bill LIVE (fold 80 ≤ 80); reverse 30 disputes it.
+   And the case a per-claim rule gets wrong — accept 100, bill 60 AND 40, reverse 20: neither
+   claim is individually over 80, the fold is 100, so the newest claim (40) is disputed and the
+   older (60) is left live, ending at 60 ≤ 80. RED against BOTH a path that disputes every claim
+   and a path that tests each claim individually against `ACCEPTED`.
+5ao. §F vendor pinning is PG-enforced: after Task 4 freezes `vendorId` on the PO-line snapshot,
+   Vendor A's bill line naming Vendor B's PO line in the SAME project is rejected by PostgreSQL,
+   not by the service.
+5ap. §0b reason coverage is COMPLETE: a whitespace-only reason is rejected by PG on every reason
+   column this phase introduces — deduction, rejection, budget revision, attribution, override,
+   measurement correction, certificate supersession and payment reversal — enumerated from the
+   schema rather than from a list written by hand.
+5aq. §B budget scope is single-valued at PG: a second live `BudgetLine` chain for the same
+   `(projectId, costHead)` is REFUSED by the partial unique, and a negative amount by the CHECK,
+   so `BUDGET(costHead)` can never be ambiguous or nonsensical.
+5ar. §C attribution authority follows the WRITE, not the route: a user with PO-issue authority
+   but without `commercial.attribute` is refused when `pos.issue` (and labour PO issue) tries to
+   write the initial `CommitmentAttribution` through the participant.
+5as. §D measurement is bounded by ORDERED authority too: 120 worked person-shifts against a
+   100-shift PO measures at most 100, and a PO amendment ordering 120 then permits the rest.
+5at. §E consumption is `(rowId, consumedQty)` on BOTH sides: with one 100-unit acceptance row and
+   an 80-unit certified bill, reversing the unused 20 is PERMITTED and reversing 21 is REFUSED;
+   the measurement twin — measure 100 by A, certify, add 100 by B, correct −100 — is REFUSED
+   even though the aggregate still covers the bill.
+5au. §E a labour bill line's tax and freight are refused at PG (`CHECK = 0`), because the
+   `LabourPurchaseOrderLine` snapshot freezes no ordered tax or freight to compare against; a
+   material line's prorated tax/freight is unaffected.
+5av. §F a `disputed` version never returns to live: resolution issues a NEW version and the
+   disputed one stays terminal, so a 120-unit dispute against 100 accepted can never re-enter
+   `BILLED_QTY` and block its own corrected 100-unit claim.
+5aw. §F supersession re-states DEDUCTIONS on the new certificate: certify ₹100 with ₹10
+   retention, supersede to ₹50 → `NET_PAYABLE` reads ₹40 against the LIVE certificate's own
+   restated row, never ₹40 from a row attached to the superseded ₹100, and the retained balance
+   never silently disappears.
+5ax. §F Task 4's vendor-pinning migration BACKFILLS existing PO lines from the PO chain and
+   ABORTS on any line it cannot resolve, so a project with lines predating Task 4 upgrades with
+   every line pinned and none invented.
+5ay. §A exact-decimal discipline holds on BOTH sides of the wire: the API probe uses
+   `Prisma.Decimal` and the WEB probe uses `apps/web/src/lib/decimal.ts`, each at a full-scale
+   value float64 demonstrably corrupts, and neither imports the other's type.
+5az. §H approval rows are strictly positive at PG: a negative approval is REFUSED, so it can
+   neither offset a later over-limit positive row nor drop `APPROVED` below `PAID` after payment.
+5ba. §F payment status is DERIVED, never stale: pay a ₹100 approved bill to `paid`, reverse the
+   full ₹100 → the status re-derives to `approved-for-payment` with `PAID = 0` in the SAME
+   transaction; a ₹40 reversal from `paid` re-derives to `part-paid`. RED against a lifecycle
+   that only moves forward.
+5bb. §E certification takes ONE ascending lock order over every PO line the bill touches: a
+   two-line bill certified concurrently from both orderings COMMITS EXACTLY ONE and never
+   deadlocks, under a deterministic barrier (the Phase-4 overlapping-crews probe shape).
+5bc. §J buckets are residual and partition the money at BOTH ends of the chain: a ₹100 approved
+   bill with ₹40 paid reports ₹60 in `approved` and ₹40 in `paid` — never ₹140 across the two;
+   ₹100 accepted with a ₹40 submitted-uncertified bill reports ₹60 `received-not-billed` and ₹40
+   `awaiting-certification`, never ₹140 for one ₹100 delivery; and a ₹100 certificate carrying
+   ₹10 retention reports ₹90 `certified-payable` before approval — never ₹100 — then ₹0 after the
+   ₹90 is approved, with no phantom ₹10 payable, and ₹5 once a ₹5 release is appended. The SIX
+   EXPOSURE buckets sum to the total exposure exactly at every step, and `budget` is asserted
+   SEPARATELY as authority plus headroom — never as a seventh addend, which would put the money
+   back in two places (§J, probe 5bm). RED against the round-13 spelling, where only the
+   post-certification buckets were residuals, AND against the round-16 spelling of this probe,
+   which still summed seven buckets after §J had made budget authority.
+5bd. §D enabling the `commercial` capability on a project that ALREADY holds live material and
+   labour POs attributes every one of them in the enabling transaction — asserted at the TASK-1 tree
+   on the ROWS, because that is what Task 1 ships: after activation every live PO line (material and
+   labour) has exactly one active `CommitmentAttribution`, and a line that cannot be attributed
+   REFUSES the activation naming it rather than inventing a cost head. An earlier revision asserted
+   `COMMITTED(costHead)` here, which Task 1 has no fold to answer with; that half is 5bu below, at
+   the tree that ships the reader.
+5bu. §C at the TASK-2 tree, `COMMITTED(costHead)` reads the real obligation for exactly those
+   backfilled rows: enable on a project with a live ₹100 material PO and a live ₹40 labour PO
+   attributed to two heads, and the fold reports ₹100 and ₹40 with no commercial command run since
+   activation — the backfill is not merely present, it is READ.
+5be. §L both structural tables parse: `docs/STATUS.md`'s named source of task numbering yields
+   exactly Tasks 1–7 from ONE contiguous execution table; §0's set table is ONE contiguous block
+   with no prose split; and the §J bucket table has one row per bucket the §J list names, so a
+   bucket cannot be listed without a definition. The §0 assertion is stated WITHOUT a row count,
+   deliberately — probe 5g gives the reason (a written count is one more thing that goes stale
+   when a set is added, which is how round 8 happened), and an earlier revision of this probe
+   ignored its own sibling and hardcoded "fourteen", which does not even equal the row count
+   because one row defines `BILLED_TAX` and `BILLED_FREIGHT` together. The check is therefore
+   NAME-based, from the document: every `SET(arg)` name any §-section references resolves to a row
+   in that one block, and every row is referenced somewhere. That fails when a set is added and
+   left undefined, or defined and never used, and it never needs updating when the count changes.
+5bf. §F a bill line names EXACTLY ONE PO line at PostgreSQL: a line with NEITHER a material nor a
+   labour PO-line reference is REJECTED (so a ₹100 claim can never enter `BILLED_AMOUNT` with
+   bounds 1–2 unable to run), a line with BOTH is REJECTED (so no fold has two owners), a `type`
+   discriminator disagreeing with the reference present is REJECTED, and each of the two valid
+   shapes is ACCEPTED — the seal is precise, not merely strict. RED against nullable alternatives
+   guarded only by per-column FKs.
+5bg. §F `duplicate-claim` has a key: `vendorBillNumber` and its document date are non-blank and
+   column-frozen after write (an UPDATE is refused); a SECOND live bill under the same
+   `(projectId, vendorId, vendorBillNumber)` is refused by the partial unique index, and two
+   CONCURRENT submissions of it admit exactly one under a deterministic barrier — the Task-2
+   one-quote-per-`(rfq, vendor)` shape; a superseding VERSION of the same bill reuses the
+   reference and is accepted; a resubmission after the first was REJECTED is accepted, and the same
+   for a `resolved` bill — the lifecycle's own terminal states, never a `cancelled` one §F does not
+   define, so this acceptance case cannot force Task 4 to invent a cancel path to satisfy it — and
+   the same units claimed under a DIFFERENT vendor number raises the service-side `duplicate-claim`
+   verdict rather than passing every bound silently.
+5bm. §J the SIX exposure buckets partition the money and `budget` is authority, not exposure: with
+   a ₹100 budget and a ₹100 PO fully accepted and unbilled, the six sum to exactly ₹100 with the
+   ₹100 in `received-not-billed` — never also in a `budget` bucket — and the reported headroom is
+   ₹0; over-commit to ₹150 of exposure and the headroom is −₹50, surfaced as the §B exception
+   rather than clamped. RED against `BUDGET − COMMITTED`, which reports ₹100 headroom for that
+   fully-accepted order because `COMMITTED` is already zero.
+5bn. §F the status derivation never invents an approval: on a ₹100 certificate with ₹10 retention,
+   releasing ₹5 with `APPROVED = 0` leaves the bill `certified`, NOT `approved-for-payment`;
+   approving ₹90 then paying ₹90 gives `paid`; releasing ₹5 after that returns it to `certified`
+   (approved portion settled, remainder unapproved) and NOT to `paid` or `approved-for-payment`;
+   and `PAID = APPROVED = NET_PAYABLE` is the only route to `paid`. RED against a derivation that
+   maps any `NET_PAYABLE > APPROVED` to `approved-for-payment`.
+5bv. §F every UNCERTIFIED live state can be disputed: a claim at `submitted`, at
+   `under-verification` and at `verified` each moves to `disputed` when an acceptance reversal or
+   measurement correction withdraws its evidence — never left live with `BILLED_QTY` above the
+   available evidence, and never `rejected` (which would judge the claim rather than record that its
+   evidence moved). RED against a lifecycle offering the arrow from only some of the three.
+5bw. §C `COMMITTED` reads each PO line through its OWNING module: a live ₹100 material PO and a live
+   ₹40 labour PO attributed to one cost head fold to ₹140, the material amount read through
+   `ProcurementQuery` and the labour amount through `LabourQuery`; the boundary analyzer reports NO
+   cross-module read for either. RED against a spelling where procurement is the universal owner,
+   which either drops the labour ₹40 or makes procurement read labour-owned rows.
+5bx. §H a deduction INSERTION re-derives payment status: on a ₹100 certified bill with no approval,
+   inserting a ₹100 retention makes `NET_PAYABLE = PAID = 0` and the status re-derives to `paid`
+   under CAS in the insertion's own transaction — not left at `certified`, which no positive approval
+   or payment row could ever advance. RED against a plan that names only the release and the payment
+   reversal as re-deriving writers.
+5br. §H `NET_PAYABLE` never goes negative: on a ₹100 certificate, a ₹150 penalty is REFUSED naming
+   the withholdable balance, ₹100 is PERMITTED (`NET_PAYABLE = 0`), a further ₹1 is REFUSED, and
+   after releasing ₹40 a ₹40 deduction is PERMITTED again — the cap is on unreleased deductions, not
+   on the lifetime total. RED against a plan where only bound 4 guards the approval, which a
+   negative `NET_PAYABLE` satisfies.
+5bs. §F a zero-net certificate reaches a TERMINAL status: certify ₹100 and offset it entirely with
+   a ₹100 advance-recovery → `NET_PAYABLE = APPROVED = PAID = 0` derives `paid` (nothing remains
+   payable), NOT `certified`; and since approval and payment rows are strictly positive there is no
+   legal row that could have advanced it, so the ordering is the only thing that can. RED against a
+   table whose first arm is `APPROVED = 0`, which strands the bill permanently.
+5bt. §F a VERIFIED uncertified claim can be disputed: with a 100-unit bill at `verified` and no
+   certificate, reversing the acceptance moves the bill to `disputed` (never left live with
+   `BILLED_QTY > ACCEPTED`, and never `rejected`, which would drop it out of the correction path);
+   the same reversal against a CERTIFIED bill is REFUSED naming the certificate. RED against a
+   lifecycle offering only `under-verification → disputed`.
+5bp. §H advance recovery cannot exceed the advance PAID: with a ₹100 advance paid, a cumulative
+   ₹150 `advance-recovery` is REFUSED naming the recoverable balance, ₹100 is PERMITTED, and a
+   further ₹1 after that is REFUSED — the fold is `Σ advance − Σ advance-recovery` with no stored
+   balance, re-derived under the bill lock. Without this the sign, fold and status probes all pass
+   while the vendor is underpaid by ₹50: the row is positive, the enum member folds, and the status
+   derives correctly from a `NET_PAYABLE` that is simply too low.
+5bq. §B the over-budget exception fires from every input that moves headroom: with a ₹100 budget
+   and a ₹90 attributed PO, (a) a further ₹20 commitment raises it, (b) revising the live budget
+   DOWN to ₹50 raises it with no commitment write, and (c) re-attributing the ₹90 onto a ₹50 head
+   raises it on the target AND clears it on the source — each in the raising write's own
+   transaction, each producing exactly one Inbox action. RED against a commitment-only trigger,
+   where (b) and (c) are silent.
+5bo. §D labour close-short cannot move the ordered line below MEASURED: measure 100 shifts on a
+   100-shift labour PO with no bill anywhere, then `labour.po.closeShort` to 40 → REFUSED naming
+   the measured floor; closing short to 100 or above is PERMITTED; and after the refusal the
+   vendor's honest 100-shift bill still certifies against the unreduced authority. RED against a
+   plan where only certification holds the labour PO-line lock, which cannot help when no bill
+   exists yet.
+5bi. §C an attribution names EXACTLY ONE PO line at PostgreSQL and carries NO amount: a row with
+   NEITHER a material nor a labour target is REJECTED (so issuance cannot satisfy the
+   never-unattributed unique with a fact that attributes nothing), a row with BOTH is REJECTED
+   (so superseding the material side cannot silently un-attribute a live labour line), each valid
+   shape is ACCEPTED, and the table has no `amount` column — `COMMITTED` is asserted to change
+   when the PO line's frozen `committedAmountBase` is the only thing that moved.
+5bj. §F the duplicate-document index releases on the lifecycle's OWN terminal states: submit
+   vendor bill `V-1`, REJECT it, resubmit a corrected `V-1` → ACCEPTED; the same for a `resolved`
+   bill; while a second `V-1` against a `submitted`, `under-verification`, `verified`, `certified`
+   or `disputed` bill is REFUSED, and two concurrent first submissions admit exactly one under a
+   deterministic barrier. RED against a `WHERE NOT cancelled` predicate, which names no state §F
+   defines and so never releases.
+5bk. §F a retention release re-derives payment status: certify ₹100 with ₹10 retention, approve
+   and pay ₹90 (status `paid`), then release ₹5 → the status re-derives under CAS in the release's
+   own transaction to **`certified`**, because `PAID = APPROVED = ₹90 < NET_PAYABLE = ₹95` and the
+   remaining ₹5 is UNAPPROVED, not unpaid — the same row of §F's derivation table probe 5bn pins,
+   never `approved-for-payment` (which would claim an approval covering ₹95 when ₹90 was approved)
+   and never `paid` (which would claim ₹5 of cash left the practice). §J reports ₹5 in
+   `certified-payable` at the same instant, so the stored status and the forecast agree. RED
+   against a derivation that compares only `PAID` to `APPROVED`, and RED against the round-16
+   spelling of this probe, which expected `approved-for-payment` and so contradicted the table
+   written in the same round.
+5bl. §D a reducing measurement correction DISPUTES uncertified claims and refuses only against a
+   certificate: measure 100, submit an uncertified 100-shift labour bill, correct to 50 → the
+   correction LANDS and the claim is disputed (newest-first, stopping when the bound holds);
+   certify that bill first and the same correction is REFUSED naming the certificate; superseding
+   the certificate then permits it. RED against a floor that blocks on live `BILLED_QTY`
+   regardless of certification — the material side's §G disposition at the measurement site.
+5bh. §E supersession re-scopes deductions AND releases atomically: certify ₹100, retain ₹10,
+   release ₹5, then supersede to ₹50 — the live certificate reads ₹10 retained and ₹5 released
+   (`NET_PAYABLE` ₹45), never ₹10 retained with ₹0 released, so no released rupee is clawed back;
+   both row kinds are read from the SAME certificate the fold reads; and the superseded
+   certificate keeps its own rows as history. RED against a supersession that re-states deductions
+   only.
+5g. §0 set identity: for EVERY row of the §0 table (no count is written here — a count is one
+   more thing that goes stale when a set is added, which is how round 8 happened), the
+   "must NOT be" column is a probe — the
+   80/20 acceptance, the accept-then-issue, the adjust-into-bucket, the amended bill, the
+   advanced-lifecycle bill, the superseded certificate and the amended PO commitment each
+   yield the stated correct total.
+5d. §E billed side: an amended bill (v1 100 → v2 100) yields 100 billed, not 200 — a
+   retained version is not a live claim.
+5e. §E freight: a bill matching quantity, rate and tax while inflating freight raises
+   `freight-mismatch`.
+5f. §F vendor pinning: Vendor A's bill line naming Vendor B's PO line in the SAME project
+   is rejected by PostgreSQL, not merely by the service.
+6. §E recomputation: a stored verdict cannot authorize certification — a hostile stored
+   `verified` on a bill whose acceptance was reversed still refuses to certify.
+7. §F append-only: PG rejects an UPDATE/DELETE of a certification, a payment row and a
+   superseded bill version.
+8. §H fold: retention withheld then partially released nets correctly with no stored
+   balance; over-release is refused.
+9. §I SoD: the measurer cannot certify; for a MATERIAL bill the acceptance actor cannot
+   certify either; an org admin may override; the override writes an attributable
+   `SodException` naming rule, actor, approver and reason.
+10. §J projection: `live == projection == rebuild`; a rebuild emits zero events and zero
+    notifications; a stale forecast cannot authorize a payment.
+11. Upgrade proof: every new table upgrades ROW-FREE over the legacy fixture; a coherent
+    commercial chain is ACCEPTED (so the seals are precise, not merely strict); each
+    hostile insert is rejected.
 
 
 ## §N. What the twenty rounds established (do not re-derive)
