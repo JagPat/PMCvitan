@@ -10,19 +10,21 @@ narrative and may lag behind reality.
 ## Now
 
 ```yaml
-phase: 4
-phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
-task: 6
-task_state: in_review
+phase: 5
+phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
+task: 1
+task_state: not_started
 work_item: none
-reviewed_merge: 67e7a00
-open_pr: 265
-next_task: phase-5-planning
+reviewed_merge: 0af7f99
+open_pr: none
+next_task: phase-5-task-1
 blocking_directive: none
 updated: 2026-08-01
 ```
 
-**PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
+**PHASE 5 IS THE ACTIVE PHASE.** Its plan is merged and independently cleared
+(PR #266 at `main` `0af7f99`, clean Codex +1 on head `ede5a1a`). No Phase-5 code
+exists yet; Task 1 is the next work item. **PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
 `codex-current-head` gate with independent Codex clearance. Task 6 — the FINAL
 Phase-4 review stop — merged as PR #246 at `main` `67e7a00` with a fresh clean
 Codex +1 on the exact head `f098be7`, after fifteen exact-head correction
@@ -37,6 +39,29 @@ explicitly instructing automatic next-phase progression (recorded in
 `docs/reviews/pr-248-convergence.md`). The **Maintenance queue** below
 remains the standing work source whenever no phase task, no correction, and
 no open PR is active.
+
+## Phase 5 — commercial control
+
+Plan: `docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md` — merged and
+independently cleared as PR #266.
+
+The plan is the owner-approved split of PR #252, which specified all seven tasks in one
+1,661-line document and drew TWENTY rounds of correct findings that never fell. The plan
+keeps only the settled cross-cutting parts (§0 canonical evidence sets, §0b, §A, §I, §J,
+§K, §L, §M, the task table, §N and the probe list); §B–§H travel VERBATIM into the PR for
+the task that implements them, pinned to `claude/phase5-planning` commit `a4d469b`. The
+convergence packet `docs/reviews/pr-266-convergence.md` carries the question→probe→task
+deferral ledger — a task PR must carry its section forward rather than re-derive it.
+
+| Task | Summary | State |
+|---|---|---|
+| 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | not_started |
+| 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | not_started |
+| 3 | `Measurement` (§D) + the `revertSignOff` withdrawal guard | not_started — **STOP** |
+| 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | not_started |
+| 5 | Three-way verification (§E) + `verified` + dispute + certification + bound 3 + §H + SoD | not_started — **STOP** |
+| 6 | Payment approval + payment records + reversals + bounds 4–5 + approval limits | not_started |
+| 7 | Cash forecast (§J) + frontend (§M) + pilot chain + consolidated packet | not_started — **FINAL STOP** |
 
 ## Phase 4 — labour readiness
 
