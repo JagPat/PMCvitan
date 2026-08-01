@@ -2,7 +2,6 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { loadStatusDocument } from './autonomous-status-state.mjs';
 import {
-  DECLARATION_WINDOW_MINUTES,
   assessRestructure,
   readMetrics,
   renderMetrics,
@@ -1101,8 +1100,8 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
           + `${pullRequest.number}.`
         : 'A human decides: add "<!-- review-restructure: continue -->" to keep correcting this '
           + 'unit, or "<!-- review-restructure: restructure -->" to split and replace it. If '
-          + `nobody answers within ${DECLARATION_WINDOW_MINUTES} minutes the loop proceeds on its `
-          + 'own judgement and records that it did.',
+          + `nobody answers within ${result.windowMinutes} minutes (the ${result.tier} `
+          + 'window) the loop proceeds on its own judgement and records that it did.',
     })}\n${renderMetrics({
       ...(recordedMetrics ?? {}),
       findingHeads: result.findingHeadCount,

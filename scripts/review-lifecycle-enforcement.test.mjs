@@ -12,7 +12,10 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 import { enforceReviewLifecycle } from './autonomous-review-gate.mjs';
-import { DECLARATION_WINDOW_MINUTES } from './review-lifecycle.mjs';
+import {
+  CRITICAL_WINDOW_MINUTES,
+  VERY_CRITICAL_WINDOW_MINUTES,
+} from './review-lifecycle.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
 const P1 = '![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat) finding';
@@ -77,7 +80,8 @@ test('W3: at the limit with a P1 and no answer, a human is ASKED and the unit bl
 
   const posted = client.calls.sticky[0];
   assert.match(posted, /review-restructure: continue/u, 'the comment must say how to answer');
-  assert.match(posted, new RegExp(String(DECLARATION_WINDOW_MINUTES), 'u'));
+  assert.match(posted, new RegExp(String(CRITICAL_WINDOW_MINUTES), 'u'),
+    'the P1 request must quote the 3-hour critical window');
   assert.match(posted, /declarationRequestedAt/u, 'the window start must be recorded');
 });
 
@@ -92,7 +96,7 @@ test('W4: at the limit with only P2 findings, the loop CONTINUES without asking'
 });
 
 test('W5: unanswered past the window, the loop PROCEEDS and records that it did', async () => {
-  const long_ago = new Date(Date.now() - (DECLARATION_WINDOW_MINUTES + 60) * 60_000)
+  const long_ago = new Date(Date.now() - (VERY_CRITICAL_WINDOW_MINUTES + 60) * 60_000)
     .toISOString();
   const client = fakeClient({
     comments: heads(5, P1),
@@ -146,4 +150,34 @@ test('W8: the client can actually READ the sticky comment', async () => {
     fakeClient({ comments: heads(5, P1), stickyThrows: true }), pr, 'h',
   );
   assert.equal(broken.allowed, false, 'an unreadable floor blocks rather than guesses');
+});
+
+test('W9: the window is TIERED by severity — 6h very critical, 3h critical', async () => {
+  // The owner's rule. More serious means a longer chance to reach a human before
+  // the loop proceeds alone, so P0 waits longer than P1 — and UNKNOWN severity
+  // takes the longest window, the same fail-closed instinct that makes it block.
+  const badge = (n) => `![P${n} Badge](https://img.shields.io/badge/P${n}-x?style=flat)`;
+  const at = async (body) => enforceReviewLifecycle(
+    fakeClient({ comments: heads(5, body) }), pr, 'h',
+  );
+
+  const p0 = await at(badge(0));
+  assert.equal(p0.tier, 'very-critical');
+  assert.equal(p0.windowMinutes, VERY_CRITICAL_WINDOW_MINUTES);
+  assert.equal(VERY_CRITICAL_WINDOW_MINUTES, 6 * 60);
+
+  const p1 = await at(badge(1));
+  assert.equal(p1.tier, 'critical');
+  assert.equal(p1.windowMinutes, CRITICAL_WINDOW_MINUTES);
+  assert.equal(CRITICAL_WINDOW_MINUTES, 3 * 60);
+
+  const unknown = await at('a finding with no badge');
+  assert.equal(unknown.tier, 'very-critical', 'unknown waits the LONGEST, not the least');
+
+  // A provably minor unit reports no tier at all — nothing is being waited for,
+  // and a "critical" in the durable record would be a lie.
+  const minor = await at(badge(2));
+  assert.equal(minor.allowed, true);
+  assert.equal(minor.tier, null);
+  assert.equal(minor.windowMinutes, null);
 });

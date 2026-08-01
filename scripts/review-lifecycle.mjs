@@ -13,7 +13,7 @@
 // prove that another correction head is the wrong instrument? It never dismisses
 // a finding and never clears a head. Its only outcomes are "keep reviewing" and
 // "stop; restructure".
-import { codexFindingHeads, nonCriticalFindingHeads } from './review-efficiency.mjs';
+import { codexFindingHeads, findingHeadSeverity } from './review-efficiency.mjs';
 
 // ONE cap, deliberately.
 //
@@ -32,16 +32,22 @@ import { codexFindingHeads, nonCriticalFindingHeads } from './review-efficiency.
 // threshold undecided, because the threshold no longer depends on it.
 export const RESTRUCTURE_AFTER_FINDING_HEADS = 5;
 
-// How long a restructure decision waits on a human before the loop proceeds.
+// How long a restructure decision waits on a human, by how serious the unit is.
 //
 // The owner's rule: ask only when it is critical, and if nobody answers within
-// the window, carry on rather than stall. A gate that waits forever is a gate
-// that stops the loop the first time someone is asleep.
+// the window, carry on rather than stall. The windows are tiered because the
+// more serious the unit, the more worth waiting for a real answer — a P0 gets
+// the longest chance to reach a human before the loop proceeds alone.
 //
-// This times the HUMAN'S REPLY, not the review. `firstSeenAt` remains telemetry
-// that nothing gates on — see nextMetrics — and this uses its own timestamp so
-// that stays true.
-export const DECLARATION_WINDOW_MINUTES = 12 * 60;
+// UNKNOWN severity takes the LONGEST window, which is the same fail-closed
+// instinct as treating it critical: when the gate cannot see how bad something
+// is, it waits longer, not less.
+export const VERY_CRITICAL_WINDOW_MINUTES = 6 * 60;
+export const CRITICAL_WINDOW_MINUTES = 3 * 60;
+
+export function declarationWindowFor(tier) {
+  return tier === 'critical' ? CRITICAL_WINDOW_MINUTES : VERY_CRITICAL_WINDOW_MINUTES;
+}
 
 // The declaration a human adds to the PR body to answer the request.
 //   <!-- review-restructure: continue -->   keep correcting this unit
@@ -146,7 +152,7 @@ export function assessRestructure({
   floorUnreadable = false,
   nowIso = null,
   requestedAt = null,
-  declarationWindowMinutes = DECLARATION_WINDOW_MINUTES,
+  declarationWindowMinutes = null,
 }) {
   const replaces = replacementSource(body);
   const liveHeads = codexFindingHeads(comments, reviews);
@@ -193,14 +199,25 @@ export function assessRestructure({
     // Critical unless PROVABLY minor. A head whose severity cannot be read is
     // critical, so losing the ability to see severity makes the gate ask a human
     // rather than wave the unit through.
-    const minor = new Set(nonCriticalFindingHeads(comments, reviews));
-    const criticalHeads = merged.ids.filter((id) => !minor.has(id));
+    // Critical unless PROVABLY minor, and TIERED by the worst head. Unknown
+    // severity counts as very-critical: losing the ability to read severity
+    // makes the gate wait longer for a human, never less.
+    const severity = findingHeadSeverity(comments, reviews);
+    const criticalHeads = merged.ids.filter((id) => severity.get(id) !== 'minor');
     const critical = criticalHeads.length > 0;
+    const tier = criticalHeads.some((id) => severity.get(id) !== 'critical')
+      ? 'very-critical'
+      : 'critical';
+    const window = declarationWindowMinutes ?? declarationWindowFor(tier);
     if (!critical) {
       return {
         ...base,
         criticalHeads,
         critical: false,
+        // No tier and no window: nothing is being waited for, and reporting one
+        // would put a misleading "critical" in the durable record.
+        tier: null,
+        windowMinutes: null,
         state: 'reviewing',
         required: false,
         allowed: true,
@@ -218,6 +235,8 @@ export function assessRestructure({
         ...base,
         criticalHeads,
         critical: true,
+        tier,
+        windowMinutes: window,
         declared,
         state: declared === 'restructure' ? 'restructure_required' : 'reviewing',
         required: declared === 'restructure',
@@ -230,11 +249,13 @@ export function assessRestructure({
     }
 
     // Nobody has answered yet. Wait — but only for the window.
-    if (windowExpired(requestedAt, nowIso, declarationWindowMinutes)) {
+    if (windowExpired(requestedAt, nowIso, window)) {
       return {
         ...base,
         criticalHeads,
         critical: true,
+        tier,
+        windowMinutes: window,
         declared: null,
         state: 'reviewing',
         required: false,
@@ -252,6 +273,8 @@ export function assessRestructure({
       ...base,
       criticalHeads,
       critical: true,
+      tier,
+      windowMinutes: window,
       declared: null,
       state: 'restructure_declaration_required',
       required: true,
@@ -261,7 +284,7 @@ export function assessRestructure({
       requestedAt: requestedAt ?? nowIso,
       reason: `${findingHeadCount} finding-bearing heads and this unit is still drawing `
         + 'P1 findings; a human decides whether to keep correcting it or restructure it '
-        + '(add "<!-- review-restructure: continue -->" or "restructure" to the body)',
+        + '(add "<!-- review-restructure: continue -->" or "restructure" to the body; ${window} minutes)',
     };
   }
 

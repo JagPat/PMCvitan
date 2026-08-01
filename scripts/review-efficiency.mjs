@@ -149,26 +149,35 @@ export function codexFindingHeads(comments, reviews = []) {
 // head limit needs a human decision or can simply carry on: five heads of P2
 // polish is a unit converging slowly, five heads still turning up P1s is a unit
 // whose design is in question.
-const P1_BADGE = /!\[P1 Badge\]|badge\/P1-/u;
-const ANY_BADGE = /!\[P\d Badge\]|badge\/P\d-/u;
+const BADGE = /!\[P(\d) Badge\]|badge\/P(\d)-/gu;
 
-// Finding heads that are PROVABLY minor: every Codex comment on them carries a
-// severity badge, and none of those badges is P1.
+// Severity per finding head, as one of:
+//   'very-critical' — a P0 finding
+//   'critical'      — a P1 finding
+//   'minor'         — findings present, all badged, none P0/P1
+//   'unknown'       — a finding whose severity could not be read
 //
-// Stated that way round on purpose. The obvious implementation — "critical means
-// some head shows a P1" — treats an UNPARSEABLE head as non-critical, so a badge
-// format change, or a finding written without one, would silently turn a safety
-// gate permissive. Unknown severity has to mean "ask", not "carry on", or the
-// gate fails open exactly when it has lost the ability to see.
-export function nonCriticalFindingHeads(comments, reviews = []) {
-  const seen = new Map(); // head -> { badged: boolean, p1: boolean }
+// 'unknown' is a first-class outcome, not a synonym for 'minor'. The obvious
+// shape — "critical means some head shows a P1" — silently reclassifies an
+// unparseable head as harmless, so a badge format change would turn a safety
+// gate permissive exactly when it had lost the ability to see. Callers treat
+// unknown as at least as serious as the worst known tier.
+export function findingHeadSeverity(comments, reviews = []) {
+  const worst = new Map(); // head -> lowest P-number seen, or null when unbadged
   const note = (head, body) => {
     if (typeof head !== 'string' || head.length === 0) return;
-    const text = String(body ?? '');
-    const entry = seen.get(head) ?? { badged: false, p1: false };
-    entry.badged = entry.badged || ANY_BADGE.test(text);
-    entry.p1 = entry.p1 || P1_BADGE.test(text);
-    seen.set(head, entry);
+    const found = [...String(body ?? '').matchAll(BADGE)]
+      .map((match) => Number(match[1] ?? match[2]))
+      .filter((n) => Number.isInteger(n));
+    const prior = worst.has(head) ? worst.get(head) : undefined;
+    if (found.length === 0) {
+      if (prior === undefined) worst.set(head, null);
+      return;
+    }
+    const lowest = Math.min(...found);
+    worst.set(head, prior === undefined || prior === null
+      ? lowest
+      : Math.min(prior, lowest));
   };
   for (const comment of comments ?? []) {
     if (comment?.user?.login !== CODEX_LOGIN) continue;
@@ -178,9 +187,15 @@ export function nonCriticalFindingHeads(comments, reviews = []) {
     if (review?.user?.login !== CODEX_LOGIN) continue;
     note(review.commit_id, review.body);
   }
-  return [...seen.entries()]
-    .filter(([, entry]) => entry.badged && !entry.p1)
-    .map(([head]) => head);
+
+  const severity = new Map();
+  for (const [head, lowest] of worst) {
+    if (lowest === null) severity.set(head, 'unknown');
+    else if (lowest === 0) severity.set(head, 'very-critical');
+    else if (lowest === 1) severity.set(head, 'critical');
+    else severity.set(head, 'minor');
+  }
+  return severity;
 }
 
 function changedFilename(file) {
