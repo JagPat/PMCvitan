@@ -139,6 +139,50 @@ export function codexFindingHeads(comments, reviews = []) {
   return [...heads];
 }
 
+// Which finding heads carry a CRITICAL finding.
+//
+// Codex tags every finding with a severity badge. Matching the BADGE markup is
+// structural; matching a bare "P1" would fire on any prose that mentions it,
+// including a comment explaining the rule itself.
+//
+// This is the signal the restructure gate uses to decide whether crossing the
+// head limit needs a human decision or can simply carry on: five heads of P2
+// polish is a unit converging slowly, five heads still turning up P1s is a unit
+// whose design is in question.
+const P1_BADGE = /!\[P1 Badge\]|badge\/P1-/u;
+const ANY_BADGE = /!\[P\d Badge\]|badge\/P\d-/u;
+
+// Finding heads that are PROVABLY minor: every Codex comment on them carries a
+// severity badge, and none of those badges is P1.
+//
+// Stated that way round on purpose. The obvious implementation — "critical means
+// some head shows a P1" — treats an UNPARSEABLE head as non-critical, so a badge
+// format change, or a finding written without one, would silently turn a safety
+// gate permissive. Unknown severity has to mean "ask", not "carry on", or the
+// gate fails open exactly when it has lost the ability to see.
+export function nonCriticalFindingHeads(comments, reviews = []) {
+  const seen = new Map(); // head -> { badged: boolean, p1: boolean }
+  const note = (head, body) => {
+    if (typeof head !== 'string' || head.length === 0) return;
+    const text = String(body ?? '');
+    const entry = seen.get(head) ?? { badged: false, p1: false };
+    entry.badged = entry.badged || ANY_BADGE.test(text);
+    entry.p1 = entry.p1 || P1_BADGE.test(text);
+    seen.set(head, entry);
+  };
+  for (const comment of comments ?? []) {
+    if (comment?.user?.login !== CODEX_LOGIN) continue;
+    note(comment.original_commit_id ?? comment.commit_id, comment.body);
+  }
+  for (const review of reviews ?? []) {
+    if (review?.user?.login !== CODEX_LOGIN) continue;
+    note(review.commit_id, review.body);
+  }
+  return [...seen.entries()]
+    .filter(([, entry]) => entry.badged && !entry.p1)
+    .map(([head]) => head);
+}
+
 function changedFilename(file) {
   return typeof file === 'string' ? file : file?.filename;
 }

@@ -13,7 +13,7 @@
 // prove that another correction head is the wrong instrument? It never dismisses
 // a finding and never clears a head. Its only outcomes are "keep reviewing" and
 // "stop; restructure".
-import { codexFindingHeads } from './review-efficiency.mjs';
+import { codexFindingHeads, nonCriticalFindingHeads } from './review-efficiency.mjs';
 
 // ONE cap, deliberately.
 //
@@ -31,6 +31,33 @@ import { codexFindingHeads } from './review-efficiency.mjs';
 // nothing to misclassify, and an unreadable file list can no longer leave the
 // threshold undecided, because the threshold no longer depends on it.
 export const RESTRUCTURE_AFTER_FINDING_HEADS = 5;
+
+// How long a restructure decision waits on a human before the loop proceeds.
+//
+// The owner's rule: ask only when it is critical, and if nobody answers within
+// the window, carry on rather than stall. A gate that waits forever is a gate
+// that stops the loop the first time someone is asleep.
+//
+// This times the HUMAN'S REPLY, not the review. `firstSeenAt` remains telemetry
+// that nothing gates on — see nextMetrics — and this uses its own timestamp so
+// that stays true.
+export const DECLARATION_WINDOW_MINUTES = 12 * 60;
+
+// The declaration a human adds to the PR body to answer the request.
+//   <!-- review-restructure: continue -->   keep correcting this unit
+//   <!-- review-restructure: restructure --> split and replace it
+const DECLARATION = /<!--\s*review-restructure:\s*(continue|restructure)\s*-->/iu;
+
+export function restructureDeclaration(body) {
+  return DECLARATION.exec(String(body ?? ''))?.[1]?.toLowerCase() ?? null;
+}
+
+function windowExpired(requestedAtIso, nowIso, windowMinutes) {
+  const requested = Date.parse(typeof requestedAtIso === 'string' ? requestedAtIso : '');
+  const now = Date.parse(typeof nowIso === 'string' ? nowIso : '');
+  if (!Number.isFinite(requested) || !Number.isFinite(now)) return false;
+  return now - requested >= windowMinutes * 60_000;
+}
 
 export const LIFECYCLE_STATES = [
   'reviewing',
@@ -117,6 +144,9 @@ export function assessRestructure({
   body,
   recordedMetrics,
   floorUnreadable = false,
+  nowIso = null,
+  requestedAt = null,
+  declarationWindowMinutes = DECLARATION_WINDOW_MINUTES,
 }) {
   const replaces = replacementSource(body);
   const liveHeads = codexFindingHeads(comments, reviews);
@@ -155,15 +185,83 @@ export function assessRestructure({
   };
 
   if (findingHeadCount >= RESTRUCTURE_AFTER_FINDING_HEADS) {
+    // CRITICAL ONLY. Five heads of P2 polish is a unit converging slowly; five
+    // heads still turning up P1s is a unit whose design is in question, and only
+    // the second is worth interrupting a human for. Blocking on both was the
+    // merged behaviour and it would have stopped PR #263 at head 5 — before the
+    // withdrawal that made it shippable.
+    // Critical unless PROVABLY minor. A head whose severity cannot be read is
+    // critical, so losing the ability to see severity makes the gate ask a human
+    // rather than wave the unit through.
+    const minor = new Set(nonCriticalFindingHeads(comments, reviews));
+    const criticalHeads = merged.ids.filter((id) => !minor.has(id));
+    const critical = criticalHeads.length > 0;
+    if (!critical) {
+      return {
+        ...base,
+        criticalHeads,
+        critical: false,
+        state: 'reviewing',
+        required: false,
+        allowed: true,
+        undecided: false,
+        thresholdCrossed: true,
+        reason: `${findingHeadCount} finding-bearing heads reaches the `
+          + `${RESTRUCTURE_AFTER_FINDING_HEADS}-head limit, but none carries a P1 — `
+          + 'the unit is converging, so it continues without a human decision',
+      };
+    }
+
+    const declared = restructureDeclaration(body);
+    if (declared) {
+      return {
+        ...base,
+        criticalHeads,
+        critical: true,
+        declared,
+        state: declared === 'restructure' ? 'restructure_required' : 'reviewing',
+        required: declared === 'restructure',
+        allowed: declared === 'continue',
+        undecided: false,
+        thresholdCrossed: true,
+        reason: `${findingHeadCount} finding-bearing heads with a P1; the declared `
+          + `decision is to ${declared}`,
+      };
+    }
+
+    // Nobody has answered yet. Wait — but only for the window.
+    if (windowExpired(requestedAt, nowIso, declarationWindowMinutes)) {
+      return {
+        ...base,
+        criticalHeads,
+        critical: true,
+        declared: null,
+        state: 'reviewing',
+        required: false,
+        allowed: true,
+        undecided: false,
+        thresholdCrossed: true,
+        autonomous: true,
+        reason: `${findingHeadCount} finding-bearing heads with a P1; no decision was `
+          + `declared within ${declarationWindowMinutes} minutes, so the loop proceeds `
+          + 'on its own judgement and records that it did',
+      };
+    }
+
     return {
       ...base,
-      state: 'restructure_required',
+      criticalHeads,
+      critical: true,
+      declared: null,
+      state: 'restructure_declaration_required',
       required: true,
       allowed: false,
       undecided: false,
-      reason: `${findingHeadCount} finding-bearing heads reaches the `
-        + `${RESTRUCTURE_AFTER_FINDING_HEADS}-head limit; further correction heads are not `
-        + 'the remedy — the unit must be restructured and replaced',
+      thresholdCrossed: true,
+      requestedAt: requestedAt ?? nowIso,
+      reason: `${findingHeadCount} finding-bearing heads and this unit is still drawing `
+        + 'P1 findings; a human decides whether to keep correcting it or restructure it '
+        + '(add "<!-- review-restructure: continue -->" or "restructure" to the body)',
     };
   }
 

@@ -624,7 +624,11 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     async setStatus(head, state, description) {
       statusWrites.push({ head, state, description });
     },
+    async stickyComment() { return null; },
     async reviewComments() { return reviewComments; },
+    // The lifecycle floor lives in the sticky comment; no record yet is a
+    // legitimate state and must not block.
+    async stickyComment() { return null; },
     async reviews() { return []; },
     async commit() {
       return { commit: { message: 'fix: ordinary head' }, files: [] };
@@ -1424,6 +1428,10 @@ test('final admission revalidates live scope and late convergence evidence', asy
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
     async updateStickyComment(...args) { sticky.push(args); },
+    // The lifecycle floor is read from the sticky comment. No record yet is a
+    // legitimate state; omitting the method makes the read THROW, which fails
+    // closed to `lifecycle_undecided` and is not what this test exercises.
+    async stickyComment() { return null; },
     async reviewComments() { return []; },
     async reviews() { return []; },
     async commit() { return { commit: { message: 'fix: no convergence' }, files: [] }; },

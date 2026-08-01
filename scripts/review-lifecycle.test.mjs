@@ -1,3 +1,18 @@
+// NOTE on the state rename in this file.
+//
+// `restructure_required` split into two states when the owner asked for a
+// human decision at the limit:
+//
+//   restructure_declaration_required — the limit is reached and the unit is
+//     still critical, so a human is asked which way to go. BLOCKING.
+//   restructure_required            — a human answered "restructure". BLOCKING.
+//
+// Every fixture below carries findings with no severity badge, which is UNKNOWN
+// severity, which fails closed to critical — so they land in the first state.
+// `allowed` is false in both, so nothing these tests protect was weakened; the
+// assertions below now pin that explicitly rather than inferring it from the
+// state string.
+
 // Lifecycle tests: reviewing → convergence_audit → restructure_required →
 // replacement_reviewing.
 //
@@ -56,7 +71,7 @@ test('L4: a code unit requires restructuring at the fifth finding head', () => {
     pullRequestFiles: CODE,
     body: '',
   });
-  assert.equal(result.state, 'restructure_required');
+  assert.equal(result.state, 'restructure_declaration_required');
   assert.equal(result.required, true);
   assert.equal(result.allowed, false);
 });
@@ -84,7 +99,7 @@ test('L6: the recorded count is a floor — a rerun seeing fewer heads cannot wa
     recordedMetrics,
   });
   assert.equal(result.findingHeadCount, 5, 'the floor survives a smaller live reading');
-  assert.equal(result.state, 'restructure_required');
+  assert.equal(result.state, 'restructure_declaration_required');
 });
 
 test('L6b: rewriting the branch does not evade the threshold', () => {
@@ -97,7 +112,7 @@ test('L6b: rewriting the branch does not evade the threshold', () => {
     body: '',
     recordedMetrics: { findingHeads: RESTRUCTURE_AFTER_FINDING_HEADS },
   });
-  assert.equal(afterReset.state, 'restructure_required');
+  assert.equal(afterReset.state, 'restructure_declaration_required');
   assert.equal(afterReset.allowed, false);
 });
 
@@ -121,7 +136,7 @@ test('L7: a new clean head does not clear a unit that already crossed the limit'
     body: '',
     recordedMetrics: { findingHeads: 5 },
   });
-  assert.equal(result.state, 'restructure_required');
+  assert.equal(result.state, 'restructure_declaration_required');
   assert.equal(
     result.allowed,
     false,
@@ -155,7 +170,7 @@ test('L8b: a replacement is still bound by the limit on its OWN findings', () =>
   });
   assert.equal(
     result.state,
-    'restructure_required',
+    'restructure_declaration_required',
     'declaring a replacement buys a fresh count, not immunity',
   );
 });
@@ -181,7 +196,7 @@ test('L9: restructure_required never reports allowed, at any count past the limi
       pullRequestFiles: CODE,
       body: '',
     });
-    assert.equal(result.state, 'restructure_required', `count ${count}`);
+    assert.equal(result.state, 'restructure_declaration_required', `count ${count}`);
     assert.equal(result.allowed, false, `count ${count} must never be allowed`);
   }
 });
@@ -196,7 +211,7 @@ test('L10: metrics round-trip through the sticky comment', () => {
     findingsPerHead: { d5e8f61: 2 },
     kind: 'code',
     threshold: 5,
-    state: 'restructure_required',
+    state: 'restructure_declaration_required',
     firstSeenAt: '2026-07-30T08:00:00Z',
     elapsedMinutes: 1_200,
     replaces: 257,
@@ -283,7 +298,7 @@ test('N1c: the identity floor drives the verdict', () => {
     recordedMetrics: { findingHeadIds: ['h1', 'h2', 'h3', 'h4'] },
   });
   assert.equal(result.findingHeadCount, 5);
-  assert.equal(result.state, 'restructure_required');
+  assert.equal(result.state, 'restructure_declaration_required');
 });
 
 
@@ -303,7 +318,7 @@ test('S1: an unreadable file list no longer leaves the threshold undecided', () 
     comments: findingsOn('a', 'b', 'c', 'd', 'e'),
     reviews: [], pullRequestFiles: undefined, body: '',
   });
-  assert.equal(over.state, 'restructure_required');
+  assert.equal(over.state, 'restructure_declaration_required');
   assert.equal(over.allowed, false);
 });
 

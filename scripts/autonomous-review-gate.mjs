@@ -1,6 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { loadStatusDocument } from './autonomous-status-state.mjs';
+import {
+  DECLARATION_WINDOW_MINUTES,
+  assessRestructure,
+  readMetrics,
+  renderMetrics,
+} from './review-lifecycle.mjs';
 
 import {
   codexThreadIdsToResolve,
@@ -711,6 +717,23 @@ export class GitHubClient {
     return ids.length;
   }
 
+  // Reads the sticky comment the gate maintains. The lifecycle floor lives in it,
+  // and a MISSING comment is a legitimate state (a unit nobody has posted about
+  // yet) — distinct from a FAILED read, which the caller must not mistake for
+  // "no findings recorded". So absence returns null and only a transport error
+  // throws.
+  async stickyComment(number) {
+    const comments = await this.request(
+      `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
+    );
+    const existing = comments.find(
+      (comment) =>
+        comment.user?.login === 'github-actions[bot]' &&
+        comment.body?.includes(COMMENT_MARKER),
+    );
+    return existing?.body ?? null;
+  }
+
   async updateStickyComment(number, body) {
     const comments = await this.request(
       `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
@@ -1007,6 +1030,91 @@ export async function enforceReviewConvergence(
   return result;
 }
 
+// The five-head limit, wired.
+//
+// `review-lifecycle.mjs` shipped as a policy model in #259 and was imported by
+// nothing but its own tests, so the rule never fired — PR #263 ran to six
+// finding-bearing heads without it once triggering. A rule nothing consults
+// governs nothing; this is the call site that makes it real.
+//
+// The owner's shape: ask a human only when it is CRITICAL, and if nobody answers
+// inside the window, proceed and record that it proceeded unanswered.
+export async function enforceReviewLifecycle(client, pullRequest, expectedHead) {
+  const [comments, reviews] = await Promise.all([
+    client.reviewComments(pullRequest.number),
+    client.reviews(pullRequest.number),
+  ]);
+
+  // The durable floor lives in the sticky comment. An unreadable read is passed
+  // through as `floorUnreadable` rather than treated as "no record", because the
+  // module blocks on that instead of guessing.
+  let recordedMetrics = null;
+  let floorUnreadable = false;
+  try {
+    recordedMetrics = readMetrics(await client.stickyComment(pullRequest.number));
+  } catch {
+    floorUnreadable = true;
+  }
+
+  let pullRequestFiles;
+  try {
+    pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
+  } catch {
+    pullRequestFiles = undefined;
+  }
+
+  const nowIso = new Date().toISOString();
+  const result = assessRestructure({
+    comments,
+    reviews,
+    pullRequestFiles,
+    body: pullRequest.body,
+    recordedMetrics,
+    floorUnreadable,
+    nowIso,
+    requestedAt: recordedMetrics?.declarationRequestedAt ?? null,
+  });
+  if (result.allowed) return result;
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return { ...result, superseded: true };
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `lifecycle: ${result.reason}`.slice(0, 140),
+    pullRequest.html_url,
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    `${statusBody({
+      state: result.state,
+      head: expectedHead,
+      detail: result.reason,
+      attempt: 0,
+      next: result.state === 'restructure_required'
+        ? 'A human declared RESTRUCTURE: split this unit and open a replacement that declares Replaces: #'
+          + `${pullRequest.number}.`
+        : 'A human decides: add "<!-- review-restructure: continue -->" to keep correcting this '
+          + 'unit, or "<!-- review-restructure: restructure -->" to split and replace it. If '
+          + `nobody answers within ${DECLARATION_WINDOW_MINUTES} minutes the loop proceeds on its `
+          + 'own judgement and records that it did.',
+    })}\n${renderMetrics({
+      ...(recordedMetrics ?? {}),
+      findingHeads: result.findingHeadCount,
+      findingHeadIds: result.findingHeadIds ?? [],
+      // Stamped ONCE, when the request is first made, so the window measures the
+      // human's reply and not the age of the newest head.
+      declarationRequestedAt: recordedMetrics?.declarationRequestedAt ?? nowIso,
+    })}`,
+  );
+  return result;
+}
+
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
   const result = assessReviewScope(pullRequest);
   if (result.allowed) return result;
@@ -1062,6 +1170,17 @@ export async function revalidateFinalReviewPolicy(
   if (!convergence.allowed) {
     return { ...convergence, state: 'convergence_required' };
   }
+
+  const lifecycle = await enforceReviewLifecycle(client, pullRequest, expectedHead);
+  if (lifecycle.superseded) return { ...lifecycle, state: 'superseded' };
+  // `undecided` means the durable floor could not be read, so whether this unit
+  // has already crossed its limit is unverified. It blocks — but it is NOT the
+  // same as a decided verdict, and returning the module's `reviewing` state for
+  // it would publish a blocked PR labelled as if it were progressing.
+  if (lifecycle.undecided) {
+    return { ...lifecycle, state: 'lifecycle_undecided', allowed: false };
+  }
+  if (!lifecycle.allowed) return { ...lifecycle };
 
   const finding = await guardAgainstCurrentHeadFinding(
     client, pullRequest, expectedHead, null,
