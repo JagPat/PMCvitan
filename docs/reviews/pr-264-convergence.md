@@ -81,6 +81,46 @@ changes now say it:
    *provably* minor; unclassifiable heads counted as unknown; unknown takes the
    longest window rather than the shortest. `W7`, `W9`, `W11`, `W12`.
 
+### The one the audit found that mattered — a fabricated human approval
+
+Checking the claim *"a human answers by adding a marker to the PR body"* rather
+than restating it turned up the worst defect this unit had.
+
+The request comment tells a human to use an exact marker. The answer was read
+from the **PR body**. So any prose *explaining how to answer contained an
+answer* — and the first draft of this pull request's own description documented
+the mechanism, which would have declared `continue` on its own behalf.
+
+```
+restructureDeclaration('A human answers by adding <!-- review-restructure:
+  continue --> to the body.')            ->  'continue'
+```
+
+That is a **fabricated human approval**, in a repository whose standing rule is
+that human approvals stay attributable. And the framing was wrong beneath the
+bug: the PR body is written by Claude, so a decision read out of it is the loop
+approving itself, quoting hazard or not. It is not a weak channel — it is not a
+human channel at all.
+
+Fixed structurally, three independent mechanisms, each discriminated:
+
+| Mechanism | Closes |
+| --- | --- |
+| the answer is read from a **comment**, never the body | the loop cannot author its own approval |
+| the author must be a non-bot with `OWNER`/`MEMBER`/`COLLABORATOR` association | the asker cannot answer itself; nor can a passer-by |
+| markers inside code spans and fences are being *shown*, not used | documenting the mechanism is not invoking it |
+
+`W16` covers all four cases plus the positive control (a real maintainer comment
+still works — the gate is closed, not welded shut); `W17` pins latest-answer-wins
+so a maintainer can change their mind by posting again rather than editing
+history. `declaredBy` now records **who** decided, which is what "attributable"
+requires and what the previous version could not have reported.
+
+Worth noting how this survived: the declaration path had **no coverage in the
+policy model's own 20 tests**. `review-lifecycle.test.mjs` never exercised a
+declaration at all, which is why swapping the entire channel broke nothing there.
+The rule that governed nothing also tested nothing about the part a human touches.
+
 ### One more, found by this audit
 
 Writing the table above sent me back through the record a human actually reads,
@@ -149,9 +189,9 @@ because it does not.
 
 | Gate | Result |
 | --- | --- |
-| `scripts/review-lifecycle-enforcement.test.mjs` | **15/15** |
+| `scripts/review-lifecycle-enforcement.test.mjs` | **17/17** |
 | `scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | **196/196** |
+| `pnpm test:automation` | **198/198** |
 | `pnpm check` | **EXIT 0** |
 
 ### Discrimination — each mechanism reverted in turn
@@ -165,7 +205,10 @@ because it does not.
 | `updateStickyComment` overwrites without carry-forward (F6) | `W13` |
 | the `floorUnreadable` path writes its metrics block (F7) | `W14` |
 | the reason strings' window interpolation | `W15` |
-| — restored — | **15/15** |
+| the declaration read from the PR body | `W16` |
+| bots and non-maintainers accepted as declarers | `W16` |
+| markers in code spans treated as declarations | `W16` |
+| — restored — | **17/17** |
 
 `W1` covers the original defect — the rule existing but being called by nothing —
 and fails if the enforcer is ever dropped from the final policy chain again.

@@ -722,10 +722,14 @@ export class GitHubClient {
   // yet) — distinct from a FAILED read, which the caller must not mistake for
   // "no findings recorded". So absence returns null and only a transport error
   // throws.
-  async stickyComment(number) {
-    const comments = await this.request(
+  async issueComments(number) {
+    return this.request(
       `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
     );
+  }
+
+  async stickyComment(number) {
+    const comments = await this.issueComments(number);
     const existing = comments.find(
       (comment) =>
         comment.user?.login === 'github-actions[bot]' &&
@@ -1074,12 +1078,24 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     pullRequestFiles = undefined;
   }
 
+  // The human's answer lives in a COMMENT, not the body. An unreadable list is
+  // "nobody has answered yet", which BLOCKS and keeps waiting — the permissive
+  // outcomes here are `continue` and window expiry, and neither may be inferred
+  // from a read that failed.
+  let issueComments = [];
+  try {
+    issueComments = await client.issueComments(pullRequest.number);
+  } catch {
+    issueComments = [];
+  }
+
   const nowIso = new Date().toISOString();
   const result = assessRestructure({
     comments,
     reviews,
     pullRequestFiles,
     body: pullRequest.body,
+    issueComments,
     recordedMetrics,
     floorUnreadable,
     nowIso,
@@ -1117,8 +1133,13 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
       next: result.state === 'restructure_required'
         ? 'A human declared RESTRUCTURE: split this unit and open a replacement that declares Replaces: #'
           + `${pullRequest.number}.`
-        : 'A human decides: add "<!-- review-restructure: continue -->" to keep correcting this '
-          + 'unit, or "<!-- review-restructure: restructure -->" to split and replace it. If '
+        // The markers are shown in code spans, and the answer is read from a
+        // maintainer's COMMENT rather than the body: quoting the instructions
+        // must never count as obeying them, and the decision has to be
+        // attributable to a person rather than to a document the loop writes.
+        : 'A maintainer decides, by posting a COMMENT on this pull request containing '
+          + '`<!-- review-restructure: continue -->` to keep correcting this unit, or '
+          + '`<!-- review-restructure: restructure -->` to split and replace it. If '
           + `nobody answers within ${result.windowMinutes} minutes (the ${result.tier} `
           + 'window) the loop proceeds on its own judgement and records that it did.',
     })}${floorUnreadable ? '' : `\n${renderMetrics({

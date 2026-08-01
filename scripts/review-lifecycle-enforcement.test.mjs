@@ -25,12 +25,23 @@ const heads = (n, body) => Array.from({ length: n }, (_, i) => ({
   user: { login: CODEX }, commit_id: `head${i}`, body,
 }));
 
-function fakeClient({ comments = [], sticky = null, stickyThrows = false } = {}) {
+// A maintainer's answer, on the only channel that carries one: a comment with a
+// real author and write access. `says(null, body)` writes arbitrary prose.
+const says = (decision, body = null) => ({
+  user: { login: 'JagPat', type: 'User' },
+  author_association: 'OWNER',
+  body: body ?? `<!-- review-restructure: ${decision} -->`,
+});
+
+function fakeClient({
+  comments = [], sticky = null, stickyThrows = false, issueComments = [],
+} = {}) {
   const calls = { status: [], sticky: [], draft: 0 };
   return {
     calls,
     reviewComments: async () => comments,
     reviews: async () => [],
+    issueComments: async () => issueComments,
     pullRequestFiles: async () => [{ filename: 'apps/api/src/x.ts' }],
     stickyComment: async () => {
       if (stickyThrows) throw new Error('transport');
@@ -109,18 +120,88 @@ test('W5: unanswered past the window, the loop PROCEEDS and records that it did'
 
 test('W6: a declared decision is obeyed, both ways', async () => {
   const cont = await enforceReviewLifecycle(
-    fakeClient({ comments: heads(5, P1) }),
-    { ...pr, body: '<!-- review-restructure: continue -->' }, 'h',
+    fakeClient({ comments: heads(5, P1), issueComments: [says('continue')] }), pr, 'h',
   );
   assert.equal(cont.allowed, true);
   assert.equal(cont.declared, 'continue');
+  assert.equal(cont.declaredBy, 'JagPat', 'the decision is attributed to whoever made it');
 
   const split = await enforceReviewLifecycle(
-    fakeClient({ comments: heads(5, P1) }),
-    { ...pr, body: '<!-- review-restructure: restructure -->' }, 'h',
+    fakeClient({ comments: heads(5, P1), issueComments: [says('restructure')] }), pr, 'h',
   );
   assert.equal(split.allowed, false);
   assert.equal(split.state, 'restructure_required');
+});
+
+test('W16: quoting the instructions is NOT obeying them', async () => {
+  // Found while auditing, and it is the worst defect this unit had: the answer
+  // was read from the PR BODY, and the request tells a human to use this exact
+  // marker — so prose EXPLAINING how to answer contained an answer. This pull
+  // request's own description documented the mechanism and would have declared
+  // "continue" on its own behalf. That is a fabricated human approval, in a
+  // repository whose standing rule is that approvals stay attributable.
+  const marker = '<' + '!-- review-restructure: continue --' + '>';
+
+  // 1. The body is no longer a channel at all. It is written by the loop, so a
+  //    decision read from it is the loop approving itself.
+  const viaBody = await enforceReviewLifecycle(
+    fakeClient({ comments: heads(5, P1) }),
+    { ...pr, body: `A human answers by adding ${marker} to the body.` }, 'h',
+  );
+  assert.equal(viaBody.allowed, false, 'the PR body can never declare a decision');
+  assert.equal(viaBody.state, 'restructure_declaration_required');
+
+  // 2. Nor can the loop's OWN comment, which quotes the marker every time it asks.
+  const viaBot = await enforceReviewLifecycle(
+    fakeClient({
+      comments: heads(5, P1),
+      issueComments: [{
+        user: { login: 'github-actions[bot]', type: 'Bot' },
+        author_association: 'NONE',
+        body: `A maintainer decides by commenting ${marker}`,
+      }],
+    }), pr, 'h',
+  );
+  assert.equal(viaBot.allowed, false, 'the asker must not be able to answer itself');
+
+  // 3. Nor a drive-by from someone without write access.
+  const viaStranger = await enforceReviewLifecycle(
+    fakeClient({
+      comments: heads(5, P1),
+      issueComments: [{
+        user: { login: 'passer-by', type: 'User' },
+        author_association: 'NONE', body: marker,
+      }],
+    }), pr, 'h',
+  );
+  assert.equal(viaStranger.allowed, false, 'only a maintainer decides');
+
+  // 4. And a maintainer SHOWING the marker in a code span is documenting it.
+  const viaCodeSpan = await enforceReviewLifecycle(
+    fakeClient({
+      comments: heads(5, P1),
+      issueComments: [says(null, `you answer with \`${marker}\`, like this`)],
+    }), pr, 'h',
+  );
+  assert.equal(viaCodeSpan.allowed, false, 'a marker being shown is not a marker being used');
+
+  // The real thing still works — the gate is closed, not welded shut.
+  const real = await enforceReviewLifecycle(
+    fakeClient({ comments: heads(5, P1), issueComments: [says('continue')] }), pr, 'h',
+  );
+  assert.equal(real.allowed, true);
+});
+
+test('W17: the LATEST maintainer answer wins', async () => {
+  // A human may change their mind, and posting again must be enough — nobody
+  // should have to edit history to be heard.
+  const client = fakeClient({
+    comments: heads(5, P1),
+    issueComments: [says('continue'), says('restructure')],
+  });
+  const result = await enforceReviewLifecycle(client, pr, 'h');
+  assert.equal(result.declared, 'restructure');
+  assert.equal(result.allowed, false);
 });
 
 test('W7: UNKNOWN severity fails closed — it asks, it does not wave through', async () => {

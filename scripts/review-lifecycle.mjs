@@ -49,13 +49,54 @@ export function declarationWindowFor(tier) {
   return tier === 'critical' ? CRITICAL_WINDOW_MINUTES : VERY_CRITICAL_WINDOW_MINUTES;
 }
 
-// The declaration a human adds to the PR body to answer the request.
+// The declaration a human posts as a COMMENT to answer the request:
 //   <!-- review-restructure: continue -->   keep correcting this unit
 //   <!-- review-restructure: restructure --> split and replace it
+//
+// It is read from a comment and not from the PR body, for two reasons.
+//
+// The body is written by Claude. Reading a human's decision out of a document
+// the loop authors itself is not an attributable approval at all — it is the
+// loop approving itself, and this repository's standing rule is that human
+// approvals stay attributable. A comment carries an author and an association.
+//
+// And the body form was actively unsafe: the request comment tells a human to
+// use this exact marker, so any prose EXPLAINING how to answer contained an
+// answer. The first draft of this pull request's own description documented the
+// mechanism and would have declared "continue" on its own behalf, fabricating a
+// human decision nobody made. Quoting the instructions must never be obeying
+// them.
 const DECLARATION = /<!--\s*review-restructure:\s*(continue|restructure)\s*-->/iu;
 
-export function restructureDeclaration(body) {
-  return DECLARATION.exec(String(body ?? ''))?.[1]?.toLowerCase() ?? null;
+// Markers inside code spans or fences are being SHOWN, not used — which is how
+// anyone documents the mechanism, including the request comment this gate posts.
+const FENCED = /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`/gu;
+
+export function restructureDeclaration(source) {
+  return DECLARATION.exec(String(source ?? '').replace(FENCED, ' '))?.[1]?.toLowerCase() ?? null;
+}
+
+// Only a human with write access on the repository can decide this. Bots are
+// excluded by both signals GitHub gives, since the loop's own comments quote the
+// marker every time it asks.
+const AUTHORITATIVE = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+function isHuman(comment) {
+  const login = comment?.user?.login ?? '';
+  if (comment?.user?.type === 'Bot' || login.endsWith('[bot]')) return false;
+  return AUTHORITATIVE.has(String(comment?.author_association ?? '').toUpperCase());
+}
+
+// The LATEST authoritative answer wins, so a human can change their mind by
+// posting again rather than editing history.
+export function humanDeclaration(comments) {
+  let declared = null;
+  for (const comment of comments ?? []) {
+    if (!isHuman(comment)) continue;
+    const found = restructureDeclaration(comment.body);
+    if (found) declared = { declared: found, by: comment.user?.login ?? null };
+  }
+  return declared;
 }
 
 function windowExpired(requestedAtIso, nowIso, windowMinutes) {
@@ -153,6 +194,7 @@ export function assessRestructure({
   nowIso = null,
   requestedAt = null,
   declarationWindowMinutes = null,
+  issueComments = null,
 }) {
   const replaces = replacementSource(body);
   const liveHeads = codexFindingHeads(comments, reviews);
@@ -239,8 +281,9 @@ export function assessRestructure({
       };
     }
 
-    const declared = restructureDeclaration(body);
-    if (declared) {
+    const answer = humanDeclaration(issueComments);
+    if (answer) {
+      const { declared, by } = answer;
       return {
         ...base,
         criticalHeads,
@@ -248,13 +291,14 @@ export function assessRestructure({
         tier,
         windowMinutes: window,
         declared,
+        declaredBy: by,
         state: declared === 'restructure' ? 'restructure_required' : 'reviewing',
         required: declared === 'restructure',
         allowed: declared === 'continue',
         undecided: false,
         thresholdCrossed: true,
-        reason: `${findingHeadCount} finding-bearing heads with a P1; the declared `
-          + `decision is to ${declared}`,
+        reason: `${findingHeadCount} finding-bearing heads with a P1; ${by ?? 'a maintainer'} `
+          + `declared the decision to ${declared}`,
       };
     }
 
@@ -293,8 +337,8 @@ export function assessRestructure({
       thresholdCrossed: true,
       requestedAt: requestedAt ?? nowIso,
       reason: `${findingHeadCount} finding-bearing heads and this unit is still drawing `
-        + 'P1 findings; a human decides whether to keep correcting it or restructure it '
-        + '(add "<!-- review-restructure: continue -->" or "restructure" to the body). '
+        + 'P1 findings; a maintainer decides whether to keep correcting it or restructure '
+        + 'it, by COMMENTING the review-restructure marker (continue or restructure). '
         + `Unanswered after ${window} minutes the loop proceeds on its own judgement`,
     };
   }
