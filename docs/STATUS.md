@@ -10,19 +10,20 @@ narrative and may lag behind reality.
 ## Now
 
 ```yaml
-phase: 4
-phase_plan: docs/superpowers/plans/2026-07-23-phase-4-labour-readiness.md
-task: 6
-task_state: in_review
-work_item: none
-reviewed_merge: 67e7a00
-open_pr: 265
-next_task: phase-5-planning
+phase: 5
+phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
+task: 1
+task_state: in_progress
+work_item: phase-5-plan-split
+reviewed_merge: a878356
+open_pr: none
+next_task: phase-5-task-1
 blocking_directive: none
 updated: 2026-08-01
 ```
 
-**PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
+**PHASE 5 IS THE ACTIVE PHASE** — its plan split is held for independent review and no
+Phase-5 code exists. **PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
 `codex-current-head` gate with independent Codex clearance. Task 6 — the FINAL
 Phase-4 review stop — merged as PR #246 at `main` `67e7a00` with a fresh clean
 Codex +1 on the exact head `f098be7`, after fifteen exact-head correction
@@ -37,6 +38,30 @@ explicitly instructing automatic next-phase progression (recorded in
 `docs/reviews/pr-248-convergence.md`). The **Maintenance queue** below
 remains the standing work source whenever no phase task, no correction, and
 no open PR is active.
+
+## Phase 5 — commercial control
+
+Plan: `docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md`.
+
+PR #252 specified all seven tasks in one 1,661-line document and drew TWENTY rounds of
+correct findings that never fell, because each round found a real defect in a different
+task. The owner approved the remedy after round 12; this head executes it. The plan now
+carries only the settled cross-cutting parts (§0 canonical evidence sets, §0b, §A, §K,
+§L, §M, the task table, §N); §B–§I and the per-task probes travel verbatim into each
+task's own PR. Nothing is dismissed — only the place of verification moves.
+
+| Task | Summary | State |
+|---|---|---|
+| — | Plan split (this PR) | in_progress — held for independent review |
+| 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | not_started |
+| 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | not_started |
+| 3 | `Measurement` (§D) — immutable, delta corrections, sign-off gate | not_started — **STOP** |
+| 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | not_started |
+| 5 | Three-way verification (§E) + `verified` + dispute + certification + bound 3 + §H + SoD | not_started — **STOP** |
+| 6 | Payment approval + payment records + reversals + bounds 4–5 + approval limits | not_started |
+| 7 | Cash forecast (§J) + frontend (§M) + pilot chain + consolidated packet | not_started — **FINAL STOP** |
+
+**Task 1 does not begin until this split plan is independently cleared.**
 
 ## Phase 4 — labour readiness
 
