@@ -1,7 +1,7 @@
 # Convergence audit — PR #264 (wiring the five-head restructure rule)
 
 Required by `CLAUDE.md` after two distinct finding-bearing heads. This is an
-architectural audit of all twenty-eight findings together, not a series of isolated
+architectural audit of all thirty-two findings together, not a series of isolated
 patches. Round 3 matters most: it is the audit's own root cause, reproduced by
 the fix written for it.
 
@@ -17,6 +17,7 @@ the fix written for it.
 | `442759b` | 2 — **one P1**, caused by the previous round's fix |
 | `651c58f` | 2 — **one P1**; the owner chose RESTRUCTURE over a fifth patch |
 | `81ce79e` | 2 — **one P1**; the restructure modelled one of two request endings |
+| `fa287d7` | 4 — **two P1**; escalated to the owner, who did not answer |
 
 ## The finding that is not like the others
 
@@ -493,6 +494,59 @@ enumerating the complete set.** The remedy that has actually worked, twice now, 
 mechanical — grep for every reader before changing a shape; list every way a
 state can end before modelling one. Where I have done that, the fix has held.
 
+## Round 11 — escalated, unanswered, proceeded
+
+Four findings, two of them P1, and the count ROSE. I had committed to stopping
+rather than patching another P1, so I put the decision to the owner with four
+options and a recommendation to SPLIT the unit. They did not answer.
+
+Their own step-4b rule covers exactly that: *if the human doesn't reply in the
+given time frame, proceed as you see fit.* So the loop proceeded, on the least
+irreversible option — fix the findings, take no action that forecloses anything.
+Splitting or parking remains equally available and equally cheap; closing this
+pull request and opening a replacement is the one move that is hard to undo, and
+it was not taken unasked. This paragraph is the record that it happened.
+
+### The P1 that my own previous fix caused — third round running
+
+Round 10 keyed a request's ending to TIME. But the **same head passes this gate
+twice**: once before Codex promotion, once at final admission. Consuming the
+answer on the first call made the second open a brand-new window and block the
+merge it had just authorised. The fix for "one answer authorises every later
+head" broke "an answer authorises the head that earned it".
+
+The ending is now keyed to the **head** that caused it (`consumedBy`,
+`autonomousBy`). The head that spent a request still sees its own decision; any
+later head sees it ended and must ask again. Both properties hold at once, which
+neither round 9 nor round 10 achieved (`W39`).
+
+### The P1 that was a real authorization hole
+
+`author_association` was treated as authority. `MEMBER` and `COLLABORATOR` are
+**relationship labels**: on an organisation repo a read-only member carries
+`MEMBER` and could have admitted an over-limit critical head as if a maintainer
+decided it. The association is now only a cheap pre-filter, and the surviving
+candidate's real repository permission (write / maintain / admin) is verified
+before the marker counts — with a failed lookup resolving to `none` (`W41`).
+
+Resolving a declaration now needs I/O, so it happens in the gate and the verified
+answer is handed to `assessRestructure`, keeping that module pure.
+
+The two P2s: `unreadable` now outranks a readable P1 when sizing the wait (a head
+carrying both was taking the 3-hour window instead of the 6-hour one, timing out
+three hours early), and Markdown's **indented** code blocks are stripped like
+fenced ones, so a maintainer showing the marker as a four-space example is not
+read as deciding.
+
+### Honest status of this unit
+
+Findings per round: 6, 1, 4, 4, 3, 3, 1, 2, 2, 2, **4**. Rounds 8–11 each carried
+at least one P1, and three of those four P1s were caused by the immediately
+preceding round's fix. The individual fixes are correct and each is
+discriminated, but **I cannot call this converging** — my judgement that a given
+fix is small and safe has been wrong three rounds running, which is the argument
+for someone else choosing the next move rather than me.
+
 ## The original F3 record — superseded, kept for the reasoning
 
 > `auto-merge.yml` triggers on `workflow_run` and `workflow_dispatch` only. There
@@ -546,9 +600,9 @@ because it does not.
 
 | Gate | Result |
 | --- | --- |
-| `scripts/review-lifecycle-enforcement.test.mjs` | **40/40** |
+| `scripts/review-lifecycle-enforcement.test.mjs` | **43/43** |
 | `scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | **221/221** |
+| `pnpm test:automation` | **224/224** |
 | `pnpm check` | **EXIT 0** |
 
 ### Discrimination — each mechanism reverted in turn

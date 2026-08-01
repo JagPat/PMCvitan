@@ -564,6 +564,37 @@ export class GitHubClient {
 
   // Open autonomous units only. The sweep runs on a timer over every open pull
   // request, so it stays scoped to the branches this loop owns.
+  // The commenter's REAL repository permission, not their relationship label.
+  //
+  // `MEMBER` and `COLLABORATOR` say how someone relates to the org or repo, not
+  // what they may do to it: on an organisation repo a READ-ONLY member carries
+  // `MEMBER` and could otherwise declare a decision they have no authority to
+  // make. Only write, maintain or admin may decide.
+  //
+  // Cached per run because the same author is checked by the gate and the sweep,
+  // and an unreadable answer must never be treated as an authorised one — a
+  // failed lookup returns 'none'.
+  async permissionFor(login) {
+    this.permissions ??= new Map();
+    if (this.permissions.has(login)) return this.permissions.get(login);
+    let level = 'none';
+    try {
+      const result = await this.request(
+        `/repos/${this.repository}/collaborators/${encodeURIComponent(login)}/permission`,
+      );
+      level = String(result?.permission ?? 'none').toLowerCase();
+    } catch {
+      level = 'none';
+    }
+    this.permissions.set(login, level);
+    return level;
+  }
+
+  async canDecide(login) {
+    if (!login) return false;
+    return ['admin', 'maintain', 'write'].includes(await this.permissionFor(login));
+  }
+
   async openAutonomousPullRequests() {
     const open = await this.paginated(
       `/repos/${this.repository}/pulls?state=open`,
@@ -1180,6 +1211,24 @@ async function recordLifecycle(client, pullRequest, body, { carry, floor, reques
   }
 }
 
+// A declaration that is both RECENT and AUTHORISED.
+//
+// `humanDeclaration` narrows on the cheap signals — a non-bot with a plausible
+// association, answering after the request. This adds the expensive one that
+// actually decides: the author's real repository permission. Used by the gate
+// (which acts on the answer) and by the sweep (so an unauthorised comment cannot
+// make it re-dispatch every fifteen minutes forever).
+async function authorisedDeclaration(client, comments, requestedAt, log = console.log) {
+  const candidate = humanDeclaration(comments, requestedAt);
+  if (!candidate) return null;
+  if (await client.canDecide(candidate.by)) return candidate;
+  log(
+    `lifecycle: ignoring "${candidate.declared}" from ${candidate.by ?? 'an unknown author'} `
+    + '— the marker only counts from someone with write access to this repository',
+  );
+  return null;
+}
+
 // The FALLBACK, and only the fallback.
 //
 // Every other transition in this loop is event-driven and reacts the moment it
@@ -1238,9 +1287,11 @@ export async function sweepExpiredWindows(client, {
     const request = lifecycleRequestOf(metrics);
     if (!expired && !unreadable && request?.at) {
       try {
-        answered = humanDeclaration(
+        answered = await authorisedDeclaration(
+          client,
           await client.issueComments(pullRequest.number),
           request.at,
+          () => {},
         );
       } catch {
         answered = null;
@@ -1336,17 +1387,26 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
   }
 
   const nowIso = new Date().toISOString();
+  // The request THIS head is waiting on. Passing the head matters: a request
+  // ended BY this head is still this head's own decision, so the merge it
+  // authorised is not blocked by the gate re-running at final admission.
+  const openRequest = liveLifecycleRequest(recordedMetrics, expectedHead);
+  const declaration = declarationsUnreadable || !openRequest?.at
+    ? null
+    : await authorisedDeclaration(client, issueComments, openRequest.at);
+
   const result = assessRestructure({
     comments,
     reviews,
     pullRequestFiles,
     body: pullRequest.body,
     issueComments,
+    declaration,
     declarationsUnreadable,
     recordedMetrics,
     floorUnreadable,
     nowIso,
-    requestedAt: liveLifecycleRequest(recordedMetrics)?.at ?? null,
+    requestedAt: openRequest?.at ?? null,
     // The recorded window, fed BACK. It was written for the sweep and then never
     // read here, so the assessment recomputed it from current severity every
     // run. A unit first blocked on unclassified evidence records 360 minutes;
@@ -1357,7 +1417,7 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     // The LONGER of the two wins, so the promise cannot shrink and a
     // reclassification to something more serious still extends it — the same
     // fail-closed direction as unknown severity taking the longest window.
-    declarationWindowMinutes: recordedWindowMinutes(recordedMetrics),
+    declarationWindowMinutes: recordedWindowMinutes(recordedMetrics, expectedHead),
   });
 
   // Proceeding UNANSWERED is the one permissive outcome nobody authorised, and
@@ -1390,6 +1450,7 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
         windowMinutes: open?.windowMinutes ?? result.windowMinutes,
         tier: open?.tier ?? result.tier,
         autonomousAt: open?.autonomousAt ?? nowIso,
+        autonomousBy: open?.autonomousBy ?? expectedHead,
       }),
     });
     return result;
@@ -1402,7 +1463,7 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
   // instead of six and promote another review rather than asking. Crossing the
   // threshold is the fact worth recording, whatever the verdict on it was.
   if (result.allowed && result.thresholdCrossed) {
-    const consuming = result.declared ? liveLifecycleRequest(recordedMetrics) : null;
+    const consuming = result.declared ? openRequest : null;
     await recordLifecycle(client, pullRequest, statusBody({
       state: result.declared ? 'lifecycle_declared' : 'lifecycle_crossed',
       head: expectedHead,
@@ -1430,7 +1491,11 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
       // Without a declaration this path opens nothing and must not disturb a
       // live request — a crossed-but-minor unit is not waiting on anybody.
       request: consuming
-        ? lifecycleRequest({ ...consuming, consumedAt: nowIso })
+        ? lifecycleRequest({
+          ...consuming,
+          consumedAt: consuming.consumedAt ?? nowIso,
+          consumedBy: consuming.consumedBy ?? expectedHead,
+        })
         : (lifecycleRequestOf(recordedMetrics) ?? undefined),
     });
     return result;
@@ -1489,7 +1554,7 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     // `expiredWindow` returned null forever and the sweep never re-dispatched —
     // the unit sat on a wait nothing could end. Written whole, a spent request
     // cannot leak into the one that replaces it.
-    const live = liveLifecycleRequest(recordedMetrics);
+    const live = openRequest;
     await recordLifecycle(client, pullRequest, statusBody({
       state: result.state,
       head: expectedHead,

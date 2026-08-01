@@ -85,38 +85,47 @@ export function lifecycleRequestOf(metrics) {
   return null;
 }
 
-// The recorded request ONLY while it is still live.
+// The recorded request ONLY while it is still live FOR THIS HEAD.
 //
-// A request ends in exactly TWO ways, and round 9 modelled only the first:
+// A request ends in exactly two ways, and it ends **for a head**, not at a time:
 //
-//   `autonomousAt` — the window ran out and the loop overrode it.
-//   `consumedAt`   — a maintainer ANSWERED it.
+//   `autonomousAt` / `autonomousBy` — the window ran out and the loop overrode it.
+//   `consumedAt`   / `consumedBy`   — a maintainer ANSWERED it.
 //
-// Missing the second was a P1. An answered request stayed live, so the same
-// comment kept postdating it: on the next correction head the gate re-read that
-// one old `continue` and admitted the head without a fresh decision. A single
-// answer authorised unlimited future critical heads, which is the opposite of
-// what asking a human is for.
+// Round 9 modelled only the first ending. Round 10 added the second and keyed it
+// to time alone, which broke the merge path: the SAME head passes this gate
+// twice — once before Codex promotion, once at final admission — so consuming
+// the answer on the first call made the second call open a brand-new window and
+// block the merge it had just authorised.
 //
-// Either stamp ends the request. The next block opens a FRESH one, and an answer
-// must postdate THAT — so old evidence fails closed on a new head.
-export function liveLifecycleRequest(metrics) {
+// Keying the ending to the head that caused it settles both. The head that spent
+// a request still sees it as its own decision, so it merges; any LATER head sees
+// it as ended and must ask again. Old evidence fails closed without the decision
+// evaporating under the head that earned it.
+export function liveLifecycleRequest(metrics, forHead = null) {
   const request = lifecycleRequestOf(metrics);
   if (!request) return null;
-  return request.autonomousAt || request.consumedAt ? null : request;
+  const endedBy = request.consumedBy ?? request.autonomousBy ?? null;
+  if (!request.autonomousAt && !request.consumedAt) return request;
+  // Ended, but by THIS head: still that head's own decision.
+  return forHead && endedBy && endedBy === forHead ? request : null;
 }
 
 // Build the request to RECORD. Callers pass the whole thing, never a spread of
 // the old one, which is what keeps a stale field from surviving.
 export function lifecycleRequest({
-  at, windowMinutes, tier, autonomousAt = null, consumedAt = null,
+  at, windowMinutes, tier,
+  autonomousAt = null, autonomousBy = null,
+  consumedAt = null, consumedBy = null,
 }) {
   return {
     at,
     windowMinutes,
     tier,
     ...(autonomousAt ? { autonomousAt } : {}),
+    ...(autonomousBy ? { autonomousBy } : {}),
     ...(consumedAt ? { consumedAt } : {}),
+    ...(consumedBy ? { consumedBy } : {}),
   };
 }
 
@@ -127,8 +136,8 @@ export function lifecycleRequest({
 // allowed to SHRINK on a later run — see the `Math.max` at the call site — so a
 // unit first blocked on unclassified evidence keeps its six hours even once the
 // heads become classifiable as merely P1.
-export function recordedWindowMinutes(metrics) {
-  const recorded = Number(liveLifecycleRequest(metrics)?.windowMinutes);
+export function recordedWindowMinutes(metrics, forHead = null) {
+  const recorded = Number(liveLifecycleRequest(metrics, forHead)?.windowMinutes);
   return Number.isFinite(recorded) && recorded > 0 ? recorded : null;
 }
 
@@ -153,21 +162,31 @@ const DECLARATION = /<!--\s*review-restructure:\s*(continue|restructure)\s*-->/i
 
 // Markers inside code spans or fences are being SHOWN, not used — which is how
 // anyone documents the mechanism, including the request comment this gate posts.
-const FENCED = /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`/gu;
+// Fenced blocks, inline spans, AND Markdown's INDENTED code blocks — four
+// spaces or a tab. A maintainer showing the marker as an indented example was
+// having it read as a real decision.
+const FENCED = /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`|^(?: {4}|\t).*$/gmu;
 
 export function restructureDeclaration(source) {
   return DECLARATION.exec(String(source ?? '').replace(FENCED, ' '))?.[1]?.toLowerCase() ?? null;
 }
 
-// Only a human with write access on the repository can decide this. Bots are
-// excluded by both signals GitHub gives, since the loop's own comments quote the
-// marker every time it asks.
-const AUTHORITATIVE = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+// A cheap PRE-filter, not the authorisation.
+//
+// `MEMBER` and `COLLABORATOR` are relationship labels: on an organisation repo a
+// read-only member carries `MEMBER` and could declare a decision they have no
+// authority to make. So this narrows the candidates without deciding, and the
+// caller verifies the survivor's real repository permission
+// (write / maintain / admin) before the marker counts.
+//
+// Bots are excluded by both signals GitHub gives, since the loop's own comments
+// quote the marker every time it asks.
+const PLAUSIBLE = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 function isHuman(comment) {
   const login = comment?.user?.login ?? '';
   if (comment?.user?.type === 'Bot' || login.endsWith('[bot]')) return false;
-  return AUTHORITATIVE.has(String(comment?.author_association ?? '').toUpperCase());
+  return PLAUSIBLE.has(String(comment?.author_association ?? '').toUpperCase());
 }
 
 // When a comment's content last became what it is. A maintainer may answer by
@@ -279,7 +298,7 @@ export function expiredWindow(metrics, nowIso) {
   // Over: this REQUEST already ended, by override or by an answer. Scoped to the
   // request object, so opening a new one clears it by construction rather than
   // by remembering to.
-  if (request.autonomousAt || request.consumedAt) return null;
+  if (request.autonomousAt || request.consumedAt) return null;   // ended: nothing to expire
 
   // A window recorded without its length is not assumed to be the short one:
   // the wait is what protects a human's chance to answer, so an unreadable
@@ -343,6 +362,7 @@ export function assessRestructure({
   requestedAt = null,
   declarationWindowMinutes = null,
   issueComments = null,
+  declaration = null,
   declarationsUnreadable = false,
 }) {
   const replaces = replacementSource(body);
@@ -459,7 +479,9 @@ export function assessRestructure({
       };
     }
 
-    const answer = humanDeclaration(issueComments, requestedAt);
+    // Handed in ALREADY VERIFIED. Resolving it here would mean this pure module
+    // deciding authorisation, which needs a permission lookup it cannot make.
+    const answer = declaration;
     if (answer) {
       const { declared, by } = answer;
       return {

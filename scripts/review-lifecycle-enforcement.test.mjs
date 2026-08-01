@@ -64,11 +64,16 @@ const says = (decision, body = null, at = AFTER) => ({
 
 function fakeClient({
   comments = [], sticky = null, stickyThrows = false, issueComments = [],
-  issueCommentsThrows = false,
+  issueCommentsThrows = false, canDecide = true, head = 'h',
 } = {}) {
-  const calls = { status: [], sticky: [], draft: 0 };
+  const calls = { status: [], sticky: [], draft: 0, permissionChecks: [] };
   return {
     calls,
+    // Real repository permission, not the relationship label on the comment.
+    canDecide: async (login) => {
+      calls.permissionChecks.push(login);
+      return typeof canDecide === 'function' ? canDecide(login) : canDecide;
+    },
     reviewComments: async () => comments,
     reviews: async () => [],
     issueComments: async () => {
@@ -83,10 +88,10 @@ function fakeClient({
     // setDraftForCurrentHead re-reads the PR, calls setDraft, and requires the
     // RESULT to still be open on the expected head — otherwise it reports the
     // head superseded and returns before writing any status.
-    pullRequest: async () => ({ number: 1, state: 'open', head: { sha: 'h' }, draft: true }),
+    pullRequest: async () => ({ number: 1, state: 'open', head: { sha: head }, draft: true }),
     setDraft: async () => {
       calls.draft += 1;
-      return { number: 1, state: 'open', head: { sha: 'h' }, draft: true };
+      return { number: 1, state: 'open', head: { sha: head }, draft: true };
     },
     setStatus: async (...args) => { calls.status.push(args); },
     updateStickyComment: async (n, body) => { calls.sticky.push(body); },
@@ -551,10 +556,13 @@ test('W21: the comment reader pages through EVERYTHING', async () => {
 // transition no event announces, because it is DEFINED by nothing happening.
 // ---------------------------------------------------------------------------
 
-function sweepClient({ pulls = [], sticky = {}, statuses = {}, stickyThrowsFor = [] } = {}) {
+function sweepClient({
+  pulls = [], sticky = {}, statuses = {}, stickyThrowsFor = [], canDecide = true,
+} = {}) {
   const calls = { dispatched: [], logs: [] };
   return {
     calls,
+    canDecide: async () => canDecide,
     openAutonomousPullRequests: async () => pulls,
     stickyComment: async (n) => {
       if (stickyThrowsFor.includes(n)) throw new Error('transport');
@@ -1155,49 +1163,136 @@ test('W38: EVERY lifecycle path survives a failed record write', async () => {
   }
 });
 
-test('W39: one "continue" authorises ONE head, not every head after it', async () => {
-  // Round 9 modelled one way a request ends — the window running out — and
-  // missed the other: a maintainer ANSWERING it. An answered request stayed
-  // live, so the same comment kept postdating it. On the next correction head
-  // the gate re-read that one old `continue` and admitted the head without a
-  // fresh decision, which is the opposite of what asking a human is for.
+test('W39: one "continue" authorises ONE head — but stays valid FOR that head', async () => {
+  // Round 9 modelled one way a request ends (the window running out) and missed
+  // the other (a maintainer answering), so one `continue` authorised every head
+  // after it. Round 10 added the second ending keyed to TIME, which broke the
+  // merge path: the SAME head passes this gate twice — once before Codex
+  // promotion, once at final admission — so consuming the answer on the first
+  // call made the second open a new window and block the merge it had just
+  // authorised.
+  //
+  // The ending is keyed to the HEAD that caused it, which is what settles both.
   const answer = says('continue');
 
-  // Head 1: the answer is obeyed AND the request it answered is closed.
+  // Head A, first pass: the answer is obeyed and the request is stamped spent.
   const first = fakeClient({
-    comments: heads(5, P1), sticky: asked(), issueComments: [answer],
+    comments: heads(5, P1), sticky: asked(), issueComments: [answer], head: 'headA',
   });
-  const admitted = await enforceReviewLifecycle(first, pr, 'h');
+  const admitted = await enforceReviewLifecycle(first, pr, 'headA');
   assert.equal(admitted.allowed, true);
   assert.equal(admitted.declared, 'continue');
-
   const recorded = JSON.parse(
     /autonomous-review-metrics:\s*(\{.*\})\s*-->/u.exec(first.calls.sticky[0])[1],
   );
   assert.ok(recorded.lifecycleRequest.consumedAt, 'the answered request is closed');
-  assert.match(first.calls.sticky[0], /lifecycle_declared/u);
+  assert.equal(recorded.lifecycleRequest.consumedBy, 'headA', 'and closed BY that head');
 
-  // Head 2: the SAME comment must not admit a second critical head.
-  const second = fakeClient({
-    comments: heads(6, P1),
-    sticky: `<!-- autonomous-review-metrics: ${JSON.stringify(recorded)} -->`,
-    issueComments: [answer],
+  const carrying = `<!-- autonomous-review-metrics: ${JSON.stringify(recorded)} -->`;
+
+  // Head A, SECOND pass — final admission after Codex clears it. The decision
+  // it already earned must still hold, or the merge is blocked by its own gate.
+  const revalidated = await enforceReviewLifecycle(
+    fakeClient({
+      comments: heads(5, P1), sticky: carrying, issueComments: [answer], head: 'headA',
+    }),
+    pr, 'headA',
+  );
+  assert.equal(revalidated.allowed, true,
+    'the head that earned the decision must not be blocked at final admission');
+
+  // A LATER head, same old comment: must ask again.
+  const later = fakeClient({
+    comments: heads(6, P1), sticky: carrying, issueComments: [answer], head: 'headB',
   });
-  const again = await enforceReviewLifecycle(second, pr, 'h');
+  const again = await enforceReviewLifecycle(later, pr, 'headB');
   assert.equal(again.allowed, false, 'a spent answer cannot authorise the next head');
   assert.equal(again.state, 'restructure_declaration_required');
 
-  // A NEW answer, posted after the fresh request, works normally.
+  // And answering the NEW request works — closed, not welded shut.
   const reopened = JSON.parse(
-    /autonomous-review-metrics:\s*(\{.*\})\s*-->/u.exec(second.calls.sticky[0])[1],
+    /autonomous-review-metrics:\s*(\{.*\})\s*-->/u.exec(later.calls.sticky[0])[1],
   );
-  const third = fakeClient({
-    comments: heads(6, P1),
-    sticky: `<!-- autonomous-review-metrics: ${JSON.stringify(reopened)} -->`,
-    issueComments: [answer, says('continue', null, new Date().toISOString())],
+  assert.equal(
+    (await enforceReviewLifecycle(fakeClient({
+      comments: heads(6, P1),
+      sticky: `<!-- autonomous-review-metrics: ${JSON.stringify(reopened)} -->`,
+      issueComments: [answer, says('continue', null, new Date().toISOString())],
+      head: 'headB',
+    }), pr, 'headB')).allowed,
+    true,
+  );
+});
+
+test('W41: a marker only counts from someone who can actually decide', async () => {
+  // `MEMBER` and `COLLABORATOR` are relationship labels, not permissions. On an
+  // organisation repo a READ-ONLY member carries `MEMBER`, and would otherwise
+  // have admitted an over-limit critical head as if a maintainer had decided.
+  const readOnly = fakeClient({
+    comments: heads(5, P1), sticky: asked(), issueComments: [says('continue')],
+    canDecide: false,
   });
-  assert.equal((await enforceReviewLifecycle(third, pr, 'h')).allowed, true,
-    'answering the new request works — the gate is closed, not welded shut');
+  const refused = await enforceReviewLifecycle(readOnly, pr, 'h');
+  assert.equal(refused.allowed, false, 'a read-only commenter cannot decide');
+  assert.equal(refused.state, 'restructure_declaration_required');
+  assert.deepEqual(readOnly.calls.permissionChecks, ['JagPat'],
+    'and the real permission WAS checked, not the association');
+
+  // With write access the same comment decides.
+  const maintainer = fakeClient({
+    comments: heads(5, P1), sticky: asked(), issueComments: [says('continue')],
+    canDecide: true,
+  });
+  assert.equal((await enforceReviewLifecycle(maintainer, pr, 'h')).allowed, true);
+});
+
+test('W42: an unreadable finding outranks a readable P1 when sizing the wait', async () => {
+  // The tier sizes the WAIT. Checking P1 before the unreadable taint classified a
+  // head carrying BOTH as merely `critical`, so its unknown-severity finding
+  // timed out three hours early — the fail-open the taint exists to prevent.
+  const { findingHeadSeverity } = await import('./review-efficiency.mjs');
+  const at = (head, body) => ({ user: { login: CODEX }, commit_id: head, body });
+  const badge = (n) => `![P${n} Badge](https://img.shields.io/badge/P${n}-x?style=flat)`;
+
+  assert.equal(
+    findingHeadSeverity([at('h', badge(1)), at('h', 'a finding with no badge')]).get('h'),
+    'unknown', 'P1 + unreadable is UNKNOWN, which takes the longest window',
+  );
+  assert.equal(findingHeadSeverity([at('h', badge(1))]).get('h'), 'critical');
+  assert.equal(findingHeadSeverity([at('h', badge(0)), at('h', 'no badge')]).get('h'),
+    'very-critical', 'P0 still reports as P0 — the same window either way');
+
+  // End to end: the head takes the 6-hour window, not the 3-hour one.
+  const client = fakeClient({
+    comments: [
+      ...heads(4, badge(1)),
+      { user: { login: CODEX }, commit_id: 'mixed', body: badge(1) },
+      { user: { login: CODEX }, commit_id: 'mixed', body: 'unbadged sibling' },
+    ],
+  });
+  const result = await enforceReviewLifecycle(client, pr, 'h');
+  assert.equal(result.tier, 'very-critical');
+  assert.equal(result.windowMinutes, VERY_CRITICAL_WINDOW_MINUTES);
+});
+
+test('W43: an INDENTED code sample is not a decision', async () => {
+  // Markdown treats four spaces as a code block. A maintainer showing the marker
+  // as an indented example was having it read as a real `continue`.
+  const { restructureDeclaration } = await import('./review-lifecycle.mjs');
+  const marker = '<' + '!-- review-restructure: continue --' + '>';
+
+  assert.equal(restructureDeclaration(`    ${marker}`), null, 'four spaces is code');
+  assert.equal(restructureDeclaration(`\t${marker}`), null, 'so is a tab');
+  assert.equal(restructureDeclaration(`you answer with:\n\n    ${marker}\n`), null);
+  assert.equal(restructureDeclaration(marker), 'continue', 'unindented still decides');
+
+  const shown = await enforceReviewLifecycle(
+    fakeClient({
+      comments: heads(5, P1), sticky: asked(),
+      issueComments: [says(null, `answer like this:\n\n    ${marker}\n`)],
+    }), pr, 'h',
+  );
+  assert.equal(shown.allowed, false, 'showing the marker is not using it');
 });
 
 test('W40: the sweep touches ONLY lifecycle blocks', async () => {

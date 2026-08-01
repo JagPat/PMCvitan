@@ -208,12 +208,17 @@ export function findingHeadSeverity(comments, reviews = []) {
 
   const severity = new Map();
   for (const [head, entry] of worst) {
-    // A P0 or P1 is already at least as serious as "unknown", so a readable
-    // critical finding decides. Otherwise any unreadable finding wins over an
-    // apparently-minor one.
+    // UNREADABLE outranks a readable P1, because the tier sizes the WAIT and an
+    // unknown finding must get the longest one. Ordering the P1 check first
+    // classified a head carrying both a P1 and an unbadged finding as merely
+    // `critical`, so its unknown finding timed out three hours early — the
+    // fail-open the unreadable taint exists to prevent.
+    //
+    // P0 stays first only for accurate reporting: it and `unknown` both take the
+    // very-critical window, so nothing about the wait depends on the order.
     if (entry.lowest === 0) severity.set(head, 'very-critical');
-    else if (entry.lowest === 1) severity.set(head, 'critical');
     else if (entry.unreadable || entry.lowest === null) severity.set(head, 'unknown');
+    else if (entry.lowest === 1) severity.set(head, 'critical');
     else severity.set(head, 'minor');
   }
   return severity;
