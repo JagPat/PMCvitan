@@ -962,6 +962,43 @@ test('W33: the sweep wakes an ANSWERED unit and an UNREADABLE one', async () => 
   assert.match(r3.woken[0].why, /could not read its own evidence/u);
 });
 
+test('W34: a failed sticky WRITE cannot strand the unit', async () => {
+  // The status was published before the record. A transient sticky-write failure
+  // therefore left a head marked "waiting" with no declarationRequestedAt — no
+  // window to expire, no request for an answer to postdate — so the sweep found
+  // nothing actionable and the unit sat draft until someone pushed.
+  const { sweepExpiredWindows } = await import('./autonomous-review-gate.mjs');
+
+  // 1. ORDER: the record is written BEFORE the status, so a sticky failure costs
+  //    only the status, and a head with no status is picked up normally.
+  const order = [];
+  const client = fakeClient({ comments: heads(5, P1) });
+  client.updateStickyComment = async () => { order.push('record'); };
+  client.setStatus = async (...a) => { order.push('status'); client.calls.status.push(a); };
+  await enforceReviewLifecycle(client, pr, 'h');
+  assert.deepEqual(order, ['record', 'status'],
+    'the record the sweep depends on must exist before the block that needs it');
+
+  // A throwing sticky write must not leave a published block behind.
+  const broken = fakeClient({ comments: heads(5, P1) });
+  broken.updateStickyComment = async () => { throw new Error('transport'); };
+  await assert.rejects(() => enforceReviewLifecycle(broken, pr, 'h'));
+  assert.equal(broken.calls.status.length, 0, 'no block is published without its record');
+
+  // 2. SELF-HEAL: a head already left in that shape by an older run is woken.
+  const stranded = sweepClient({
+    pulls: [{ number: 4, head: { sha: 'h4', ref: 'claude/d' } }],
+    sticky: { 4: null },                 // published wait, no record
+    statuses: { h4: blocked(21) },
+  });
+  stranded.issueComments = async () => [];
+  const result = await sweepExpiredWindows(stranded, {
+    nowIso: '2026-08-01T00:20:00Z', log: () => {},
+  });
+  assert.equal(result.woken.length, 1, 'an unrecordable wait must not sit forever');
+  assert.match(result.woken[0].why, /never recorded/u);
+});
+
 test('W14: a failed sticky READ never rewrites the durable floor', async () => {
   // A transient read failure left this run's counts computed WITHOUT the floor.
   // Writing them patched a recorded five-head floor down to however many heads

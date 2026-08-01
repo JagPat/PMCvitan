@@ -1,7 +1,7 @@
 # Convergence audit — PR #264 (wiring the five-head restructure rule)
 
 Required by `CLAUDE.md` after two distinct finding-bearing heads. This is an
-architectural audit of all twenty-one findings together, not a series of isolated
+architectural audit of all twenty-two findings together, not a series of isolated
 patches. Round 3 matters most: it is the audit's own root cause, reproduced by
 the fix written for it.
 
@@ -13,6 +13,7 @@ the fix written for it.
 | `0a7589a` | 4 — two already in progress (F3, the unclassifiable status), two new (P2, P2) |
 | `ad290cc` | 3 — all P2, all durable-record handling |
 | `1c6cdaa` | 3 — all P2; one a direct miss against the owner's stated design |
+| `af81b9b` | 1 — P2, write ordering |
 
 ## The finding that is not like the others
 
@@ -324,6 +325,31 @@ the fifth position-coupled pin in this workstream to fail on a change that did n
 touch its subject. Re-anchored on the signals the condition must carry, not its
 text.
 
+## Round 7 — one P2, and the write order was backwards
+
+The failing status was published BEFORE the record it depends on. A transient
+sticky-write failure therefore left a head marked "waiting" carrying no
+`declarationRequestedAt` — no window to expire, no request for an answer to
+postdate — so nothing in the sweep could ever find it actionable and the unit
+sat draft until somebody pushed. The stall the sweep exists to prevent,
+reintroduced through the ordering of two adjacent writes.
+
+Two changes, both discriminated by `W34`:
+
+- **The record is written first.** The sweep reads it to decide whether a blocked
+  unit is actionable, so it must exist before the block that needs it. Now the
+  most a sticky failure can cost is the status, and a head with no status is
+  picked up by the ordinary path on the next event.
+- **The sweep self-heals a head already in that shape.** A published wait with no
+  recorded request is an *incomplete* record, not a patient one; it is woken so
+  the gate can write what is missing.
+
+This closes the last shape in a family the whole unit has been circling: **the
+durable record and the thing that depends on it must be written in dependency
+order, and every state that can be reached must have a path out.** Rounds 4–7
+have each found one more corner of it — an unwritten override, an unread window,
+a stale duplicate, and now a record written too late.
+
 ## The original F3 record — superseded, kept for the reasoning
 
 > `auto-merge.yml` triggers on `workflow_run` and `workflow_dispatch` only. There
@@ -377,9 +403,9 @@ because it does not.
 
 | Gate | Result |
 | --- | --- |
-| `scripts/review-lifecycle-enforcement.test.mjs` | **33/33** |
+| `scripts/review-lifecycle-enforcement.test.mjs` | **34/34** |
 | `scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | **214/214** |
+| `pnpm test:automation` | **215/215** |
 | `pnpm check` | **EXIT 0** |
 
 ### Discrimination — each mechanism reverted in turn

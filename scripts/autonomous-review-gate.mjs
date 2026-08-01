@@ -1190,6 +1190,14 @@ export async function sweepExpiredWindows(client, {
       }
     }
 
+    // A published wait with NO recorded request is an INCOMPLETE record, not a
+    // patient one. Ordering now prevents it being created, but a head already
+    // left in that shape by an older run has no window to expire and no request
+    // for an answer to postdate, so nothing else here would ever find it
+    // actionable and it would sit draft forever. Waking it costs one dispatch
+    // and lets the gate write the record it is missing.
+    const incomplete = !metrics?.declarationRequestedAt;
+
     const why = expired
       ? `the ${expired.minutes}-minute window closed `
         + `${expired.elapsedMinutes - expired.minutes} minutes ago`
@@ -1197,7 +1205,10 @@ export async function sweepExpiredWindows(client, {
         ? 'the previous run could not read its own evidence, which is transient'
         : answered
           ? `${answered.by ?? 'a maintainer'} answered "${answered.declared}"`
-          : null;
+          : incomplete
+            ? 'it is blocked on a request that was never recorded, so nothing '
+              + 'could ever make it actionable'
+            : null;
     if (!why) continue;
 
     await client.dispatchReviewRecovery({
@@ -1342,29 +1353,15 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     true,
   );
   if (!live) return { ...result, superseded: true };
-  await client.setStatus(
-    expectedHead,
-    'failure',
-    // `review:` is the vocabulary `isTerminalReviewStatus` recognises. Written
-    // as a bare `lifecycle:` this status was not classified as terminal at all,
-    // so the state machine could neither see the block nor resume from it — the
-    // fallback sweep had nothing to act on even once a window had expired.
-    // A declared restructure is terminal BY DECISION and must not be retried: the
-    // sweep would dispatch recovery every fifteen minutes, the gate would re-read
-    // the same declaration and fail again, and each pass would leave another
-    // pending recovery request while everyone waits for a replacement PR. Only a
-    // unit still WAITING on an answer is resumable.
-    // Three distinct kinds of lifecycle block, and the sweep treats them
-    // differently: a DECLARED restructure is terminal by decision and must never
-    // be retried; an UNREADABLE-evidence block is transient and should be retried
-    // as soon as possible; a plain wait is resumable only once its window runs out.
-    (result.state === 'restructure_required'
-      ? `review: lifecycle restructure — ${result.reason}`
-      : result.undecided
-        ? `review: lifecycle unreadable — ${result.reason}`
-        : `review: lifecycle — ${result.reason}`).slice(0, 140),
-    pullRequest.html_url,
-  );
+  // The RECORD is written before the block is published.
+  //
+  // The sweep decides whether a blocked unit is actionable by reading this
+  // record. Publishing the failing status first meant a transient sticky-write
+  // failure left a head marked "waiting" with no `declarationRequestedAt` for
+  // the sweep to read — no window to expire, no request for an answer to
+  // postdate — so the unit sat draft until someone pushed. Writing the record
+  // first means the only thing a sticky failure can cost is the status, and a
+  // head with no status is picked up by the ordinary path on the next event.
   await client.updateStickyComment(
     pullRequest.number,
     // When the floor could NOT be read, this run's counts were computed without
@@ -1404,6 +1401,24 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
       declarationWindowMinutes:
         recordedMetrics?.declarationWindowMinutes ?? result.windowMinutes,
     })}`}`,
+  );
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    // `review:` is the vocabulary `isTerminalReviewStatus` recognises; a bare
+    // `lifecycle:` was not classified as terminal at all, so the state machine
+    // could neither see the block nor resume from it.
+    //
+    // Three kinds of block, and the sweep treats each differently: a DECLARED
+    // restructure is terminal by decision and is never retried; an UNREADABLE
+    // block is transient and is retried at once; a plain wait is resumable only
+    // once its window runs out or someone answers.
+    (result.state === 'restructure_required'
+      ? `review: lifecycle restructure — ${result.reason}`
+      : result.undecided
+        ? `review: lifecycle unreadable — ${result.reason}`
+        : `review: lifecycle — ${result.reason}`).slice(0, 140),
+    pullRequest.html_url,
   );
   return result;
 }
