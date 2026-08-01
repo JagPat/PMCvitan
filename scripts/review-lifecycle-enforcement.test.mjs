@@ -273,6 +273,38 @@ test('W13: the metrics block survives OTHER sticky writes', async () => {
   );
 });
 
+test('W15: the recorded REASON states the real window, in both directions', async () => {
+  // Found while writing the convergence audit, and it is the same defect family
+  // as the six findings: the lifecycle record failing to carry its own truth.
+  //
+  // The waiting reason interpolated `${window}` inside a SINGLE-quoted string, so
+  // it published the literal characters. The proceeding reason used the raw
+  // `declarationWindowMinutes` PARAMETER, which is null unless a caller overrides
+  // it — so the durable justification for having proceeded without a human read
+  // "within null minutes". Neither is load-bearing for the decision, and both are
+  // the only account a human gets of why the loop did what it did.
+  const waiting = await enforceReviewLifecycle(
+    fakeClient({ comments: heads(5, P1) }), pr, 'h',
+  );
+  assert.equal(waiting.allowed, false);
+  assert.doesNotMatch(waiting.reason, /\$\{/u, 'no uninterpolated placeholder may ship');
+  assert.match(waiting.reason, new RegExp(`${CRITICAL_WINDOW_MINUTES} minutes`, 'u'));
+
+  const long_ago = new Date(Date.now() - (VERY_CRITICAL_WINDOW_MINUTES + 60) * 60_000)
+    .toISOString();
+  const proceeded = await enforceReviewLifecycle(
+    fakeClient({
+      comments: heads(5, '![P0 Badge](https://img.shields.io/badge/P0-red?style=flat) x'),
+      sticky: `<!-- autonomous-review-metrics: ${
+        JSON.stringify({ declarationRequestedAt: long_ago })} -->`,
+    }), pr, 'h',
+  );
+  assert.equal(proceeded.autonomous, true);
+  assert.doesNotMatch(proceeded.reason, /null/u, 'the window it waited must be a number');
+  assert.match(proceeded.reason, new RegExp(`${VERY_CRITICAL_WINDOW_MINUTES}-minute`, 'u'));
+  assert.match(proceeded.reason, /very-critical/u, 'and it must name the tier it applied');
+});
+
 test('W14: a failed sticky READ never rewrites the durable floor', async () => {
   // A transient read failure left this run's counts computed WITHOUT the floor.
   // Writing them patched a recorded five-head floor down to however many heads

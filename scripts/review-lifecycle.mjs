@@ -274,7 +274,7 @@ export function assessRestructure({
         thresholdCrossed: true,
         autonomous: true,
         reason: `${findingHeadCount} finding-bearing heads with a P1; no decision was `
-          + `declared within ${declarationWindowMinutes} minutes, so the loop proceeds `
+          + `declared within the ${window}-minute ${tier} window, so the loop proceeds `
           + 'on its own judgement and records that it did',
       };
     }
@@ -294,7 +294,8 @@ export function assessRestructure({
       requestedAt: requestedAt ?? nowIso,
       reason: `${findingHeadCount} finding-bearing heads and this unit is still drawing `
         + 'P1 findings; a human decides whether to keep correcting it or restructure it '
-        + '(add "<!-- review-restructure: continue -->" or "restructure" to the body; ${window} minutes)',
+        + '(add "<!-- review-restructure: continue -->" or "restructure" to the body). '
+        + `Unanswered after ${window} minutes the loop proceeds on its own judgement`,
     };
   }
 
