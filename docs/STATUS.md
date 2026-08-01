@@ -16,7 +16,7 @@ task: 1
 task_state: in_progress
 work_item: phase-5-task-1
 reviewed_merge: 60864b5
-open_pr: none
+open_pr: 268
 next_task: phase-5-task-2
 blocking_directive: none
 updated: 2026-08-01
@@ -26,7 +26,7 @@ updated: 2026-08-01
 (PR #266 at `main` `0af7f99`, clean Codex +1 on head `ede5a1a`). **Task 1 — the
 `commercial` capability, `CostHead` and the §C `CommitmentAttribution` with its
 XOR/uniqueness/append-only seals, the `CommercialParticipant`, the §L activation
-backfill and all eight forward lifecycle hooks — is DELIVERED on a held draft PR
+backfill and all eight forward lifecycle hooks — is DELIVERED on draft PR #268
 from `main` `60864b5`** (branch `claude/phase5-task1`; evidence
 `docs/reviews/phase-5-t1-commercial-packet.md`). It ships NO `BudgetLine`: §L is
 explicit that authority is only meaningful against the obligation it measures, so
@@ -62,7 +62,7 @@ deferral ledger — a task PR must carry its section forward rather than re-deri
 
 | Task | Summary | State |
 |---|---|---|
-| 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | in_progress — delivered on a held draft PR from `main` `60864b5`; evidence `docs/reviews/phase-5-t1-commercial-packet.md` |
+| 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | in_progress — delivered on draft PR #268 from `main` `60864b5`; evidence `docs/reviews/phase-5-t1-commercial-packet.md` |
 | 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | not_started |
 | 3 | `Measurement` (§D) + the `revertSignOff` withdrawal guard | not_started — **STOP** |
 | 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | not_started |
