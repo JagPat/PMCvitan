@@ -136,6 +136,36 @@ Neither changes a decision. Both are the only account a human gets of why the
 loop did what it did, on the one path where it acts without them. Fixed, pinned
 by `W15`, and discriminated (reverting the fix fails `W15` alone).
 
+### A bookkeeping miss the hourly shepherd caught, not me
+
+`docs/STATUS.md` still recorded `open_pr: 263` after #263 merged and this unit
+opened. `CLAUDE.md` requires `open_pr` to move in the **same change** that opens
+the pull request; I did not do it, so the runner's recorded work item named a
+merged PR while the live one went untracked. `task_state: in_review` was already
+correct. Corrected, and verified with the runner's own parser rather than by
+reading the file — `assessRunnerState(parseStatusNow(STATUS))` now returns
+`nextStep: "pr:264"`, the exact next step the shepherd asked for.
+
+It belongs in this audit because the PR description carries a checkbox asserting
+that the packet and STATUS state are truthful, and while `open_pr` named a merged
+PR that assertion was false — ticked by me. The repair is to correct the record,
+not to let the checkbox cover for it.
+
+### An observation on the convergence protocol itself
+
+That STATUS fix is what produced this head. `hasPacket` is computed from
+`changedFiles` — deliberately scoped to *this head's commit* — so **every** head
+past the threshold must carry the audit, including a one-line bookkeeping commit
+that has nothing to audit. This head exists because the previous one touched only
+`docs/STATUS.md`.
+
+I do not think that is wrong, and I am not proposing a change: the rule keeps the
+audit current with the head under review, which is the whole point of pinning
+review evidence to an exact SHA. It is worth recording as a known cost — routine
+follow-ups inside a converged unit are not free, so they are worth batching. The
+alternative (judging the packet on the cumulative diff) would let the audit go
+stale while the head moves, which is the failure this protocol exists to prevent.
+
 ## Not fixed, and it needs an owner decision — F3
 
 > `auto-merge.yml` triggers on `workflow_run` and `workflow_dispatch` only. There
