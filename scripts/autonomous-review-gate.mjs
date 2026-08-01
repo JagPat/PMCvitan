@@ -1102,6 +1102,13 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
   );
   await client.updateStickyComment(
     pullRequest.number,
+    // When the floor could NOT be read, this run's counts were computed without
+    // it — writing them would patch a recorded five-head floor down to however
+    // many heads happen to be visible now, and the next run would read the
+    // lowered value and pass a unit that had already crossed the limit. So the
+    // metrics block is omitted entirely on that path and `updateStickyComment`
+    // carries the existing one forward untouched. A durable floor is only ever
+    // rewritten from a reading that actually saw it.
     `${statusBody({
       state: result.state,
       head: expectedHead,
@@ -1114,14 +1121,14 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
           + 'unit, or "<!-- review-restructure: restructure -->" to split and replace it. If '
           + `nobody answers within ${result.windowMinutes} minutes (the ${result.tier} `
           + 'window) the loop proceeds on its own judgement and records that it did.',
-    })}\n${renderMetrics({
+    })}${floorUnreadable ? '' : `\n${renderMetrics({
       ...(recordedMetrics ?? {}),
       findingHeads: result.findingHeadCount,
       findingHeadIds: result.findingHeadIds ?? [],
       // Stamped ONCE, when the request is first made, so the window measures the
       // human's reply and not the age of the newest head.
       declarationRequestedAt: recordedMetrics?.declarationRequestedAt ?? nowIso,
-    })}`,
+    })}`}`,
   );
   return result;
 }

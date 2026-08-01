@@ -272,3 +272,19 @@ test('W13: the metrics block survives OTHER sticky writes', async () => {
     'a supplied block replaces the old one rather than stacking',
   );
 });
+
+test('W14: a failed sticky READ never rewrites the durable floor', async () => {
+  // A transient read failure left this run's counts computed WITHOUT the floor.
+  // Writing them patched a recorded five-head floor down to however many heads
+  // were visible, and the next run read the lowered value and passed a unit that
+  // had already crossed the limit — a walk-back the floor rule exists to forbid.
+  const client = fakeClient({ comments: heads(1, P1), stickyThrows: true });
+  const result = await enforceReviewLifecycle(client, pr, 'h');
+
+  assert.equal(result.allowed, false, 'an unreadable floor blocks');
+  assert.equal(client.calls.sticky.length, 1, 'it still reports why');
+  assert.doesNotMatch(
+    client.calls.sticky[0], /autonomous-review-metrics/u,
+    'but it must NOT write a floor computed without the floor it could not read',
+  );
+});
