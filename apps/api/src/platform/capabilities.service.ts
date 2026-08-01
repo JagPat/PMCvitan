@@ -17,6 +17,10 @@ export const MATERIALS_CAPABILITY = 'materials';
 // labour surface. A `type='labour'` requirement asserts THIS capability; a non-pilot project is
 // byte-for-byte unchanged (no labour route, no labour rows, the Team gate stays the stored stub).
 export const LABOUR_CAPABILITY = 'labour';
+// Phase 5 Task 1 — the commercial pilot capability (plan §L). Same mechanism again, with ONE
+// difference that is the whole point of §L: enabling `commercial` is NOT a no-op on a project
+// that already holds live purchase orders. See `CommercialActivationService`.
+export const COMMERCIAL_CAPABILITY = 'commercial';
 
 @Injectable()
 export class CapabilitiesService {

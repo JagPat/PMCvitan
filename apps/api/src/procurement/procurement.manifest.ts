@@ -30,7 +30,13 @@ export const procurementManifest: ModuleManifest = {
   dependsOn: ['activities', 'decisions'],
   // procurement invokes no foreign participant; the REVERSE edge (requirements-cancel invoking
   // this module's ProcurementParticipant) is declared by the activities manifest
-  workflowParticipants: [],
+  // Phase 5 Task 1 (§C/§K) — `CommercialParticipant` writes/supersedes the cost-head attribution
+  // inside procurement's OWN transaction at all four PO lifecycle sites (issue · amend · cancel ·
+  // close-short). Without the edge, amending a live ₹100 PO leaves the new version unattributed
+  // until some later commercial command, so `COMMITTED` silently drops the whole vendor
+  // obligation. NOT a `dependsOn` edge — procurement never READS commercial (that is what makes
+  // commercial a SINK) — and participant channels are cycle-exempt, so the graph stays acyclic.
+  workflowParticipants: ['commercial'],
   producesEvents: [
     'requisition.submitted', 'requisition.approved', 'comparison.approved',
     'po.issued', 'po.amended', 'po.cancelled', 'po.closed_short',

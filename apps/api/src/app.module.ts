@@ -46,6 +46,11 @@ import { LabourProcurementService } from './labour/labour-procurement.service';
 import { LabourCapacityController } from './labour/labour-capacity.controller';
 import { LabourCapacityService } from './labour/labour-capacity.service';
 import { LabourCoverageService } from './labour/labour-coverage.service';
+import { CommercialController } from './commercial/commercial.controller';
+import { CommercialService } from './commercial/commercial.service';
+import { CommercialParticipant } from './commercial/commercial.participant';
+import { CommercialActivationService } from './commercial/commercial-activation.service';
+import { ProcurementQuery } from './procurement/procurement.query';
 import { WorkerDevicesController } from './orgs/worker-devices.controller';
 import { WorkerDevicesService } from './orgs/worker-devices.service';
 import { RequirementsService } from './activities/requirements.service';
@@ -112,6 +117,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     LabourController,
     LabourProcurementController,
     LabourCapacityController,
+    CommercialController,
     WorkerDevicesController,
     InspectionsController,
     DailyLogController,
@@ -137,6 +143,10 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     LabourProcurementService,
     LabourCapacityService,
     LabourCoverageService,
+    CommercialService,
+    CommercialParticipant,
+    CommercialActivationService,
+    ProcurementQuery,
     WorkerDevicesService,
     LabourRequirementParticipant,
     LabourRequirementQuery,

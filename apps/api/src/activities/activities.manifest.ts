@@ -44,7 +44,11 @@ export const activitiesManifest: ModuleManifest = {
   // Phase 4 Task 1 — `requirements.create/revise/cancel` writes the labour requirement detail
   // through the Labour-owned participant when `type='labour'` (the cycle-exempt activities →
   // labour edge; Labour stays a leaf).
-  workflowParticipants: ['inspections', 'drawings', 'procurement', 'labour'],
+  // Phase 5 (§E/§K) — `revertSignOff` asks `CommercialParticipant.assertWorkEvidenceRevisable`
+  // before withdrawing a sign-off a measurement rests on. NOT for output supersession:
+  // `ActivityWorkOutput` is append-only with no supersession path (Phase 4), and Phase 5 does
+  // not change it. Declared with the Task-1 edge table; the call lands with the measurement.
+  workflowParticipants: ['inspections', 'drawings', 'procurement', 'labour', 'commercial'],
   producesEvents: [
     'activity.created',
     'activity.updated',

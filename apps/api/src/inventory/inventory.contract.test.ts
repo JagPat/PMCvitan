@@ -24,7 +24,9 @@ describe('Tasks 4–5 — the inventory module implements its shared command/que
   });
 
   it('inventory reaches procurement AND activities ONLY as workflow participants — no read edges (§G)', () => {
-    expect(inventoryManifest.workflowParticipants).toEqual(['procurement', 'activities']);
+    // Phase 5 (§E/§K) adds `commercial`: stock.reverse asks assertAcceptanceReversible before
+    // withdrawing accepted material a live certificate rests on (declared with the Task-1 table).
+    expect(inventoryManifest.workflowParticipants).toEqual(['procurement', 'activities', 'commercial']);
     expect(inventoryManifest.dependsOn).toEqual([]);
   });
 });

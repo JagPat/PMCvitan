@@ -121,6 +121,9 @@ model Project {
   labourMismatchResolutions LabourMismatchResolution[]
   activityWorkOutputs       ActivityWorkOutput[]
   approvedSkillSubstitutions ApprovedSkillSubstitution[]
+  // Phase 5 Task 1 — the commercial cost-head catalog + commitment attributions (§C/§L)
+  costHeads                 CostHead[]
+  commitmentAttributions    CommitmentAttribution[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -882,6 +885,10 @@ model User {
   activityOutputsRecorded    ActivityWorkOutput[] @relation("activityOutputsRecorded")
   skillSubstitutionsApproved ApprovedSkillSubstitution[] @relation("skillSubstitutionsApproved")
   skillSubstitutionsRevoked  ApprovedSkillSubstitution[] @relation("skillSubstitutionsRevoked")
+  // Phase 5 Task 1 (§C/§L)
+  costHeadsDefined           CostHead[]              @relation("costHeadsDefined")
+  attributionsCreated        CommitmentAttribution[] @relation("attributionsCreated")
+  attributionsSuperseded     CommitmentAttribution[] @relation("attributionsSuperseded")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -1461,6 +1468,8 @@ model PurchaseOrderLine {
   // Phase 3 Task 4 — received batches + receipt ledger rows against this line
   stockLots         StockLot[]
   stockTransactions StockTransaction[]
+  // Phase 5 Task 1 (§C) — the commercial-owned cost-head attribution history for this line
+  attributions      CommitmentAttribution[]
 
   @@unique([projectId, id])
   @@index([projectId, requisitionLineId])
@@ -2501,6 +2510,8 @@ model LabourPurchaseOrderLine {
   selectedQuoteLineId   String
 
   commitments CapacityCommitment[]
+  // Phase 5 Task 1 (§C) — the commercial-owned cost-head attribution history for this line
+  attributions CommitmentAttribution[]
 
   @@unique([projectId, id])
   @@index([projectId, requisitionLineId])
@@ -2794,4 +2805,73 @@ model ActivityWorkOutput {
 
   @@unique([projectId, id])
   @@index([projectId, activityId, civilDate, shift])
+}
+
+// ─── Phase 5 Task 1 — the COMMERCIAL module (plan §C/§K/§L) ────────────────────────────────
+// `commercial` is a SINK: it reads procurement/inventory/labour/activities and NOTHING reads
+// it. Task 1 ships the cost-head catalog and the commitment attribution — the ONLY new fact
+// §C admits — plus its PostgreSQL seals. The versioned budget and the `COMMITTED` fold that
+// reads these rows land in Task 2 (§L: authority is only meaningful against the obligation it
+// measures, so BUDGET and its exception ship together).
+
+model CostHead {
+  project     Project  @relation(fields: [projectId], references: [id])
+  projectId   String
+  code        String // §0b "a key that groups facts is FROZEN after write" — a column-freeze trigger
+  name        String
+  definedAt   DateTime @default(now())
+  definedBy   User     @relation("costHeadsDefined", fields: [definedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  definedById String
+
+  attributions CommitmentAttribution[]
+
+  // Project-contained identity, the `LabourTrade` convention: the code IS the key inside a project.
+  @@id([projectId, code])
+}
+
+// §C — the attribution is the ONLY new fact; the amount is NOT copied, so there is deliberately
+// NO amount column (a column to copy it into is how the rule gets broken). `COMMITTED` reads the
+// frozen amount from the PO-line snapshot through the OWNING module's query: `ProcurementQuery`
+// for a `PurchaseOrderLine`, `LabourQuery` for a `LabourPurchaseOrderLine` — one fold, two owners.
+//
+// Append-only at PostgreSQL: DELETE is refused always, and UPDATE is refused always EXCEPT the ONE
+// controlled transition — stamping an ACTIVE row superseded (`supersededAt`/`supersededById`/
+// `supersedeReason` and nothing else). The identity columns, `costHeadCode` and `reason` are
+// rejected on any UPDATE, and a row already superseded cannot be stamped again. Reclassification
+// therefore has exactly one representable path and always leaves TWO rows.
+model CommitmentAttribution {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id])
+  projectId String
+
+  // EXACTLY ONE target — enforced by a raw-SQL XOR CHECK
+  // (`("poLineId" IS NULL) <> ("labourPoLineId" IS NULL)`). Both degenerate shapes are real
+  // defects: BOTH targets makes one row stand for two obligations (superseding the material side
+  // silently un-attributes a live labour line); NEITHER lets issuance satisfy the
+  // never-unattributed partial unique with a fact that attributes nothing.
+  poLine         PurchaseOrderLine?       @relation(fields: [projectId, poLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  poLineId       String?
+  labourPoLine   LabourPurchaseOrderLine? @relation(fields: [projectId, labourPoLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  labourPoLineId String?
+
+  costHead     CostHead @relation(fields: [projectId, costHeadCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
+  costHeadCode String
+  reason       String // non-blank CHECK; frozen after write (§0b)
+
+  createdAt   DateTime @default(now())
+  createdBy   User     @relation("attributionsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+
+  // The single permitted transition. A row with `supersededAt IS NULL` is ACTIVE.
+  supersededAt    DateTime?
+  supersededBy    User?     @relation("attributionsSuperseded", fields: [supersededById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  supersededById  String?
+  supersedeReason String?
+
+  @@unique([projectId, id])
+  @@index([projectId, costHeadCode])
+  // The two PARTIAL uniques — one per TARGET, not per row — live in the migration
+  // (Prisma cannot express a partial index):
+  //   (projectId, poLineId)       WHERE "supersededAt" IS NULL AND "poLineId"       IS NOT NULL
+  //   (projectId, labourPoLineId) WHERE "supersededAt" IS NULL AND "labourPoLineId" IS NOT NULL
 }

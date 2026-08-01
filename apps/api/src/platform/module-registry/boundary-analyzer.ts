@@ -118,6 +118,8 @@ export const DEFAULT_DIR_TO_MODULE: Readonly<Record<string, string>> = {
   inventory: 'inventory',
   // Phase 4 Task 1 — the labour pillar (workforce identity + the labour requirement detail)
   labour: 'labour',
+  // Phase 5 Task 1 — the commercial SINK (cost heads + commitment attribution)
+  commercial: 'commercial',
   auth: 'auth',
   platform: 'platform',
   push: 'platform',

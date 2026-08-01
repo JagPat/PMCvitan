@@ -82,6 +82,16 @@ export const ROLE_POLICY = {
   'labour.mismatch.record': ['pmc', 'engineer'],
   'labour.mismatch.resolve': ['pmc'],
   'activity.output.record': ['pmc', 'engineer', 'contractor'],
+  // Phase 5 Task 1 — the COMMERCIAL pilot surface (plan §C/§I). Defining a cost head and
+  // attributing a vendor commitment to one are the acts that decide which budget carries which
+  // money, so both are pmc authority. `commercial.attribute` follows the WRITE, not the route: it
+  // is enforced identically by the standalone re-attribution route and by `CommercialParticipant`
+  // inside `pos.issue`/`labour.po.issue`, so PO-issue authority alone never confers it (§C).
+  // The fuller §I authority set (certification, payment approval, SoD, approval limits) lands
+  // with the facts it guards in Tasks 5–6.
+  'commercial.manage': ['pmc'],
+  'commercial.attribute': ['pmc'],
+  'commercial.read': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

@@ -19,6 +19,7 @@ import type { AuthUser } from '../common/auth';
 import type {
   AmendPoInput, CancelPoInput, CloseShortPoInput, CommitDeliveryInput, CreatePoInput, IssuePoInput, ReviseDeliveryInput,
 } from '../contracts';
+import { CommercialParticipant } from '../commercial/commercial.participant';
 
 /**
  * Phase 3 Task 3 — purchase orders + delivery commitments (§F).
@@ -127,7 +128,94 @@ export class PurchaseOrdersService {
     private readonly capabilities: CapabilitiesService,
     private readonly requirementsQuery: RequirementsQueryService,
     private readonly dispatcher: ExternalEffectDispatcher,
+    private readonly commercial: CommercialParticipant,
   ) {}
+
+  /**
+   * Phase 5 Task 1 (§C/§0b) — the FOUR material PO lifecycle sites go through ONE commercial
+   * channel, so a live line is never unattributed and a dead one never keeps an attribution.
+   * Off-pilot (`commercial` capability absent) every one of these is a no-op and the procurement
+   * transaction is byte-for-byte what it was before Phase 5.
+   *
+   * `issue` writes the initial attribution inside the ISSUING transaction (a separate command
+   * would leave every newly issued order a live unattributed obligation); `amend` replaces v1's
+   * attribution with v2's atomically (otherwise both stay active and the committed total reads
+   * ₹200 for a ₹100 order); `cancel` releases (the obligation no longer exists); `closeShort`
+   * replaces on the same line (the obligation changed size and that is recorded, not silent).
+   */
+  private async attributeIssued(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: Actor,
+    user: AuthUser,
+    lines: ReadonlyArray<{ id: string }>,
+    costHeads: ReadonlyArray<{ poLineId: string; costHeadCode: string }> | undefined,
+    reason: string,
+  ): Promise<void> {
+    if (!(await this.commercial.isActive(tx, projectId))) return;
+    const map = new Map((costHeads ?? []).map((c) => [c.poLineId, c.costHeadCode]));
+    const unmapped = lines.filter((l) => !map.has(l.id)).map((l) => l.id);
+    if (unmapped.length) {
+      throw new BadRequestException(
+        `Every purchase-order line must name the cost head that carries it — unattributed lines: [${unmapped.join(', ')}]`,
+      );
+    }
+    await this.commercial.attribute(
+      tx, projectId, { actorId: actor.actorId, role: user.role },
+      lines.map((l) => ({ target: { poLineId: l.id }, costHeadCode: map.get(l.id)!, reason })),
+    );
+  }
+
+  /**
+   * §C amendment: v1's line and v2's line are the SAME obligation re-issued, and the pairing is
+   * the requisition line each allocates against (a PO line allocates against exactly one). An
+   * amended-away line has no successor, so its attribution is released; a brand-new line has no
+   * predecessor, so the caller must name its head — the alternative is inventing one.
+   */
+  private async replaceOnAmend(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: Actor,
+    user: AuthUser,
+    priorLines: ReadonlyArray<{ id: string; requisitionLineId: string }>,
+    nextVersionId: string,
+    costHeads: ReadonlyArray<{ poLineId: string; costHeadCode: string }> | undefined,
+    reason: string,
+  ): Promise<void> {
+    if (!(await this.commercial.isActive(tx, projectId))) return;
+    const nextLines = await tx.purchaseOrderLine.findMany({
+      where: { projectId, poVersionId: nextVersionId },
+      select: { id: true, requisitionLineId: true },
+      orderBy: { id: 'asc' },
+    });
+    const priorByRequisitionLine = new Map(priorLines.map((l) => [l.requisitionLineId, l.id]));
+    const map = new Map((costHeads ?? []).map((c) => [c.poLineId, c.costHeadCode]));
+    const identity = { actorId: actor.actorId, role: user.role };
+
+    const carried = new Set<string>();
+    const fresh: { poLineId: string; costHeadCode: string }[] = [];
+    const replaced: { from: { poLineId: string }; to: { poLineId: string }; costHeadCode?: string; reason: string }[] = [];
+    for (const line of nextLines) {
+      const prior = priorByRequisitionLine.get(line.requisitionLineId);
+      if (prior) {
+        carried.add(prior);
+        replaced.push({ from: { poLineId: prior }, to: { poLineId: line.id }, costHeadCode: map.get(line.id), reason });
+      } else if (map.has(line.id)) {
+        fresh.push({ poLineId: line.id, costHeadCode: map.get(line.id)! });
+      } else {
+        throw new BadRequestException(
+          `Amended line ${line.id} is new to this purchase order — name the cost head that carries it`,
+        );
+      }
+    }
+    await this.commercial.replaceAttribution(tx, projectId, identity, replaced);
+    await this.commercial.attribute(
+      tx, projectId, identity,
+      fresh.map((f) => ({ target: { poLineId: f.poLineId }, costHeadCode: f.costHeadCode, reason })),
+    );
+    const dropped = priorLines.filter((l) => !carried.has(l.id)).map((l) => ({ poLineId: l.id }));
+    await this.commercial.releaseAttribution(tx, projectId, identity, dropped, reason);
+  }
 
   private async begin(projectId: string, user: AuthUser): Promise<{ actor: Actor; scope: CommandScope }> {
     await this.capabilities.assertEnabled(projectId, MATERIALS_CAPABILITY);
@@ -328,6 +416,8 @@ export class PurchaseOrdersService {
         });
         if (count === 0) throw new ConflictException('Only a draft purchase order can be issued — reload and retry');
         await this.applyOverages(tx, projectId, current.id, input.overages);
+        // §C — the initial attribution, in the transaction that makes the version LIVE.
+        await this.attributeIssued(tx, projectId, actor, user, current.lines, input.costHeads, 'Purchase order issued');
         const issued = await this.currentVersion(tx, projectId, poId);
         await recordAudit(tx, { projectId, actor, action: 'po.issue', entity: 'PurchaseOrderVersion', entityId: current.id });
         const ev = await emitEvent(tx, {
@@ -374,6 +464,9 @@ export class PurchaseOrdersService {
         });
         await this.freezeLines(tx, projectId, next.id, po.requisitionId, comparison.selectedQuoteId!, input.lines);
         await this.applyOverages(tx, projectId, next.id, input.overages);
+        // §C — the ATOMIC REPLACEMENT: v1's attribution is superseded and v2's written in the SAME
+        // transaction that issues v2, or both stay active and `COMMITTED` reads double.
+        await this.replaceOnAmend(tx, projectId, actor, user, current.lines, next.id, input.costHeads, input.reason);
         const issued = await this.currentVersion(tx, projectId, poId);
         await recordAudit(tx, { projectId, actor, action: 'po.amend', entity: 'PurchaseOrderVersion', entityId: next.id });
         const ev = await emitEvent(tx, {
@@ -407,6 +500,14 @@ export class PurchaseOrdersService {
         });
         if (count === 0) throw new ConflictException('Only a draft or issued purchase order can be cancelled — reload and retry');
         for (const l of current.lines) await this.refreshOrderedFlag(tx, projectId, l.requisitionLineId);
+        // §C — a cancelled version is no longer live, so its attributions are released. This is the
+        // ONE site where superseding without a replacement is correct: the obligation is gone.
+        if (await this.commercial.isActive(tx, projectId)) {
+          await this.commercial.releaseAttribution(
+            tx, projectId, { actorId: actor.actorId, role: user.role },
+            current.lines.map((l) => ({ poLineId: l.id })), input.reason,
+          );
+        }
         await recordAudit(tx, { projectId, actor, action: 'po.cancel', entity: 'PurchaseOrderVersion', entityId: current.id });
         // §G: only a version the world SAW as issued announces its cancellation
         if (wasIssued) {
@@ -439,6 +540,14 @@ export class PurchaseOrdersService {
         });
         if (count === 0) throw new ConflictException('Only an issued or partially received purchase order can be closed short — reload and retry');
         for (const l of current.lines) await this.refreshOrderedFlag(tx, projectId, l.requisitionLineId);
+        // §C — the obligation changed size: supersede and re-attribute on the SAME line so the
+        // change is attributable evidence rather than a stamp-free row behind a moved amount.
+        if (await this.commercial.isActive(tx, projectId)) {
+          await this.commercial.replaceAttribution(
+            tx, projectId, { actorId: actor.actorId, role: user.role },
+            current.lines.map((l) => ({ from: { poLineId: l.id }, to: { poLineId: l.id }, reason: input.reason })),
+          );
+        }
         await recordAudit(tx, { projectId, actor, action: 'po.closeShort', entity: 'PurchaseOrderVersion', entityId: current.id });
         // §G (Task 6 F4): a closed-short version releases its lines' UN-received inbound coverage —
         // announce it so the readiness projection re-derives. A closeable version was always issued,

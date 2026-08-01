@@ -858,14 +858,27 @@ export const createPoSchema = z.object({
   lines: z.array(poLineShape).min(1).max(50),
 }).strict();
 export type CreatePoInput = z.infer<typeof createPoSchema>;
+// Phase 5 Task 1 (§C) — the cost head is an INPUT to issuance when the `commercial` capability
+// is on: a PO version becomes live at `pos.issue`, and §C's "a live line can never be
+// unattributed" has to hold from that first instant. Optional in the contract so every existing
+// material caller is byte-for-byte unchanged off-pilot; the service REFUSES an issue that leaves
+// a line unattributed when the capability IS on.
+export const poCostHeadShape = z.object({
+  poLineId: z.string().min(1),
+  costHeadCode: z.string().trim().min(1).max(64),
+}).strict();
 export const issuePoSchema = z.object({
   overages: z.array(poOverageShape).max(50).optional(),
+  costHeads: z.array(poCostHeadShape).max(50).optional(),
 }).strict();
 export type IssuePoInput = z.infer<typeof issuePoSchema>;
 export const amendPoSchema = z.object({
   reason: z.string().trim().min(1).max(1000),
   lines: z.array(poLineShape).min(1).max(50),
   overages: z.array(poOverageShape).max(50).optional(),
+  // §C: an amendment issues a NEW version, so its lines need attribution too. Omitted entries
+  // carry the amended line's own head forward; supplying one reclassifies at the same time.
+  costHeads: z.array(poCostHeadShape).max(50).optional(),
 }).strict();
 export type AmendPoInput = z.infer<typeof amendPoSchema>;
 export const cancelPoSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
@@ -1056,9 +1069,19 @@ export const createLabourPoSchema = z.object({
 }).strict();
 export type CreateLabourPoInput = z.infer<typeof createLabourPoSchema>;
 // Issuance carries no overage in Task 2 — the §F bound-3 approvedOverage is a Task-3 concern.
-export const issueLabourPoSchema = z.object({}).strict();
+// Phase 5 Task 1 (§C) — the labour twin of the material cost-head input: a labour PO version
+// becomes live at issue, so the head that carries it is named in the SAME command. Optional, so
+// every existing labour caller is byte-for-byte unchanged off-pilot.
+export const labourPoCostHeadShape = z.object({
+  labourPoLineId: z.string().min(1),
+  costHeadCode: z.string().trim().min(1).max(64),
+}).strict();
+export const issueLabourPoSchema = z.object({
+  costHeads: z.array(labourPoCostHeadShape).max(200).optional(),
+}).strict();
 export type IssueLabourPoInput = z.infer<typeof issueLabourPoSchema>;
 export const amendLabourPoSchema = z.object({
+  costHeads: z.array(labourPoCostHeadShape).max(200).optional(),
   reason: z.string().trim().min(1).max(1000),
   lines: z.array(labourPoLineShape).min(1).max(100),
 }).strict();
@@ -1237,3 +1260,38 @@ export type RevokeSkillSubstitutionInput = z.infer<typeof revokeSkillSubstitutio
 // cite the device as evidence. A device starts UNBOUND (anonymous QR/tap onboarding unchanged).
 export const bindWorkerDeviceSchema = z.object({ workerId: z.string().min(1) }).strict();
 export type BindWorkerDeviceInput = z.infer<typeof bindWorkerDeviceSchema>;
+
+// ── Phase 5 Task 1 — the COMMERCIAL module (plan §C/§L) ─────────────────────────────────────
+// §0b non-blank discipline, mirroring the PostgreSQL CHECKs so a blank value is refused before
+// it reaches the database rather than surfacing as a 500.
+const commercialNonBlank = (label: string, max: number) =>
+  z.string().max(max).refine((s) => s.replace(/[ \t\n\v\f\r]+/gu, '') !== '', `${label} must not be blank`);
+
+export const defineCostHeadSchema = z
+  .object({
+    code: commercialNonBlank('code', 64),
+    name: commercialNonBlank('name', 200),
+  })
+  .strict();
+export type DefineCostHeadInput = z.infer<typeof defineCostHeadSchema>;
+
+// §C: re-attribution is an ATOMIC REPLACEMENT, never a bare revocation — revoking Head A as
+// miscoded would drop a live vendor obligation out of every budget and forecast while no other
+// head picked the payable up. So the input names the target line and the NEW cost head; the
+// service supersedes the active row and inserts its replacement in one transaction.
+//
+// The target is EXACTLY ONE line, mirroring the PG XOR CHECK: a request naming both or neither is
+// refused by the contract before it reaches the database.
+export const reattributeSchema = z
+  .object({
+    poLineId: z.string().min(1).optional(),
+    labourPoLineId: z.string().min(1).optional(),
+    costHeadCode: commercialNonBlank('costHeadCode', 64),
+    reason: commercialNonBlank('reason', 500),
+  })
+  .strict()
+  .refine(
+    (v) => (v.poLineId === undefined) !== (v.labourPoLineId === undefined),
+    'exactly one of poLineId or labourPoLineId must be supplied',
+  );
+export type ReattributeInput = z.infer<typeof reattributeSchema>;

@@ -38,7 +38,11 @@ export const inventoryManifest: ModuleManifest = {
   // and the reserve/issue activity target through the activities participant (workflow
   // edges, §G) — never a direct table read.
   dependsOn: [],
-  workflowParticipants: ['procurement', 'activities'],
+  // Phase 5 (§E/§K) — `stock.reverse` asks `CommercialParticipant.assertAcceptanceReversible`
+  // before withdrawing accepted material, or accept 100 → certify → reverse commits with no
+  // commercial check and leaves the certificate payable against withdrawn evidence. Declared
+  // with the Task-1 edge table (§K is the single declaration); the call lands in Task 5.
+  workflowParticipants: ['procurement', 'activities', 'commercial'],
   producesEvents: ['stock.transacted', 'issue.recorded'],
   consumesEvents: [],
   commands: [...INVENTORY_COMMANDS],
