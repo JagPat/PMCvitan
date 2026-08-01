@@ -1,12 +1,15 @@
 # Convergence audit — PR #264 (wiring the five-head restructure rule)
 
 Required by `CLAUDE.md` after two distinct finding-bearing heads. This is an
-architectural audit of all seven findings together, not a third isolated patch.
+architectural audit of all eleven findings together, not a series of isolated
+patches. Round 3 matters most: it is the audit's own root cause, reproduced by
+the fix written for it.
 
 | Head | Findings |
 | --- | --- |
 | `ccbdee3` | 6 — F1 (P1), F2 (P1), F3 (P1), F4 (P1), F5 (P2), F6 (P1) |
 | `77117e4` | 1 — F7 (P1) |
+| `e2941ab` | 4 — R1 (P1), R2 (P1), R3 (P1), R4 (P2) |
 
 ## The finding that is not like the others
 
@@ -136,6 +139,56 @@ Neither changes a decision. Both are the only account a human gets of why the
 loop did what it did, on the one path where it acts without them. Fixed, pinned
 by `W15`, and discriminated (reverting the fix fails `W15` alone).
 
+## Round 3 — four findings on `e2941ab`, and I caused all four
+
+Codex returned four findings on the head that fixed the attribution defect. They
+are not a new root cause. **They are the audit's own root cause, reproduced by
+the fix for it.**
+
+The thesis above is: *the lifecycle record is durable state, and I treated it as
+a return value.* I then added a **second** read of durable state — the maintainer
+declaration — and gave it none of the properties the first read had been
+corrected into having:
+
+| # | P | The new read… | Same as |
+| --- | --- | --- | --- |
+| R1 | P1 | fails **open**: `catch { issueComments = [] }` made a transport error indistinguishable from silence, and silence is what expiry consumes | F7, one function earlier |
+| R2 | P1 | reads only the **first 100 comments**, so a floor or a `restructure` past the page boundary reads as absent | new, and it applies to the sticky floor too |
+| R3 | P1 | accepts a declaration of **any age**, so a marker written while discussing the mechanism answers a request that did not exist yet | new |
+| R4 | P2 | the timeout path returns **before the only sticky write**, so the override claimed by the reason string was never recorded | F6, inverted |
+
+R1 is the one worth dwelling on. I had already written, twelve lines above the
+defect, that a failed sticky read must not be mistaken for "no record" — and then
+wrote `catch { issueComments = [] }` for the new read in the same function. The
+lesson was on the screen. Applying it to the case in front of me is a different
+act from having learned it, and this is the second time in this unit that gap has
+produced a finding (the first was F1, wiring the rule into one call site after
+writing that a rule nothing consults governs nothing).
+
+R4 is a truthfulness defect, not only a missing write: the reason string asserted
+*"records that it did"* about a record that did not exist. A claim to have
+recorded something is worth less than nothing when it **is** the only record.
+
+### The fixes
+
+- **R2** — `issueComments` pages to exhaustion. A failed page **throws** rather
+  than returning a short list, so the caller can distinguish "read everything"
+  from "read some of it" — which is exactly what R1's fix depends on. Past a
+  2000-comment bound it throws too: returning what it has would be the same
+  silent truncation. `W21`.
+- **R1** — a failed read sets `declarationsUnreadable`, and the model blocks on it
+  with its own reason, next to the `floorUnreadable` branch it should have
+  matched from the start. `W18`.
+- **R3** — a declaration must postdate the recorded `declarationRequestedAt`.
+  Before any request exists, nothing can answer it. An **edit** counts (a
+  maintainer may answer by editing), so the comparison uses the later of
+  `created_at`/`updated_at`; an undated comment cannot be shown to postdate
+  anything and does not count. `W19`.
+- **R4** — the autonomous override writes a durable `lifecycle_autonomous` record
+  carrying `autonomousAt` and the tier, stamped once, before returning. `W20`.
+
+Each reverted alone fails its own probe and no other.
+
 ### A bookkeeping miss the hourly shepherd caught, not me
 
 `docs/STATUS.md` still recorded `open_pr: 263` after #263 merged and this unit
@@ -219,9 +272,9 @@ because it does not.
 
 | Gate | Result |
 | --- | --- |
-| `scripts/review-lifecycle-enforcement.test.mjs` | **17/17** |
+| `scripts/review-lifecycle-enforcement.test.mjs` | **21/21** |
 | `scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | **198/198** |
+| `pnpm test:automation` | **202/202** |
 | `pnpm check` | **EXIT 0** |
 
 ### Discrimination — each mechanism reverted in turn

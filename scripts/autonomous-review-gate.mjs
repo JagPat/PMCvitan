@@ -717,15 +717,33 @@ export class GitHubClient {
     return ids.length;
   }
 
-  // Reads the sticky comment the gate maintains. The lifecycle floor lives in it,
-  // and a MISSING comment is a legitimate state (a unit nobody has posted about
-  // yet) — distinct from a FAILED read, which the caller must not mistake for
-  // "no findings recorded". So absence returns null and only a transport error
-  // throws.
+  // EVERY comment, not the first hundred.
+  //
+  // Two pieces of lifecycle evidence live here — the durable floor on the sticky
+  // comment, and a maintainer's restructure declaration — and both are read to
+  // decide whether an over-limit unit may proceed. A long review unit passes a
+  // hundred comments easily, and a single unread page would make the gate treat
+  // a recorded floor or a posted `restructure` as ABSENT: the permissive
+  // outcome, decided by a page boundary. Truncated evidence is the one thing a
+  // fail-closed gate must never mistake for no evidence.
+  //
+  // A page that fails to load THROWS rather than returning a short list, so the
+  // caller can tell "read everything" from "read some of it".
   async issueComments(number) {
-    return this.request(
-      `/repos/${this.repository}/issues/${number}/comments?per_page=100`,
-    );
+    const all = [];
+    for (let page = 1; page <= 20; page += 1) {
+      const batch = await this.request(
+        `/repos/${this.repository}/issues/${number}/comments?per_page=100&page=${page}`,
+      );
+      if (!Array.isArray(batch)) {
+        throw new Error(`issue comments page ${page} was not a list`);
+      }
+      all.push(...batch);
+      if (batch.length < 100) return all;
+    }
+    // 2000 comments without exhausting the pages. Returning what we have would
+    // be the same truncation this method exists to prevent, silently.
+    throw new Error('issue comments exceeded the pagination bound; evidence would be partial');
   }
 
   async stickyComment(number) {
@@ -1078,15 +1096,17 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     pullRequestFiles = undefined;
   }
 
-  // The human's answer lives in a COMMENT, not the body. An unreadable list is
-  // "nobody has answered yet", which BLOCKS and keeps waiting — the permissive
-  // outcomes here are `continue` and window expiry, and neither may be inferred
-  // from a read that failed.
+  // The human's answer lives in a COMMENT, not the body. A failed read is NOT an
+  // empty answer list: the permissive outcomes are `continue` and window expiry,
+  // and expiry needs no answer at all, so a read that failed would look exactly
+  // like silence and let the loop override a `restructure` it never saw. The
+  // model is told the difference and blocks on it.
   let issueComments = [];
+  let declarationsUnreadable = false;
   try {
     issueComments = await client.issueComments(pullRequest.number);
   } catch {
-    issueComments = [];
+    declarationsUnreadable = true;
   }
 
   const nowIso = new Date().toISOString();
@@ -1096,11 +1116,42 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     pullRequestFiles,
     body: pullRequest.body,
     issueComments,
+    declarationsUnreadable,
     recordedMetrics,
     floorUnreadable,
     nowIso,
     requestedAt: recordedMetrics?.declarationRequestedAt ?? null,
   });
+
+  // Proceeding UNANSWERED is the one permissive outcome nobody authorised, and
+  // the reason string says the loop "records that it did". It did not: this
+  // function's only sticky write was on the blocking path below, so the override
+  // left no trace and the next status body carried the old metrics forward
+  // unchanged. A claim to have recorded something is worth less than nothing
+  // when it IS the only record. So it is written before returning, and stamped
+  // once — `autonomousAt` is preserved if an earlier run already recorded it.
+  if (result.allowed && result.autonomous) {
+    await client.updateStickyComment(
+      pullRequest.number,
+      `${statusBody({
+        state: 'lifecycle_autonomous',
+        head: expectedHead,
+        detail: result.reason,
+        attempt: 0,
+        next: `No maintainer answered within the ${result.windowMinutes}-minute `
+          + `${result.tier} window, so the loop proceeded on its own judgement. `
+          + 'This is the durable record of that override.',
+      })}\n${renderMetrics({
+        ...(recordedMetrics ?? {}),
+        findingHeads: result.findingHeadCount,
+        findingHeadIds: result.findingHeadIds ?? [],
+        declarationRequestedAt: recordedMetrics?.declarationRequestedAt ?? nowIso,
+        autonomousAt: recordedMetrics?.autonomousAt ?? nowIso,
+        autonomousTier: recordedMetrics?.autonomousTier ?? result.tier,
+      })}`,
+    );
+    return result;
+  }
   if (result.allowed) return result;
 
   const live = await setDraftForCurrentHead(

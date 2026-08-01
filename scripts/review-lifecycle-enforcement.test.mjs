@@ -25,23 +25,39 @@ const heads = (n, body) => Array.from({ length: n }, (_, i) => ({
   user: { login: CODEX }, commit_id: `head${i}`, body,
 }));
 
+// The gate stamps `declarationRequestedAt` when it first asks, and an answer
+// only counts if it POSTDATES that request.
+const ASKED_AT = '2026-08-01T00:00:00Z';
+const AFTER = '2026-08-01T00:30:00Z';
+const BEFORE = '2026-07-01T00:00:00Z';
+
+// A recorded request, so a declaration has something to answer.
+const asked = (extra = {}) => `<!-- autonomous-review-metrics: ${
+  JSON.stringify({ declarationRequestedAt: ASKED_AT, ...extra })} -->`;
+
 // A maintainer's answer, on the only channel that carries one: a comment with a
 // real author and write access. `says(null, body)` writes arbitrary prose.
-const says = (decision, body = null) => ({
+const says = (decision, body = null, at = AFTER) => ({
   user: { login: 'JagPat', type: 'User' },
   author_association: 'OWNER',
+  created_at: at,
+  updated_at: at,
   body: body ?? `<!-- review-restructure: ${decision} -->`,
 });
 
 function fakeClient({
   comments = [], sticky = null, stickyThrows = false, issueComments = [],
+  issueCommentsThrows = false,
 } = {}) {
   const calls = { status: [], sticky: [], draft: 0 };
   return {
     calls,
     reviewComments: async () => comments,
     reviews: async () => [],
-    issueComments: async () => issueComments,
+    issueComments: async () => {
+      if (issueCommentsThrows) throw new Error('transport');
+      return issueComments;
+    },
     pullRequestFiles: async () => [{ filename: 'apps/api/src/x.ts' }],
     stickyComment: async () => {
       if (stickyThrows) throw new Error('transport');
@@ -120,14 +136,16 @@ test('W5: unanswered past the window, the loop PROCEEDS and records that it did'
 
 test('W6: a declared decision is obeyed, both ways', async () => {
   const cont = await enforceReviewLifecycle(
-    fakeClient({ comments: heads(5, P1), issueComments: [says('continue')] }), pr, 'h',
+    fakeClient({ comments: heads(5, P1), sticky: asked(), issueComments: [says('continue')] }),
+    pr, 'h',
   );
   assert.equal(cont.allowed, true);
   assert.equal(cont.declared, 'continue');
   assert.equal(cont.declaredBy, 'JagPat', 'the decision is attributed to whoever made it');
 
   const split = await enforceReviewLifecycle(
-    fakeClient({ comments: heads(5, P1), issueComments: [says('restructure')] }), pr, 'h',
+    fakeClient({ comments: heads(5, P1), sticky: asked(), issueComments: [says('restructure')] }),
+    pr, 'h',
   );
   assert.equal(split.allowed, false);
   assert.equal(split.state, 'restructure_required');
@@ -155,9 +173,10 @@ test('W16: quoting the instructions is NOT obeying them', async () => {
   const viaBot = await enforceReviewLifecycle(
     fakeClient({
       comments: heads(5, P1),
+      sticky: asked(),
       issueComments: [{
         user: { login: 'github-actions[bot]', type: 'Bot' },
-        author_association: 'NONE',
+        author_association: 'NONE', created_at: AFTER, updated_at: AFTER,
         body: `A maintainer decides by commenting ${marker}`,
       }],
     }), pr, 'h',
@@ -168,9 +187,10 @@ test('W16: quoting the instructions is NOT obeying them', async () => {
   const viaStranger = await enforceReviewLifecycle(
     fakeClient({
       comments: heads(5, P1),
+      sticky: asked(),
       issueComments: [{
         user: { login: 'passer-by', type: 'User' },
-        author_association: 'NONE', body: marker,
+        author_association: 'NONE', created_at: AFTER, updated_at: AFTER, body: marker,
       }],
     }), pr, 'h',
   );
@@ -179,7 +199,7 @@ test('W16: quoting the instructions is NOT obeying them', async () => {
   // 4. And a maintainer SHOWING the marker in a code span is documenting it.
   const viaCodeSpan = await enforceReviewLifecycle(
     fakeClient({
-      comments: heads(5, P1),
+      comments: heads(5, P1), sticky: asked(),
       issueComments: [says(null, `you answer with \`${marker}\`, like this`)],
     }), pr, 'h',
   );
@@ -187,7 +207,8 @@ test('W16: quoting the instructions is NOT obeying them', async () => {
 
   // The real thing still works — the gate is closed, not welded shut.
   const real = await enforceReviewLifecycle(
-    fakeClient({ comments: heads(5, P1), issueComments: [says('continue')] }), pr, 'h',
+    fakeClient({ comments: heads(5, P1), sticky: asked(), issueComments: [says('continue')] }),
+    pr, 'h',
   );
   assert.equal(real.allowed, true);
 });
@@ -196,8 +217,11 @@ test('W17: the LATEST maintainer answer wins', async () => {
   // A human may change their mind, and posting again must be enough — nobody
   // should have to edit history to be heard.
   const client = fakeClient({
-    comments: heads(5, P1),
-    issueComments: [says('continue'), says('restructure')],
+    comments: heads(5, P1), sticky: asked(),
+    issueComments: [
+      says('continue', null, AFTER),
+      says('restructure', null, '2026-08-01T01:00:00Z'),
+    ],
   });
   const result = await enforceReviewLifecycle(client, pr, 'h');
   assert.equal(result.declared, 'restructure');
@@ -384,6 +408,124 @@ test('W15: the recorded REASON states the real window, in both directions', asyn
   assert.doesNotMatch(proceeded.reason, /null/u, 'the window it waited must be a number');
   assert.match(proceeded.reason, new RegExp(`${VERY_CRITICAL_WINDOW_MINUTES}-minute`, 'u'));
   assert.match(proceeded.reason, /very-critical/u, 'and it must name the tier it applied');
+});
+
+test('W18: an UNREADABLE declaration list blocks — it is not silence', async () => {
+  // Round 3, and the same rule I had already applied to the sticky floor one
+  // function earlier: a failed read is not evidence of absence. Expiry is the
+  // dangerous case precisely because it needs NO answer, so a transport error
+  // looks exactly like a human saying nothing — and the loop would override a
+  // `restructure` it never saw.
+  const expired = new Date(Date.now() - (VERY_CRITICAL_WINDOW_MINUTES + 60) * 60_000)
+    .toISOString();
+  const client = fakeClient({
+    comments: heads(5, P1),
+    sticky: `<!-- autonomous-review-metrics: ${
+      JSON.stringify({ declarationRequestedAt: expired })} -->`,
+    issueCommentsThrows: true,
+  });
+  const result = await enforceReviewLifecycle(client, pr, 'h');
+
+  assert.equal(result.allowed, false, 'an unread answer must not expire into consent');
+  assert.equal(result.undecided, true);
+  assert.match(result.reason, /could not be read/u);
+});
+
+test('W19: a declaration that PREDATES the request does not answer it', async () => {
+  // A marker written while discussing the mechanism — months before this unit
+  // crossed the limit — was being treated as the answer to a request that did
+  // not exist yet, letting a five-P1-head unit proceed on a decision nobody made
+  // about it.
+  const stale = await enforceReviewLifecycle(
+    fakeClient({
+      comments: heads(5, P1), sticky: asked(),
+      issueComments: [says('continue', null, BEFORE)],
+    }), pr, 'h',
+  );
+  assert.equal(stale.allowed, false, 'an old marker cannot answer a later request');
+  assert.equal(stale.state, 'restructure_declaration_required');
+
+  // An answer with NO readable timestamp cannot be shown to postdate anything.
+  const undated = await enforceReviewLifecycle(
+    fakeClient({
+      comments: heads(5, P1), sticky: asked(),
+      issueComments: [{
+        user: { login: 'JagPat', type: 'User' }, author_association: 'OWNER',
+        body: '<!-- review-restructure: continue -->',
+      }],
+    }), pr, 'h',
+  );
+  assert.equal(undated.allowed, false, 'an undated answer is not a proven answer');
+
+  // A maintainer may answer by EDITING an older comment: the edit is the act.
+  const edited = await enforceReviewLifecycle(
+    fakeClient({
+      comments: heads(5, P1), sticky: asked(),
+      issueComments: [{
+        user: { login: 'JagPat', type: 'User' }, author_association: 'OWNER',
+        created_at: BEFORE, updated_at: AFTER,
+        body: '<!-- review-restructure: restructure -->',
+      }],
+    }), pr, 'h',
+  );
+  assert.equal(edited.declared, 'restructure', 'an edited-in answer counts from the edit');
+});
+
+test('W20: proceeding unanswered leaves a DURABLE record of the override', async () => {
+  // The reason string said the loop "records that it did" — and it did not. The
+  // timeout path returned before this function's only sticky write, so the one
+  // permissive outcome nobody authorised was the one that left no trace.
+  const expired = new Date(Date.now() - (VERY_CRITICAL_WINDOW_MINUTES + 60) * 60_000)
+    .toISOString();
+  const client = fakeClient({
+    comments: heads(5, P1),
+    sticky: `<!-- autonomous-review-metrics: ${
+      JSON.stringify({ declarationRequestedAt: expired })} -->`,
+  });
+  const result = await enforceReviewLifecycle(client, pr, 'h');
+
+  assert.equal(result.allowed, true);
+  assert.equal(result.autonomous, true);
+  assert.equal(client.calls.sticky.length, 1, 'the override must be written down');
+  const written = client.calls.sticky[0];
+  assert.match(written, /autonomousAt/u, 'when the loop overrode the request');
+  assert.match(written, /lifecycle_autonomous/u, 'and that it is what happened');
+  assert.match(written, /declarationRequestedAt/u, 'without dropping the request stamp');
+
+  // The unit is NOT drafted or failed — it proceeds. The record is the point.
+  assert.equal(client.calls.status.length, 0);
+});
+
+test('W21: the comment reader pages through EVERYTHING', async () => {
+  // Both the durable floor and a maintainer's answer are read from this list. A
+  // single unread page would make either look ABSENT — which is the permissive
+  // outcome, decided by a page boundary.
+  const { GitHubClient } = await import('./autonomous-review-gate.mjs');
+  const client = Object.create(GitHubClient.prototype);
+  client.repository = 'o/r';
+
+  const pages = [];
+  client.request = async (path) => {
+    pages.push(path);
+    // `[?&]` matters: a bare /page=(\d+)/ matches `per_page=100` first.
+    const page = Number(/[?&]page=(\d+)/u.exec(path)?.[1] ?? 1);
+    return page < 3
+      ? Array.from({ length: 100 }, (_, i) => ({ id: page * 100 + i }))
+      : [{ id: 'last' }];
+  };
+
+  const all = await client.issueComments(1);
+  assert.equal(all.length, 201, 'every page is included, not just the first');
+  assert.equal(pages.length, 3);
+  assert.equal(all.at(-1).id, 'last', 'the final partial page ends the walk');
+
+  // A failed page THROWS rather than returning a short list, so the caller can
+  // tell "read everything" from "read some of it" — which is what W18 needs.
+  client.request = async (path) => {
+    if (path.includes('page=2')) throw new Error('transport');
+    return Array.from({ length: 100 }, (_, i) => ({ id: i }));
+  };
+  await assert.rejects(() => client.issueComments(1), /transport/u);
 });
 
 test('W14: a failed sticky READ never rewrites the durable floor', async () => {

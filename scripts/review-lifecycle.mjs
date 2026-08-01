@@ -87,14 +87,43 @@ function isHuman(comment) {
   return AUTHORITATIVE.has(String(comment?.author_association ?? '').toUpperCase());
 }
 
+// When a comment's content last became what it is. A maintainer may answer by
+// EDITING a comment, so an edit counts; a comment never edited is judged on when
+// it was written.
+function contentTime(comment) {
+  const created = Date.parse(comment?.created_at ?? '');
+  const updated = Date.parse(comment?.updated_at ?? '');
+  const times = [created, updated].filter(Number.isFinite);
+  return times.length ? Math.max(...times) : null;
+}
+
 // The LATEST authoritative answer wins, so a human can change their mind by
 // posting again rather than editing history.
-export function humanDeclaration(comments) {
+//
+// An answer must POSTDATE the request it answers. Without that, a marker written
+// while merely discussing the mechanism — months earlier, in a comment about how
+// the gate works — silently answers a request that did not exist yet, and a
+// five-P1-head unit proceeds on a decision nobody made about it. `requestedAt` is
+// the stamp the gate records when it first asks; a comment with no readable
+// timestamp cannot be shown to postdate anything, so it does not count.
+//
+// Before any request has been made there is nothing to answer, and every
+// declaration is stale by definition.
+export function humanDeclaration(comments, requestedAt = null) {
+  const asked = Date.parse(requestedAt ?? '');
+  if (!Number.isFinite(asked)) return null;
+
   let declared = null;
+  let declaredAt = -Infinity;
   for (const comment of comments ?? []) {
     if (!isHuman(comment)) continue;
+    const at = contentTime(comment);
+    if (at === null || at < asked) continue;
     const found = restructureDeclaration(comment.body);
-    if (found) declared = { declared: found, by: comment.user?.login ?? null };
+    if (found && at >= declaredAt) {
+      declared = { declared: found, by: comment.user?.login ?? null, at };
+      declaredAt = at;
+    }
   }
   return declared;
 }
@@ -195,6 +224,7 @@ export function assessRestructure({
   requestedAt = null,
   declarationWindowMinutes = null,
   issueComments = null,
+  declarationsUnreadable = false,
 }) {
   const replaces = replacementSource(body);
   const liveHeads = codexFindingHeads(comments, reviews);
@@ -281,7 +311,28 @@ export function assessRestructure({
       };
     }
 
-    const answer = humanDeclaration(issueComments);
+    // The answer could not be read, so whether a maintainer has already said
+    // "restructure" is unknown. Both permissive outcomes below — an explicit
+    // `continue`, and the window expiring — would be decided on evidence we do
+    // not have, and expiry is the dangerous one: it needs no answer at all, so a
+    // failed read looks exactly like silence. This is the same rule the sticky
+    // floor already follows, and I did not apply it when adding this second read.
+    if (declarationsUnreadable) {
+      return {
+        ...base,
+        critical: true,
+        state: 'restructure_declaration_required',
+        required: true,
+        allowed: false,
+        undecided: true,
+        thresholdCrossed: true,
+        reason: `${findingHeadCount} finding-bearing heads with a P1, and the comments `
+          + 'carrying a maintainer decision could not be read. Whether one was posted is '
+          + 'unverified, so the unit waits rather than proceeding on evidence it does not have',
+      };
+    }
+
+    const answer = humanDeclaration(issueComments, requestedAt);
     if (answer) {
       const { declared, by } = answer;
       return {
