@@ -80,19 +80,44 @@ FOLD read at write time is not enforced by locking one participant in the flow. 
 took the bill lock; the writes that actually move `PAID` did not. Under READ COMMITTED
 that is a double-spend with both rows append-only, so nothing walks it back.
 
+## Correction: what the round cap actually obliges
+
+The previous section said the cap "gates KIND rather than COUNT" and therefore
+changed nothing on a head whose findings were all concrete defects. **Half of that
+was wrong, and the gate caught it** — `ca148eb` was refused with
+`convergence_required`: *missing a `Review-Deferred-To-Probes: <task>` trailer*.
+
+The rule as implemented is unconditional. `review-efficiency.mjs` states it
+directly — *"PLAN_REVIEW_ROUND_CAP — this adds an obligation, it never removes
+one."* Past three finding-bearing heads a docs-only review owes the trailer
+**regardless of what kind of findings the latest round produced.**
+
+What I had right: the cap never excuses fixing a finding, and every finding on
+every head here was fixed. What I had wrong: I treated "no findings needed
+deferring" as "no deferral is owed". Those are different claims. The trailer does
+not assert that anything went unanswered — it names **where the plan's remaining
+open questions get settled**, which is a standing fact about a plan that defers
+mechanism to task PRs, not a per-round judgement about the last review.
+
+**Value: `phase-5-task-7`.** The trailer names the review stop that settles the
+deferred questions, and Task 7 is this plan's FINAL STOP. `phase-5-task-1` would
+be wrong for the same reason it was a P1 in #252 round 17: the deferred §B–§H
+mechanism is settled across every task, and the last stop that can adjudicate any
+of it is Task 7, not the first one. Both values are shape-valid and phase-eligible,
+so nothing but honesty distinguishes them.
+
 ## Where this leaves the review
 
-This is head 4 of a docs-only plan, past `PLAN_REVIEW_ROUND_CAP = 3`. The cap has
-now engaged once and changed nothing, because it gates KIND rather than COUNT.
+This is head 5 of a docs-only plan, past `PLAN_REVIEW_ROUND_CAP = 3`, and the
+deferral is now declared.
 
 **The commitment stands unchanged for every further round:** findings that are
-*"the plan should also specify X"* are converted into
-NAMED PROBES carrying `Review-Deferred-To-Probes: phase-5-task-1` rather than
+*"the plan should also specify X"* are converted into NAMED PROBES rather than
 answered with more prose — the mechanism the repository already has for the case
-where a plan can always be specified further. If head 3 draws findings that are
-concrete DEFECTS with concrete fixes — as all six here were — they are fixed,
-because the cap gates paperwork and never a finding, and `guardAgainstCurrentHeadFinding`
-fails closed on every current-head finding regardless.
+where a plan can always be specified further. Findings that are concrete DEFECTS
+with concrete fixes are fixed, because the cap gates paperwork and never a
+finding, and `guardAgainstCurrentHeadFinding` fails closed on every current-head
+finding regardless.
 
 Nothing here is dismissed, deferred or downgraded. The `codex-current-head` gate
 still admits only a head Codex returns clean on.
