@@ -1,7 +1,7 @@
 # Convergence audit — PR #264 (wiring the five-head restructure rule)
 
 Required by `CLAUDE.md` after two distinct finding-bearing heads. This is an
-architectural audit of all twenty-two findings together, not a series of isolated
+architectural audit of all twenty-four findings together, not a series of isolated
 patches. Round 3 matters most: it is the audit's own root cause, reproduced by
 the fix written for it.
 
@@ -14,6 +14,7 @@ the fix written for it.
 | `ad290cc` | 3 — all P2, all durable-record handling |
 | `1c6cdaa` | 3 — all P2; one a direct miss against the owner's stated design |
 | `af81b9b` | 1 — P2, write ordering |
+| `442759b` | 2 — **one P1**, caused by the previous round's fix |
 
 ## The finding that is not like the others
 
@@ -350,6 +351,45 @@ order, and every state that can be reached must have a path out.** Rounds 4–7
 have each found one more corner of it — an unwritten override, an unread window,
 a stale duplicate, and now a record written too late.
 
+## Round 8 — a P1, and the previous round caused it
+
+**Round 7's fix produced round 8's P1.** That is the signature I abandoned #263
+over, so it deserves to be stated first and plainly rather than buried under the
+correction.
+
+Round 7 found: the status was published before the record, so a sticky-write
+failure left a block the sweep could not act on. I fixed it **twice** — reordered
+the writes, *and* taught the sweep to self-heal a block whose record is missing.
+The second fix alone was sufficient. The first only **moved** the failure: a throw
+now left the earlier `pending` status as the latest, and the sweep only wakes
+retryable *terminal* statuses, so the unit sat exactly as before, one layer deeper.
+
+So the correction is a **subtraction**: revert the reordering, keep the
+self-healing. The block is published first — because the sweep knows how to
+recover a block whose record is missing — and the record write is best-effort,
+reported rather than thrown. Losing the record costs one sweep cycle; losing the
+block costs the unit.
+
+The second finding is the same over-reach seen from the other side: the
+self-healing keyed on *"no lifecycle metrics"*, which is equally true of an
+ordinary `review: Codex review timed out after two attempts`. Unscoped, the sweep
+re-ran the whole review loop every fifteen minutes while Codex was unhealthy —
+**overriding a two-attempt safety cap it has no business touching.** Now scoped to
+lifecycle waits (`W35`), which narrows the false positive without losing the fix.
+
+### What this round says about the unit
+
+Both findings come from one habit, and it is not the same habit as rounds 1–6.
+Those were *under*-application — a principle stated and applied in one place.
+This round is **over**-application: fixing a problem twice, where the second fix
+creates a new failure mode the first already covered. The two are opposite
+errors with the same cause — not checking whether the fix I already have is
+sufficient before adding another.
+
+The remedy that generalises: **when a fix has two candidate mechanisms, ship the
+one that makes the bad state recoverable, not the one that tries to prevent it.**
+Prevention has to enumerate every path; recovery only has to recognise the state.
+
 ## The original F3 record — superseded, kept for the reasoning
 
 > `auto-merge.yml` triggers on `workflow_run` and `workflow_dispatch` only. There
@@ -403,9 +443,9 @@ because it does not.
 
 | Gate | Result |
 | --- | --- |
-| `scripts/review-lifecycle-enforcement.test.mjs` | **34/34** |
+| `scripts/review-lifecycle-enforcement.test.mjs` | **35/35** |
 | `scripts/review-lifecycle.test.mjs` | 20/20 |
-| `pnpm test:automation` | **215/215** |
+| `pnpm test:automation` | **216/216** |
 | `pnpm check` | **EXIT 0** |
 
 ### Discrimination — each mechanism reverted in turn

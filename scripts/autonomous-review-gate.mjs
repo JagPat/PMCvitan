@@ -1190,13 +1190,21 @@ export async function sweepExpiredWindows(client, {
       }
     }
 
-    // A published wait with NO recorded request is an INCOMPLETE record, not a
-    // patient one. Ordering now prevents it being created, but a head already
-    // left in that shape by an older run has no window to expire and no request
-    // for an answer to postdate, so nothing else here would ever find it
-    // actionable and it would sit draft forever. Waking it costs one dispatch
-    // and lets the gate write the record it is missing.
-    const incomplete = !metrics?.declarationRequestedAt;
+    // A LIFECYCLE WAIT with no recorded request is an INCOMPLETE record, not a
+    // patient one: no window to expire and no request for an answer to postdate,
+    // so nothing else here would ever find it actionable and it would sit draft
+    // forever. Waking it costs one dispatch and lets the gate write what is
+    // missing.
+    //
+    // Scoped to lifecycle waits DELIBERATELY. An ordinary retryable failure —
+    // `review: Codex review timed out after two attempts` — also carries no
+    // lifecycle metrics, so an unscoped check treated every one of them as an
+    // unrecorded request and re-ran the whole review loop every fifteen minutes
+    // while Codex was unhealthy. That bypasses the two-attempt cap, which is a
+    // safety limit this sweep has no business overriding.
+    const lifecycleWait = String(terminal.description ?? '')
+      .startsWith('review: lifecycle —');
+    const incomplete = lifecycleWait && !metrics?.declarationRequestedAt;
 
     const why = expired
       ? `the ${expired.minutes}-minute window closed `
@@ -1353,55 +1361,6 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
     true,
   );
   if (!live) return { ...result, superseded: true };
-  // The RECORD is written before the block is published.
-  //
-  // The sweep decides whether a blocked unit is actionable by reading this
-  // record. Publishing the failing status first meant a transient sticky-write
-  // failure left a head marked "waiting" with no `declarationRequestedAt` for
-  // the sweep to read — no window to expire, no request for an answer to
-  // postdate — so the unit sat draft until someone pushed. Writing the record
-  // first means the only thing a sticky failure can cost is the status, and a
-  // head with no status is picked up by the ordinary path on the next event.
-  await client.updateStickyComment(
-    pullRequest.number,
-    // When the floor could NOT be read, this run's counts were computed without
-    // it — writing them would patch a recorded five-head floor down to however
-    // many heads happen to be visible now, and the next run would read the
-    // lowered value and pass a unit that had already crossed the limit. So the
-    // metrics block is omitted entirely on that path and `updateStickyComment`
-    // carries the existing one forward untouched. A durable floor is only ever
-    // rewritten from a reading that actually saw it.
-    `${statusBody({
-      state: result.state,
-      head: expectedHead,
-      detail: result.reason,
-      attempt: 0,
-      next: result.state === 'restructure_required'
-        ? 'A human declared RESTRUCTURE: split this unit and open a replacement that declares Replaces: #'
-          + `${pullRequest.number}.`
-        // The markers are shown in code spans, and the answer is read from a
-        // maintainer's COMMENT rather than the body: quoting the instructions
-        // must never count as obeying them, and the decision has to be
-        // attributable to a person rather than to a document the loop writes.
-        : 'A maintainer decides, by posting a COMMENT on this pull request containing '
-          + '`<!-- review-restructure: continue -->` to keep correcting this unit, or '
-          + '`<!-- review-restructure: restructure -->` to split and replace it. If '
-          + `nobody answers within ${result.windowMinutes} minutes (the ${result.tier} `
-          + 'window) the loop proceeds on its own judgement and records that it did.',
-    })}${floorUnreadable ? '' : `\n${renderMetrics({
-      ...(recordedMetrics ?? {}),
-      findingHeads: result.findingHeadCount,
-      findingHeadIds: result.findingHeadIds ?? [],
-      // Stamped ONCE, when the request is first made, so the window measures the
-      // human's reply and not the age of the newest head.
-      declarationRequestedAt: recordedMetrics?.declarationRequestedAt ?? nowIso,
-      // Recorded WITH the stamp so the fallback sweep can tell when this window
-      // runs out from the sticky comment alone — no review re-read, no severity
-      // recomputation, on every open pull request every fifteen minutes.
-      declarationWindowMinutes:
-        recordedMetrics?.declarationWindowMinutes ?? result.windowMinutes,
-    })}`}`,
-  );
   await client.setStatus(
     expectedHead,
     'failure',
@@ -1420,6 +1379,67 @@ export async function enforceReviewLifecycle(client, pullRequest, expectedHead) 
         : `review: lifecycle — ${result.reason}`).slice(0, 140),
     pullRequest.html_url,
   );
+
+  // The record is written AFTER the block, and a failure here is TOLERATED.
+  //
+  // Round 7 moved this write first, reasoning that the sweep reads the record to
+  // decide whether a blocked unit is actionable. That was an over-fix: the same
+  // round taught the sweep to self-heal a block whose record is missing, which
+  // already solved it. Writing first only moved the failure — a throw here left
+  // the earlier `pending` status as the latest one, and the sweep ignores a
+  // pending status, so the unit sat exactly as before.
+  //
+  // Publishing the block first means the worst case is a block the sweep KNOWS
+  // how to recover. So the write is best-effort and its failure is reported
+  // rather than thrown: losing the record costs one extra sweep cycle; losing
+  // the block costs the unit.
+  try {
+    await client.updateStickyComment(
+      pullRequest.number,
+      // When the floor could NOT be read, this run's counts were computed without
+      // it — writing them would patch a recorded five-head floor down to however
+      // many heads happen to be visible now, and the next run would read the
+      // lowered value and pass a unit that had already crossed the limit. So the
+      // metrics block is omitted entirely on that path and `updateStickyComment`
+      // carries the existing one forward untouched. A durable floor is only ever
+      // rewritten from a reading that actually saw it.
+      `${statusBody({
+        state: result.state,
+        head: expectedHead,
+        detail: result.reason,
+        attempt: 0,
+        next: result.state === 'restructure_required'
+          ? 'A human declared RESTRUCTURE: split this unit and open a replacement that declares Replaces: #'
+            + `${pullRequest.number}.`
+          // The markers are shown in code spans, and the answer is read from a
+          // maintainer's COMMENT rather than the body: quoting the instructions
+          // must never count as obeying them, and the decision has to be
+          // attributable to a person rather than to a document the loop writes.
+          : 'A maintainer decides, by posting a COMMENT on this pull request containing '
+            + '`<!-- review-restructure: continue -->` to keep correcting this unit, or '
+            + '`<!-- review-restructure: restructure -->` to split and replace it. If '
+            + `nobody answers within ${result.windowMinutes} minutes (the ${result.tier} `
+            + 'window) the loop proceeds on its own judgement and records that it did.',
+      })}${floorUnreadable ? '' : `\n${renderMetrics({
+        ...(recordedMetrics ?? {}),
+        findingHeads: result.findingHeadCount,
+        findingHeadIds: result.findingHeadIds ?? [],
+        // Stamped ONCE, when the request is first made, so the window measures the
+        // human's reply and not the age of the newest head.
+        declarationRequestedAt: recordedMetrics?.declarationRequestedAt ?? nowIso,
+        // Recorded WITH the stamp so the fallback sweep can tell when this window
+        // runs out from the sticky comment alone — no review re-read, no severity
+        // recomputation, on every open pull request every fifteen minutes.
+        declarationWindowMinutes:
+          recordedMetrics?.declarationWindowMinutes ?? result.windowMinutes,
+      })}`}`,
+    );
+  } catch (error) {
+    console.log(
+      `lifecycle: the block is published but its record could not be written `
+      + `(${error.message}); the sweep will recover it`,
+    );
+  }
   return result;
 }
 

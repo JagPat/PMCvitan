@@ -963,40 +963,81 @@ test('W33: the sweep wakes an ANSWERED unit and an UNREADABLE one', async () => 
 });
 
 test('W34: a failed sticky WRITE cannot strand the unit', async () => {
-  // The status was published before the record. A transient sticky-write failure
-  // therefore left a head marked "waiting" with no declarationRequestedAt — no
-  // window to expire, no request for an answer to postdate — so the sweep found
-  // nothing actionable and the unit sat draft until someone pushed.
+  // Round 7 fixed this by writing the record BEFORE the status. That was an
+  // over-fix, and round 8 showed why: a throw then left the earlier `pending`
+  // status as the latest one, and the sweep only wakes retryable TERMINAL
+  // statuses — so the unit sat exactly as before, one layer deeper.
+  //
+  // The block is published FIRST and the record is best-effort, because the
+  // sweep already knows how to recover a block whose record is missing. Losing
+  // the record costs one sweep cycle; losing the block costs the unit.
   const { sweepExpiredWindows } = await import('./autonomous-review-gate.mjs');
 
-  // 1. ORDER: the record is written BEFORE the status, so a sticky failure costs
-  //    only the status, and a head with no status is picked up normally.
   const order = [];
   const client = fakeClient({ comments: heads(5, P1) });
-  client.updateStickyComment = async () => { order.push('record'); };
-  client.setStatus = async (...a) => { order.push('status'); client.calls.status.push(a); };
+  client.setStatus = async (...a) => { order.push('block'); client.calls.status.push(a); };
+  client.updateStickyComment = async (n, b) => { order.push('record'); client.calls.sticky.push(b); };
   await enforceReviewLifecycle(client, pr, 'h');
-  assert.deepEqual(order, ['record', 'status'],
-    'the record the sweep depends on must exist before the block that needs it');
+  assert.deepEqual(order, ['block', 'record'],
+    'the block the sweep can recover must be published before the record');
 
-  // A throwing sticky write must not leave a published block behind.
+  // A throwing record write must NOT swallow the block or fail the run.
   const broken = fakeClient({ comments: heads(5, P1) });
   broken.updateStickyComment = async () => { throw new Error('transport'); };
-  await assert.rejects(() => enforceReviewLifecycle(broken, pr, 'h'));
-  assert.equal(broken.calls.status.length, 0, 'no block is published without its record');
+  const result = await enforceReviewLifecycle(broken, pr, 'h');
+  assert.equal(result.allowed, false);
+  assert.equal(broken.calls.status.length, 1, 'the block is published regardless');
+  assert.match(broken.calls.status[0][2], /^review: lifecycle —/u);
 
-  // 2. SELF-HEAL: a head already left in that shape by an older run is woken.
+  // SELF-HEAL: the sweep wakes exactly that shape.
   const stranded = sweepClient({
     pulls: [{ number: 4, head: { sha: 'h4', ref: 'claude/d' } }],
     sticky: { 4: null },                 // published wait, no record
     statuses: { h4: blocked(21) },
   });
   stranded.issueComments = async () => [];
-  const result = await sweepExpiredWindows(stranded, {
+  const healed = await sweepExpiredWindows(stranded, {
     nowIso: '2026-08-01T00:20:00Z', log: () => {},
   });
-  assert.equal(result.woken.length, 1, 'an unrecordable wait must not sit forever');
-  assert.match(result.woken[0].why, /never recorded/u);
+  assert.equal(healed.woken.length, 1, 'an unrecorded wait must not sit forever');
+  assert.match(healed.woken[0].why, /never recorded/u);
+});
+
+test('W35: the sweep never overrides the Codex attempt cap', async () => {
+  // The self-heal above keyed on "no lifecycle metrics", which is ALSO true of
+  // an ordinary retryable failure like `review: Codex review timed out after two
+  // attempts`. Unscoped, the sweep re-ran the entire review loop every fifteen
+  // minutes while Codex was unhealthy — overriding a two-attempt safety cap the
+  // sweep has no business touching.
+  const { sweepExpiredWindows } = await import('./autonomous-review-gate.mjs');
+  const timedOut = sweepClient({
+    pulls: [{ number: 9, head: { sha: 'h9', ref: 'claude/e' } }],
+    sticky: { 9: null },                 // no lifecycle metrics — same as above
+    statuses: { h9: [{
+      id: 31, context: 'codex-current-head', state: 'failure',
+      description: 'review: Codex review timed out after two attempts',
+    }] },
+  });
+  timedOut.issueComments = async () => [];
+  const result = await sweepExpiredWindows(timedOut, {
+    nowIso: '2026-08-01T00:20:00Z', log: () => {},
+  });
+  assert.equal(result.woken.length, 0,
+    'a non-lifecycle retryable failure is not the sweep\'s to re-run');
+
+  // The lifecycle wait with the same empty record IS still healed, so the scope
+  // narrowed the false positive without losing the fix.
+  const wait = sweepClient({
+    pulls: [{ number: 10, head: { sha: 'h10', ref: 'claude/f' } }],
+    sticky: { 10: null },
+    statuses: { h10: blocked(32) },
+  });
+  wait.issueComments = async () => [];
+  assert.equal(
+    (await sweepExpiredWindows(wait, { nowIso: '2026-08-01T00:20:00Z', log: () => {} }))
+      .woken.length,
+    1,
+  );
 });
 
 test('W14: a failed sticky READ never rewrites the durable floor', async () => {
