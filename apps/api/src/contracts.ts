@@ -867,6 +867,16 @@ export const poCostHeadShape = z.object({
   poLineId: z.string().min(1),
   costHeadCode: z.string().trim().min(1).max(64),
 }).strict();
+// Codex round 3 (P2) — an AMENDMENT's heads are keyed by REQUISITION LINE, not by PO line. The
+// replacement `PurchaseOrderLine` rows are generated INSIDE the amend transaction, so their ids
+// cannot exist in a caller's request: keyed by `poLineId`, a new line always failed "name the
+// cost head" and a carried line silently kept its old head, making reclassification-at-amend
+// unreachable. The requisition line is the identity the caller already supplies in `lines`.
+// Issuance keeps `poLineId` because at issue the lines already exist and ARE addressable.
+export const poAmendCostHeadShape = z.object({
+  requisitionLineId: z.string().min(1),
+  costHeadCode: z.string().trim().min(1).max(64),
+}).strict();
 export const issuePoSchema = z.object({
   overages: z.array(poOverageShape).max(50).optional(),
   costHeads: z.array(poCostHeadShape).max(50).optional(),
@@ -878,7 +888,7 @@ export const amendPoSchema = z.object({
   overages: z.array(poOverageShape).max(50).optional(),
   // §C: an amendment issues a NEW version, so its lines need attribution too. Omitted entries
   // carry the amended line's own head forward; supplying one reclassifies at the same time.
-  costHeads: z.array(poCostHeadShape).max(50).optional(),
+  costHeads: z.array(poAmendCostHeadShape).max(50).optional(),
 }).strict();
 export type AmendPoInput = z.infer<typeof amendPoSchema>;
 export const cancelPoSchema = z.object({ reason: z.string().trim().min(1).max(1000) }).strict();
@@ -1076,12 +1086,17 @@ export const labourPoCostHeadShape = z.object({
   labourPoLineId: z.string().min(1),
   costHeadCode: z.string().trim().min(1).max(64),
 }).strict();
+// The labour twin of the amendment key (§0b — same rule, every site).
+export const labourAmendCostHeadShape = z.object({
+  requisitionLineId: z.string().min(1),
+  costHeadCode: z.string().trim().min(1).max(64),
+}).strict();
 export const issueLabourPoSchema = z.object({
   costHeads: z.array(labourPoCostHeadShape).max(200).optional(),
 }).strict();
 export type IssueLabourPoInput = z.infer<typeof issueLabourPoSchema>;
 export const amendLabourPoSchema = z.object({
-  costHeads: z.array(labourPoCostHeadShape).max(200).optional(),
+  costHeads: z.array(labourAmendCostHeadShape).max(200).optional(),
   reason: z.string().trim().min(1).max(1000),
   lines: z.array(labourPoLineShape).min(1).max(100),
 }).strict();

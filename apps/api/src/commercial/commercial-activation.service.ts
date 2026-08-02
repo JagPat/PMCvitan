@@ -101,7 +101,17 @@ export class CommercialActivationService {
     if (!reason) throw new BadRequestException('Activation must carry an attributable reason');
 
     return this.prisma.$transaction(async (tx) => {
-      await tx.project.findUniqueOrThrow({ where: { id: projectId }, select: { id: true } });
+      // Codex round 3 (P2) — the project must be OPERABLE, not merely present. The first spelling
+      // read `Project` directly (an orgs-owned table — the round-2 ownership finding again) and
+      // only proved the row existed. `ProjectAccessService.authorize` refuses an ARCHIVED project
+      // before it considers membership, so an active PMC left on an archived project could
+      // otherwise commit cost heads, attributions and the capability row that no request path
+      // could author. The owner states the rule; commercial asks.
+      if (!(await this.orgs.isProjectOperable(tx, projectId))) {
+        throw new BadRequestException(
+          `Project "${projectId}" is archived or does not exist — activation authors rows no request path could`,
+        );
+      }
 
       // Codex round 1 (P1) — activation SERIALIZES with the PO lifecycle. Every PO command
       // (`pos.issue`/amend/cancel/close-short, material and labour) takes this same lock, and

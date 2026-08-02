@@ -25,6 +25,31 @@ export interface OrgsParticipantClient {
 @Injectable()
 export class OrgsParticipant {
   /**
+   * Is `projectId` a project that may be OPERATED ON at all — it exists and is not archived?
+   *
+   * Phase 5 Task 1, Codex round 3 (P2). `ProjectAccessService.authorize` refuses an archived
+   * project BEFORE it looks at membership, so no request path can author anything there. An
+   * operator-driven path that only proves the row EXISTS therefore admits work the application
+   * itself would refuse: an active PMC membership left on an archived project could run commercial
+   * activation and commit cost heads, attributions and the capability row.
+   *
+   * `hasProjectRoleStanding` deliberately does NOT fold this in. That method answers a question
+   * about a PERSON, it is already relied on by the cleared Phase-4 T3 repair engine, and widening
+   * it would silently change that caller's behaviour. Two questions, two methods; a caller that
+   * needs both asks both.
+   */
+  async isProjectOperable(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+  ): Promise<boolean> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ operable: boolean }>>(
+      `SELECT EXISTS (SELECT 1 FROM "Project" WHERE "id" = $1 AND "archivedAt" IS NULL) AS operable`,
+      projectId,
+    );
+    return rows[0]?.operable === true;
+  }
+
+  /**
    * Resolve an OPERATOR STRING — a user id or an email — to the orgs-owned `User` row it names.
    * Returns `null` when it names nobody.
    *

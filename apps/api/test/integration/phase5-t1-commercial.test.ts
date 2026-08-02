@@ -827,4 +827,67 @@ describe('Phase 5 Task 1 — commercial capability + §C commitment attribution 
     })).rejects.toMatchObject({ status: 400 });
     expect(await capabilities.isEnabled(other, COMMERCIAL_CAPABILITY)).toBe(false);
   });
+
+  // ── Codex round 3 — the two findings on head `b179c2d`, each reproduced RED first ────────────
+
+  it('CODEX R3-F1 (P2): an ARCHIVED project cannot be activated — existence is not operability', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    // The membership stays ACTIVE and pmc — the only thing that changes is the project's own
+    // lifecycle. `ProjectAccessService.authorize` refuses an archived project BEFORE it considers
+    // membership, so activation must too, or it authors rows no request path could.
+    await t.prisma.project.update({ where: { id: projectId }, data: { archivedAt: new Date() } });
+    await expect(activation.activate(projectId, f.memberUser.id, {
+      costHeads: [{ code: 'CIVIL', name: 'Civil works' }], materialLines: [], labourLines: [],
+      reason: 'activation on an archived project',
+    })).rejects.toMatchObject({ status: 400 });
+    expect(await capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY)).toBe(false);
+    expect(await t.prisma.costHead.count({ where: { projectId } })).toBe(0);
+
+    // un-archiving restores it, so the check is precise rather than a blanket refusal
+    await t.prisma.project.update({ where: { id: projectId }, data: { archivedAt: null } });
+    await enableCommercial(projectId);
+    expect(await capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY)).toBe(true);
+
+    // and a project that never existed is refused the same way
+    await expect(activation.activate('it-p5t1-nope', f.memberUser.id, {
+      costHeads: [], materialLines: [], labourLines: [], reason: 'no such project',
+    })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('CODEX R3-F2 (P2): amendment cost heads are keyed by REQUISITION LINE, so an added line is attributable and a carried line is reclassifiable', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId);
+    const activityId = await freshActivity(projectId);
+    const { poId, poLineId } = await draftMaterialPo(projectId, activityId, '100');
+    await pos.issue(projectId, poId, { costHeads: [{ poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    const v1Line = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { projectId, id: poLineId } });
+
+    // RECLASSIFY AT AMEND. The replacement PO-line id is generated inside the amend transaction,
+    // so the caller cannot name it — it names the requisition line it already supplied. Keyed by
+    // `poLineId` this map could never match and the head silently carried forward as CIVIL.
+    await pos.amend(projectId, poId, {
+      reason: 'quantity revised and recoded',
+      lines: [{ requisitionLineId: v1Line.requisitionLineId, purchaseQty: '60' }],
+      costHeads: [{ requisitionLineId: v1Line.requisitionLineId, costHeadCode: 'MEP' }],
+    }, pmc(projectId));
+    const v2Line = await t.prisma.purchaseOrderLine.findFirstOrThrow({
+      where: { projectId, requisitionLineId: v1Line.requisitionLineId, id: { not: poLineId } },
+    });
+    expect((await activeFor(projectId, v2Line.id))!.costHeadCode).toBe('MEP');
+    expect((await t.prisma.commitmentAttribution.findFirstOrThrow({ where: { projectId, poLineId } })).supersededAt).not.toBeNull();
+    expect(await t.prisma.commitmentAttribution.count({ where: { projectId, supersededAt: null } })).toBe(1);
+
+    // OMITTING the head still carries the current one forward — the amend contract stays optional.
+    await pos.amend(projectId, poId, {
+      reason: 'quantity revised again, coding unchanged',
+      lines: [{ requisitionLineId: v1Line.requisitionLineId, purchaseQty: '50' }],
+    }, pmc(projectId));
+    const v3Line = await t.prisma.purchaseOrderLine.findFirstOrThrow({
+      where: { projectId, requisitionLineId: v1Line.requisitionLineId, id: { notIn: [poLineId, v2Line.id] } },
+    });
+    expect((await activeFor(projectId, v3Line.id))!.costHeadCode).toBe('MEP');
+    expect(await t.prisma.commitmentAttribution.count({ where: { projectId, supersededAt: null } })).toBe(1);
+  });
 });

@@ -256,8 +256,8 @@ its row to that table in the same change.
 | Gate | Result |
 |---|---|
 | `pnpm check` | EXIT 0 — web 543/543, API 685/685 |
-| integration suite (TRUNCATE-cleaned DB) | 73 files / 720 tests |
-| `phase5-t1-commercial.test.ts` | 15/15 (10 original + 5 Codex probes) |
+| integration suite (TRUNCATE-cleaned DB) | 73 files / 722 tests |
+| `phase5-t1-commercial.test.ts` | 20/20 (10 plan probes + 10 Codex probes across three rounds) |
 | `upgrade-proof.sh` | PASSED — 231 assertions |
 | `test:e2e:api:allmodules` | 35/35 — including the `daily-log-lost-response` step that flaked on the first head |
 

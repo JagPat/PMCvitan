@@ -197,7 +197,7 @@ export class LabourProcurementService {
     user: AuthUser,
     priorLines: ReadonlyArray<{ id: string; requisitionLineId: string }>,
     nextVersionId: string,
-    costHeads: ReadonlyArray<{ labourPoLineId: string; costHeadCode: string }> | undefined,
+    costHeads: ReadonlyArray<{ requisitionLineId: string; costHeadCode: string }> | undefined,
     reason: string,
   ): Promise<void> {
     if (!(await this.commercial.isActive(tx, projectId))) return;
@@ -207,7 +207,9 @@ export class LabourProcurementService {
       orderBy: { id: 'asc' },
     });
     const priorByRequisitionLine = new Map(priorLines.map((l) => [l.requisitionLineId, l.id]));
-    const map = new Map((costHeads ?? []).map((c) => [c.labourPoLineId, c.costHeadCode]));
+    // Codex round 3 (P2): keyed by REQUISITION LINE — the identity the caller supplies. The
+    // replacement PO-line ids are generated in THIS transaction, so a caller could never name them.
+    const map = new Map((costHeads ?? []).map((c) => [c.requisitionLineId, c.costHeadCode]));
     const identity = { actorId: actor.actorId, role: user.role };
 
     const carried = new Set<string>();
@@ -217,12 +219,12 @@ export class LabourProcurementService {
       const prior = priorByRequisitionLine.get(line.requisitionLineId);
       if (prior) {
         carried.add(prior);
-        replaced.push({ from: { labourPoLineId: prior }, to: { labourPoLineId: line.id }, costHeadCode: map.get(line.id), reason });
-      } else if (map.has(line.id)) {
-        fresh.push({ labourPoLineId: line.id, costHeadCode: map.get(line.id)! });
+        replaced.push({ from: { labourPoLineId: prior }, to: { labourPoLineId: line.id }, costHeadCode: map.get(line.requisitionLineId), reason });
+      } else if (map.has(line.requisitionLineId)) {
+        fresh.push({ labourPoLineId: line.id, costHeadCode: map.get(line.requisitionLineId)! });
       } else {
         throw new BadRequestException(
-          `Amended labour line ${line.id} is new to this purchase order — name the cost head that carries it`,
+          `Amended labour line ${line.id} is new to this purchase order — name the cost head that carries it (keyed by requisitionLineId)`,
         );
       }
     }

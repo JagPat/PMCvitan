@@ -6,8 +6,10 @@ Required by `CLAUDE.md` after two finding-bearing heads.
 | --- | --- | --- |
 | `09af9e5` | 5 | 2×P1 — activation takes no PO lifecycle lock; authority read from the legacy `User.role` column |
 | `42fc16c` | 2 | 1×P1 — the standalone re-attribution takes no PO lifecycle lock |
+| `b179c2d` | 2 | 2×P2 — activation admits ARCHIVED projects; amendment cost heads keyed by an id the caller cannot know |
 
-5 → 2 is a decline, but the number is not the interesting part of this audit.
+5 → 2 → 2, and the severity has fallen to P2-only. The number is not the
+interesting part of this audit.
 **The P1 on the second head is the SAME RULE as the P1 on the first head, at a
 different site.** That is the finding behind the findings, and it is the one this
 document exists to close.
@@ -114,6 +116,47 @@ hardest to correct after merge (deployed migration bytes, PostgreSQL seals) has 
 zero findings across two rounds, and the part that has drawn all seven is the part a
 later commit can still fix.
 
+## Round 3 — the same two families, and what that says
+
+Neither round-3 finding is new in KIND, and that is the honest reading:
+
+| Finding | Family | First seen |
+| --- | --- | --- |
+| activation admits archived projects | **a rule the request path enforces, not enforced on the operator path** | round 1 (F2: live standing, not `User.role`) |
+| activation read `Project` directly | **an orgs-owned table read from commercial** | round 2 (R2-F2: `User` read directly) |
+| amendment heads keyed by an unknowable id | a NEW family — a contract defect, not a boundary or lock one | round 3 |
+
+The first two are the *operator-path* version of a question I have now been asked
+three times: **the activation path has no request token, so every guard
+`ProjectAccessService.authorize` applies for free must be re-established
+explicitly, and every orgs-owned fact it needs must come from orgs.** Round 1 gave
+it standing. Round 2 gave it identity. Round 3 gave it project operability. Those
+are the three things `authorize` checks, and it took three rounds because I fixed
+them one at a time as each was named — the exact failure this audit's first section
+already indicted, appearing again while the audit that indicted it was in the diff.
+
+So the closure this time is stated as a list rather than a patch. `authorize`
+refuses on: archived-or-missing project, then inactive membership, then role. The
+activation path now asks orgs all three — `isProjectOperable`, then
+`hasProjectRoleStanding` with the policy's role set — before any write. There is no
+fourth check in `authorize` to miss; I read it rather than inferring it.
+
+**R3-F2 is a different and more useful kind of finding**, and worth separating from
+the boundary work: the amendment cost-head map was keyed by `PurchaseOrderLine.id`
+of the NEW version — rows generated inside the amend transaction. No caller could
+ever supply those ids. The consequence was not a race or a leak but a **blocked
+feature**: adding a line during a commercial amendment always failed "name the cost
+head", and a carried line silently kept its old head, so reclassification-at-amend
+was unreachable. My probes did not catch it because every one of them amended a
+line that already existed and asserted the head CARRIED — which passed for the
+wrong reason. The probe now asserts a head that CHANGES at amend, which the old
+keying could not produce. The key is `requisitionLineId`, which the caller already
+supplies in the same request; issuance keeps `poLineId` because at issue the lines
+exist and are addressable.
+
+That one is on my test design, not my reading of a rule: an assertion that a value
+is UNCHANGED cannot distinguish "carried correctly" from "never looked up".
+
 ## The commitment for any further round
 
 Findings continue to be **batched** — read every one before pushing a correction —
@@ -131,9 +174,9 @@ still admits only a head Codex returns clean on.
 
 ## Gates
 
-`pnpm check` EXIT 0 · integration 73 files / 720 tests on a TRUNCATE-cleaned database
+`pnpm check` EXIT 0 · integration 73 files / 722 tests on a TRUNCATE-cleaned database
 (`prisma migrate reset` is refused here as a destructive action needing human consent —
 an earlier claim of a "reset database" in this PR's packet was wrong and is corrected) ·
-`phase5-t1-commercial.test.ts` 18/18 · `upgrade-proof.sh` PASSED (231 assertions) ·
+`phase5-t1-commercial.test.ts` 20/20 · `upgrade-proof.sh` PASSED (231 assertions) ·
 `test:e2e:api:allmodules` 35/35 · review-scope justified-large with the complete
 invariant matrix.
