@@ -1468,9 +1468,17 @@ assert "the Task-3 quantity/reason/self-correction CHECKs and the immutability t
   "4|1"
 # round-3 — the row-level correction floor is only sound over a ONE-LEVEL tree, so a correction
 # targeting another correction must be unrepresentable, not merely refused by the service.
-assert "the Task-3 correction-target trigger is installed (a correction may not target a correction)" \
-  "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname = 'Measurement_correction_target' AND NOT tgisinternal;" \
-  "1"
+# round-4 — and it must fire at COMMIT: a BEFORE trigger's snapshot and the FK's are taken at
+# different moments, so a target committing between them was seen by the FK and missed by the
+# trigger. DEFERRABLE INITIALLY DEFERRED leaves no interleaving before the check.
+assert "the Task-3 correction-target trigger is installed and DEFERRED to commit" \
+  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'Measurement_correction_target' AND NOT tgisinternal)::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'Measurement_correction_target' AND tgdeferrable AND tginitdeferred)::text;" \
+  "1|1"
+# round-4 — the two identity FKs: a cited output belongs to the MEASURING activity, and a
+# correction carries its target's WHOLE work identity (not merely the target's existence)
+assert "the Task-3 round-4 identity FKs and their candidate keys are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('Measurement_projectId_citedOutputId_activityId_fkey','Measurement_corrects_identity_fkey'))::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname IN ('Measurement_corrects_identity_key','ActivityWorkOutput_projectId_id_activityId_key'))::text;" \
+  "2|2"
 # §D — MATERIAL lines are not measured, and the ABSENCE of the column is what makes that true:
 # `ACCEPTED(poLine)` already IS the measurement of a delivery, so a parallel manual figure would be
 # a second truth about one physical event. There is no `poLineId` to point at a material line with.
@@ -1519,6 +1527,16 @@ assert_rejects "commercial T3 §D: DELETING a measurement (a correction is a NEW
   "DELETE FROM \"Measurement\" WHERE \"id\"='UPL-P5M0'"
 assert_rejects "commercial T3 §D: a measurement citing ANOTHER project's activity (same-project composite FK)" \
   "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M6','p2','UPL-T2POL','ACT-1',1,'2026-08-12','UPL-T5O','USER-1','UPL-CMD1')"
+# round-4 — the cited output must belong to the MEASURING activity. `UPL-T5O` is recorded against
+# ACT-1; naming ACT-2 while citing it is a measurement resting on another activity's progress.
+$PSQL >/dev/null -c "INSERT INTO \"Activity\"(\"id\",\"projectId\",\"name\",\"zone\",\"plannedStart\",\"plannedEnd\",\"status\",\"progressPct\",\"gateMaterial\") VALUES('ACT-P5T3','p1','Second activity','Hall',0,5,'done',100,'na')" 2>/dev/null
+assert_rejects "commercial T3 §D: a measurement whose cited OUTPUT belongs to another activity (identity FK)" \
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M7','p1','UPL-T2POL','ACT-P5T3',1,'2026-08-12','UPL-T5O','USER-1','UPL-CMD1')"
+# round-4 — a correction carries its target's WHOLE work identity. `UPL-P5M0` measures UPL-T2POL on
+# ACT-1; a correction naming it while describing ANOTHER line's work would apply its signed quantity
+# to that other line while `netOf` counted it against the one it names.
+assert_rejects "commercial T3 §D: a correction naming a target but describing ANOTHER line's work (identity FK)" \
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"correctsId\",\"reason\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M8','p1','UPL-T2POL2','ACT-1',-1,'UPL-P5M0','forged','2026-08-12','UPL-T5O','USER-1','UPL-CMD1')"
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

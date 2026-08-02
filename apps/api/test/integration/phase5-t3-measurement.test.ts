@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
+import { MediaService } from '../../src/media/media.service';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { ActivitiesService } from '../../src/activities/activities.service';
@@ -194,6 +196,40 @@ describe('Phase 5 Task 3 — §D measurement (live PG)', () => {
       }, pmc(projectId));
       await capacity.recordWork(projectId, { allocationId: allocations[0]!.id, workedMinutes: minutesEach }, pmc(projectId));
     }
+  };
+
+  /**
+   * A server-reserved one-shot command row, so a DIRECT hostile insert can satisfy the NOT NULL
+   * `sourceCommandId` composite FK and be rejected by the seal under test rather than by provenance.
+   */
+  const freshCommand = async (projectId: string): Promise<string> => {
+    const project = await t.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { orgId: true } });
+    const row = await t.prisma.commandExecution.create({
+      data: {
+        scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id,
+        commandType: 'test.hostile', idempotencyKey: `hostile-${(seq += 1)}`, requestHash: 'x', status: 'succeeded',
+      },
+    });
+    return row.id;
+  };
+
+  /**
+   * A SECOND measurable line inside an EXISTING project. The round-4 seals are about naming the
+   * wrong work WITHIN one project — across projects the composite FKs already refuse it, so a
+   * cross-project fixture would let those probes pass without exercising the seal at all.
+   */
+  const siblingLine = async (
+    projectId: string, opts: { orderedQty?: number; civilDate?: string } = {},
+  ): Promise<{ activityId: string; poLineId: string; outputId: string }> => {
+    const civilDate = opts.civilDate ?? '2026-08-10';
+    const qty = opts.orderedQty ?? 2;
+    const activityId = await freshActivity(projectId);
+    const req = await labourRequirement(projectId, activityId, civilDate, qty);
+    const { poLineId, commitmentId } = await committedCapacity(projectId, req, civilDate, qty);
+    await workShifts(projectId, activityId, req, civilDate, commitmentId, qty);
+    const outputId = await recordOutput(projectId, activityId);
+    await signOff(projectId, activityId);
+    return { activityId, poLineId, outputId };
   };
 
   /** the whole chain: a signed-off activity with recorded output, a committed PO line, and effort */
@@ -650,6 +686,150 @@ describe('Phase 5 Task 3 — §D measurement (live PG)', () => {
     expect(position.committed.toString()).toBe('1000');
     expect(position.receivedNotBilled.toString()).toBe('1000');
     expect(position.exposure.toString()).toBe('2000');
+  });
+
+  // ── Codex round 4 — the seals must hold against CONCURRENCY and DIRECT writers ────────────────
+
+  it('R11 (§D): the correction-target seal is DEFERRED, and no concurrent interleaving lands a chain', async () => {
+    // The seal now fires at COMMIT rather than BEFORE INSERT. What is actually reachable, measured
+    // rather than assumed (the ground truth is in the packet):
+    //
+    //   • an UNCOMMITTED target is refused by the FK outright — PostgreSQL does NOT block and wait
+    //     for it, the invisible row simply is not there ("Key … is not present");
+    //   • a COMMITTED target is refused by the correction-target seal.
+    //
+    // The one gap between them is intra-statement: the BEFORE trigger's snapshot and the FK's are
+    // taken at different moments, so a target committing between them was seen by the FK and missed
+    // by the trigger. That window is real and cannot be hit deterministically from a test — which
+    // is exactly why the check belongs at COMMIT, where no interleaving precedes it.
+    expect(await t.prisma.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT COUNT(*)::int AS n FROM pg_trigger WHERE tgname = 'Measurement_correction_target' AND tgdeferrable AND tginitdeferred`,
+    )).toEqual([{ n: 1 }]);
+
+    const { projectId, activityId, poLineId, outputId } = await measurableLine({ orderedQty: 2, workedWorkers: 2 });
+    const a = await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '2', citedOutputId: outputId }, pmc(projectId));
+    const cmd = (await t.prisma.measurement.findFirstOrThrow({ where: { projectId, id: a.id } })).sourceCommandId;
+    const insert = (id: string, correctsId: string, qty: string) =>
+      `INSERT INTO "Measurement"("id","projectId","labourPoLineId","activityId","quantity","correctsId","reason","measuredOn","citedOutputId","takenById","sourceCommandId")
+       VALUES('${id}','${projectId}','${poLineId}','${activityId}',${qty},'${correctsId}','concurrent','2026-08-10','${outputId}','${f.memberUser.id}','${cmd}')`;
+
+    // (1) session 1 holds correction B uncommitted; session 2 names it and is refused NOW
+    const held = new PrismaClient();
+    let release!: () => void; let inserted!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const bInserted = new Promise<void>((r) => { inserted = r; });
+    const session1 = held.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(insert('R11-B', a.id, '-0.5'));
+      inserted();
+      await gate;
+    }, { timeout: 30_000 });
+    await bInserted;
+    await expect(t.prisma.$executeRawUnsafe(insert('R11-C', 'R11-B', '0.5'))).rejects.toThrow(/not present|foreign key/iu);
+    release();
+    await session1;
+    await held.$disconnect();
+
+    // (2) now that B is committed, the DEFERRED seal refuses the same chain at commit
+    await expect(t.prisma.$executeRawUnsafe(insert('R11-C', 'R11-B', '0.5')))
+      .rejects.toThrow(/may not target another correction/u);
+
+    // either way the register holds exactly one correction and the tree is ONE level deep
+    const rows = await t.prisma.measurement.findMany({ where: { projectId }, select: { id: true, correctsId: true } });
+    expect(rows.filter((r) => r.correctsId !== null).map((r) => r.id)).toEqual(['R11-B']);
+    expect(rows.every((r) => r.correctsId === null || rows.find((x) => x.id === r.correctsId)!.correctsId === null)).toBe(true);
+  });
+
+  it('R12 (§D): a cited output must belong to the measuring activity AT PostgreSQL', async () => {
+    // Project containment alone let a direct writer store activityId = A while citing B's output.
+    // The row is immutable, so sign-off withdrawal and billing would read B's progress as A's
+    // evidence permanently. The service already refused it; this proves the DATABASE does.
+    const one = await measurableLine({ orderedQty: 1, workedWorkers: 1 });
+    // a sibling activity in the SAME project, so ONLY the activity binding can reject the row
+    const two = await siblingLine(one.projectId, { orderedQty: 1 });
+    const cmd = await freshCommand(one.projectId);
+
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Measurement"("id","projectId","labourPoLineId","activityId","quantity","measuredOn","citedOutputId","takenById","sourceCommandId")
+       VALUES('R12-X','${one.projectId}','${one.poLineId}','${one.activityId}',1,'2026-08-10','${two.outputId}','${f.memberUser.id}','${cmd}')`,
+    )).rejects.toThrow();
+    expect(await t.prisma.measurement.count({ where: { projectId: one.projectId, id: 'R12-X' } })).toBe(0);
+
+    // the SAME insert citing this activity's OWN output is accepted — the seal is precise, and
+    // without this the rejection above could be any of the row's other constraints
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Measurement"("id","projectId","labourPoLineId","activityId","quantity","measuredOn","citedOutputId","takenById","sourceCommandId")
+       VALUES('R12-OK','${one.projectId}','${one.poLineId}','${one.activityId}',1,'2026-08-10','${one.outputId}','${f.memberUser.id}','${cmd}')`,
+    );
+    expect(await t.prisma.measurement.count({ where: { projectId: one.projectId, id: 'R12-OK' } })).toBe(1);
+  });
+
+  it('R13 (§D): a correction carries the target row’s whole work identity', async () => {
+    // A correction naming original A while describing B's line/activity/output would apply its
+    // signed quantity to B while `netOf(A)` counted it as A's child — the register adding or
+    // withdrawing payable evidence for a line the correction does not name.
+    const one = await measurableLine({ orderedQty: 2, workedWorkers: 2 });
+    // the other line lives in the SAME project, so only the identity binding can reject the row
+    const two = await siblingLine(one.projectId, { orderedQty: 2 });
+    const a = await measurement.take(one.projectId, { labourPoLineId: one.poLineId, activityId: one.activityId, quantity: '1', citedOutputId: one.outputId }, pmc(one.projectId));
+    const cmd = await freshCommand(one.projectId);
+
+    // same project, same target row — but the correction describes the OTHER line's work
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Measurement"("id","projectId","labourPoLineId","activityId","quantity","correctsId","reason","measuredOn","citedOutputId","takenById","sourceCommandId")
+       VALUES('R13-X','${one.projectId}','${two.poLineId}','${two.activityId}',-1,'${a.id}','forged','2026-08-10','${two.outputId}','${f.memberUser.id}','${cmd}')`,
+    )).rejects.toThrow();
+    expect(await t.prisma.measurement.count({ where: { projectId: one.projectId, id: 'R13-X' } })).toBe(0);
+
+    // the honest correction — same work as its target — is still accepted, so the seal is precise
+    const ok = await measurement.correct(one.projectId, { measurementId: a.id, quantity: '-1', reason: 'over-measured' }, pmc(one.projectId));
+    expect(ok.correctsId).toBe(a.id);
+  });
+
+  it('R14 (§D): a photo cited as measurement evidence cannot be deleted', async () => {
+    const { projectId, activityId, poLineId, outputId } = await measurableLine({ orderedQty: 1, workedWorkers: 1 });
+    const photo = await t.prisma.media.create({
+      data: { projectId, kind: 'progress', mime: 'image/png', data: Buffer.from('x'), sizeBytes: 1, uploadedBy: f.memberUser.id },
+    });
+    await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId, evidenceMediaId: photo.id }, pmc(projectId));
+
+    // a CONTROLLED refusal (409), not the raw P2003 500 the bare FK produced
+    await expect(t.app.get(MediaService).remove(photo.id, pmc(projectId))).rejects.toMatchObject({ status: 409 });
+    expect(await t.prisma.media.count({ where: { id: photo.id } })).toBe(1);
+
+    // an UNCITED photo on the same project still deletes — the guard is precise, not blanket
+    const loose = await t.prisma.media.create({
+      data: { projectId, kind: 'progress', mime: 'image/png', data: Buffer.from('y'), sizeBytes: 1, uploadedBy: f.memberUser.id },
+    });
+    expect(await t.app.get(MediaService).remove(loose.id, pmc(projectId))).toBe(true);
+  });
+
+  it('R15 (§D): the register reports the LIVE authority, not the frozen order', async () => {
+    // The write path caps by live authority, so publishing only the frozen order stated a cap that
+    // was not real: a closed-short line showed its original quantity while measurement above the
+    // committed portion was refused.
+    const { projectId, activityId, poLineId, poId, outputId } = await measurableLine({ orderedQty: 2, workedWorkers: 2 });
+    await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId));
+
+    let register = await measurement.read(projectId, poLineId, pmc(projectId));
+    expect(register.orderedPersonShiftQty).toBe(2);
+    expect(register.liveAuthorityPersonShiftQty).toBe(2);
+    expect(register.defaulted).toBe(false);
+
+    // close short to the 1 shift already measured: the ORDER is history, the AUTHORITY is now 1.
+    // (A close-short needs a version still `issued`/`partially_committed` and keeps only the
+    // committed portion — the probe-5bo setup, since fully committing the order completes it.)
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "LabourPurchaseOrderVersion" SET "status" = 'partially_committed' WHERE "poId" = $1`, poId,
+    );
+    await t.prisma.$executeRawUnsafe(`UPDATE "LabourPurchaseOrderLine" SET "committedQty" = 1 WHERE "id" = $1`, poLineId);
+    await labourCommercial.closeShortPo(projectId, poId, { reason: 'supplier withdrew the balance' }, pmc(projectId));
+    register = await measurement.read(projectId, poLineId, pmc(projectId));
+    expect(register.orderedPersonShiftQty).toBe(2);
+    expect(register.liveAuthorityPersonShiftQty).toBe(1);
+    // …and the published cap is the one the write path actually enforces
+    await expect(
+      measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
   });
 
   // ── §D — the surface is absent off-pilot ──────────────────────────────────────────────────────

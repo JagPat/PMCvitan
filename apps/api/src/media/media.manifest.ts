@@ -17,7 +17,9 @@ export const mediaManifest: ModuleManifest = {
   // Phase 4 Task 5 (§I) adds `activities`: the delete transaction consults
   // ActivityParticipant.assertMediaDisposable so a photo cited as measured-output
   // evidence is never deletable (the same rule as inventory/labour evidence).
-  workflowParticipants: ['activities', 'inspections', 'inventory', 'labour'],
+  // Phase 5 Task 3 (§D) adds `commercial` for the strictest case of that rule: a measurement is
+  // fully immutable and becomes a payable quantity, so its evidence photo is delete-sealed too.
+  workflowParticipants: ['activities', 'commercial', 'inspections', 'inventory', 'labour'],
   producesEvents: ['media.uploaded', 'media.refiled', 'media.removed'],
   consumesEvents: [],
   commands: ['media.create', 'media.setNode', 'media.remove'],

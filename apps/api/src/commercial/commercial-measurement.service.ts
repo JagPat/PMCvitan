@@ -366,6 +366,11 @@ export class CommercialMeasurementService {
         measured: rows.reduce((acc, r) => acc.add(r.quantity), ZERO).toString(),
         effort: (effort.get(labourPoLineId) ?? ZERO).toString(),
         orderedPersonShiftQty: line.personShiftQty,
+        // Codex round-4 P2 — the register must state the authority the line CURRENTLY carries, not
+        // only the quantity frozen at issue. The write path caps by `liveAuthority`, so reporting
+        // the frozen order alone published a cap that was not real.
+        liveAuthorityPersonShiftQty: line.liveAuthority,
+        defaulted: line.defaulted,
       };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }

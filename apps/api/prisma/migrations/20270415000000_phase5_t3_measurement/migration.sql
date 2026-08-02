@@ -25,6 +25,13 @@ CREATE TABLE IF NOT EXISTS "Measurement" (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS "Measurement_projectId_id_key" ON "Measurement"("projectId", "id");
+-- Codex round-4 P2 — the candidate key a CORRECTION binds to, so a correction and the row it
+-- adjusts necessarily describe the same work. Unique because `(projectId,"id")` already is:
+-- widening a unique key adds an FK target, it never constrains what may be stored.
+CREATE UNIQUE INDEX IF NOT EXISTS "Measurement_corrects_identity_key" ON "Measurement"("projectId", "id", "labourPoLineId", "activityId", "citedOutputId");
+-- …and the same widening on the ACTIVITIES-owned output table, so a cited output can be bound to
+-- the measurement's own activity. Additive on an existing table: no row can fail it.
+CREATE UNIQUE INDEX IF NOT EXISTS "ActivityWorkOutput_projectId_id_activityId_key" ON "ActivityWorkOutput"("projectId", "id", "activityId");
 CREATE INDEX IF NOT EXISTS "Measurement_projectId_labourPoLineId_idx" ON "Measurement"("projectId", "labourPoLineId");
 CREATE INDEX IF NOT EXISTS "Measurement_projectId_activityId_idx" ON "Measurement"("projectId", "activityId");
 
@@ -40,14 +47,22 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Measurement_projectId_activityId_fkey') THEN
     ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_projectId_activityId_fkey" FOREIGN KEY ("projectId", "activityId") REFERENCES "Activity"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
   END IF;
-  -- §0 `OUTPUT` is a PREDICATE: the cited row must EXIST and belong to this project. The FK is the
-  -- authority (the cleared attendance-evidence precedent), and the service asserts it belongs to
-  -- the measurement's own activity — a cross-activity citation is progress evidence for other work.
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Measurement_projectId_citedOutputId_fkey') THEN
-    ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_projectId_citedOutputId_fkey" FOREIGN KEY ("projectId", "citedOutputId") REFERENCES "ActivityWorkOutput"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+  -- §0 `OUTPUT` is a PREDICATE: the cited row must EXIST and belong to this project — AND to the
+  -- measurement's OWN activity. Codex round-4 P2: project containment alone let a maintenance
+  -- insert or a future writer store `activityId = A` while citing an output recorded against B,
+  -- and because the row is immutable, sign-off withdrawal and later billing would treat B's
+  -- progress as evidence for A permanently. The service check protects the rows IT writes; this
+  -- protects the rows the READ will find.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Measurement_projectId_citedOutputId_activityId_fkey') THEN
+    ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_projectId_citedOutputId_activityId_fkey" FOREIGN KEY ("projectId", "citedOutputId", "activityId") REFERENCES "ActivityWorkOutput"("projectId", "id", "activityId") ON DELETE NO ACTION ON UPDATE NO ACTION;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Measurement_projectId_correctsId_fkey') THEN
-    ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_projectId_correctsId_fkey" FOREIGN KEY ("projectId", "correctsId") REFERENCES "Measurement"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+  -- Codex round-4 P2 — a correction carries the target's WHOLE WORK IDENTITY. Proving only that
+  -- the target EXISTS let a correction name original A while its own line/activity/output
+  -- described B's work: the fold applied the signed quantity to B while `netOf(A)` counted it as
+  -- A's child, so the register could add or withdraw payable evidence for a line the correction
+  -- does not name.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Measurement_corrects_identity_fkey') THEN
+    ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_corrects_identity_fkey" FOREIGN KEY ("projectId", "correctsId", "labourPoLineId", "activityId", "citedOutputId") REFERENCES "Measurement"("projectId", "id", "labourPoLineId", "activityId", "citedOutputId") ON DELETE NO ACTION ON UPDATE NO ACTION;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Measurement_projectId_evidenceMediaId_fkey') THEN
     ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_projectId_evidenceMediaId_fkey" FOREIGN KEY ("projectId", "evidenceMediaId") REFERENCES "Media"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
@@ -94,21 +109,36 @@ END $$;
 -- §D — a correction targets an ORIGINAL measurement, never another correction. The service
 -- refuses it too; this is the seal that makes a chain unrepresentable rather than merely refused,
 -- because the row-level correction floor is only sound over a ONE-LEVEL tree.
+--
+-- Codex round-4 P1 — this MUST run at COMMIT, not BEFORE INSERT. A BEFORE trigger's ordinary
+-- SELECT reads the inserting transaction's snapshot, which cannot see a CONCURRENT uncommitted
+-- sibling: session 1 inserts correction B against original A; session 2, before B commits, inserts
+-- C naming B. B is invisible to C's BEFORE trigger, so the check passed. The self-FK still held —
+-- an FK check WAITS on the uncommitted referenced row, so C blocked until B committed and then
+-- validated — which is precisely the problem: the FK settled AFTER the trigger had already
+-- returned, and a correction-of-correction landed in an immutable register.
+--
+-- A DEFERRABLE INITIALLY DEFERRED constraint trigger fires at C's COMMIT, by which point C has
+-- necessarily blocked on B's FK and B is committed and visible. The one path to a chain is
+-- therefore closed rather than narrowed. (The `phase4_labour_demand_sealed` deferred-seal
+-- precedent, for the same reason: a check whose input another transaction can still change is not
+-- a seal.)
 CREATE OR REPLACE FUNCTION phase5_measurement_correction_target() RETURNS trigger AS $$
 DECLARE target_corrects text;
 BEGIN
-  IF NEW."correctsId" IS NULL THEN RETURN NEW; END IF;
+  IF NEW."correctsId" IS NULL THEN RETURN NULL; END IF;
   SELECT "correctsId" INTO target_corrects FROM "Measurement"
     WHERE "projectId" = NEW."projectId" AND "id" = NEW."correctsId";
   IF target_corrects IS NOT NULL THEN
     RAISE EXCEPTION 'Measurement %: a correction may not target another correction (%) — address the original', NEW."id", NEW."correctsId";
   END IF;
-  RETURN NEW;
+  RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS "Measurement_correction_target" ON "Measurement";
-CREATE TRIGGER "Measurement_correction_target" BEFORE INSERT ON "Measurement"
+CREATE CONSTRAINT TRIGGER "Measurement_correction_target" AFTER INSERT ON "Measurement"
+  DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_measurement_correction_target();
 
 -- §D — IMMUTABLE ONCE TAKEN. A correction is a NEW row carrying a signed delta, never an edit,

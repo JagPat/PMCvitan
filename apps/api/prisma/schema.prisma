@@ -2817,6 +2817,10 @@ model ActivityWorkOutput {
   measurements Measurement[]
 
   @@unique([projectId, id])
+  /// Codex round-4 P2 — the candidate key a `Measurement` binds its cited output to, so the
+  /// output PostgreSQL admits as evidence is one recorded against the measurement's OWN activity.
+  /// Unique because `(projectId, id)` already is; widening it adds a target, never a constraint.
+  @@unique([projectId, id, activityId])
   @@index([projectId, activityId, civilDate, shift])
 }
 
@@ -2988,7 +2992,13 @@ model Measurement {
 
   /// the correction this row adjusts, or NULL for an original measurement. Present so a reducing
   /// correction can be attributed to the row it walks back, which §E's consumption freeze needs.
-  corrects   Measurement? @relation("measurementCorrections", fields: [projectId, correctsId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  ///
+  /// Codex round-4 P2 — the FK carries the target's WHOLE WORK IDENTITY, not merely its existence.
+  /// Proving only that the target row exists let a correction name original A while its own
+  /// `labourPoLineId`/`activityId`/`citedOutputId` described B's work: the fold would apply the
+  /// signed quantity to B while `netOf(A)` counted it as A's child, so the immutable register could
+  /// add or withdraw payable evidence for a different line than the correction says it adjusts.
+  corrects   Measurement? @relation("measurementCorrections", fields: [projectId, correctsId, labourPoLineId, activityId, citedOutputId], references: [projectId, id, labourPoLineId, activityId, citedOutputId], onDelete: NoAction, onUpdate: NoAction)
   correctsId String?
   corrections Measurement[] @relation("measurementCorrections")
 
@@ -2997,7 +3007,11 @@ model Measurement {
 
   measuredOn DateTime @db.Date
   /// progress EVIDENCE (§0 `OUTPUT` is a predicate, not a pool) — the cited activity work output
-  citedOutput   ActivityWorkOutput @relation(fields: [projectId, citedOutputId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  /// Codex round-4 P2 — the FK binds the output to THIS measurement's activity. Project
+  /// containment alone let a maintenance insert or a future writer store `activityId = A` while
+  /// citing an output recorded against B, and because the row is immutable, sign-off withdrawal
+  /// and later billing would treat B's progress as evidence for A forever.
+  citedOutput   ActivityWorkOutput @relation(fields: [projectId, citedOutputId, activityId], references: [projectId, id, activityId], onDelete: NoAction, onUpdate: NoAction)
   citedOutputId String
 
   evidence        Media?  @relation(fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
@@ -3011,6 +3025,9 @@ model Measurement {
   sourceCommandId String
 
   @@unique([projectId, id])
+  /// Codex round-4 P2 — the candidate key a CORRECTION binds to, so a correction and the row it
+  /// adjusts necessarily describe the same work. Unique because `(projectId, id)` already is.
+  @@unique([projectId, id, labourPoLineId, activityId, citedOutputId])
   @@index([projectId, labourPoLineId])
   @@index([projectId, activityId])
 }

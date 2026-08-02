@@ -465,4 +465,24 @@ export class CommercialParticipant {
       throw new ConflictException('This attribution was superseded concurrently — reload and retry');
     }
   }
+
+  /**
+   * Codex round-4 P2 — refuse deleting a photo cited as MEASUREMENT evidence, invoked BY the owning
+   * media module's delete transaction (the cleared inventory / labour-attendance / activity-output
+   * pattern). Task 3 gave the measurement an `evidenceMediaId` FK but no guard here, so deleting a
+   * cited photo raised a raw `P2003` and returned a 500 — an internal error where every other
+   * evidence-backed fact returns a controlled refusal.
+   *
+   * A measurement is FULLY immutable and becomes a payable quantity, so this is the strictest case
+   * of the rule the other three already state: the photo backing a number somebody will be paid
+   * against cannot quietly disappear from under it.
+   */
+  async assertMediaDisposable(tx: Prisma.TransactionClient, projectId: string, mediaId: string): Promise<void> {
+    const cited = await tx.measurement.count({ where: { projectId, evidenceMediaId: mediaId } });
+    if (cited > 0) {
+      throw new ConflictException(
+        `This photo is evidence on ${cited} measurement(s) — a measurement is immutable and becomes a payable quantity, so its evidence cannot be deleted (§D)`,
+      );
+    }
+  }
 }

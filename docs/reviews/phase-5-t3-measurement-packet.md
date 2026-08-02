@@ -2,9 +2,9 @@
 
 **Branch** `claude/phase5-task3` · **base** `main` `96b0713`
 
-**Convergence audit** `docs/reviews/pr-272-convergence.md` (three finding-bearing heads, ten
-findings, three roots — including the honest record that round 1's own fix created round 2's finding,
-and that round 1's fix for finding 4 acquired the unsealed precondition round 3 found)
+**Convergence audit** `docs/reviews/pr-272-convergence.md` (four finding-bearing heads, fifteen
+findings, four roots — including the honest record that each round's own fix created the next round's
+finding twice over, and that round 3 stated a rule it then applied only where the reviewer pointed)
 
 **§D is carried forward VERBATIM** from `claude/phase5-planning` @ `a4d469b`, byte-identity verified
 by diff against the source revision. The plan mandates carrying rather than re-deriving; re-deriving
@@ -89,6 +89,39 @@ evidence is that the number recorded on the day cannot change. A correction is a
 | 5 | Additive migrations | one new table, `CREATE`-only, closing row-free ABORT |
 | 6 | Isolation proven against PostgreSQL | `upgrade-proof.sh` executes the Task-3 assertions on the migrated legacy database |
 
+## Codex round 4 — five findings, and a rule I stated but did not sweep
+
+**R11 (P1) — a seal a snapshot can beat.** Round 3's correction-target check was a BEFORE INSERT
+trigger. I measured what PostgreSQL actually does here rather than reasoning about it, and the
+reviewer's stated mechanism is not quite right — which is worth recording, because the fix is the
+same but the reason is different:
+
+- a correction naming an **uncommitted** target is refused **immediately** by the FK. PostgreSQL does
+  NOT block waiting for that transaction (`ERROR: … Key (parent)=(B) is not present`); the invisible
+  row simply is not there. So the "FK validates later" path in the finding cannot occur.
+- a correction naming a **committed** target was already caught by the BEFORE trigger.
+
+What IS real is the **intra-statement** gap: the BEFORE trigger's snapshot and the FK's check are
+taken at different moments, so a target committing between them is missed by one and accepted by the
+other. Narrow, real, and not deterministically reachable from a test. `DEFERRABLE INITIALLY DEFERRED`
+removes it by construction — at COMMIT there is no "before" left to slip into. Probe R11 asserts the
+trigger IS deferred, and proves both reachable outcomes (uncommitted → FK refusal; committed →
+correction-target refusal) with the register left one level deep either way.
+
+**R12/R13/R14 (P2) — root C again, unswept.** All three are the rule round 3 already wrote down
+("if a later read depends on the shape, PostgreSQL must hold it"), applied only at the two sites the
+previous review had named. So round 4's corrections were derived by enumerating EVERY reference on
+the table and asking that question of each, not by fixing the three reported: the cited output now
+carries a 3-column FK binding it to the measuring activity, a correction carries a 5-column FK
+binding it to its target's whole work identity, and `MediaService.remove` consults a new
+`CommercialParticipant.assertMediaDisposable` so a cited photo is a controlled 409 rather than a raw
+`P2003` 500. The enumeration table is in the audit.
+
+**R15 (P2) — root A again.** The register published the frozen `personShiftQty` while the write path
+capped by `liveAuthority`, so a 10-shift line closed short to 4 advertised a cap of 10 and refused
+everything above 4. `MeasurementRegisterDto` now carries `liveAuthorityPersonShiftQty` and
+`defaulted` alongside the frozen order — the order placed is history, the live authority is the cap.
+
 ## Codex round 3 — three findings, and the same question answered wrongly three times
 
 All three ask **which of the service and PostgreSQL should hold this rule**, and I had been answering
@@ -164,6 +197,16 @@ measurement and its signed correction first (citing the real `UPL-T5O` output on
 and each hostile row differs from that accepted one in exactly the single respect its label names —
 the same coherent-chain pattern the §C, §E and §B sections already use to prove precision.
 
+**Round 4's first draft of probes R12 and R13 compared across PROJECTS.** `measurableLine` mints a
+fresh project per call, so "cite another activity's output" and "correct a row while describing
+another line's work" were both being refused by the same-project composite FKs that already existed —
+green, and proving nothing about the new identity FKs. Both now build the second line INSIDE one
+project (`siblingLine`), so only the seal under test can decide the outcome, and R12 additionally
+asserts the same insert citing its OWN activity's output is ACCEPTED.
+
+Three probes-that-proved-nothing in one PR, all the same mistake: **writing the assertion for the
+mechanism I had in mind instead of constructing the state where only that mechanism can decide.**
+
 ## Two things the probes taught me, recorded rather than smoothed over
 
 **5as — `EFFORT` cannot normally exceed `ORDERED`, and finding that out mattered.** My first probe
@@ -202,8 +245,9 @@ is what went wrong twice in PR #270.
 | Gate | Result |
 |---|---|
 | `pnpm check` | **EXIT 0** — web 543/543, API 716/716, build clean |
-| `phase5-t3-measurement.test.ts` | **19/19**, and **proven RED**: disabling the five §D bounds and both guards fails six of the original nine; reverting the five round-1 fixes fails all five of their probes, the two round-2 fixes fail both of theirs, and the three round-3 fixes fail all three of theirs (proven by restoring the old CHECK and dropping the trigger in live PG, not by reasoning) |
-| `upgrade-proof.sh` | **PASSED** — the table ROW-FREE over the legacy fixture, the material-column absence asserted, the `measurement` label accepted, the correction-target trigger present, a coherent measurement + its signed correction **ACCEPTED** (so the seals are precise, not merely strict), and **eight** forgeries rejected on the migrated DB |
+| `phase5-t3-measurement.test.ts` | **24/24**, and **proven RED** every round: disabling the five §D bounds and both guards fails six of the original nine; reverting round 1's five fixes fails all five of their probes, round 2's two fail both, round 3's three fail all three, and round 4's five fail all five — each proven by actually restoring the old constraints/triggers in live PG and the old code, never by reasoning |
+| `upgrade-proof.sh` | **PASSED** — the table ROW-FREE over the legacy fixture, the material-column absence asserted, the `measurement` label accepted, the correction-target trigger present **and DEFERRED**, both round-4 identity FKs + their candidate keys present, a coherent measurement + its signed correction **ACCEPTED** (so the seals are precise, not merely strict), and **ten** forgeries rejected on the migrated DB |
+| `module-registry` + `boundary` | **51/51** — the new `media → commercial` participant edge is declared, and commercial stays a SINK with the graph acyclic |
 | Full integration suite, migrated + UNSEEDED DB | **75 files / 759 tests passed** |
 
 ## Not in this PR

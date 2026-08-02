@@ -170,6 +170,19 @@ export interface MeasurementRegisterDto {
   measured: string;
   /** `EFFORT(poLine)` — worked minutes normalised to person-shifts; the quantity cap */
   effort: string;
-  /** the ordered authority this line carries; measurement may not exceed it either */
+  /**
+   * the quantity ORDERED on this line, frozen at issue. Historical fact, NOT the current cap —
+   * see `liveAuthorityPersonShiftQty`.
+   */
   orderedPersonShiftQty: number;
+  /**
+   * what the line authorises NOW, and the cap the write path actually enforces (Codex round-4 P2).
+   * `0` once the supplier commitment is DEFAULTED — the source reneged and the line can never be
+   * re-committed — and the committed quantity once the version is CLOSED SHORT. Reporting only the
+   * frozen order made the register state a cap that was not real: a 10-shift line closed short to 4
+   * showed 10 while every measurement above 4 was refused.
+   */
+  liveAuthorityPersonShiftQty: number;
+  /** whether this line's supplier commitment was defaulted (why the live authority can be `0`) */
+  defaulted: boolean;
 }
