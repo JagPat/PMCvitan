@@ -94,10 +94,11 @@ export interface BudgetExceptionDto {
   headroom: string;
   budget: string;
   exposure: string;
-  /** which of §B's four headroom-moving writes raised it — `acceptance` is the accepted-overage
-   *  case, where §G authorises more than the ordered quantity and no commitment releases against
-   *  the extra units */
-  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance';
+  /** which of §B's five headroom-moving writes raised it. `acceptance` is the accepted-overage
+   *  case (§G authorises more than the ordered quantity and no commitment releases against the
+   *  extra units); `receipt_progress` is a receipt recorded, rejected or reversed, which re-prices
+   *  a CLOSED-SHORT line's released remainder with nothing accepted at all. */
+  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress';
   raisedAt: string;
   raisedById: string;
   clearedAt: string | null;

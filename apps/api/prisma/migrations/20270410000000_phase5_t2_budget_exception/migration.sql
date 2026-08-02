@@ -54,11 +54,14 @@ DO $$ BEGIN
   END IF;
   -- §B names exactly three writes that can move headroom; a fourth source is a bug, not data
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'BudgetException_raisedBy_check') THEN
-    -- §B's four headroom-moving writes. `acceptance` is here because §G authorises accepting more
+    -- §B's five headroom-moving writes. `acceptance` is here because §G authorises accepting more
     -- than the ordered quantity and §J values that overage at the frozen rate with no commitment
-    -- released against it, so the receipt itself raises exposure. A closed set at PostgreSQL means
-    -- an unlabelled mover cannot be recorded as one.
-    ALTER TABLE "BudgetException" ADD CONSTRAINT "BudgetException_raisedBy_check" CHECK ("raisedBy" IN ('commitment', 'budget_revision', 'reattribution', 'acceptance'));
+    -- released against it; `receipt_progress` because a CLOSED-SHORT line's released remainder is
+    -- computed from `receivedQty`, so recording, rejecting or reversing a receipt moves exposure
+    -- with nothing accepted at all. A closed set at PostgreSQL means an unlabelled mover cannot be
+    -- recorded as one — and `raisedBy` is the durable explanation a human reads months later, so a
+    -- wrong-but-permitted label would be worse than a refused write.
+    ALTER TABLE "BudgetException" ADD CONSTRAINT "BudgetException_raisedBy_check" CHECK ("raisedBy" IN ('commitment', 'budget_revision', 'reattribution', 'acceptance', 'receipt_progress'));
   END IF;
 END $$;
 

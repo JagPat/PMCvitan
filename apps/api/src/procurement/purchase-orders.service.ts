@@ -19,7 +19,7 @@ import type { AuthUser } from '../common/auth';
 import type {
   AmendPoInput, CancelPoInput, CloseShortPoInput, CommitDeliveryInput, CreatePoInput, IssuePoInput, ReviseDeliveryInput,
 } from '../contracts';
-import { CommercialParticipant } from '../commercial/commercial.participant';
+import { CommercialParticipant, type HeadroomTouch } from '../commercial/commercial.participant';
 
 /**
  * Phase 3 Task 3 — purchase orders + delivery commitments (§F).
@@ -216,9 +216,11 @@ export class PurchaseOrdersService {
     // version is already non-live and the fresh lines are not attributed yet, so a ₹120 breach
     // amended to a different ₹120 order momentarily reads ₹60 and CLEARS — and the register is
     // append-only, so that false recovery would be permanent evidence.
-    const touched: string[] = [];
-    // the amended obligation is a COMMITMENT that changed size, not a reclassification
-    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, 'commitment', touched);
+    const touched: HeadroomTouch[] = [];
+    // the label is DERIVED per line inside the participant: a carried line whose head is unchanged
+    // is a COMMITMENT that changed size; one the caller reclassified via `costHeads` is a
+    // reattribution. One amend can do both, so no single caller-supplied label would be true.
+    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, touched);
     await this.commercial.attribute(
       tx, projectId, identity,
       fresh.map((f) => ({ target: { poLineId: f.poLineId }, costHeadCode: f.costHeadCode, reason })),
@@ -226,7 +228,7 @@ export class PurchaseOrdersService {
     );
     const dropped = priorLines.filter((l) => !carried.has(l.id)).map((l) => ({ poLineId: l.id }));
     await this.commercial.releaseAttribution(tx, projectId, identity, dropped, reason, touched);
-    await this.commercial.evaluateDeferred(tx, projectId, identity, touched, 'commitment');
+    await this.commercial.evaluateDeferred(tx, projectId, identity, touched);
   }
 
   private async begin(projectId: string, user: AuthUser): Promise<{ actor: Actor; scope: CommandScope }> {
@@ -558,7 +560,6 @@ export class PurchaseOrdersService {
           await this.commercial.replaceAttribution(
             tx, projectId, { actorId: actor.actorId, role: user.role },
             current.lines.map((l) => ({ from: { poLineId: l.id }, to: { poLineId: l.id }, reason: input.reason })),
-            'commitment',
           );
         }
         await recordAudit(tx, { projectId, actor, action: 'po.closeShort', entity: 'PurchaseOrderVersion', entityId: current.id });

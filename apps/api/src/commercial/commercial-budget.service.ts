@@ -19,15 +19,29 @@ import type { SetBudgetInput } from '../contracts';
 /**
  * §B's rule is "the exception is raised from EVERY write that can move headroom". The section
  * NAMES three — a commitment, a budget revision, a re-attribution — because those were the writes
- * that existed when it was written. `acceptance` is the FOURTH, and it belongs to the same rule
- * rather than extending it: §G authorises accepting more than the ordered quantity, §J values the
- * overage at the frozen rate, and no commitment is released against it, so the receipt itself
- * raises exposure. Naming it separately (rather than folding it into `commitment`) is what lets a
- * PMC read the exception and know a DELIVERY caused it, not an order.
+ * that existed when it was written. Two more belong to the same rule rather than extending it,
+ * and each is named separately so the durable row explains ITSELF:
+ *
+ * - `acceptance` — §G authorises accepting more than the ordered quantity, §J values the overage
+ *   at the frozen rate, and no commitment is released against it, so the receipt raises exposure.
+ * - `receipt_progress` — recording, rejecting or reversing a receipt moves `receivedQty`, which is
+ *   what a CLOSED-SHORT line's released remainder is computed from. Nothing was accepted, so
+ *   labelling it `acceptance` would send a PMC looking for a delivery that never happened.
+ *
+ * `raisedBy` is the durable explanation a human reads months later, so it must describe what
+ * ACTUALLY moved — never merely which code path noticed. That is why `replaceAttribution` DERIVES
+ * its label from whether the head changed rather than accepting one from its caller (Codex round-4
+ * P2): the same method serves a PO amendment and a reclassification, and only the data can say
+ * which one happened.
  *
  * The DB CHECK on `BudgetException.raisedBy` pins exactly this set.
  */
-export type HeadroomMover = 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance';
+export type HeadroomMover =
+  | 'commitment'
+  | 'budget_revision'
+  | 'reattribution'
+  | 'acceptance'
+  | 'receipt_progress';
 
 /**
  * Phase 5 Task 2 (§B) — the BUDGET write path and the over-budget EXCEPTION.

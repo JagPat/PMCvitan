@@ -26,7 +26,7 @@ import type {
   CreateLabourPoInput, IssueLabourPoInput, AmendLabourPoInput, CancelLabourPoInput, CloseShortLabourPoInput,
   CommitCapacityInput, ReviseCapacityInput,
 } from '../contracts';
-import { CommercialParticipant } from '../commercial/commercial.participant';
+import { CommercialParticipant, type HeadroomTouch } from '../commercial/commercial.participant';
 
 /**
  * Phase 4 Task 2 — the LABOUR COMMERCIAL chain (plan §F). The labour supplier IS the existing
@@ -231,9 +231,11 @@ export class LabourProcurementService {
     // §B (Codex round-3 P2) — ONE act, THREE mutations, evaluated ONCE at the end over the union
     // of the heads they touch. See the material twin: an intermediate evaluate reads a state that
     // never existed at commit and writes a permanent false clear into an append-only register.
-    const touched: string[] = [];
-    // the amended obligation is a COMMITMENT that changed size, not a reclassification
-    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, 'commitment', touched);
+    const touched: HeadroomTouch[] = [];
+    // the label is DERIVED per line inside the participant: a carried line whose head is unchanged
+    // is a COMMITMENT that changed size; one the caller reclassified via `costHeads` is a
+    // reattribution. One amend can do both, so no single caller-supplied label would be true.
+    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, touched);
     await this.commercial.attribute(
       tx, projectId, identity,
       fresh.map((f) => ({ target: { labourPoLineId: f.labourPoLineId }, costHeadCode: f.costHeadCode, reason })),
@@ -241,7 +243,7 @@ export class LabourProcurementService {
     );
     const dropped = priorLines.filter((l) => !carried.has(l.id)).map((l) => ({ labourPoLineId: l.id }));
     await this.commercial.releaseAttribution(tx, projectId, identity, dropped, reason, touched);
-    await this.commercial.evaluateDeferred(tx, projectId, identity, touched, 'commitment');
+    await this.commercial.evaluateDeferred(tx, projectId, identity, touched);
   }
 
   /**
@@ -1060,7 +1062,6 @@ export class LabourProcurementService {
           await this.commercial.replaceAttribution(
             tx, projectId, { actorId: actor.actorId, role: user.role },
             current.lines.map((l) => ({ from: { labourPoLineId: l.id }, to: { labourPoLineId: l.id }, reason: input.reason })),
-            'commitment',
           );
         }
         await recordAudit(tx, { projectId, actor, action: 'labour.po.closeShort', entity: 'LabourPurchaseOrderVersion', entityId: current.id });

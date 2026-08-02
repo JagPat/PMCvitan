@@ -1,9 +1,11 @@
 # Phase 5 Task 2 — budget, `COMMITTED`, and the over-budget exception (review packet)
 
 **Branch** `claude/phase5-task2` · **base** `main` `edb7f08` · **PR** #270
-**Convergence audit** `docs/reviews/pr-270-convergence.md` (three finding-bearing heads, eleven
-findings, three roots, three mechanical closures — including the honest record that round 2's
-closure for root B was itself the wrong shape, which is why round 3 found three more of it)
+**Convergence audit** `docs/reviews/pr-270-convergence.md` (four finding-bearing heads, thirteen
+findings, four roots, four mechanical closures — including the honest record that TWICE a round-2
+corrective was one level too shallow: its closure for root B was a list of sites when the answer was
+derivable from the fold's inputs, and its fix for root D moved the label decision to the caller when
+the caller cannot know it either)
 
 ## Vision alignment
 
@@ -91,13 +93,19 @@ is evaluated ONCE at the end over the union of touched heads. Evaluating between
 that existed at no instant of the committed transaction, and the register is append-only, so the
 resulting clear/re-raise pair would be permanent evidence of a recovery that never happened.
 
-The four exception LABELS the movers produce:
+### The label is DERIVED, never supplied
 
-| Mover | Why | Site |
+`raisedBy` is the durable explanation a human reads months later on an **append-only** row, so it
+must say what ACTUALLY moved. It is derived from the data, not from the call site: one PO amend can
+re-size some lines and reclassify others, so no caller-level label would be true for the whole call.
+
+| Mover | Why | Derived from |
 |---|---|---|
 | `budget_revision` | authority down — a ₹100 budget cut to ₹50 against a ₹90 PO breaches with **no commitment write anywhere** | `setBudget` |
-| `commitment` | exposure up (issue/amend/close-short) or freed (cancel) — eight PO lifecycle sites, all through one participant | `CommercialParticipant` |
-| `reattribution` | exposure moves BETWEEN heads — raises on the target, clears on the source | `commercial.service#reattribute` |
+| `commitment` | the obligation changed size — issue, amend, close-short, cancel | a replacement whose head is UNCHANGED |
+| `reattribution` | the money moved BETWEEN heads — raises on the target, clears on the source | `active.costHeadCode !== code`, per row |
+| `acceptance` | accepted OVERAGE, valued at the frozen rate with nothing released against it | `accept`, and the reversal of an acceptance |
+| `receipt_progress` | `receivedQty` moved, re-pricing a closed-short line's release — **with nothing accepted at all** | `recordReceipt`, `reject`, and receipt/rejection reversals |
 | `acceptance` | §G authorises accepting more than `qty`, §J values the overage at the frozen rate, and **no commitment is released against it** — the receipt itself raises exposure | `receipts.accept`, and the reversal of one |
 
 `acceptance` was found by Codex on head `bc95efe` and belongs to §B's rule rather than extending it;
@@ -107,11 +115,26 @@ the convergence audit records why the enumeration went stale and how it is now m
 
 | Gate | Result |
 |---|---|
-| `pnpm check` | **EXIT 0** — web 543/543, API 708/708, build clean |
-| Full integration suite, pristine migrated DB | **74 files / 740 tests passed** |
-| `phase5-t2-budget.test.ts` | **13/13** — 5am/5af, 5aq, 5bu, 5bw, 5bm, 5bq, acceptance-overage, closed-short receipt reversal, amend-evaluates-once, sub-cent, unbudgeted, authority/idempotency, read surface, §D |
-| `upgrade-proof.sh` | **PASSED** — both tables ROW-FREE over the legacy fixture; a coherent budget chain ACCEPTED (the seals are precise, not merely strict); 14 Task-2 forgeries rejected; every prior Phase-1…Phase-5-T1 rejection surviving |
-| `commercial.contract.test.ts` | **18/18**, and proven RED against every defect it closes — reverting all four round-3 fixes fails exactly four assertions |
+| `pnpm check` | **EXIT 0** — web 543/543, API 713/713, build clean |
+| Full integration suite, migrated + UNSEEDED DB | **74 files / 740 tests passed** |
+| `phase5-t2-budget.test.ts` | **15/15** — 5am/5af, 5aq, 5bu, 5bw, 5bm, 5bq, acceptance-overage, closed-short receipt reversal, amend-evaluates-once, sub-cent, unbudgeted, authority/idempotency, read surface, §D |
+| `upgrade-proof.sh` | **PASSED** (257 assertions) — both tables ROW-FREE over the legacy fixture; a coherent budget chain ACCEPTED (the seals are precise, not merely strict); 14 Task-2 forgeries rejected; every prior Phase-1…Phase-5-T1 rejection surviving |
+| `commercial.contract.test.ts` | **23/23**, and proven RED against every defect it closes — reverting the four round-3 fixes fails exactly four assertions, and the two round-4 label fixes fail three more |
+| `test:e2e:api:outbox` | **29/29** |
+| `test:e2e:api:allmodules` | **34/35** — see the note below; CI is the authority |
+
+### On the local e2e battery, stated plainly
+
+Task 2 ships **no frontend surface**, so no e2e spec exercises commercial at all. Three consecutive
+local runs each failed exactly ONE unrelated legacy spec, and a DIFFERENT one each time —
+`pillar-chain` inspection steps, then `project-scope` browser history, then `drawings-module-query`.
+Earlier in the same session this battery ran 35/35 clean twice on the same tree, and two of the
+three are already documented flakes in `CLAUDE.md`.
+
+The local runs also launch via `PW_CHROMIUM=/opt/pw-browsers/chromium-1194/…` because the pinned
+Playwright's `chrome-headless-shell` build is absent from this environment — a launcher
+substitution, not a code change. **CI runs the battery with the pinned browser and is the authority
+on it.** Reporting 34/35 rather than cherry-picking the clean earlier runs.
 
 ### Reproduce-first, per finding
 
@@ -128,6 +151,8 @@ the convergence audit records why the enumeration went stale and how it is now m
 | Receipt reversal leaves a stale breach | probe: closed-short reversal frees ₹100, exception stands | every `receivedQty` writer evaluates |
 | Amend writes a false clear/re-raise pair | probe: one exception becomes cleared + re-raised | deferral sink; one settle at the end |
 | Read can contradict itself | no isolation level | `RepeatableRead`, pinned by the contract test |
+| Amend reclassification mislabelled | probe: head change records `commitment` | label DERIVED per row from `active.costHeadCode !== code` |
+| Receipt-progress breach claims a delivery | probe: rejection reversal records `acceptance` | new `receipt_progress` mover; label from `target.type` |
 
 ## Tripwires advanced in this PR
 

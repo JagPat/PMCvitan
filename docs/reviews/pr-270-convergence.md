@@ -1,6 +1,6 @@
 # PR #270 — architectural convergence audit (Phase 5 Task 2)
 
-Three finding-bearing heads, eleven findings. Per `CLAUDE.md`, the corrections are not isolated
+Four finding-bearing heads, thirteen findings. Per `CLAUDE.md`, the corrections are not isolated
 patches: this audit names the ROOTS the findings share, and each root leaves a mechanical closure
 behind so it cannot recur as a review round.
 
@@ -9,10 +9,14 @@ behind so it cannot recur as a review round.
 | `56be595` | 3 | 1×P2 arithmetic, 2×P1 unreachable surface |
 | `bc95efe` | 4 | 3×P2 (one arithmetic, one label, one mover), 1×P2 unreachable surface |
 | `f28a8fd` | 4 | 3×P2 movers/ordering, 1×P2 read snapshot |
+| `13c04cd` | 2 | 2×P2 wrong exception LABEL |
 
-**Round 3 is recorded honestly: three of its four findings are root B recurring, and they recurred
-because round 2's closure for root B was itself the wrong shape.** That is written up in full
-below rather than presented as four new patches.
+**Rounds 3 and 4 are recorded honestly. Three of round 3's findings are root B recurring, because
+round 2's closure for root B was itself the wrong shape. Both of round 4's are root D recurring,
+because round 2's FIX for the label problem was also the wrong shape — I moved the decision to the
+caller when it should have been derived from the data.** Both are written up in full below rather
+than presented as six new patches. Twice now the corrective was one level too shallow, and saying
+so plainly is more useful than a longer list of patches.
 
 ---
 
@@ -31,6 +35,8 @@ below rather than presented as four new patches.
 | 9 | `f28a8fd` | P2 | Reversing a **receipt** changes `receivedQty` — a fold input on a closed-short line — without evaluating; the acceptance-only branch missed it | **B** |
 | 10 | `f28a8fd` | P2 | The amend evaluated after its FIRST of three mutations, reading a state that never existed at commit and writing a permanent false clear/re-raise pair into an append-only register | **B** |
 | 11 | `f28a8fd` | P2 | The budget read transaction had no isolation level, so under READ COMMITTED it could report healthy headroom beside the exception just opened for that same head | **C** |
+| 12 | `13c04cd` | P2 | A PO amend that RECLASSIFIES a carried line recorded the breach as `commitment` — pointing a PMC at an order that never moved | **D** |
+| 13 | `13c04cd` | P2 | The inventory hook hard-coded `acceptance`, so a rejection-reversal breach claimed a delivery that never happened | **D** |
 
 ---
 
@@ -141,6 +147,43 @@ the act is applied. Without one they evaluate immediately, which is correct for 
 act — **the default stays the safe one and only a multi-step caller opts in.** Both `replaceOnAmend`
 sites (material and labour) are pinned to pass the sink to all three calls and to settle exactly
 once.
+
+---
+
+## Root D — the label must be DERIVED from what moved, not supplied by who noticed (findings 5, 12, 13)
+
+`raisedBy` is the durable explanation a human reads months later on an **append-only** row. A
+wrong-but-plausible label is therefore worse than a vague one: nobody can correct it, and it sends
+the reader looking for an event that never happened.
+
+Round 2's finding 5 was the first instance — every replacement stamped `reattribution`, so an
+amended order looked like a reclassification. **My fix was to let the CALLER name the label.** Round
+4 found both remaining halves of that being wrong:
+
+- **Finding 12.** One amend can re-size some lines and RECLASSIFY others, so no single caller-level
+  label is true for the whole call. The caller cannot know; only the row can.
+- **Finding 13.** The inventory hook hard-coded `acceptance` for every inventory-side evaluation.
+  Reversing a *rejection* moves `receivedQty` with nothing accepted anywhere, so the row claimed a
+  delivery that did not exist.
+
+Both are the same shape as root B: I replaced a wrong constant with a *parameter*, when the answer
+was always derivable from the data. That is the second time in this PR the corrective was one level
+too shallow, and it is worth naming as a pattern rather than a coincidence.
+
+**Closure D.**
+
+- `replaceAttribution` no longer ACCEPTS a `raisedBy`; it derives one **per row** from
+  `active.costHeadCode !== code` and attaches it to that row's heads. The contract test asserts both
+  the derivation and the *absence* of the parameter, so the round-2 shape cannot come back.
+- The deferral sink carries `{code, raisedBy}` rather than a bare code, and the settle groups by
+  label — so one amend can legitimately raise `reattribution` on one head and `commitment` on
+  another. Where a head is touched by both, `reattribution` wins: it is the more specific claim and
+  the one a PMC cannot reconstruct from the PO alone.
+- `receipt_progress` joins the mover set (and the `raisedBy` CHECK), because moving `receivedQty` is
+  genuinely a different event from accepting goods. The inventory reversal path picks its label from
+  `target.type`, not from which branch it is in.
+
+Proven RED: hard-coding the label back in either place fails three assertions.
 
 ---
 

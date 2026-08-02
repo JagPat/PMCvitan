@@ -305,13 +305,19 @@ export class InventoryService {
    *
    * Every call is idempotent by construction (one OPEN exception per head is a partial unique), so
    * evaluating on a command that turns out not to have moved anything is a no-op, not a duplicate.
+   *
+   * The two paths carry DIFFERENT labels, and the distinction is not cosmetic (Codex round-4 P2):
+   * `raisedBy` is the durable explanation a PMC reads months later on an append-only row. A
+   * rejection reversal moves `receivedQty` with nothing accepted at all, so recording it as
+   * `acceptance` sends them looking for a delivery that never happened.
    */
   private async evaluateBudgetForLine(
     tx: Prisma.TransactionClient, projectId: string, actor: Actor, role: string, poLineId: string,
+    raisedBy: 'acceptance' | 'receipt_progress',
   ): Promise<void> {
     if (!(await this.commercialParticipant.isActive(tx, projectId))) return;
     await this.commercialParticipant.evaluateForTarget(
-      tx, projectId, { actorId: actor.actorId, role }, { poLineId }, 'acceptance',
+      tx, projectId, { actorId: actor.actorId, role }, { poLineId }, raisedBy,
     );
   }
 
@@ -477,7 +483,7 @@ export class InventoryService {
         // §F bound 3 under the PO-line FOR UPDATE lock + the received-progress fact — the
         // procurement-owned side of the §G participant edge, same transaction.
         await this.procurementParticipant.applyReceiptProgress(tx, projectId, line.poLineId, qty);
-        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, line.poLineId);
+        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, line.poLineId, 'receipt_progress');
         const { event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
           lotId: lot.id, storeLocation, type: 'receipt', qty,
           fromBucket: null, toBucket: 'quarantine',
@@ -507,7 +513,7 @@ export class InventoryService {
           fromBucket: 'quarantine', toBucket: 'acceptedOnHand',
           qualityResult: input.qualityResult, evidenceMediaId: input.evidenceMediaId, reason: input.note,
         }, 'stock.accept');
-        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, lot.poLineId);
+        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, lot.poLineId, 'acceptance');
         return { resultRef: row.id, events: [event] };
       },
     });
@@ -531,7 +537,7 @@ export class InventoryService {
         await this.assertEvidenceMedia(tx, projectId, input.evidenceMediaId);
         this.assertMovementLegal(await this.lotRows(tx, projectId, lot.id), { qty, fromBucket: 'quarantine', toBucket: 'rejected', storeLocation, toStoreLocation: null });
         await this.procurementParticipant.applyReceiptProgress(tx, projectId, lot.poLineId, qty.negated());
-        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, lot.poLineId);
+        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, lot.poLineId, 'receipt_progress');
         const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
           lotId: lot.id, storeLocation, type: 'rejection', qty,
           fromBucket: 'quarantine', toBucket: 'rejected',
@@ -670,7 +676,12 @@ export class InventoryService {
         // releases the full ₹100 and must CLEAR the exception the ₹50 exposure raised (Codex
         // round-3 P2) — the acceptance-only branch left that breach standing forever.
         if (target.type === 'acceptance' || target.type === 'receipt' || target.type === 'rejection') {
-          await this.evaluateBudgetForLine(tx, projectId, actor, user.role, lot.poLineId);
+          await this.evaluateBudgetForLine(
+            tx, projectId, actor, user.role, lot.poLineId,
+            // the label follows what MOVED, not which branch we are in: only an acceptance reversal
+            // withdraws accepted value; a receipt/rejection reversal moved `receivedQty` alone
+            target.type === 'acceptance' ? 'acceptance' : 'receipt_progress',
+          );
         }
         return { resultRef: row.id, events: [event] };
       },

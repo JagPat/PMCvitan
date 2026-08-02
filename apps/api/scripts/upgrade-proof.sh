@@ -1426,6 +1426,14 @@ assert_rejects "commercial T2 §B: an UNLABELLED headroom mover (raisedBy CHECK)
 $PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BXAC','p1','MEP',-10.00,50.00,60.00,'acceptance','USER-1')" \
   && printf 'ok      %s\n' "commercial T2 §B: an exception raised by an ACCEPTANCE overage is accepted (the fourth mover)" \
   || { printf 'FAILED  %s\n' "commercial T2 §B: the acceptance-raised exception was rejected"; FAIL=1; }
+# §B round-4 — `receipt_progress` is the FIFTH mover: moving `receivedQty` re-prices a closed-short
+# line's release with NOTHING accepted, so recording it as `acceptance` would claim a delivery that
+# never happened. `raisedBy` is the durable explanation, so PostgreSQL must admit the honest label.
+$PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPL-P5BXAC'" >/dev/null
+$PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BXRP','p1','MEP',-10.00,50.00,60.00,'receipt_progress','USER-1')" \
+  && printf 'ok      %s\n' "commercial T2 §B: an exception raised by RECEIPT PROGRESS is accepted (the fifth mover)" \
+  || { printf 'FAILED  %s\n' "commercial T2 §B: the receipt_progress exception was rejected"; FAIL=1; }
+$PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPL-P5BXRP'" >/dev/null
 # §B — the exception is a LIFECYCLE row with exactly ONE permitted transition
 assert_rejects "commercial T2 §B: editing an open exception's figures (lifecycle trigger)" \
   "UPDATE \"BudgetException\" SET \"headroom\"=-1.00 WHERE \"id\"='UPL-P5BX1'"

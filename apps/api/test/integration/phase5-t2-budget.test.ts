@@ -453,6 +453,78 @@ describe('Phase 5 Task 2 — §B budget + §C COMMITTED + the over-budget except
     expect(position.headroom!.toString()).toBe('-20');
   });
 
+  // ── §B round 4: the label describes what MOVED, not which path noticed ────────────────────────
+
+  it('§B: reclassifying THROUGH an amend records `reattribution`, while re-sizing records `commitment`', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId, [{ code: 'CIVIL', name: 'Civil works' }, { code: 'MEP', name: 'MEP' }]);
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '200.00', reason: 'civil plan' }, pmc(projectId));
+    await budget.setBudget(projectId, { costHeadCode: 'MEP', amount: '50.00', reason: 'mep plan' }, pmc(projectId));
+    const activityId = await freshActivity(projectId);
+
+    const { poId, poLineId, requisitionLineId } = await draftPo(projectId, activityId, { qty: '90', baseRate: '1.00' });
+    await pos.issue(projectId, poId, { costHeads: [{ poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    expect(await openExceptions(projectId)).toHaveLength(0);
+
+    // amend with the SAME quantity but a DIFFERENT head. Nothing about the obligation changed size;
+    // the money was RECLASSIFIED onto a head that cannot absorb it. Labelling the resulting breach
+    // `commitment` tells the PMC an order moved, which is exactly what did not happen — and the
+    // register is append-only, so that wrong explanation is permanent.
+    await pos.amend(projectId, poId, {
+      reason: 'miscoded at issuance',
+      lines: [{ requisitionLineId, purchaseQty: '90' }],
+      costHeads: [{ requisitionLineId, costHeadCode: 'MEP' }],
+    }, pmc(projectId));
+
+    const open = await openExceptions(projectId);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ costHeadCode: 'MEP', raisedBy: 'reattribution' });
+    expect(open[0]!.headroom.toString()).toBe('-40');
+    // and CIVIL, which now carries nothing, is back within its budget
+    expect((await positionOf(projectId, 'CIVIL')).committed.toString()).toBe('0');
+  });
+
+  it('§B: a receipt-progress breach records `receipt_progress`, never `acceptance`', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId, [{ code: 'CIVIL', name: 'Civil works' }]);
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '40.00', reason: 'plan' }, pmc(projectId));
+    const activityId = await freshActivity(projectId);
+
+    const { poId, poLineId } = await draftPo(projectId, activityId, { qty: '100', baseRate: '1.00' });
+    await pos.issue(projectId, poId, { costHeads: [{ poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    const commitment = await pos.commitDelivery(projectId, { poLineId, promisedDate: '2026-09-01' }, pmc(projectId));
+    // ₹100 against ₹40 breaches by ₹60, raised by the COMMITMENT
+    expect((await openExceptions(projectId))[0]).toMatchObject({ raisedBy: 'commitment' });
+
+    // receive 50 then REJECT all 50, so `receivedQty` nets back to zero; closing short then releases
+    // the whole ₹100 and the breach CLEARS on its own — no exposure left to flag
+    const lot = await inventory.recordReceipt(projectId, {
+      poLineId, commitmentId: commitment.id, storeLocation: 'main', purchaseQty: '50',
+    }, pmc(projectId));
+    await inventory.reject(projectId, {
+      lotId: lot.id, storeLocation: 'main', qty: '50', reason: 'wrong grade', evidenceMediaId: await freshMedia(projectId),
+    }, pmc(projectId));
+    await pos.closeShort(projectId, poId, { reason: 'vendor withdrew' }, pmc(projectId));
+    expect((await positionOf(projectId, 'CIVIL')).committed.toString()).toBe('0');
+    expect(await openExceptions(projectId)).toHaveLength(0);
+
+    // NOW reverse the rejection. `receivedQty` goes back to 50, the closed-short release shrinks to
+    // ₹50, and exposure of ₹50 against ₹40 breaches AGAIN — through the COMMITTED bucket, with
+    // nothing accepted anywhere. Recording that as `acceptance` would send a PMC looking for a
+    // delivery that never happened.
+    const rejection = await t.prisma.stockTransaction.findFirstOrThrow({ where: { projectId, lotId: lot.id, type: 'rejection' } });
+    await inventory.reverse(projectId, { txId: rejection.id, reason: 'rejected the wrong pallet' }, pmc(projectId));
+
+    const open = await openExceptions(projectId);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ costHeadCode: 'CIVIL', raisedBy: 'receipt_progress' });
+    expect(open[0]!.headroom.toString()).toBe('-10');
+    // nothing was ever accepted on this lot, which is exactly why the label must not say so
+    expect(await t.prisma.stockTransaction.count({ where: { projectId, lotId: lot.id, type: 'acceptance' } })).toBe(0);
+  });
+
   // ── §A/§B: a sub-cent artefact is not a breach ────────────────────────────────────────────────
 
   it('§A: a sub-cent negative headroom does NOT raise an exception the Decimal(18,2) CHECK would then reject', async () => {

@@ -185,7 +185,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ).toBe(true);
     }
     expect(
-      /evaluateDeferred\(tx, projectId, identity, touched,/u.test(body),
+      /evaluateDeferred\(tx, projectId, identity, touched\)/u.test(body),
       `${file}#${method} never settles the deferred evaluation — the amend's budget effect would be dropped entirely`,
     ).toBe(true);
   });
@@ -195,12 +195,64 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       join(SRC, '..', 'prisma/migrations/20270410000000_phase5_t2_budget_exception/migration.sql'),
       'utf8',
     );
-    for (const label of ['commitment', 'budget_revision', 'reattribution', 'acceptance']) {
+    for (const label of ['commitment', 'budget_revision', 'reattribution', 'acceptance', 'receipt_progress']) {
       expect(
         migration.includes(`'${label}'`),
         `${label} is a headroom mover but PostgreSQL would refuse to record it (raisedBy CHECK)`,
       ).toBe(true);
     }
+  });
+
+  /**
+   * CLOSURE 3 — THE LABEL DESCRIBES WHAT MOVED, NOT WHO NOTICED (audit root D).
+   *
+   * `raisedBy` is the durable explanation a human reads months later on an APPEND-ONLY row, so a
+   * wrong-but-plausible one is worse than a vague one — nobody can correct it. Round 2 found the
+   * first instance and fixed it by letting the CALLER name the label; round 4 found that the caller
+   * cannot know either, because one PO amend can re-size some lines and reclassify others.
+   *
+   * So `replaceAttribution` must DERIVE the label per row from whether the head actually changed,
+   * and must NOT accept one. These pins keep both halves true.
+   */
+  it('replaceAttribution derives the label per row and accepts none from its caller', () => {
+    const src = readFileSync(join(HERE, 'commercial.participant.ts'), 'utf8');
+    const start = src.indexOf('async replaceAttribution(');
+    const body = src.slice(start, src.indexOf('\n  /**', start));
+    expect(
+      /const reclassified = Boolean\(active\) && active!\.costHeadCode !== code;/u.test(body),
+      'replaceAttribution must DERIVE reclassification from the data — one amend can re-size some lines and reclassify others',
+    ).toBe(true);
+    // the signature must not carry a caller-supplied mover: that is the round-2 shape round 4 broke
+    const signature = src.slice(start, start + body.indexOf('): Promise<void>'));
+    expect(
+      /raisedBy: HeadroomMover,/u.test(signature),
+      'replaceAttribution must not take a caller-supplied `raisedBy` — the caller cannot know it per line',
+    ).toBe(false);
+  });
+
+  it.each([
+    ['accept', 'acceptance'],
+    ['recordReceipt', 'receipt_progress'],
+    ['reject', 'receipt_progress'],
+  ])('inventory %s records the mover that actually moved (%s)', (method, label) => {
+    const src = readFileSync(join(SRC, 'inventory/inventory.service.ts'), 'utf8');
+    const start = src.indexOf(`async ${method}(`);
+    const next = src.indexOf('\n  async ', start + 1);
+    const body = src.slice(start, next === -1 ? undefined : next);
+    expect(
+      body.includes(`'${label}'`),
+      `${method} must record '${label}' — a rejection reversal labelled 'acceptance' sends a PMC looking for a delivery that never happened`,
+    ).toBe(true);
+  });
+
+  it('the reversal path picks its label from the reversed row type, not the branch', () => {
+    const src = readFileSync(join(SRC, 'inventory/inventory.service.ts'), 'utf8');
+    const start = src.indexOf('async reverse(');
+    const body = src.slice(start, src.indexOf('\n  /**', start));
+    expect(
+      /target\.type === 'acceptance' \? 'acceptance' : 'receipt_progress'/u.test(body),
+      "reverse must derive the label from what it reversed — hard-coding 'acceptance' mislabels every receipt/rejection reversal",
+    ).toBe(true);
   });
 
   /**

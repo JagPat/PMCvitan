@@ -14,6 +14,19 @@ export interface AttributionActor {
 export type AttributionTarget = { poLineId: string } | { labourPoLineId: string };
 
 /**
+ * One head a deferred act touched, WITH the label describing what actually moved it.
+ *
+ * The label travels with the head rather than being supplied once per act (Codex round-4 P2). A PO
+ * amendment can re-size some lines and RECLASSIFY others in the same call, so a single act-level
+ * label would necessarily be wrong for one of them — and `raisedBy` is the durable explanation a
+ * human reads months later, not a debug tag.
+ */
+export interface HeadroomTouch {
+  readonly code: string;
+  readonly raisedBy: HeadroomMover;
+}
+
+/**
  * Phase 5 Task 1 — the COMMERCIAL workflow participant (plan §C/§K).
  *
  * §C: "a live PO line can never be unattributed", and that has to hold from the FIRST INSTANT
@@ -51,11 +64,12 @@ export class CommercialParticipant {
    * A re-attribution passes BOTH heads — the source can now afford what it could not, and the
    * target may not be able to absorb what it just received.
    *
-   * `raisedBy` is the CALLER's to name (Codex round-2 P2). `replaceAttribution` serves two very
-   * different acts — the PO amend/close-short lifecycle and the standalone reclassification route —
-   * and stamping every one of them `'reattribution'` sends a PMC looking for a reclassification
-   * that never happened: amending a ₹90 CIVIL order up to ₹120 against a ₹100 CIVIL budget is a
-   * COMMITMENT that grew. The exception explains itself only if the label is the truth.
+   * `raisedBy` must describe what ACTUALLY moved. Round 2 found the first half of this — stamping
+   * every replacement `'reattribution'` sends a PMC looking for a reclassification that never
+   * happened, since amending a ₹90 CIVIL order to ₹120 is a COMMITMENT that grew — and the fix
+   * then was to let the CALLER name it. Round 4 found the other half: the caller cannot know
+   * either, because one amend can re-size some lines and reclassify others. So the label is DERIVED
+   * per row, from whether that row's head actually changed.
    */
   private async evaluateHeads(
     tx: Prisma.TransactionClient,
@@ -87,15 +101,14 @@ export class CommercialParticipant {
     tx: Prisma.TransactionClient,
     projectId: string,
     actor: AttributionActor,
-    heads: readonly string[],
-    raisedBy: HeadroomMover,
-    defer?: string[],
+    touches: readonly HeadroomTouch[],
+    defer?: HeadroomTouch[],
   ): Promise<void> {
     if (defer) {
-      defer.push(...heads);
+      defer.push(...touches);
       return;
     }
-    await this.evaluateHeads(tx, projectId, actor, heads, raisedBy);
+    await this.settle(tx, projectId, actor, touches);
   }
 
   /** Settle a deferred act: evaluate the union of every head its mutations touched, ONCE. */
@@ -103,10 +116,41 @@ export class CommercialParticipant {
     tx: Prisma.TransactionClient,
     projectId: string,
     actor: AttributionActor,
-    heads: readonly string[],
-    raisedBy: HeadroomMover,
+    touches: readonly HeadroomTouch[],
   ): Promise<void> {
-    await this.evaluateHeads(tx, projectId, actor, heads, raisedBy);
+    await this.settle(tx, projectId, actor, touches);
+  }
+
+  /**
+   * Evaluate each touched head ONCE, under the label that best explains why it moved.
+   *
+   * A head can be touched twice in one act — re-sized on one line and reclassified on another — and
+   * only one row can be raised for it (one OPEN exception per head is a partial unique). Where the
+   * two disagree, `reattribution` wins: it is the more specific claim, and it is the one a PMC
+   * cannot reconstruct from the PO alone. A wrong-but-plausible label is worse than a vague one,
+   * because the register is append-only and nobody can correct it later.
+   */
+  private async settle(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    touches: readonly HeadroomTouch[],
+  ): Promise<void> {
+    const labelOf = new Map<string, HeadroomMover>();
+    for (const touch of touches) {
+      const existing = labelOf.get(touch.code);
+      if (existing === 'reattribution') continue;
+      labelOf.set(touch.code, touch.raisedBy);
+    }
+    const byLabel = new Map<HeadroomMover, string[]>();
+    for (const [code, raisedBy] of labelOf) {
+      const bucket = byLabel.get(raisedBy);
+      if (bucket) bucket.push(code);
+      else byLabel.set(raisedBy, [code]);
+    }
+    for (const [raisedBy, codes] of byLabel) {
+      await this.evaluateHeads(tx, projectId, actor, codes, raisedBy);
+    }
   }
 
   /**
@@ -198,7 +242,7 @@ export class CommercialParticipant {
     projectId: string,
     actor: AttributionActor,
     rows: ReadonlyArray<{ target: AttributionTarget; costHeadCode: string; reason: string }>,
-    defer?: string[],
+    defer?: HeadroomTouch[],
   ): Promise<void> {
     if (rows.length === 0) return;
     this.assertAttributeAuthority(actor);
@@ -221,7 +265,8 @@ export class CommercialParticipant {
         },
       });
     }
-    await this.evaluate(tx, projectId, actor, rows.map((r) => r.costHeadCode), 'commitment', defer);
+    // a newly live line is new obligation on its head — always a COMMITMENT, never a move
+    await this.evaluate(tx, projectId, actor, rows.map((r) => ({ code: r.costHeadCode, raisedBy: 'commitment' as const })), defer);
   }
 
   /**
@@ -245,12 +290,11 @@ export class CommercialParticipant {
     projectId: string,
     actor: AttributionActor,
     rows: ReadonlyArray<{ from: AttributionTarget; to: AttributionTarget; costHeadCode?: string; reason: string }>,
-    raisedBy: HeadroomMover,
-    defer?: string[],
+    defer?: HeadroomTouch[],
   ): Promise<void> {
     if (rows.length === 0) return;
     this.assertAttributeAuthority(actor);
-    const touched: string[] = [];
+    const touched: HeadroomTouch[] = [];
     for (const row of rows) {
       const active = await this.activeFor(tx, projectId, row.from);
       const code = row.costHeadCode ?? active?.costHeadCode;
@@ -270,12 +314,18 @@ export class CommercialParticipant {
           createdById: actor.actorId,
         },
       });
-      touched.push(code);
-      if (active) touched.push(active.costHeadCode);
+      // DERIVED, not supplied (Codex round-4 P2): if this row's head actually CHANGED, the money
+      // was reclassified — say so. If it did not, the same head simply carries a different amount,
+      // which is a COMMITMENT that moved. The caller cannot decide this for the whole call, because
+      // ONE amend can do both on different lines.
+      const reclassified = Boolean(active) && active!.costHeadCode !== code;
+      const raisedBy: HeadroomMover = reclassified ? 'reattribution' : 'commitment';
+      touched.push({ code, raisedBy });
+      // §B: a replacement recomputes BOTH the source and the target. Only recomputing the target
+      // leaves the source permanently flagged for an obligation it no longer carries.
+      if (active) touched.push({ code: active.costHeadCode, raisedBy });
     }
-    // §B: a replacement recomputes BOTH the source and the target. Only recomputing the target
-    // leaves the source permanently flagged for an obligation it no longer carries.
-    await this.evaluate(tx, projectId, actor, touched, raisedBy, defer);
+    await this.evaluate(tx, projectId, actor, touched, defer);
   }
 
   /**
@@ -290,21 +340,21 @@ export class CommercialParticipant {
     actor: AttributionActor,
     targets: ReadonlyArray<AttributionTarget>,
     reason: string,
-    defer?: string[],
+    defer?: HeadroomTouch[],
   ): Promise<void> {
     if (targets.length === 0) return;
     this.assertAttributeAuthority(actor);
-    const touched: string[] = [];
+    const touched: HeadroomTouch[] = [];
     for (const target of targets) {
       const active = await this.activeFor(tx, projectId, target);
       if (active) {
         await this.supersede(tx, projectId, actor, active.id, reason);
-        touched.push(active.costHeadCode);
+        // a cancelled obligation frees headroom — the exception it caused must CLEAR, or the Inbox
+        // keeps an action for a breach that no longer exists. Nothing was reclassified.
+        touched.push({ code: active.costHeadCode, raisedBy: 'commitment' });
       }
     }
-    // a cancelled obligation frees headroom — the exception it caused must CLEAR, or the Inbox
-    // keeps an action for a breach that no longer exists
-    await this.evaluate(tx, projectId, actor, touched, 'commitment', defer);
+    await this.evaluate(tx, projectId, actor, touched, defer);
   }
 
   /**

@@ -46,12 +46,15 @@ gates NOTHING: commercial stays a SINK and no readiness verdict consults a
 budget. Two Codex rounds returned seven findings, all fixed forward; the
 convergence audit `docs/reviews/pr-270-convergence.md` names the two roots and
 leaves a mechanical closure for each in
-`apps/api/src/commercial/commercial.contract.test.ts`. THREE Codex rounds
-returned eleven findings, all fixed forward. Round 2's closure for root B was a
-hand-kept list of six SITES, and round 3 found three more movers it did not
-contain — so the mover set is now DERIVED from what the fold READS
-(`FOLD_INPUTS`, pinned against the `MaterialCommittedLine` read contract), which
-is the difference between a list and a derivation. Notably `acceptance` is §B's
+`apps/api/src/commercial/commercial.contract.test.ts`. FOUR Codex rounds
+returned thirteen findings, all fixed forward. TWICE a round-2 corrective was one
+level too shallow, and the audit says so plainly: its closure for root B was a
+hand-kept list of six SITES (round 3 found three more movers it did not contain,
+so the mover set is now DERIVED from what the fold READS — `FOLD_INPUTS`, pinned
+against the `MaterialCommittedLine` read contract), and its fix for the wrong
+exception LABEL moved the decision to the caller (round 4 found the caller cannot
+know either, since one amend can re-size some lines and reclassify others, so the
+label is now derived per row from whether the head actually changed). Notably `acceptance` is §B's
 FOURTH headroom mover (§G authorises accepting more than the ordered quantity and
 no commitment is released against the overage, so a receipt can breach a budget
 with no purchase-order write anywhere), a closed-short line's released remainder
