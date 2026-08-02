@@ -89,10 +89,10 @@ describe('Phase 5 Task 3 — §D measurement (live PG)', () => {
 
   // ── fixtures (the Phase-4 labour chain, reused) ───────────────────────────────────────────────
 
-  const freshProject = async (): Promise<string> => {
+  const freshProject = async (timeZone = 'Asia/Kolkata'): Promise<string> => {
     const id = `it-p5t3-${Date.now() % 1e6}-${seq++}`;
     await t.prisma.project.create({
-      data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
+      data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone, scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
     });
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
     await capabilities.enable(id, LABOUR_CAPABILITY, f.memberUser.id);
@@ -197,11 +197,11 @@ describe('Phase 5 Task 3 — §D measurement (live PG)', () => {
 
   /** the whole chain: a signed-off activity with recorded output, a committed PO line, and effort */
   const measurableLine = async (
-    opts: { orderedQty?: number; workedWorkers?: number; civilDate?: string } = {},
+    opts: { orderedQty?: number; workedWorkers?: number; civilDate?: string; timeZone?: string } = {},
   ): Promise<{ projectId: string; activityId: string; poLineId: string; poId: string; outputId: string }> => {
     const civilDate = opts.civilDate ?? '2026-08-10';
     const orderedQty = opts.orderedQty ?? 2;
-    const projectId = await freshProject();
+    const projectId = await freshProject(opts.timeZone);
     const activityId = await freshActivity(projectId);
     const req = await labourRequirement(projectId, activityId, civilDate, orderedQty);
     const { poLineId, poId, commitmentId } = await committedCapacity(projectId, req, civilDate, orderedQty);
@@ -422,6 +422,112 @@ describe('Phase 5 Task 3 — §D measurement (live PG)', () => {
     await labourCommercial.closeShortPo(projectId, poId, { reason: 'supplier withdrew the balance' }, pmc(projectId));
     expect((await t.prisma.labourPurchaseOrderVersion.findFirstOrThrow({ where: { projectId, poId }, orderBy: { version: 'desc' } })).status)
       .toBe('closed_short');
+  });
+
+  // ── Codex round-1 findings ────────────────────────────────────────────────────────────────────
+
+  it('R1 (§D): effort is scoped to the MEASURED activity — another activity\'s sign-off cannot fund this line', async () => {
+    // Line L funds work on activity A, which is NOT signed off. Activity B is signed off and has
+    // its own recorded output. Naming B while pointing at L would pass the sign-off and evidence
+    // checks against B and satisfy the quantity cap with A's work — an immutable measurement for a
+    // line whose own activity nobody ever signed off.
+    const projectId = await freshProject();
+    const activityA = await freshActivity(projectId);
+    const activityB = await freshActivity(projectId);
+    const reqA = await labourRequirement(projectId, activityA, '2026-08-10', 1);
+    const { poLineId, commitmentId } = await committedCapacity(projectId, reqA, '2026-08-10', 1);
+    await workShifts(projectId, activityA, reqA, '2026-08-10', commitmentId, 1);
+
+    const outputB = await recordOutput(projectId, activityB);
+    await signOff(projectId, activityB);          // B is signed off…
+    // …and A deliberately is NOT.
+
+    await expect(
+      measurement.take(projectId, { labourPoLineId: poLineId, activityId: activityB, quantity: '1', citedOutputId: outputB }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await t.prisma.measurement.count({ where: { projectId } })).toBe(0);
+    // the register agrees: scoped to B, this line funded nothing
+    expect((await measurement.read(projectId, poLineId, pmc(projectId))).effort).toBe('1');
+  });
+
+  it('R2 (§D): a DEFAULTED commitment authorises nothing, even while its version is still live', async () => {
+    const { projectId, activityId, poLineId, outputId } = await measurableLine({ orderedQty: 1, workedWorkers: 1 });
+    // the supplier reneges AFTER the work was recorded. The version can still read `issued`, but a
+    // defaulted commitment can never be re-committed, so the line authorises nothing — measuring
+    // its historical effort would move money into received-not-billed for an order nobody owes.
+    const commitment = await t.prisma.capacityCommitment.findFirstOrThrow({ where: { projectId, poLineId } });
+    await labourCommercial.defaultCapacity(projectId, commitment.id, pmc(projectId));
+
+    await expect(
+      measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await t.prisma.measurement.count({ where: { projectId } })).toBe(0);
+  });
+
+  it('R3 (§D): `measuredOn` defaults to the PROJECT\'s civil day, not the server\'s UTC date', async () => {
+    // This has to BITE at every hour, or it is vacuous for most of the day: with Asia/Kolkata the
+    // site date differs from UTC only between 18:30 and 24:00 UTC, so the probe passed against the
+    // very bug it was written for. UTC+14 and UTC-11 sit on opposite sides of the date line, so at
+    // EVERY instant at least one of them is on a different civil date from UTC — pick whichever
+    // currently is, and the assertion can never coincide with the UTC answer.
+    const utcToday = new Date().toISOString().slice(0, 10);
+    const civilIn = (tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
+    const timeZone = civilIn('Pacific/Kiritimati') !== utcToday ? 'Pacific/Kiritimati' : 'Pacific/Midway';
+    const siteToday = civilIn(timeZone);
+    expect(siteToday, 'the chosen zone must differ from UTC or the probe proves nothing').not.toBe(utcToday);
+
+    const { projectId, activityId, poLineId, outputId } = await measurableLine({ orderedQty: 1, workedWorkers: 1, timeZone });
+    const taken = await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId));
+    expect(taken.measuredOn).toBe(siteToday);
+  });
+
+  it('R4 (§D): a correction is bounded by the ROW it adjusts, not by the line total', async () => {
+    const { projectId, activityId, poLineId, outputId } = await measurableLine({ orderedQty: 2, workedWorkers: 2 });
+    const a = await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId));
+    const b = await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId));
+
+    // correcting A by −2 keeps the LINE total at a perfectly legal 0, but silently wipes B's
+    // payable evidence with nothing naming or justifying a correction to B
+    await expect(
+      measurement.correct(projectId, { measurementId: a.id, quantity: '-2', reason: 'over-measured' }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await measurement.read(projectId, poLineId, pmc(projectId))).measured).toBe('2');
+
+    // withdrawing A's OWN shift is permitted, and B is untouched
+    await measurement.correct(projectId, { measurementId: a.id, quantity: '-1', reason: 'A was a re-do' }, pmc(projectId));
+    expect((await measurement.read(projectId, poLineId, pmc(projectId))).measured).toBe('1');
+    // …and A has nothing left to withdraw
+    await expect(
+      measurement.correct(projectId, { measurementId: a.id, quantity: '-1', reason: 'again' }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    // correcting B is the real path, and it works
+    await measurement.correct(projectId, { measurementId: b.id, quantity: '-1', reason: 'B was a re-do too' }, pmc(projectId));
+    expect((await measurement.read(projectId, poLineId, pmc(projectId))).measured).toBe('0');
+  });
+
+  it('R5 (§D): a REDUCING correction still works after the line stops being live', async () => {
+    // `assertWorkEvidenceRevisable` tells an operator to correct a measurement to zero before
+    // withdrawing a sign-off. If the line had since been cancelled, refusing every write on a dead
+    // line made that correction impossible and left the activity permanently stuck on the very
+    // evidence it was being told to withdraw.
+    const { projectId, activityId, poLineId, poId, outputId } = await measurableLine({ orderedQty: 1, workedWorkers: 1 });
+    const taken = await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId));
+
+    // (a cancelled version must carry its reason — a Task-2 CHECK, satisfied here rather than
+    // worked around, because a stamp-free cancellation is exactly what that seal exists to refuse)
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "LabourPurchaseOrderVersion" SET "status" = 'cancelled', "cancelReason" = $2 WHERE "poId" = $1`,
+      poId, 'supplier withdrew entirely',
+    );
+    // a NEW positive measurement against the dead line is still refused…
+    await expect(
+      measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    // …but withdrawing what was recorded is always permitted, and the sign-off can then be revoked
+    await measurement.correct(projectId, { measurementId: taken.id, quantity: '-1', reason: 'order cancelled; work re-opened' }, pmc(projectId));
+    expect((await measurement.read(projectId, poLineId, pmc(projectId))).measured).toBe('0');
+    await t.prisma.$transaction((tx) => activityParticipant.revertSignOff(tx, { projectId, activityId }));
+    expect((await t.prisma.activity.findFirstOrThrow({ where: { id: activityId } })).status).toBe('in_progress');
   });
 
   // ── §D authority + the COMMITTED consumption term ─────────────────────────────────────────────

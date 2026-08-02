@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ROLE_POLICY, type MeasurementDto, type MeasurementRegisterDto } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
@@ -8,6 +8,7 @@ import { resolveActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
+import { CLOCK, type Clock } from '../common/clock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { LabourRequirementQuery } from '../labour/labour.query';
@@ -63,6 +64,7 @@ export class CommercialMeasurementService {
     private readonly labour: LabourRequirementQuery,
     private readonly measured: CommercialMeasurementQuery,
     private readonly participant: CommercialParticipant,
+    @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
   private assertMeasure(user: AuthUser): void {
@@ -83,6 +85,20 @@ export class CommercialMeasurementService {
     tx: Prisma.TransactionClient, projectId: string, labourPoLineId: string,
   ): Promise<Prisma.Decimal> {
     return (await this.measured.measuredForPoLines(tx, projectId, [labourPoLineId])).get(labourPoLineId) ?? ZERO;
+  }
+
+  /**
+   * The NET contribution one measurement row still makes to the fold: its own quantity plus every
+   * correction addressed to it. A row corrected back to zero has nothing left to withdraw.
+   */
+  private async netOf(
+    tx: Prisma.TransactionClient, projectId: string, measurementId: string,
+  ): Promise<Prisma.Decimal> {
+    const rows = await tx.measurement.findMany({
+      where: { projectId, OR: [{ id: measurementId }, { correctsId: measurementId }] },
+      select: { quantity: true },
+    });
+    return rows.reduce((acc, r) => acc.add(r.quantity), ZERO);
   }
 
   /**
@@ -164,9 +180,17 @@ export class CommercialMeasurementService {
     // A correction inherits nothing here: it is taken TODAY, on the day the practice decided the
     // earlier figure was wrong. Backdating a correction to the original's date would erase the
     // fact that the record changed after the event.
+    //
+    // TODAY is the PROJECT's civil day, not the server's UTC date (Codex round-1 P2). A site in
+    // UTC+5:30 entering a measurement at 00:30 local is still on yesterday's UTC date, and the
+    // billing evidence would carry a date the site never worked. `takenAt` records the instant;
+    // `measuredOn` must record the SITE's day.
+    const project = await this.prisma.project.findUniqueOrThrow({
+      where: { id: projectId }, select: { timeZone: true },
+    });
     const measuredOnIso = 'measuredOn' in input && input.measuredOn
       ? input.measuredOn
-      : new Date().toISOString().slice(0, 10);
+      : this.clock.today(project.timeZone);
     const measuredOn = fromIsoCivilDate(measuredOnIso);
     if (!measuredOn) throw new ConflictException(`"${measuredOnIso}" is not a civil date`);
 
@@ -202,11 +226,21 @@ export class CommercialMeasurementService {
 
         const [lines, effort] = await Promise.all([
           this.labour.committedLinesFor(tx, projectId, [row.labourPoLineId]),
-          this.labour.effortForPoLines(tx, projectId, [row.labourPoLineId]),
+          // Codex round-1 P1 — effort SCOPED to the activity being measured. Unscoped, a caller
+          // could name a different signed-off activity with its own output, satisfy the sign-off
+          // and evidence checks against THAT one, and have the quantity cap met by work done on an
+          // activity nobody ever signed off.
+          this.labour.effortForPoLines(tx, projectId, [row.labourPoLineId], row.activityId),
         ]);
         const line = lines.get(row.labourPoLineId);
         if (!line) throw new NotFoundException('Labour purchase-order line not found in this project');
-        if (!line.live) {
+        // Codex round-1 P1 — the live-line requirement gates NEW measurement, never a REDUCING
+        // correction. `assertWorkEvidenceRevisable` tells an operator to correct a measurement to
+        // zero before withdrawing a sign-off; if the line had since been amended or cancelled, an
+        // unconditional check made that correction impossible and left the activity permanently
+        // stuck on evidence it was being told to withdraw. Reducing recorded work is always
+        // permitted — it can only ever make a claim smaller.
+        if (!line.live && row.quantity.greaterThan(0)) {
           throw new ConflictException('This labour purchase-order line is not live — a dead order cannot be measured against');
         }
 
@@ -220,6 +254,25 @@ export class CommercialMeasurementService {
             `This correction would take measured work to ${after.toString()} person-shifts; ${before.toString()} were measured and a negative total is not a record of anything`,
           );
         }
+        // Codex round-1 P1 — a correction is bounded by the ROW IT ADJUSTS, not merely by the
+        // line's aggregate. The aggregate alone lets one row's correction eat another's evidence:
+        // measure A = 1 and B = 1, then correct A by −2 and the line total is a perfectly legal 0
+        // while B's payable evidence has been wiped from the fold with nothing naming or
+        // justifying a correction to B.
+        //
+        // This is the same row-level identity §E's consumption freeze depends on — a certificate
+        // records `(measurementId, consumedQty)`, so a row whose net contribution can be driven
+        // negative by an unrelated correction makes that freeze unresolvable. Correcting B is a
+        // real operation with a real path: address a correction TO B.
+        if (row.correctsId && row.quantity.isNegative()) {
+          const net = await this.netOf(tx, projectId, row.correctsId);
+          const remaining = net.add(row.quantity);
+          if (remaining.isNegative()) {
+            throw new ConflictException(
+              `Measurement ${row.correctsId} has ${net.toString()} person-shifts left to withdraw, and this correction withdraws ${row.quantity.abs().toString()} — correct the other measurements on this line individually so each reduction names the work it walks back`,
+            );
+          }
+        }
         if (row.quantity.greaterThan(0)) {
           // (3) the EFFORT cap — worked minutes normalised to person-shifts, joined to THIS line
           const available = effort.get(row.labourPoLineId) ?? ZERO;
@@ -229,9 +282,16 @@ export class CommercialMeasurementService {
             );
           }
           // (4) the ORDERED authority cap
-          if (after.greaterThan(new Prisma.Decimal(line.personShiftQty))) {
+          // Codex round-1 P1 — the cap is the line's LIVE authority, not its frozen ordered
+          // quantity. A DEFAULTED commitment authorises nothing even while the version is still
+          // `issued`: the source reneged and the line can never be re-committed, so measuring its
+          // historical effort would move money into received-not-billed for shifts no live order
+          // covers. A closed-short version authorises only what was committed.
+          if (after.greaterThan(new Prisma.Decimal(line.liveAuthority))) {
             throw new ConflictException(
-              `Measuring ${row.quantity.toString()} would total ${after.toString()} person-shifts against an order for ${line.personShiftQty} — amend the purchase order to authorise more work before measuring it`,
+              line.defaulted
+                ? `This line's supplier commitment was DEFAULTED, so it authorises no work — measuring ${row.quantity.toString()} person-shifts against it would bill for an order nobody owes`
+                : `Measuring ${row.quantity.toString()} would total ${after.toString()} person-shifts against a live authority of ${line.liveAuthority} — amend the purchase order to authorise more work before measuring it`,
             );
           }
         }

@@ -42,6 +42,19 @@ export function labourDetailKey(requirementId: string, revision: number): string
  * module's own client for the standalone `list` read. This is the `activities → labour` read edge
  * (`activities.dependsOn` includes `labour`); Labour stays a LEAF (it reads nothing foreign).
  */
+/** The frozen commercial facts of one LABOUR PO line, as the commercial folds consume them. */
+export interface LabourCommittedLine {
+  committedAmountBase: Prisma.Decimal;
+  /** the ORIGINAL frozen order quantity — history, not current authority */
+  personShiftQty: number;
+  committedQty: number;
+  /** what the line authorises RIGHT NOW: 0 when defaulted, `committedQty` when closed short */
+  liveAuthority: number;
+  defaulted: boolean;
+  live: boolean;
+  closedShort: boolean;
+}
+
 @Injectable()
 export class LabourRequirementQuery {
   constructor(private readonly prisma: PrismaService) {}
@@ -225,12 +238,19 @@ export class LabourRequirementQuery {
     tx: Prisma.TransactionClient,
     projectId: string,
     labourPoLineIds: readonly string[],
+    // Codex round-1 P1 — scope the effort to ONE activity. A PO line's effort answers "how much
+    // work did this order fund", and a measurement asks the narrower question "…on the activity
+    // whose sign-off I am measuring against". Without the scope a caller can name a DIFFERENT
+    // signed-off activity and its output, pass those checks, and have the cap satisfied by work
+    // done on an activity that was never signed off.
+    activityId?: string,
   ): Promise<Map<string, Prisma.Decimal>> {
     const out = new Map<string, Prisma.Decimal>();
     if (labourPoLineIds.length === 0) return out;
     const rows = await tx.labourWorkFact.findMany({
       where: {
         projectId,
+        ...(activityId ? { activityId } : {}),
         allocation: { is: { capacityCommitment: { is: { poLineId: { in: [...labourPoLineIds] } } } } },
       },
       select: { workedMinutes: true, allocation: { select: { capacityCommitment: { select: { poLineId: true } } } } },
@@ -254,22 +274,36 @@ export class LabourRequirementQuery {
     tx: Prisma.TransactionClient,
     projectId: string,
     labourPoLineIds: readonly string[],
-  ): Promise<Map<string, { committedAmountBase: Prisma.Decimal; personShiftQty: number; committedQty: number; live: boolean; closedShort: boolean }>> {
-    const out = new Map<string, { committedAmountBase: Prisma.Decimal; personShiftQty: number; committedQty: number; live: boolean; closedShort: boolean }>();
+  ): Promise<Map<string, LabourCommittedLine>> {
+    const out = new Map<string, LabourCommittedLine>();
     if (labourPoLineIds.length === 0) return out;
     const rows = await tx.labourPurchaseOrderLine.findMany({
       where: { projectId, id: { in: [...labourPoLineIds] } },
       select: {
         id: true, committedAmountBase: true, personShiftQty: true, committedQty: true,
         poVersion: { select: { status: true } },
+        commitments: { select: { status: true } },
       },
     });
     for (const r of rows) {
       const status = r.poVersion.status;
+      // Codex round-1 P1 — the LIVE authority is not the frozen ordered quantity. This mirrors the
+      // `liveAllocation` rule Task 2's correction established, and for the same reason: a DEFAULTED
+      // commitment means the source reneged and the line can never be re-committed, so it
+      // authorises NOTHING even while the version is still `issued`. A closed-short version keeps
+      // only what was committed. Anything else is authorised for the full order.
+      const defaulted = r.commitments.some((c) => c.status === 'defaulted');
+      const liveAuthority = defaulted
+        ? 0
+        : status === 'closed_short'
+          ? r.committedQty
+          : r.personShiftQty;
       out.set(r.id, {
         committedAmountBase: r.committedAmountBase,
         personShiftQty: r.personShiftQty,
         committedQty: r.committedQty,
+        liveAuthority,
+        defaulted,
         live: ['issued', 'partially_committed', 'completed', 'closed_short'].includes(status),
         closedShort: status === 'closed_short',
       });
