@@ -53,10 +53,10 @@ import { computeLabourReadinessDto } from './labour-readiness.projection';
  * ONE signal-only event per row.
  */
 
-/** One shift is 12 hours. The per-row CHECK bounds a single record; the CUMULATIVE bound per
- *  `(worker, civilDate, shift)` is re-derived under the worker `FOR UPDATE` (round-3 guardrail 2 —
- *  a per-row CHECK alone cannot stop several rows summing past the shift). */
-export const SHIFT_MINUTES = 720;
+/** Re-exported so every existing import keeps working; the constant itself now lives in a LEAF
+ *  file, because importing it from this service closed a module cycle (see `./shift`). */
+export { SHIFT_MINUTES } from './shift';
+import { SHIFT_MINUTES } from './shift';
 
 type MismatchRow = Prisma.LabourMismatchGetPayload<{ include: { resolution: true } }>;
 function serializeMismatch(m: MismatchRow): LabourMismatchDto {

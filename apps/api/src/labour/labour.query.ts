@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { SHIFT_MINUTES } from './labour-capacity.service';
+import { SHIFT_MINUTES } from './shift';
 import type { LabourSpecRef } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { toIsoCivilDate } from '../common/civil-date';
