@@ -350,6 +350,104 @@ see above.
 This is the Phase-4 §C lesson applied to money: a second ledger holding the same number is
 a second truth, and the two will diverge under amendment.
 
+### §D. Measurement — a billing fact, distinct from the operational work fact
+
+**Carried forward VERBATIM from `claude/phase5-planning` @ `a4d469b` by the Task-3 PR, per this
+plan's own rule: "a task PR that reaches its section MUST carry that text forward rather than
+re-derive it". Not one word is changed.**
+
+
+`ActivityWorkOutput` records what was physically produced. `LabourWorkFact` records minutes
+worked. Neither is a measurement for payment: a measurement is a **contractually agreed
+quantity at a contract rate, taken by a named person on a named date, against a named PO
+line**. It has a different unit, a different authority and a different lifecycle.
+
+- `Measurement` is commercial-owned, immutable once taken, and carries: the PO line, the
+  measured quantity in the PO line's UOM, the measurement date, the taker, evidence media,
+  and — for work measured against an activity — the activity reference validated through
+  `ActivityParticipant`.
+- A measurement against an activity requires that activity to be `done` with its closing
+  sign-off. Measuring incomplete work for payment is exactly the failure Phase 1 existed to
+  prevent. **The status must be read under the activity/root row lock, not by a plain
+  query.** `ActivityParticipant.revertSignOff` can move `done → in_progress` when a closing
+  inspection is rejected, so an unlocked read admits: measurement sees `done`, the rejection
+  commits, the immutable measurement commits anyway, and a bill later rests on work whose
+  sign-off was withdrawn. The guard runs inside the locked participant — the same discipline
+  §E uses for the accepted side.
+- **A measurement is BOUNDED BY operational evidence, not merely permitted by a status.**
+  Sign-off alone would let a commercial actor author the only quantity evidence in the
+  chain — a 100-unit measurement against an activity with no recorded output — and
+  verification would then certify from commercial input rather than from the Phase-1–4
+  facts this phase exists to consume. So:
+  - a measurement MUST cite at least one `ActivityWorkOutput` for that activity, read
+    through `ActivitiesQuery`. What that citation BOUNDS depends on how the line is priced,
+    because the two contract shapes measure different things:
+    - **priced by output quantity** (a rate per sqm, per rm, per unit): **OUT OF SCOPE for
+      Phase 5, and removed here.** I introduced this shape mid-review without checking that
+      the ordered side supports it, and it does not: a Phase-4 `LabourPurchaseOrderLine`
+      freezes `personShiftQty` and `ratePerPersonShift` and nothing else, so a 100 sqm claim
+      has no frozen ordered quantity and no frozen ₹/sqm to verify against. §G bound 1 would
+      compare sqm to person-shifts and the rate check would have no authoritative value —
+      certification from no ordered evidence, which is precisely what this phase exists to
+      prevent. Output-priced (lump-sum / item-rate) subcontracts need a frozen work-order
+      snapshot of their own, which is a procurement change and a later phase. Phase 5 verifies
+      person-shift-priced labour only; `OUTPUT(poLine)` survives in §0 solely as the
+      progress-evidence citation below, never as a priced quantity.
+    - **priced per person-shift**: the billable unit is person-shifts and the output is
+      recorded in a physical unit, so a same-unit cap is not merely wrong but unsatisfiable
+      — it would refuse a valid attended shift whenever progress is recorded in sqm, or
+      push teams to fabricate person-shift outputs to bill. Here the cited output is
+      REQUIRED AS EVIDENCE that work happened, and the QUANTITY cap is
+      `MEASURED(poLine) ≤ EFFORT(poLine)` (§0) — effort matched to that line's own
+      `labourSpecFingerprint` and slices, each unit consumable once, so one trade's
+      attendance can never fund another trade's bill on the same day. **Cumulative
+      `MEASURED(poLine)` is ALSO capped at the ordered `personShiftQty`** (raised only by a PO
+      amendment that orders more): `EFFORT` alone would let 120 worked shifts be measured
+      against a 100-shift PO, and since `COMMITTED` consumes measured person-shifts (§0) the
+      forecast would carry 20 shifts of unauthorised work long before Task 4 refuses to bill
+      them. Ordered authority bounds measurement, not just billing;
+  - the bound is re-derived under lock at measurement time AND re-checked at certification,
+    because `EFFORT` can grow or be consumed by another line between the two, and the
+    activity's sign-off can be reverted. NOT because the output can be superseded — it
+    cannot (§0).
+- A correction is a new measurement carrying a signed delta and a reason, never an edit.
+  The measured total is a fold, with no stored balance — the Phase-3 §C rule.
+- **A negative correction is bounded by what the fold already SUPPORTS, not merely by zero.**
+  A zero floor alone stops `MEASURED` going negative and nothing else: measure 100, certify a
+  100-unit bill, then append −50 and the fold sits at a perfectly legal 50 while a live
+  certificate for 100 stands — bound 2 is broken AFTER the payable fact exists, and the
+  certificate is append-only so nothing walks it back. So a reducing correction may not leave
+  `MEASURED(poLine)` below what a live payable fact has already consumed, re-derived under the
+  same serialization as the positive cap.
+
+  **But "consumed" means CERTIFIED, and an uncertified claim is DISPUTED rather than blocking.**
+  An earlier revision refused the correction whenever live `BILLED_QTY` would exceed the new
+  total, which blocks evidence repair on the strength of a bill nobody has verified: measure 100,
+  a vendor submits a 100-unit labour claim, then the engineer discovers the real figure is 50 —
+  the correction is refused and the site cannot fix its own record until the vendor's unverified
+  claim is dealt with. §G already decided this for the material side, where an acceptance reversal
+  DISPUTES live uncertified claims and refuses only against a live certificate; the measurement
+  path owes the identical disposition, and giving acceptance one rule and measurement another is
+  the same one-site-short defect as the rest of this round. So, under the serialization:
+  refuse only if the result would fall below `max(0, BILLED_QTY over live CERTIFIED bills)` — **and,
+  before that aggregate test, refuse any correction that would reduce a measurement row a live
+  certificate has FROZEN as its consumed evidence** (§E's `(measurementId, consumedQty)` set). The
+  aggregate alone is strictly weaker, and the gap is not hypothetical: measurement A records 100, an
+  80-shift certificate freezes A as its evidence, measurement B later records another 100, then A is
+  corrected by −100. Aggregate `MEASURED` is still 100, so an aggregate-only floor permits it — and
+  the certificate now rests on rows, and an actor, that neither certification nor the §I SoD rule
+  ever evaluated. That is the identity failure §E's consumption freeze exists to prevent, so the
+  row-level check comes first and the aggregate test second;
+  otherwise DISPUTE enough live uncertified claims — newest-first, stopping as soon as the
+  aggregate bound holds, exactly as §G disputes acceptances — and let the correction land.
+  Withdrawing measured work a live CERTIFICATE rests on still requires superseding that
+  certificate first, the same ordering §E requires for accepted material. A measurement
+  correction IS an evidence-withdrawal path and belongs in that row of §0b.
+- **Material lines are not measured.** For a material PO line the accepted quantity IS the
+  measurement: `ACCEPTED(poLine)` per §0 — acceptance movements net of acceptance reversals,
+  read through `InventoryQuery`. A parallel manual measurement of delivered material would
+  be a second truth about the same physical event.
+
 ### §I. Authority, segregation of duties, approval limits
 
 - New permissions: `commercial.read`, **`commercial.budget`** (create a `CostHead`, create or

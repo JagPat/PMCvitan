@@ -126,6 +126,7 @@ model Project {
   commitmentAttributions    CommitmentAttribution[]
   budgetLines               BudgetLine[]
   budgetExceptions          BudgetException[]
+  measurements      Measurement[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -708,6 +709,7 @@ model Media {
   @@index([projectId, kind])
   @@index([nodeId])
   @@index([inspectionId])
+  measurements Measurement[]
 }
 
 // A controlled drawing in the project's register (the source of truth the team
@@ -894,6 +896,7 @@ model User {
   budgetLinesAuthored        BudgetLine[]            @relation("budgetLinesAuthored")
   budgetLinesSuperseded      BudgetLine[]            @relation("budgetLinesSuperseded")
   budgetExceptionsRaised     BudgetException[]       @relation("budgetExceptionsRaised")
+  measurementsTaken Measurement[] @relation("measurementsTaken")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -1851,6 +1854,7 @@ model Activity {
   requirements ActivityRequirement[]
   labourMismatches LabourMismatch[]
   workOutputs      ActivityWorkOutput[]
+  measurements Measurement[]
 }
 
 // A manual readiness exception (Phase 1 Task 6): the PMC overrides ONE gate's
@@ -2518,6 +2522,8 @@ model LabourPurchaseOrderLine {
   // Phase 5 Task 1 (§C) — the commercial-owned cost-head attribution history for this line
   attributions CommitmentAttribution[]
 
+  measurements Measurement[]
+
   @@unique([projectId, id])
   @@index([projectId, requisitionLineId])
 }
@@ -2808,6 +2814,8 @@ model ActivityWorkOutput {
   recordedById    String
   sourceCommandId String
 
+  measurements Measurement[]
+
   @@unique([projectId, id])
   @@index([projectId, activityId, civilDate, shift])
 }
@@ -2947,6 +2955,66 @@ model BudgetLine {
 //
 // The row records the headroom AT THE MOMENT IT WAS RAISED, so the Inbox action is answerable
 // later even after the numbers move; the fold stays the live truth.
+/// Phase 5 Task 3 (§D) — a MEASUREMENT: a contractually agreed quantity at a contract rate, taken
+/// by a named person on a named date, against a named PO line. It is NOT `ActivityWorkOutput`
+/// (what was physically produced) and NOT `LabourWorkFact` (minutes worked): different unit,
+/// different authority, different lifecycle.
+///
+/// IMMUTABLE once taken. A correction is a NEW row carrying a SIGNED delta and a reason, so
+/// `MEASURED(poLine)` is a fold with no stored balance — the Phase-3 §C rule.
+///
+/// LABOUR ONLY. §D: material lines are not measured, because `ACCEPTED(poLine)` already IS the
+/// measurement of a delivery, and a parallel manual figure would be a second truth about one
+/// physical event. There is deliberately no `poLineId` column here — a material measurement is
+/// unrepresentable rather than merely refused.
+model Measurement {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  /// the LABOUR PO line this quantity is measured against (same-project composite FK)
+  labourPoLine   LabourPurchaseOrderLine @relation(fields: [projectId, labourPoLineId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  labourPoLineId String
+
+  /// the activity whose signed-off work this measures — validated through ActivityParticipant
+  /// under the activity row lock (§D: never a plain status query)
+  activity   Activity @relation(fields: [projectId, activityId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  activityId String
+
+  /// person-shifts. SIGNED: a correction is a negative row. The FOLD is bounded (never negative,
+  /// never above EFFORT, never above the ordered authority) — a per-row CHECK cannot say that, so
+  /// the only per-row rule is that a row must move something.
+  quantity Decimal @db.Decimal(18, 6) // raw-SQL CHECK <> 0
+
+  /// the correction this row adjusts, or NULL for an original measurement. Present so a reducing
+  /// correction can be attributed to the row it walks back, which §E's consumption freeze needs.
+  corrects   Measurement? @relation("measurementCorrections", fields: [projectId, correctsId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  correctsId String?
+  corrections Measurement[] @relation("measurementCorrections")
+
+  /// non-blank CHECK; required on a correction (a signed delta with no reason is unauditable)
+  reason String?
+
+  measuredOn DateTime @db.Date
+  /// progress EVIDENCE (§0 `OUTPUT` is a predicate, not a pool) — the cited activity work output
+  citedOutput   ActivityWorkOutput @relation(fields: [projectId, citedOutputId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  citedOutputId String
+
+  evidence        Media?  @relation(fields: [projectId, evidenceMediaId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  evidenceMediaId String?
+
+  takenAt   DateTime @default(now())
+  takenBy   User     @relation("measurementsTaken", fields: [takenById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  takenById String
+
+  /// §C rule ii — every fact records the command that produced it
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@index([projectId, labourPoLineId])
+  @@index([projectId, activityId])
+}
+
 model BudgetException {
   id        String  @id @default(cuid())
   projectId String

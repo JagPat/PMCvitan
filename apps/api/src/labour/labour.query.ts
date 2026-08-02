@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { SHIFT_MINUTES } from './labour-capacity.service';
 import type { LabourSpecRef } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { toIsoCivilDate } from '../common/civil-date';
@@ -198,6 +199,57 @@ export class LabourRequirementQuery {
    * `committedQty` is the person-shifts actually committed by a supplier; a version closed short
    * KEEPS that portion and releases the rest, which is the §0 released term.
    */
+  /**
+   * Phase 5 Task 3 (§0 `EFFORT`) — worked effort attributable to a set of LABOUR PO lines,
+   * NORMALISED into billable person-shifts.
+   *
+   * §0 is emphatic about two things, and both live HERE so no call site can forget them.
+   *
+   * **The join reaches the exact PO line**, `LabourWorkFact → WorkerAllocation →
+   * CapacityCommitment → LabourPurchaseOrderLine`, and NOT `labourSpecFingerprint` + slice. Two
+   * vendors can hold the same fingerprint on the same activity and day; matching on that would let
+   * vendor A's attendance fund vendor B's bill while A stays unbillable. Going through the
+   * commitment that actually funded the allocation makes each worked unit reachable from at most
+   * ONE line — conservation is structural, not a check somebody has to remember.
+   *
+   * **Minutes are converted to person-shifts INSIDE this set.** `LabourWorkFact` records worked
+   * MINUTES (Phase 4); a labour bill is denominated in person-SHIFTS. Comparing them raw lets one
+   * worker's single 720-minute day satisfy a ten-person-shift measurement, because `10 ≤ 720`. The
+   * conversion is `Σ workedMinutes / SHIFT_MINUTES`, and it is deliberately not exposed unrounded:
+   * a caller that received minutes could compare them to shifts and the bug would be silent.
+   *
+   * Own-workforce effort (an allocation with no `capacityCommitmentId`) attributes to NO PO line,
+   * which is correct — nobody is billing for it.
+   */
+  async effortForPoLines(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    labourPoLineIds: readonly string[],
+  ): Promise<Map<string, Prisma.Decimal>> {
+    const out = new Map<string, Prisma.Decimal>();
+    if (labourPoLineIds.length === 0) return out;
+    const rows = await tx.labourWorkFact.findMany({
+      where: {
+        projectId,
+        allocation: { is: { capacityCommitment: { is: { poLineId: { in: [...labourPoLineIds] } } } } },
+      },
+      select: { workedMinutes: true, allocation: { select: { capacityCommitment: { select: { poLineId: true } } } } },
+    });
+    const minutes = new Map<string, number>();
+    for (const r of rows) {
+      const poLineId = r.allocation.capacityCommitment?.poLineId;
+      if (!poLineId) continue;
+      minutes.set(poLineId, (minutes.get(poLineId) ?? 0) + r.workedMinutes);
+    }
+    for (const id of labourPoLineIds) {
+      // an unworked line has ZERO effort, not an absent entry — a caller reading `?? undefined`
+      // and skipping the cap is the failure this avoids
+      const m = minutes.get(id) ?? 0;
+      out.set(id, new Prisma.Decimal(m).div(SHIFT_MINUTES).toDecimalPlaces(6, Prisma.Decimal.ROUND_DOWN));
+    }
+    return out;
+  }
+
   async committedLinesFor(
     tx: Prisma.TransactionClient,
     projectId: string,
