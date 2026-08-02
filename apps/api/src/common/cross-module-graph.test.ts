@@ -83,6 +83,7 @@ const MODEL_OWNER: Record<string, string> = {
   // Phase 5 Task 1 — the commercial SINK (§C/§K).
   costHead: 'commercial',
   commitmentAttribution: 'commercial',
+  budgetLine: 'commercial',
   activityWorkOutput: 'activities',
   // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
