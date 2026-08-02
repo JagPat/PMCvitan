@@ -57,6 +57,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // authority alone never confers it. The register read mirrors `procurement.read`.
   'commercial.manage': ['pmc'],
   'commercial.attribute': ['pmc'],
+  'commercial.budget.manage': ['pmc'],
   'commercial.read': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],

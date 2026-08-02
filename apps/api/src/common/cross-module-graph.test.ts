@@ -199,6 +199,11 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // through each OWNING module's read contract (ProcurementQuery / LabourRequirementQuery), so
   // there is no foreign table read here either. Operator-driven; it dispatches nothing.
   'commercial/commercial-activation.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
+  // Phase 5 Task 2 (§B) — the budget write path and the over-budget exception. Writes ONLY
+  // commercial-owned tables (`BudgetLine`, `BudgetException`); the fold it evaluates against reads
+  // each PO line through its OWNING module's query. Emits no domain event, so it dispatches
+  // nothing — the exception IS the signal, and it is a row with a lifecycle rather than a notice.
+  'commercial/commercial-budget.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
   // Phase 4 Task 2 — the labour COMMERCIAL chain (§F). Writes ONLY labour-owned commercial tables;
   // the reused procurement Vendor/ProjectVendor party is read/validated THROUGH ProcurementParticipant
   // (never a direct foreign write/read — Labour stays a LEAF). requisition submit/approve +
@@ -393,6 +398,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   // Phase 5 Task 1 — the commercial cost-head catalog + the standalone re-attribution. The GET
   // register reads are declared by the manifest `queries`, not here.
   'commercial/commercial.controller.ts': [
+    "Post('commercial/budget')",
     "Post('commercial/cost-heads')",
     "Post('commercial/attributions')",
   ],
@@ -518,12 +524,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('149 mutating routes total (§4 command inventory; +2 Phase-5 Task-1 commercial catalog/re-attribution)', () => {
+    it('150 mutating routes total (§4 command inventory; +1 Phase-5 Task-2 budget set/revise)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(149);
+      expect(total).toBe(150);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(149);
+      expect(live).toBe(150);
     });
   });
 

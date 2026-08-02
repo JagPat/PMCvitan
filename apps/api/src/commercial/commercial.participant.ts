@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, Injectable } from '@nestjs/commo
 import { Prisma } from '@prisma/client';
 import { ROLE_POLICY } from '@vitan/shared';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
+import { CommercialBudgetService, type HeadroomMover } from './commercial-budget.service';
 
 /** The acting identity a lifecycle site passes in; the participant never re-derives it. */
 export interface AttributionActor {
@@ -35,7 +36,30 @@ export type AttributionTarget = { poLineId: string } | { labourPoLineId: string 
  */
 @Injectable()
 export class CommercialParticipant {
-  constructor(private readonly capabilities: CapabilitiesService) {}
+  constructor(
+    private readonly capabilities: CapabilitiesService,
+    private readonly budget: CommercialBudgetService,
+  ) {}
+
+  /**
+   * §B — every attribution write MOVES HEADROOM, so every one of them re-evaluates the affected
+   * head(s) and raises or clears the exception in the SAME transaction. This is the one place
+   * that has to be right for all eight PO lifecycle sites at once: they all reach the register
+   * through this participant, so evaluating here closes the rule for every site rather than at
+   * whichever one a reviewer happens to name.
+   *
+   * A re-attribution passes BOTH heads — the source can now afford what it could not, and the
+   * target may not be able to absorb what it just received.
+   */
+  private async evaluateHeads(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    heads: readonly string[],
+    raisedBy: HeadroomMover,
+  ): Promise<void> {
+    await this.budget.evaluate(tx, projectId, actor.actorId, heads, raisedBy);
+  }
 
   /** Off-pilot this whole surface does not exist: the caller's transaction is untouched (§D). */
   async isActive(tx: Prisma.TransactionClient, projectId: string): Promise<boolean> {
@@ -111,6 +135,7 @@ export class CommercialParticipant {
         },
       });
     }
+    await this.evaluateHeads(tx, projectId, actor, rows.map((r) => r.costHeadCode), 'commitment');
   }
 
   /**
@@ -137,6 +162,7 @@ export class CommercialParticipant {
   ): Promise<void> {
     if (rows.length === 0) return;
     this.assertAttributeAuthority(actor);
+    const touched: string[] = [];
     for (const row of rows) {
       const active = await this.activeFor(tx, projectId, row.from);
       const code = row.costHeadCode ?? active?.costHeadCode;
@@ -156,7 +182,12 @@ export class CommercialParticipant {
           createdById: actor.actorId,
         },
       });
+      touched.push(code);
+      if (active) touched.push(active.costHeadCode);
     }
+    // §B: a re-attribution recomputes BOTH the source and the target. Only recomputing the target
+    // leaves the source permanently flagged for an obligation it no longer carries.
+    await this.evaluateHeads(tx, projectId, actor, touched, 'reattribution');
   }
 
   /**
@@ -174,10 +205,17 @@ export class CommercialParticipant {
   ): Promise<void> {
     if (targets.length === 0) return;
     this.assertAttributeAuthority(actor);
+    const touched: string[] = [];
     for (const target of targets) {
       const active = await this.activeFor(tx, projectId, target);
-      if (active) await this.supersede(tx, projectId, actor, active.id, reason);
+      if (active) {
+        await this.supersede(tx, projectId, actor, active.id, reason);
+        touched.push(active.costHeadCode);
+      }
     }
+    // a cancelled obligation frees headroom — the exception it caused must CLEAR, or the Inbox
+    // keeps an action for a breach that no longer exists
+    await this.evaluateHeads(tx, projectId, actor, touched, 'commitment');
   }
 
   /**

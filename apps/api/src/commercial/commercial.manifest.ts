@@ -49,6 +49,7 @@ export const commercialManifest: ModuleManifest = {
   routes: [
     'POST /projects/:projectId/commercial/cost-heads',
     'POST /projects/:projectId/commercial/attributions',
+    'POST /projects/:projectId/commercial/budget',
   ],
   permissions: ['pmc'],
 };

@@ -24,6 +24,8 @@ export const COMMERCIAL_CAPABILITY = 'commercial';
 export const COMMERCIAL_COMMANDS = [
   'commercial.costHead.define',
   'commercial.attribution.reattribute',
+  // Phase 5 Task 2 (§B) — one command for v1 and every revision; the chain is immutable.
+  'commercial.budget.set',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -31,6 +33,8 @@ export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 export const COMMERCIAL_QUERIES = [
   'commercial.costHeads',
   'commercial.attributions',
+  // Phase 5 Task 2 — BUDGET/COMMITTED per head plus any OPEN over-budget exception.
+  'commercial.budget',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 

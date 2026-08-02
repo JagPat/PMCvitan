@@ -7,6 +7,9 @@ import { CommercialParticipant } from '../commercial/commercial.participant';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from './capabilities.service';
 import { ProcurementQuery } from '../procurement/procurement.query';
 import { OrgsParticipant } from '../orgs/orgs.participant';
+import { InventoryQuery } from '../inventory/inventory.query';
+import { CommercialBudgetQuery } from '../commercial/commercial-budget.query';
+import { CommercialBudgetService } from '../commercial/commercial-budget.service';
 import { LabourRequirementQuery } from '../labour/labour.query';
 import type { CommercialActivationPlan } from '@vitan/shared';
 
@@ -59,9 +62,16 @@ async function main(): Promise<void> {
         labourLines: parsed.labourLines ?? [],
         reason: parsed.reason ?? f.reason,
       };
+      // the activation path constructs its own graph (no Nest container in a CLI)
+      const capabilitiesService = new CapabilitiesService(prisma);
+      const budgetService = new CommercialBudgetService(
+        prisma,
+        capabilitiesService,
+        new CommercialBudgetQuery(new ProcurementQuery(prisma), new LabourRequirementQuery(prisma), new InventoryQuery(prisma)),
+      );
       const activation = new CommercialActivationService(
         prisma,
-        new CommercialParticipant(new CapabilitiesService(prisma)),
+        new CommercialParticipant(capabilitiesService, budgetService),
         new ProcurementQuery(prisma),
         new LabourRequirementQuery(prisma),
         new OrgsParticipant(),

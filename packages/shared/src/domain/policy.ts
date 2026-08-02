@@ -91,6 +91,10 @@ export const ROLE_POLICY = {
   // with the facts it guards in Tasks 5–6.
   'commercial.manage': ['pmc'],
   'commercial.attribute': ['pmc'],
+  // Phase 5 Task 2 (§B) — setting or revising a budget is the act that decides how much a cost
+  // head may carry, so it is pmc authority alongside `commercial.manage`. A budget GATES nothing,
+  // so there is no separate approval role: exceeding it raises an exception, never a refusal.
+  'commercial.budget.manage': ['pmc'],
   'commercial.read': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
