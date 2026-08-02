@@ -12,12 +12,12 @@ narrative and may lag behind reality.
 ```yaml
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
-task: 1
-task_state: merged
-work_item: none
-reviewed_merge: 3ae5591
-open_pr: none
-next_task: phase-5-task-2
+task: 2
+task_state: in_progress
+work_item: phase-5-task-2
+reviewed_merge: edb7f08
+open_pr: 270
+next_task: phase-5-task-3
 blocking_directive: none
 updated: 2026-08-01
 ```
@@ -77,7 +77,7 @@ deferral ledger — a task PR must carry its section forward rather than re-deri
 | Task | Summary | State |
 |---|---|---|
 | 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | merged — PR #268 at `main` `3ae5591` with a fresh clean Codex +1 on the exact head `e08a6a1` (four correction rounds, twelve findings, all reproduce-first); evidence `docs/reviews/phase-5-t1-commercial-packet.md` + `docs/reviews/pr-268-convergence.md` |
-| 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | not_started |
+| 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | in_progress — draft PR #270 from `main` `edb7f08`; the budget table, its seals and the `COMMITTED` fold are in, the exception and its probes are not |
 | 3 | `Measurement` (§D) + the `revertSignOff` withdrawal guard | not_started — **STOP** |
 | 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | not_started |
 | 5 | Three-way verification (§E) + `verified` + dispute + certification + bound 3 + §H + SoD | not_started — **STOP** |
