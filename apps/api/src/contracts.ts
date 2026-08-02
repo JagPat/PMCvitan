@@ -1343,7 +1343,10 @@ export const takeMeasurementSchema = z
       .regex(/^\d+(\.\d{1,6})?$/u, 'quantity must be a positive decimal with at most 6 places')
       .refine((v) => Number(v) > 0, 'a measurement of zero measures nothing'),
     citedOutputId: z.string().min(1),
-    measuredOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u).optional(),
+    // the SHARED civil-date schema, not a shape regex: `2026-02-31` is well-shaped and impossible,
+    // and letting it through means the service's `fromIsoCivilDate` throws a plain Error — a 500
+    // for what is plainly a bad request. Boundary validation belongs at the boundary.
+    measuredOn: isoCivilDateSchema.optional(),
     evidenceMediaId: z.string().min(1).optional(),
     reason: z.string().trim().min(1).max(1000).optional(),
   })

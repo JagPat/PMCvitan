@@ -2,6 +2,9 @@
 
 **Branch** `claude/phase5-task3` · **base** `main` `96b0713`
 
+**Convergence audit** `docs/reviews/pr-272-convergence.md` (two finding-bearing heads, seven
+findings, two roots — including the honest record that round 1's own fix created round 2's finding)
+
 **§D is carried forward VERBATIM** from `claude/phase5-planning` @ `a4d469b`, byte-identity verified
 by diff against the source revision. The plan mandates carrying rather than re-deriving; re-deriving
 is what produced twenty review rounds on the plan itself.
@@ -85,6 +88,21 @@ evidence is that the number recorded on the day cannot change. A correction is a
 | 5 | Additive migrations | one new table, `CREATE`-only, closing row-free ABORT |
 | 6 | Isolation proven against PostgreSQL | `upgrade-proof.sh` executes the Task-3 assertions on the migrated legacy database |
 
+## Codex round 2 — two findings, one of them mine to have created
+
+**R6 (P1).** The measured floor was on close-short only, and **round 1's own fix is what made
+`defaultCapacity` need it**: once `defaulted` maps to a live authority of 0, defaulting silently does
+what close-short is refused for. A fix that changes what a value MEANS changes which writers are
+subject to the rules that read it — the same shape as PR #270's root B, one task later.
+
+The operational consequence is stated in the code rather than left to be discovered: once real work
+has been measured against a line, a supplier walking away is recorded as a CLOSE-SHORT (which keeps
+the committed portion), not a default. `default` is for a commitment that delivered nothing anyone
+measured; if the work is being disclaimed rather than kept, the measurement is corrected first.
+
+**R7 (P2).** `measuredOn` accepted a well-shaped impossible date (`2026-02-31`), so the shared
+parser threw a plain `Error` — a 500 for a plainly bad request. It now uses `isoCivilDateSchema`.
+
 ## Codex round 1 — five findings, one shape
 
 All five were real and four were P1. What they share is worth naming, because it is the same class
@@ -148,9 +166,9 @@ is what went wrong twice in PR #270.
 | Gate | Result |
 |---|---|
 | `pnpm check` | **EXIT 0** — web 543/543, API 716/716, build clean |
-| `phase5-t3-measurement.test.ts` | **14/14**, and **proven RED**: disabling the five §D bounds and both guards fails six of the original nine; reverting the five round-1 fixes fails all five of their probes |
+| `phase5-t3-measurement.test.ts` | **16/16**, and **proven RED**: disabling the five §D bounds and both guards fails six of the original nine; reverting the five round-1 fixes fails all five of their probes, and the two round-2 fixes fail both of theirs |
 | `upgrade-proof.sh` | **PASSED** — the table ROW-FREE over the legacy fixture, the material-column absence asserted, the `measurement` label accepted, and three forgeries rejected on the migrated DB |
-| Full integration suite, migrated + UNSEEDED DB | **75 files / 754 tests passed** |
+| Full integration suite, migrated + UNSEEDED DB | **75 files / 756 tests passed** |
 
 ## Not in this PR
 

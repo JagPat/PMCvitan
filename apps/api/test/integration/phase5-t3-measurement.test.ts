@@ -13,6 +13,7 @@ import { CommercialMeasurementService } from '../../src/commercial/commercial-me
 import { CommercialBudgetQuery } from '../../src/commercial/commercial-budget.query';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
+import { takeMeasurementSchema } from '../../src/contracts';
 
 /**
  * Phase 5 Task 3 — §D MEASUREMENT, proven live against PostgreSQL, reproduce-first.
@@ -528,6 +529,41 @@ describe('Phase 5 Task 3 — §D measurement (live PG)', () => {
     expect((await measurement.read(projectId, poLineId, pmc(projectId))).measured).toBe('0');
     await t.prisma.$transaction((tx) => activityParticipant.revertSignOff(tx, { projectId, activityId }));
     expect((await t.prisma.activity.findFirstOrThrow({ where: { id: activityId } })).status).toBe('in_progress');
+  });
+
+  it('R6 (§D/§0b): the measured floor covers DEFAULT too, not just close-short', async () => {
+    // Round 1's own fix created this: once `defaulted` maps to a live authority of 0, defaulting
+    // cuts authority exactly as close-short does — and the floor was on only one of the two sites.
+    const { projectId, activityId, poLineId, outputId } = await measurableLine({ orderedQty: 1, workedWorkers: 1 });
+    await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId));
+    const commitment = await t.prisma.capacityCommitment.findFirstOrThrow({ where: { projectId, poLineId } });
+
+    // defaulting would take the live authority to 0 while an immutable 1-shift measurement stands,
+    // leaving the budget carrying received-not-billed value for work no live order authorises
+    await expect(
+      labourCommercial.defaultCapacity(projectId, commitment.id, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    expect((await t.prisma.capacityCommitment.findFirstOrThrow({ where: { id: commitment.id } })).status).not.toBe('defaulted');
+
+    // the ordering the guard insists on: disclaim the work first, THEN the default is free
+    const row = await t.prisma.measurement.findFirstOrThrow({ where: { projectId, labourPoLineId: poLineId } });
+    await measurement.correct(projectId, { measurementId: row.id, quantity: '-1', reason: 'supplier never actually attended' }, pmc(projectId));
+    await labourCommercial.defaultCapacity(projectId, commitment.id, pmc(projectId));
+    expect((await t.prisma.capacityCommitment.findFirstOrThrow({ where: { id: commitment.id } })).status).toBe('defaulted');
+  });
+
+  it('R7 (§A): an impossible civil date is a 400 at the boundary, never a 500 from the parser', async () => {
+    // `2026-02-31` is well-SHAPED and impossible. A shape regex lets it through and the service's
+    // `fromIsoCivilDate` then throws a plain Error — an internal error for a plainly bad request.
+    const { projectId, activityId, poLineId, outputId } = await measurableLine({ orderedQty: 1, workedWorkers: 1 });
+    const parsed = takeMeasurementSchema.safeParse({
+      labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId, measuredOn: '2026-02-31',
+    });
+    expect(parsed.success).toBe(false);
+    // …and a REAL date still parses, so the schema is precise rather than merely strict
+    expect(takeMeasurementSchema.safeParse({
+      labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId, measuredOn: '2026-02-28',
+    }).success).toBe(true);
   });
 
   // ── §D authority + the COMMITTED consumption term ─────────────────────────────────────────────

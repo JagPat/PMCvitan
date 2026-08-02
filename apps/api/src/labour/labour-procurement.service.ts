@@ -1206,6 +1206,19 @@ export class LabourProcurementService {
         // F1 — a defaulted commitment RELEASES its line's committed progress; the version status is
         // recomputed so the freed slice can be re-procured (a terminal PO version is left untouched).
         const defaulted = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, select: { poLineId: true, poLine: { select: { poVersionId: true, requisitionLineId: true, requisitionId: true } } } });
+        // Codex round-2 P1 — the measured floor belongs on EVERY write that cuts a line's live
+        // authority, and round-1's own fix is what made this one of them: once `defaulted` maps to
+        // a live authority of 0, defaulting silently does what close-short is refused for. §0b's
+        // rule is "same rule, every site", and putting it on one site was the failure.
+        //
+        // The operational consequence, stated rather than hidden: once real work has been measured
+        // against a line, a supplier walking away is recorded as a CLOSE-SHORT — which keeps the
+        // committed portion — not as a default. `default` is for a commitment that delivered
+        // nothing anyone measured. If the work is being disclaimed rather than kept, correct the
+        // measurement first and the default is then free.
+        await this.commercial.assertOrderedNotBelowMeasured(
+          tx, projectId, [{ labourPoLineId: defaulted.poLineId, orderedPersonShiftQty: 0 }],
+        );
         await tx.labourPurchaseOrderLine.updateMany({ where: { projectId, id: defaulted.poLineId }, data: { committedQty: 0 } });
         await this.recomputeVersionStatus(tx, projectId, defaulted.poLine.poVersionId);
         await this.evaluateBudgetForLine(tx, projectId, actor, user.role, defaulted.poLineId);
