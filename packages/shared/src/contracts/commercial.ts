@@ -32,6 +32,19 @@ export const COMMERCIAL_COMMANDS = [
   // field to decide which rules apply.
   'commercial.measurement.take',
   'commercial.measurement.correct',
+  // Phase 5 Task 4 (§F) — the vendor's CLAIM and the lifecycle up to `under-verification`.
+  // `record` creates the bill at `draft` with its immutable v1 lines; `submit` is where §G
+  // bounds 1–2 are evaluated and the claim becomes live OR disputed; `beginVerification` opens
+  // the §E check that lands in Task 5; `amend` issues a NEW version (and RESOLVES a disputed
+  // one); `reject` is the attributable judgement that a claim is not owed. There is no
+  // `dispute` command: a dispute is never something a person decides about a claim, it is what
+  // happens when the EVIDENCE under one moves, so it is written from the withdrawal guards
+  // inside the transaction that withdrew it.
+  'commercial.bill.record',
+  'commercial.bill.submit',
+  'commercial.bill.beginVerification',
+  'commercial.bill.amend',
+  'commercial.bill.reject',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -43,6 +56,9 @@ export const COMMERCIAL_QUERIES = [
   'commercial.budget',
   // Phase 5 Task 3 — the §D measurement register for a labour PO line, with its folded total.
   'commercial.measurements',
+  // Phase 5 Task 4 — the vendor claims of a project, and ONE claim with its version history.
+  'commercial.bills',
+  'commercial.bill',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -185,4 +201,121 @@ export interface MeasurementRegisterDto {
   liveAuthorityPersonShiftQty: number;
   /** whether this line's supplier commitment was defaulted (why the live authority can be `0`) */
   defaulted: boolean;
+}
+
+/**
+ * Phase 5 Task 4 (§F) — the vendor bill LIFECYCLE.
+ *
+ * Task 4 can only REACH the first six. `verified` and everything past it belong to the task that
+ * produces their evidence: `verified` is the state whose safety IS the §E three-way verdict, so
+ * shipping the transition here while §E lands in Task 5 would let a bill reach it before the
+ * ordered/accepted/billed comparison exists — and pulling §E forward would bypass the Task-5
+ * review stop that guards it. They are named here because §0's LIVE rule is defined over the
+ * WHOLE set, and the billed folds must keep meaning the same thing when Task 5 adds the arrows.
+ */
+export const VENDOR_BILL_STATUSES = [
+  'draft',
+  'submitted',
+  'under-verification',
+  'disputed',
+  'resolved',
+  'rejected',
+  // ── not reachable at the Task-4 tree ──
+  'verified',
+  'certified',
+  'approved-for-payment',
+  'part-paid',
+  'paid',
+] as const;
+export type VendorBillStatus = (typeof VENDOR_BILL_STATUSES)[number];
+
+/**
+ * §0's LIVE rule for the billed sets, in ONE place: the bill version is not superseded AND the
+ * status is none of `draft`, `rejected`, an unresolved `disputed`, or a terminal `resolved`.
+ *
+ * `resolved` is a RELEASED terminal state — the claim it recorded has been settled by a corrected
+ * version — so counting it would fold the old claim alongside the new one. `disputed` is excluded
+ * because §E's own exception path is what creates it: a 120-unit claim against 100 accepted that
+ * stayed live would violate bound 2 on the spot and reserve 120 of 100 units, so the honest
+ * corrected 100-unit claim could never be submitted — the dispute would block its own resolution.
+ * NOT "`submitted` only": a first claim advancing to `verified` would drop out of the fold and a
+ * second claim for the same quantity would pass.
+ */
+export const BILL_STATUSES_NOT_LIVE = ['draft', 'rejected', 'disputed', 'resolved'] as const;
+export function isLiveBillStatus(status: string): boolean {
+  return !(BILL_STATUSES_NOT_LIVE as readonly string[]).includes(status);
+}
+
+/** One immutable claim line. Every amount is a decimal STRING — §A forbids a float64 round trip. */
+export interface VendorBillLineDto {
+  id: string;
+  type: 'material' | 'labour';
+  /** EXACTLY ONE of the two is set — a PG XOR CHECK, plus a `type` discriminator that must agree */
+  poLineId: string | null;
+  labourPoLineId: string | null;
+  /** base units for material, person-shifts for labour — the PO line's own unit */
+  quantity: string;
+  rate: string;
+  taxAmount: string;
+  freightAmount: string;
+  /** DERIVED = round(rate × quantity, 2) + tax + freight, re-derived by a DB CHECK */
+  amount: string;
+}
+
+/** One immutable claim VERSION. An amendment issues a new one retaining this verbatim. */
+export interface VendorBillVersionDto {
+  id: string;
+  version: number;
+  supersedesVersion: number | null;
+  claimedAmount: string;
+  lines: VendorBillLineDto[];
+  createdAt: string;
+  createdById: string;
+  supersededAt: string | null;
+  supersededById: string | null;
+  supersedeReason: string | null;
+  /** whether this version's lines are in the billed folds right now (§0 LIVE) */
+  live: boolean;
+}
+
+/** One vendor claim: its frozen identity, its lifecycle state and its whole version history. */
+export interface VendorBillDto {
+  id: string;
+  vendorId: string;
+  /** the duplicate-claim key, frozen after write (§0b) */
+  vendorBillNumber: string;
+  documentDate: string;
+  status: VendorBillStatus;
+  statusChangedAt: string;
+  /** why the claim left the live set — always present on `disputed` and `rejected` */
+  statusReason: string | null;
+  createdAt: string;
+  createdById: string;
+  versions: VendorBillVersionDto[];
+}
+
+/** The `commercial.bills` read: every claim on the project, newest first. */
+export interface VendorBillListDto {
+  bills: VendorBillDto[];
+}
+
+/**
+ * The §G bound picture for ONE purchase-order line — what a claim on it may still draw.
+ *
+ * Every field is a §0 set by name, so a reader never re-derives a filter: `billed` is
+ * `BILLED_QTY(poLine)` over LIVE claim lines, `ordered` is bound 1's right-hand side
+ * (`qty + approvedOverage` for material, `personShiftQty` for labour — a labour line has no
+ * overage column), and `evidence` is bound 2's (`ACCEPTED` for material, `MEASURED` for labour).
+ */
+export interface BillableLineDto {
+  type: 'material' | 'labour';
+  poLineId: string;
+  vendorId: string;
+  /** the PO line's own unit — base units for material, person-shifts for labour */
+  uom: string;
+  ordered: string;
+  evidence: string;
+  billed: string;
+  /** `min(ordered, evidence) − billed`, floored at zero: what a further claim may still cover */
+  billable: string;
 }

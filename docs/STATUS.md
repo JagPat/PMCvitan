@@ -13,10 +13,10 @@ narrative and may lag behind reality.
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
 task: 4
-task_state: not_started
+task_state: in_progress
 work_item: phase-5-task-4
 reviewed_merge: 8833744
-open_pr: none
+open_pr: PENDING
 next_task: phase-5-task-5
 blocking_directive: none
 updated: 2026-08-02
@@ -109,7 +109,7 @@ deferral ledger — a task PR must carry its section forward rather than re-deri
 | 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | merged — PR #268 at `main` `3ae5591` with a fresh clean Codex +1 on the exact head `e08a6a1` (four correction rounds, twelve findings, all reproduce-first); evidence `docs/reviews/phase-5-t1-commercial-packet.md` + `docs/reviews/pr-268-convergence.md` |
 | 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | merged — PR #270 at `main` `b480e0e` with a fresh clean Codex +1 on the exact head `0a6b6d7` (four correction rounds, thirteen findings, all reproduce-first); evidence `docs/reviews/phase-5-t2-budget-packet.md` + `docs/reviews/pr-270-convergence.md` |
 | 3 | `Measurement` (§D) + the `revertSignOff` withdrawal guard | merged — PR #272 at `main` `8833744` with a fresh clean Codex +1 on the exact head `236e7c3` through the `codex-current-head` gate (FOUR correction rounds, fifteen findings, every one fixed forward with a reproduce-first RED→GREEN probe); evidence `docs/reviews/phase-5-t3-measurement-packet.md` + `docs/reviews/pr-272-convergence.md`. **The plan's post-Task-3 STOP — a narrow review before any bill can consume a measurement — is SATISFIED by that independent review.** The audit names four roots; round 4's headline is that round 3 stated closure C and applied it only where the reviewer pointed, so round 4 SWEEPS every reference on the table instead. Three probes in this PR passed while proving nothing (a vacuous timezone probe, three §D upgrade-proof rejections firing on the wrong FK, and two identity probes comparing across projects) — all caught by running the RED proof rather than assuming it, and closed once as a rule: a rejection is only evidence when an otherwise-identical case is ACCEPTED |
-| 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | not_started |
+| 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | in_progress — the §F claim (root + immutable versions + XOR-sealed lines), the CAS lifecycle up to `under-verification` plus `disputed`/`resolved`/`rejected`, §G bounds 1–2 re-derived under the owning module's row lock AND sealed by a DEFERRABLE INITIALLY DEFERRED constraint trigger firing from five sites, the §F vendor pinning on both PO-line snapshots with a diagnostic-first backfill, and BOTH withdrawal guards (acceptance side through `inventory`, measurement side through the correction path). §F/§G carried into the plan VERBATIM from `a4d469b`. Evidence: `docs/reviews/phase-5-t4-vendor-bill-packet.md` |
 | 5 | Three-way verification (§E) + `verified` + dispute + certification + bound 3 + §H + SoD | not_started — **STOP** |
 | 6 | Payment approval + payment records + reversals + bounds 4–5 + approval limits | not_started |
 | 7 | Cash forecast (§J) + frontend (§M) + pilot chain + consolidated packet | not_started — **FINAL STOP** |

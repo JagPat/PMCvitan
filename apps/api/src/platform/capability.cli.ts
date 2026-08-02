@@ -12,6 +12,11 @@ import { CommercialBudgetQuery } from '../commercial/commercial-budget.query';
 import { CommercialMeasurementQuery } from '../commercial/commercial-measurement.query';
 import { CommercialBudgetService } from '../commercial/commercial-budget.service';
 import { LabourRequirementQuery } from '../labour/labour.query';
+import { LabourRequirementParticipant } from '../labour/labour.participant';
+import { ProcurementParticipant } from '../procurement/procurement.participant';
+import { RequirementsQueryService } from '../activities/requirements.query';
+import { CommercialBillService } from '../commercial/commercial-bill.service';
+import { CommercialBillQuery } from '../commercial/commercial-bill.query';
 import type { CommercialActivationPlan } from '@vitan/shared';
 
 /**
@@ -72,7 +77,21 @@ async function main(): Promise<void> {
       );
       const activation = new CommercialActivationService(
         prisma,
-        new CommercialParticipant(capabilitiesService, budgetService),
+        // Phase 5 Task 4 — the participant now also carries the vendor-claim withdrawal guards,
+        // so the CLI's hand-built graph gains the two collaborators they need. Activation itself
+        // never reaches them (it attributes existing PO lines and writes no claim), but the
+        // constructor is the constructor: a CLI that builds a DIFFERENT object from the one the
+        // container builds is how a code path stops being the path that was tested.
+        new CommercialParticipant(
+          capabilitiesService,
+          budgetService,
+          new InventoryQuery(prisma),
+          new CommercialBillService(
+            prisma, capabilitiesService, new ProcurementParticipant(new RequirementsQueryService()),
+            new LabourRequirementParticipant(), new InventoryQuery(prisma),
+            new CommercialBillQuery(), new CommercialMeasurementQuery(),
+          ),
+        ),
         new ProcurementQuery(prisma),
         new LabourRequirementQuery(prisma),
         new OrgsParticipant(),

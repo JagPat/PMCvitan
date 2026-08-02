@@ -1,19 +1,28 @@
 import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
 import {
+  amendVendorBillSchema,
   correctMeasurementSchema,
   defineCostHeadSchema,
   reattributeSchema,
+  recordVendorBillSchema,
+  rejectVendorBillSchema,
   setBudgetSchema,
   takeMeasurementSchema,
+  vendorBillStepSchema,
+  type AmendVendorBillInput,
   type CorrectMeasurementInput,
   type DefineCostHeadInput,
   type ReattributeInput,
+  type RecordVendorBillInput,
+  type RejectVendorBillInput,
   type SetBudgetInput,
   type TakeMeasurementInput,
+  type VendorBillStepInput,
 } from '../contracts';
 import { CommercialService } from './commercial.service';
 import { CommercialBudgetService } from './commercial-budget.service';
 import { CommercialMeasurementService } from './commercial-measurement.service';
+import { CommercialBillService } from './commercial-bill.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
@@ -38,6 +47,7 @@ export class CommercialController {
     private readonly commercial: CommercialService,
     private readonly budget: CommercialBudgetService,
     private readonly measurement: CommercialMeasurementService,
+    private readonly bills: CommercialBillService,
   ) {}
 
   /** §B — set or REVISE the live budget for one cost head. One command for both: v1 and a
@@ -129,5 +139,89 @@ export class CommercialController {
   @RolesFor('commercial.read')
   listAttributions(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
     return this.commercial.listAttributions(projectId, user);
+  }
+
+  // ── Phase 5 Task 4 (§F/§G) — the vendor claim ────────────────────────────────────────────────
+  //
+  // Five commands, because §F's arrows carry different authority questions. Recording, amending
+  // and rejecting a claim are the `commercial.bill` data-entry surface; opening verification is
+  // `commercial.verify`. There is deliberately NO `dispute` route: a dispute is never a decision
+  // somebody makes ABOUT a claim, it is what happens when the EVIDENCE under one moves, so it is
+  // written from the withdrawal guards inside the transaction that withdrew it.
+
+  /** §F — record what the vendor claims. It lands at `draft`; nothing is bounded until submit. */
+  @Post('commercial/bills')
+  @RolesFor('commercial.bill')
+  recordBill(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(recordVendorBillSchema)) body: RecordVendorBillInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.bills.record(projectId, body, user, idempotencyKey);
+  }
+
+  /** §G — submit it. This is where bounds 1–2 are evaluated under the ordered line's own lock. */
+  @Post('commercial/bills/submit')
+  @RolesFor('commercial.bill')
+  submitBill(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(vendorBillStepSchema)) body: VendorBillStepInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.bills.submit(projectId, body, user, idempotencyKey);
+  }
+
+  /** §F — open the §E three-way check. The VERDICT is Task 5's; this is only the transition in. */
+  @Post('commercial/bills/begin-verification')
+  @RolesFor('commercial.verify')
+  beginVerification(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(vendorBillStepSchema)) body: VendorBillStepInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.bills.beginVerification(projectId, body, user, idempotencyKey);
+  }
+
+  /** §F — amend into a NEW version retaining the prior verbatim; also RESOLVES a dispute. */
+  @Post('commercial/bills/amend')
+  @RolesFor('commercial.bill')
+  amendBill(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(amendVendorBillSchema)) body: AmendVendorBillInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.bills.amend(projectId, body, user, idempotencyKey);
+  }
+
+  /** §F — a JUDGEMENT that the claim is not owed, with an attributable reason. */
+  @Post('commercial/bills/reject')
+  @RolesFor('commercial.bill')
+  rejectBill(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(rejectVendorBillSchema)) body: RejectVendorBillInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.bills.reject(projectId, body, user, idempotencyKey);
+  }
+
+  @Get('commercial/bills')
+  @RolesFor('commercial.read')
+  listBills(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.bills.list(projectId, user);
+  }
+
+  @Get('commercial/bills/:billId')
+  @RolesFor('commercial.read')
+  readBill(
+    @Param('projectId') projectId: string,
+    @Param('billId') billId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.bills.readOne(projectId, billId, user);
   }
 }

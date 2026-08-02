@@ -38,12 +38,23 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     // the two literals reachable, so the needle is the type rather than a call-site string.
     'commercial.measurement.take': { file: 'commercial/commercial-measurement.service.ts', needle: "'commercial.measurement.take'" },
     'commercial.measurement.correct': { file: 'commercial/commercial-measurement.service.ts', needle: "'commercial.measurement.correct'" },
+    // Task 4 (§F) — the claim lifecycle. `submit`/`beginVerification`/`reject` share ONE
+    // `transition` helper that passes the caller's `commandType` straight to `executeCommand`,
+    // so — exactly as for the two measurement writes — the needle is the union member on that
+    // parameter rather than a call-site string.
+    'commercial.bill.record': { file: 'commercial/commercial-bill.service.ts', needle: "commandType: 'commercial.bill.record'" },
+    'commercial.bill.submit': { file: 'commercial/commercial-bill.service.ts', needle: "'commercial.bill.submit'" },
+    'commercial.bill.beginVerification': { file: 'commercial/commercial-bill.service.ts', needle: "'commercial.bill.beginVerification'" },
+    'commercial.bill.amend': { file: 'commercial/commercial-bill.service.ts', needle: "commandType: 'commercial.bill.amend'" },
+    'commercial.bill.reject': { file: 'commercial/commercial-bill.service.ts', needle: "'commercial.bill.reject'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {
     'commercial.costHeads': "Get('commercial/cost-heads')",
     'commercial.attributions': "Get('commercial/attributions')",
     'commercial.budget': "Get('commercial/budget')",
     'commercial.measurements': "Get('commercial/labour-po-lines/:labourPoLineId/measurements')",
+    'commercial.bills': "Get('commercial/bills')",
+    'commercial.bill': "Get('commercial/bills/:billId')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {

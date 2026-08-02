@@ -28,8 +28,16 @@ export const commercialManifest: ModuleManifest = {
   kind: 'domain',
   // Phase 5 Task 2 (§B) — the versioned budget joins the owned set. Read-encapsulated with
   // the rest: `BUDGET(costHead)` is a commercial fold, and nothing outside commercial reads it.
-  ownsModels: ['costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement'],
-  readEncapsulated: ['costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement'],
+  // Phase 5 Task 4 (§F) — the vendor CLAIM joins the owned set, read-encapsulated with the rest:
+  // `BILLED_QTY`/`BILLED_AMOUNT` are commercial folds and nothing outside commercial reads them.
+  ownsModels: [
+    'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
+    'vendorBill', 'vendorBillVersion', 'vendorBillLine',
+  ],
+  readEncapsulated: [
+    'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
+    'vendorBill', 'vendorBillVersion', 'vendorBillLine',
+  ],
   dependsOn: ['procurement', 'inventory', 'labour', 'activities'],
   // `orgs` is the Codex round-1 P1 fix: §L activation has no request token, so it resolves the
   // operator's LIVE project standing through `OrgsParticipant.hasProjectRoleStanding` rather than
@@ -52,6 +60,12 @@ export const commercialManifest: ModuleManifest = {
     'POST /projects/:projectId/commercial/budget',
     'POST /projects/:projectId/commercial/measurements',
     'POST /projects/:projectId/commercial/measurements/corrections',
+    // Phase 5 Task 4 (§F) — the vendor claim lifecycle up to `under-verification`
+    'POST /projects/:projectId/commercial/bills',
+    'POST /projects/:projectId/commercial/bills/submit',
+    'POST /projects/:projectId/commercial/bills/begin-verification',
+    'POST /projects/:projectId/commercial/bills/amend',
+    'POST /projects/:projectId/commercial/bills/reject',
   ],
   permissions: ['pmc'],
 };

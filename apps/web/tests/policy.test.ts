@@ -62,6 +62,10 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // Phase 5 Task 3 (§D) — a measurement is a BILLING fact taken against signed-off work, so it
   // is the engineer-and-above surface the site already trusts to record what happened.
   'commercial.measure': ['pmc', 'engineer'],
+  // Phase 5 Task 4 (§F/§I) — recording/amending/rejecting a vendor claim is the engineer-and-above
+  // data-entry surface; opening the §E verification on one is pmc.
+  'commercial.bill': ['pmc', 'engineer'],
+  'commercial.verify': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],

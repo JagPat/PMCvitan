@@ -100,6 +100,19 @@ export const ROLE_POLICY = {
   // is the engineer-and-above surface the site already trusts to record what happened, not an
   // org-admin one. Task 5's SoD rule then keeps the measurer out of the certifier's seat.
   'commercial.measure': ['pmc', 'engineer'],
+  // Phase 5 Task 4 (§F/§I) — recording, amending and REJECTING a vendor's claim.
+  //
+  // §I's permission list does not name this one, and Task 4 adds it rather than borrowing
+  // `commercial.read` or silently reusing `commercial.certify`, because §I's own rule is that
+  // "a permission a route needs and the manifest does not declare is not a gap in the docs; it
+  // is an unauthorized write path". Recording what a counterparty claims is data entry against
+  // site-adjacent evidence, so it is the same engineer-and-above surface as measurement — the
+  // authority that MATTERS is `commercial.verify` below and, from Task 5, certification.
+  'commercial.bill': ['pmc', 'engineer'],
+  // §I — opening the §E three-way check on a claim. Task 4 ships only the transition INTO
+  // verification (`submitted → under-verification`); the VERDICT and everything it authorises
+  // land in Task 5 with the evidence that makes them safe.
+  'commercial.verify': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

@@ -87,6 +87,10 @@ const MODEL_OWNER: Record<string, string> = {
   budgetException: 'commercial',
   // Phase 5 Task 3 (§D) — the measurement, a commercial-owned BILLING fact
   measurement: 'commercial',
+  // Phase 5 Task 4 (§F) — the vendor CLAIM: root, immutable versions, immutable lines
+  vendorBill: 'commercial',
+  vendorBillVersion: 'commercial',
+  vendorBillLine: 'commercial',
   activityWorkOutput: 'activities',
   // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
@@ -211,6 +215,12 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // bounds through `LabourQuery`, so no foreign table is touched. Emits no domain event: a
   // measurement is an internal billing fact whose external effect arrives with the bill (Task 4).
   'commercial/commercial-measurement.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
+  // Phase 5 Task 4 — the §F vendor-claim write path. Writes ONLY the commercial-owned
+  // `VendorBill`/`VendorBillVersion`/`VendorBillLine`; the ORDERED side it bounds a claim against
+  // is read AND LOCKED through each PO line's owning participant, and the accepted/measured side
+  // through the owning query contracts — never a foreign table read. Task 4 emits NO domain
+  // event: a claim has no external effect until Task 5's verification makes it payable.
+  'commercial/commercial-bill.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
   // Phase 4 Task 2 — the labour COMMERCIAL chain (§F). Writes ONLY labour-owned commercial tables;
   // the reused procurement Vendor/ProjectVendor party is read/validated THROUGH ProcurementParticipant
   // (never a direct foreign write/read — Labour stays a LEAF). requisition submit/approve +
@@ -410,6 +420,12 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('commercial/attributions')",
     "Post('commercial/measurements')",
     "Post('commercial/measurements/corrections')",
+    // Phase 5 Task 4 (§F) — the vendor-claim lifecycle up to `under-verification`
+    "Post('commercial/bills')",
+    "Post('commercial/bills/submit')",
+    "Post('commercial/bills/begin-verification')",
+    "Post('commercial/bills/amend')",
+    "Post('commercial/bills/reject')",
   ],
   'labour/labour.controller.ts': [
     "Post('labour/trades')",
@@ -533,12 +549,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('152 mutating routes total (§4 command inventory; +2 Phase-5 Task-3 measurement take/correct)', () => {
+    it('157 mutating routes total (§4 command inventory; +5 Phase-5 Task-4 §F vendor-claim lifecycle)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(152);
+      expect(total).toBe(157);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(152);
+      expect(live).toBe(157);
     });
   });
 

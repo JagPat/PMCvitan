@@ -2,7 +2,9 @@ import { ConflictException, ForbiddenException, Injectable } from '@nestjs/commo
 import { Prisma } from '@prisma/client';
 import { ROLE_POLICY } from '@vitan/shared';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
+import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialBudgetService, type HeadroomMover } from './commercial-budget.service';
+import { CommercialBillService } from './commercial-bill.service';
 
 /** The acting identity a lifecycle site passes in; the participant never re-derives it. */
 export interface AttributionActor {
@@ -52,6 +54,8 @@ export class CommercialParticipant {
   constructor(
     private readonly capabilities: CapabilitiesService,
     private readonly budget: CommercialBudgetService,
+    private readonly inventory: InventoryQuery,
+    private readonly bills: CommercialBillService,
   ) {}
 
   /**
@@ -276,6 +280,68 @@ export class CommercialParticipant {
         );
       }
     }
+  }
+
+  /**
+   * Phase 5 Task 4 (§E/§G/§K) — WITHDRAWAL GUARD, INVENTORY side. `stock.reverse` asks this when
+   * it withdraws ACCEPTED material, so a live claim can never be left standing above the evidence
+   * behind it.
+   *
+   * §K assigns this guard to §E, and it ships HERE for the reason the plan's own task table
+   * gives: Task 4 is the task that first creates a LIVE bill, so it is the first tree in which
+   * accept 100 → bill 100 → reverse the acceptance can leave `BILLED_QTY = 100 > ACCEPTED = 0`.
+   * A guard that arrived with §E would leave a whole task in which that state is reachable.
+   *
+   * The disposition is a DISPUTE, not a refusal, and the difference is the whole design. §E
+   * refuses only against a live CERTIFICATE — money someone has already authorised — while an
+   * uncertified claim is disputed and returned for correction. Refusing every reversal under any
+   * live claim would block the store from correcting its own record on the strength of a bill
+   * nobody has verified.
+   *
+   * **At the Task-4 tree there is no certificate, so no refusal arm can be written yet** — the
+   * `certified` status is unreachable until Task 5 ships the §E verdict and the certificate it
+   * produces. What ships here is the half that is real now: the aggregate dispute. Task 5 adds
+   * the refusal in front of it, against the certificate table it introduces.
+   *
+   * Off-pilot this is a no-op, so a non-commercial project's reversal behaves byte-for-byte as it
+   * did before Phase 5.
+   */
+  async assertAcceptanceReversible(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    poLineId: string,
+  ): Promise<void> {
+    if (!(await this.isActive(tx, projectId))) return;
+    // read the evidence AFTER the reversal row is appended — the guard is about the state the
+    // transaction is about to commit, not the one it started from
+    const accepted = (await this.inventory.acceptedFor(tx, projectId, [poLineId])).get(poLineId) ?? new Prisma.Decimal(0);
+    await this.bills.disputeClaimsBeyondEvidence(
+      tx, projectId, 'material', poLineId, accepted,
+      `qty-over-accepted: an acceptance on purchase-order line ${poLineId} was reversed, leaving ${accepted.toString()} base units of accepted evidence`,
+    );
+  }
+
+  /**
+   * Phase 5 Task 4 (§D/§G) — WITHDRAWAL GUARD, MEASUREMENT side. The measurement correction path
+   * asks this after appending a REDUCING delta.
+   *
+   * The task table is explicit about why it belongs here rather than with the measurement:
+   * "Task 3 ships the signed-delta correction route while no `BILLED_QTY` row can exist, so its
+   * guard has only the zero floor; the §D live-claim floor has to ship HERE or measure 100 → bill
+   * 100 live → correct −50 leaves `BILLED_QTY = 100 > MEASURED = 50`." Same rule, both sites
+   * (§0b) — this is the exact twin of the acceptance guard above, in person-shifts.
+   */
+  async assertMeasurementWithdrawable(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    labourPoLineId: string,
+    measured: Prisma.Decimal,
+  ): Promise<void> {
+    if (!(await this.isActive(tx, projectId))) return;
+    await this.bills.disputeClaimsBeyondEvidence(
+      tx, projectId, 'labour', labourPoLineId, measured,
+      `qty-over-accepted: measured work on labour purchase-order line ${labourPoLineId} was corrected down to ${measured.toString()} person-shifts`,
+    );
   }
 
   /** Off-pilot this whole surface does not exist: the caller's transaction is untouched (§D). */

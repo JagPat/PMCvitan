@@ -743,6 +743,50 @@ re-install the canonical function body from the deployed migration file), then r
 functions in its own prerequisite block, so a direct `prisma migrate deploy` that still has the
 correction pending aborts over a hollowed body before touching anything.
 
+## §P5T4. Phase 5 Task-4 vendor pinning — a purchase-order line with no resolvable order (rare)
+
+`20270420000000_phase5_t4_vendor_bill` copies `purchaseOrderId`/`vendorId` onto every existing
+`PurchaseOrderLine` and `LabourPurchaseOrderLine` from the version→root chain each row already
+references, so a vendor claim can be FK-bound to its counterparty. It is diagnostic-first and aborts
+rather than inventing a vendor:
+
+> `Phase 5 Task 4 vendor pinning ABORTED: N material and M labour purchase-order line(s) cannot be resolved to a purchase order and vendor from their own version/root chain (sample: …)`
+
+**What it means.** A named line's `poVersionId` does not resolve to a `PurchaseOrderVersion`, or that
+version's `poId` does not resolve to a `PurchaseOrder`. Both hops are FK-protected in the current
+schema, so this is a broken chain — not a business state a migration should paper over. The line
+records an order that, as far as the database is concerned, does not exist; guessing a vendor for it
+would attribute a future payable to a counterparty nobody chose.
+
+**What to do.**
+
+1. List them (the sample in the abort names up to five of each; this is the full set):
+
+   ```sql
+   SELECT 'material' AS kind, l."projectId", l."id", l."poVersionId"
+     FROM "PurchaseOrderLine" l
+     LEFT JOIN "PurchaseOrderVersion" v ON v."projectId" = l."projectId" AND v."id" = l."poVersionId"
+     LEFT JOIN "PurchaseOrder" p ON p."projectId" = v."projectId" AND p."id" = v."poId"
+    WHERE v."id" IS NULL OR p."id" IS NULL
+   UNION ALL
+   SELECT 'labour', l."projectId", l."id", l."poVersionId"
+     FROM "LabourPurchaseOrderLine" l
+     LEFT JOIN "LabourPurchaseOrderVersion" v ON v."projectId" = l."projectId" AND v."id" = l."poVersionId"
+     LEFT JOIN "LabourPurchaseOrder" p ON p."projectId" = v."projectId" AND p."id" = v."poId"
+    WHERE v."id" IS NULL OR p."id" IS NULL;
+   ```
+
+2. For each, decide with the project's PMC what the line actually is, and repair the CHAIN — restore
+   the missing version or order row from backup, or, if the line is genuinely orphaned test data,
+   remove it through the same maintenance path any other append-only row would need. Do **not**
+   write `vendorId` onto the line by hand: the migration adds two composite FKs that re-derive it
+   from the chain, so a hand-written value that disagrees will be rejected anyway.
+3. Re-run the deploy. The migration is retry-safe: every statement is guarded, and the backfill only
+   touches rows whose pinning columns are still null.
+
+**Nothing else in this migration can abort.** The three vendor-bill tables are additive and the
+closing check asserts they are row-free — a migration that creates no claim cannot leave one behind.
+
 ## 1. Drain all OLD application instances
 
 Stop routing to and shut down every instance running the PREVIOUS build. The single-sender

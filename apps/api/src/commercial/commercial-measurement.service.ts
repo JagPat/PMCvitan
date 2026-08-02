@@ -14,6 +14,7 @@ import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabili
 import { ActivityParticipant } from '../activities/activity.participant';
 import { LabourRequirementQuery } from '../labour/labour.query';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
+import { CommercialBillQuery } from './commercial-bill.query';
 import { CommercialParticipant } from './commercial.participant';
 import type { CorrectMeasurementInput, TakeMeasurementInput } from '../contracts';
 
@@ -64,6 +65,7 @@ export class CommercialMeasurementService {
     private readonly activities: ActivityParticipant,
     private readonly labour: LabourRequirementQuery,
     private readonly measured: CommercialMeasurementQuery,
+    private readonly bills: CommercialBillQuery,
     private readonly participant: CommercialParticipant,
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
@@ -135,11 +137,20 @@ export class CommercialMeasurementService {
   /**
    * §D — a CORRECTION is a new row carrying a SIGNED delta and a reason, never an edit.
    *
-   * The floor is what the fold already SUPPORTS. At this task no bill can exist, so it is zero:
-   * §0 says recording 100 then correcting −150 must be refused, because leaving `MEASURED` at −50
-   * would permanently fail `BILLED_QTY ≤ MEASURED` for work that was actually done. Task 4 raises
-   * the floor to what live CERTIFIED bills have consumed, and adds the row-level freeze — both
-   * ship with the facts that make them meaningful, exactly as this guard ships with the fold.
+   * The floor is what the fold already SUPPORTS. §0's zero floor is the base case — recording 100
+   * then correcting −150 must be refused, because leaving `MEASURED` at −50 would permanently fail
+   * `BILLED_QTY ≤ MEASURED` for work that was actually done.
+   *
+   * Phase 5 Task 4 raises it to the LIVE-CLAIM floor §D states, because this is the first tree in
+   * which a claim can exist: refuse only if the result would fall below `BILLED_QTY` over live
+   * CERTIFIED bills, and otherwise DISPUTE enough live UNCERTIFIED claims for the bound to hold.
+   * An earlier plan revision refused the correction whenever live `BILLED_QTY` would exceed the
+   * new total, which blocks evidence repair on the strength of a bill nobody has verified: measure
+   * 100, a vendor submits a 100-shift claim, the engineer discovers the real figure is 50 — and
+   * the site cannot fix its own record until the vendor's unverified claim is dealt with. §G
+   * already decided this for the material side, where an acceptance reversal disputes live
+   * uncertified claims and refuses only against a live certificate; the measurement path owes the
+   * identical disposition (§0b: same rule, every site).
    *
    * A POSITIVE correction is still a measurement, so it re-checks the EFFORT and ordered caps.
    */
@@ -260,12 +271,26 @@ export class CommercialMeasurementService {
         const before = await this.measuredFor(tx, projectId, row.labourPoLineId);
         const after = before.add(row.quantity);
 
-        // §0 — the fold may never go NEGATIVE. At this task no bill exists, so zero IS the floor
-        // that "what the fold already supports" resolves to (§D).
+        // §0 — the fold may never go NEGATIVE.
         if (after.isNegative()) {
           throw new ConflictException(
             `This correction would take measured work to ${after.toString()} person-shifts; ${before.toString()} were measured and a negative total is not a record of anything`,
           );
+        }
+        // Phase 5 Task 4 (§D) — and it may never fall below what a live CERTIFIED claim has
+        // already consumed. Withdrawing measured work a certificate rests on requires superseding
+        // that certificate first, the same ordering §E requires for accepted material.
+        //
+        // At the Task-4 tree this set is EMPTY by construction — `certified` is unreachable until
+        // Task 5 ships the §E verdict — so the arm cannot fire here and is written over the status
+        // set rather than hardcoded, so Task 5 adds the certificate WITHOUT re-deriving the floor.
+        if (row.quantity.isNegative()) {
+          const certified = await this.bills.certifiedBilledQtyFor(tx, projectId, row.labourPoLineId);
+          if (after.lessThan(certified)) {
+            throw new ConflictException(
+              `This correction would take measured work to ${after.toString()} person-shifts while certified claims consume ${certified.toString()} — supersede the certificate before withdrawing the evidence it rests on`,
+            );
+          }
         }
         // Codex round-1 P1 — a correction is bounded by the ROW IT ADJUSTS, not merely by the
         // line's aggregate. The aggregate alone lets one row's correction eat another's evidence:
@@ -331,6 +356,14 @@ export class CommercialMeasurementService {
         await recordAudit(tx, {
           projectId, actor, action: commandType, entity: 'Measurement', entityId: created.id,
         });
+        // Phase 5 Task 4 (§D/§G) — a REDUCING correction withdraws billing evidence, so live
+        // uncertified claims above the new total are disputed here, in the SAME transaction. The
+        // participant is asked with the POST-correction fold: the guard is about the state this
+        // transaction is committing, not the one it started from. The deferred DB bound seal then
+        // aborts the whole transaction if the disposition left the bound broken.
+        if (row.quantity.isNegative()) {
+          await this.participant.assertMeasurementWithdrawable(tx, projectId, row.labourPoLineId, after);
+        }
         // §B — MEASURED is a `COMMITTED` fold input, so this write is a headroom mover and
         // re-evaluates in its own transaction. As the arithmetic stands it is exposure-NEUTRAL
         // (measurement is hard-capped at the ordered quantity, so the money only changes bucket),
