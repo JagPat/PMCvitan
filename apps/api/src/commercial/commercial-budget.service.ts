@@ -27,6 +27,13 @@ import type { SetBudgetInput } from '../contracts';
  * - `receipt_progress` — recording, rejecting or reversing a receipt moves `receivedQty`, which is
  *   what a CLOSED-SHORT line's released remainder is computed from. Nothing was accepted, so
  *   labelling it `acceptance` would send a PMC looking for a delivery that never happened.
+ * - `measurement` — measured person-shifts are the labour CONSUMPTION term (§D/Task 3). As the
+ *   arithmetic stands this mover is exposure-NEUTRAL and can never actually raise: measurement is
+ *   hard-capped at the ordered `personShiftQty`, so consumed can never exceed
+ *   `committedAmountBase` and the money only changes bucket. It is wired and labelled anyway,
+ *   because the closure's rule is mechanical — every writer of a fold input evaluates — and
+ *   carving out an exception on the strength of my own arithmetic is what went wrong twice in
+ *   Task 2. If labour ever gains an overage path, the mover is already correct.
  *
  * `raisedBy` is the durable explanation a human reads months later, so it must describe what
  * ACTUALLY moved — never merely which code path noticed. That is why `replaceAttribution` DERIVES
@@ -41,7 +48,8 @@ export type HeadroomMover =
   | 'budget_revision'
   | 'reattribution'
   | 'acceptance'
-  | 'receipt_progress';
+  | 'receipt_progress'
+  | 'measurement';
 
 /**
  * Phase 5 Task 2 (§B) — the BUDGET write path and the over-budget EXCEPTION.

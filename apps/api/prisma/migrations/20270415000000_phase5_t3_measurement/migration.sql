@@ -112,3 +112,9 @@ BEGIN
     RAISE EXCEPTION 'phase5_t3_measurement: expected a row-free Measurement, found %', rows;
   END IF;
 END $$;
+
+-- §B — `measurement` joins the headroom-mover set (§D makes measured person-shifts the labour
+-- CONSUMPTION term). The set is closed at PostgreSQL so an unlabelled mover cannot be recorded.
+ALTER TABLE "BudgetException" DROP CONSTRAINT IF EXISTS "BudgetException_raisedBy_check";
+ALTER TABLE "BudgetException" ADD CONSTRAINT "BudgetException_raisedBy_check"
+  CHECK ("raisedBy" IN ('commitment', 'budget_revision', 'reattribution', 'acceptance', 'receipt_progress', 'measurement'));

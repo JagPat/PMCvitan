@@ -27,7 +27,7 @@ const signedStub = { mediaPath: (id: string) => id } as unknown as SignedUrlServ
  *  init id-scan, schedule-structure copy and portfolio rollup are all activity-owned reads). */
 const initParticipants = (prisma: unknown) => [
   new NodeInitParticipant(),
-  new ActivityParticipant(),
+  new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never),
   new InspectionParticipant(),
   new DecisionsQueryService(prisma as unknown as PrismaService),
   new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),

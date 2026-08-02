@@ -85,6 +85,8 @@ const MODEL_OWNER: Record<string, string> = {
   commitmentAttribution: 'commercial',
   budgetLine: 'commercial',
   budgetException: 'commercial',
+  // Phase 5 Task 3 (§D) — the measurement, a commercial-owned BILLING fact
+  measurement: 'commercial',
   activityWorkOutput: 'activities',
   // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
@@ -204,6 +206,11 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // each PO line through its OWNING module's query. Emits no domain event, so it dispatches
   // nothing — the exception IS the signal, and it is a row with a lifecycle rather than a notice.
   'commercial/commercial-budget.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
+  // Phase 5 Task 3 — the §D measurement write path. Writes ONLY the commercial-owned `Measurement`;
+  // the activity sign-off is read through `ActivityParticipant` (locked) and the ordered/effort
+  // bounds through `LabourQuery`, so no foreign table is touched. Emits no domain event: a
+  // measurement is an internal billing fact whose external effect arrives with the bill (Task 4).
+  'commercial/commercial-measurement.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
   // Phase 4 Task 2 — the labour COMMERCIAL chain (§F). Writes ONLY labour-owned commercial tables;
   // the reused procurement Vendor/ProjectVendor party is read/validated THROUGH ProcurementParticipant
   // (never a direct foreign write/read — Labour stays a LEAF). requisition submit/approve +
@@ -401,6 +408,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('commercial/budget')",
     "Post('commercial/cost-heads')",
     "Post('commercial/attributions')",
+    "Post('commercial/measurements')",
+    "Post('commercial/measurements/corrections')",
   ],
   'labour/labour.controller.ts': [
     "Post('labour/trades')",
@@ -524,12 +533,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('150 mutating routes total (§4 command inventory; +1 Phase-5 Task-2 budget set/revise)', () => {
+    it('152 mutating routes total (§4 command inventory; +2 Phase-5 Task-3 measurement take/correct)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(150);
+      expect(total).toBe(152);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(150);
+      expect(live).toBe(152);
     });
   });
 

@@ -96,6 +96,10 @@ export const ROLE_POLICY = {
   // so there is no separate approval role: exceeding it raises an exception, never a refusal.
   'commercial.budget.manage': ['pmc'],
   'commercial.read': ['pmc', 'engineer'],
+  // Phase 5 Task 3 (§D/§I) — a measurement is a BILLING fact taken against signed-off work, so it
+  // is the engineer-and-above surface the site already trusts to record what happened, not an
+  // org-admin one. Task 5's SoD rule then keeps the measurer out of the certifier's seat.
+  'commercial.measure': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

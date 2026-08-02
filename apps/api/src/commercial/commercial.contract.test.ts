@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES } from '@vitan/shared';
@@ -33,11 +33,17 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.costHead.define': { file: 'commercial/commercial.service.ts', needle: "commandType: 'commercial.costHead.define'" },
     'commercial.attribution.reattribute': { file: 'commercial/commercial.service.ts', needle: "commandType: 'commercial.attribution.reattribute'" },
     'commercial.budget.set': { file: 'commercial/commercial-budget.service.ts', needle: "commandType: 'commercial.budget.set'" },
+    // Task 3 (§D) — both measurement writes run through ONE `append`, which passes the caller's
+    // `commandType` straight to `executeCommand`; the union type on that parameter is what makes
+    // the two literals reachable, so the needle is the type rather than a call-site string.
+    'commercial.measurement.take': { file: 'commercial/commercial-measurement.service.ts', needle: "'commercial.measurement.take'" },
+    'commercial.measurement.correct': { file: 'commercial/commercial-measurement.service.ts', needle: "'commercial.measurement.correct'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {
     'commercial.costHeads': "Get('commercial/cost-heads')",
     'commercial.attributions': "Get('commercial/attributions')",
     'commercial.budget': "Get('commercial/budget')",
+    'commercial.measurements': "Get('commercial/labour-po-lines/:labourPoLineId/measurements')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {
@@ -122,6 +128,13 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ],
     },
     {
+      field: 'MEASURED', owner: 'commercial',
+      why: 'measured person-shifts are the labour CONSUMPTION term, so they move money between the committed and received buckets',
+      writers: [
+        { file: 'commercial/commercial-measurement.service.ts', method: 'append' },
+      ],
+    },
+    {
       field: 'BUDGET', owner: 'commercial',
       why: 'authority down is a breach with no commitment write anywhere — §B calls it the most ordinary case',
       writers: [{ file: 'commercial/commercial-budget.service.ts', method: 'setBudget' }],
@@ -156,7 +169,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
         const next = src.indexOf('\n  async ', start + 1);
         const body = src.slice(start, next === -1 ? undefined : next);
         expect(
-          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(/u.test(body),
+          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(/u.test(body),
           `${writer.file}#${writer.method} writes ${input.field} (${input.why}) but never re-evaluates — §B requires raise-or-clear in the SAME transaction`,
         ).toBe(true);
       });
@@ -190,12 +203,15 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     ).toBe(true);
   });
 
-  it('the four labels the movers produce are all recordable at PostgreSQL', () => {
-    const migration = readFileSync(
-      join(SRC, '..', 'prisma/migrations/20270410000000_phase5_t2_budget_exception/migration.sql'),
-      'utf8',
-    );
-    for (const label of ['commitment', 'budget_revision', 'reattribution', 'acceptance', 'receipt_progress']) {
+  it('every label the movers produce is recordable at PostgreSQL', () => {
+    // scan EVERY migration: a task that adds a mover adds the CHECK in its OWN migration, and
+    // pinning a single filename would silently stop checking the moment that happened
+    const dir = join(SRC, '..', 'prisma/migrations');
+    const migration = readdirSync(dir)
+      .filter((d) => /phase5/u.test(d))
+      .map((d) => readFileSync(join(dir, d, 'migration.sql'), 'utf8'))
+      .join('\n');
+    for (const label of ['commitment', 'budget_revision', 'reattribution', 'acceptance', 'receipt_progress', 'measurement']) {
       expect(
         migration.includes(`'${label}'`),
         `${label} is a headroom mover but PostgreSQL would refuse to record it (raisedBy CHECK)`,

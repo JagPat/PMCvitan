@@ -1,14 +1,19 @@
 import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
 import {
+  correctMeasurementSchema,
   defineCostHeadSchema,
   reattributeSchema,
   setBudgetSchema,
+  takeMeasurementSchema,
+  type CorrectMeasurementInput,
   type DefineCostHeadInput,
   type ReattributeInput,
   type SetBudgetInput,
+  type TakeMeasurementInput,
 } from '../contracts';
 import { CommercialService } from './commercial.service';
 import { CommercialBudgetService } from './commercial-budget.service';
+import { CommercialMeasurementService } from './commercial-measurement.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
@@ -32,6 +37,7 @@ export class CommercialController {
   constructor(
     private readonly commercial: CommercialService,
     private readonly budget: CommercialBudgetService,
+    private readonly measurement: CommercialMeasurementService,
   ) {}
 
   /** §B — set or REVISE the live budget for one cost head. One command for both: v1 and a
@@ -67,6 +73,42 @@ export class CommercialController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.commercial.reattribute(projectId, body, user, idempotencyKey);
+  }
+
+  /** §D — take a measurement against a signed-off activity's labour PO line. */
+  @Post('commercial/measurements')
+  @RolesFor('commercial.measure')
+  takeMeasurement(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(takeMeasurementSchema)) body: TakeMeasurementInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.measurement.take(projectId, body, user, idempotencyKey);
+  }
+
+  /** §D — CORRECT one with a signed delta. There is deliberately no edit route: a measurement is
+   *  immutable at PostgreSQL, and the correction is what leaves the reasoning behind the change. */
+  @Post('commercial/measurements/corrections')
+  @RolesFor('commercial.measure')
+  correctMeasurement(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(correctMeasurementSchema)) body: CorrectMeasurementInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.measurement.correct(projectId, body, user, idempotencyKey);
+  }
+
+  /** §D — the measurement register for one labour PO line, with MEASURED, EFFORT and the order. */
+  @Get('commercial/labour-po-lines/:labourPoLineId/measurements')
+  @RolesFor('commercial.read')
+  readMeasurements(
+    @Param('projectId') projectId: string,
+    @Param('labourPoLineId') labourPoLineId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.measurement.read(projectId, labourPoLineId, user);
   }
 
   /** §B/§J — BUDGET, outstanding COMMITTED, received-not-billed and headroom per head, with any

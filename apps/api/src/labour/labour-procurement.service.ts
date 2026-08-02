@@ -1055,6 +1055,21 @@ export class LabourProcurementService {
           data: { status: 'closed_short', closeShortReason: input.reason, closedShortAt: new Date() },
         });
         if (count === 0) throw new ConflictException('Only an issued or partially committed labour purchase order can be closed short — reload and retry');
+        // Phase 5 Task 3 (§D/§G) — closing short KEEPS only the committed portion, so it REDUCES
+        // the ordered authority a measurement was taken against. §D lets Task 3 record immutable
+        // measurements before any bill exists, so without this the cap moves underneath work the
+        // practice already agreed happened: measure 100 shifts, close short to 40, and Task 4
+        // disputes the vendor's honest 100-shift claim against an authority cut after the fact.
+        // The certification lock cannot cover it — it serializes a BILL against the line, and here
+        // there is no bill. Closing short TO the measured quantity or above stays permitted.
+        //
+        // AMEND is deliberately not guarded here: an amendment issues NEW lines and leaves the
+        // measured line non-live, so that line's own `MEASURED <= ordered` still holds. Refusing to
+        // BILL against a dead line is Task 4's, with the bill that would do it.
+        await this.commercial.assertOrderedNotBelowMeasured(
+          tx, projectId,
+          current.lines.map((l) => ({ labourPoLineId: l.id, orderedPersonShiftQty: l.committedQty })),
+        );
         for (const l of current.lines) await this.refreshOrderedFlag(tx, projectId, l.requisitionLineId);
         // §C — the obligation changed size: supersede and re-attribute on the SAME line, so
         // `COMMITTED` re-reads the reduced obligation with attributable evidence behind the change.
