@@ -101,7 +101,11 @@ export class CommercialBudgetQuery {
           const line = materialLines.get(a.poLineId);
           if (!line || !line.live) continue;
           const acceptedQty = accepted.get(a.poLineId) ?? ZERO;
-          // consumed — the PRORATED LANDED amount, so the frozen tax and freight travel with it
+          // CONSUMED (the COMMITTED subtraction) — the PRORATED LANDED amount per §0, so the
+          // frozen tax and freight travel with it. Overage is handled by the clamp below: §0 is
+          // explicit that on a ₹100/100-unit line with 10 overage units accepted the raw consumed
+          // part is ₹110, outstanding goes to ZERO, and the overage value shows up only on the
+          // received side.
           const consumed = line.qty.isZero()
             ? ZERO
             : line.committedAmountBase.mul(acceptedQty).div(line.qty);
@@ -110,8 +114,25 @@ export class CommercialBudgetQuery {
             ? line.committedAmountBase.mul(Prisma.Decimal.max(line.qty.sub(line.receivedQty), ZERO)).div(line.qty)
             : ZERO;
           committed = committed.add(Prisma.Decimal.max(line.committedAmountBase.sub(consumed).sub(released), ZERO));
-          // the received side, on the SAME money basis as the eventual bill (§J)
-          receivedNotBilled = receivedNotBilled.add(consumed);
+          // RECEIVED-NOT-BILLED is a DIFFERENT calculation, not a reuse of `consumed`, and §J says
+          // why: the PO froze tax and freight for `qty` ALONE, so scaling the whole landed amount
+          // past `qty` over-values overage. §J states it exactly —
+          //   rate × ACCEPTED  +  (tax + freight) × min(ACCEPTED, qty) / qty
+          // On a 100-unit / ₹1,000 line with ₹100 tax and ₹50 freight, accepting 110 units gives
+          // ₹1,250 here, not the ₹1,265 an unclamped reuse produces. That phantom ₹15 would lower
+          // headroom and could raise a FALSE over-budget exception — and no downstream row could
+          // ever move it, because §E caps the live bill at ₹1,250 too.
+          //
+          // Overage is authorised as QUANTITY, so it is valued at rate only unless a PO amendment
+          // freezes more tax and freight; then the amended figures are the authority and this
+          // clamp follows them, because `qty`/`taxAmount`/`freightAmount` come from the CURRENT
+          // live version's frozen line.
+          const clampedQty = Prisma.Decimal.min(acceptedQty, line.qty);
+          const receivedValue = line.qty.isZero()
+            ? ZERO
+            : line.rate.mul(acceptedQty)
+                .add(line.taxAmount.add(line.freightAmount).mul(clampedQty).div(line.qty));
+          receivedNotBilled = receivedNotBilled.add(receivedValue);
         } else if (a.labourPoLineId) {
           const line = labourLines.get(a.labourPoLineId);
           if (!line || !line.live) continue;
