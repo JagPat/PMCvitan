@@ -40,4 +40,42 @@ export class ProcurementQuery {
     });
     return rows.map((r) => r.id);
   }
+
+  /**
+   * Phase 5 Task 2 (§0 `COMMITTED`) — the frozen commercial facts of a set of MATERIAL PO lines,
+   * so the commercial fold can compute OUTSTANDING obligation without ever reading a
+   * procurement-owned table itself. §C states the rule this serves: the committed amount already
+   * exists, frozen with provenance, and `COMMITTED` reads it THROUGH the owning module.
+   *
+   * `live` is the same version-status set the attribution lifecycle maintains. `closedShort` is
+   * carried separately because §0 subtracts the RELEASED remainder of a version closed short:
+   * a ₹100 PO closed short before any receipt has ₹0 outstanding, because the practice explicitly
+   * cancelled that obligation.
+   */
+  async committedLinesFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    poLineIds: readonly string[],
+  ): Promise<Map<string, { committedAmountBase: Prisma.Decimal; qty: Prisma.Decimal; receivedQty: Prisma.Decimal; live: boolean; closedShort: boolean }>> {
+    const out = new Map<string, { committedAmountBase: Prisma.Decimal; qty: Prisma.Decimal; receivedQty: Prisma.Decimal; live: boolean; closedShort: boolean }>();
+    if (poLineIds.length === 0) return out;
+    const rows = await tx.purchaseOrderLine.findMany({
+      where: { projectId, id: { in: [...poLineIds] } },
+      select: {
+        id: true, committedAmountBase: true, qty: true, receivedQty: true,
+        poVersion: { select: { status: true } },
+      },
+    });
+    for (const r of rows) {
+      const status = r.poVersion.status;
+      out.set(r.id, {
+        committedAmountBase: r.committedAmountBase,
+        qty: r.qty,
+        receivedQty: r.receivedQty,
+        live: ['issued', 'partially_received', 'completed', 'closed_short'].includes(status),
+        closedShort: status === 'closed_short',
+      });
+    }
+    return out;
+  }
 }
