@@ -10,7 +10,7 @@ import {
   commitCapacitySchema, reviseCapacitySchema,
   type SetVendorLabourProfileInput, type CreateLabourRequisitionInput, type RejectLabourRequisitionInput,
   type CreateLabourRfqInput, type RecordLabourQuoteInput, type ApproveLabourComparisonInput,
-  type CreateLabourPoInput, type AmendLabourPoInput, type CancelLabourPoInput, type CloseShortLabourPoInput,
+  type CreateLabourPoInput, type IssueLabourPoInput, type AmendLabourPoInput, type CancelLabourPoInput, type CloseShortLabourPoInput,
   type CommitCapacityInput, type ReviseCapacityInput,
 } from '../contracts';
 
@@ -193,12 +193,11 @@ export class LabourProcurementController {
   issuePo(
     @Param('projectId') projectId: string,
     @Param('poId') poId: string,
-    @Body(new ZodPipe(issueLabourPoSchema)) _body: unknown,
+    @Body(new ZodPipe(issueLabourPoSchema)) body: IssueLabourPoInput,
     @CurrentUser() user: AuthUser,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    void _body;
-    return this.labour.issuePo(projectId, poId, user, idempotencyKey);
+    return this.labour.issuePo(projectId, poId, body, user, idempotencyKey);
   }
 
   @Post('projects/:projectId/labour/pos/:poId/amend')

@@ -80,6 +80,9 @@ const MODEL_OWNER: Record<string, string> = {
   labourReadinessProjection: 'labour',
   labourMismatch: 'labour',
   labourMismatchResolution: 'labour',
+  // Phase 5 Task 1 — the commercial SINK (§C/§K).
+  costHead: 'commercial',
+  commitmentAttribution: 'commercial',
   activityWorkOutput: 'activities',
   // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
@@ -184,6 +187,16 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // in Tasks 3–5), so it dispatches nothing. The labour requirement detail write lives in the
   // (un-scanned) labour.participant.ts, invoked by the Activities requirement command.
   'labour/labour.service.ts': { domain: 'labour', foreign: {}, dispatch: 0 },
+  // Phase 5 Task 1 — the COMMERCIAL module (§C/§L). Writes ONLY commercial-owned tables
+  // (`CostHead`, `CommitmentAttribution`) and emits NO domain event, so it dispatches nothing.
+  // The forward lifecycle attributions are written by the (un-scanned) commercial.participant.ts,
+  // invoked from procurement's and labour's own PO transactions.
+  'commercial/commercial.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
+  // §L activation: creates the cost heads, attributes every LIVE PO line through the participant
+  // and writes the `ProjectCapability` row in ONE transaction. The live-line enumeration goes
+  // through each OWNING module's read contract (ProcurementQuery / LabourRequirementQuery), so
+  // there is no foreign table read here either. Operator-driven; it dispatches nothing.
+  'commercial/commercial-activation.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
   // Phase 4 Task 2 — the labour COMMERCIAL chain (§F). Writes ONLY labour-owned commercial tables;
   // the reused procurement Vendor/ProjectVendor party is read/validated THROUGH ProcurementParticipant
   // (never a direct foreign write/read — Labour stays a LEAF). requisition submit/approve +
@@ -375,6 +388,12 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
   ],
   // Phase 4 Task 1 — the labour trusted-workforce onboarding surface (§H). GET reads
   // (labour/workforce, labour/catalog) are declared by the manifest `queries`, not here.
+  // Phase 5 Task 1 — the commercial cost-head catalog + the standalone re-attribution. The GET
+  // register reads are declared by the manifest `queries`, not here.
+  'commercial/commercial.controller.ts': [
+    "Post('commercial/cost-heads')",
+    "Post('commercial/attributions')",
+  ],
   'labour/labour.controller.ts': [
     "Post('labour/trades')",
     "Post('labour/skills')",
@@ -497,12 +516,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('144 mutating routes total (§4 command inventory; +7 Phase-4 Task-3 §C time-capacity facts, +1 device binding)', () => {
+    it('149 mutating routes total (§4 command inventory; +2 Phase-5 Task-1 commercial catalog/re-attribution)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(147);
+      expect(total).toBe(149);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(147);
+      expect(live).toBe(149);
     });
   });
 

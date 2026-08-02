@@ -1,6 +1,14 @@
+import { readFileSync } from 'node:fs';
 import { PrismaService } from '../prisma.service';
 import { recordAudit } from './audit';
 import { systemActor } from '../common/actor';
+import { CommercialActivationService } from '../commercial/commercial-activation.service';
+import { CommercialParticipant } from '../commercial/commercial.participant';
+import { CapabilitiesService, COMMERCIAL_CAPABILITY } from './capabilities.service';
+import { ProcurementQuery } from '../procurement/procurement.query';
+import { OrgsParticipant } from '../orgs/orgs.participant';
+import { LabourRequirementQuery } from '../labour/labour.query';
+import type { CommercialActivationPlan } from '@vitan/shared';
 
 /**
  * Phase 3 Task 1 — the operator capability-activation command (plan §D).
@@ -24,12 +32,44 @@ function parseFlags(argv: string[]): Record<string, string> {
 async function main(): Promise<void> {
   const f = parseFlags(process.argv.slice(2));
   if (!f.project || !f.capability || !f.operator || !f.reason) {
-    process.stderr.write('usage: capability:enable --project <id> --capability <name> --operator <identity> --reason <text>\n');
+    process.stderr.write('usage: capability:enable --project <id> --capability <name> --operator <identity> --reason <text> [--plan <activation-plan.json>]\n');
     process.exitCode = 2;
     return;
   }
   const prisma = new PrismaService();
   try {
+    // Phase 5 Task 1 (§L) — `commercial` is the ONE capability whose activation is not a no-op:
+    // a project can already hold live POs, and flipping the flag without attributing them leaves
+    // `COMMITTED` reading ₹0 against real vendor obligations. The activation plan (cost heads +
+    // a head for every live line) is INPUT, because while the capability is off there is no
+    // commercial surface on which an operator could choose one.
+    if (f.capability === COMMERCIAL_CAPABILITY) {
+      if (!f.plan) {
+        process.stderr.write(
+          'capability:enable commercial requires --plan <file.json> with { costHeads, materialLines, labourLines }.\n' +
+          'Enabling commercial must attribute every LIVE purchase-order line in the same transaction (§L).\n',
+        );
+        process.exitCode = 2;
+        return;
+      }
+      const parsed = JSON.parse(readFileSync(f.plan, 'utf8')) as Partial<CommercialActivationPlan>;
+      const plan: CommercialActivationPlan = {
+        costHeads: parsed.costHeads ?? [],
+        materialLines: parsed.materialLines ?? [],
+        labourLines: parsed.labourLines ?? [],
+        reason: parsed.reason ?? f.reason,
+      };
+      const activation = new CommercialActivationService(
+        prisma,
+        new CommercialParticipant(new CapabilitiesService(prisma)),
+        new ProcurementQuery(prisma),
+        new LabourRequirementQuery(prisma),
+        new OrgsParticipant(),
+      );
+      const result = await activation.activate(f.project, f.operator, plan);
+      process.stdout.write(JSON.stringify({ ok: true, projectId: f.project, capability: f.capability, ...result }) + '\n');
+      return;
+    }
     await prisma.$transaction(async (tx) => {
       await tx.project.findUniqueOrThrow({ where: { id: f.project }, select: { id: true } });
       await tx.projectCapability.upsert({

@@ -37,8 +37,12 @@ describe('Task 2 — the procurement module implements its shared command/query 
     ]);
   });
 
-  it('procurement invokes no foreign participant; its reverse disposition edge is declared by activities', () => {
-    expect(procurementManifest.workflowParticipants).toEqual([]);
+  it('procurement invokes ONLY the commercial participant; its reverse disposition edge is declared by activities', () => {
+    // Phase 5 Task 1 (§C/§K): all four PO lifecycle sites write or supersede the cost-head
+    // attribution inside procurement's own transaction, so the attribution and the version it
+    // describes commit together. Procurement still READS nothing from commercial (`dependsOn`
+    // unchanged) — that asymmetry is what makes commercial a SINK.
+    expect(procurementManifest.workflowParticipants).toEqual(['commercial']);
     expect(procurementManifest.dependsOn).toEqual(['activities', 'decisions']);
   });
 });

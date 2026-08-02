@@ -30,5 +30,7 @@ export * from './contracts/drawings';
 export * from './contracts/inspections';
 // Module contracts: the labour command/query contract (Phase 4 Task 1 — the labour leaf module)
 export * from './contracts/labour';
+// Module contracts: the commercial command/query contract (Phase 5 Task 1 — the commercial SINK)
+export * from './contracts/commercial';
 // i18n dictionaries
 export * from './i18n/dictionary';

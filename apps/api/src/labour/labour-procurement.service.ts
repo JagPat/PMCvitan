@@ -23,9 +23,10 @@ import type { AuthUser } from '../common/auth';
 import type {
   SetVendorLabourProfileInput, CreateLabourRequisitionInput, RejectLabourRequisitionInput,
   CreateLabourRfqInput, RecordLabourQuoteInput, ApproveLabourComparisonInput,
-  CreateLabourPoInput, AmendLabourPoInput, CancelLabourPoInput, CloseShortLabourPoInput,
+  CreateLabourPoInput, IssueLabourPoInput, AmendLabourPoInput, CancelLabourPoInput, CloseShortLabourPoInput,
   CommitCapacityInput, ReviseCapacityInput,
 } from '../contracts';
+import { CommercialParticipant } from '../commercial/commercial.participant';
 
 /**
  * Phase 4 Task 2 — the LABOUR COMMERCIAL chain (plan §F). The labour supplier IS the existing
@@ -154,7 +155,87 @@ export class LabourProcurementService {
     private readonly procurementParticipant: ProcurementParticipant,
     private readonly dispatcher: ExternalEffectDispatcher,
     @Inject(CLOCK) private readonly clock: Clock,
+    private readonly commercial: CommercialParticipant,
   ) {}
+
+  /**
+   * Phase 5 Task 1 (§C/§0b) — the LABOUR twin of the material lifecycle hooks. §0b's closure row
+   * names all four sites for BOTH pipelines, and probe 5aj is RED against an implementation that
+   * attributes on issue only: closing a live ₹100 labour order short would otherwise leave the
+   * attribution active and `COMMITTED` still reporting ₹100 against an obligation that shrank.
+   * Off-pilot every one of these is a no-op.
+   */
+  private async attributeIssuedLabour(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: Actor,
+    user: AuthUser,
+    lines: ReadonlyArray<{ id: string }>,
+    costHeads: ReadonlyArray<{ labourPoLineId: string; costHeadCode: string }> | undefined,
+    reason: string,
+  ): Promise<void> {
+    if (!(await this.commercial.isActive(tx, projectId))) return;
+    const map = new Map((costHeads ?? []).map((c) => [c.labourPoLineId, c.costHeadCode]));
+    const unmapped = lines.filter((l) => !map.has(l.id)).map((l) => l.id);
+    if (unmapped.length) {
+      throw new BadRequestException(
+        `Every labour purchase-order line must name the cost head that carries it — unattributed lines: [${unmapped.join(', ')}]`,
+      );
+    }
+    await this.commercial.attribute(
+      tx, projectId, { actorId: actor.actorId, role: user.role },
+      lines.map((l) => ({ target: { labourPoLineId: l.id }, costHeadCode: map.get(l.id)!, reason })),
+    );
+  }
+
+  /** §C amendment, labour side. A labour PO line's obligation is identified by its requisition
+   *  line exactly as the material one is, so that is the v1↔v2 pairing. */
+  private async replaceLabourOnAmend(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: Actor,
+    user: AuthUser,
+    priorLines: ReadonlyArray<{ id: string; requisitionLineId: string }>,
+    nextVersionId: string,
+    costHeads: ReadonlyArray<{ requisitionLineId: string; costHeadCode: string }> | undefined,
+    reason: string,
+  ): Promise<void> {
+    if (!(await this.commercial.isActive(tx, projectId))) return;
+    const nextLines = await tx.labourPurchaseOrderLine.findMany({
+      where: { projectId, poVersionId: nextVersionId },
+      select: { id: true, requisitionLineId: true },
+      orderBy: { id: 'asc' },
+    });
+    const priorByRequisitionLine = new Map(priorLines.map((l) => [l.requisitionLineId, l.id]));
+    // Codex round 3 (P2): keyed by REQUISITION LINE — the identity the caller supplies. The
+    // replacement PO-line ids are generated in THIS transaction, so a caller could never name them.
+    const map = new Map((costHeads ?? []).map((c) => [c.requisitionLineId, c.costHeadCode]));
+    const identity = { actorId: actor.actorId, role: user.role };
+
+    const carried = new Set<string>();
+    const replaced: { from: { labourPoLineId: string }; to: { labourPoLineId: string }; costHeadCode?: string; reason: string }[] = [];
+    const fresh: { labourPoLineId: string; costHeadCode: string }[] = [];
+    for (const line of nextLines) {
+      const prior = priorByRequisitionLine.get(line.requisitionLineId);
+      if (prior) {
+        carried.add(prior);
+        replaced.push({ from: { labourPoLineId: prior }, to: { labourPoLineId: line.id }, costHeadCode: map.get(line.requisitionLineId), reason });
+      } else if (map.has(line.requisitionLineId)) {
+        fresh.push({ labourPoLineId: line.id, costHeadCode: map.get(line.requisitionLineId)! });
+      } else {
+        throw new BadRequestException(
+          `Amended labour line ${line.id} is new to this purchase order — name the cost head that carries it (keyed by requisitionLineId)`,
+        );
+      }
+    }
+    await this.commercial.replaceAttribution(tx, projectId, identity, replaced);
+    await this.commercial.attribute(
+      tx, projectId, identity,
+      fresh.map((f) => ({ target: { labourPoLineId: f.labourPoLineId }, costHeadCode: f.costHeadCode, reason })),
+    );
+    const dropped = priorLines.filter((l) => !carried.has(l.id)).map((l) => ({ labourPoLineId: l.id }));
+    await this.commercial.releaseAttribution(tx, projectId, identity, dropped, reason);
+  }
 
   private async begin(projectId: string, user: AuthUser): Promise<{ actor: Actor; scope: CommandScope }> {
     await this.capabilities.assertEnabled(projectId, LABOUR_CAPABILITY);
@@ -814,11 +895,11 @@ export class LabourProcurementService {
   }
 
   /** draft → issued. */
-  async issuePo(projectId: string, poId: string, user: AuthUser, idempotencyKey?: string): Promise<LabourPurchaseOrderDto> {
+  async issuePo(projectId: string, poId: string, input: IssueLabourPoInput, user: AuthUser, idempotencyKey?: string): Promise<LabourPurchaseOrderDto> {
     const { actor, scope } = await this.begin(projectId, user);
     this.assertApprove(user);
     const outcome = await executeCommand(this.prisma, {
-      scope, actor, commandType: 'labour.po.issue', idempotencyKey, requestHash: hashRequest({ poId }),
+      scope, actor, commandType: 'labour.po.issue', idempotencyKey, requestHash: hashRequest({ poId, ...input }),
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
         const current = await this.currentVersion(tx, projectId, poId);
@@ -827,6 +908,8 @@ export class LabourProcurementService {
           data: { status: 'issued', issuedById: actor.actorId, issuedAt: new Date() },
         });
         if (count === 0) throw new ConflictException('Only a draft labour purchase order can be issued — reload and retry');
+        // §C — the initial attribution, in the transaction that makes the version LIVE.
+        await this.attributeIssuedLabour(tx, projectId, actor, user, current.lines, input.costHeads, 'Labour purchase order issued');
         const issued = await this.currentVersion(tx, projectId, poId);
         await recordAudit(tx, { projectId, actor, action: 'labour.po.issue', entity: 'LabourPurchaseOrderVersion', entityId: current.id });
         const ev = await emitEvent(tx, {
@@ -871,6 +954,8 @@ export class LabourProcurementService {
           },
         });
         await this.freezeLines(tx, projectId, next.id, po.requisitionId, po.comparisonId, comparison.selectedQuoteId!, input.lines);
+        // §C — the ATOMIC REPLACEMENT, in the SAME transaction that issues the new version.
+        await this.replaceLabourOnAmend(tx, projectId, actor, user, current.lines, next.id, input.costHeads, input.reason);
         const issued = await this.currentVersion(tx, projectId, poId);
         await recordAudit(tx, { projectId, actor, action: 'labour.po.amend', entity: 'LabourPurchaseOrderVersion', entityId: next.id });
         const ev = await emitEvent(tx, {
@@ -905,6 +990,13 @@ export class LabourProcurementService {
         });
         if (count === 0) throw new ConflictException('Only a draft or issued labour purchase order can be cancelled — reload and retry');
         for (const l of current.lines) await this.refreshOrderedFlag(tx, projectId, l.requisitionLineId);
+        // §C — a cancelled version is no longer live, so its attributions are released.
+        if (await this.commercial.isActive(tx, projectId)) {
+          await this.commercial.releaseAttribution(
+            tx, projectId, { actorId: actor.actorId, role: user.role },
+            current.lines.map((l) => ({ labourPoLineId: l.id })), input.reason,
+          );
+        }
         await recordAudit(tx, { projectId, actor, action: 'labour.po.cancel', entity: 'LabourPurchaseOrderVersion', entityId: current.id });
         if (wasIssued) {
           const cancelled = await this.currentVersion(tx, projectId, poId);
@@ -937,6 +1029,14 @@ export class LabourProcurementService {
         });
         if (count === 0) throw new ConflictException('Only an issued or partially committed labour purchase order can be closed short — reload and retry');
         for (const l of current.lines) await this.refreshOrderedFlag(tx, projectId, l.requisitionLineId);
+        // §C — the obligation changed size: supersede and re-attribute on the SAME line, so
+        // `COMMITTED` re-reads the reduced obligation with attributable evidence behind the change.
+        if (await this.commercial.isActive(tx, projectId)) {
+          await this.commercial.replaceAttribution(
+            tx, projectId, { actorId: actor.actorId, role: user.role },
+            current.lines.map((l) => ({ from: { labourPoLineId: l.id }, to: { labourPoLineId: l.id }, reason: input.reason })),
+          );
+        }
         await recordAudit(tx, { projectId, actor, action: 'labour.po.closeShort', entity: 'LabourPurchaseOrderVersion', entityId: current.id });
         const closed = await this.currentVersion(tx, projectId, poId);
         const ev = await emitEvent(tx, {

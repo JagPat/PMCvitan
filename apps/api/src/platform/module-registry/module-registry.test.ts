@@ -14,7 +14,7 @@ describe('Phase 2 Task 7 — module registry', () => {
 
   it('enablement is every compiled module — the single source of truth (finding 7)', () => {
     expect(enabledModuleIds()).toEqual(
-      ['activities', 'auth', 'daily-log', 'decisions', 'drawings', 'inspections', 'inventory', 'labour', 'media', 'nodes', 'orgs', 'platform', 'procurement'],
+      ['activities', 'auth', 'commercial', 'daily-log', 'decisions', 'drawings', 'inspections', 'inventory', 'labour', 'media', 'nodes', 'orgs', 'platform', 'procurement'],
     );
   });
 
@@ -89,6 +89,11 @@ describe('Phase 2 Task 7 — module registry', () => {
       // target depends back on procurement (the requirements-cancel disposition guard is a
       // WORKFLOW PARTICIPATION, cycle-exempt), so the graph stays acyclic.
       procurement: ['activities', 'decisions'],
+      // Phase 5 Task 1 (§K) — `commercial` is a SINK: it READS these four and NOTHING reads it
+      // (no module's dependsOn gains `commercial`). Every one of them is a leaf-ward edge, so the
+      // graph is still acyclic — the §G-style acceptance test below runs Kahn's algorithm over the
+      // LIVE manifests and is RED against any cycle a future edge would introduce.
+      commercial: ['procurement', 'inventory', 'labour', 'activities'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.dependsOn, `${m.id} dependsOn`).toEqual(expectedDependsOn[m.id] ?? []);
@@ -103,7 +108,9 @@ describe('Phase 2 Task 7 — module registry', () => {
       // Phase 4 Task 1 adds the labour participant: a type='labour' requirement writes its
       // Labour-owned detail (spec + slices) through LabourRequirementParticipant — the
       // cycle-exempt activities → labour edge that keeps labour a leaf (dependsOn: []).
-      activities: ['inspections', 'drawings', 'procurement', 'labour'],
+      // Phase 5 (§E/§K) adds `commercial`: revertSignOff asks assertWorkEvidenceRevisable before
+      // withdrawing a sign-off a measurement rests on. Declared with the Task-1 edge table.
+      activities: ['inspections', 'drawings', 'procurement', 'labour', 'commercial'],
       'daily-log': ['activities'], // material-mismatch blocks the activity's readiness (edge 4)
       // Phase 3 Task 4 adds the inventory participant to media: the delete tx refuses while the
       // photo is immutable stock-ledger quality evidence (assertMediaDisposable)
@@ -117,7 +124,9 @@ describe('Phase 2 Task 7 — module registry', () => {
       // not depend back on inventory, so the graph stays acyclic. Task 5 adds the activities
       // participant: reserve/issue validate their named activity through materialTarget (the
       // cycle-exempt channel — §G's READ edge runs activities → inventory in Task 6)
-      inventory: ['procurement', 'activities'],
+      // Phase 5 (§E/§K) adds `commercial`: stock.reverse asks assertAcceptanceReversible before
+      // withdrawing accepted material a live certificate rests on.
+      inventory: ['procurement', 'activities', 'commercial'],
       // Task 10 Module 4 (+ correction): node deletion unfiles placed inspections, filed activities,
       // filed drawings AND staged site materials — each through its owning module's participant,
       // appending inspection.unfiled / activity.unfiled / drawing.unfiled / material.unfiled
@@ -138,7 +147,20 @@ describe('Phase 2 Task 7 — module registry', () => {
       // queried from labour. Cycle-exempt for
       // the same reason (orgs.dependsOn includes labour, so a labour → orgs READ would close a
       // cycle; the participant channel does not).
-      labour: ['procurement', 'activities', 'orgs'],
+      // Phase 5 Task 1 (§C/§K) adds `commercial`: all FOUR labour PO lifecycle sites write or
+      // supersede the cost-head attribution in labour's OWN transaction, because
+      // `LabourPurchaseOrderLine` is labour-owned. Cycle-exempt like the others.
+      labour: ['procurement', 'activities', 'orgs', 'commercial'],
+      // Phase 5 Task 1 (§K) — the OUTBOUND half of commercial's edge table. The calls land with
+      // the sections that need them (§D measurement, §E certification); the manifest declares
+      // them now because an undeclared transaction-bound call is a boundary escape and the
+      // fallback unlocked read is the race the participant exists to close.
+      // `orgs` — §L activation resolves the operator's LIVE project standing through
+      // OrgsParticipant.hasProjectRoleStanding (there is no request token on that path).
+      commercial: ['inventory', 'activities', 'procurement', 'labour', 'orgs'],
+      // Phase 5 Task 1 (§C/§K) — the material twin: all FOUR PO lifecycle sites write or supersede
+      // the attribution inside procurement's own transaction. Procurement never READS commercial.
+      procurement: ['commercial'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);

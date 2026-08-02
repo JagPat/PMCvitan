@@ -68,7 +68,12 @@ export const labourManifest: ModuleManifest = {
   // through `OrgsParticipant.hasProjectRoleStanding` (Membership/Project/OrgMembership are orgs-owned;
   // the owner answers the question) — cycle-exempt for the same reason (`orgs.dependsOn` includes
   // `labour`, so a labour → orgs READ edge would close a cycle; the participant channel does not).
-  workflowParticipants: ['procurement', 'activities', 'orgs'],
+  // Phase 5 Task 1 (§C/§K) adds `commercial`: `CommercialParticipant` writes/supersedes the
+  // cost-head attribution inside LABOUR's own transaction at all four labour PO lifecycle sites
+  // (issue · amend · cancel · close-short), because `LabourPurchaseOrderLine` is labour-owned.
+  // Without it, issuing or amending a ₹100 labour PO cannot create or supersede its attribution
+  // atomically and `COMMITTED` drops the whole obligation. Cycle-exempt like the others.
+  workflowParticipants: ['procurement', 'activities', 'orgs', 'commercial'],
   // Phase 4 Task 2 — the labour commercial event family (signal-only, invalidate:true, push:null).
   producesEvents: [
     'labour.requisition.submitted', 'labour.requisition.approved', 'labour.comparison.approved',

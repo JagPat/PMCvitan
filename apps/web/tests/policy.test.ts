@@ -50,6 +50,14 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'labour.mismatch.record': ['pmc', 'engineer'],
   'labour.mismatch.resolve': ['pmc'],
   'activity.output.record': ['pmc', 'engineer', 'contractor'],
+  // Phase 5 Task 1 — the COMMERCIAL pilot surface (plan §C/§I). Defining a cost head and
+  // attributing a vendor commitment to one decide which budget carries which money, so both are
+  // pmc. `commercial.attribute` follows the WRITE, not the route: the participant enforces it
+  // inside `pos.issue`/`labour.po.issue` exactly as the standalone route does, so PO-issue
+  // authority alone never confers it. The register read mirrors `procurement.read`.
+  'commercial.manage': ['pmc'],
+  'commercial.attribute': ['pmc'],
+  'commercial.read': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],

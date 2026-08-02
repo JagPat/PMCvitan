@@ -122,7 +122,7 @@ describe('Phase 4 Task 2 correction — labour commercial integrity (live PG)', 
     const line = requisition.lines[0]!;
     const { comparisonId, quoteId } = await approvedComparison(projectId, requisition.id, line.id, vendorId, rate, premium, rate);
     const po = await commercial.createPo(projectId, { comparisonId, lines: [{ requisitionLineId: line.id, personShiftQty: poQty }] }, pmc(projectId));
-    await commercial.issuePo(projectId, po.id, pmc(projectId));
+    await commercial.issuePo(projectId, po.id, {}, pmc(projectId));
     const poLine = po.currentVersion.lines[0]!;
     return { projectId, requisitionId: requisition.id, lineId: line.id, comparisonId, quoteId, poId: po.id, poLine, vendorId };
   };
@@ -149,7 +149,7 @@ describe('Phase 4 Task 2 correction — labour commercial integrity (live PG)', 
     try { await commercial.closeShortPo(projectId, poId, { reason: 'source fell short' }, pmc(projectId)); } catch { /* refused after fix */ }
     try {
       const po2 = await commercial.createPo(projectId, { comparisonId, lines: [{ requisitionLineId: lineId, personShiftQty: 10 }] }, pmc(projectId));
-      await commercial.issuePo(projectId, po2.id, pmc(projectId));
+      await commercial.issuePo(projectId, po2.id, {}, pmc(projectId));
     } catch { /* refused after fix */ }
     // the requirement asks for 10 person-shifts on the slice; live inbound must never exceed it.
     expect(await intendedInboundForSlice(projectId, '2026-08-10')).toBeLessThanOrEqual(10);
@@ -227,7 +227,7 @@ describe('Phase 4 Task 2 correction — labour commercial integrity (live PG)', 
     await commercial.approveComparison(projectId, rfq.id, { selectedQuoteId: quoteId, reason: 'both lines in-spec' }, pmc(projectId));
     const comparisonId = (await commercial.readRfq(projectId, rfq.id, pmc(projectId))).comparison!.id;
     const po = await commercial.createPo(projectId, { comparisonId, lines: [{ requisitionLineId: l1!.id, personShiftQty: qty }, { requisitionLineId: l2!.id, personShiftQty: qty }] }, pmc(projectId));
-    await commercial.issuePo(projectId, po.id, pmc(projectId));
+    await commercial.issuePo(projectId, po.id, {}, pmc(projectId));
     const lines = (await commercial.readPo(projectId, po.id, pmc(projectId))).currentVersion.lines;
     return { projectId, poId: po.id, lines };
   };

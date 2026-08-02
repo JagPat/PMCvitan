@@ -71,7 +71,9 @@ describe('Task 10 — the activities module implements its shared command/query 
     // (Drawing.activityId, previously ON DELETE SET NULL only) through the drawings participant.
     // Phase 4 Task 1 adds `labour` — a type='labour' requirement writes its Labour-owned
     // `LabourRequirementSpec` + demand slices through the cycle-exempt activities→labour participant.
-    expect(activitiesManifest.workflowParticipants).toEqual(['inspections', 'drawings', 'procurement', 'labour']);
+    // Phase 5 (§E/§K) adds `commercial`: revertSignOff asks assertWorkEvidenceRevisable before
+    // withdrawing a sign-off a measurement rests on (declared with the Task-1 §K edge table).
+    expect(activitiesManifest.workflowParticipants).toEqual(['inspections', 'drawings', 'procurement', 'labour', 'commercial']);
     // the readiness BAKE reads decisions + drawings + inspections via their query contracts (dependsOn);
     // the reverse inspections→activities edge is the cycle-exempt participant, keeping this graph acyclic.
     // Phase 4 Task 1 (correction F1) — `labour` joins dependsOn: the requirement command/read hydrates

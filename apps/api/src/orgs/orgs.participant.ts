@@ -25,6 +25,65 @@ export interface OrgsParticipantClient {
 @Injectable()
 export class OrgsParticipant {
   /**
+   * Is `projectId` a project that may be OPERATED ON at all — it exists and is not archived?
+   *
+   * Phase 5 Task 1, Codex round 3 (P2). `ProjectAccessService.authorize` refuses an archived
+   * project BEFORE it looks at membership, so no request path can author anything there. An
+   * operator-driven path that only proves the row EXISTS therefore admits work the application
+   * itself would refuse: an active PMC membership left on an archived project could run commercial
+   * activation and commit cost heads, attributions and the capability row.
+   *
+   * `hasProjectRoleStanding` deliberately does NOT fold this in. That method answers a question
+   * about a PERSON, it is already relied on by the cleared Phase-4 T3 repair engine, and widening
+   * it would silently change that caller's behaviour. Two questions, two methods; a caller that
+   * needs both asks both.
+   */
+  async isProjectOperable(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+  ): Promise<boolean> {
+    // Codex round 4 (P2) — the guard depends on the project ROOT ROW's status, and archiving
+    // updates that row without taking the readiness lock. A plain `SELECT EXISTS` therefore lets
+    // activation read `operable = true`, an org admin archive and commit, and activation then
+    // write onto a project no request path can operate. Locking the row makes the archive wait
+    // for this transaction (or this read wait for the archive) — the decision cannot go stale
+    // between the check and the writes it authorises.
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ archived: boolean }>>(
+      `SELECT ("archivedAt" IS NOT NULL) AS archived FROM "Project" WHERE "id" = $1 FOR UPDATE`,
+      projectId,
+    );
+    return rows.length > 0 && rows[0]!.archived === false;
+  }
+
+  /**
+   * Resolve an OPERATOR STRING — a user id or an email — to the orgs-owned `User` row it names.
+   * Returns `null` when it names nobody.
+   *
+   * Phase 5 Task 1, Codex round 2 (P2). The commercial activation CLI takes `--operator` as free
+   * text, and its first spelling resolved it with `tx.user.findFirst` from the commercial module.
+   * `User` is orgs-owned and merely not read-encapsulated, and this file's own header says why
+   * that is not permission: **a read being representable is not the same as it being legitimate —
+   * the OWNER states the rule.** Identity and tenancy semantics (which column is the identity key,
+   * whether email is unique, whether a disabled or merged account still resolves) belong here, so
+   * they can change once rather than in every module that happens to accept an operator string.
+   *
+   * Evaluated against the CALLER'S transaction, exactly like `hasProjectRoleStanding`, so the
+   * identity and the standing decision see the same snapshot.
+   */
+  async resolveUserIdentity(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    identifier: string,
+  ): Promise<{ id: string } | null> {
+    if (!identifier) return null;
+    // Both values bind as parameters; nothing user-controlled is interpolated into the SQL text.
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ id: string }>>(
+      `SELECT "id" FROM "User" WHERE "id" = $1 OR "email" = $1 ORDER BY ("id" = $1) DESC LIMIT 1`,
+      identifier,
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
    * Does `userId` have ROLE-QUALIFIED standing on `projectId` — an ACTIVE project membership whose
    * role is one of `roles`, or (when `roles` admits `pmc` AND the user holds NO active membership
    * on this project) owner/admin of the project's org? Same rule, same PRECEDENCE as
@@ -49,8 +108,37 @@ export class OrgsParticipant {
     projectId: string,
     userId: string,
     roles: readonly string[],
+    opts: { forUpdate?: boolean } = {},
   ): Promise<boolean> {
     if (roles.length === 0) return false;
+    // Codex round 4 (P2) — `forUpdate` locks the standing rows before the decision is read.
+    // `MembersService.updateRole` writes `Membership.role` WITHOUT the readiness lock, so a plain
+    // read lets activation see an active `pmc`, a concurrent downgrade to `engineer` commit, and
+    // activation then write rows the operator's live authority no longer permits. Locking the row
+    // makes the downgrade wait for this transaction.
+    //
+    // OPT-IN, defaulted OFF: the cleared Phase-4 T3 repair engine already relies on this method,
+    // and silently changing its locking would change behaviour nobody asked to change.
+    //
+    // Stated honestly: `FOR UPDATE` locks rows that EXIST, so this closes the downgrade race (an
+    // UPDATE of a present row) — the shape that actually threatens an authority decision. It does
+    // not serialize a membership that is INSERTED after this read; that direction only ever grants
+    // authority the operator did not have at decision time, and the decision has already been made.
+    if (opts.forUpdate) {
+      await (tx as OrgsParticipantClient).$queryRawUnsafe(
+        `SELECT 1 FROM "Membership" WHERE "projectId" = $1 AND "userId" = $2 FOR UPDATE`,
+        projectId, userId,
+      );
+      if (roles.includes('pmc')) {
+        await (tx as OrgsParticipantClient).$queryRawUnsafe(
+          `SELECT 1 FROM "OrgMembership" om
+             JOIN "Project" p ON p."orgId" = om."orgId"
+            WHERE p."id" = $1 AND om."userId" = $2
+              FOR UPDATE OF om`,
+          projectId, userId,
+        );
+      }
+    }
     // placeholders are derived from the ARITY of `roles` only — every value still binds as a
     // parameter, nothing user-controlled is interpolated into the SQL text
     const rolePlaceholders = roles.map((_, i) => `$${i + 3}`).join(', ');

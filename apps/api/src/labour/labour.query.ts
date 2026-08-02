@@ -164,4 +164,27 @@ export class LabourRequirementQuery {
     });
     return new Set(rows.map((r) => r.activityId));
   }
+
+  /**
+   * Phase 5 Task 1 (§C/§L) — the LIVE labour PO lines of a project, for the commercial
+   * activation backfill. `LabourPurchaseOrderLine` is labour-owned and read-encapsulated, so
+   * commercial asks the OWNER rather than reaching into the table (§C: one fold, two owners).
+   *
+   * LIVE is the version-status set the attribution lifecycle maintains: `draft` is not live yet
+   * (issue attributes it), `amended` has been superseded by the next version (amend replaces the
+   * attribution), and `cancelled` released it. A `closed_short` version stays live because it
+   * keeps its committed portion — a real obligation someone still owes.
+   */
+  async liveOrderedLineIds(projectId: string, tx?: Prisma.TransactionClient): Promise<string[]> {
+    const db = tx ?? this.prisma;
+    const rows = await db.labourPurchaseOrderLine.findMany({
+      where: {
+        projectId,
+        poVersion: { is: { status: { in: ['issued', 'partially_committed', 'completed', 'closed_short'] } } },
+      },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+    });
+    return rows.map((r) => r.id);
+  }
 }
