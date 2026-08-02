@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { SHIFT_MINUTES } from './shift';
 import type { LabourSpecRef } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { toIsoCivilDate } from '../common/civil-date';
@@ -41,6 +42,19 @@ export function labourDetailKey(requirementId: string, revision: number): string
  * module's own client for the standalone `list` read. This is the `activities → labour` read edge
  * (`activities.dependsOn` includes `labour`); Labour stays a LEAF (it reads nothing foreign).
  */
+/** The frozen commercial facts of one LABOUR PO line, as the commercial folds consume them. */
+export interface LabourCommittedLine {
+  committedAmountBase: Prisma.Decimal;
+  /** the ORIGINAL frozen order quantity — history, not current authority */
+  personShiftQty: number;
+  committedQty: number;
+  /** what the line authorises RIGHT NOW: 0 when defaulted, `committedQty` when closed short */
+  liveAuthority: number;
+  defaulted: boolean;
+  live: boolean;
+  closedShort: boolean;
+}
+
 @Injectable()
 export class LabourRequirementQuery {
   constructor(private readonly prisma: PrismaService) {}
@@ -198,26 +212,98 @@ export class LabourRequirementQuery {
    * `committedQty` is the person-shifts actually committed by a supplier; a version closed short
    * KEEPS that portion and releases the rest, which is the §0 released term.
    */
+  /**
+   * Phase 5 Task 3 (§0 `EFFORT`) — worked effort attributable to a set of LABOUR PO lines,
+   * NORMALISED into billable person-shifts.
+   *
+   * §0 is emphatic about two things, and both live HERE so no call site can forget them.
+   *
+   * **The join reaches the exact PO line**, `LabourWorkFact → WorkerAllocation →
+   * CapacityCommitment → LabourPurchaseOrderLine`, and NOT `labourSpecFingerprint` + slice. Two
+   * vendors can hold the same fingerprint on the same activity and day; matching on that would let
+   * vendor A's attendance fund vendor B's bill while A stays unbillable. Going through the
+   * commitment that actually funded the allocation makes each worked unit reachable from at most
+   * ONE line — conservation is structural, not a check somebody has to remember.
+   *
+   * **Minutes are converted to person-shifts INSIDE this set.** `LabourWorkFact` records worked
+   * MINUTES (Phase 4); a labour bill is denominated in person-SHIFTS. Comparing them raw lets one
+   * worker's single 720-minute day satisfy a ten-person-shift measurement, because `10 ≤ 720`. The
+   * conversion is `Σ workedMinutes / SHIFT_MINUTES`, and it is deliberately not exposed unrounded:
+   * a caller that received minutes could compare them to shifts and the bug would be silent.
+   *
+   * Own-workforce effort (an allocation with no `capacityCommitmentId`) attributes to NO PO line,
+   * which is correct — nobody is billing for it.
+   */
+  async effortForPoLines(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    labourPoLineIds: readonly string[],
+    // Codex round-1 P1 — scope the effort to ONE activity. A PO line's effort answers "how much
+    // work did this order fund", and a measurement asks the narrower question "…on the activity
+    // whose sign-off I am measuring against". Without the scope a caller can name a DIFFERENT
+    // signed-off activity and its output, pass those checks, and have the cap satisfied by work
+    // done on an activity that was never signed off.
+    activityId?: string,
+  ): Promise<Map<string, Prisma.Decimal>> {
+    const out = new Map<string, Prisma.Decimal>();
+    if (labourPoLineIds.length === 0) return out;
+    const rows = await tx.labourWorkFact.findMany({
+      where: {
+        projectId,
+        ...(activityId ? { activityId } : {}),
+        allocation: { is: { capacityCommitment: { is: { poLineId: { in: [...labourPoLineIds] } } } } },
+      },
+      select: { workedMinutes: true, allocation: { select: { capacityCommitment: { select: { poLineId: true } } } } },
+    });
+    const minutes = new Map<string, number>();
+    for (const r of rows) {
+      const poLineId = r.allocation.capacityCommitment?.poLineId;
+      if (!poLineId) continue;
+      minutes.set(poLineId, (minutes.get(poLineId) ?? 0) + r.workedMinutes);
+    }
+    for (const id of labourPoLineIds) {
+      // an unworked line has ZERO effort, not an absent entry — a caller reading `?? undefined`
+      // and skipping the cap is the failure this avoids
+      const m = minutes.get(id) ?? 0;
+      out.set(id, new Prisma.Decimal(m).div(SHIFT_MINUTES).toDecimalPlaces(6, Prisma.Decimal.ROUND_DOWN));
+    }
+    return out;
+  }
+
   async committedLinesFor(
     tx: Prisma.TransactionClient,
     projectId: string,
     labourPoLineIds: readonly string[],
-  ): Promise<Map<string, { committedAmountBase: Prisma.Decimal; personShiftQty: number; committedQty: number; live: boolean; closedShort: boolean }>> {
-    const out = new Map<string, { committedAmountBase: Prisma.Decimal; personShiftQty: number; committedQty: number; live: boolean; closedShort: boolean }>();
+  ): Promise<Map<string, LabourCommittedLine>> {
+    const out = new Map<string, LabourCommittedLine>();
     if (labourPoLineIds.length === 0) return out;
     const rows = await tx.labourPurchaseOrderLine.findMany({
       where: { projectId, id: { in: [...labourPoLineIds] } },
       select: {
         id: true, committedAmountBase: true, personShiftQty: true, committedQty: true,
         poVersion: { select: { status: true } },
+        commitments: { select: { status: true } },
       },
     });
     for (const r of rows) {
       const status = r.poVersion.status;
+      // Codex round-1 P1 — the LIVE authority is not the frozen ordered quantity. This mirrors the
+      // `liveAllocation` rule Task 2's correction established, and for the same reason: a DEFAULTED
+      // commitment means the source reneged and the line can never be re-committed, so it
+      // authorises NOTHING even while the version is still `issued`. A closed-short version keeps
+      // only what was committed. Anything else is authorised for the full order.
+      const defaulted = r.commitments.some((c) => c.status === 'defaulted');
+      const liveAuthority = defaulted
+        ? 0
+        : status === 'closed_short'
+          ? r.committedQty
+          : r.personShiftQty;
       out.set(r.id, {
         committedAmountBase: r.committedAmountBase,
         personShiftQty: r.personShiftQty,
         committedQty: r.committedQty,
+        liveAuthority,
+        defaulted,
         live: ['issued', 'partially_committed', 'completed', 'closed_short'].includes(status),
         closedShort: status === 'closed_short',
       });

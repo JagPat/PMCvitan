@@ -49,6 +49,8 @@ import { LabourCoverageService } from './labour/labour-coverage.service';
 import { CommercialController } from './commercial/commercial.controller';
 import { CommercialService } from './commercial/commercial.service';
 import { CommercialParticipant } from './commercial/commercial.participant';
+import { CommercialMeasurementService } from './commercial/commercial-measurement.service';
+import { CommercialMeasurementQuery } from './commercial/commercial-measurement.query';
 import { CommercialActivationService } from './commercial/commercial-activation.service';
 import { ProcurementQuery } from './procurement/procurement.query';
 import { InventoryQuery } from './inventory/inventory.query';
@@ -149,6 +151,8 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     LabourCoverageService,
     CommercialService,
     CommercialParticipant,
+    CommercialMeasurementService,
+    CommercialMeasurementQuery,
     CommercialActivationService,
     ProcurementQuery,
     InventoryQuery,

@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { LabourRequirementQuery } from '../labour/labour.query';
 import { ProcurementQuery } from '../procurement/procurement.query';
 import { InventoryQuery } from '../inventory/inventory.query';
+import { CommercialMeasurementQuery } from './commercial-measurement.query';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -59,9 +60,9 @@ export interface CostHeadPosition {
  * - consumed, MATERIAL: the PRORATED LANDED amount for `ACCEPTED`
  *   (`committedAmountBase × ACCEPTED / qty`) — never `rate × ACCEPTED`, which leaves the frozen
  *   tax and freight stranded.
- * - consumed, LABOUR: measured person-shifts at the frozen rate. **`Measurement` does not exist
- *   until Task 3, so this term is ZERO here and a live labour PO reads its gross amount.** That
- *   is stated rather than hidden: Task 3 adds the term with the fact it measures.
+ * - consumed, LABOUR: measured person-shifts at the frozen rate — `committedAmountBase ×
+ *   MEASURED / personShiftQty`. Task 2 shipped this term as ZERO and said so in the code; Task 3
+ *   adds `Measurement` (§D) and the term lands with the fact that supplies it.
  * - released: the unreceived remainder of a version CLOSED SHORT. Closing short to zero is the
  *   deliberate way to end an obligation and the fold honours it — the released part is subtracted
  *   once and never added back.
@@ -75,6 +76,7 @@ export class CommercialBudgetQuery {
     private readonly procurement: ProcurementQuery,
     private readonly labour: LabourRequirementQuery,
     private readonly inventory: InventoryQuery,
+    private readonly measurement: CommercialMeasurementQuery,
   ) {}
 
   /**
@@ -106,10 +108,14 @@ export class CommercialBudgetQuery {
 
     const materialIds = attributions.map((a) => a.poLineId).filter((v): v is string => v !== null);
     const labourIds = attributions.map((a) => a.labourPoLineId).filter((v): v is string => v !== null);
-    const [materialLines, labourLines, accepted] = await Promise.all([
+    const [materialLines, labourLines, accepted, measured] = await Promise.all([
       this.procurement.committedLinesFor(tx, projectId, materialIds),
       this.labour.committedLinesFor(tx, projectId, labourIds),
       this.inventory.acceptedFor(tx, projectId, materialIds),
+      // Phase 5 Task 3 (§D) — MEASURED person-shifts, the labour CONSUMPTION term. Task 2 left
+      // this at zero and said so in the code rather than hiding it; the fact that supplies it
+      // ships in Task 3, so the term ships with it.
+      this.measurement.measuredForPoLines(tx, projectId, labourIds),
     ]);
 
     for (const code of heads) {
@@ -156,13 +162,23 @@ export class CommercialBudgetQuery {
         } else if (a.labourPoLineId) {
           const line = labourLines.get(a.labourPoLineId);
           if (!line || !line.live) continue;
-          // Task 3 adds the MEASURED consumption term; there is no measurement to subtract yet.
+          // CONSUMED (§0) — measured person-shifts at the line's FROZEN rate. A labour PO whose
+          // work has been measured is no longer an outstanding obligation for that part: the
+          // money has moved to the received side exactly as an accepted material receipt does,
+          // and leaving it in `committed` would forecast a ₹200 exposure from a ₹100 order.
+          const measuredQty = measured.get(a.labourPoLineId) ?? ZERO;
+          const consumed = line.personShiftQty > 0
+            ? line.committedAmountBase.mul(measuredQty).div(line.personShiftQty)
+            : ZERO;
           const released = line.closedShort && line.personShiftQty > 0
             ? line.committedAmountBase
                 .mul(Math.max(line.personShiftQty - line.committedQty, 0))
                 .div(line.personShiftQty)
             : ZERO;
-          committed = committed.add(Prisma.Decimal.max(line.committedAmountBase.sub(released), ZERO));
+          committed = committed.add(Prisma.Decimal.max(line.committedAmountBase.sub(consumed).sub(released), ZERO));
+          // the measured value moves to received-not-billed — the buckets PARTITION the money, and
+          // Tasks 4-6 subtract `BILLED_AMOUNT` from this side as bills arrive
+          receivedNotBilled = receivedNotBilled.add(consumed);
         }
       }
       const budget = budgetOf.get(code) ?? null;

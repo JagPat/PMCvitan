@@ -7,6 +7,8 @@ import type { InspectionsQueryService } from '../inspections/inspections.query';
 import type { InspectionParticipant } from '../inspections/inspection.participant';
 import type { InventoryParticipant } from '../inventory/inventory.participant';
 import type { LabourRequirementParticipant } from '../labour/labour.participant';
+import type { ActivityParticipant } from '../activities/activity.participant';
+import type { CommercialParticipant } from '../commercial/commercial.participant';
 import type { PrismaService } from '../prisma.service';
 import type { StorageService } from './storage.service';
 import type { SignedUrlService } from './signed-url.service';
@@ -79,6 +81,9 @@ function make(
   // Phase 4 Task 5 (§I) — the delete tx also asks ACTIVITIES whether the photo is cited as
   // measured-output evidence; the live refusal has its own probe in the Task-5 suite.
   const activityParticipant = { assertMediaDisposable: vi.fn(async () => {}) } as unknown as ActivityParticipant;
+  // Phase 5 Task 3 (§D) — and whether it is cited as MEASUREMENT evidence; the live refusal has
+  // its own probe (R14) in `phase5-t3-measurement.test.ts`.
+  const commercialParticipant = { assertMediaDisposable: vi.fn(async () => {}) } as unknown as CommercialParticipant;
   const svc = new MediaService(
     prisma as unknown as PrismaService,
     storage as unknown as StorageService,
@@ -93,8 +98,9 @@ function make(
     inventoryParticipant,
     labourParticipant,
     activityParticipant,
+    commercialParticipant,
   );
-  return { svc, prisma, storage, signed, dispatcher, snapshot, created, inventoryParticipant, labourParticipant };
+  return { svc, prisma, storage, signed, dispatcher, snapshot, created, inventoryParticipant, labourParticipant, commercialParticipant };
 }
 
 const user = { sub: 'u1', role: 'pmc', projectId: 'ambli' } as never;

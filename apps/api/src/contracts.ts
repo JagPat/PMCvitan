@@ -1324,3 +1324,50 @@ export const setBudgetSchema = z
   })
   .strict();
 export type SetBudgetInput = z.infer<typeof setBudgetSchema>;
+
+/**
+ * Phase 5 Task 3 (§D) — take a measurement. Person-shifts are DIVISIBLE (a half shift is real),
+ * so the quantity is a positive decimal string; §A forbids a float64 round trip.
+ *
+ * `citedOutputId` is REQUIRED, not optional: §D bounds a measurement by operational evidence, and
+ * an optional citation is one a caller can simply omit — which is precisely the "commercial actor
+ * authors the only quantity evidence" failure the requirement exists to close.
+ */
+export const takeMeasurementSchema = z
+  .object({
+    labourPoLineId: z.string().min(1),
+    activityId: z.string().min(1),
+    quantity: z
+      .string()
+      .trim()
+      .regex(/^\d+(\.\d{1,6})?$/u, 'quantity must be a positive decimal with at most 6 places')
+      .refine((v) => Number(v) > 0, 'a measurement of zero measures nothing'),
+    citedOutputId: z.string().min(1),
+    // the SHARED civil-date schema, not a shape regex: `2026-02-31` is well-shaped and impossible,
+    // and letting it through means the service's `fromIsoCivilDate` throws a plain Error — a 500
+    // for what is plainly a bad request. Boundary validation belongs at the boundary.
+    measuredOn: isoCivilDateSchema.optional(),
+    evidenceMediaId: z.string().min(1).optional(),
+    reason: z.string().trim().min(1).max(1000).optional(),
+  })
+  .strict();
+export type TakeMeasurementInput = z.infer<typeof takeMeasurementSchema>;
+
+/**
+ * §D — a correction is a SIGNED delta against an existing measurement, never an edit. The sign is
+ * part of the value (a leading `-` is permitted and meaningful), zero is refused because it
+ * corrects nothing, and the reason is MANDATORY here while optional on an original: a restatement
+ * of agreed work that nobody has to justify is how a record quietly loses its meaning.
+ */
+export const correctMeasurementSchema = z
+  .object({
+    measurementId: z.string().min(1),
+    quantity: z
+      .string()
+      .trim()
+      .regex(/^-?\d+(\.\d{1,6})?$/u, 'quantity must be a signed decimal with at most 6 places')
+      .refine((v) => Number(v) !== 0, 'a correction of zero corrects nothing'),
+    reason: z.string().trim().min(1).max(1000),
+  })
+  .strict();
+export type CorrectMeasurementInput = z.infer<typeof correctMeasurementSchema>;

@@ -1,5 +1,6 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { CommercialParticipant } from '../commercial/commercial.participant';
 import { emitEvent } from '../platform/events';
 import type { Actor } from '../common/actor';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
@@ -36,7 +37,14 @@ export class ActivityParticipant {
   // Phase 4 Task 5 (§E) — labour truth for the block handover is read through the QUERY CONTRACT
   // (the declared `activities → labour` read edge; LabourRequirementQuery injects only Prisma, so
   // no DI cycle with the labour services that use this participant).
-  constructor(private readonly labourQuery: LabourRequirementQuery) {}
+  constructor(
+    private readonly labourQuery: LabourRequirementQuery,
+    // Phase 5 Task 3 (§D/§K) — `activities.workflowParticipants` gains `commercial`, so a sign-off
+    // cannot be withdrawn while measured work rests on it. Cycle-exempt participant channel: the
+    // commercial participant injects capabilities + the budget service, neither of which reaches
+    // back into activities.
+    private readonly commercial: CommercialParticipant,
+  ) {}
 
   /**
    * The sign-off TARGET a closing-inspection decide reads before its command runs: the linked
@@ -88,6 +96,11 @@ export class ActivityParticipant {
    */
   async revertSignOff(tx: Prisma.TransactionClient, params: { projectId: string; activityId: string }): Promise<{ name: string }> {
     const { projectId, activityId } = params;
+    // Phase 5 Task 3 (§D/§K) — the WITHDRAWAL GUARD, asked BEFORE the sign-off moves. It lives
+    // HERE rather than at the calling inspection so the rule covers every path that can revert a
+    // sign-off, present and future (§0b: same rule, every site) — a guard the next caller has to
+    // remember is a guard that will eventually be missed. Off-pilot it is a no-op.
+    await this.commercial.assertWorkEvidenceRevisable(tx, projectId, activityId);
     const revert = await tx.activity.updateMany({
       where: { id: activityId, projectId, status: { in: ['awaiting_signoff', 'done'] } },
       data: { status: 'in_progress', doneAt: null },
@@ -199,6 +212,64 @@ export class ActivityParticipant {
       select: { revision: true, activityId: true, status: true, type: true },
     });
     return head ? { ...head, type: String(head.type) } : null;
+  }
+
+  /**
+   * Phase 5 Task 3 (§D) — the MEASURABLE target: an activity whose closing sign-off currently
+   * stands, read UNDER THE ROW LOCK.
+   *
+   * §D is explicit that a plain status query will not do, and names the race: a measurement reads
+   * `done`, a closing-inspection rejection commits `revertSignOff` (`done → in_progress`), and the
+   * IMMUTABLE measurement commits anyway — so a bill later rests on work whose sign-off was
+   * withdrawn, with no path to walk the measurement back. Taking the activity row `FOR UPDATE`
+   * before reading its status makes the answer authoritative for the rest of the caller's
+   * transaction: `revertSignOff` CASes the same row, so whichever reaches it first wins and the
+   * loser blocks and then re-reads a status it can trust.
+   *
+   * Returns the status rather than throwing, so the commercial caller phrases the refusal in its
+   * own terms — Activities does not know what a measurement is.
+   */
+  async measurableTarget(
+    db: Prisma.TransactionClient,
+    params: { projectId: string; activityId: string },
+  ): Promise<{ id: string; name: string; status: string } | null> {
+    const { projectId, activityId } = params;
+    // SERIALIZE first, then read — same discipline as `labourRequirementHead`.
+    const locked = await db.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Activity"
+      WHERE "projectId" = ${projectId} AND "id" = ${activityId} FOR UPDATE`;
+    if (locked.length === 0) return null;
+    const row = await db.activity.findFirstOrThrow({
+      where: { id: activityId, projectId },
+      select: { id: true, name: true, status: true },
+    });
+    return { id: row.id, name: row.name, status: String(row.status) };
+  }
+
+  /**
+   * Phase 5 Task 3 (§0 `OUTPUT`) — does this `ActivityWorkOutput` exist AND belong to this
+   * activity?
+   *
+   * §0 is emphatic that this is a PREDICATE, not a pool: it answers "is there recorded progress
+   * evidence for this measurement?" and is never drawn down. A mason line and a helper line on the
+   * same activity legitimately measure against ONE 100 sqm output, each bounded by its own
+   * `EFFORT` — consuming the output for the first would block the second, or push a team to
+   * fabricate a duplicate output row to bill honest attendance.
+   *
+   * The composite FK already proves existence and project containment; what needs asking here is
+   * whether the row belongs to the measurement's OWN activity, because progress recorded elsewhere
+   * is evidence for other work.
+   */
+  async workOutputBelongsToActivity(
+    db: Prisma.TransactionClient,
+    params: { projectId: string; activityId: string; outputId: string },
+  ): Promise<boolean> {
+    const { projectId, activityId, outputId } = params;
+    const row = await db.activityWorkOutput.findFirst({
+      where: { projectId, id: outputId, activityId },
+      select: { id: true },
+    });
+    return row !== null;
   }
 
   /**

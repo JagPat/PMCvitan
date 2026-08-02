@@ -13,10 +13,10 @@ narrative and may lag behind reality.
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
 task: 3
-task_state: not_started
+task_state: in_review
 work_item: phase-5-task-3
 reviewed_merge: b480e0e
-open_pr: none
+open_pr: 272
 next_task: phase-5-task-4
 blocking_directive: none
 updated: 2026-08-02
@@ -108,7 +108,7 @@ deferral ledger — a task PR must carry its section forward rather than re-deri
 |---|---|---|
 | 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | merged — PR #268 at `main` `3ae5591` with a fresh clean Codex +1 on the exact head `e08a6a1` (four correction rounds, twelve findings, all reproduce-first); evidence `docs/reviews/phase-5-t1-commercial-packet.md` + `docs/reviews/pr-268-convergence.md` |
 | 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | merged — PR #270 at `main` `b480e0e` with a fresh clean Codex +1 on the exact head `0a6b6d7` (four correction rounds, thirteen findings, all reproduce-first); evidence `docs/reviews/phase-5-t2-budget-packet.md` + `docs/reviews/pr-270-convergence.md` |
-| 3 | `Measurement` (§D) + the `revertSignOff` withdrawal guard | not_started — **STOP** |
+| 3 | `Measurement` (§D) + the `revertSignOff` withdrawal guard | in_review — draft PR #272 from `main` `96b0713`; §D carried forward verbatim, the measurement fact + both withdrawal guards + the COMMITTED labour consumption term in, probes 24/24. FOUR Codex rounds returned fifteen findings, all fixed forward reproduce-first; convergence audit `docs/reviews/pr-272-convergence.md` names four roots (round 4's headline: round 3 stated closure C and applied it only where the reviewer pointed, so round 4 SWEEPS every reference on the table). **STOP** = a narrow review AFTER this task, before any bill can consume a measurement |
 | 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | not_started |
 | 5 | Three-way verification (§E) + `verified` + dispute + certification + bound 3 + §H + SoD | not_started — **STOP** |
 | 6 | Payment approval + payment records + reversals + bounds 4–5 + approval limits | not_started |

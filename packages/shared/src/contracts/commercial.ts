@@ -26,6 +26,12 @@ export const COMMERCIAL_COMMANDS = [
   'commercial.attribution.reattribute',
   // Phase 5 Task 2 (§B) — one command for v1 and every revision; the chain is immutable.
   'commercial.budget.set',
+  // Phase 5 Task 3 (§D) — take a measurement, and CORRECT one with a signed delta. Two commands
+  // rather than one: an original and a correction carry different authority questions and a
+  // correction must name the row it walks back, so one command would have to branch on a nullable
+  // field to decide which rules apply.
+  'commercial.measurement.take',
+  'commercial.measurement.correct',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -35,6 +41,8 @@ export const COMMERCIAL_QUERIES = [
   'commercial.attributions',
   // Phase 5 Task 2 — BUDGET/COMMITTED per head plus any OPEN over-budget exception.
   'commercial.budget',
+  // Phase 5 Task 3 — the §D measurement register for a labour PO line, with its folded total.
+  'commercial.measurements',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -98,7 +106,7 @@ export interface BudgetExceptionDto {
    *  case (§G authorises more than the ordered quantity and no commitment releases against the
    *  extra units); `receipt_progress` is a receipt recorded, rejected or reversed, which re-prices
    *  a CLOSED-SHORT line's released remainder with nothing accepted at all. */
-  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress';
+  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement';
   raisedAt: string;
   raisedById: string;
   clearedAt: string | null;
@@ -128,4 +136,53 @@ export interface CommercialActivationPlan {
   labourLines: { labourPoLineId: string; costHeadCode: string }[];
   /** Attributable justification, recorded on every backfilled row. */
   reason: string;
+}
+
+/**
+ * Phase 5 Task 3 (§D) — one measurement row. Quantities are decimal STRINGS at `Decimal(18,6)`:
+ * person-shifts are divisible (a half shift is real) and §A forbids a float64 round trip.
+ *
+ * `quantity` is SIGNED — a correction is a negative row, never an edit — so a reader that sums
+ * this column gets `MEASURED(poLine)` with no stored balance to drift.
+ */
+export interface MeasurementDto {
+  id: string;
+  labourPoLineId: string;
+  activityId: string;
+  /** person-shifts; negative on a correction */
+  quantity: string;
+  /** the measurement this row adjusts, or null for an original */
+  correctsId: string | null;
+  reason: string | null;
+  measuredOn: string;
+  /** the `ActivityWorkOutput` cited as progress EVIDENCE (§0 — a predicate, never drawn down) */
+  citedOutputId: string;
+  evidenceMediaId: string | null;
+  takenAt: string;
+  takenById: string;
+}
+
+/** The `commercial.measurements` read for ONE labour PO line: the rows and what they fold to. */
+export interface MeasurementRegisterDto {
+  labourPoLineId: string;
+  rows: MeasurementDto[];
+  /** `MEASURED(poLine)` — the fold, never a stored total */
+  measured: string;
+  /** `EFFORT(poLine)` — worked minutes normalised to person-shifts; the quantity cap */
+  effort: string;
+  /**
+   * the quantity ORDERED on this line, frozen at issue. Historical fact, NOT the current cap —
+   * see `liveAuthorityPersonShiftQty`.
+   */
+  orderedPersonShiftQty: number;
+  /**
+   * what the line authorises NOW, and the cap the write path actually enforces (Codex round-4 P2).
+   * `0` once the supplier commitment is DEFAULTED — the source reneged and the line can never be
+   * re-committed — and the committed quantity once the version is CLOSED SHORT. Reporting only the
+   * frozen order made the register state a cap that was not real: a 10-shift line closed short to 4
+   * showed 10 while every measurement above 4 was refused.
+   */
+  liveAuthorityPersonShiftQty: number;
+  /** whether this line's supplier commitment was defaulted (why the live authority can be `0`) */
+  defaulted: boolean;
 }

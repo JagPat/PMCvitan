@@ -190,6 +190,94 @@ export class CommercialParticipant {
     await this.evaluateHeads(tx, projectId, actor, [active.costHeadCode], raisedBy);
   }
 
+  /**
+   * Phase 5 Task 3 (§D/§E) — WITHDRAWAL GUARD, activities side. `revertSignOff` asks this BEFORE
+   * moving a signed-off activity back to `in_progress`.
+   *
+   * A measurement is immutable and rests on a closing sign-off. If a rejected closing inspection
+   * could withdraw that sign-off freely, the measurement would stand against work the practice no
+   * longer says is complete — and from Task 4 a bill rests on it, from Task 5 an append-only
+   * certificate. §K assigns this guard to §E, but §D is where the fact it guards first EXISTS, so
+   * it ships here: the alternative is two tasks in which a rejection silently strands a live
+   * measurement with nothing to adjudicate it.
+   *
+   * The ordering it enforces is the same one §E requires for accepted material: withdraw the
+   * evidence by CORRECTING the measurement to zero first (an attributable signed delta), then
+   * revert the sign-off. Refusing is not obstruction — it is insisting the evidence trail be
+   * unwound in the order it was built.
+   *
+   * Off-pilot this is a no-op, so a non-commercial project's closing-inspection rejection behaves
+   * byte-for-byte as it did before Phase 5.
+   */
+  async assertWorkEvidenceRevisable(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    activityId: string,
+  ): Promise<void> {
+    if (!(await this.isActive(tx, projectId))) return;
+    // MEASURED per line, folded from the signed rows — a line corrected back to zero no longer
+    // rests on this sign-off and must not block the revert.
+    const rows = await tx.measurement.findMany({
+      where: { projectId, activityId },
+      select: { labourPoLineId: true, quantity: true },
+    });
+    if (rows.length === 0) return;
+    const byLine = new Map<string, Prisma.Decimal>();
+    for (const r of rows) {
+      byLine.set(r.labourPoLineId, (byLine.get(r.labourPoLineId) ?? new Prisma.Decimal(0)).add(r.quantity));
+    }
+    const live = [...byLine.entries()].filter(([, total]) => total.greaterThan(0));
+    if (live.length === 0) return;
+    const named = live.map(([lineId, total]) => `${lineId} (${total.toString()} person-shifts)`).join(', ');
+    throw new ConflictException(
+      `This activity's sign-off carries live measurements — ${named}. Correct them to zero first, ` +
+      'then withdraw the sign-off: measured work may not be left resting on evidence that no longer stands',
+    );
+  }
+
+  /**
+   * Phase 5 Task 3 (§D/§G) — WITHDRAWAL GUARD, labour side. The labour close-short and amend paths
+   * ask this before REDUCING a line's ordered person-shifts.
+   *
+   * §D lets Task 3 record immutable measurements that consume ordered authority before any bill
+   * exists. Measure 100 shifts on a 100-shift labour PO, then close short to 40, and the ordered
+   * cap moves underneath measurements that were valid when taken — Task 4 would then dispute the
+   * vendor's honest 100-shift claim against an authority reduced after the work was measured.
+   *
+   * The certification lock cannot cover this: it serializes a BILL against the ordered line, and
+   * here there is no bill yet. So the floor is the measured quantity itself, named in the refusal,
+   * and closing short TO the measured quantity or above is permitted — the practice may still end
+   * an obligation, just not below work it has already agreed happened.
+   */
+  async assertOrderedNotBelowMeasured(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    lines: ReadonlyArray<{ labourPoLineId: string; orderedPersonShiftQty: number }>,
+  ): Promise<void> {
+    if (lines.length === 0) return;
+    if (!(await this.isActive(tx, projectId))) return;
+    const rows = await tx.measurement.findMany({
+      where: { projectId, labourPoLineId: { in: lines.map((l) => l.labourPoLineId) } },
+      select: { labourPoLineId: true, quantity: true },
+    });
+    if (rows.length === 0) return;
+    const measured = new Map<string, Prisma.Decimal>();
+    for (const r of rows) {
+      measured.set(r.labourPoLineId, (measured.get(r.labourPoLineId) ?? new Prisma.Decimal(0)).add(r.quantity));
+    }
+    for (const line of lines) {
+      const total = measured.get(line.labourPoLineId);
+      if (!total) continue;
+      if (new Prisma.Decimal(line.orderedPersonShiftQty).lessThan(total)) {
+        throw new ConflictException(
+          `Line ${line.labourPoLineId} already carries ${total.toString()} measured person-shifts — ` +
+          `the ordered quantity cannot be reduced to ${line.orderedPersonShiftQty}. Close short to ` +
+          'the measured quantity or above, or correct the measurement first',
+        );
+      }
+    }
+  }
+
   /** Off-pilot this whole surface does not exist: the caller's transaction is untouched (§D). */
   async isActive(tx: Prisma.TransactionClient, projectId: string): Promise<boolean> {
     return this.capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY, tx);
@@ -375,6 +463,26 @@ export class CommercialParticipant {
     });
     if (count === 0) {
       throw new ConflictException('This attribution was superseded concurrently — reload and retry');
+    }
+  }
+
+  /**
+   * Codex round-4 P2 — refuse deleting a photo cited as MEASUREMENT evidence, invoked BY the owning
+   * media module's delete transaction (the cleared inventory / labour-attendance / activity-output
+   * pattern). Task 3 gave the measurement an `evidenceMediaId` FK but no guard here, so deleting a
+   * cited photo raised a raw `P2003` and returned a 500 — an internal error where every other
+   * evidence-backed fact returns a controlled refusal.
+   *
+   * A measurement is FULLY immutable and becomes a payable quantity, so this is the strictest case
+   * of the rule the other three already state: the photo backing a number somebody will be paid
+   * against cannot quietly disappear from under it.
+   */
+  async assertMediaDisposable(tx: Prisma.TransactionClient, projectId: string, mediaId: string): Promise<void> {
+    const cited = await tx.measurement.count({ where: { projectId, evidenceMediaId: mediaId } });
+    if (cited > 0) {
+      throw new ConflictException(
+        `This photo is evidence on ${cited} measurement(s) — a measurement is immutable and becomes a payable quantity, so its evidence cannot be deleted (§D)`,
+      );
     }
   }
 }
