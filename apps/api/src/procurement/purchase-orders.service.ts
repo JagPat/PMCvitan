@@ -210,14 +210,23 @@ export class PurchaseOrdersService {
         );
       }
     }
+    // §B (Codex round-3 P2) — an amend is ONE act made of THREE mutations, so its budget effect is
+    // evaluated ONCE at the end, over the union of every head they touch. Evaluating after each
+    // step reads a state that never existed at commit: after `replaceAttribution` alone the old
+    // version is already non-live and the fresh lines are not attributed yet, so a ₹120 breach
+    // amended to a different ₹120 order momentarily reads ₹60 and CLEARS — and the register is
+    // append-only, so that false recovery would be permanent evidence.
+    const touched: string[] = [];
     // the amended obligation is a COMMITMENT that changed size, not a reclassification
-    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, 'commitment');
+    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, 'commitment', touched);
     await this.commercial.attribute(
       tx, projectId, identity,
       fresh.map((f) => ({ target: { poLineId: f.poLineId }, costHeadCode: f.costHeadCode, reason })),
+      touched,
     );
     const dropped = priorLines.filter((l) => !carried.has(l.id)).map((l) => ({ poLineId: l.id }));
-    await this.commercial.releaseAttribution(tx, projectId, identity, dropped, reason);
+    await this.commercial.releaseAttribution(tx, projectId, identity, dropped, reason, touched);
+    await this.commercial.evaluateDeferred(tx, projectId, identity, touched, 'commitment');
   }
 
   private async begin(projectId: string, user: AuthUser): Promise<{ actor: Actor; scope: CommandScope }> {

@@ -68,33 +68,79 @@ export class CommercialParticipant {
   }
 
   /**
-   * §B — RE-EVALUATE the head carrying one material PO line, because an inventory ACCEPTANCE can
-   * move headroom (Codex round-2 P2).
+   * DEFERRAL (Codex round-3 P2). A single lifecycle act sometimes needs SEVERAL of the mutations
+   * above, and evaluating after each one reads a state that never existed at commit.
    *
-   * Up to the ordered quantity acceptance is exposure-NEUTRAL, and the arithmetic says why:
-   * `committedAmountBase = rate × qty + tax + freight`, so the consumed part subtracted from
-   * `COMMITTED` is exactly the value added to received-not-billed. The buckets hand the money to
-   * each other and the total does not move.
+   * The amend is the case that proves it. `replaceOnAmend` carries lines forward, attributes the
+   * fresh ones, then releases the dropped ones. Evaluating after the first step sees only the
+   * carried lines — the old version is already non-live and the new lines are not attributed yet —
+   * so a ₹120 two-line breach amended to a different ₹120 two-line order momentarily reads ₹60,
+   * CLEARS the exception, and the next step re-raises it. The register is APPEND-ONLY, so that
+   * clear/re-raise pair is permanent evidence of a headroom recovery that never happened.
    *
-   * OVERAGE breaks that symmetry, and legitimately: §G authorises accepting more than `qty`, the
-   * extra units are valued at the frozen rate, and nothing releases a matching amount of
-   * commitment — a ₹100 order accepted at 110 units exposes ₹110 against a ₹100 budget. That is
-   * new obligation created at the RECEIPT, so under §B's rule — "the exception is raised from
-   * EVERY write that can move headroom" — acceptance is a headroom-moving write and must raise
-   * here, in the accepting transaction. Reversing that acceptance is the same write in the other
-   * direction and CLEARS it.
-   *
-   * The head is resolved from commercial's OWN attribution register: inventory knows the PO line,
-   * never the cost head, so nothing outside this module has to learn the mapping.
+   * When a caller passes a sink, the touched heads accumulate into it and NOTHING is evaluated;
+   * the caller evaluates once, over the union, when every mutation of that act is applied. Passing
+   * no sink evaluates immediately, which is right for a single-mutation act — so the default stays
+   * the safe one and only a multi-step caller has to opt in.
    */
-  async evaluateForPoLine(
+  private async evaluate(
     tx: Prisma.TransactionClient,
     projectId: string,
     actor: AttributionActor,
-    poLineId: string,
+    heads: readonly string[],
+    raisedBy: HeadroomMover,
+    defer?: string[],
+  ): Promise<void> {
+    if (defer) {
+      defer.push(...heads);
+      return;
+    }
+    await this.evaluateHeads(tx, projectId, actor, heads, raisedBy);
+  }
+
+  /** Settle a deferred act: evaluate the union of every head its mutations touched, ONCE. */
+  async evaluateDeferred(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    heads: readonly string[],
     raisedBy: HeadroomMover,
   ): Promise<void> {
-    const active = await this.activeFor(tx, projectId, { poLineId });
+    await this.evaluateHeads(tx, projectId, actor, heads, raisedBy);
+  }
+
+  /**
+   * §B — RE-EVALUATE the head carrying one PO line (material OR labour), because writes OUTSIDE
+   * the attribution lifecycle can move headroom too.
+   *
+   * Which ones is not a judgement call: it is derivable from what the fold READS. `positionsFor`
+   * consumes `receivedQty` and `ACCEPTED` on the material side and `committedQty` on the labour
+   * side, so every write that changes one of those changes exposure. Codex round 2 found the
+   * acceptance case, round 3 found the other three (receipt progress, receipt reversal, labour
+   * capacity default) — the same root each time, which is why the closure is now derived from the
+   * fold's input set rather than from a hand-kept list of sites. See
+   * `commercial.contract.test.ts` and `docs/reviews/pr-270-convergence.md`.
+   *
+   * Up to the ordered quantity, acceptance is exposure-NEUTRAL, and the arithmetic says why:
+   * `committedAmountBase = rate × qty + tax + freight`, so the consumed part subtracted from
+   * `COMMITTED` is exactly the value added to received-not-billed. The buckets hand the money to
+   * each other and the total does not move. OVERAGE breaks that symmetry, legitimately: §G
+   * authorises accepting more than `qty`, the extra units are valued at the frozen rate, and
+   * nothing releases a matching commitment. A closed-short line moves for a different reason —
+   * its released remainder is a function of `receivedQty` (material) or `committedQty` (labour),
+   * so a later receipt reversal or capacity default silently changes the released amount.
+   *
+   * The head is resolved from commercial's OWN attribution register: the calling module knows the
+   * PO line, never the cost head, so nothing outside this module has to learn the mapping.
+   */
+  async evaluateForTarget(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    target: AttributionTarget,
+    raisedBy: HeadroomMover,
+  ): Promise<void> {
+    const active = await this.activeFor(tx, projectId, target);
     // an UNATTRIBUTED line carries no head to evaluate — nothing moved that a budget can measure
     if (!active) return;
     await this.evaluateHeads(tx, projectId, actor, [active.costHeadCode], raisedBy);
@@ -152,6 +198,7 @@ export class CommercialParticipant {
     projectId: string,
     actor: AttributionActor,
     rows: ReadonlyArray<{ target: AttributionTarget; costHeadCode: string; reason: string }>,
+    defer?: string[],
   ): Promise<void> {
     if (rows.length === 0) return;
     this.assertAttributeAuthority(actor);
@@ -174,7 +221,7 @@ export class CommercialParticipant {
         },
       });
     }
-    await this.evaluateHeads(tx, projectId, actor, rows.map((r) => r.costHeadCode), 'commitment');
+    await this.evaluate(tx, projectId, actor, rows.map((r) => r.costHeadCode), 'commitment', defer);
   }
 
   /**
@@ -199,6 +246,7 @@ export class CommercialParticipant {
     actor: AttributionActor,
     rows: ReadonlyArray<{ from: AttributionTarget; to: AttributionTarget; costHeadCode?: string; reason: string }>,
     raisedBy: HeadroomMover,
+    defer?: string[],
   ): Promise<void> {
     if (rows.length === 0) return;
     this.assertAttributeAuthority(actor);
@@ -227,7 +275,7 @@ export class CommercialParticipant {
     }
     // §B: a replacement recomputes BOTH the source and the target. Only recomputing the target
     // leaves the source permanently flagged for an obligation it no longer carries.
-    await this.evaluateHeads(tx, projectId, actor, touched, raisedBy);
+    await this.evaluate(tx, projectId, actor, touched, raisedBy, defer);
   }
 
   /**
@@ -242,6 +290,7 @@ export class CommercialParticipant {
     actor: AttributionActor,
     targets: ReadonlyArray<AttributionTarget>,
     reason: string,
+    defer?: string[],
   ): Promise<void> {
     if (targets.length === 0) return;
     this.assertAttributeAuthority(actor);
@@ -255,7 +304,7 @@ export class CommercialParticipant {
     }
     // a cancelled obligation frees headroom — the exception it caused must CLEAR, or the Inbox
     // keeps an action for a breach that no longer exists
-    await this.evaluateHeads(tx, projectId, actor, touched, 'commitment');
+    await this.evaluate(tx, projectId, actor, touched, 'commitment', defer);
   }
 
   /**

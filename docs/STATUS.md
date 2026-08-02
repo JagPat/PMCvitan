@@ -46,11 +46,20 @@ gates NOTHING: commercial stays a SINK and no readiness verdict consults a
 budget. Two Codex rounds returned seven findings, all fixed forward; the
 convergence audit `docs/reviews/pr-270-convergence.md` names the two roots and
 leaves a mechanical closure for each in
-`apps/api/src/commercial/commercial.contract.test.ts` (every declared command and
-query must be reachable; every headroom-moving write must re-evaluate). Notably
-`acceptance` is §B's FOURTH headroom mover — §G authorises accepting more than
-the ordered quantity and no commitment is released against the overage, so a
-receipt can breach a budget with no purchase-order write anywhere. Evidence:
+`apps/api/src/commercial/commercial.contract.test.ts`. THREE Codex rounds
+returned eleven findings, all fixed forward. Round 2's closure for root B was a
+hand-kept list of six SITES, and round 3 found three more movers it did not
+contain — so the mover set is now DERIVED from what the fold READS
+(`FOLD_INPUTS`, pinned against the `MaterialCommittedLine` read contract), which
+is the difference between a list and a derivation. Notably `acceptance` is §B's
+FOURTH headroom mover (§G authorises accepting more than the ordered quantity and
+no commitment is released against the overage, so a receipt can breach a budget
+with no purchase-order write anywhere), a closed-short line's released remainder
+is a function of `receivedQty`/`committedQty` so receipt reversals and labour
+capacity defaults are movers too, an AMEND evaluates ONCE at the end (an
+intermediate evaluate writes a permanent false clear into an append-only
+register), and the budget READ runs at repeatable-read so it cannot report
+healthy headroom beside the exception it just opened. Evidence:
 `docs/reviews/phase-5-t2-budget-packet.md`.
 
 **One decision is OPEN for the owner and is recorded rather than assumed.** Eight

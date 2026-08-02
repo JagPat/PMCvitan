@@ -1,8 +1,9 @@
 # Phase 5 Task 2 — budget, `COMMITTED`, and the over-budget exception (review packet)
 
 **Branch** `claude/phase5-task2` · **base** `main` `edb7f08` · **PR** #270
-**Convergence audit** `docs/reviews/pr-270-convergence.md` (two finding-bearing heads, seven
-findings, two roots, two mechanical closures)
+**Convergence audit** `docs/reviews/pr-270-convergence.md` (three finding-bearing heads, eleven
+findings, three roots, three mechanical closures — including the honest record that round 2's
+closure for root B was itself the wrong shape, which is why round 3 found three more of it)
 
 ## Vision alignment
 
@@ -24,7 +25,7 @@ module. **No committed amount is copied anywhere.**
 | §B | `BudgetLine` — versioned, immutable, one live chain per head, `amount >= 0` | `20270405000000_phase5_t2_budget` |
 | §B | `BudgetException` — a lifecycle observation with ONE permitted transition (`open → cleared`), one open row per head | `20270410000000_phase5_t2_budget_exception` |
 | §B | `commercial.budget.set` — one command for v1 and every revision; supersede-and-append atomically, no-op revisions refused | `commercial-budget.service.ts` |
-| §B | raise-or-clear in the SAME transaction, from all four headroom movers | `commercial-budget.service.ts#evaluate` |
+| §B | raise-or-clear in the SAME transaction, from every write the fold's inputs make a mover | `commercial-budget.service.ts#evaluate` |
 | §C/§0 | `COMMITTED(costHead)` — OUTSTANDING obligation, folded through `ProcurementQuery`/`LabourQuery`/`InventoryQuery` | `commercial-budget.query.ts` |
 | §J | received-not-billed, and `headroom = BUDGET − Σ exposure` | `commercial-budget.query.ts` |
 | §J | `GET …/commercial/budget` — every head's position worst-first with any OPEN exception | `commercial.controller.ts` |
@@ -68,9 +69,29 @@ Tasks 4–6 facts that do not exist yet. Headroom therefore sums the buckets tha
 measure. Probe 5bm asserts only the claim that is RED against `BUDGET − COMMITTED` today; the limit
 is stated here rather than left for a reader to discover.
 
-## The four headroom movers
+## The headroom movers, derived from the fold's inputs
 
-§B's rule is "the exception is raised from EVERY write that can move headroom". Four writes can:
+§B's rule is "the exception is raised from EVERY write that can move headroom". **Which writes
+those are is not a judgement call — it is a function of what the fold READS.** Round 2 answered it
+with a hand-kept list of six sites and round 3 found three more, so the mover set is now derived:
+`FOLD_INPUTS` in `commercial.contract.test.ts` names each field `positionsFor` consumes and every
+write path that changes it, and is PINNED against the `MaterialCommittedLine` read contract, so a
+fold that starts reading a new field fails at the desk until its writers are named.
+
+| fold input | why it moves exposure | writers |
+|---|---|---|
+| `committedAmountBase` | the obligation itself, entering/leaving with the attribution | the three participant mutations (all eight PO lifecycle sites route through them) |
+| `receivedQty` | a closed-short line releases `qty − receivedQty` | `recordReceipt`, `reject`, `reverse` |
+| `ACCEPTED` | the consumed term; overage raises exposure with nothing released | `accept`, `reverse` |
+| `committedQty` (labour) | a closed-short labour line releases `personShiftQty − committedQty` | `commitCapacity`, `defaultCapacity` |
+| `BUDGET` | authority down breaches with no commitment write anywhere | `setBudget` |
+
+**Ordering is part of the rule.** An amend is ONE act made of THREE mutations, so its budget effect
+is evaluated ONCE at the end over the union of touched heads. Evaluating between them reads a state
+that existed at no instant of the committed transaction, and the register is append-only, so the
+resulting clear/re-raise pair would be permanent evidence of a recovery that never happened.
+
+The four exception LABELS the movers produce:
 
 | Mover | Why | Site |
 |---|---|---|
@@ -86,11 +107,11 @@ the convergence audit records why the enumeration went stale and how it is now m
 
 | Gate | Result |
 |---|---|
-| `pnpm check` | **EXIT 0** — web 543/543, API 690/690 (+9 contract closure), build clean |
-| Full integration suite, pristine migrated DB | **74 files / 736 tests passed** |
-| `phase5-t2-budget.test.ts` | **11/11** — 5am/5af, 5aq, 5bu, 5bw, 5bm, 5bq, acceptance-overage, sub-cent, unbudgeted, authority/idempotency, read surface, §D |
+| `pnpm check` | **EXIT 0** — web 543/543, API 708/708, build clean |
+| Full integration suite, pristine migrated DB | **74 files / 740 tests passed** |
+| `phase5-t2-budget.test.ts` | **13/13** — 5am/5af, 5aq, 5bu, 5bw, 5bm, 5bq, acceptance-overage, closed-short receipt reversal, amend-evaluates-once, sub-cent, unbudgeted, authority/idempotency, read surface, §D |
 | `upgrade-proof.sh` | **PASSED** — both tables ROW-FREE over the legacy fixture; a coherent budget chain ACCEPTED (the seals are precise, not merely strict); 14 Task-2 forgeries rejected; every prior Phase-1…Phase-5-T1 rejection surviving |
-| `commercial.contract.test.ts` | **9/9**, and proven RED against both defects it closes |
+| `commercial.contract.test.ts` | **18/18**, and proven RED against every defect it closes — reverting all four round-3 fixes fails exactly four assertions |
 
 ### Reproduce-first, per finding
 
@@ -103,6 +124,10 @@ the convergence audit records why the enumeration went stale and how it is now m
 | Amend stamped `reattribution` | caller could not name the mover | `raisedBy` is a required parameter |
 | Sub-cent headroom aborts the write | decision on full precision | exposure rounded ONCE at the fold |
 | `commercial.budget` unreachable | no route | `GET …/commercial/budget`; closure A pins it |
+| Labour default leaves a stale breach | probe: default frees the remainder, exception stands | `defaultCapacity` evaluates; `FOLD_INPUTS` pins it |
+| Receipt reversal leaves a stale breach | probe: closed-short reversal frees ₹100, exception stands | every `receivedQty` writer evaluates |
+| Amend writes a false clear/re-raise pair | probe: one exception becomes cleared + re-raised | deferral sink; one settle at the end |
+| Read can contradict itself | no isolation level | `RepeatableRead`, pinned by the contract test |
 
 ## Tripwires advanced in this PR
 

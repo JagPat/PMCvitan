@@ -62,11 +62,14 @@ export class CommercialBudgetService {
    * exposure, the received-not-billed value, the resulting headroom, and the OPEN exception if
    * one stands.
    *
-   * Folded inside ONE transaction because the position spans four owners (commercial's budget and
-   * attribution rows, procurement's and labour's frozen PO-line snapshots, inventory's accepted
-   * ledger). Reading them across separate statements would let a PO issue land mid-read and report
-   * a headroom that never existed at any instant — a number nobody could reconcile against the
-   * exception register.
+   * Folded inside ONE **repeatable-read** transaction because the position spans four owners
+   * (commercial's budget and attribution rows, procurement's and labour's frozen PO-line snapshots,
+   * inventory's accepted ledger). The isolation level is load-bearing, not decoration (Codex
+   * round-3 P2): under PostgreSQL's default READ COMMITTED each STATEMENT takes its own snapshot,
+   * so a PO issue committing between the fold and the exception read returns healthy headroom
+   * alongside the freshly opened exception for that same head — a page that contradicts itself and
+   * that nobody can reconcile against the register. One snapshot makes every figure in the response
+   * true at one instant.
    *
    * The read does NOT take `lockProjectReadiness`. It reports; it decides nothing. Blocking every
    * budget page-load behind the lock that serializes the PO lifecycle would make reporting contend
@@ -104,7 +107,7 @@ export class CommercialBudgetService {
         names: new Map(heads.map((h) => [h.code, h.name])),
         open: exceptions,
       };
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 
     const exceptionOf = new Map(open.map((e) => [e.costHeadCode, serializeException(e)]));
     const rows: CostHeadPositionDto[] = [...positions.folded.values()].map((p) => ({

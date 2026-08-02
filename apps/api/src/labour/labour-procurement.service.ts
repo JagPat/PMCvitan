@@ -228,14 +228,38 @@ export class LabourProcurementService {
         );
       }
     }
+    // §B (Codex round-3 P2) — ONE act, THREE mutations, evaluated ONCE at the end over the union
+    // of the heads they touch. See the material twin: an intermediate evaluate reads a state that
+    // never existed at commit and writes a permanent false clear into an append-only register.
+    const touched: string[] = [];
     // the amended obligation is a COMMITMENT that changed size, not a reclassification
-    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, 'commitment');
+    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, 'commitment', touched);
     await this.commercial.attribute(
       tx, projectId, identity,
       fresh.map((f) => ({ target: { labourPoLineId: f.labourPoLineId }, costHeadCode: f.costHeadCode, reason })),
+      touched,
     );
     const dropped = priorLines.filter((l) => !carried.has(l.id)).map((l) => ({ labourPoLineId: l.id }));
-    await this.commercial.releaseAttribution(tx, projectId, identity, dropped, reason);
+    await this.commercial.releaseAttribution(tx, projectId, identity, dropped, reason, touched);
+    await this.commercial.evaluateDeferred(tx, projectId, identity, touched, 'commitment');
+  }
+
+  /**
+   * §B (Codex round-3 P2) — the LABOUR capacity headroom movers. The commercial fold prices a
+   * closed-short labour line's RELEASED remainder from `personShiftQty - committedQty`, so both
+   * commands that write `committedQty` change exposure. Committing capacity on a closed-short line
+   * re-instates obligation; DEFAULTING it releases the whole remainder, and without this the open
+   * exception would stand forever against a commitment the supplier already reneged on.
+   *
+   * Derived from the fold's input set, not from a list of sites — see `commercial.contract.test.ts`.
+   */
+  private async evaluateBudgetForLine(
+    tx: Prisma.TransactionClient, projectId: string, actor: Actor, role: string, labourPoLineId: string,
+  ): Promise<void> {
+    if (!(await this.commercial.isActive(tx, projectId))) return;
+    await this.commercial.evaluateForTarget(
+      tx, projectId, { actorId: actor.actorId, role }, { labourPoLineId }, 'commitment',
+    );
   }
 
   private async begin(projectId: string, user: AuthUser): Promise<{ actor: Actor; scope: CommandScope }> {
@@ -1103,6 +1127,7 @@ export class LabourProcurementService {
         // move together, so the committed slice stays allocated (§F bound 2) across the PO lifecycle.
         await tx.labourPurchaseOrderLine.updateMany({ where: { projectId, id: line.id }, data: { committedQty: line.personShiftQty } });
         await this.recomputeVersionStatus(tx, projectId, line.poVersionId);
+        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, line.id);
         await recordAudit(tx, { projectId, actor, action: 'labour.commitment.commit', entity: 'CapacityCommitment', entityId: commitment.id });
         const full = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitment.id }, include: { promises: true } });
         const ev = await emitEvent(tx, {
@@ -1167,6 +1192,7 @@ export class LabourProcurementService {
         const defaulted = await tx.capacityCommitment.findFirstOrThrow({ where: { projectId, id: commitmentId }, select: { poLineId: true, poLine: { select: { poVersionId: true, requisitionLineId: true, requisitionId: true } } } });
         await tx.labourPurchaseOrderLine.updateMany({ where: { projectId, id: defaulted.poLineId }, data: { committedQty: 0 } });
         await this.recomputeVersionStatus(tx, projectId, defaulted.poLine.poVersionId);
+        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, defaulted.poLineId);
         // R2 — the freed slice's requisition line must reflect its now-ZERO live allocation: a
         // defaulted PO line covers nothing (it can never be re-committed), so the line reopens to
         // 'open' whether the version returned to issued/partially_committed or was closed short —

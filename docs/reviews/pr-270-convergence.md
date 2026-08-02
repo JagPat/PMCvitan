@@ -1,13 +1,18 @@
 # PR #270 — architectural convergence audit (Phase 5 Task 2)
 
-Two finding-bearing heads, seven findings. Per `CLAUDE.md`, the third head is not another isolated
-patch: this audit names the ROOTS the seven findings share, and each root leaves a mechanical
-closure behind so it cannot recur as a review round.
+Three finding-bearing heads, eleven findings. Per `CLAUDE.md`, the corrections are not isolated
+patches: this audit names the ROOTS the findings share, and each root leaves a mechanical closure
+behind so it cannot recur as a review round.
 
 | Head | Findings | |
 |---|---|---|
 | `56be595` | 3 | 1×P2 arithmetic, 2×P1 unreachable surface |
 | `bc95efe` | 4 | 3×P2 (one arithmetic, one label, one mover), 1×P2 unreachable surface |
+| `f28a8fd` | 4 | 3×P2 movers/ordering, 1×P2 read snapshot |
+
+**Round 3 is recorded honestly: three of its four findings are root B recurring, and they recurred
+because round 2's closure for root B was itself the wrong shape.** That is written up in full
+below rather than presented as four new patches.
 
 ---
 
@@ -22,6 +27,10 @@ closure behind so it cannot recur as a review round.
 | 5 | `bc95efe` | P2 | PO amend/close-short exceptions were stamped `reattribution` — pointing a PMC at a reclassification that never happened | **B** |
 | 6 | `bc95efe` | P2 | A sub-cent negative headroom is written to `Decimal(18,2)`, PostgreSQL rounds it to `0.00`, and the `headroom < 0` CHECK then ABORTS the write that was merely reporting a rounding artefact | **B** |
 | 7 | `bc95efe` | P2 | `commercial.budget` declared in `COMMERCIAL_QUERIES` with no route — the read the Inbox action needs was unreachable | **A** |
+| 8 | `f28a8fd` | P2 | Labour `defaultCapacity` sets `committedQty` to 0 — a fold input — without evaluating, so a defaulted commitment leaves its breach standing | **B** |
+| 9 | `f28a8fd` | P2 | Reversing a **receipt** changes `receivedQty` — a fold input on a closed-short line — without evaluating; the acceptance-only branch missed it | **B** |
+| 10 | `f28a8fd` | P2 | The amend evaluated after its FIRST of three mutations, reading a state that never existed at commit and writing a permanent false clear/re-raise pair into an append-only register | **B** |
+| 11 | `f28a8fd` | P2 | The budget read transaction had no isolation level, so under READ COMMITTED it could report healthy headroom beside the exception just opened for that same head | **C** |
 
 ---
 
@@ -81,19 +90,75 @@ Findings 5 and 6 are the same shape at two other consumers:
   breach, and treating it as one does not merely mis-report — PostgreSQL rounds `-0.003` to `0.00`,
   the `headroom < 0` CHECK rejects the row, and the *legitimate* budget revision aborts with a 500.
 
-**Closure B — the same contract test.** A `HEADROOM_MOVERS` table enumerates all six sites that can
-change `BUDGET − Σ exposure` and asserts each re-evaluates inside its own transaction, and pins the
-four labels against the `raisedBy` CHECK in the migration. The list is no longer the rule's only
-home. Adding a mover without evaluating now fails here.
-
-Proven RED: removing the `evaluateBudgetForLine` call from `receipts.accept` produces
-*"acceptance (inventory/inventory.service.ts#accept) can move headroom but never re-evaluates —
-§B requires raise-or-clear in the SAME transaction"*.
-
 The fold itself is corrected at the source rather than at each consumer: `positionsFor` now rounds
 exposure ONCE, from the full-precision sum, and derives headroom from that rounded figure — so the
 read surface and the exception register consume one already-money-scaled result and cannot
 disagree, and `headroom = budget − exposure` holds at PostgreSQL by construction.
+
+### Round 2's closure for root B was the wrong shape — and round 3 proved it
+
+Round 2 closed root B with a `HEADROOM_MOVERS` table: six named SITES, each asserted to evaluate.
+Round 3 then found **three more movers that table did not contain** — the labour capacity default,
+the receipt reversal, and the amend's ordering.
+
+That is not bad luck. **A hand-kept list of sites is the same mistake as §B's hand-kept list of
+three writes, one level up.** I replaced "the section names three writes" with "I name six sites",
+and a list is exactly what goes stale when the fold changes. The reviewer's own wording on finding 8
+makes the causation plain: `committedQty` became a fold input when the closed-short RELEASE term was
+written, and everything that writes it became a mover at that moment — whether or not I noticed.
+
+**Closure B (corrected) — derive the mover set from the fold's INPUTS.**
+`FOLD_INPUTS` in `commercial.contract.test.ts` now names each field `positionsFor` consumes and
+every write path that can change it:
+
+| fold input | owner | why it moves exposure | writers |
+|---|---|---|---|
+| `committedAmountBase` | procurement | the obligation itself, entering/leaving with the attribution | the three participant mutations (all eight PO lifecycle sites route through them) |
+| `receivedQty` | procurement | a closed-short line releases `qty − receivedQty` | `recordReceipt`, `reject`, `reverse` |
+| `ACCEPTED` | inventory | the consumed term; overage raises exposure with nothing released | `accept`, `reverse` |
+| `committedQty` | labour | a closed-short labour line releases `personShiftQty − committedQty` | `commitCapacity`, `defaultCapacity` |
+| `BUDGET` | commercial | authority down is a breach with no commitment write anywhere | `setBudget` |
+
+And critically, the table is **pinned against the read contract it derives from**: the test parses
+`MaterialCommittedLine` and fails if the fold gains a field that `FOLD_INPUTS` neither names nor
+classifies as frozen. Teaching the fold to read something new now fails at the desk until its
+writers are named and made to evaluate. That is the difference between a list and a derivation.
+
+Proven RED: reverting all four round-3 fixes fails exactly four assertions —
+`recordReceipt`, `defaultCapacity`, the amend deferral, and the read isolation.
+
+### Ordering is part of the rule (finding 10)
+
+Finding 10 is root B in the time dimension: not *whether* a mover evaluates, but *when*. An amend is
+ONE act made of THREE mutations — carry forward, attribute fresh, release dropped — and evaluating
+after the first reads a state that exists at no instant of the committed transaction. Because the
+exception register is **append-only**, the false clear it writes can never be removed; the history
+would permanently record a headroom recovery that never happened.
+
+So the three participant mutations now take an optional deferral sink: with one, touched heads
+accumulate and nothing is evaluated; the caller settles once, over the union, when every mutation of
+the act is applied. Without one they evaluate immediately, which is correct for a single-mutation
+act — **the default stays the safe one and only a multi-step caller opts in.** Both `replaceOnAmend`
+sites (material and labour) are pinned to pass the sink to all three calls and to settle exactly
+once.
+
+---
+
+## Root C — a multi-owner read needs one snapshot (finding 11)
+
+The budget read folds four owners' tables across several statements. Under PostgreSQL's default
+READ COMMITTED **each statement takes its own snapshot**, so a PO issue committing mid-read returns
+healthy headroom beside the exception it just opened for that same head — a page that contradicts
+itself, and that nobody can reconcile against the register.
+
+This is a distinct root, not root B: nothing here is a missing mover: every writer did its job. The
+defect is that the *reader* never asked for a consistent view of what they wrote.
+
+**Closure C.** `readBudget` runs at `RepeatableRead`, and the contract test pins it there. The read
+still takes no `lockProjectReadiness` — it reports, it decides nothing, and blocking every budget
+page-load behind the lock that serializes the PO lifecycle would make reporting contend with the
+site's own writes. One snapshot is enough to make every figure in a response true at one instant; a
+read that is one commit stale is honest, a read that delayed a purchase order would not be.
 
 ---
 

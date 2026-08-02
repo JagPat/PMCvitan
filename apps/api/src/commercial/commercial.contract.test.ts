@@ -70,48 +70,127 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
   });
 
   /**
-   * CLOSURE 2 — EVERY HEADROOM-MOVING WRITE EVALUATES (audit root 2).
+   * CLOSURE 2 — THE MOVER SET IS DERIVED FROM THE FOLD'S INPUTS (audit root 2).
    *
    * §B's rule is "the exception is raised from EVERY write that can move headroom". The section
-   * NAMES three, and the first implementation copied the three and lost the rule — so when the
-   * received-value fold changed, ACCEPTANCE became a fourth mover and nothing noticed. The list
-   * cannot be the rule's only home; this table is, and it is checked mechanically.
+   * NAMES three; the first implementation copied the three and lost the rule, so a changed fold
+   * silently created a fourth mover. Round 2's closure was a hand-kept list of SITES — and round 3
+   * found three more movers it did not contain, because the fold reads `receivedQty`, `ACCEPTED`
+   * and labour `committedQty`, and writes to those are movers wherever they live.
    *
-   * A write is a mover when it can change `BUDGET − Σ exposure` for a head. Adding one without an
-   * `evaluate`/`evaluateForPoLine` call in its transaction fails here, not in review.
+   * A list of sites was the same mistake one level up. So the mover set is derived from what the
+   * fold READS: `FOLD_INPUTS` names each input field and every write path that can change it, and
+   * the first test PINS that table against the query contracts' actual `select`s. Teaching the
+   * fold to read a new field now fails here until its writers are named and made to evaluate.
    */
-  const HEADROOM_MOVERS: Array<{ label: string; file: string; method: string; why: string }> = [
-    // authority down: revising a live budget can breach with NO commitment write anywhere
-    { label: 'budget_revision', file: 'commercial/commercial-budget.service.ts', method: 'setBudget', why: 'the live budget amount IS the ceiling' },
-    // exposure onto a new head: the standalone reclassification, and every PO lifecycle site,
-    // all reach the register through the participant, so evaluating there closes eight sites
-    { label: 'commitment / reattribution', file: 'commercial/commercial.participant.ts', method: 'attribute', why: 'a newly live PO line adds exposure' },
-    { label: 'commitment (amend / close-short)', file: 'commercial/commercial.participant.ts', method: 'replaceAttribution', why: 'an amended obligation changes size' },
-    { label: 'commitment (cancel)', file: 'commercial/commercial.participant.ts', method: 'releaseAttribution', why: 'a cancelled obligation FREES headroom and must clear' },
-    // exposure up with no PO write at all: §G authorises accepting more than the ordered quantity
-    // and §J values the overage at the frozen rate, so the receipt itself raises exposure
-    { label: 'acceptance', file: 'inventory/inventory.service.ts', method: 'accept', why: 'accepted OVERAGE raises exposure with no commitment released' },
-    { label: 'acceptance (reversal)', file: 'inventory/inventory.service.ts', method: 'reverse', why: 'withdrawing accepted material must CLEAR what the overage raised' },
+  const FOLD_INPUTS: Array<{
+    field: string; owner: string; why: string;
+    writers: Array<{ file: string; method: string }>;
+  }> = [
+    {
+      field: 'committedAmountBase', owner: 'procurement',
+      why: 'the frozen obligation itself — it enters and leaves exposure with the ATTRIBUTION, and every PO lifecycle site reaches the register through the participant',
+      writers: [
+        { file: 'commercial/commercial.participant.ts', method: 'attribute' },
+        { file: 'commercial/commercial.participant.ts', method: 'replaceAttribution' },
+        { file: 'commercial/commercial.participant.ts', method: 'releaseAttribution' },
+      ],
+    },
+    {
+      field: 'receivedQty', owner: 'procurement',
+      why: 'a CLOSED-SHORT line releases `qty - receivedQty`, so receipt progress re-prices the release',
+      writers: [
+        { file: 'inventory/inventory.service.ts', method: 'recordReceipt' },
+        { file: 'inventory/inventory.service.ts', method: 'reject' },
+        { file: 'inventory/inventory.service.ts', method: 'reverse' },
+      ],
+    },
+    {
+      field: 'ACCEPTED', owner: 'inventory',
+      why: 'the consumed term, and OVERAGE raises exposure with no commitment released against it',
+      writers: [
+        { file: 'inventory/inventory.service.ts', method: 'accept' },
+        { file: 'inventory/inventory.service.ts', method: 'reverse' },
+      ],
+    },
+    {
+      field: 'committedQty', owner: 'labour',
+      why: 'a CLOSED-SHORT labour line releases `personShiftQty - committedQty`, so a capacity default frees the whole remainder',
+      writers: [
+        { file: 'labour/labour-procurement.service.ts', method: 'commitCapacity' },
+        { file: 'labour/labour-procurement.service.ts', method: 'defaultCapacity' },
+      ],
+    },
+    {
+      field: 'BUDGET', owner: 'commercial',
+      why: 'authority down is a breach with no commitment write anywhere — §B calls it the most ordinary case',
+      writers: [{ file: 'commercial/commercial-budget.service.ts', method: 'setBudget' }],
+    },
   ];
 
-  for (const mover of HEADROOM_MOVERS) {
-    it(`${mover.label} re-evaluates the affected cost head (${mover.why})`, () => {
-      const src = readFileSync(join(SRC, mover.file), 'utf8');
-      const start = src.indexOf(`async ${mover.method}(`);
-      expect(start, `${mover.file}#${mover.method} not found — the headroom-mover table drifted from the code`).toBeGreaterThan(-1);
-      const next = src.indexOf('\n  async ', start + 1);
-      const body = src.slice(start, next === -1 ? undefined : next);
+  it('FOLD_INPUTS covers every amount-bearing field the owning-module read contracts expose', () => {
+    // The pin that makes this table derived rather than remembered: the fold consumes exactly the
+    // fields these contracts return, so a new one must arrive here with its writers.
+    const declared = new Set(FOLD_INPUTS.map((i) => i.field));
+    const material = readFileSync(join(SRC, 'procurement/procurement.query.ts'), 'utf8');
+    const iface = /export interface MaterialCommittedLine \{([\s\S]*?)\n\}/u.exec(material)?.[1] ?? '';
+    const fields = [...iface.matchAll(/^\s{2}(\w+):/gmu)].map((m) => m[1]!);
+    expect(fields.length, 'MaterialCommittedLine could not be parsed — the pin is not actually reading the contract').toBeGreaterThan(4);
+    // `qty`, `rate`, `taxAmount`, `freightAmount`, `live` and `closedShort` are all FROZEN at
+    // issuance or moved by the PO lifecycle, so they travel with `committedAmountBase`'s writers.
+    const frozenOrLifecycle = new Set(['qty', 'rate', 'taxAmount', 'freightAmount', 'live', 'closedShort', 'committedAmountBase']);
+    for (const field of fields) {
       expect(
-        /evaluateHeads\(|evaluateBudgetForLine\(|this\.evaluate\(/u.test(body),
-        `${mover.label} (${mover.file}#${mover.method}) can move headroom but never re-evaluates — §B requires raise-or-clear in the SAME transaction`,
+        declared.has(field) || frozenOrLifecycle.has(field),
+        `${field} is read by the commercial fold but FOLD_INPUTS does not say which writes change it — name its writers, or classify it as frozen`,
       ).toBe(true);
-    });
+    }
+  });
+
+  for (const input of FOLD_INPUTS) {
+    for (const writer of input.writers) {
+      it(`${writer.file.split('/').pop()}#${writer.method} evaluates — it writes ${input.owner}.${input.field}`, () => {
+        const src = readFileSync(join(SRC, writer.file), 'utf8');
+        const start = src.indexOf(`async ${writer.method}(`);
+        expect(start, `${writer.file}#${writer.method} not found — FOLD_INPUTS drifted from the code`).toBeGreaterThan(-1);
+        const next = src.indexOf('\n  async ', start + 1);
+        const body = src.slice(start, next === -1 ? undefined : next);
+        expect(
+          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(/u.test(body),
+          `${writer.file}#${writer.method} writes ${input.field} (${input.why}) but never re-evaluates — §B requires raise-or-clear in the SAME transaction`,
+        ).toBe(true);
+      });
+    }
   }
 
-  it('enumerates every headroom-moving write (6 sites, 4 labelled movers)', () => {
-    // Completeness is the guard: the DB CHECK on `BudgetException.raisedBy` pins the four labels,
-    // and this pins the sites that produce them. Adding a mover is then a visible, reviewed change.
-    expect(HEADROOM_MOVERS).toHaveLength(6);
+  /**
+   * A multi-mutation act evaluates ONCE, at the end. Evaluating between an amend's three steps
+   * reads a state that never existed at commit, and the register is APPEND-ONLY, so the resulting
+   * clear/re-raise pair is permanent evidence of a headroom recovery that never happened.
+   */
+  it.each([
+    ['procurement/purchase-orders.service.ts', 'replaceOnAmend'],
+    ['labour/labour-procurement.service.ts', 'replaceLabourOnAmend'],
+  ])('%s defers the amend evaluation to a single settle', (file, method) => {
+    const src = readFileSync(join(SRC, file), 'utf8');
+    const start = src.indexOf(`private async ${method}(`);
+    expect(start, `${file} has no ${method} — the deferral pin drifted`).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\n  private async begin', start));
+    for (const call of ['replaceAttribution', 'attribute', 'releaseAttribution']) {
+      const m = new RegExp(`commercial\\.${call}\\([\\s\\S]*?\\);`, 'u').exec(body);
+      expect(m, `${file}#${method} does not call ${call}`).not.toBeNull();
+      expect(
+        m![0].includes('touched'),
+        `${file}#${method} calls ${call} WITHOUT the deferral sink — it would evaluate on a partial amend state`,
+      ).toBe(true);
+    }
+    expect(
+      /evaluateDeferred\(tx, projectId, identity, touched,/u.test(body),
+      `${file}#${method} never settles the deferred evaluation — the amend's budget effect would be dropped entirely`,
+    ).toBe(true);
+  });
+
+  it('the four labels the movers produce are all recordable at PostgreSQL', () => {
     const migration = readFileSync(
       join(SRC, '..', 'prisma/migrations/20270410000000_phase5_t2_budget_exception/migration.sql'),
       'utf8',
@@ -122,5 +201,20 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
         `${label} is a headroom mover but PostgreSQL would refuse to record it (raisedBy CHECK)`,
       ).toBe(true);
     }
+  });
+
+  /**
+   * The budget READ folds four owners' tables, so it must see ONE snapshot. Under PostgreSQL's
+   * default READ COMMITTED each statement takes its own, and a PO issue landing mid-read returns
+   * healthy headroom beside the exception it just opened.
+   */
+  it('the budget read runs at repeatable-read isolation', () => {
+    const src = readFileSync(join(HERE, 'commercial-budget.service.ts'), 'utf8');
+    const start = src.indexOf('async readBudget(');
+    const body = src.slice(start, src.indexOf('\n  /**', start + 1));
+    expect(
+      body.includes('Prisma.TransactionIsolationLevel.RepeatableRead'),
+      'readBudget folds four owners across several statements and must pin ONE snapshot, or it can report a headroom that never existed',
+    ).toBe(true);
   });
 });

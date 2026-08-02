@@ -377,6 +377,82 @@ describe('Phase 5 Task 2 — §B budget + §C COMMITTED + the over-budget except
     expect(await openExceptions(projectId)).toHaveLength(0);
   });
 
+  // ── §B round 3: the movers the FOLD's inputs imply, not the ones a list remembered ────────────
+
+  it('§B: reversing a receipt on a CLOSED-SHORT order re-prices the release and CLEARS the exception', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId, [{ code: 'CIVIL', name: 'Civil works' }]);
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '40.00', reason: 'thin plan' }, pmc(projectId));
+    const activityId = await freshActivity(projectId);
+
+    const { poId, poLineId } = await draftPo(projectId, activityId, { qty: '100', baseRate: '1.00' });
+    await pos.issue(projectId, poId, { costHeads: [{ poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    const commitment = await pos.commitDelivery(projectId, { poLineId, promisedDate: '2026-09-01' }, pmc(projectId));
+    // ₹100 against ₹40 breaches by ₹60
+    expect((await openExceptions(projectId))[0]!.headroom.toString()).toBe('-60');
+
+    // receive 50, then close short: the released remainder is `qty - receivedQty` = 50, so the
+    // true outstanding exposure is ₹50 and the breach narrows but STANDS
+    const lot = await inventory.recordReceipt(projectId, {
+      poLineId, commitmentId: commitment.id, storeLocation: 'main', purchaseQty: '50',
+    }, pmc(projectId));
+    await pos.closeShort(projectId, poId, { reason: 'vendor could not supply the balance' }, pmc(projectId));
+    let position = await positionOf(projectId, 'CIVIL');
+    expect(position.committed.toString()).toBe('50');
+    expect(position.headroom!.toString()).toBe('-10');
+    // the breach NARROWED but still stands, so the open row is neither cleared nor replaced. Its
+    // stored figures are the state AT RAISE — an exception is an observation of a moment, and the
+    // register is append-only, so it is never rewritten. Current truth is the fold above.
+    const stillOpen = await openExceptions(projectId);
+    expect(stillOpen).toHaveLength(1);
+    expect(stillOpen[0]!.headroom.toString()).toBe('-60');
+
+    // NOW reverse the receipt. `receivedQty` returns to 0, so the closed-short line releases the
+    // FULL ₹100 and exposure is zero — headroom +₹40. Nothing in the attribution register moved,
+    // and no PO command ran: a mover list that named only the attribution lifecycle and acceptance
+    // leaves this breach standing forever, which is the spelling this probe is RED against.
+    const receipt = await t.prisma.stockTransaction.findFirstOrThrow({ where: { projectId, lotId: lot.id, type: 'receipt' } });
+    await inventory.reverse(projectId, { txId: receipt.id, reason: 'goods never actually arrived' }, pmc(projectId));
+    position = await positionOf(projectId, 'CIVIL');
+    expect(position.committed.toString()).toBe('0');
+    expect(position.headroom!.toString()).toBe('40');
+    expect(await openExceptions(projectId)).toHaveLength(0);
+  });
+
+  it('§B: an AMEND evaluates ONCE at the end — no false clear/re-raise pair in the append-only register', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId, [{ code: 'CIVIL', name: 'Civil works' }]);
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100.00', reason: 'plan' }, pmc(projectId));
+    const activityId = await freshActivity(projectId);
+
+    const { poId, poLineId, requisitionLineId } = await draftPo(projectId, activityId, { qty: '120', baseRate: '1.00' });
+    await pos.issue(projectId, poId, { costHeads: [{ poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    const before = await t.prisma.budgetException.findMany({ where: { projectId, costHeadCode: 'CIVIL' } });
+    expect(before).toHaveLength(1);
+    expect(before[0]!.clearedAt).toBeNull();
+
+    // amend to a DIFFERENT ₹120 order. Mid-amend the carried line is momentarily the only
+    // attributed one, so an evaluate between the three mutations would see less exposure than
+    // exists, CLEAR this exception and then re-raise a second one. The register is APPEND-ONLY, so
+    // that pair would be permanent evidence of a headroom recovery that never happened.
+    await pos.amend(projectId, poId, {
+      reason: 'vendor re-quoted the same scope',
+      lines: [{ requisitionLineId, purchaseQty: '120' }],
+      costHeads: [{ requisitionLineId, costHeadCode: 'CIVIL' }],
+    }, pmc(projectId));
+
+    const after = await t.prisma.budgetException.findMany({ where: { projectId, costHeadCode: 'CIVIL' }, orderBy: { raisedAt: 'asc' } });
+    // STILL exactly one exception, still open, never cleared — the breach never went away
+    expect(after).toHaveLength(1);
+    expect(after[0]!.id).toBe(before[0]!.id);
+    expect(after[0]!.clearedAt).toBeNull();
+    const position = await positionOf(projectId, 'CIVIL');
+    expect(position.committed.toString()).toBe('120');
+    expect(position.headroom!.toString()).toBe('-20');
+  });
+
   // ── §A/§B: a sub-cent artefact is not a breach ────────────────────────────────────────────────
 
   it('§A: a sub-cent negative headroom does NOT raise an exception the Decimal(18,2) CHECK would then reject', async () => {
