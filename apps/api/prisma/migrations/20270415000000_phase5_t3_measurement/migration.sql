@@ -64,8 +64,14 @@ DO $$ BEGIN
   -- a row that measures NOTHING is not a measurement and not a correction; the interesting bounds
   -- (never negative, never above EFFORT, never above the ordered authority) are properties of the
   -- FOLD, which no per-row CHECK can express — they are re-derived under lock by the service
+  -- An ORIGINAL measurement records work that HAPPENED, so it is strictly positive; only a
+  -- CORRECTION carries a sign. Without this a direct insert can leave a negative original in the
+  -- register — and because the row is immutable, that corrupted billing evidence is permanent and
+  -- bypasses every service-side floor the sign-off and ordered guards reason over.
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Measurement_quantity_check') THEN
-    ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_quantity_check" CHECK ("quantity" <> 0);
+    ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_quantity_check" CHECK (
+      ("correctsId" IS NULL AND "quantity" > 0) OR ("correctsId" IS NOT NULL AND "quantity" <> 0)
+    );
   END IF;
   -- a signed delta with no reason is unauditable; an ORIGINAL measurement needs none
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Measurement_correction_reasoned') THEN
@@ -84,6 +90,26 @@ DO $$ BEGIN
     ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_corrects_not_self" CHECK ("correctsId" IS NULL OR "correctsId" <> "id");
   END IF;
 END $$;
+
+-- §D — a correction targets an ORIGINAL measurement, never another correction. The service
+-- refuses it too; this is the seal that makes a chain unrepresentable rather than merely refused,
+-- because the row-level correction floor is only sound over a ONE-LEVEL tree.
+CREATE OR REPLACE FUNCTION phase5_measurement_correction_target() RETURNS trigger AS $$
+DECLARE target_corrects text;
+BEGIN
+  IF NEW."correctsId" IS NULL THEN RETURN NEW; END IF;
+  SELECT "correctsId" INTO target_corrects FROM "Measurement"
+    WHERE "projectId" = NEW."projectId" AND "id" = NEW."correctsId";
+  IF target_corrects IS NOT NULL THEN
+    RAISE EXCEPTION 'Measurement %: a correction may not target another correction (%) — address the original', NEW."id", NEW."correctsId";
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "Measurement_correction_target" ON "Measurement";
+CREATE TRIGGER "Measurement_correction_target" BEFORE INSERT ON "Measurement"
+  FOR EACH ROW EXECUTE FUNCTION phase5_measurement_correction_target();
 
 -- §D — IMMUTABLE ONCE TAKEN. A correction is a NEW row carrying a signed delta, never an edit,
 -- so there is no permitted UPDATE at all and no permitted DELETE. This is stricter than the

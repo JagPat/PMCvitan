@@ -566,6 +566,68 @@ describe('Phase 5 Task 3 — §D measurement (live PG)', () => {
     }).success).toBe(true);
   });
 
+  it('R8 (§D): a correction may not target another correction — the tree stays ONE level deep', async () => {
+    // A chain makes the row-level floor unsound: with A <- +1 <- -1, a direct-children `netOf`
+    // reads A as 2 while its real subtree is 1, so a -2 correction to A passes the floor and eats
+    // another row's evidence. Getting a correction wrong is fixed by a further delta on the SAME
+    // original, which nets identically and keeps the tree flat.
+    const { projectId, activityId, poLineId, outputId } = await measurableLine({ orderedQty: 2, workedWorkers: 2 });
+    const a = await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId));
+    await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId));
+    const plusOne = await measurement.correct(projectId, { measurementId: a.id, quantity: '-0.5', reason: 'half of A was a re-do' }, pmc(projectId));
+
+    await expect(
+      measurement.correct(projectId, { measurementId: plusOne.id, quantity: '0.5', reason: 'undo that correction' }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    // …and PostgreSQL refuses it too, so a chain is unrepresentable rather than merely refused
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Measurement"("id","projectId","labourPoLineId","activityId","quantity","correctsId","reason","measuredOn","citedOutputId","takenById","sourceCommandId")
+       SELECT 'HOSTILE-CHAIN',$1,$2,$3,0.5,$4,'forced','2026-08-10',$5,"takenById","sourceCommandId" FROM "Measurement" WHERE "id"=$4`,
+      projectId, poLineId, activityId, plusOne.id, outputId,
+    )).rejects.toThrow(/may not target another correction/u);
+
+    // the real path — a further delta on the ORIGINAL — works and nets the same
+    await measurement.correct(projectId, { measurementId: a.id, quantity: '0.5', reason: 'A stands after all' }, pmc(projectId));
+    expect((await measurement.read(projectId, poLineId, pmc(projectId))).measured).toBe('2');
+  });
+
+  it('R9 (§D): an ORIGINAL measurement is POSITIVE at PostgreSQL; only a correction carries a sign', async () => {
+    const { projectId, activityId, poLineId, outputId } = await measurableLine({ orderedQty: 1, workedWorkers: 1 });
+    const row = await measurement.take(projectId, { labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId }, pmc(projectId));
+
+    // an original recording NEGATIVE work is not a record of anything, and because the row is
+    // immutable such an insert would corrupt the register permanently and bypass every
+    // service-side floor the sign-off and ordered guards reason over
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Measurement"("id","projectId","labourPoLineId","activityId","quantity","measuredOn","citedOutputId","takenById","sourceCommandId")
+       SELECT 'HOSTILE-NEG',$1,$2,$3,-5,'2026-08-10',$4,"takenById","sourceCommandId" FROM "Measurement" WHERE "id"=$5`,
+      projectId, poLineId, activityId, outputId, row.id,
+    )).rejects.toThrow(/Measurement_quantity_check/u);
+    expect((await measurement.read(projectId, poLineId, pmc(projectId))).measured).toBe('1');
+  });
+
+  it('R10 (§A): a stale or cross-project evidence photo is a 400, never a 500 from the FK', async () => {
+    const { projectId, activityId, poLineId, outputId } = await measurableLine({ orderedQty: 1, workedWorkers: 1 });
+    // a photo that does not exist at all
+    await expect(measurement.take(projectId, {
+      labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId, evidenceMediaId: 'NO-SUCH-MEDIA',
+    }, pmc(projectId))).rejects.toMatchObject({ status: 400 });
+    // a photo belonging to ANOTHER project — the same-project composite FK is the authority
+    const other = await freshProject();
+    const foreign = await freshMedia(other);
+    await expect(measurement.take(projectId, {
+      labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId, evidenceMediaId: foreign,
+    }, pmc(projectId))).rejects.toMatchObject({ status: 400 });
+    expect(await t.prisma.measurement.count({ where: { projectId } })).toBe(0);
+
+    // …and this project's OWN photo is accepted, so the check is precise rather than merely strict
+    const own = await freshMedia(projectId);
+    const taken = await measurement.take(projectId, {
+      labourPoLineId: poLineId, activityId, quantity: '1', citedOutputId: outputId, evidenceMediaId: own,
+    }, pmc(projectId));
+    expect(taken.evidenceMediaId).toBe(own);
+  });
+
   // ── §D authority + the COMMITTED consumption term ─────────────────────────────────────────────
 
   it('§D/§I: measuring is pmc/engineer authority, and MEASURED consumes COMMITTED into received-not-billed', async () => {

@@ -1466,6 +1466,11 @@ assert "the Phase-5 Task-3 Measurement table exists and is ROW-FREE over the leg
 assert "the Task-3 quantity/reason/self-correction CHECKs and the immutability trigger are installed" \
   "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('Measurement_quantity_check','Measurement_correction_reasoned','Measurement_reason_nonblank','Measurement_corrects_not_self'))::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'Measurement_immutable' AND NOT tgisinternal)::text;" \
   "4|1"
+# round-3 — the row-level correction floor is only sound over a ONE-LEVEL tree, so a correction
+# targeting another correction must be unrepresentable, not merely refused by the service.
+assert "the Task-3 correction-target trigger is installed (a correction may not target a correction)" \
+  "SELECT COUNT(*)::text FROM pg_trigger WHERE tgname = 'Measurement_correction_target' AND NOT tgisinternal;" \
+  "1"
 # §D — MATERIAL lines are not measured, and the ABSENCE of the column is what makes that true:
 # `ACCEPTED(poLine)` already IS the measurement of a delivery, so a parallel manual figure would be
 # a second truth about one physical event. There is no `poLineId` to point at a material line with.
@@ -1478,13 +1483,42 @@ $PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"cost
   && printf 'ok      %s\n' "commercial T3 §B: an exception raised by a MEASUREMENT is accepted (the sixth mover)" \
   || { printf 'FAILED  %s\n' "commercial T3 §B: the measurement-raised exception was rejected"; FAIL=1; }
 $PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPL-P5BXME'" >/dev/null
+# A coherent §D chain FIRST — an original measurement and its signed correction, both citing the
+# real §I output `UPL-T5O` on the same activity. This proves the seals below are PRECISE rather
+# than merely strict, and it is what makes each rejection attributable: every hostile row differs
+# from this accepted one in exactly the one respect its label names. (Cite a nonexistent output and
+# every rejection below would pass on the `citedOutputId` FK while proving nothing.)
+$PSQL >/dev/null <<SQL && printf 'ok      %s\n' "commercial T3 §D: a coherent measurement + its signed correction are accepted (seals are precise)" || { printf 'FAILED  %s\n' "commercial T3 §D coherent measurement chain rejected"; FAIL=1; }
+BEGIN;
+INSERT INTO "Measurement"("id","projectId","labourPoLineId","activityId","quantity","measuredOn","citedOutputId","takenById","sourceCommandId")
+  VALUES('UPL-P5M0','p1','UPL-T2POL','ACT-1',2,'2026-08-12','UPL-T5O','USER-1','UPL-CMD1');
+INSERT INTO "Measurement"("id","projectId","labourPoLineId","activityId","quantity","correctsId","reason","measuredOn","citedOutputId","takenById","sourceCommandId")
+  VALUES('UPL-P5M0C','p1','UPL-T2POL','ACT-1',-1,'UPL-P5M0','over-measured by one shift','2026-08-12','UPL-T5O','USER-1','UPL-CMD1');
+COMMIT;
+SQL
 # tenancy + referential truth — every reference is same-project or unrepresentable
 assert_rejects "commercial T3 §D: a measurement naming a labour PO line that does not exist (composite FK)" \
-  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M1','p1','NOPE','ACT-1',1,'2026-08-10','OUT-1','USER-1','UPL-CMD1')"
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M1','p1','NOPE','ACT-1',1,'2026-08-12','UPL-T5O','USER-1','UPL-CMD1')"
 assert_rejects "commercial T3 §D: a measurement of ZERO (quantity CHECK — it measures nothing)" \
-  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M2','p1','UPL-T2POL','ACT-1',0,'2026-08-10','OUT-1','USER-1','UPL-CMD1')"
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M2','p1','UPL-T2POL','ACT-1',0,'2026-08-12','UPL-T5O','USER-1','UPL-CMD1')"
+# round-3 — an ORIGINAL records work that HAPPENED, so it is strictly positive; only a CORRECTION
+# carries a sign. A negative original slipped in directly would be PERMANENT (the row is immutable)
+# and would sit under every service-side floor as corrupted billing evidence.
+assert_rejects "commercial T3 §D: a NEGATIVE original measurement (only a correction carries a sign)" \
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M4','p1','UPL-T2POL','ACT-1',-1,'2026-08-12','UPL-T5O','USER-1','UPL-CMD1')"
 assert_rejects "commercial T3 §D: a correction with a whitespace-only reason (a signed delta nobody justified)" \
-  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"correctsId\",\"reason\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M3','p1','UPL-T2POL','ACT-1',-1,'UPL-P5M2',E' \t\n','2026-08-10','OUT-1','USER-1','UPL-CMD1')"
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"correctsId\",\"reason\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M3','p1','UPL-T2POL','ACT-1',-1,'UPL-P5M0',E' \t\n','2026-08-12','UPL-T5O','USER-1','UPL-CMD1')"
+# round-3 — the correction floor walks a row's DIRECT children only, so a chain would let a second
+# correction erase evidence the first already accounted for. `UPL-P5M0C` is itself a correction.
+assert_rejects "commercial T3 §D: a correction targeting ANOTHER correction (chain trigger)" \
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"correctsId\",\"reason\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M5','p1','UPL-T2POL','ACT-1',-1,'UPL-P5M0C','correcting the correction','2026-08-12','UPL-T5O','USER-1','UPL-CMD1')"
+# §D — a measurement is FULLY immutable: no lifecycle stamp, no edit, no delete
+assert_rejects "commercial T3 §D: editing a taken measurement's quantity (immutability trigger)" \
+  "UPDATE \"Measurement\" SET \"quantity\"=99 WHERE \"id\"='UPL-P5M0'"
+assert_rejects "commercial T3 §D: DELETING a measurement (a correction is a NEW row, never an erasure)" \
+  "DELETE FROM \"Measurement\" WHERE \"id\"='UPL-P5M0'"
+assert_rejects "commercial T3 §D: a measurement citing ANOTHER project's activity (same-project composite FK)" \
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M6','p2','UPL-T2POL','ACT-1',1,'2026-08-12','UPL-T5O','USER-1','UPL-CMD1')"
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

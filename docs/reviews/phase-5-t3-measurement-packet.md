@@ -2,8 +2,9 @@
 
 **Branch** `claude/phase5-task3` · **base** `main` `96b0713`
 
-**Convergence audit** `docs/reviews/pr-272-convergence.md` (two finding-bearing heads, seven
-findings, two roots — including the honest record that round 1's own fix created round 2's finding)
+**Convergence audit** `docs/reviews/pr-272-convergence.md` (three finding-bearing heads, ten
+findings, three roots — including the honest record that round 1's own fix created round 2's finding,
+and that round 1's fix for finding 4 acquired the unsealed precondition round 3 found)
 
 **§D is carried forward VERBATIM** from `claude/phase5-planning` @ `a4d469b`, byte-identity verified
 by diff against the source revision. The plan mandates carrying rather than re-deriving; re-deriving
@@ -88,6 +89,31 @@ evidence is that the number recorded on the day cannot change. A correction is a
 | 5 | Additive migrations | one new table, `CREATE`-only, closing row-free ABORT |
 | 6 | Isolation proven against PostgreSQL | `upgrade-proof.sh` executes the Task-3 assertions on the migrated legacy database |
 
+## Codex round 3 — three findings, and the same question answered wrongly three times
+
+All three ask **which of the service and PostgreSQL should hold this rule**, and I had been answering
+"whichever is easier to write here".
+
+**R8 (P1).** A correction could target another correction. This is the sharper half of the round, and
+it is **round 1's fix acquiring a precondition it did not seal**: finding 4 replaced the line-aggregate
+floor with `netOf` walking a row's DIRECT children, which is sound only over a one-level tree, and
+nothing made the tree one level deep. A → B → C would let C erase evidence B had already accounted
+for. The service now refuses it, and `phase5_measurement_correction_target()` makes a chain
+**unrepresentable** rather than merely refused by the one path that happens to write it.
+
+**R9 (P2).** A negative ORIGINAL was refused by the service only. Because the table is fully
+immutable, a direct insert would leave permanently corrupted billing evidence sitting under every
+service-side floor. `Measurement_quantity_check` now splits: `> 0` for an original (it records work
+that HAPPENED), `<> 0` for a correction (only a correction carries a sign).
+
+**R10 (P2).** A nonexistent or cross-project `evidenceMediaId` reached the client as a 500 from the
+raw FK violation. It now goes through `rethrowMediaRefViolation` — the cleared Task-5 precedent for
+exactly this — and is a 400.
+
+The rule I take forward is in the audit's closure C: when a correction changes HOW a value is
+computed, write down the property of the stored data the new computation relies on and put it in the
+schema, where the computation will read it.
+
 ## Codex round 2 — two findings, one of them mine to have created
 
 **R6 (P1).** The measured floor was on close-short only, and **round 1's own fix is what made
@@ -120,13 +146,23 @@ F2's fix reuses the `liveAllocation` rule Task 2's correction established (0 whe
 `committedQty` when closed short) rather than inventing a second spelling of it, and F4's row-level
 floor is the same identity §E's `(measurementId, consumedQty)` freeze will depend on.
 
-### A defect in my own testing, fixed
+### Two defects in my own testing, both fixed
 
 **R3 initially PASSED against the very bug it was written for.** With Asia/Kolkata the site date
 differs from UTC only between 18:30 and 24:00 UTC, so for most of the day the probe proved nothing.
 It now picks whichever of UTC+14 / UTC−11 currently differs from UTC — at every instant at least one
 does — and asserts that difference up front, so it can never be vacuous. A probe that passes while
 the code is wrong is worse than no probe.
+
+**The three §D upgrade-proof rejections were passing for the wrong reason.** Extending the proof for
+R8 and R9 I found that all three existing `Measurement` hostile inserts cited an output id `OUT-1`
+the legacy fixture never creates, so every one was rejected by the `citedOutputId` FK — three green
+lines with no evidence behind them, which would have stayed green if I had deleted all three of the
+constraints they named. The closure is the shared one, not a second patch: **a rejection is only
+evidence when an otherwise-identical row is ACCEPTED.** The §D section now inserts a coherent
+measurement and its signed correction first (citing the real `UPL-T5O` output on the same activity),
+and each hostile row differs from that accepted one in exactly the single respect its label names —
+the same coherent-chain pattern the §C, §E and §B sections already use to prove precision.
 
 ## Two things the probes taught me, recorded rather than smoothed over
 
@@ -166,9 +202,9 @@ is what went wrong twice in PR #270.
 | Gate | Result |
 |---|---|
 | `pnpm check` | **EXIT 0** — web 543/543, API 716/716, build clean |
-| `phase5-t3-measurement.test.ts` | **16/16**, and **proven RED**: disabling the five §D bounds and both guards fails six of the original nine; reverting the five round-1 fixes fails all five of their probes, and the two round-2 fixes fail both of theirs |
-| `upgrade-proof.sh` | **PASSED** — the table ROW-FREE over the legacy fixture, the material-column absence asserted, the `measurement` label accepted, and three forgeries rejected on the migrated DB |
-| Full integration suite, migrated + UNSEEDED DB | **75 files / 756 tests passed** |
+| `phase5-t3-measurement.test.ts` | **19/19**, and **proven RED**: disabling the five §D bounds and both guards fails six of the original nine; reverting the five round-1 fixes fails all five of their probes, the two round-2 fixes fail both of theirs, and the three round-3 fixes fail all three of theirs (proven by restoring the old CHECK and dropping the trigger in live PG, not by reasoning) |
+| `upgrade-proof.sh` | **PASSED** — the table ROW-FREE over the legacy fixture, the material-column absence asserted, the `measurement` label accepted, the correction-target trigger present, a coherent measurement + its signed correction **ACCEPTED** (so the seals are precise, not merely strict), and **eight** forgeries rejected on the migrated DB |
+| Full integration suite, migrated + UNSEEDED DB | **75 files / 759 tests passed** |
 
 ## Not in this PR
 

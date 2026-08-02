@@ -9,6 +9,7 @@ import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
 import { CLOCK, type Clock } from '../common/clock';
+import { rethrowMediaRefViolation } from '../common/project-ref';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { LabourRequirementQuery } from '../labour/labour.query';
@@ -145,9 +146,21 @@ export class CommercialMeasurementService {
   async correct(projectId: string, input: CorrectMeasurementInput, user: AuthUser, idempotencyKey?: string): Promise<MeasurementDto> {
     const target = await this.prisma.measurement.findFirst({
       where: { projectId, id: input.measurementId },
-      select: { id: true, labourPoLineId: true, activityId: true, citedOutputId: true },
+      select: { id: true, labourPoLineId: true, activityId: true, citedOutputId: true, correctsId: true },
     });
     if (!target) throw new NotFoundException('Measurement not found in this project');
+    // Codex round-3 P1 — a correction adjusts an ORIGINAL measurement, never another correction.
+    // Allowing chains makes the row-level floor unsound: with A ← +1 ← −1, a direct-children `netOf`
+    // reads A as 2 while its real subtree is 1, so a −2 correction to A passes the floor and eats
+    // another row's evidence. Keeping the tree ONE level deep is what makes "the row it adjusts"
+    // a well-defined quantity — and it is also the identity §E's `(measurementId, consumedQty)`
+    // freeze will name. Getting a correction wrong is corrected by a further delta on the SAME
+    // original, which nets identically and leaves the tree flat.
+    if (target.correctsId) {
+      throw new ConflictException(
+        'This row is itself a correction — address the correction to the original measurement it adjusts, so every delta names the work it walks back',
+      );
+    }
     return this.append(projectId, user, idempotencyKey, 'commercial.measurement.correct', input, {
       labourPoLineId: target.labourPoLineId,
       activityId: target.activityId,
@@ -310,7 +323,11 @@ export class CommercialMeasurementService {
             takenById: actor.actorId,
             sourceCommandId: ctx.commandId!,
           },
-        });
+          // Codex round-3 P2 — a stale or cross-project photo is a BAD REQUEST, not an internal
+          // error. The composite FK is the authority (the cleared attendance-evidence precedent),
+          // and this translates its P2003 to the same 400 every other media-citing path returns
+          // rather than letting a plainly bad request surface as a 500 mid-transaction.
+        }).catch((e) => rethrowMediaRefViolation(e));
         await recordAudit(tx, {
           projectId, actor, action: commandType, entity: 'Measurement', entityId: created.id,
         });
