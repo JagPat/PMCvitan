@@ -7,6 +7,7 @@ import { executeCommand, hashRequest, type CommandScope } from '../platform/comm
 import { resolveActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import { CommercialParticipant, type AttributionTarget } from './commercial.participant';
 
 /**
@@ -112,6 +113,16 @@ export class CommercialService {
       scope: this.scope(projectId), actor, commandType: 'commercial.attribution.reattribute',
       idempotencyKey, requestHash: hashRequest(input),
       run: async (tx) => {
+        // Codex round 2 (P1) — SERIALIZE WITH THE PO LIFECYCLE, before the active-row check.
+        // Round 1 put this lock on activation and stopped there; this is the SAME rule's second
+        // site, which is §0b's own failure class. Without it: this command reads active
+        // attribution A, a concurrent `pos.cancel`/`pos.amend` (holding the same lock) supersedes
+        // A and commits, and the replacement below then inserts a NEW active attribution on a line
+        // that is no longer live — commercial reporting a dead obligation, which is exactly what
+        // the cancel hook exists to prevent. Taking the lock FIRST makes the precondition below a
+        // decision about state that cannot move underneath it.
+        await lockProjectReadiness(tx, projectId);
+
         // Codex round 1 (P2) — RECLASSIFICATION PRESUPPOSES SOMETHING TO RECLASSIFY.
         // `replaceAttribution` deliberately tolerates a missing prior row, because the amend path
         // must still attribute a v2 line when the capability was enabled after v1 was issued. The

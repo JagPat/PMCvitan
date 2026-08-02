@@ -64,11 +64,13 @@ export class CommercialActivationService {
     projectId: string,
     operator: string,
   ): Promise<AttributionActor> {
-    // The CLI passes an email, a programmatic caller a user id — both resolve to the same row.
-    const user = await tx.user.findFirst({
-      where: { OR: [{ id: operator }, { email: operator }] },
-      select: { id: true },
-    });
+    // Codex round 2 (P2) — identity resolution belongs to the OWNER. `User` is orgs-owned, and
+    // merely not being read-encapsulated makes a direct read representable, not legitimate: which
+    // column is the identity key, whether email is unique, and whether a disabled account still
+    // resolves are orgs' semantics to state, not commercial's to assume. The CLI passes an email
+    // and a programmatic caller a user id; both go through the same orgs contract, in this
+    // transaction, so identity and standing see one snapshot.
+    const user = await this.orgs.resolveUserIdentity(tx, operator);
     if (!user) {
       throw new BadRequestException(
         `Operator "${operator}" is not a user in this deployment — activation attributes rows to a real identity`,

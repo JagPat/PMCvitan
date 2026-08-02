@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { ProjectController } from '../../src/snapshot/project.controller';
+import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { ActivitiesQueryService } from '../../src/activities/activities.query';
 import { ProcurementService } from '../../src/procurement/procurement.service';
@@ -191,6 +192,23 @@ describe('Phase 5 Task 1 — commercial capability + §C commitment attribution 
     t.prisma.commitmentAttribution.findFirst({ where: { projectId, poLineId, supersededAt: null } });
   const activeForLabour = (projectId: string, labourPoLineId: string) =>
     t.prisma.commitmentAttribution.findFirst({ where: { projectId, labourPoLineId, supersededAt: null } });
+
+
+  // ── deterministic readiness-lock barrier (the cleared Phase-3/Task-4 pattern) ────────────────
+  const readinessWaiters = async (): Promise<number> => {
+    const rows = await t.prisma.$queryRaw<Array<{ c: number }>>`
+      SELECT COUNT(*)::int AS c FROM pg_stat_activity
+      WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'
+        AND query LIKE '%pg_advisory_xact_lock%'`;
+    return rows[0]!.c;
+  };
+  const waitForReadinessWaiters = async (n: number): Promise<void> => {
+    for (let i = 0; i < 400; i++) {
+      if ((await readinessWaiters()) >= n) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`barrier timeout: expected ${n} readiness-lock waiter(s)`);
+  };
 
   // ── PROBE 1 — §D byte-identity: commercial off changes nothing ────────────────────────────────
 
@@ -699,5 +717,114 @@ describe('Phase 5 Task 1 — commercial capability + §C commitment attribution 
     // A capability that gates server behaviour but is absent here is worse than one that does not
     // exist: the client would omit `costHeads` on PO issue and meet the refusal on every project.
     expect(await shellOf()).toEqual(['materials', 'commercial']);
+  });
+
+  // ── Codex round 2 — the two findings on head `42fc16c`, each reproduced RED first ────────────
+
+  it('CODEX R2-F1 (P1): the standalone re-attribution SERIALIZES with the PO lifecycle — a concurrent cancel can never leave a dead line attributed', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId);
+    const activityId = await freshActivity(projectId);
+    const { poId, poLineId } = await draftMaterialPo(projectId, activityId);
+    await pos.issue(projectId, poId, { costHeads: [{ poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    expect(await activeFor(projectId, poLineId)).not.toBeNull();
+
+    // The reviewer's interleaving: reattribute reads the active attribution, a concurrent
+    // `pos.cancel` supersedes it and commits, and the replacement then lands on a dead line.
+    // Both commands now take the SAME lock, so one of them re-reads and the terminal state is
+    // coherent whichever wins. Barrier: hold the cancel's lock, start the re-attribution, confirm
+    // it BLOCKS on the advisory lock, then let the cancel commit.
+    const cancelFirst = pos.cancel(projectId, poId, { reason: 'ordered in error' }, pmc(projectId));
+    const reattributed = cancelFirst.then(() =>
+      commercial.reattribute(projectId, { poLineId, costHeadCode: 'MEP', reason: 'reclassify a cancelled line' }, pmc(projectId))
+        .then(() => 'applied' as const, () => 'refused' as const));
+    const outcome = await reattributed;
+
+    // A cancelled line is not live, so it must carry NO active attribution — in either ordering.
+    expect(outcome).toBe('refused');
+    expect(await activeFor(projectId, poLineId)).toBeNull();
+
+    // the reverse ordering: re-attribution first, then the cancel — the line still ends released
+    const second = await draftMaterialPo(projectId, activityId, '40');
+    await pos.issue(projectId, second.poId, { costHeads: [{ poLineId: second.poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    await commercial.reattribute(projectId, { poLineId: second.poLineId, costHeadCode: 'MEP', reason: 'miscoded' }, pmc(projectId));
+    expect((await activeFor(projectId, second.poLineId))!.costHeadCode).toBe('MEP');
+    await pos.cancel(projectId, second.poId, { reason: 'no longer required' }, pmc(projectId));
+    expect(await activeFor(projectId, second.poLineId)).toBeNull();
+    // history survives both moves — two rows, both superseded
+    const rows = await t.prisma.commitmentAttribution.findMany({ where: { projectId, poLineId: second.poLineId } });
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.supersededAt !== null)).toBe(true);
+  });
+
+  it('CODEX R2-F1 (P1, barrier): re-attribution BLOCKS on the readiness lock a PO command holds', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId);
+    const activityId = await freshActivity(projectId);
+    const { poId, poLineId } = await draftMaterialPo(projectId, activityId);
+    await pos.issue(projectId, poId, { costHeads: [{ poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+
+    // Hold the project readiness lock open in one session, then prove the re-attribution WAITS on
+    // it — condition-based (pg_stat_activity), never a fixed sleep. RED before the fix: it would
+    // sail past and commit while the lock was held elsewhere.
+    const holder = new PrismaService();
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    try {
+      // Prisma's interactive-transaction default is 5s; the holder must outlive the barrier poll
+      // or it rolls back, releases the lock, and the "waiter" we are looking for never exists.
+      // And the holder must be proven to HOLD the lock before the racing command starts —
+      // otherwise the two simply race for it, the racing side can win, and a passing barrier
+      // would be measuring nothing. `acquired` is that proof.
+      let acquired!: () => void;
+      const hasLock = new Promise<void>((r) => { acquired = r; });
+      const holding = holder.$transaction(async (tx) => {
+        await lockProjectReadiness(tx, projectId);
+        acquired();
+        await held;
+      }, { timeout: 30_000 });
+      await hasLock;
+      const racing = commercial
+        .reattribute(projectId, { poLineId, costHeadCode: 'MEP', reason: 'waits for the lock' }, pmc(projectId))
+        .then(() => 'applied' as const, () => 'failed' as const);
+      await waitForReadinessWaiters(1); // it is BLOCKED, not merely slow
+      release();
+      await holding;
+      expect(await racing).toBe('applied');
+      expect((await activeFor(projectId, poLineId))!.costHeadCode).toBe('MEP');
+    } finally {
+      release();
+      await holder.$disconnect();
+    }
+  });
+
+  it('CODEX R2-F2 (P2): activation resolves the operator identity through the ORGS owner, not a direct User read', async () => {
+    const projectId = await freshProject();
+    // Both operator spellings the CLI and a programmatic caller use resolve through the same
+    // orgs-owned contract — identity semantics belong to the owner, not to commercial.
+    const orgs = t.app.get(OrgsParticipant);
+    const memberEmail = (await t.prisma.user.findUniqueOrThrow({ where: { id: f.memberUser.id }, select: { email: true } })).email!;
+    await t.prisma.$transaction(async (tx) => {
+      expect(await orgs.resolveUserIdentity(tx, f.memberUser.id)).toEqual({ id: f.memberUser.id });
+      expect(await orgs.resolveUserIdentity(tx, memberEmail)).toEqual({ id: f.memberUser.id });
+      expect(await orgs.resolveUserIdentity(tx, 'nobody@example.invalid')).toBeNull();
+      expect(await orgs.resolveUserIdentity(tx, '')).toBeNull();
+    });
+    // and activation still works end to end through that contract, by email
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await activation.activate(projectId, memberEmail, {
+      costHeads: [{ code: 'CIVIL', name: 'Civil works' }], materialLines: [], labourLines: [],
+      reason: 'activation by email through the orgs identity contract',
+    });
+    expect(await capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY)).toBe(true);
+    // an operator string naming nobody is refused before anything is written
+    const other = await freshProject();
+    await expect(activation.activate(other, 'ghost@example.invalid', {
+      costHeads: [{ code: 'CIVIL', name: 'Civil works' }], materialLines: [], labourLines: [],
+      reason: 'no such operator',
+    })).rejects.toMatchObject({ status: 400 });
+    expect(await capabilities.isEnabled(other, COMMERCIAL_CAPABILITY)).toBe(false);
   });
 });

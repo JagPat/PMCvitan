@@ -256,7 +256,7 @@ its row to that table in the same change.
 | Gate | Result |
 |---|---|
 | `pnpm check` | EXIT 0 — web 543/543, API 685/685 |
-| integration suite (reset DB) | 73 files / 717 tests |
+| integration suite (TRUNCATE-cleaned DB) | 73 files / 720 tests |
 | `phase5-t1-commercial.test.ts` | 15/15 (10 original + 5 Codex probes) |
 | `upgrade-proof.sh` | PASSED — 231 assertions |
 | `test:e2e:api:allmodules` | 35/35 — including the `daily-log-lost-response` step that flaked on the first head |
@@ -264,4 +264,16 @@ its row to that table in the same change.
 One honest note on the integration suite: the first full run after the isolated
 probe runs showed 3 failures in `decisions-projection` — duplicate `Decision.id`
 from data an isolated run left behind, the documented leftover-data collision. That
-suite passes 5/5 in isolation, and the full suite is 717/717 on a reset database.
+suite passes 5/5 in isolation, and the full suite is 720/720 once the tables are
+genuinely empty.
+**A correction to how the database state is described.** Earlier revisions of this
+packet said the integration suite ran on a "reset database". It did not:
+`prisma migrate reset` is refused in this environment as a destructive action
+requiring explicit human consent, and the command I relied on returned without
+resetting anything. The suite is run instead on a database cleaned by TRUNCATE —
+the same mechanism every suite's own `afterEach` uses. The 3 `decisions-projection`
+failures reported earlier were duplicate `Decision.id` rows left behind by
+interrupted isolated runs, and they are gone once the tables are genuinely empty:
+**720/720 across 73 files.** The distinction matters because "reset" and
+"truncated" are different claims about how much was proven.
+

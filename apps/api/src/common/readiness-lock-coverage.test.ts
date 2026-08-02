@@ -160,6 +160,15 @@ const SECTION_A_COMMANDS: Array<{ label: string; file: string; method: string }>
   // observation and its resolution serialize with `start` on the ONE project lock.
   { label: 'labour.mismatch.record', file: 'labour/labour-capacity.service.ts', method: 'recordMismatch' },
   { label: 'labour.mismatch.resolve', file: 'labour/labour-capacity.service.ts', method: 'resolveMismatch' },
+  // Phase 5 Task 1 (§C) — EVERY command that WRITES a `CommitmentAttribution` serializes with the
+  // PO lifecycle, because the set of LIVE PO lines is what the attribution invariant is stated
+  // over and every PO command already holds this lock. Codex found the same rule missing at two
+  // separate sites across two rounds (activation, then the standalone re-attribution), which is
+  // exactly the §0b "stated once, applied at one site" failure — so the closure is now MECHANICAL:
+  // a third commercial write path added without the lock fails HERE rather than in review.
+  // `commercial.costHead.define` is deliberately absent: it writes no attribution.
+  { label: 'commercial.activation', file: 'commercial/commercial-activation.service.ts', method: 'activate' },
+  { label: 'commercial.attribution.reattribute', file: 'commercial/commercial.service.ts', method: 'reattribute' },
 ];
 
 /** The body of `async <method>(` up to the next same-indent `async ` (or end of file). */
@@ -183,12 +192,13 @@ describe('readiness-lock §A COMMAND-LEVEL coverage (Phase 3 Task 6)', () => {
     });
   }
 
-  it('enumerates every command in the §A lock-coverage table (32 commands)', () => {
+  it('enumerates every command in the §A lock-coverage table (36 commands)', () => {
     // A mechanical guard on completeness: the table has 32 rows across activities/procurement/
     // inventory/daily-log/labour (Task 6 correction added delivery.fulfill + po.close-short — both
     // remove inbound coverage; Phase 4 Task 3 added the seven §C time-capacity fact commands;
     // Phase 4 Task 4 added the three capacity-commitment lifecycle commands — forecast cover).
     // Adding a §A command without listing it here is a visible, reviewed change.
-    expect(SECTION_A_COMMANDS).toHaveLength(34);
+    // Phase 5 Task 1 adds the two commercial write paths (activation + re-attribution).
+    expect(SECTION_A_COMMANDS).toHaveLength(36);
   });
 });
