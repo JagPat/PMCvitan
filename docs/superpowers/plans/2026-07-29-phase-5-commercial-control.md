@@ -198,6 +198,64 @@ licence to write a local filter.
 - Rounding is stated once: half-up at 2 decimals, applied only where a value is persisted,
   never mid-computation.
 
+### §B. Budget (`BudgetLine`)
+
+**Carried forward VERBATIM from `claude/phase5-planning` @ `a4d469b` by the Task-2 PR, per this
+plan's own rule: "a task PR that reaches its section MUST carry that text forward rather than
+re-derive it". Not one word is changed.**
+
+
+- A budget line is a project-scoped PLAN with an amount and a scope key. Scope is
+  `(projectId, costHead)` where `costHead` is a project-contained code from a
+  commercial-owned `CostHead` table — NOT the activity id and NOT the location node.
+  Because that code is the SCOPE KEY every budget line and attribution groups under, its
+  `code` and `name` carry the repo's complete non-blank discipline at PostgreSQL —
+  `CHECK (btrim(code, E' \t\n\x0B\f\r') <> '')`, same for `name` — not merely `NOT NULL`.
+  **And it is UNIQUE per project: `UNIQUE (projectId, code)` at PostgreSQL.** A scope key that
+  can repeat is not a key: two `CIVIL` heads let a ₹100 budget sit on one while a ₹100 PO
+  attribution sits on the other, so the budget exception compares a commitment against the wrong
+  budget and the forecast shows two heads nobody can tell apart — while every non-blank and
+  freeze check still passes. Non-blank, frozen and unique are three separate obligations on the
+  same column and all three are needed for it to be a scope key.
+  A cost head coded `'   '` would otherwise satisfy every planned check while collecting
+  budget and commitment facts under a key no one can select, report or reconcile. Same rule
+  as the reason columns; see §0b.
+  **And because it is the scope key, `code` is FROZEN after insert** — a column-freeze
+  trigger, the Phase-3 frozen-snapshot discipline. An in-place edit is a silent
+  reclassification of history: record a ₹100 budget and a live PO attribution under `CIVIL`,
+  rename the row to `MEP`, and every `BUDGET`/`COMMITTED` fact ever recorded moves head with
+  no budget revision, no attribution reason and no append-only evidence that anything moved.
+  Reclassifying is a real operation and it has a real path: create the new head, then
+  supersede the attribution (§C, attributable and reasoned) and revise the budget (§B). The
+  display `name` stays editable — it labels a head, it does not key one.
+- **Exactly one live budget chain per `(projectId, costHead)`, PG-enforced**, and the amount
+  carries `CHECK (amount >= 0)`. `BUDGET(costHead)` is defined (§0) as "the amount of the LIVE
+  budget version only", which presupposes there is exactly one: with two live roots for the
+  same head, summing them overstates the plan and picking one hides an approved plan, and a
+  negative live amount feeds nonsensical capacity into the budget-vs-committed exception before
+  any PO exists. A partial unique on the live root plus the sign CHECK make both unrepresentable
+  rather than merely unvalidated.
+  Binding budget to an activity would make a schedule edit a budget edit; the two must be
+  able to move independently.
+- Budget lines are **versioned and immutable** (spec §97). A revision APPENDS a new version
+  retaining the prior verbatim, with an attributable reason. There is no in-place edit.
+- A budget line does not gate anything. Exceeding budget produces a flagged exception and an
+  Inbox action; it never blocks a PO, because stopping site supply over a planning number is the
+  wrong failure mode. Whether an over-budget commitment requires a stronger authority is a §I
+  approval-limit decision, not a hard block.
+- **The exception is raised from EVERY write that can move headroom, not only from the
+  commitment.** Headroom is `BUDGET(costHead) − Σ exposure` (§J), so three different writes can
+  turn it negative: a new or amended commitment (exposure up), a budget REVISION downward
+  (authority down), and a RE-ATTRIBUTION that moves an obligation onto a head that cannot absorb
+  it (exposure up on the target). An earlier revision named only the commitment, which leaves the
+  most ordinary case silent: with a ₹100 budget and a ₹90 PO already attributed, revising the live
+  budget to ₹50 produces −₹40 of headroom with no commitment write anywhere, so a
+  commitment-triggered Inbox action never fires and the practice learns nothing. So
+  `budget.revise`, `commercial.attribute`/re-attribution, and the commitment hooks all recompute
+  the affected cost head(s) — the re-attribution recomputing BOTH the source and the target — and
+  raise or clear the exception in the same transaction. This is the same "every writer that can
+  move any input" rule §F's status derivation states; the two are one discipline at two sites.
+
 ### §C. Commitment — consumed, never rebuilt
 
 **Carried forward VERBATIM from `claude/phase5-planning` @ `a4d469b` by the Task-1 PR, per this
