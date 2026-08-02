@@ -13,10 +13,10 @@ narrative and may lag behind reality.
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
 task: 1
-task_state: in_progress
-work_item: phase-5-task-1
-reviewed_merge: 60864b5
-open_pr: 268
+task_state: merged
+work_item: none
+reviewed_merge: 3ae5591
+open_pr: none
 next_task: phase-5-task-2
 blocking_directive: none
 updated: 2026-08-01
@@ -26,12 +26,26 @@ updated: 2026-08-01
 (PR #266 at `main` `0af7f99`, clean Codex +1 on head `ede5a1a`). **Task 1 — the
 `commercial` capability, `CostHead` and the §C `CommitmentAttribution` with its
 XOR/uniqueness/append-only seals, the `CommercialParticipant`, the §L activation
-backfill and all eight forward lifecycle hooks — is DELIVERED on draft PR #268
-from `main` `60864b5`** (branch `claude/phase5-task1`; evidence
-`docs/reviews/phase-5-t1-commercial-packet.md`). It ships NO `BudgetLine`: §L is
-explicit that authority is only meaningful against the obligation it measures, so
-the budget, the `COMMITTED` fold and the over-budget exception land together in
-Task 2. **PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
+backfill and all eight forward lifecycle hooks — is MERGED and INDEPENDENTLY
+CLEARED** (PR #268 at `main` `3ae5591`, fresh clean Codex +1 on the exact head
+`e08a6a1` through the `codex-current-head` gate, after FOUR correction rounds and
+twelve findings all fixed forward with reproduce-first probes). Evidence:
+`docs/reviews/phase-5-t1-commercial-packet.md`; convergence audit
+`docs/reviews/pr-268-convergence.md`. It ships NO `BudgetLine`: §L is explicit
+that authority is only meaningful against the obligation it measures, so the
+budget, the `COMMITTED` fold and the over-budget exception land together in Task 2.
+
+**One decision is OPEN for the owner and is recorded rather than assumed.** Eight
+of the twelve review findings were the §L activation path: `capability:enable` is
+an operator CLI, so every guarantee `ProjectAccessService.authorize` plus the
+command transaction give a request for free — project-not-archived, active
+membership, role, a resolved actor, readiness serialization — had to be rebuilt
+explicitly, and the review found them missing one at a time. Task 1 now closes
+that list as a table (see the convergence audit). Whether activation should
+instead become an ordinary authenticated command, inheriting all five by
+construction, is a design change to a cleared mechanism (`capability:enable`
+activated both `materials` and `labour`) and is the owner's call. **It does not
+block Task 2**, whose scope is the versioned budget and the `COMMITTED` fold. **PHASE 4 IS COMPLETE.** Tasks 1–6 are all merged through the exact-head
 `codex-current-head` gate with independent Codex clearance. Task 6 — the FINAL
 Phase-4 review stop — merged as PR #246 at `main` `67e7a00` with a fresh clean
 Codex +1 on the exact head `f098be7`, after fifteen exact-head correction
@@ -62,7 +76,7 @@ deferral ledger — a task PR must carry its section forward rather than re-deri
 
 | Task | Summary | State |
 |---|---|---|
-| 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | in_progress — delivered on draft PR #268 from `main` `60864b5`; evidence `docs/reviews/phase-5-t1-commercial-packet.md` |
+| 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | merged — PR #268 at `main` `3ae5591` with a fresh clean Codex +1 on the exact head `e08a6a1` (four correction rounds, twelve findings, all reproduce-first); evidence `docs/reviews/phase-5-t1-commercial-packet.md` + `docs/reviews/pr-268-convergence.md` |
 | 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | not_started |
 | 3 | `Measurement` (§D) + the `revertSignOff` withdrawal guard | not_started — **STOP** |
 | 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | not_started |
