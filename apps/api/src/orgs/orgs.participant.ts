@@ -42,11 +42,17 @@ export class OrgsParticipant {
     tx: OrgsParticipantClient | Prisma.TransactionClient,
     projectId: string,
   ): Promise<boolean> {
-    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ operable: boolean }>>(
-      `SELECT EXISTS (SELECT 1 FROM "Project" WHERE "id" = $1 AND "archivedAt" IS NULL) AS operable`,
+    // Codex round 4 (P2) — the guard depends on the project ROOT ROW's status, and archiving
+    // updates that row without taking the readiness lock. A plain `SELECT EXISTS` therefore lets
+    // activation read `operable = true`, an org admin archive and commit, and activation then
+    // write onto a project no request path can operate. Locking the row makes the archive wait
+    // for this transaction (or this read wait for the archive) — the decision cannot go stale
+    // between the check and the writes it authorises.
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ archived: boolean }>>(
+      `SELECT ("archivedAt" IS NOT NULL) AS archived FROM "Project" WHERE "id" = $1 FOR UPDATE`,
       projectId,
     );
-    return rows[0]?.operable === true;
+    return rows.length > 0 && rows[0]!.archived === false;
   }
 
   /**
@@ -102,8 +108,37 @@ export class OrgsParticipant {
     projectId: string,
     userId: string,
     roles: readonly string[],
+    opts: { forUpdate?: boolean } = {},
   ): Promise<boolean> {
     if (roles.length === 0) return false;
+    // Codex round 4 (P2) — `forUpdate` locks the standing rows before the decision is read.
+    // `MembersService.updateRole` writes `Membership.role` WITHOUT the readiness lock, so a plain
+    // read lets activation see an active `pmc`, a concurrent downgrade to `engineer` commit, and
+    // activation then write rows the operator's live authority no longer permits. Locking the row
+    // makes the downgrade wait for this transaction.
+    //
+    // OPT-IN, defaulted OFF: the cleared Phase-4 T3 repair engine already relies on this method,
+    // and silently changing its locking would change behaviour nobody asked to change.
+    //
+    // Stated honestly: `FOR UPDATE` locks rows that EXIST, so this closes the downgrade race (an
+    // UPDATE of a present row) — the shape that actually threatens an authority decision. It does
+    // not serialize a membership that is INSERTED after this read; that direction only ever grants
+    // authority the operator did not have at decision time, and the decision has already been made.
+    if (opts.forUpdate) {
+      await (tx as OrgsParticipantClient).$queryRawUnsafe(
+        `SELECT 1 FROM "Membership" WHERE "projectId" = $1 AND "userId" = $2 FOR UPDATE`,
+        projectId, userId,
+      );
+      if (roles.includes('pmc')) {
+        await (tx as OrgsParticipantClient).$queryRawUnsafe(
+          `SELECT 1 FROM "OrgMembership" om
+             JOIN "Project" p ON p."orgId" = om."orgId"
+            WHERE p."id" = $1 AND om."userId" = $2
+              FOR UPDATE OF om`,
+          projectId, userId,
+        );
+      }
+    }
     // placeholders are derived from the ARITY of `roles` only — every value still binds as a
     // parameter, nothing user-controlled is interpolated into the SQL text
     const rolePlaceholders = roles.map((_, i) => `$${i + 3}`).join(', ');

@@ -890,4 +890,83 @@ describe('Phase 5 Task 1 — commercial capability + §C commitment attribution 
     expect((await activeFor(projectId, v3Line.id))!.costHeadCode).toBe('MEP');
     expect(await t.prisma.commitmentAttribution.count({ where: { projectId, supersededAt: null } })).toBe(1);
   });
+
+  // ── Codex round 4 — the three findings on head `c7762e0`, each reproduced RED first ──────────
+
+  it('CODEX R4-F1 (P2): activation takes the PROJECT ROW LOCK, so a concurrent archive cannot slip past the operable check', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+
+    // Hold the Project row in another session and prove activation BLOCKS on it — the read is a
+    // lock, not a snapshot. RED before the fix: `SELECT EXISTS` took no row lock and sailed past.
+    const holder = new PrismaService();
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    try {
+      let locked!: () => void;
+      const hasRow = new Promise<void>((r) => { locked = r; });
+      const holding = holder.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SELECT 1 FROM "Project" WHERE "id" = $1 FOR UPDATE`, projectId);
+        locked();
+        await held;
+      }, { timeout: 30_000 });
+      await hasRow;
+      const racing = enableCommercial(projectId).then(() => 'applied' as const, () => 'failed' as const);
+      // it is BLOCKED on the row, not merely slow
+      for (let i = 0; i < 400; i++) {
+        const rows = await t.prisma.$queryRaw<Array<{ c: number }>>`
+          SELECT COUNT(*)::int AS c FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND query LIKE '%FOR UPDATE%'`;
+        if (rows[0]!.c >= 1) break;
+        if (i === 399) throw new Error('barrier timeout: activation never blocked on the project row');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      release();
+      await holding;
+      expect(await racing).toBe('applied');
+    } finally {
+      release();
+      await holder.$disconnect();
+    }
+  });
+
+  it('CODEX R4-F2 (P2): the standing decision is read under a row lock, so a concurrent role downgrade cannot be missed', async () => {
+    const projectId = await freshProject();
+    const orgs = t.app.get(OrgsParticipant);
+    // the lock is OPT-IN: the default shape is unchanged for the cleared Phase-4 T3 caller
+    await t.prisma.$transaction(async (tx) => {
+      expect(await orgs.hasProjectRoleStanding(tx, projectId, f.memberUser.id, ['pmc'])).toBe(true);
+      expect(await orgs.hasProjectRoleStanding(tx, projectId, f.memberUser.id, ['pmc'], { forUpdate: true })).toBe(true);
+      expect(await orgs.hasProjectRoleStanding(tx, projectId, f.memberUser.id, ['engineer'], { forUpdate: true })).toBe(false);
+    });
+    // a DOWNGRADE is seen: the decision reflects live standing, not a stale snapshot
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
+      data: { role: 'engineer' },
+    });
+    await expect(activation.activate(projectId, f.memberUser.id, {
+      costHeads: [{ code: 'CIVIL', name: 'Civil works' }], materialLines: [], labourLines: [],
+      reason: 'operator was downgraded',
+    })).rejects.toMatchObject({ status: 403 });
+    expect(await capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY)).toBe(false);
+  });
+
+  it('CODEX R4-F3 (P2): the activation audit records the RESOLVED user id, so it joins the rows it authorised', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const memberEmail = (await t.prisma.user.findUniqueOrThrow({ where: { id: f.memberUser.id }, select: { email: true } })).email!;
+    // activate BY EMAIL — the case where the raw operator string and the durable identity differ
+    await activation.activate(projectId, memberEmail, {
+      costHeads: [{ code: 'CIVIL', name: 'Civil works' }], materialLines: [], labourLines: [],
+      reason: 'audit attribution probe',
+    });
+    const audit = await t.prisma.auditLog.findFirstOrThrow({
+      where: { projectId, action: 'capability.enable' }, orderBy: { at: 'desc' },
+    });
+    // RED before the fix: this was the email string, so the audit could not be joined to the
+    // cost head the same activation created.
+    expect(audit.actorId).toBe(f.memberUser.id);
+    const head = await t.prisma.costHead.findUniqueOrThrow({ where: { projectId_code: { projectId, code: 'CIVIL' } } });
+    expect(head.definedById).toBe(audit.actorId);
+  });
 });

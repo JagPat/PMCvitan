@@ -7,9 +7,11 @@ Required by `CLAUDE.md` after two finding-bearing heads.
 | `09af9e5` | 5 | 2×P1 — activation takes no PO lifecycle lock; authority read from the legacy `User.role` column |
 | `42fc16c` | 2 | 1×P1 — the standalone re-attribution takes no PO lifecycle lock |
 | `b179c2d` | 2 | 2×P2 — activation admits ARCHIVED projects; amendment cost heads keyed by an id the caller cannot know |
+| `c7762e0` | 3 | 3×P2 — project row not locked; membership not locked; audit attributed to the raw operator string |
 
-5 → 2 → 2, and the severity has fallen to P2-only. The number is not the
-interesting part of this audit.
+5 → 2 → 2 → 3, P1s 2 → 1 → 0 → 0. The count is not the interesting part of this
+audit, and by round 4 neither is the trend — see "What four rounds have actually
+been about" below.
 **The P1 on the second head is the SAME RULE as the P1 on the first head, at a
 different site.** That is the finding behind the findings, and it is the one this
 document exists to close.
@@ -157,6 +159,69 @@ exist and are addressable.
 That one is on my test design, not my reading of a rule: an assertion that a value
 is UNCHANGED cannot distinguish "carried correctly" from "never looked up".
 
+## Round 4 — and what four rounds have actually been about
+
+Every round-4 finding is in the SAME place as rounds 2 and 3: the §L activation
+path. The tally is now unambiguous.
+
+| Round | Findings in the activation path | Elsewhere |
+| --- | --- | --- |
+| 1 | 3 (lock, live standing, authorize-before-empty-backfill) | 2 |
+| 2 | 1 (identity through the owner) | 1 |
+| 3 | 1 (archived projects) | 1 |
+| 4 | **3** (project row lock, membership row lock, audit identity) | 0 |
+
+**8 of 12 findings are one surface**, and the pattern is not "each fix was wrong".
+Each fix was correct and each next finding was correct too. The pattern is that
+**an operator CLI is being held to the full concurrency and authority discipline of
+a request path, and it gets there one row lock at a time.**
+
+A request gets all of this for free. `ProjectAccessService.authorize` runs on every
+request and checks project-archived, then active membership, then role; the command
+transaction takes `lockProjectReadiness` before touching anything; the actor is a
+resolved `AuthUser`. `capability:enable` has none of that, so every one of those
+guarantees has had to be rebuilt explicitly, and the reviewer has correctly found
+them missing one at a time because I added them one at a time.
+
+Round 4's three findings are the *concurrency* half of the same list round 3 closed
+for *existence*: it is not enough to check archived and standing, those reads must
+be taken under locks that serialize with the writers that can change them —
+`Project.archivedAt` (archiving takes no readiness lock) and `Membership.role`
+(`MembersService.updateRole` takes no readiness lock, unlike activation and removal
+at lines 89 and 130 of the same file, which do).
+
+So the closure is now stated as a complete table rather than a running list, and the
+lock ordering is stated with it because round 4 exposed that too: round 3 put the
+operable check ABOVE `lockProjectReadiness`, and round 4's row lock made that
+inversion real. `readiness-lock.ts` requires the advisory lock to be the FIRST
+statement of its transaction, "ahead of any row locks … so no lock-ordering deadlock
+is possible". Every row lock in activation now comes after it.
+
+| What `authorize` gives a request | How activation gets it | Locked against |
+| --- | --- | --- |
+| project not archived | `OrgsParticipant.isProjectOperable` | the `Project` row (`FOR UPDATE`) |
+| active membership + role | `hasProjectRoleStanding(..., { forUpdate: true })` | the `Membership` / `OrgMembership` rows |
+| a resolved actor | `OrgsParticipant.resolveUserIdentity` | — (identity is immutable here) |
+| readiness serialization | `lockProjectReadiness`, taken FIRST | the advisory lock |
+
+**The honest question this raises, which is the owner's and not mine.** The reason
+this surface keeps producing findings is that it is an operator CLI doing work the
+application otherwise only does behind `authorize` and a command transaction. The
+alternative shape — activation as an ordinary authenticated command, with the CLI
+reduced to calling it — would inherit all four rows of that table by construction
+instead of reconstructing them. That is a design change to a cleared mechanism
+(`capability:enable` is how `materials` and `labour` were both activated), so it is
+not something to make mid-review. It is recorded here as the thing to decide before
+Task 2 rather than discovered again in round 5.
+
+`forUpdate` is deliberately OPT-IN and defaulted off: the cleared Phase-4 T3 repair
+engine already calls `hasProjectRoleStanding`, and silently changing its locking
+would change behaviour nobody asked to change. The limitation is stated in the code
+rather than glossed: `FOR UPDATE` locks rows that EXIST, so it closes the downgrade
+race (an UPDATE of a present row); it does not serialize a membership INSERTED after
+the read, a direction that can only grant authority the operator lacked at decision
+time.
+
 ## The commitment for any further round
 
 Findings continue to be **batched** — read every one before pushing a correction —
@@ -177,6 +242,12 @@ still admits only a head Codex returns clean on.
 `pnpm check` EXIT 0 · integration 73 files / 722 tests on a TRUNCATE-cleaned database
 (`prisma migrate reset` is refused here as a destructive action needing human consent —
 an earlier claim of a "reset database" in this PR's packet was wrong and is corrected) ·
-`phase5-t1-commercial.test.ts` 20/20 · `upgrade-proof.sh` PASSED (231 assertions) ·
-`test:e2e:api:allmodules` 35/35 · review-scope justified-large with the complete
-invariant matrix.
+`phase5-t1-commercial.test.ts` 23/23 · `upgrade-proof.sh` PASSED (231 assertions) ·
+`test:e2e:api:allmodules` — reported honestly: 34/35 locally on this head, with the
+FAILING TEST DIFFERING between runs (`inspections-module-query`, then `project-scope`
+twice) and each passing when the suite is re-run or re-ordered. All are named entries
+in the Maintenance queue's documented flake list, the diff contains zero web,
+inspections or project-scope product code, and the same suite ran 35/35 on the three
+earlier heads of this branch — including the two that already carried the shell
+change. CI's own `api-e2e` job is the arbiter and has been green on every head.
+Review-scope justified-large with the complete invariant matrix.

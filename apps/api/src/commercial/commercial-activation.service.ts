@@ -77,7 +77,7 @@ export class CommercialActivationService {
       );
     }
     for (const candidate of ROLE_POLICY['commercial.attribute'] as readonly string[]) {
-      if (await this.orgs.hasProjectRoleStanding(tx, projectId, user.id, [candidate])) {
+      if (await this.orgs.hasProjectRoleStanding(tx, projectId, user.id, [candidate], { forUpdate: true })) {
         return { actorId: user.id, role: candidate };
       }
     }
@@ -101,18 +101,6 @@ export class CommercialActivationService {
     if (!reason) throw new BadRequestException('Activation must carry an attributable reason');
 
     return this.prisma.$transaction(async (tx) => {
-      // Codex round 3 (P2) — the project must be OPERABLE, not merely present. The first spelling
-      // read `Project` directly (an orgs-owned table — the round-2 ownership finding again) and
-      // only proved the row existed. `ProjectAccessService.authorize` refuses an ARCHIVED project
-      // before it considers membership, so an active PMC left on an archived project could
-      // otherwise commit cost heads, attributions and the capability row that no request path
-      // could author. The owner states the rule; commercial asks.
-      if (!(await this.orgs.isProjectOperable(tx, projectId))) {
-        throw new BadRequestException(
-          `Project "${projectId}" is archived or does not exist — activation authors rows no request path could`,
-        );
-      }
-
       // Codex round 1 (P1) — activation SERIALIZES with the PO lifecycle. Every PO command
       // (`pos.issue`/amend/cancel/close-short, material and labour) takes this same lock, and
       // without it the live-line reads below race them: activation reads zero live lines while a
@@ -122,6 +110,26 @@ export class CommercialActivationService {
       // equally real: a line read as live here can be cancelled before this transaction commits.
       // Taking the lock FIRST, before any status read, makes both orderings impossible.
       await lockProjectReadiness(tx, projectId);
+
+      // Codex round 3 (P2) — the project must be OPERABLE, not merely present.
+      // `ProjectAccessService.authorize` refuses an ARCHIVED project before it considers
+      // membership, so an active PMC left on an archived project could otherwise commit cost
+      // heads, attributions and the capability row that no request path could author. The owner
+      // states the rule; commercial asks — and round 4 made that read take the project ROW LOCK,
+      // because archiving does not take the advisory lock and the decision could otherwise go
+      // stale between the check and the writes it authorises.
+      //
+      // ORDER MATTERS, and this is the repository's stated rule, not a local preference:
+      // `readiness-lock.ts` requires the advisory lock to be the FIRST statement of its
+      // transaction, "a single uniform acquisition order ahead of any row locks … so no
+      // lock-ordering deadlock is possible". Round 3 put this check ABOVE the advisory lock,
+      // which took a row lock first and broke that uniform order; round 4's row lock made the
+      // inversion real. Every row lock in this transaction now comes after the advisory lock.
+      if (!(await this.orgs.isProjectOperable(tx, projectId))) {
+        throw new BadRequestException(
+          `Project "${projectId}" is archived or does not exist — activation authors rows no request path could`,
+        );
+      }
 
       // Authority is resolved from LIVE project access, and BEFORE any write — see resolveOperator.
       const actor = await this.resolveOperator(tx, projectId, operator);
@@ -173,7 +181,11 @@ export class CommercialActivationService {
       });
       await recordAudit(tx, {
         projectId,
-        actor: systemActor(operator, operator, 'operator'),
+        // Codex round 4 (P2) — the audit records the RESOLVED user id, the same durable identity
+        // the cost heads, attributions and capability row are attributed to. An email-based
+        // activation previously left its `capability.enable` evidence pointing at a free-form
+        // string while the rows it authorised pointed at a user, so the two could not be joined.
+        actor: systemActor(actor.actorId, operator, 'operator'),
         action: 'capability.enable',
         entity: 'ProjectCapability',
         entityId: `${projectId}:${COMMERCIAL_CAPABILITY}`,
