@@ -85,6 +85,31 @@ evidence is that the number recorded on the day cannot change. A correction is a
 | 5 | Additive migrations | one new table, `CREATE`-only, closing row-free ABORT |
 | 6 | Isolation proven against PostgreSQL | `upgrade-proof.sh` executes the Task-3 assertions on the migrated legacy database |
 
+## Codex round 1 — five findings, one shape
+
+All five were real and four were P1. What they share is worth naming, because it is the same class
+of mistake five times: **every bound I wrote checked the right quantity against the WRONG SCOPE.**
+
+| # | Sev | Finding | The scope that was wrong |
+|---|---|---|---|
+| F1 | P1 | Effort fetched by PO line alone, so a caller could name a DIFFERENT signed-off activity plus its output, pass the sign-off and evidence checks against that one, and have the quantity cap satisfied by work on an activity nobody signed off | effort scoped to the line, not to the **activity being measured** |
+| F2 | P1 | The ordered cap compared against the FROZEN `personShiftQty`; after a capacity default the version can still read `issued` while the commitment authorises nothing, so historical effort could be measured against an order nobody owes | the **original** order, not the **live authority** |
+| F4 | P1 | The correction floor was the LINE aggregate: with A=1 and B=1, correcting A by −2 keeps the line at a legal 0 while silently wiping B's payable evidence | the **line**, not the **row being corrected** |
+| F5 | P1 | The live-line check refused REDUCING corrections too, so a cancelled line deadlocked against `assertWorkEvidenceRevisable` telling the operator to correct to zero first | gated **all** writes, not just **positive** ones |
+| F3 | P2 | `measuredOn` defaulted to the server's UTC date | the **server's** day, not the **project's** civil day |
+
+F2's fix reuses the `liveAllocation` rule Task 2's correction established (0 when defaulted,
+`committedQty` when closed short) rather than inventing a second spelling of it, and F4's row-level
+floor is the same identity §E's `(measurementId, consumedQty)` freeze will depend on.
+
+### A defect in my own testing, fixed
+
+**R3 initially PASSED against the very bug it was written for.** With Asia/Kolkata the site date
+differs from UTC only between 18:30 and 24:00 UTC, so for most of the day the probe proved nothing.
+It now picks whichever of UTC+14 / UTC−11 currently differs from UTC — at every instant at least one
+does — and asserts that difference up front, so it can never be vacuous. A probe that passes while
+the code is wrong is worse than no probe.
+
 ## Two things the probes taught me, recorded rather than smoothed over
 
 **5as — `EFFORT` cannot normally exceed `ORDERED`, and finding that out mattered.** My first probe
@@ -123,9 +148,9 @@ is what went wrong twice in PR #270.
 | Gate | Result |
 |---|---|
 | `pnpm check` | **EXIT 0** — web 543/543, API 716/716, build clean |
-| `phase5-t3-measurement.test.ts` | **9/9**, and **proven RED**: disabling the five §D bounds and both guards fails six of the nine |
+| `phase5-t3-measurement.test.ts` | **14/14**, and **proven RED**: disabling the five §D bounds and both guards fails six of the original nine; reverting the five round-1 fixes fails all five of their probes |
 | `upgrade-proof.sh` | **PASSED** — the table ROW-FREE over the legacy fixture, the material-column absence asserted, the `measurement` label accepted, and three forgeries rejected on the migrated DB |
-| Full integration suite | *(reported in the PR body)* |
+| Full integration suite, migrated + UNSEEDED DB | **75 files / 754 tests passed** |
 
 ## Not in this PR
 
