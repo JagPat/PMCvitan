@@ -12,12 +12,12 @@ narrative and may lag behind reality.
 ```yaml
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
-task: 2
-task_state: in_review
-work_item: phase-5-task-2
-reviewed_merge: edb7f08
-open_pr: 270
-next_task: phase-5-task-3
+task: 3
+task_state: not_started
+work_item: phase-5-task-3
+reviewed_merge: b480e0e
+open_pr: none
+next_task: phase-5-task-4
 blocking_directive: none
 updated: 2026-08-02
 ```
@@ -35,7 +35,7 @@ twelve findings all fixed forward with reproduce-first probes). Evidence:
 that authority is only meaningful against the obligation it measures, so the
 budget, the `COMMITTED` fold and the over-budget exception land together in Task 2.
 
-**Task 2 is COMPLETE on PR #270 and held for review.** It ships §B's versioned
+**Task 2 is MERGED and INDEPENDENTLY CLEARED** (PR #270 at `main` `b480e0e`, fresh clean Codex +1 on the exact head `0a6b6d7` through the `codex-current-head` gate). It ships §B's versioned
 immutable `BudgetLine` (one live chain per head, `amount >= 0`), the §C/§0
 `COMMITTED` fold read through each PO line's OWNING module (OUTSTANDING, not
 gross — the buckets PARTITION the money), §J's received-not-billed and headroom,
@@ -107,7 +107,7 @@ deferral ledger — a task PR must carry its section forward rather than re-deri
 | Task | Summary | State |
 |---|---|---|
 | 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | merged — PR #268 at `main` `3ae5591` with a fresh clean Codex +1 on the exact head `e08a6a1` (four correction rounds, twelve findings, all reproduce-first); evidence `docs/reviews/phase-5-t1-commercial-packet.md` + `docs/reviews/pr-268-convergence.md` |
-| 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | in_progress — draft PR #270 from `main` `edb7f08`; the budget table, its seals and the `COMMITTED` fold are in, the exception and its probes are not |
+| 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | merged — PR #270 at `main` `b480e0e` with a fresh clean Codex +1 on the exact head `0a6b6d7` (four correction rounds, thirteen findings, all reproduce-first); evidence `docs/reviews/phase-5-t2-budget-packet.md` + `docs/reviews/pr-270-convergence.md` |
 | 3 | `Measurement` (§D) + the `revertSignOff` withdrawal guard | not_started — **STOP** |
 | 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | not_started |
 | 5 | Three-way verification (§E) + `verified` + dispute + certification + bound 3 + §H + SoD | not_started — **STOP** |
