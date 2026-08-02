@@ -1456,6 +1456,35 @@ assert_rejects "commercial T2: a budget line naming ANOTHER project's cost head 
 assert_rejects "commercial T2: an exception citing a cost head that does not exist (composite FK)" \
   "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BXH','p1','NOPE',-1.00,1.00,2.00,'commitment','USER-1')"
 
+# ── Phase 5 Task 3 — the §D MEASUREMENT. The table upgrades ROW-FREE over the legacy DB (the
+#    migration's closing block ABORTS if it finds any), and its seals reject forgeries on the
+#    MIGRATED database. A measurement is LABOUR-only and FULLY immutable — stricter than the
+#    append-only tables that permit one supersession stamp, because it has no lifecycle at all.
+assert "the Phase-5 Task-3 Measurement table exists and is ROW-FREE over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name='Measurement')::text || '|' || (SELECT COUNT(*) FROM \"Measurement\")::text;" \
+  "1|0"
+assert "the Task-3 quantity/reason/self-correction CHECKs and the immutability trigger are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('Measurement_quantity_check','Measurement_correction_reasoned','Measurement_reason_nonblank','Measurement_corrects_not_self'))::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'Measurement_immutable' AND NOT tgisinternal)::text;" \
+  "4|1"
+# §D — MATERIAL lines are not measured, and the ABSENCE of the column is what makes that true:
+# `ACCEPTED(poLine)` already IS the measurement of a delivery, so a parallel manual figure would be
+# a second truth about one physical event. There is no `poLineId` to point at a material line with.
+assert "the §D measurement has NO material PO-line column (a material measurement is unrepresentable)" \
+  "SELECT COUNT(*)::text FROM information_schema.columns WHERE table_name='Measurement' AND column_name IN ('poLineId','purchaseOrderLineId');" \
+  "0"
+# §B round-5 — `measurement` joins the headroom-mover set (§D makes measured person-shifts the
+# labour CONSUMPTION term), so PostgreSQL must admit the honest label.
+$PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BXME','p1','MEP',-10.00,50.00,60.00,'measurement','USER-1')" \
+  && printf 'ok      %s\n' "commercial T3 §B: an exception raised by a MEASUREMENT is accepted (the sixth mover)" \
+  || { printf 'FAILED  %s\n' "commercial T3 §B: the measurement-raised exception was rejected"; FAIL=1; }
+$PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPL-P5BXME'" >/dev/null
+# tenancy + referential truth — every reference is same-project or unrepresentable
+assert_rejects "commercial T3 §D: a measurement naming a labour PO line that does not exist (composite FK)" \
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M1','p1','NOPE','ACT-1',1,'2026-08-10','OUT-1','USER-1','UPL-CMD1')"
+assert_rejects "commercial T3 §D: a measurement of ZERO (quantity CHECK — it measures nothing)" \
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M2','p1','UPL-T2POL','ACT-1',0,'2026-08-10','OUT-1','USER-1','UPL-CMD1')"
+assert_rejects "commercial T3 §D: a correction with a whitespace-only reason (a signed delta nobody justified)" \
+  "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"correctsId\",\"reason\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M3','p1','UPL-T2POL','ACT-1',-1,'UPL-P5M2',E' \t\n','2026-08-10','OUT-1','USER-1','UPL-CMD1')"
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

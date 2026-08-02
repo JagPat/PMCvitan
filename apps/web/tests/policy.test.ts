@@ -59,6 +59,9 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'commercial.attribute': ['pmc'],
   'commercial.budget.manage': ['pmc'],
   'commercial.read': ['pmc', 'engineer'],
+  // Phase 5 Task 3 (§D) — a measurement is a BILLING fact taken against signed-off work, so it
+  // is the engineer-and-above surface the site already trusts to record what happened.
+  'commercial.measure': ['pmc', 'engineer'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],
