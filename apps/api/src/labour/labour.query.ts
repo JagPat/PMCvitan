@@ -187,4 +187,41 @@ export class LabourRequirementQuery {
     });
     return rows.map((r) => r.id);
   }
+
+  /**
+   * Phase 5 Task 2 (§0 `COMMITTED`) — the frozen commercial facts of a set of LABOUR PO lines.
+   * The labour twin of `ProcurementQuery.committedLinesFor`, and the reason §C says "one fold,
+   * two owners": `LabourPurchaseOrderLine` is labour-owned, so a spelling where procurement is
+   * the universal owner would either drop live labour POs from `COMMITTED` or make procurement
+   * read labour-owned rows.
+   *
+   * `committedQty` is the person-shifts actually committed by a supplier; a version closed short
+   * KEEPS that portion and releases the rest, which is the §0 released term.
+   */
+  async committedLinesFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    labourPoLineIds: readonly string[],
+  ): Promise<Map<string, { committedAmountBase: Prisma.Decimal; personShiftQty: number; committedQty: number; live: boolean; closedShort: boolean }>> {
+    const out = new Map<string, { committedAmountBase: Prisma.Decimal; personShiftQty: number; committedQty: number; live: boolean; closedShort: boolean }>();
+    if (labourPoLineIds.length === 0) return out;
+    const rows = await tx.labourPurchaseOrderLine.findMany({
+      where: { projectId, id: { in: [...labourPoLineIds] } },
+      select: {
+        id: true, committedAmountBase: true, personShiftQty: true, committedQty: true,
+        poVersion: { select: { status: true } },
+      },
+    });
+    for (const r of rows) {
+      const status = r.poVersion.status;
+      out.set(r.id, {
+        committedAmountBase: r.committedAmountBase,
+        personShiftQty: r.personShiftQty,
+        committedQty: r.committedQty,
+        live: ['issued', 'partially_committed', 'completed', 'closed_short'].includes(status),
+        closedShort: status === 'closed_short',
+      });
+    }
+    return out;
+  }
 }

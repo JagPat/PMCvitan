@@ -1310,3 +1310,17 @@ export const reattributeSchema = z
     'exactly one of poLineId or labourPoLineId must be supplied',
   );
 export type ReattributeInput = z.infer<typeof reattributeSchema>;
+
+// Phase 5 Task 2 (§B) — set or REVISE the live budget for one cost head. ONE command for both:
+// v1 and a revision are the same act on a versioned immutable chain, and splitting them would let
+// a caller "create" a second live version for a head that already has one. The service supersedes
+// the live row and inserts the next version atomically.
+export const setBudgetSchema = z
+  .object({
+    costHeadCode: commercialNonBlank('costHeadCode', 64),
+    // a money STRING, parsed to Decimal server-side — never a float (§A)
+    amount: z.string().trim().regex(/^\d+(\.\d{1,2})?$/u, 'amount must be a non-negative money value with at most 2 decimals'),
+    reason: commercialNonBlank('reason', 500),
+  })
+  .strict();
+export type SetBudgetInput = z.infer<typeof setBudgetSchema>;

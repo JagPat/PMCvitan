@@ -143,6 +143,9 @@ export class CommercialService {
         // gets, because the authority follows the WRITE, not the route (§C, probe 5ar).
         await this.participant.replaceAttribution(tx, projectId, { actorId: actor.actorId, role: user.role }, [
           { from: target, to: target, costHeadCode: input.costHeadCode, reason: input.reason },
+        // the label is DERIVED: this route names a NEW head for the same line, so the participant
+        // sees `active.costHeadCode !== code` and records `reattribution` on both heads. Naming it
+        // here would be a second place for the same truth to live — and to go stale.
         ]);
         const replacement = await tx.commitmentAttribution.findFirstOrThrow({
           where: { projectId, supersededAt: null, ...('poLineId' in target ? { poLineId: target.poLineId } : { labourPoLineId: target.labourPoLineId }) },

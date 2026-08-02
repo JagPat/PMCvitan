@@ -51,6 +51,9 @@ import { CommercialService } from './commercial/commercial.service';
 import { CommercialParticipant } from './commercial/commercial.participant';
 import { CommercialActivationService } from './commercial/commercial-activation.service';
 import { ProcurementQuery } from './procurement/procurement.query';
+import { InventoryQuery } from './inventory/inventory.query';
+import { CommercialBudgetQuery } from './commercial/commercial-budget.query';
+import { CommercialBudgetService } from './commercial/commercial-budget.service';
 import { OrgsParticipant } from './orgs/orgs.participant';
 import { WorkerDevicesController } from './orgs/worker-devices.controller';
 import { WorkerDevicesService } from './orgs/worker-devices.service';
@@ -148,6 +151,9 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     CommercialParticipant,
     CommercialActivationService,
     ProcurementQuery,
+    InventoryQuery,
+    CommercialBudgetQuery,
+    CommercialBudgetService,
     OrgsParticipant,
     WorkerDevicesService,
     LabourRequirementParticipant,

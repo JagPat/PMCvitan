@@ -2,10 +2,13 @@ import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/
 import {
   defineCostHeadSchema,
   reattributeSchema,
+  setBudgetSchema,
   type DefineCostHeadInput,
   type ReattributeInput,
+  type SetBudgetInput,
 } from '../contracts';
 import { CommercialService } from './commercial.service';
+import { CommercialBudgetService } from './commercial-budget.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
@@ -26,7 +29,23 @@ import { RolesFor, RolesGuard } from '../common/roles';
 @Controller('projects/:projectId')
 @UseGuards(JwtGuard, RolesGuard)
 export class CommercialController {
-  constructor(private readonly commercial: CommercialService) {}
+  constructor(
+    private readonly commercial: CommercialService,
+    private readonly budget: CommercialBudgetService,
+  ) {}
+
+  /** §B — set or REVISE the live budget for one cost head. One command for both: v1 and a
+   *  revision are the same act on a versioned immutable chain. */
+  @Post('commercial/budget')
+  @RolesFor('commercial.budget.manage')
+  setBudget(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(setBudgetSchema)) body: SetBudgetInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.budget.setBudget(projectId, body, user, idempotencyKey);
+  }
 
   @Post('commercial/cost-heads')
   @RolesFor('commercial.manage')
@@ -48,6 +67,14 @@ export class CommercialController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.commercial.reattribute(projectId, body, user, idempotencyKey);
+  }
+
+  /** §B/§J — BUDGET, outstanding COMMITTED, received-not-billed and headroom per head, with any
+   *  OPEN exception. A read, not a gate: nothing here can refuse a purchase order. */
+  @Get('commercial/budget')
+  @RolesFor('commercial.read')
+  readBudget(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.budget.readBudget(projectId, user);
   }
 
   @Get('commercial/cost-heads')

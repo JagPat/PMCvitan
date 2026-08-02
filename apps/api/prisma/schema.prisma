@@ -124,6 +124,8 @@ model Project {
   // Phase 5 Task 1 — the commercial cost-head catalog + commitment attributions (§C/§L)
   costHeads                 CostHead[]
   commitmentAttributions    CommitmentAttribution[]
+  budgetLines               BudgetLine[]
+  budgetExceptions          BudgetException[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -889,6 +891,9 @@ model User {
   costHeadsDefined           CostHead[]              @relation("costHeadsDefined")
   attributionsCreated        CommitmentAttribution[] @relation("attributionsCreated")
   attributionsSuperseded     CommitmentAttribution[] @relation("attributionsSuperseded")
+  budgetLinesAuthored        BudgetLine[]            @relation("budgetLinesAuthored")
+  budgetLinesSuperseded      BudgetLine[]            @relation("budgetLinesSuperseded")
+  budgetExceptionsRaised     BudgetException[]       @relation("budgetExceptionsRaised")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -2823,7 +2828,9 @@ model CostHead {
   definedBy   User     @relation("costHeadsDefined", fields: [definedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   definedById String
 
-  attributions CommitmentAttribution[]
+  attributions     CommitmentAttribution[]
+  budgetLines      BudgetLine[]
+  budgetExceptions BudgetException[]
 
   // Project-contained identity, the `LabourTrade` convention: the code IS the key inside a project.
   @@id([projectId, code])
@@ -2874,4 +2881,98 @@ model CommitmentAttribution {
   // (Prisma cannot express a partial index):
   //   (projectId, poLineId)       WHERE "supersededAt" IS NULL AND "poLineId"       IS NOT NULL
   //   (projectId, labourPoLineId) WHERE "supersededAt" IS NULL AND "labourPoLineId" IS NOT NULL
+}
+
+// Phase 5 Task 2 (§B) — the BUDGET, versioned and immutable.
+//
+// A budget line is a project-scoped PLAN with an amount and a scope key, and the scope key is
+// `(projectId, costHead)` — NOT the activity id and NOT the location node. Binding budget to an
+// activity would make a schedule edit a budget edit; the two must move independently.
+//
+// Versioned and immutable (spec §97): a revision APPENDS a new version retaining the prior
+// verbatim, with an attributable reason. There is no in-place edit — the same discipline, and the
+// same trigger shape, as `CommitmentAttribution`.
+//
+// `BUDGET(costHead)` is defined (§0) as "the amount of the LIVE budget version only", which
+// presupposes there is exactly ONE: two live roots for one head would overstate the plan when
+// summed and hide an approved plan when one is picked. A partial unique on the live row and a
+// `amount >= 0` CHECK make both unrepresentable rather than merely unvalidated.
+//
+// A budget line does NOT gate anything. Exceeding it produces a flagged exception and an Inbox
+// action; it never blocks a PO, because stopping site supply over a planning number is the wrong
+// failure mode.
+model BudgetLine {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  costHead     CostHead @relation(fields: [projectId, costHeadCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
+  costHeadCode String
+  amount       Decimal  @db.Decimal(18, 2) // raw-SQL CHECK >= 0
+  version      Int // monotonic within the head; v1 is the first plan
+  reason       String // non-blank CHECK; frozen after write
+
+  createdAt   DateTime @default(now())
+  createdBy   User     @relation("budgetLinesAuthored", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+
+  // The single permitted transition. A row with `supersededAt IS NULL` is the LIVE version.
+  supersededAt    DateTime?
+  supersededBy    User?     @relation("budgetLinesSuperseded", fields: [supersededById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  supersededById  String?
+  supersedeReason String?
+
+  @@unique([projectId, id])
+  @@unique([projectId, costHeadCode, version]) // versions are monotonic and never reused
+  @@index([projectId, costHeadCode])
+  // The PARTIAL unique — exactly one LIVE version per head — lives in the migration
+  // (Prisma cannot express a partial index):
+  //   (projectId, costHeadCode) WHERE "supersededAt" IS NULL
+}
+
+// Phase 5 Task 2 (§B) — the over-budget EXCEPTION.
+//
+// A budget line does not gate anything: exceeding it produces a flagged exception and an Inbox
+// action, never a refused PO, because stopping site supply over a planning number is the wrong
+// failure mode.
+//
+// The exception has a LIFECYCLE, which is why it is a row and not a derived read. §B requires
+// every write that can move headroom to "raise or clear the exception in the same transaction",
+// and a flat notification cannot be cleared. Headroom is `BUDGET − Σ exposure`, so THREE
+// different writes can turn it negative: a new or amended commitment (exposure up), a budget
+// revision downward (authority down), and a re-attribution that moves an obligation onto a head
+// that cannot absorb it. An earlier plan revision named only the commitment, which leaves the
+// most ordinary case silent — a ₹100 budget with a ₹90 PO revised down to ₹50 produces −₹40 of
+// headroom with no commitment write anywhere.
+//
+// The row records the headroom AT THE MOMENT IT WAS RAISED, so the Inbox action is answerable
+// later even after the numbers move; the fold stays the live truth.
+model BudgetException {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  costHead     CostHead @relation(fields: [projectId, costHeadCode], references: [projectId, code], onDelete: NoAction, onUpdate: NoAction)
+  costHeadCode String
+
+  /// the headroom that triggered this exception — negative by construction (raw-SQL CHECK < 0)
+  headroom Decimal @db.Decimal(18, 2)
+  /// BUDGET and exposure as they stood, so the row explains itself without re-folding history
+  budget   Decimal @db.Decimal(18, 2)
+  exposure Decimal @db.Decimal(18, 2)
+  /// which write raised it: 'commitment' | 'budget_revision' | 'reattribution' (CHECK)
+  raisedBy String
+
+  raisedAt   DateTime @default(now())
+  raisedBy_  User     @relation("budgetExceptionsRaised", fields: [raisedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  raisedById String
+
+  /// cleared when a later write returns headroom to non-negative — the ONE permitted transition
+  clearedAt DateTime?
+
+  @@unique([projectId, id])
+  @@index([projectId, costHeadCode])
+  // Exactly one OPEN exception per head — a partial unique in the migration, so a second
+  // headroom-moving write on an already-excepted head does not stack duplicate Inbox actions:
+  //   (projectId, costHeadCode) WHERE "clearedAt" IS NULL
 }

@@ -26,8 +26,10 @@ export const commercialManifest: ModuleManifest = {
   id: 'commercial',
   title: 'Commercial & Cost Control',
   kind: 'domain',
-  ownsModels: ['costHead', 'commitmentAttribution'],
-  readEncapsulated: ['costHead', 'commitmentAttribution'],
+  // Phase 5 Task 2 (§B) — the versioned budget joins the owned set. Read-encapsulated with
+  // the rest: `BUDGET(costHead)` is a commercial fold, and nothing outside commercial reads it.
+  ownsModels: ['costHead', 'commitmentAttribution', 'budgetLine', 'budgetException'],
+  readEncapsulated: ['costHead', 'commitmentAttribution', 'budgetLine', 'budgetException'],
   dependsOn: ['procurement', 'inventory', 'labour', 'activities'],
   // `orgs` is the Codex round-1 P1 fix: §L activation has no request token, so it resolves the
   // operator's LIVE project standing through `OrgsParticipant.hasProjectRoleStanding` rather than
@@ -47,6 +49,7 @@ export const commercialManifest: ModuleManifest = {
   routes: [
     'POST /projects/:projectId/commercial/cost-heads',
     'POST /projects/:projectId/commercial/attributions',
+    'POST /projects/:projectId/commercial/budget',
   ],
   permissions: ['pmc'],
 };

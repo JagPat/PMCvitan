@@ -12,14 +12,14 @@ narrative and may lag behind reality.
 ```yaml
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
-task: 1
-task_state: merged
-work_item: none
-reviewed_merge: 3ae5591
-open_pr: none
-next_task: phase-5-task-2
+task: 2
+task_state: in_review
+work_item: phase-5-task-2
+reviewed_merge: edb7f08
+open_pr: 270
+next_task: phase-5-task-3
 blocking_directive: none
-updated: 2026-08-01
+updated: 2026-08-02
 ```
 
 **PHASE 5 IS THE ACTIVE PHASE.** Its plan is merged and independently cleared
@@ -34,6 +34,36 @@ twelve findings all fixed forward with reproduce-first probes). Evidence:
 `docs/reviews/pr-268-convergence.md`. It ships NO `BudgetLine`: §L is explicit
 that authority is only meaningful against the obligation it measures, so the
 budget, the `COMMITTED` fold and the over-budget exception land together in Task 2.
+
+**Task 2 is COMPLETE on PR #270 and held for review.** It ships §B's versioned
+immutable `BudgetLine` (one live chain per head, `amount >= 0`), the §C/§0
+`COMMITTED` fold read through each PO line's OWNING module (OUTSTANDING, not
+gross — the buckets PARTITION the money), §J's received-not-billed and headroom,
+the `BudgetException` lifecycle observation raised or cleared in the SAME
+transaction as the write that moved headroom, `commercial.budget.set` (one
+command for v1 and every revision), and the `GET …/commercial/budget` read. It
+gates NOTHING: commercial stays a SINK and no readiness verdict consults a
+budget. Two Codex rounds returned seven findings, all fixed forward; the
+convergence audit `docs/reviews/pr-270-convergence.md` names the two roots and
+leaves a mechanical closure for each in
+`apps/api/src/commercial/commercial.contract.test.ts`. FOUR Codex rounds
+returned thirteen findings, all fixed forward. TWICE a round-2 corrective was one
+level too shallow, and the audit says so plainly: its closure for root B was a
+hand-kept list of six SITES (round 3 found three more movers it did not contain,
+so the mover set is now DERIVED from what the fold READS — `FOLD_INPUTS`, pinned
+against the `MaterialCommittedLine` read contract), and its fix for the wrong
+exception LABEL moved the decision to the caller (round 4 found the caller cannot
+know either, since one amend can re-size some lines and reclassify others, so the
+label is now derived per row from whether the head actually changed). Notably `acceptance` is §B's
+FOURTH headroom mover (§G authorises accepting more than the ordered quantity and
+no commitment is released against the overage, so a receipt can breach a budget
+with no purchase-order write anywhere), a closed-short line's released remainder
+is a function of `receivedQty`/`committedQty` so receipt reversals and labour
+capacity defaults are movers too, an AMEND evaluates ONCE at the end (an
+intermediate evaluate writes a permanent false clear into an append-only
+register), and the budget READ runs at repeatable-read so it cannot report
+healthy headroom beside the exception it just opened. Evidence:
+`docs/reviews/phase-5-t2-budget-packet.md`.
 
 **One decision is OPEN for the owner and is recorded rather than assumed.** Eight
 of the twelve review findings were the §L activation path: `capability:enable` is
@@ -77,7 +107,7 @@ deferral ledger — a task PR must carry its section forward rather than re-deri
 | Task | Summary | State |
 |---|---|---|
 | 1 | `commercial` capability + SINK module + `CostHead` + `CommitmentAttribution` + activation backfill (§C/§L) | merged — PR #268 at `main` `3ae5591` with a fresh clean Codex +1 on the exact head `e08a6a1` (four correction rounds, twelve findings, all reproduce-first); evidence `docs/reviews/phase-5-t1-commercial-packet.md` + `docs/reviews/pr-268-convergence.md` |
-| 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | not_started |
+| 2 | Versioned immutable `BudgetLine` + `COMMITTED` fold + budget-vs-committed exception (§B) | in_progress — draft PR #270 from `main` `edb7f08`; the budget table, its seals and the `COMMITTED` fold are in, the exception and its probes are not |
 | 3 | `Measurement` (§D) + the `revertSignOff` withdrawal guard | not_started — **STOP** |
 | 4 | `VendorBill` + immutable versions + lifecycle to `under-verification` + bounds 1–2 + both withdrawal guards | not_started |
 | 5 | Three-way verification (§E) + `verified` + dispute + certification + bound 3 + §H + SoD | not_started — **STOP** |

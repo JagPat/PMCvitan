@@ -169,6 +169,9 @@ const SECTION_A_COMMANDS: Array<{ label: string; file: string; method: string }>
   // `commercial.costHead.define` is deliberately absent: it writes no attribution.
   { label: 'commercial.activation', file: 'commercial/commercial-activation.service.ts', method: 'activate' },
   { label: 'commercial.attribution.reattribute', file: 'commercial/commercial.service.ts', method: 'reattribute' },
+  // Phase 5 Task 2 (§B) — a budget revision MOVES HEADROOM and raises/clears the exception from
+  // commitment facts, so it serializes with the PO lifecycle exactly as the attribution writes do.
+  { label: 'commercial.budget.set', file: 'commercial/commercial-budget.service.ts', method: 'setBudget' },
 ];
 
 /** The body of `async <method>(` up to the next same-indent `async ` (or end of file). */
@@ -192,13 +195,13 @@ describe('readiness-lock §A COMMAND-LEVEL coverage (Phase 3 Task 6)', () => {
     });
   }
 
-  it('enumerates every command in the §A lock-coverage table (36 commands)', () => {
+  it('enumerates every command in the §A lock-coverage table (37 commands)', () => {
     // A mechanical guard on completeness: the table has 32 rows across activities/procurement/
     // inventory/daily-log/labour (Task 6 correction added delivery.fulfill + po.close-short — both
     // remove inbound coverage; Phase 4 Task 3 added the seven §C time-capacity fact commands;
     // Phase 4 Task 4 added the three capacity-commitment lifecycle commands — forecast cover).
     // Adding a §A command without listing it here is a visible, reviewed change.
     // Phase 5 Task 1 adds the two commercial write paths (activation + re-attribution).
-    expect(SECTION_A_COMMANDS).toHaveLength(36);
+    expect(SECTION_A_COMMANDS).toHaveLength(37);
   });
 });

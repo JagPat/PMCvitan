@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, Injectable } from '@nestjs/commo
 import { Prisma } from '@prisma/client';
 import { ROLE_POLICY } from '@vitan/shared';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
+import { CommercialBudgetService, type HeadroomMover } from './commercial-budget.service';
 
 /** The acting identity a lifecycle site passes in; the participant never re-derives it. */
 export interface AttributionActor {
@@ -11,6 +12,19 @@ export interface AttributionActor {
 
 /** ONE attribution target. The XOR is a PG CHECK; this type makes it unrepresentable in TS too. */
 export type AttributionTarget = { poLineId: string } | { labourPoLineId: string };
+
+/**
+ * One head a deferred act touched, WITH the label describing what actually moved it.
+ *
+ * The label travels with the head rather than being supplied once per act (Codex round-4 P2). A PO
+ * amendment can re-size some lines and RECLASSIFY others in the same call, so a single act-level
+ * label would necessarily be wrong for one of them — and `raisedBy` is the durable explanation a
+ * human reads months later, not a debug tag.
+ */
+export interface HeadroomTouch {
+  readonly code: string;
+  readonly raisedBy: HeadroomMover;
+}
 
 /**
  * Phase 5 Task 1 — the COMMERCIAL workflow participant (plan §C/§K).
@@ -35,7 +49,146 @@ export type AttributionTarget = { poLineId: string } | { labourPoLineId: string 
  */
 @Injectable()
 export class CommercialParticipant {
-  constructor(private readonly capabilities: CapabilitiesService) {}
+  constructor(
+    private readonly capabilities: CapabilitiesService,
+    private readonly budget: CommercialBudgetService,
+  ) {}
+
+  /**
+   * §B — every attribution write MOVES HEADROOM, so every one of them re-evaluates the affected
+   * head(s) and raises or clears the exception in the SAME transaction. This is the one place
+   * that has to be right for all eight PO lifecycle sites at once: they all reach the register
+   * through this participant, so evaluating here closes the rule for every site rather than at
+   * whichever one a reviewer happens to name.
+   *
+   * A re-attribution passes BOTH heads — the source can now afford what it could not, and the
+   * target may not be able to absorb what it just received.
+   *
+   * `raisedBy` must describe what ACTUALLY moved. Round 2 found the first half of this — stamping
+   * every replacement `'reattribution'` sends a PMC looking for a reclassification that never
+   * happened, since amending a ₹90 CIVIL order to ₹120 is a COMMITMENT that grew — and the fix
+   * then was to let the CALLER name it. Round 4 found the other half: the caller cannot know
+   * either, because one amend can re-size some lines and reclassify others. So the label is DERIVED
+   * per row, from whether that row's head actually changed.
+   */
+  private async evaluateHeads(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    heads: readonly string[],
+    raisedBy: HeadroomMover,
+  ): Promise<void> {
+    await this.budget.evaluate(tx, projectId, actor.actorId, heads, raisedBy);
+  }
+
+  /**
+   * DEFERRAL (Codex round-3 P2). A single lifecycle act sometimes needs SEVERAL of the mutations
+   * above, and evaluating after each one reads a state that never existed at commit.
+   *
+   * The amend is the case that proves it. `replaceOnAmend` carries lines forward, attributes the
+   * fresh ones, then releases the dropped ones. Evaluating after the first step sees only the
+   * carried lines — the old version is already non-live and the new lines are not attributed yet —
+   * so a ₹120 two-line breach amended to a different ₹120 two-line order momentarily reads ₹60,
+   * CLEARS the exception, and the next step re-raises it. The register is APPEND-ONLY, so that
+   * clear/re-raise pair is permanent evidence of a headroom recovery that never happened.
+   *
+   * When a caller passes a sink, the touched heads accumulate into it and NOTHING is evaluated;
+   * the caller evaluates once, over the union, when every mutation of that act is applied. Passing
+   * no sink evaluates immediately, which is right for a single-mutation act — so the default stays
+   * the safe one and only a multi-step caller has to opt in.
+   */
+  private async evaluate(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    touches: readonly HeadroomTouch[],
+    defer?: HeadroomTouch[],
+  ): Promise<void> {
+    if (defer) {
+      defer.push(...touches);
+      return;
+    }
+    await this.settle(tx, projectId, actor, touches);
+  }
+
+  /** Settle a deferred act: evaluate the union of every head its mutations touched, ONCE. */
+  async evaluateDeferred(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    touches: readonly HeadroomTouch[],
+  ): Promise<void> {
+    await this.settle(tx, projectId, actor, touches);
+  }
+
+  /**
+   * Evaluate each touched head ONCE, under the label that best explains why it moved.
+   *
+   * A head can be touched twice in one act — re-sized on one line and reclassified on another — and
+   * only one row can be raised for it (one OPEN exception per head is a partial unique). Where the
+   * two disagree, `reattribution` wins: it is the more specific claim, and it is the one a PMC
+   * cannot reconstruct from the PO alone. A wrong-but-plausible label is worse than a vague one,
+   * because the register is append-only and nobody can correct it later.
+   */
+  private async settle(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    touches: readonly HeadroomTouch[],
+  ): Promise<void> {
+    const labelOf = new Map<string, HeadroomMover>();
+    for (const touch of touches) {
+      const existing = labelOf.get(touch.code);
+      if (existing === 'reattribution') continue;
+      labelOf.set(touch.code, touch.raisedBy);
+    }
+    const byLabel = new Map<HeadroomMover, string[]>();
+    for (const [code, raisedBy] of labelOf) {
+      const bucket = byLabel.get(raisedBy);
+      if (bucket) bucket.push(code);
+      else byLabel.set(raisedBy, [code]);
+    }
+    for (const [raisedBy, codes] of byLabel) {
+      await this.evaluateHeads(tx, projectId, actor, codes, raisedBy);
+    }
+  }
+
+  /**
+   * §B — RE-EVALUATE the head carrying one PO line (material OR labour), because writes OUTSIDE
+   * the attribution lifecycle can move headroom too.
+   *
+   * Which ones is not a judgement call: it is derivable from what the fold READS. `positionsFor`
+   * consumes `receivedQty` and `ACCEPTED` on the material side and `committedQty` on the labour
+   * side, so every write that changes one of those changes exposure. Codex round 2 found the
+   * acceptance case, round 3 found the other three (receipt progress, receipt reversal, labour
+   * capacity default) — the same root each time, which is why the closure is now derived from the
+   * fold's input set rather than from a hand-kept list of sites. See
+   * `commercial.contract.test.ts` and `docs/reviews/pr-270-convergence.md`.
+   *
+   * Up to the ordered quantity, acceptance is exposure-NEUTRAL, and the arithmetic says why:
+   * `committedAmountBase = rate × qty + tax + freight`, so the consumed part subtracted from
+   * `COMMITTED` is exactly the value added to received-not-billed. The buckets hand the money to
+   * each other and the total does not move. OVERAGE breaks that symmetry, legitimately: §G
+   * authorises accepting more than `qty`, the extra units are valued at the frozen rate, and
+   * nothing releases a matching commitment. A closed-short line moves for a different reason —
+   * its released remainder is a function of `receivedQty` (material) or `committedQty` (labour),
+   * so a later receipt reversal or capacity default silently changes the released amount.
+   *
+   * The head is resolved from commercial's OWN attribution register: the calling module knows the
+   * PO line, never the cost head, so nothing outside this module has to learn the mapping.
+   */
+  async evaluateForTarget(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    target: AttributionTarget,
+    raisedBy: HeadroomMover,
+  ): Promise<void> {
+    const active = await this.activeFor(tx, projectId, target);
+    // an UNATTRIBUTED line carries no head to evaluate — nothing moved that a budget can measure
+    if (!active) return;
+    await this.evaluateHeads(tx, projectId, actor, [active.costHeadCode], raisedBy);
+  }
 
   /** Off-pilot this whole surface does not exist: the caller's transaction is untouched (§D). */
   async isActive(tx: Prisma.TransactionClient, projectId: string): Promise<boolean> {
@@ -89,6 +242,7 @@ export class CommercialParticipant {
     projectId: string,
     actor: AttributionActor,
     rows: ReadonlyArray<{ target: AttributionTarget; costHeadCode: string; reason: string }>,
+    defer?: HeadroomTouch[],
   ): Promise<void> {
     if (rows.length === 0) return;
     this.assertAttributeAuthority(actor);
@@ -111,6 +265,8 @@ export class CommercialParticipant {
         },
       });
     }
+    // a newly live line is new obligation on its head — always a COMMITMENT, never a move
+    await this.evaluate(tx, projectId, actor, rows.map((r) => ({ code: r.costHeadCode, raisedBy: 'commitment' as const })), defer);
   }
 
   /**
@@ -134,9 +290,11 @@ export class CommercialParticipant {
     projectId: string,
     actor: AttributionActor,
     rows: ReadonlyArray<{ from: AttributionTarget; to: AttributionTarget; costHeadCode?: string; reason: string }>,
+    defer?: HeadroomTouch[],
   ): Promise<void> {
     if (rows.length === 0) return;
     this.assertAttributeAuthority(actor);
+    const touched: HeadroomTouch[] = [];
     for (const row of rows) {
       const active = await this.activeFor(tx, projectId, row.from);
       const code = row.costHeadCode ?? active?.costHeadCode;
@@ -156,7 +314,18 @@ export class CommercialParticipant {
           createdById: actor.actorId,
         },
       });
+      // DERIVED, not supplied (Codex round-4 P2): if this row's head actually CHANGED, the money
+      // was reclassified — say so. If it did not, the same head simply carries a different amount,
+      // which is a COMMITMENT that moved. The caller cannot decide this for the whole call, because
+      // ONE amend can do both on different lines.
+      const reclassified = Boolean(active) && active!.costHeadCode !== code;
+      const raisedBy: HeadroomMover = reclassified ? 'reattribution' : 'commitment';
+      touched.push({ code, raisedBy });
+      // §B: a replacement recomputes BOTH the source and the target. Only recomputing the target
+      // leaves the source permanently flagged for an obligation it no longer carries.
+      if (active) touched.push({ code: active.costHeadCode, raisedBy });
     }
+    await this.evaluate(tx, projectId, actor, touched, defer);
   }
 
   /**
@@ -171,13 +340,21 @@ export class CommercialParticipant {
     actor: AttributionActor,
     targets: ReadonlyArray<AttributionTarget>,
     reason: string,
+    defer?: HeadroomTouch[],
   ): Promise<void> {
     if (targets.length === 0) return;
     this.assertAttributeAuthority(actor);
+    const touched: HeadroomTouch[] = [];
     for (const target of targets) {
       const active = await this.activeFor(tx, projectId, target);
-      if (active) await this.supersede(tx, projectId, actor, active.id, reason);
+      if (active) {
+        await this.supersede(tx, projectId, actor, active.id, reason);
+        // a cancelled obligation frees headroom — the exception it caused must CLEAR, or the Inbox
+        // keeps an action for a breach that no longer exists. Nothing was reclassified.
+        touched.push({ code: active.costHeadCode, raisedBy: 'commitment' });
+      }
     }
+    await this.evaluate(tx, projectId, actor, touched, defer);
   }
 
   /**

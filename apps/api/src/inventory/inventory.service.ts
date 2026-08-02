@@ -12,6 +12,7 @@ import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { CommercialParticipant } from '../commercial/commercial.participant';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, type CommandRunContext, type CommandScope, type CommandTx } from '../platform/commands';
@@ -280,8 +281,45 @@ export class InventoryService {
     // through the activities participant (the cycle-exempt channel — §G's dependency edge
     // runs activities → inventory in Task 6, so inventory may not READ activities).
     private readonly activityParticipant: ActivityParticipant,
+    // Phase 5 Task 2 (§B) — an ACCEPTANCE can move budget headroom (accepted OVERAGE raises
+    // exposure with no commitment released against it), so the accepting transaction re-evaluates
+    // the line's cost head through the cycle-exempt commercial participant. Off-pilot the call is
+    // a no-op and the transaction is untouched.
+    private readonly commercialParticipant: CommercialParticipant,
     private readonly dispatcher: ExternalEffectDispatcher,
   ) {}
+
+  /**
+   * §B — the RECEIPT-SIDE headroom movers. The commercial fold reads two inventory-adjacent facts:
+   * `ACCEPTED` (the §C ledger) and the PO line's `receivedQty`, which the closed-short RELEASE term
+   * is computed from. So every command that changes either one changes exposure, and §B requires
+   * raise-or-clear in that command's own transaction.
+   *
+   * Acceptance is exposure-NEUTRAL up to the ordered quantity — the consumed commitment and the
+   * received value are the same money changing bucket — and moves only on authorised OVERAGE.
+   * Receipt progress is different: on a CLOSED-SHORT line the released remainder is a function of
+   * `receivedQty`, so recording, rejecting or REVERSING a receipt silently re-prices the release.
+   * Codex round 2 found the acceptance case and round 3 the receipt-progress one; both are the
+   * same root, closed in `commercial.contract.test.ts` by deriving the movers from the fold's
+   * INPUT set rather than from a list of sites.
+   *
+   * Every call is idempotent by construction (one OPEN exception per head is a partial unique), so
+   * evaluating on a command that turns out not to have moved anything is a no-op, not a duplicate.
+   *
+   * The two paths carry DIFFERENT labels, and the distinction is not cosmetic (Codex round-4 P2):
+   * `raisedBy` is the durable explanation a PMC reads months later on an append-only row. A
+   * rejection reversal moves `receivedQty` with nothing accepted at all, so recording it as
+   * `acceptance` sends them looking for a delivery that never happened.
+   */
+  private async evaluateBudgetForLine(
+    tx: Prisma.TransactionClient, projectId: string, actor: Actor, role: string, poLineId: string,
+    raisedBy: 'acceptance' | 'receipt_progress',
+  ): Promise<void> {
+    if (!(await this.commercialParticipant.isActive(tx, projectId))) return;
+    await this.commercialParticipant.evaluateForTarget(
+      tx, projectId, { actorId: actor.actorId, role }, { poLineId }, raisedBy,
+    );
+  }
 
   private async begin(projectId: string, user: AuthUser): Promise<{ actor: Actor; scope: CommandScope }> {
     await this.capabilities.assertEnabled(projectId, MATERIALS_CAPABILITY);
@@ -445,6 +483,7 @@ export class InventoryService {
         // §F bound 3 under the PO-line FOR UPDATE lock + the received-progress fact — the
         // procurement-owned side of the §G participant edge, same transaction.
         await this.procurementParticipant.applyReceiptProgress(tx, projectId, line.poLineId, qty);
+        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, line.poLineId, 'receipt_progress');
         const { event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
           lotId: lot.id, storeLocation, type: 'receipt', qty,
           fromBucket: null, toBucket: 'quarantine',
@@ -474,6 +513,7 @@ export class InventoryService {
           fromBucket: 'quarantine', toBucket: 'acceptedOnHand',
           qualityResult: input.qualityResult, evidenceMediaId: input.evidenceMediaId, reason: input.note,
         }, 'stock.accept');
+        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, lot.poLineId, 'acceptance');
         return { resultRef: row.id, events: [event] };
       },
     });
@@ -497,6 +537,7 @@ export class InventoryService {
         await this.assertEvidenceMedia(tx, projectId, input.evidenceMediaId);
         this.assertMovementLegal(await this.lotRows(tx, projectId, lot.id), { qty, fromBucket: 'quarantine', toBucket: 'rejected', storeLocation, toStoreLocation: null });
         await this.procurementParticipant.applyReceiptProgress(tx, projectId, lot.poLineId, qty.negated());
+        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, lot.poLineId, 'receipt_progress');
         const { row, event } = await this.appendLedgerRow(tx, ctx, actor, projectId, {
           lotId: lot.id, storeLocation, type: 'rejection', qty,
           fromBucket: 'quarantine', toBucket: 'rejected',
@@ -628,6 +669,20 @@ export class InventoryService {
           reversedTxId: target.id, reason: input.reason,
           activityId: target.activityId, issueId: target.issueId, toStoreLocation: inverse.toStoreLocation,
         }, 'stock.reverse');
+        // §B — a reversal moves headroom whenever it moves a fold INPUT, which is every one of the
+        // three types handled above: an `acceptance` reversal withdraws received value, and a
+        // `receipt`/`rejection` reversal just changed `receivedQty`, which re-prices a closed-short
+        // line's released remainder. Reversing a 50-unit receipt on a closed-short ₹100 order
+        // releases the full ₹100 and must CLEAR the exception the ₹50 exposure raised (Codex
+        // round-3 P2) — the acceptance-only branch left that breach standing forever.
+        if (target.type === 'acceptance' || target.type === 'receipt' || target.type === 'rejection') {
+          await this.evaluateBudgetForLine(
+            tx, projectId, actor, user.role, lot.poLineId,
+            // the label follows what MOVED, not which branch we are in: only an acceptance reversal
+            // withdraws accepted value; a receipt/rejection reversal moved `receivedQty` alone
+            target.type === 'acceptance' ? 'acceptance' : 'receipt_progress',
+          );
+        }
         return { resultRef: row.id, events: [event] };
       },
     });
