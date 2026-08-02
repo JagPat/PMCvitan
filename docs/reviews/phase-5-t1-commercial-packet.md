@@ -114,7 +114,8 @@ declaration of it. `module-registry.test.ts` asserts the exact edge set (probe 5
 and runs Kahn's algorithm over the LIVE manifests.
 
 - `commercial.dependsOn: ['procurement', 'inventory', 'labour', 'activities']`
-- `commercial.workflowParticipants: ['inventory', 'activities', 'procurement', 'labour']`
+- `commercial.workflowParticipants: ['inventory', 'activities', 'procurement', 'labour', 'orgs']`
+  (`orgs` added by the Codex round-1 F2 fix — see below)
 - `procurement` / `labour` / `activities` / `inventory` each gain `commercial`
 - **no module's `dependsOn` gains `commercial`** — that asymmetry is what makes it a SINK
 
@@ -201,3 +202,66 @@ blocked the wipe. Fixed in the same change.
 
 `5bu` and `5bw` are explicitly Task-2 probes (they need the `COMMITTED` fold this
 task has no reader for), exactly as §L and probe 5bd's own text assign them.
+
+## Codex round 1 — five findings on head `09af9e5`, all fixed forward
+
+Every finding was real and every one is fixed in one batched correction. No
+convergence audit is owed yet: that obligation starts after two distinct
+finding-bearing heads.
+
+| # | P | Finding | Fix |
+|---|---|---|---|
+| F1 | P1 | activation's live-line reads take no lock, so a concurrent `pos.issue` can slip between the read and the capability write | `lockProjectReadiness(tx, projectId)` FIRST in the activation transaction, before any status read |
+| F2 | P1 | authority resolved from the legacy `User.role` column, not live project access | `OrgsParticipant.hasProjectRoleStanding` — the cleared Phase-4 T3 precedent |
+| F3 | P2 | the participant's authority check early-returns on an EMPTY row list, so a project with no live lines skipped authorization while still creating cost heads and the capability row | authority asserted in the activation service before ANY write |
+| F4 | P2 | the standalone re-attribution route inherited `replaceAttribution`'s tolerance for a missing prior row, so a draft/cancelled/superseded line could be given a live attribution | the route requires an existing ACTIVE attribution |
+| F5 | P2 | the project shell's hard-coded capability list omitted `commercial` | the shell reports it under the same per-project gate |
+
+**F1 is the one worth reading twice.** The interleaving is exact: activation reads
+zero live lines while the PO is still draft → `pos.issue` takes the readiness lock,
+sees commercial inactive, issues WITHOUT an attribution, commits → activation
+inserts `ProjectCapability`. The result is an enabled project holding a live
+unattributed line — precisely the state §C exists to forbid, reached through the
+activation path that exists to prevent it. The mirror image is equally real: a line
+read as live here can be cancelled before this transaction commits. Every PO
+command already takes `lockProjectReadiness`; activation simply had to join them.
+
+**F2 and F3 are one defect seen from two sides**, and the fix is one change.
+Activation has no request token, so there is no `AuthUser` whose role
+`ProjectAccessService.authorize` has already validated against live membership.
+Reading `User.role` is wrong in both directions — a removed member whose stale row
+still says `pmc` passes, and a genuine project PMC whose legacy row differs is
+refused — and the participant's own check could not cover the gap because it
+early-returns on an empty row list. Resolving live standing through the orgs
+participant, before any write, answers both. Asking one policy role at a time
+yields the operator's ACTUAL project role rather than a fabricated one, so the
+participant's downstream guard is checking something true.
+
+**One ordering defect surfaced while fixing F4**, and it is recorded because the
+probe caught it rather than a reviewer: the new active-attribution precondition
+initially ran BEFORE the authority check, so an unauthorized caller learned whether
+a line was attributed from the 409. Authorization now precedes state inspection.
+That is the same shape as PR #264's round-12 finding (permission checked after
+selection), which is why it is called out rather than quietly corrected.
+
+Each finding has a reproduce-first probe named `CODEX F1`–`F5` in
+`phase5-t1-commercial.test.ts`, and each was RED at `09af9e5`.
+
+§K's edge table — the plan's single declaration — gains the `orgs` row in the same
+change, per §0b's rule that any section describing a transaction-bound call adds
+its row to that table in the same change.
+
+### Gates at the corrected head
+
+| Gate | Result |
+|---|---|
+| `pnpm check` | EXIT 0 — web 543/543, API 685/685 |
+| integration suite (reset DB) | 73 files / 717 tests |
+| `phase5-t1-commercial.test.ts` | 15/15 (10 original + 5 Codex probes) |
+| `upgrade-proof.sh` | PASSED — 231 assertions |
+| `test:e2e:api:allmodules` | 35/35 — including the `daily-log-lost-response` step that flaked on the first head |
+
+One honest note on the integration suite: the first full run after the isolated
+probe runs showed 3 failures in `decisions-projection` — duplicate `Decision.id`
+from data an isolated run left behind, the documented leftover-data collision. That
+suite passes 5/5 in isolation, and the full suite is 717/717 on a reset database.

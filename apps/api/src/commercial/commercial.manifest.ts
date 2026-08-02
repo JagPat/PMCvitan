@@ -29,7 +29,11 @@ export const commercialManifest: ModuleManifest = {
   ownsModels: ['costHead', 'commitmentAttribution'],
   readEncapsulated: ['costHead', 'commitmentAttribution'],
   dependsOn: ['procurement', 'inventory', 'labour', 'activities'],
-  workflowParticipants: ['inventory', 'activities', 'procurement', 'labour'],
+  // `orgs` is the Codex round-1 P1 fix: §L activation has no request token, so it resolves the
+  // operator's LIVE project standing through `OrgsParticipant.hasProjectRoleStanding` rather than
+  // the legacy `User.role` column — the cleared Phase-4 T3 precedent (Membership/Project/
+  // OrgMembership are orgs-owned, so the owner answers the membership question). Cycle-exempt.
+  workflowParticipants: ['inventory', 'activities', 'procurement', 'labour', 'orgs'],
   // Task 1 emits NO domain event. An attribution is an internal accounting fact with no external
   // effect and no consumer — the budget-vs-committed exception that reacts to it is Task 2's
   // Inbox action, raised from the fold. Attributability is the actor FK + reason + the

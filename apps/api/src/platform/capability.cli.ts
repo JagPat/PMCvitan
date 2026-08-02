@@ -6,6 +6,7 @@ import { CommercialActivationService } from '../commercial/commercial-activation
 import { CommercialParticipant } from '../commercial/commercial.participant';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from './capabilities.service';
 import { ProcurementQuery } from '../procurement/procurement.query';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import { LabourRequirementQuery } from '../labour/labour.query';
 import type { CommercialActivationPlan } from '@vitan/shared';
 
@@ -63,6 +64,7 @@ async function main(): Promise<void> {
         new CommercialParticipant(new CapabilitiesService(prisma)),
         new ProcurementQuery(prisma),
         new LabourRequirementQuery(prisma),
+        new OrgsParticipant(),
       );
       const result = await activation.activate(f.project, f.operator, plan);
       process.stdout.write(JSON.stringify({ ok: true, projectId: f.project, capability: f.capability, ...result }) + '\n');

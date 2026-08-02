@@ -1,13 +1,15 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { CommercialActivationPlan } from '@vitan/shared';
+import { ROLE_POLICY, type CommercialActivationPlan } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { recordAudit } from '../platform/audit';
 import { systemActor } from '../common/actor';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import { LabourRequirementQuery } from '../labour/labour.query';
 import { ProcurementQuery } from '../procurement/procurement.query';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import { COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
-import { CommercialParticipant } from './commercial.participant';
+import { CommercialParticipant, type AttributionActor } from './commercial.participant';
 
 /**
  * Phase 5 Task 1 — commercial pilot ACTIVATION (plan §L).
@@ -35,7 +37,52 @@ export class CommercialActivationService {
     private readonly participant: CommercialParticipant,
     private readonly procurement: ProcurementQuery,
     private readonly labour: LabourRequirementQuery,
+    private readonly orgs: OrgsParticipant,
   ) {}
+
+  /**
+   * Codex round 1 (P1 + P2) — the operator's authority is resolved from LIVE PROJECT ACCESS, and
+   * it is resolved BEFORE any write.
+   *
+   * Two defects, one fix. The first spelling read `User.role`, a legacy column that is not the
+   * authority a request runs under: `ProjectAccessService.authorize` decides from the ACTIVE
+   * `Membership` (with the org owner/admin fallback operating a project AS pmc), so a removed
+   * member whose stale user row still said `pmc` could activate, while a genuine project PMC whose
+   * legacy row differed was refused. The second: the participant's own check early-returns on an
+   * EMPTY row list, so a project with no live PO lines skipped authorization entirely while the
+   * transaction still created cost heads and the `ProjectCapability` row — an unauthorized caller
+   * could turn the pilot on and author its initial catalog.
+   *
+   * The question is asked through `OrgsParticipant.hasProjectRoleStanding` — the cleared Phase-4
+   * T3 precedent. `Membership`/`Project`/`OrgMembership` are orgs-owned, so the OWNER answers the
+   * membership question and commercial supplies the policy it is enforcing. Asking one role at a
+   * time yields the operator's ACTUAL project role rather than a fabricated one, so the
+   * participant's own guard downstream is checking something true.
+   */
+  private async resolveOperator(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    operator: string,
+  ): Promise<AttributionActor> {
+    // The CLI passes an email, a programmatic caller a user id — both resolve to the same row.
+    const user = await tx.user.findFirst({
+      where: { OR: [{ id: operator }, { email: operator }] },
+      select: { id: true },
+    });
+    if (!user) {
+      throw new BadRequestException(
+        `Operator "${operator}" is not a user in this deployment — activation attributes rows to a real identity`,
+      );
+    }
+    for (const candidate of ROLE_POLICY['commercial.attribute'] as readonly string[]) {
+      if (await this.orgs.hasProjectRoleStanding(tx, projectId, user.id, [candidate])) {
+        return { actorId: user.id, role: candidate };
+      }
+    }
+    throw new ForbiddenException(
+      `Operator "${operator}" does not hold \`commercial.attribute\` on this project — activation authors the initial attributions and is not a side door`,
+    );
+  }
 
   /**
    * Enable `commercial` for ONE project, attributing every live PO line in the same transaction.
@@ -54,21 +101,18 @@ export class CommercialActivationService {
     return this.prisma.$transaction(async (tx) => {
       await tx.project.findUniqueOrThrow({ where: { id: projectId }, select: { id: true } });
 
-      // The operator identity is a real User row: every attribution is attributable to a person,
-      // and the FK makes an invented operator string unrepresentable rather than merely unusual.
-      // The CLI passes an email, a programmatic caller a user id — both resolve to the same row.
-      const actorUser = await tx.user.findFirst({
-        where: { OR: [{ id: operator }, { email: operator }] },
-        select: { id: true, role: true },
-      });
-      if (!actorUser) {
-        throw new BadRequestException(
-          `Operator "${operator}" is not a user in this deployment — activation attributes rows to a real identity`,
-        );
-      }
-      // §I: the operator turning the pilot on is authoring the initial attributions, so the
-      // participant's `commercial.attribute` check applies to THEM. Activation is not a side door.
-      const actor = { actorId: actorUser.id, role: actorUser.role };
+      // Codex round 1 (P1) — activation SERIALIZES with the PO lifecycle. Every PO command
+      // (`pos.issue`/amend/cancel/close-short, material and labour) takes this same lock, and
+      // without it the live-line reads below race them: activation reads zero live lines while a
+      // PO is still draft, `pos.issue` then sees commercial inactive and issues WITHOUT an
+      // attribution, and activation commits the capability row afterwards — leaving an enabled
+      // project holding a live unattributed line, the one state §C forbids. The mirror image is
+      // equally real: a line read as live here can be cancelled before this transaction commits.
+      // Taking the lock FIRST, before any status read, makes both orderings impossible.
+      await lockProjectReadiness(tx, projectId);
+
+      // Authority is resolved from LIVE project access, and BEFORE any write — see resolveOperator.
+      const actor = await this.resolveOperator(tx, projectId, operator);
 
       for (const head of plan.costHeads) {
         await tx.costHead.upsert({
@@ -112,7 +156,7 @@ export class CommercialActivationService {
 
       await tx.projectCapability.upsert({
         where: { projectId_capability: { projectId, capability: COMMERCIAL_CAPABILITY } },
-        create: { projectId, capability: COMMERCIAL_CAPABILITY, enabledById: actorUser.id },
+        create: { projectId, capability: COMMERCIAL_CAPABILITY, enabledById: actor.actorId },
         update: {},
       });
       await recordAudit(tx, {

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { ProjectController } from '../../src/snapshot/project.controller';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { ActivitiesQueryService } from '../../src/activities/activities.query';
 import { ProcurementService } from '../../src/procurement/procurement.service';
@@ -15,6 +16,8 @@ import {
 } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
+import { lockProjectReadiness } from '../../src/common/readiness-lock';
+import { PrismaService } from '../../src/prisma.service';
 
 /**
  * Phase 5 Task 1 — the `commercial` capability, `CostHead` and the §C `CommitmentAttribution`,
@@ -565,5 +568,136 @@ describe('Phase 5 Task 1 — commercial capability + §C commitment attribution 
     await expect(
       pos.issue(projectId, material.poId, { costHeads: [{ poLineId: material.poLineId, costHeadCode: 'NOPE' }] }, pmc(projectId)),
     ).rejects.toThrow(/not defined in this project/u);
+  });
+
+  // ── Codex round 1 — the five findings on head `09af9e5`, each reproduced RED first ──────────
+
+  it('CODEX F1 (P1): activation SERIALIZES with the PO lifecycle — a concurrent issue can never leave an enabled project holding a live unattributed line', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    const activityId = await freshActivity(projectId);
+    const { poId, poLineId } = await draftMaterialPo(projectId, activityId);
+
+    // The reviewer's interleaving: activation reads live lines (none — the PO is still draft),
+    // then `pos.issue` runs and commits, then activation enables the capability. Without the
+    // readiness lock the issue slips between the read and the capability write and the project
+    // ends up enabled with a live unattributed line. The barrier holds activation's transaction
+    // open across the exact window the race needs.
+    const other = new PrismaService();
+    try {
+      const held = (async () => activation.activate(projectId, f.memberUser.id, {
+        costHeads: [{ code: 'CIVIL', name: 'Civil works' }], materialLines: [], labourLines: [],
+        reason: 'activation while a draft PO is issued concurrently',
+      }))();
+
+      // `pos.issue` takes the SAME lock, so it cannot commit until activation has. Whichever wins,
+      // the terminal state must be coherent: either the line was live at activation time (and is
+      // therefore attributed or the activation refused), or it was issued after (and the issue saw
+      // the capability ON and demanded a cost head).
+      const issued = pos.issue(projectId, poId, {}, pmc(projectId)).then(() => 'issued' as const, () => 'refused' as const);
+      const [, outcome] = await Promise.all([held.catch(() => null), issued]);
+
+      const enabled = await capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY);
+      const version = await t.prisma.purchaseOrderVersion.findFirstOrThrow({ where: { projectId, poId } });
+      const attribution = await activeFor(projectId, poLineId);
+      if (enabled && version.status !== 'draft') {
+        // a live line on an enabled project MUST carry an attribution — the invariant §C states
+        expect(attribution, `outcome=${outcome}: a live PO line on a commercial project is unattributed`).not.toBeNull();
+      }
+      // and the issue never silently half-applied: a refused issue leaves the version draft
+      if (outcome === 'refused') expect(version.status).toBe('draft');
+    } finally {
+      await other.$disconnect();
+    }
+  });
+
+  it('CODEX F2 (P1): activation resolves authority from LIVE project standing, not the legacy `User.role` column', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+
+    // `otherUser` is an active pmc on projectB and holds NO membership here. Its legacy `User.role`
+    // is irrelevant: what decides is live standing on THIS project.
+    await expect(activation.activate(projectId, f.otherUser.id, {
+      costHeads: [{ code: 'CIVIL', name: 'Civil works' }], materialLines: [], labourLines: [],
+      reason: 'no standing on this project',
+    })).rejects.toMatchObject({ status: 403 });
+    expect(await capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY)).toBe(false);
+
+    // A REMOVED member is refused even though the membership row still exists — `authorize`'s own
+    // rule is an ACTIVE membership, and this is the case the legacy-column spelling let through.
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
+      data: { status: 'removed' },
+    });
+    await expect(activation.activate(projectId, f.memberUser.id, {
+      costHeads: [{ code: 'CIVIL', name: 'Civil works' }], materialLines: [], labourLines: [],
+      reason: 'membership was removed',
+    })).rejects.toMatchObject({ status: 403 });
+    expect(await capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY)).toBe(false);
+
+    // …and the genuine active PMC succeeds, so the check is precise rather than merely strict.
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
+      data: { status: 'active' },
+    });
+    await enableCommercial(projectId);
+    expect(await capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY)).toBe(true);
+  });
+
+  it('CODEX F3 (P2): an EMPTY backfill is still authorized — no live line is not a bypass', async () => {
+    const projectId = await freshProject();
+    // No POs at all, so both participant calls would receive empty arrays and early-return before
+    // their own authority check. Activation must refuse anyway: the transaction still creates cost
+    // heads and the capability row, and turning the pilot on is itself the authored act.
+    await expect(activation.activate(projectId, f.otherUser.id, {
+      costHeads: [{ code: 'CIVIL', name: 'Civil works' }], materialLines: [], labourLines: [],
+      reason: 'unauthorized operator, empty project',
+    })).rejects.toMatchObject({ status: 403 });
+    expect(await capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY)).toBe(false);
+    expect(await t.prisma.costHead.count({ where: { projectId } })).toBe(0);
+  });
+
+  it('CODEX F4 (P2): the standalone route reclassifies only a LIVE attributed commitment', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId);
+    const activityId = await freshActivity(projectId);
+
+    // a DRAFT line was never attributed
+    const draft = await draftMaterialPo(projectId, activityId);
+    await expect(
+      commercial.reattribute(projectId, { poLineId: draft.poLineId, costHeadCode: 'MEP', reason: 'not live' }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await t.prisma.commitmentAttribution.count({ where: { projectId, poLineId: draft.poLineId } })).toBe(0);
+
+    // a CANCELLED line had its attribution released — reclassifying it would resurrect an
+    // obligation nobody owes, which is exactly what the cancel hook exists to prevent
+    const cancelled = await draftMaterialPo(projectId, activityId, '40');
+    await pos.issue(projectId, cancelled.poId, { costHeads: [{ poLineId: cancelled.poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    await pos.cancel(projectId, cancelled.poId, { reason: 'ordered in error' }, pmc(projectId));
+    await expect(
+      commercial.reattribute(projectId, { poLineId: cancelled.poLineId, costHeadCode: 'MEP', reason: 'resurrect' }, pmc(projectId)),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await activeFor(projectId, cancelled.poLineId)).toBeNull();
+
+    // a LIVE attributed line still reclassifies — the guard is precise, not a blanket refusal
+    const live = await draftMaterialPo(projectId, activityId, '60');
+    await pos.issue(projectId, live.poId, { costHeads: [{ poLineId: live.poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    const moved = await commercial.reattribute(projectId, { poLineId: live.poLineId, costHeadCode: 'MEP', reason: 'miscoded' }, pmc(projectId));
+    expect(moved.costHeadCode).toBe('MEP');
+  });
+
+  it('CODEX F5 (P2): the project shell REPORTS the commercial capability, so a client can gate on it', async () => {
+    const projectId = await freshProject();
+    const shellOf = async () => {
+      const controller = t.app.get(ProjectController);
+      return (await controller.shell(projectId, pmc(projectId))).capabilities;
+    };
+    expect(await shellOf()).toEqual([]);
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId);
+    // A capability that gates server behaviour but is absent here is worse than one that does not
+    // exist: the client would omit `costHeads` on PO issue and meet the refusal on every project.
+    expect(await shellOf()).toEqual(['materials', 'commercial']);
   });
 });

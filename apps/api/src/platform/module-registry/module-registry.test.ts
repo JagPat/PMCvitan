@@ -155,7 +155,9 @@ describe('Phase 2 Task 7 — module registry', () => {
       // the sections that need them (§D measurement, §E certification); the manifest declares
       // them now because an undeclared transaction-bound call is a boundary escape and the
       // fallback unlocked read is the race the participant exists to close.
-      commercial: ['inventory', 'activities', 'procurement', 'labour'],
+      // `orgs` — §L activation resolves the operator's LIVE project standing through
+      // OrgsParticipant.hasProjectRoleStanding (there is no request token on that path).
+      commercial: ['inventory', 'activities', 'procurement', 'labour', 'orgs'],
       // Phase 5 Task 1 (§C/§K) — the material twin: all FOUR PO lifecycle sites write or supersede
       // the attribution inside procurement's own transaction. Procurement never READS commercial.
       procurement: ['commercial'],

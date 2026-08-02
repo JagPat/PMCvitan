@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ROLE_POLICY, type CommitmentAttributionDto, type CostHeadDto } from '@vitan/shared';
 import type { DefineCostHeadInput, ReattributeInput } from '../contracts';
 import { PrismaService } from '../prisma.service';
@@ -35,6 +35,14 @@ export class CommercialService {
   private assertManage(user: AuthUser): void {
     if (!(ROLE_POLICY['commercial.manage'] as readonly string[]).includes(user.role)) {
       throw new ForbiddenException('Defining a cost head is a pmc surface');
+    }
+  }
+
+  private assertAttribute(user: AuthUser): void {
+    if (!(ROLE_POLICY['commercial.attribute'] as readonly string[]).includes(user.role)) {
+      throw new ForbiddenException(
+        'Attributing a vendor commitment to a cost head requires `commercial.attribute`',
+      );
     }
   }
 
@@ -91,6 +99,11 @@ export class CommercialService {
     idempotencyKey?: string,
   ): Promise<CommitmentAttributionDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    // AUTHORIZATION PRECEDES STATE INSPECTION. The participant enforces this too — the authority
+    // follows the WRITE, not the route (§C, probe 5ar) — but reaching it first would mean an
+    // unauthorized caller learns whether a line is attributed from the 409 the precondition below
+    // raises. Refusing on authority first keeps the register's state unreadable to them.
+    this.assertAttribute(user);
     const actor = await resolveActor(this.prisma, user);
     const target: AttributionTarget = input.poLineId
       ? { poLineId: input.poLineId }
@@ -99,20 +112,36 @@ export class CommercialService {
       scope: this.scope(projectId), actor, commandType: 'commercial.attribution.reattribute',
       idempotencyKey, requestHash: hashRequest(input),
       run: async (tx) => {
+        // Codex round 1 (P2) — RECLASSIFICATION PRESUPPOSES SOMETHING TO RECLASSIFY.
+        // `replaceAttribution` deliberately tolerates a missing prior row, because the amend path
+        // must still attribute a v2 line when the capability was enabled after v1 was issued. The
+        // standalone route must NOT inherit that tolerance: a draft line (never attributed), a
+        // cancelled one (released) and a superseded version's line (replaced) all have no active
+        // attribution, and creating one here would make the register claim a live obligation the
+        // lifecycle hooks had correctly released. One check covers all three states.
+        const active = await tx.commitmentAttribution.findFirst({
+          where: { projectId, supersededAt: null, ...('poLineId' in target ? { poLineId: target.poLineId } : { labourPoLineId: target.labourPoLineId }) },
+          select: { id: true },
+        });
+        if (!active) {
+          throw new ConflictException(
+            'This purchase-order line carries no active attribution — only a LIVE attributed commitment can be reclassified',
+          );
+        }
         // The participant enforces `commercial.attribute` — the SAME check the `pos.issue` path
         // gets, because the authority follows the WRITE, not the route (§C, probe 5ar).
         await this.participant.replaceAttribution(tx, projectId, { actorId: actor.actorId, role: user.role }, [
           { from: target, to: target, costHeadCode: input.costHeadCode, reason: input.reason },
         ]);
-        const active = await tx.commitmentAttribution.findFirstOrThrow({
+        const replacement = await tx.commitmentAttribution.findFirstOrThrow({
           where: { projectId, supersededAt: null, ...('poLineId' in target ? { poLineId: target.poLineId } : { labourPoLineId: target.labourPoLineId }) },
           select: { id: true },
         });
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.attribution.reattribute',
-          entity: 'CommitmentAttribution', entityId: active.id,
+          entity: 'CommitmentAttribution', entityId: replacement.id,
         });
-        return { resultRef: active.id, events: [] };
+        return { resultRef: replacement.id, events: [] };
       },
     });
     return this.readAttribution(projectId, outcome.resultRef);
