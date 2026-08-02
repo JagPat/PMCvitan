@@ -113,7 +113,7 @@ describe('Phase 5 Task 2 — §B budget + §C COMMITTED + the over-budget except
   const draftPo = async (
     projectId: string, activityId: string,
     money: { qty?: string; baseRate?: string; taxAmount?: string; freightAmount?: string } = {},
-  ): Promise<{ poId: string; poLineId: string }> => {
+  ): Promise<{ poId: string; poLineId: string; requisitionLineId: string }> => {
     const qty = money.qty ?? '100';
     const input: CreateRequirementInput = {
       activityId, materialCategory: 'Cement', make: 'UltraTech', grade: 'OPC 53', attributes: 'grey',
@@ -137,7 +137,7 @@ describe('Phase 5 Task 2 — §B budget + §C COMMITTED + the over-budget except
     const approved = await procurement.approveComparison(projectId, rfq.id, { selectedQuoteId: quoteId, reason: 'single quote, in spec' }, pmc(projectId));
     const po = await pos.create(projectId, { comparisonId: approved.comparison!.id, lines: [{ requisitionLineId: lineId, purchaseQty: qty }] }, pmc(projectId));
     const line = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { projectId, requisitionLineId: lineId } });
-    return { poId: po.id, poLineId: line.id };
+    return { poId: po.id, poLineId: line.id, requisitionLineId: lineId };
   };
 
   const freshMedia = async (projectId: string): Promise<string> => {
@@ -318,6 +318,101 @@ describe('Phase 5 Task 2 — §B budget + §C COMMITTED + the over-budget except
     ).rejects.toThrow(/append-only/u);
   });
 
+  // ── §B: ACCEPTANCE is the fourth headroom-moving write ────────────────────────────────────────
+
+  it('§B: accepted OVERAGE raises the exception in the accepting transaction, and reversing it clears', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId, [{ code: 'CIVIL', name: 'Civil works' }]);
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100.00', reason: 'plan' }, pmc(projectId));
+    const activityId = await freshActivity(projectId);
+
+    // a ₹100 order against a ₹100 budget: headroom is exactly zero and nothing is flagged
+    const { poId, poLineId, requisitionLineId } = await draftPo(projectId, activityId, { qty: '100', baseRate: '1.00' });
+    // §G authorises 10 units of overage at ISSUANCE — the only path that may set it
+    await pos.issue(projectId, poId, {
+      costHeads: [{ poLineId, costHeadCode: 'CIVIL' }],
+      overages: [{ requisitionLineId, approvedOverage: '10', reason: 'bagged cement tolerance' }],
+    }, pmc(projectId));
+    const commitment = await pos.commitDelivery(projectId, { poLineId, promisedDate: '2026-09-01' }, pmc(projectId));
+    expect(await openExceptions(projectId)).toHaveLength(0);
+
+    // accepting UP TO the ordered quantity is exposure-NEUTRAL: `committedAmountBase = rate × qty
+    // + tax + freight`, so the commitment consumed equals the value received. The money changes
+    // bucket; the total does not move, and no exception is raised.
+    const lot = await inventory.recordReceipt(projectId, {
+      poLineId, commitmentId: commitment.id, storeLocation: 'main', purchaseQty: '110',
+    }, pmc(projectId));
+    await inventory.accept(projectId, { lotId: lot.id, storeLocation: 'main', qty: '100', qualityResult: 'pass', evidenceMediaId: await freshMedia(projectId) }, pmc(projectId));
+    let position = await positionOf(projectId, 'CIVIL');
+    expect(position.committed.toString()).toBe('0');
+    expect(position.receivedNotBilled.toString()).toBe('100');
+    expect(position.headroom!.toString()).toBe('0');
+    expect(await openExceptions(projectId)).toHaveLength(0);
+
+    // OVERAGE breaks the symmetry: §G authorises the extra 10 units, §J values them at the frozen
+    // rate, and NO commitment is released against them. Exposure goes to ₹110 against a ₹100
+    // budget with no PO write anywhere — a commitment-only trigger is silent here, which is the
+    // spelling this probe is RED against.
+    const overage = await inventory.accept(projectId, { lotId: lot.id, storeLocation: 'main', qty: '10', qualityResult: 'pass', evidenceMediaId: await freshMedia(projectId) }, pmc(projectId));
+    expect(overage).toBeDefined();
+    position = await positionOf(projectId, 'CIVIL');
+    expect(position.receivedNotBilled.toString()).toBe('110');
+    expect(position.headroom!.toString()).toBe('-10');
+    const open = await openExceptions(projectId);
+    expect(open).toHaveLength(1);
+    // the label names the DELIVERY, not an order — a PMC sent looking for a purchase order finds
+    // nothing, because no purchase order moved
+    expect(open[0]).toMatchObject({ costHeadCode: 'CIVIL', raisedBy: 'acceptance' });
+    expect(open[0]!.headroom.toString()).toBe('-10');
+
+    // reversing the overage acceptance is the same write in the other direction and CLEARS it
+    const overageRow = await t.prisma.stockTransaction.findFirstOrThrow({
+      where: { projectId, lotId: lot.id, type: 'acceptance', qty: new Prisma.Decimal('10') },
+    });
+    await inventory.reverse(projectId, { txId: overageRow.id, reason: 'miscounted at the gate' }, pmc(projectId));
+    position = await positionOf(projectId, 'CIVIL');
+    expect(position.receivedNotBilled.toString()).toBe('100');
+    expect(position.headroom!.toString()).toBe('0');
+    expect(await openExceptions(projectId)).toHaveLength(0);
+  });
+
+  // ── §A/§B: a sub-cent artefact is not a breach ────────────────────────────────────────────────
+
+  it('§A: a sub-cent negative headroom does NOT raise an exception the Decimal(18,2) CHECK would then reject', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId, [{ code: 'CIVIL', name: 'Civil works' }]);
+    const activityId = await freshActivity(projectId);
+
+    // a 3-unit order at ₹10 = ₹30 committed. Accepting ONE unit prorates ₹30 × 1/3 = ₹10 exactly,
+    // but the intermediate quotient 1/3 is where a full-precision fold leaves fractional paisa.
+    const { poId, poLineId } = await draftPo(projectId, activityId, { qty: '3', baseRate: '10.00' });
+    await pos.issue(projectId, poId, { costHeads: [{ poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    const commitment = await pos.commitDelivery(projectId, { poLineId, promisedDate: '2026-09-01' }, pmc(projectId));
+    const lot = await inventory.recordReceipt(projectId, {
+      poLineId, commitmentId: commitment.id, storeLocation: 'main', purchaseQty: '3',
+    }, pmc(projectId));
+    await inventory.accept(projectId, { lotId: lot.id, storeLocation: 'main', qty: '1', qualityResult: 'pass', evidenceMediaId: await freshMedia(projectId) }, pmc(projectId));
+
+    // budgeting EXACTLY the exposure must leave headroom at a clean zero and raise nothing. A fold
+    // that decided on unrounded arithmetic would see −0.000…1, write `headroom = -0.000…1`, and
+    // PostgreSQL would round it to 0.00 — failing the `headroom < 0` CHECK and ABORTING this very
+    // budget write with a 500. The command succeeding IS the assertion.
+    const position = await positionOf(projectId, 'CIVIL');
+    const exposure = position.committed.add(position.receivedNotBilled);
+    expect(exposure.toString()).toBe('30');
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: exposure.toFixed(2), reason: 'budgeted to the penny' }, pmc(projectId));
+
+    const after = await positionOf(projectId, 'CIVIL');
+    expect(after.headroom!.toString()).toBe('0');
+    expect(after.headroom!.isNegative()).toBe(false);
+    expect(await openExceptions(projectId)).toHaveLength(0);
+    // and every persisted figure is at the money scale, so nothing can be re-rounded into a
+    // CHECK violation on the way into PostgreSQL
+    expect(after.exposure.toFixed(2)).toBe('30.00');
+  });
+
   // ── an UNBUDGETED head has no authority to breach ─────────────────────────────────────────────
 
   it('§B: an UNBUDGETED cost head raises nothing — no budget is not the same as zero budget', async () => {
@@ -362,6 +457,64 @@ describe('Phase 5 Task 2 — §B budget + §C COMMITTED + the over-budget except
     ).rejects.toMatchObject({ status: 403 });
   });
 
+  // ── the read surface reports the same fold the exception is raised from ───────────────────────
+
+  it('§B/§J: the budget read is worst-first, carries the OPEN exception, and reports exact decimals', async () => {
+    const projectId = await freshProject();
+    await capabilities.enable(projectId, MATERIALS_CAPABILITY, f.memberUser.id);
+    await enableCommercial(projectId, [
+      { code: 'CIVIL', name: 'Civil works' },
+      { code: 'MEP', name: 'MEP' },
+      { code: 'PRELIM', name: 'Preliminaries' },
+    ]);
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100.00', reason: 'civil plan' }, pmc(projectId));
+    await budget.setBudget(projectId, { costHeadCode: 'MEP', amount: '50.00', reason: 'mep plan' }, pmc(projectId));
+    // PRELIM is deliberately left UNBUDGETED — it must rank last and report null, not zero
+    const activityId = await freshActivity(projectId);
+
+    const civil = await draftPo(projectId, activityId, { qty: '120', baseRate: '1.00' });
+    await pos.issue(projectId, civil.poId, { costHeads: [{ poLineId: civil.poLineId, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    const mep = await draftPo(projectId, activityId, { qty: '10', baseRate: '1.00' });
+    await pos.issue(projectId, mep.poId, { costHeads: [{ poLineId: mep.poLineId, costHeadCode: 'MEP' }] }, pmc(projectId));
+
+    const read = await budget.readBudget(projectId, engineer(projectId));
+    // WORST FIRST: the breach, then thinning headroom, then the unbudgeted head
+    expect(read.positions.map((p) => p.costHeadCode)).toEqual(['CIVIL', 'MEP', 'PRELIM']);
+    expect(read.openExceptions).toBe(1);
+
+    const [breached, healthy, unbudgeted] = read.positions;
+    // exact `Decimal(18,2)` strings end to end — §A forbids a float64 round trip
+    expect(breached).toMatchObject({
+      costHeadName: 'Civil works', budget: '100.00', budgetVersion: 1,
+      committed: '120.00', receivedNotBilled: '0.00', headroom: '-20.00',
+    });
+    expect(breached!.exception).toMatchObject({
+      costHeadCode: 'CIVIL', headroom: '-20.00', budget: '100.00', exposure: '120.00',
+      raisedBy: 'commitment', clearedAt: null,
+    });
+    expect(healthy).toMatchObject({ costHeadCode: 'MEP', headroom: '40.00', exception: null });
+    // an unbudgeted head reports NULL, not zero — it has no authority to breach, and its real
+    // committed exposure is still reported so the omission is visible rather than silent
+    expect(unbudgeted).toMatchObject({
+      costHeadCode: 'PRELIM', budget: null, budgetVersion: null, headroom: null,
+      committed: '0.00', exception: null,
+    });
+
+    // clearing the breach removes it from the read as well as the register — the two cannot drift,
+    // because the read serves the SAME fold `evaluate` raises from
+    await pos.cancel(projectId, civil.poId, { reason: 'ordered in error' }, pmc(projectId));
+    const cleared = await budget.readBudget(projectId, pmc(projectId));
+    expect(cleared.openExceptions).toBe(0);
+    expect(cleared.positions.find((p) => p.costHeadCode === 'CIVIL')).toMatchObject({
+      committed: '0.00', headroom: '100.00', exception: null,
+    });
+
+    // the register read is pmc/engineer — a site role never sees the project's money
+    await expect(
+      budget.readBudget(projectId, { ...pmc(projectId), role: 'contractor' } as AuthUser),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
   // ── §D — the whole surface is absent off-pilot ────────────────────────────────────────────────
 
   it('§D: a project without the commercial capability has no budget surface and no rows', async () => {
@@ -369,6 +522,9 @@ describe('Phase 5 Task 2 — §B budget + §C COMMITTED + the over-budget except
     await expect(
       budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100.00', reason: 'off pilot' }, pmc(projectId)),
     ).rejects.toMatchObject({ status: 404 });
+    // the READ is gated by the same capability assertion, and 404 (not 403) is the honest answer:
+    // off-pilot the surface does not exist, and a 403 would confirm that it might
+    await expect(budget.readBudget(projectId, pmc(projectId))).rejects.toMatchObject({ status: 404 });
     expect(await t.prisma.budgetLine.count({ where: { projectId } })).toBe(0);
     expect(await t.prisma.budgetException.count({ where: { projectId } })).toBe(0);
   });

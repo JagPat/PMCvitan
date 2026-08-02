@@ -210,7 +210,8 @@ export class PurchaseOrdersService {
         );
       }
     }
-    await this.commercial.replaceAttribution(tx, projectId, identity, replaced);
+    // the amended obligation is a COMMITMENT that changed size, not a reclassification
+    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, 'commitment');
     await this.commercial.attribute(
       tx, projectId, identity,
       fresh.map((f) => ({ target: { poLineId: f.poLineId }, costHeadCode: f.costHeadCode, reason })),
@@ -548,6 +549,7 @@ export class PurchaseOrdersService {
           await this.commercial.replaceAttribution(
             tx, projectId, { actorId: actor.actorId, role: user.role },
             current.lines.map((l) => ({ from: { poLineId: l.id }, to: { poLineId: l.id }, reason: input.reason })),
+            'commitment',
           );
         }
         await recordAudit(tx, { projectId, actor, action: 'po.closeShort', entity: 'PurchaseOrderVersion', entityId: current.id });

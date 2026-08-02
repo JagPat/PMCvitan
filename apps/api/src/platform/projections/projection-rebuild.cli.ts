@@ -76,7 +76,9 @@ async function main(): Promise<void> {
     // substitutions; the CLI runs standalone, so bind the minimal instances (only the read-only
     // methods `coverageFor`/`coveringCommitments`/`activeTargets` run, all pure over the tx).
     bindMaterialReadinessDeps({
-      inventory: new InventoryService(prisma, {} as never, new ProcurementParticipant(new RequirementsQueryService()), {} as never, {} as never),
+      // the extra `{} as never` is the Phase-5 commercial participant: it is only reached from the
+      // acceptance WRITE path, and a rebuild runs read-only methods, so it is never dereferenced
+      inventory: new InventoryService(prisma, {} as never, new ProcurementParticipant(new RequirementsQueryService()), {} as never, {} as never, {} as never),
       substitutions: new SubstitutionsService(prisma, {} as never, {} as never),
     });
     // Phase 4 Task 4 — the labour-readiness recompute routes forecast coverage through the labour

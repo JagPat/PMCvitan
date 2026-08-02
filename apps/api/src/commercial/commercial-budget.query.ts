@@ -6,6 +6,22 @@ import { InventoryQuery } from '../inventory/inventory.query';
 
 const ZERO = new Prisma.Decimal(0);
 
+/**
+ * MONEY SCALE (Codex round-2 P2). Every persisted money column is `Decimal(18,2)`, so the fold's
+ * own arithmetic must land on that scale before anything DECIDES on it or STORES it.
+ *
+ * The prorations here divide — `committedAmountBase × ACCEPTED / qty` on a 3-unit line, a
+ * close-short remainder — and a full-precision quotient can leave headroom at −0.003. Unrounded,
+ * `isNegative()` is true, the §B exception is written with `headroom = -0.003`, PostgreSQL rounds
+ * it to `0.00` on the way into `Decimal(18,2)`, and the `headroom < 0` CHECK then REJECTS the row —
+ * aborting the budget revision or PO issue that was merely reporting a sub-cent rounding artefact.
+ *
+ * Rounding at the fold fixes it at the source: a third of a paisa is not a breach, and the read
+ * surface and the exception register cannot disagree because both consume this one rounded result.
+ */
+const MONEY_DP = 2;
+const money = (d: Prisma.Decimal): Prisma.Decimal => d.toDecimalPlaces(MONEY_DP, Prisma.Decimal.ROUND_HALF_UP);
+
 /** One cost head's money picture, all amounts exact `Decimal(18,2)` (§A — never float64). */
 export interface CostHeadPosition {
   costHeadCode: string;
@@ -16,6 +32,10 @@ export interface CostHeadPosition {
   /** Received-but-unbilled value. At this task there is no bill, so this is the whole received
    *  side; Tasks 4–6 subtract `BILLED_AMOUNT` from it. */
   receivedNotBilled: Prisma.Decimal;
+  /** `Σ exposure` — the buckets that measure against the budget, rounded to the money scale.
+   *  Carried explicitly so the exception row's `headroom = budget - exposure` CHECK holds by
+   *  construction rather than by a caller re-deriving the same subtraction. */
+  exposure: Prisma.Decimal;
   /** `BUDGET − Σ exposure`. Deliberately allowed to go NEGATIVE — that is the over-commitment
    *  signal the §B exception fires on, not an error to clamp away. Null when unbudgeted. */
   headroom: Prisma.Decimal | null;
@@ -149,12 +169,18 @@ export class CommercialBudgetQuery {
       // §J — budget is the CEILING the exposure buckets are measured against, never a bucket
       // itself. Headroom subtracts every exposure bucket that EXISTS at this task; Tasks 4–6 add
       // the billing buckets as their facts arrive.
-      const exposure = committed.add(receivedNotBilled);
+      //
+      // Exposure is rounded ONCE, from the full-precision sum, and headroom is derived from that
+      // rounded figure — not from separately rounded buckets, whose two half-paisa errors could
+      // add to a phantom cent of breach. The displayed buckets are rounded for reporting; the
+      // DECISION is made on `exposure`.
+      const exposure = money(committed.add(receivedNotBilled));
       out.set(code, {
         costHeadCode: code,
         budget,
-        committed,
-        receivedNotBilled,
+        committed: money(committed),
+        receivedNotBilled: money(receivedNotBilled),
+        exposure,
         headroom: budget === null ? null : budget.sub(exposure),
       });
     }

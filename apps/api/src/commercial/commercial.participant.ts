@@ -50,6 +50,12 @@ export class CommercialParticipant {
    *
    * A re-attribution passes BOTH heads — the source can now afford what it could not, and the
    * target may not be able to absorb what it just received.
+   *
+   * `raisedBy` is the CALLER's to name (Codex round-2 P2). `replaceAttribution` serves two very
+   * different acts — the PO amend/close-short lifecycle and the standalone reclassification route —
+   * and stamping every one of them `'reattribution'` sends a PMC looking for a reclassification
+   * that never happened: amending a ₹90 CIVIL order up to ₹120 against a ₹100 CIVIL budget is a
+   * COMMITMENT that grew. The exception explains itself only if the label is the truth.
    */
   private async evaluateHeads(
     tx: Prisma.TransactionClient,
@@ -59,6 +65,39 @@ export class CommercialParticipant {
     raisedBy: HeadroomMover,
   ): Promise<void> {
     await this.budget.evaluate(tx, projectId, actor.actorId, heads, raisedBy);
+  }
+
+  /**
+   * §B — RE-EVALUATE the head carrying one material PO line, because an inventory ACCEPTANCE can
+   * move headroom (Codex round-2 P2).
+   *
+   * Up to the ordered quantity acceptance is exposure-NEUTRAL, and the arithmetic says why:
+   * `committedAmountBase = rate × qty + tax + freight`, so the consumed part subtracted from
+   * `COMMITTED` is exactly the value added to received-not-billed. The buckets hand the money to
+   * each other and the total does not move.
+   *
+   * OVERAGE breaks that symmetry, and legitimately: §G authorises accepting more than `qty`, the
+   * extra units are valued at the frozen rate, and nothing releases a matching amount of
+   * commitment — a ₹100 order accepted at 110 units exposes ₹110 against a ₹100 budget. That is
+   * new obligation created at the RECEIPT, so under §B's rule — "the exception is raised from
+   * EVERY write that can move headroom" — acceptance is a headroom-moving write and must raise
+   * here, in the accepting transaction. Reversing that acceptance is the same write in the other
+   * direction and CLEARS it.
+   *
+   * The head is resolved from commercial's OWN attribution register: inventory knows the PO line,
+   * never the cost head, so nothing outside this module has to learn the mapping.
+   */
+  async evaluateForPoLine(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    poLineId: string,
+    raisedBy: HeadroomMover,
+  ): Promise<void> {
+    const active = await this.activeFor(tx, projectId, { poLineId });
+    // an UNATTRIBUTED line carries no head to evaluate — nothing moved that a budget can measure
+    if (!active) return;
+    await this.evaluateHeads(tx, projectId, actor, [active.costHeadCode], raisedBy);
   }
 
   /** Off-pilot this whole surface does not exist: the caller's transaction is untouched (§D). */
@@ -159,6 +198,7 @@ export class CommercialParticipant {
     projectId: string,
     actor: AttributionActor,
     rows: ReadonlyArray<{ from: AttributionTarget; to: AttributionTarget; costHeadCode?: string; reason: string }>,
+    raisedBy: HeadroomMover,
   ): Promise<void> {
     if (rows.length === 0) return;
     this.assertAttributeAuthority(actor);
@@ -185,9 +225,9 @@ export class CommercialParticipant {
       touched.push(code);
       if (active) touched.push(active.costHeadCode);
     }
-    // §B: a re-attribution recomputes BOTH the source and the target. Only recomputing the target
+    // §B: a replacement recomputes BOTH the source and the target. Only recomputing the target
     // leaves the source permanently flagged for an obligation it no longer carries.
-    await this.evaluateHeads(tx, projectId, actor, touched, 'reattribution');
+    await this.evaluateHeads(tx, projectId, actor, touched, raisedBy);
   }
 
   /**

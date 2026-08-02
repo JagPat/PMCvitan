@@ -61,6 +61,56 @@ export interface CommitmentAttributionDto {
 }
 
 /**
+ * Phase 5 Task 2 (§B/§J) — one cost head's money picture.
+ *
+ * Every amount is a decimal STRING, never a JS number: §A requires exact `Decimal(18,2)` end to
+ * end, and serializing through float64 would corrupt the very figures the exception is raised on.
+ *
+ * `budget` and `headroom` are NULL together, and that pair is not "zero": an unbudgeted head has
+ * no authority to breach. Reporting it as ₹0 would flag every commitment on a project that has
+ * not budgeted yet, which is the normal state of a project mid-setup.
+ */
+export interface CostHeadPositionDto {
+  costHeadCode: string;
+  costHeadName: string;
+  /** the LIVE budget version's amount, or null when the head is unbudgeted */
+  budget: string | null;
+  /** the version number of that live budget line, or null when unbudgeted */
+  budgetVersion: number | null;
+  /** OUTSTANDING obligation — gross committed less the consumed and released parts (§0) */
+  committed: string;
+  /** received-but-unbilled value; Tasks 4–6 subtract `BILLED_AMOUNT` from it */
+  receivedNotBilled: string;
+  /** `BUDGET − Σ exposure`, NEGATIVE when over-committed; null when unbudgeted */
+  headroom: string | null;
+  /** the OPEN over-budget exception on this head, if one stands right now */
+  exception: BudgetExceptionDto | null;
+}
+
+/** An over-budget exception. It flags; it never gates (§B) — no PO is blocked by one. */
+export interface BudgetExceptionDto {
+  id: string;
+  costHeadCode: string;
+  headroom: string;
+  budget: string;
+  exposure: string;
+  /** which of §B's four headroom-moving writes raised it — `acceptance` is the accepted-overage
+   *  case, where §G authorises more than the ordered quantity and no commitment releases against
+   *  the extra units */
+  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance';
+  raisedAt: string;
+  raisedById: string;
+  clearedAt: string | null;
+}
+
+/** The `commercial.budget` read: every cost head's position, worst headroom first. */
+export interface CommercialBudgetDto {
+  positions: CostHeadPositionDto[];
+  /** how many heads currently stand over budget — the Inbox action count (§B) */
+  openExceptions: number;
+}
+
+/**
  * §L: enabling `commercial` on a project that already holds live POs must ATTRIBUTE them in the
  * enabling transaction — a capability-on project whose forecast silently omits every commitment
  * predating enablement is the "observational not operational" defect Phase 3 Task 7 was blocked

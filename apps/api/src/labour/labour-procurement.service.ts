@@ -228,7 +228,8 @@ export class LabourProcurementService {
         );
       }
     }
-    await this.commercial.replaceAttribution(tx, projectId, identity, replaced);
+    // the amended obligation is a COMMITMENT that changed size, not a reclassification
+    await this.commercial.replaceAttribution(tx, projectId, identity, replaced, 'commitment');
     await this.commercial.attribute(
       tx, projectId, identity,
       fresh.map((f) => ({ target: { labourPoLineId: f.labourPoLineId }, costHeadCode: f.costHeadCode, reason })),
@@ -1035,6 +1036,7 @@ export class LabourProcurementService {
           await this.commercial.replaceAttribution(
             tx, projectId, { actorId: actor.actorId, role: user.role },
             current.lines.map((l) => ({ from: { labourPoLineId: l.id }, to: { labourPoLineId: l.id }, reason: input.reason })),
+            'commitment',
           );
         }
         await recordAudit(tx, { projectId, actor, action: 'labour.po.closeShort', entity: 'LabourPurchaseOrderVersion', entityId: current.id });

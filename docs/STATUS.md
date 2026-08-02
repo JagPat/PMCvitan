@@ -13,13 +13,13 @@ narrative and may lag behind reality.
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
 task: 2
-task_state: in_progress
+task_state: in_review
 work_item: phase-5-task-2
 reviewed_merge: edb7f08
 open_pr: 270
 next_task: phase-5-task-3
 blocking_directive: none
-updated: 2026-08-01
+updated: 2026-08-02
 ```
 
 **PHASE 5 IS THE ACTIVE PHASE.** Its plan is merged and independently cleared
@@ -34,6 +34,24 @@ twelve findings all fixed forward with reproduce-first probes). Evidence:
 `docs/reviews/pr-268-convergence.md`. It ships NO `BudgetLine`: §L is explicit
 that authority is only meaningful against the obligation it measures, so the
 budget, the `COMMITTED` fold and the over-budget exception land together in Task 2.
+
+**Task 2 is COMPLETE on PR #270 and held for review.** It ships §B's versioned
+immutable `BudgetLine` (one live chain per head, `amount >= 0`), the §C/§0
+`COMMITTED` fold read through each PO line's OWNING module (OUTSTANDING, not
+gross — the buckets PARTITION the money), §J's received-not-billed and headroom,
+the `BudgetException` lifecycle observation raised or cleared in the SAME
+transaction as the write that moved headroom, `commercial.budget.set` (one
+command for v1 and every revision), and the `GET …/commercial/budget` read. It
+gates NOTHING: commercial stays a SINK and no readiness verdict consults a
+budget. Two Codex rounds returned seven findings, all fixed forward; the
+convergence audit `docs/reviews/pr-270-convergence.md` names the two roots and
+leaves a mechanical closure for each in
+`apps/api/src/commercial/commercial.contract.test.ts` (every declared command and
+query must be reachable; every headroom-moving write must re-evaluate). Notably
+`acceptance` is §B's FOURTH headroom mover — §G authorises accepting more than
+the ordered quantity and no commitment is released against the overage, so a
+receipt can breach a budget with no purchase-order write anywhere. Evidence:
+`docs/reviews/phase-5-t2-budget-packet.md`.
 
 **One decision is OPEN for the owner and is recorded rather than assumed.** Eight
 of the twelve review findings were the §L activation path: `capability:enable` is

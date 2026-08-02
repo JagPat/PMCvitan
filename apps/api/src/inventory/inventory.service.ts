@@ -12,6 +12,7 @@ import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { CommercialParticipant } from '../commercial/commercial.participant';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, type CommandRunContext, type CommandScope, type CommandTx } from '../platform/commands';
@@ -280,8 +281,28 @@ export class InventoryService {
     // through the activities participant (the cycle-exempt channel — §G's dependency edge
     // runs activities → inventory in Task 6, so inventory may not READ activities).
     private readonly activityParticipant: ActivityParticipant,
+    // Phase 5 Task 2 (§B) — an ACCEPTANCE can move budget headroom (accepted OVERAGE raises
+    // exposure with no commitment released against it), so the accepting transaction re-evaluates
+    // the line's cost head through the cycle-exempt commercial participant. Off-pilot the call is
+    // a no-op and the transaction is untouched.
+    private readonly commercialParticipant: CommercialParticipant,
     private readonly dispatcher: ExternalEffectDispatcher,
   ) {}
+
+  /**
+   * §B — acceptance is a headroom-moving write. Neutral up to the ordered quantity (the consumed
+   * commitment and the received value are the same money changing bucket), it moves ONLY on
+   * authorised overage — and that is exactly the case a budget must flag. Called on acceptance and
+   * on the reversal of one, so the exception both raises and clears from the same fact.
+   */
+  private async evaluateBudgetForLine(
+    tx: Prisma.TransactionClient, projectId: string, actor: Actor, role: string, poLineId: string,
+  ): Promise<void> {
+    if (!(await this.commercialParticipant.isActive(tx, projectId))) return;
+    await this.commercialParticipant.evaluateForPoLine(
+      tx, projectId, { actorId: actor.actorId, role }, poLineId, 'acceptance',
+    );
+  }
 
   private async begin(projectId: string, user: AuthUser): Promise<{ actor: Actor; scope: CommandScope }> {
     await this.capabilities.assertEnabled(projectId, MATERIALS_CAPABILITY);
@@ -474,6 +495,7 @@ export class InventoryService {
           fromBucket: 'quarantine', toBucket: 'acceptedOnHand',
           qualityResult: input.qualityResult, evidenceMediaId: input.evidenceMediaId, reason: input.note,
         }, 'stock.accept');
+        await this.evaluateBudgetForLine(tx, projectId, actor, user.role, lot.poLineId);
         return { resultRef: row.id, events: [event] };
       },
     });
@@ -628,6 +650,12 @@ export class InventoryService {
           reversedTxId: target.id, reason: input.reason,
           activityId: target.activityId, issueId: target.issueId, toStoreLocation: inverse.toStoreLocation,
         }, 'stock.reverse');
+        // §B — reversing an ACCEPTANCE withdraws the received value, so an exception the overage
+        // raised must CLEAR here. Without it the Inbox keeps an action for a breach the correction
+        // already undid, which is the same defect a commitment-only trigger has.
+        if (target.type === 'acceptance') {
+          await this.evaluateBudgetForLine(tx, projectId, actor, user.role, lot.poLineId);
+        }
         return { resultRef: row.id, events: [event] };
       },
     });

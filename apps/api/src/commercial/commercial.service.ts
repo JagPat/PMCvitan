@@ -143,7 +143,9 @@ export class CommercialService {
         // gets, because the authority follows the WRITE, not the route (§C, probe 5ar).
         await this.participant.replaceAttribution(tx, projectId, { actorId: actor.actorId, role: user.role }, [
           { from: target, to: target, costHeadCode: input.costHeadCode, reason: input.reason },
-        ]);
+        // this is the ONE site where the mover really is a RECLASSIFICATION — a deliberate change
+        // of head with the obligation itself unchanged
+        ], 'reattribution');
         const replacement = await tx.commitmentAttribution.findFirstOrThrow({
           where: { projectId, supersededAt: null, ...('poLineId' in target ? { poLineId: target.poLineId } : { labourPoLineId: target.labourPoLineId }) },
           select: { id: true },

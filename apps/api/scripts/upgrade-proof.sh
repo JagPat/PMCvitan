@@ -1365,6 +1365,89 @@ assert_rejects "commercial T1 §0b: a whitespace-only attribution reason (non-bl
 assert_rejects "commercial T1 §0b: a whitespace-only cost-head code (non-blank CHECK)" \
   "INSERT INTO \"CostHead\"(\"projectId\",\"code\",\"name\",\"definedById\") VALUES('p1',E' \t\n','Blank','USER-1')"
 
+# ── Phase 5 Task 2 — the §B versioned BUDGET and the over-budget EXCEPTION. Both tables upgrade
+#    ROW-FREE over the legacy DB (the pilot has no rows; each migration's closing block ABORTS if
+#    it finds any), and the §B seals reject forgeries on the MIGRATED database. Anchored on the
+#    cost heads created by the Task-1 coherent chain above (p1/CIVIL and p1/MEP).
+assert "the 2 Phase-5 Task-2 budget tables exist and are ROW-FREE over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('BudgetLine','BudgetException'))::text || '|' || (SELECT COUNT(*) FROM \"BudgetLine\")::text || '|' || (SELECT COUNT(*) FROM \"BudgetException\")::text;" \
+  "2|0|0"
+assert "the Task-2 sign/version/relation CHECKs, live+open partial uniques and append-only triggers are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('BudgetLine_amount_check','BudgetLine_version_check','BudgetLine_supersede_complete','BudgetLine_text_nonblank','BudgetException_headroom_check','BudgetException_arithmetic_check','BudgetException_raisedBy_check'))::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname IN ('BudgetLine_live_costHead_key','BudgetException_open_costHead_key'))::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('BudgetLine_append_only','BudgetException_lifecycle') AND NOT tgisinternal)::text;" \
+  "7|2|2"
+
+# a coherent §B chain: v1, a revision that supersedes it, and an exception raised against the live
+# version. Proves the seals are PRECISE (they accept legitimate budget truth), not merely strict.
+$PSQL >/dev/null <<SQL && printf 'ok      %s\n' "commercial T2 §B: a coherent budget v1 -> revision -> exception chain is accepted (seals are precise)" || { printf 'FAILED  %s\n' "commercial T2 coherent budget chain rejected"; FAIL=1; }
+BEGIN;
+INSERT INTO "BudgetLine"("id","projectId","costHeadCode","amount","version","reason","createdById")
+  VALUES('UPL-P5BL1','p1','CIVIL',100.00,1,'civil plan','USER-1');
+UPDATE "BudgetLine" SET "supersededAt"=now(), "supersededById"='USER-1', "supersedeReason"='budget cut'
+  WHERE "id"='UPL-P5BL1';
+INSERT INTO "BudgetLine"("id","projectId","costHeadCode","amount","version","reason","createdById")
+  VALUES('UPL-P5BL2','p1','CIVIL',50.00,2,'civil plan v2','USER-1');
+INSERT INTO "BudgetException"("id","projectId","costHeadCode","headroom","budget","exposure","raisedBy","raisedById")
+  VALUES('UPL-P5BX1','p1','CIVIL',-40.00,50.00,90.00,'budget_revision','USER-1');
+COMMIT;
+SQL
+
+# §B — exactly ONE live budget chain per head, and the amount can never be negative
+assert_rejects "commercial T2 §B: a SECOND live budget version for one head (live partial unique)" \
+  "INSERT INTO \"BudgetLine\"(\"id\",\"projectId\",\"costHeadCode\",\"amount\",\"version\",\"reason\",\"createdById\") VALUES('UPL-P5BLD','p1','CIVIL',10.00,3,'a second live plan','USER-1')"
+assert_rejects "commercial T2 §B: a NEGATIVE budget amount (sign CHECK)" \
+  "INSERT INTO \"BudgetLine\"(\"id\",\"projectId\",\"costHeadCode\",\"amount\",\"version\",\"reason\",\"createdById\") VALUES('UPL-P5BLN','p1','MEP',-1.00,1,'negative authority','USER-1')"
+assert_rejects "commercial T2 §B: a version below 1 (monotonic-version CHECK)" \
+  "INSERT INTO \"BudgetLine\"(\"id\",\"projectId\",\"costHeadCode\",\"amount\",\"version\",\"reason\",\"createdById\") VALUES('UPL-P5BLV','p1','MEP',10.00,0,'version zero','USER-1')"
+assert_rejects "commercial T2 §B: a whitespace-only budget reason (non-blank CHECK)" \
+  "INSERT INTO \"BudgetLine\"(\"id\",\"projectId\",\"costHeadCode\",\"amount\",\"version\",\"reason\",\"createdById\") VALUES('UPL-P5BLB','p1','MEP',10.00,1,E' \t\n','USER-1')"
+# §B — versions are IMMUTABLE: the amount a budget authorised is not editable after the fact
+assert_rejects "commercial T2 §B: editing a LIVE budget amount in place (append-only trigger)" \
+  "UPDATE \"BudgetLine\" SET \"amount\"=999.00 WHERE \"id\"='UPL-P5BL2'"
+assert_rejects "commercial T2 §B: rewriting a superseded version's amount (history is not editable)" \
+  "UPDATE \"BudgetLine\" SET \"amount\"=999.00 WHERE \"id\"='UPL-P5BL1'"
+assert_rejects "commercial T2 §B: DELETING a budget version (append-only)" \
+  "DELETE FROM \"BudgetLine\" WHERE \"id\"='UPL-P5BL1'"
+assert_rejects "commercial T2 §B: an unattributable half-stamped supersession (supersede-complete CHECK)" \
+  "UPDATE \"BudgetLine\" SET \"supersededAt\"=now() WHERE \"id\"='UPL-P5BL2'"
+assert_rejects "commercial T2 §B: re-stamping an ALREADY-superseded version" \
+  "UPDATE \"BudgetLine\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='again' WHERE \"id\"='UPL-P5BL1'"
+
+# §B — the exception describes a REAL breach: negative headroom, and `headroom = budget - exposure`
+assert_rejects "commercial T2 §B: an exception with NON-negative headroom (there is nothing to flag)" \
+  "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BXP','p1','MEP',10.00,50.00,40.00,'commitment','USER-1')"
+assert_rejects "commercial T2 §B: an exception whose arithmetic does not hold (relation CHECK)" \
+  "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BXA','p1','MEP',-10.00,50.00,999.00,'commitment','USER-1')"
+assert_rejects "commercial T2 §B: a SECOND open exception on one head (open partial unique)" \
+  "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BXD','p1','CIVIL',-5.00,50.00,55.00,'commitment','USER-1')"
+assert_rejects "commercial T2 §B: an UNLABELLED headroom mover (raisedBy CHECK)" \
+  "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BXU','p1','MEP',-10.00,50.00,60.00,'somebody_did_something','USER-1')"
+# §B round-2 — `acceptance` IS one of the four movers: accepted OVERAGE raises exposure with no
+# commitment released against it, so a receipt can breach a budget with no PO write anywhere
+$PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BXAC','p1','MEP',-10.00,50.00,60.00,'acceptance','USER-1')" \
+  && printf 'ok      %s\n' "commercial T2 §B: an exception raised by an ACCEPTANCE overage is accepted (the fourth mover)" \
+  || { printf 'FAILED  %s\n' "commercial T2 §B: the acceptance-raised exception was rejected"; FAIL=1; }
+# §B — the exception is a LIFECYCLE row with exactly ONE permitted transition
+assert_rejects "commercial T2 §B: editing an open exception's figures (lifecycle trigger)" \
+  "UPDATE \"BudgetException\" SET \"headroom\"=-1.00 WHERE \"id\"='UPL-P5BX1'"
+assert_rejects "commercial T2 §B: re-labelling which write raised an exception" \
+  "UPDATE \"BudgetException\" SET \"raisedBy\"='commitment' WHERE \"id\"='UPL-P5BX1'"
+assert_rejects "commercial T2 §B: DELETING an exception (a breach is history, never erased)" \
+  "DELETE FROM \"BudgetException\" WHERE \"id\"='UPL-P5BX1'"
+$PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPL-P5BX1'" \
+  && printf 'ok      %s\n' "commercial T2 §B: the ONE permitted transition (clearing an OPEN exception) is accepted" \
+  || { printf 'FAILED  %s\n' "commercial T2 §B: the permitted clear was rejected"; FAIL=1; }
+assert_rejects "commercial T2 §B: RE-OPENING a cleared exception" \
+  "UPDATE \"BudgetException\" SET \"clearedAt\"=NULL WHERE \"id\"='UPL-P5BX1'"
+# …and the cleared head can be flagged again, so clearing really releases the open unique
+$PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BX2','p1','CIVIL',-20.00,50.00,70.00,'commitment','USER-1')" \
+  && printf 'ok      %s\n' "commercial T2 §B: a fresh exception is accepted once the prior is cleared" \
+  || { printf 'FAILED  %s\n' "commercial T2 §B: the follow-on exception was rejected"; FAIL=1; }
+# tenancy — a budget or exception on ANOTHER project's cost head is unrepresentable
+assert_rejects "commercial T2: a budget line naming ANOTHER project's cost head (same-project composite FK)" \
+  "INSERT INTO \"BudgetLine\"(\"id\",\"projectId\",\"costHeadCode\",\"amount\",\"version\",\"reason\",\"createdById\") VALUES('UPL-P5BLT','p2','CIVIL',10.00,1,'cross-tenant','USER-1')"
+assert_rejects "commercial T2: an exception citing a cost head that does not exist (composite FK)" \
+  "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPL-P5BXH','p1','NOPE',-1.00,1.00,2.00,'commitment','USER-1')"
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."

@@ -69,6 +69,14 @@ export class CommercialController {
     return this.commercial.reattribute(projectId, body, user, idempotencyKey);
   }
 
+  /** §B/§J — BUDGET, outstanding COMMITTED, received-not-billed and headroom per head, with any
+   *  OPEN exception. A read, not a gate: nothing here can refuse a purchase order. */
+  @Get('commercial/budget')
+  @RolesFor('commercial.read')
+  readBudget(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.budget.readBudget(projectId, user);
+  }
+
   @Get('commercial/cost-heads')
   @RolesFor('commercial.read')
   listCostHeads(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {

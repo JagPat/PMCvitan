@@ -41,7 +41,10 @@ export const inventoryManifest: ModuleManifest = {
   // Phase 5 (§E/§K) — `stock.reverse` asks `CommercialParticipant.assertAcceptanceReversible`
   // before withdrawing accepted material, or accept 100 → certify → reverse commits with no
   // commercial check and leaves the certificate payable against withdrawn evidence. Declared
-  // with the Task-1 edge table (§K is the single declaration); the call lands in Task 5.
+  // with the Task-1 edge table (§K is the single declaration); that call lands in Task 5.
+  // Task 2 (§B) already USES this edge: `receipts.accept` and the reversal of an acceptance call
+  // `CommercialParticipant.evaluateForPoLine`, because authorised OVERAGE raises exposure with no
+  // commitment released against it — acceptance is a headroom-moving write.
   workflowParticipants: ['procurement', 'activities', 'commercial'],
   producesEvents: ['stock.transacted', 'issue.recorded'],
   consumesEvents: [],

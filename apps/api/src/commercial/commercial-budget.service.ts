@@ -1,6 +1,11 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { ROLE_POLICY } from '@vitan/shared';
+import {
+  ROLE_POLICY,
+  type BudgetExceptionDto,
+  type CommercialBudgetDto,
+  type CostHeadPositionDto,
+} from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
@@ -11,8 +16,18 @@ import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabili
 import { CommercialBudgetQuery } from './commercial-budget.query';
 import type { SetBudgetInput } from '../contracts';
 
-/** §B names exactly three writes that can move headroom; the DB CHECK pins the same set. */
-export type HeadroomMover = 'commitment' | 'budget_revision' | 'reattribution';
+/**
+ * §B's rule is "the exception is raised from EVERY write that can move headroom". The section
+ * NAMES three — a commitment, a budget revision, a re-attribution — because those were the writes
+ * that existed when it was written. `acceptance` is the FOURTH, and it belongs to the same rule
+ * rather than extending it: §G authorises accepting more than the ordered quantity, §J values the
+ * overage at the frozen rate, and no commitment is released against it, so the receipt itself
+ * raises exposure. Naming it separately (rather than folding it into `commitment`) is what lets a
+ * PMC read the exception and know a DELIVERY caused it, not an order.
+ *
+ * The DB CHECK on `BudgetException.raisedBy` pins exactly this set.
+ */
+export type HeadroomMover = 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance';
 
 /**
  * Phase 5 Task 2 (§B) — the BUDGET write path and the over-budget EXCEPTION.
@@ -34,6 +49,84 @@ export class CommercialBudgetService {
     if (!(ROLE_POLICY['commercial.budget.manage'] as readonly string[]).includes(user.role)) {
       throw new ForbiddenException('Setting a budget is a pmc surface');
     }
+  }
+
+  private assertRead(user: AuthUser): void {
+    if (!(ROLE_POLICY['commercial.read'] as readonly string[]).includes(user.role)) {
+      throw new ForbiddenException('The commercial register is a pmc/engineer surface');
+    }
+  }
+
+  /**
+   * §B/§J — the `commercial.budget` read: every cost head's BUDGET, its outstanding COMMITTED
+   * exposure, the received-not-billed value, the resulting headroom, and the OPEN exception if
+   * one stands.
+   *
+   * Folded inside ONE transaction because the position spans four owners (commercial's budget and
+   * attribution rows, procurement's and labour's frozen PO-line snapshots, inventory's accepted
+   * ledger). Reading them across separate statements would let a PO issue land mid-read and report
+   * a headroom that never existed at any instant — a number nobody could reconcile against the
+   * exception register.
+   *
+   * The read does NOT take `lockProjectReadiness`. It reports; it decides nothing. Blocking every
+   * budget page-load behind the lock that serializes the PO lifecycle would make reporting contend
+   * with the site's own writes, and a read that is one commit stale is honest — a read that
+   * delayed a purchase order would not be.
+   *
+   * Sorted worst-first: breaches at the top, then thinning headroom, then unbudgeted heads. That
+   * is the order the practice needs to act in, and it makes the top of the list the same set the
+   * Inbox action counts.
+   */
+  async readBudget(projectId: string, user: AuthUser): Promise<CommercialBudgetDto> {
+    await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    this.assertRead(user);
+
+    const { positions, names, open } = await this.prisma.$transaction(async (tx) => {
+      const heads = await tx.costHead.findMany({
+        where: { projectId },
+        select: { code: true, name: true },
+        orderBy: { code: 'asc' },
+      });
+      const codes = heads.map((h) => h.code);
+      const [folded, liveVersions, exceptions] = await Promise.all([
+        this.budget.positionsFor(tx, projectId, codes),
+        tx.budgetLine.findMany({
+          where: { projectId, supersededAt: null },
+          select: { costHeadCode: true, version: true },
+        }),
+        tx.budgetException.findMany({
+          where: { projectId, clearedAt: null },
+          orderBy: { raisedAt: 'asc' },
+        }),
+      ]);
+      return {
+        positions: { folded, versionOf: new Map(liveVersions.map((v) => [v.costHeadCode, v.version])) },
+        names: new Map(heads.map((h) => [h.code, h.name])),
+        open: exceptions,
+      };
+    });
+
+    const exceptionOf = new Map(open.map((e) => [e.costHeadCode, serializeException(e)]));
+    const rows: CostHeadPositionDto[] = [...positions.folded.values()].map((p) => ({
+      costHeadCode: p.costHeadCode,
+      costHeadName: names.get(p.costHeadCode) ?? p.costHeadCode,
+      budget: p.budget?.toFixed(2) ?? null,
+      budgetVersion: positions.versionOf.get(p.costHeadCode) ?? null,
+      committed: p.committed.toFixed(2),
+      receivedNotBilled: p.receivedNotBilled.toFixed(2),
+      headroom: p.headroom?.toFixed(2) ?? null,
+      exception: exceptionOf.get(p.costHeadCode) ?? null,
+    }));
+    rows.sort((a, b) => {
+      // unbudgeted heads have no headroom to rank and sort last, by code
+      if (a.headroom === null || b.headroom === null) {
+        if (a.headroom === b.headroom) return a.costHeadCode.localeCompare(b.costHeadCode);
+        return a.headroom === null ? 1 : -1;
+      }
+      const cmp = new Prisma.Decimal(a.headroom).comparedTo(new Prisma.Decimal(b.headroom));
+      return cmp !== 0 ? cmp : a.costHeadCode.localeCompare(b.costHeadCode);
+    });
+    return { positions: rows, openExceptions: open.length };
   }
 
   /**
@@ -152,10 +245,13 @@ export class CommercialBudgetService {
           data: {
             projectId,
             costHeadCode: code,
+            // Codex round-2 P2 — all three figures come from the fold ALREADY at the persisted
+            // `Decimal(18,2)` money scale, and `headroom` was derived from this exact `exposure`.
+            // So `headroom < 0` and `headroom = budget - exposure` both hold at PostgreSQL by
+            // construction; nothing here can be silently re-rounded on the way in.
             headroom: position!.headroom!,
             budget: position!.budget!,
-            // recorded so `headroom = budget - exposure` holds on the row itself (DB CHECK)
-            exposure: position!.budget!.sub(position!.headroom!),
+            exposure: position!.exposure,
             raisedBy,
             raisedById: actorId,
           },
@@ -169,4 +265,22 @@ export class CommercialBudgetService {
       }
     }
   }
+}
+
+function serializeException(r: {
+  id: string; costHeadCode: string; headroom: Prisma.Decimal; budget: Prisma.Decimal; exposure: Prisma.Decimal;
+  raisedBy: string; raisedAt: Date; raisedById: string; clearedAt: Date | null;
+}): BudgetExceptionDto {
+  return {
+    id: r.id,
+    costHeadCode: r.costHeadCode,
+    headroom: r.headroom.toFixed(2),
+    budget: r.budget.toFixed(2),
+    exposure: r.exposure.toFixed(2),
+    // the DB CHECK pins the same three-value set, so the cast reflects a constraint, not a hope
+    raisedBy: r.raisedBy as BudgetExceptionDto['raisedBy'],
+    raisedAt: r.raisedAt.toISOString(),
+    raisedById: r.raisedById,
+    clearedAt: r.clearedAt?.toISOString() ?? null,
+  };
 }
