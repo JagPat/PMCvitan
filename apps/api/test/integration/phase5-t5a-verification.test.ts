@@ -333,10 +333,14 @@ describe('Phase 5 Task 5A — §E three-way verification (live PG)', () => {
     expect(verdict.exceptions).toEqual([]);
     expect(await statusOf(projectId, bill.id)).toBe('verified');
 
-    // …and NOT one step further. `certified` is 5B's, with the certificate that is its evidence.
+    // …and NOT one step further WITHOUT the evidence. Task 5A refused this because the ARROW did
+    // not exist; Task 5B opened the arrow and put a certificate behind it, so the refusal now
+    // comes from the shadow rule instead — `certified` is the projection of a live certificate,
+    // never a status a writer may assert. The probe is updated rather than deleted because what it
+    // is really about is unchanged: a verified claim does not become payable by an UPDATE.
     await expect(t.prisma.$executeRawUnsafe(
       `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "id"=$1`, bill.id,
-    )).rejects.toThrow(/cannot move from/u);
+    )).rejects.toThrow(/LIVE certificate exists for it/u);
     expect(await statusOf(projectId, bill.id)).toBe('verified');
   });
 

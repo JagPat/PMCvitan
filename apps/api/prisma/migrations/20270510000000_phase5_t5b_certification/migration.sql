@@ -331,14 +331,23 @@ BEGIN
   END IF;
 END $$;
 
--- ── §F — the arrows Task 4 deliberately withheld ───────────────────────────────────────────────
+-- ── §F — the ONE arrow this task adds, and the one it adds back ────────────────────────────────
 --
--- Task 4 stopped the transition graph at `under-verification` and said so in as many words: "the
--- STATUSES stay in the CHECK vocabulary because §0's LIVE rule is defined over the whole set;
--- Task 5 adds these arrows WITH the evidence that makes them safe". That evidence now exists —
--- the §E verdict for `verified`, and a `BillCertificate` for `certified` — so the arrows open,
--- and none opens further than its evidence reaches. `approved-for-payment`, `part-paid` and
--- `paid` stay closed: their evidence is Task 6's.
+-- **This function is `20270501000000`'s body VERBATIM plus a NAMED delta.** It is reproduced in
+-- full because PostgreSQL has no way to add a clause to an existing function — `CREATE OR REPLACE`
+-- takes a whole body — and the first draft of this migration paid for that: it pasted the body
+-- from an older branch and silently DELETED 5A's `verified` provenance seal and its
+-- `verified -> submitted` amendment guard, five correction rounds of cleared work, while the
+-- migration applied green. `phase5-t5a-verification.test.ts` caught it.
+--
+-- The delta, in full, so the next task can diff rather than trust this sentence:
+--   1. `DECLARE v_cert bigint;`
+--   2. the `certified` shadow rule, immediately before the transition table
+--   3. `certified` added to the `verified` arrow row, and `certified -> verified` added below it
+--   4. the closing message names `certified` rather than `verified` as the frontier
+-- Nothing else differs. A task that adds another arrow should copy the CURRENT body and state its
+-- own delta the same way.
+
 CREATE OR REPLACE FUNCTION phase5_t4_bill_lifecycle() RETURNS trigger AS $$
 DECLARE v_cert bigint;
 BEGIN
@@ -379,34 +388,121 @@ BEGIN
     END IF;
     PERFORM phase5_t4_resolution_bound_check(NEW."projectId", NEW."id");
   END IF;
-  -- Task 5 — `certified` is not a status a writer may simply assert: it is the SHADOW of a
-  -- certificate row. Without this, maintenance SQL could mark a bill certified with no certificate
-  -- behind it, and §G bounds 3–5 would all read a payable of zero while the status says money is
-  -- authorised. The certificate is the fact; the status is its projection.
-  IF NEW."status" = 'certified' AND OLD."status" IS DISTINCT FROM 'certified' THEN
-    SELECT COUNT(*) INTO v_cert FROM "BillCertificate" c
-     WHERE c."projectId" = NEW."projectId" AND c."billId" = NEW."id" AND c."supersededAt" IS NULL;
-    IF v_cert <> 1 THEN
-      RAISE EXCEPTION 'A bill is `certified` because a LIVE certificate exists for it, not because a status says so — found % (%)', v_cert, OLD."id";
+  -- Codex round-1 F2 — `verified` is the SHADOW of a verdict, not a status a writer may assert.
+  -- The verdict must be a MATCH and must have been computed over the claim version that is live
+  -- right now: a verdict over a superseded version says nothing about the claim being verified.
+  IF NEW."status" = 'verified' AND OLD."status" IS DISTINCT FROM 'verified' THEN
+    -- Codex round-3 — the verdict must be PROVABLY the service's, not merely present. The first
+    -- head checked that some `matched` row existed, which a maintenance path could satisfy by
+    -- inserting one: fake the verdict, then flip the status, and the §E check the arrow exists to
+    -- enforce is bypassed with two statements.
+    --
+    -- The seal is PROVENANCE, not a re-derivation. Re-deriving the rate, tax, freight and duplicate
+    -- checks here would restate §E in a second language, and §0 is explicit that restating a rule at
+    -- a second site is the drift that produces findings — the two copies disagree the first time
+    -- either changes. Instead the row must have been produced BY the command that computes the
+    -- verdict, which is the four-FK provenance shape Task 2 established for proving a PO line's
+    -- terms came from the approved comparison. `sourceCommandId` is already an FK to
+    -- `CommandExecution`; this adds the requirement that the command be a SUCCEEDED
+    -- `commercial.bill.verify` for this same project.
+    IF NOT EXISTS (
+      SELECT 1 FROM "BillVerification" bv
+       JOIN "CommandExecution" ce
+         ON ce."projectId" = bv."projectId" AND ce."id" = bv."sourceCommandId"
+       WHERE bv."projectId" = NEW."projectId" AND bv."billId" = NEW."id"
+         AND bv."verdict" = 'matched'
+         -- NOT `ce."status" = 'succeeded'`, and NOT `ce."resultRef" = bv."id"`: this trigger fires
+         -- DURING the verify command, while its own ledger row is still `reserved` and its result
+         -- has not been written, so either clause is unsatisfiable HERE by construction — the
+         -- first head of this seal carried the status clause and refused every honest
+         -- verification. What can be checked at this instant is the command's TYPE. What cannot
+         -- is checked at COMMIT instead, by `VendorBill_verified_provenance` below, which is where
+         -- the ledger row is complete. The two halves are one rule split by WHEN it is knowable,
+         -- not a weaker check and a stronger one.
+         AND ce."commandType" = 'commercial.bill.verify'
+         AND bv."versionId" = (
+           SELECT v."id" FROM "VendorBillVersion" v
+            WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL
+         )
+    ) THEN
+      RAISE EXCEPTION 'A bill is `verified` because a MATCHED §E verdict produced by `commercial.bill.verify` stands over its CURRENT claim version, not because a status says so (%)', OLD."id";
+    END IF;
+  END IF;
+  -- Codex round-4 — `verified -> submitted` is the AMENDMENT arrow, and round 1 opened it without
+  -- requiring the amendment. `CommercialBillService.amend` supersedes the verified version and
+  -- writes its replacement BEFORE the CAS, so the honest path satisfies this; a bare status flip
+  -- does not, and that is the whole difference. Left unguarded, one UPDATE re-opens a verified
+  -- claim for re-verification with no new claim behind it — the same "a status is not a fact"
+  -- defect the `verified` arrow itself was found for, one arrow along.
+  --
+  -- The rule names the version the verdict was about, not merely "some superseded version": the
+  -- live version must supersede the version whose MATCHED verdict made this bill `verified`.
+  IF OLD."status" = 'verified' AND NEW."status" = 'submitted' THEN
+    IF NOT EXISTS (
+      SELECT 1
+        FROM "VendorBillVersion" live
+        JOIN "VendorBillVersion" prev
+          ON prev."projectId" = live."projectId" AND prev."billId" = live."billId"
+         AND prev."version"   = live."supersedesVersion"
+        JOIN "BillVerification" bv
+          ON bv."projectId" = prev."projectId" AND bv."versionId" = prev."id"
+       WHERE live."projectId" = NEW."projectId" AND live."billId" = NEW."id"
+         AND live."supersededAt" IS NULL
+         AND bv."verdict" = 'matched'
+    ) THEN
+      RAISE EXCEPTION 'A verified claim returns to `submitted` only by being AMENDED — the live version must supersede the version whose matched verdict made it `verified`, and a status flip with no replacement claim behind it re-opens verification over the claim that was already verified (%)', OLD."id";
     END IF;
   END IF;
   IF NEW."status" IS DISTINCT FROM OLD."status" THEN
     IF NOT (
       (OLD."status" = 'draft'              AND NEW."status" IN ('submitted', 'disputed', 'rejected'))
       OR (OLD."status" = 'submitted'          AND NEW."status" IN ('under-verification', 'disputed', 'rejected'))
-      -- Task 5 — the §E verdict makes this arrow safe
+      -- Task 5A — the §E verdict is the evidence that makes THIS arrow safe, and it is the only
+      -- one this increment opens.
       OR (OLD."status" = 'under-verification' AND NEW."status" IN ('verified', 'disputed', 'rejected'))
-      -- Task 5 — a certificate makes this one safe. `verified -> disputed` is §E's withdrawal
-      -- arrow, which exists precisely because a claim is live from the moment it is submitted.
-      OR (OLD."status" = 'verified'           AND NEW."status" IN ('certified', 'disputed', 'rejected'))
-      -- a certified bill returns to `verified` when its certificate is SUPERSEDED, which is §F's
-      -- correction path. It never goes further back: rejection stops at `verified`, because §0
-      -- drops a rejected bill from every billed set and that would free accepted quantity a
-      -- certificate still stands on.
+      -- §E/§F — a claim is LIVE from the moment it is submitted, so evidence withdrawn under a
+      -- VERIFIED claim must have somewhere to put it. Rejection stops at `verified` because §0
+      -- drops a rejected bill from every billed set.
+      -- Codex round-1 F3 — `CommercialBillService.amend` has ALWAYS admitted `verified` and CASes
+      -- `verified -> submitted` so the replacement claim is re-checked from the start. That path was
+      -- unreachable while `verified` was, and opening the state without opening the arrow the
+      -- existing service already takes from it would fail every amendment of a verified claim at
+      -- the trigger. The recheck is guarded by construction: `submitted` re-runs §G bounds 1–2 on
+      -- submission and must be verified again before it can advance.
+      -- Task 5B adds `certified` to this row and does NOT disturb the rest of it: `submitted` is
+      -- round-1 F3's amendment arrow (guarded above) and `disputed` is §E's withdrawal arrow.
+      OR (OLD."status" = 'verified'           AND NEW."status" IN ('submitted', 'certified', 'disputed', 'rejected'))
+      -- …and back, on SUPERSESSION — §F's ONE correction path past certification. It never goes
+      -- further back: rejection stops at `verified`, because §0 drops a rejected bill from every
+      -- billed set and that would free accepted quantity a certificate still stands on.
       OR (OLD."status" = 'certified'          AND NEW."status" = 'verified')
       OR (OLD."status" = 'disputed'           AND NEW."status" IN ('resolved', 'rejected'))
     ) THEN
       RAISE EXCEPTION 'A vendor bill cannot move from % to % — a resolved or rejected claim is terminal, a disputed one is corrected by a NEW version, and the arrows past `certified` belong to the task that produces their evidence (%)', OLD."status", NEW."status", OLD."id";
+    END IF;
+  END IF;
+  -- Task 5B — `certified` is the SHADOW of a CERTIFICATE, exactly as `verified` above is the
+  -- shadow of a verdict. Without this, maintenance SQL could mark a bill certified with no
+  -- certificate behind it, and §G bounds 3-5 would read a payable of zero while the status says
+  -- money is authorised. The certificate is the fact; the status is its projection.
+  --
+  -- No provenance clause is needed beside it, and the asymmetry with `verified` is deliberate: a
+  -- verdict is DERIVED, so a hand-written one is indistinguishable from a computed one unless the
+  -- producing command is checked. A certificate is not derived — it IS the fact, sealed
+  -- append-only with its own §G bound checked at COMMIT and its evidence frozen by composite FK.
+  -- Requiring a command type here would check the weaker of the two things already checked.
+  --
+  -- It is checked AFTER the transition table, and the order is the point: an ILLEGAL arrow must be
+  -- reported as an illegal arrow. `under-verification -> certified` is not a transition at all, and
+  -- answering it with "no live certificate exists" would send a reader hunting for a certificate
+  -- when the real answer is that the claim has not been verified yet. The coarser question is
+  -- answered first — the same reasoning that puts the certificate refusal ahead of the dispute in
+  -- the withdrawal guards.
+  IF NEW."status" = 'certified' AND OLD."status" IS DISTINCT FROM 'certified' THEN
+    SELECT COUNT(*) INTO v_cert FROM "BillCertificate" c
+     WHERE c."projectId" = NEW."projectId" AND c."billId" = NEW."id" AND c."supersededAt" IS NULL;
+    IF v_cert <> 1 THEN
+      RAISE EXCEPTION 'A bill is `certified` because a LIVE certificate exists for it, not because a status says so — found % (%)', v_cert, OLD."id";
     END IF;
   END IF;
   RETURN NEW;
