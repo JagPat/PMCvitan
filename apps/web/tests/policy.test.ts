@@ -65,6 +65,11 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // Phase 5 Task 4 (§F/§I) — recording/amending/rejecting a vendor claim is the engineer-and-above
   // data-entry surface; opening the §E verification on one is pmc.
   'commercial.bill': ['pmc', 'engineer'],
+  // Phase 5 Task 5 (§I) — certification is pmc and separate from verification, because the SoD
+  // rule binds the certifier. Recording and releasing a withholding are separate authorities too.
+  'commercial.certify': ['pmc'],
+  'commercial.deduct': ['pmc'],
+  'commercial.release': ['pmc'],
   'commercial.verify': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],

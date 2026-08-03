@@ -448,6 +448,201 @@ line**. It has a different unit, a different authority and a different lifecycle
   read through `InventoryQuery`. A parallel manual measurement of delivered material would
   be a second truth about the same physical event.
 
+### §E. Three-way verification — derived, never stored
+
+`verifyBill(tx, billId)` computes, per bill line, the triple:
+
+| Side | Material line | Labour line |
+|---|---|---|
+| ORDERED | PO line frozen `qty` + `approvedOverage`, at frozen `rate` / `taxAmount` / `freightAmount` | PO line `personShiftQty` at frozen `ratePerPersonShift` + `shiftPremium` |
+| ACCEPTED / MEASURED | `ACCEPTED(poLine)` (§0) via `InventoryQuery` | `MEASURED(poLine)` (§0) |
+| BILLED | this bill line's quantity × rate + its claimed tax and freight, plus `BILLED_QTY(poLine)` / `BILLED_AMOUNT(poLine)` (§0) for the rest | this line's person-shifts × (`ratePerPersonShift` + `shiftPremium`) — the SAME combined frozen terms the ordered side uses — and NO tax or freight — see below | 
+
+Each side is the §0 set by name. Restating any of those filters here is exactly the drift
+that produced two rounds of findings.
+
+**A labour bill line carries NO tax or freight in Phase 5, and PostgreSQL refuses one.** The
+shipped `LabourPurchaseOrderLine` snapshot (`20270201000000_phase4_t2_labour_procurement`)
+freezes `personShiftQty`, `ratePerPersonShift`, `shiftPremium` and `committedAmountBase` — and
+no tax or freight. There is therefore no ordered-side frozen amount to compare a labour tax or
+freight claim against, so a 10-shift ₹100+₹20 PO could carry an extra ₹200 claim that bound 3
+would certify on the strength of a certificate alone. The two ways out are to refuse the claim
+or to add a frozen labour tax/freight snapshot — and the second edits a cleared Phase-4 table,
+which §0 puts out of scope. So Phase 5 refuses it: a labour bill line's tax and freight columns
+are `CHECK (... = 0)`, and a vendor with labour taxes to claim is a Phase-6 scope item with its
+own ordered-side snapshot. Materials are unaffected — their PO line freezes both.
+
+**Tax and freight are prorated, never compared whole.** The PO line freezes a LINE-level
+`taxAmount` and `freightAmount` for the full ordered quantity, so a 50-unit bill against a
+100-unit PO carrying ₹1,800 tax and ₹500 freight legitimately claims ₹900 and ₹250.
+Comparing either against the full frozen figure disputes an honest partial bill; comparing
+neither lets two 50-unit bills each claim the whole ₹1,800. The cap is cumulative and
+pro-rata: `BILLED_TAX(poLine)` and `BILLED_FREIGHT(poLine)` (§0) may not exceed the frozen
+amount scaled by `min(BILLED_QTY, qty) / qty`, with §A's rounding applied once at the line.
+
+**The `min` is load-bearing, because §G lets material billing reach `qty + approvedOverage`.**
+Scaling by raw `BILLED_QTY / qty` on a 100-unit / ₹1,800-tax line with 10 overage units gives
+a ₹1,980 cap — ₹180 of tax authority nobody ever froze. Phase-3 overage approval records a
+QUANTITY and a reason; it does not snapshot extra landed amounts, so there is no ordered
+commercial figure to compare the extra against, and certifying it would be certifying against
+no evidence. The cap therefore stops at the frozen ordered amounts and any tax or freight on
+overage units is an EXPLICIT charge: a `rate-mismatch`/`tax-mismatch` exception until the
+overage is re-approved as an amendment that freezes its own landed amounts. This is the same
+clamp as `COMMITTED`'s, at the second site — see §0b.
+
+The verdict is `matched | exception`, with each exception naming its own kind
+(`qty-over-ordered`, `qty-over-accepted`, `rate-mismatch`, `tax-mismatch`,
+`freight-mismatch`, `duplicate-claim`). Freight is compared, not merely carried: the
+ordered side freezes `freightAmount`, so a bill matching on quantity, rate and tax while
+inflating freight would otherwise reach certification unexamined.
+
+**`duplicate-claim` needs a KEY, and this is where it is defined.** An exception kind with no
+identity behind it is a name, not a check: naming it here while leaving vendor-bill identity
+unspecified means every quantity and amount bound passes for both copies of one invoice — 200
+units accepted, the same invoice for 100 units submitted twice, each copy inside every bound,
+both certifiable — and Task 4 would have to invent its own duplicate predicate to satisfy an
+exception this section declared. So the bill carries a **FROZEN vendor reference**: the vendor's
+own document number (`vendorBillNumber`) and its document date, non-blank under the §0b whitespace
+rule, column-frozen after write like every other identity column this phase seals. A **partial
+unique index on `(projectId, vendorId, vendorBillNumber)` over bills whose current version is
+NON-TERMINAL** makes a second live claim under one vendor document unrepresentable at
+PostgreSQL — the same shape as Task 2's one-recorded-quote-per-`(rfq, vendor)` seal, whose review
+established that a duplicate commercial document is a PG constraint and not a service check,
+because two concurrent submissions each see zero.
+
+**The index predicate names states §F actually has.** An earlier revision scoped it to
+"non-cancelled" bills, and §F's lifecycle has no `cancelled` state — it has
+`draft → submitted → under-verification → { verified | disputed }`, `disputed → resolved`
+(terminal), and `disputed | verified → rejected`. Keying on a state that does not exist leaves
+Task 4 two bad choices, which is what makes this a defect rather than wording: follow the
+lifecycle and the index never releases, so a vendor whose bad `V-1` was REJECTED can never
+resubmit a corrected `V-1` under its own document number; or invent an unreviewed cancel path to
+satisfy the predicate. So the predicate is `WHERE status NOT IN ('rejected', 'resolved')` — the
+two terminal states the lifecycle defines — and a rejected or resolved bill releases its vendor
+document number for an honest resubmission. `duplicate-claim` is then the SERVICE-side verdict
+for the cases the index cannot see: a resubmission after rejection that is genuinely the same
+claim rather than a correction, and the same units claimed twice under DIFFERENT vendor document
+numbers, which the index permits and the accepted-quantity bound catches only once the second
+claim exceeds what was accepted. A superseding version of the same bill reuses its own reference
+and is not a duplicate — the uniqueness is per BILL, over its current version's status, not per
+version.
+
+The triple is **recomputed at every state transition that depends on it** — submission,
+verification and certification — never read from a stored column. A stored verdict is a
+stale verdict the moment a receipt is reversed.
+
+**Recomputation must lock the evidence it reads, not only the PO line.** The accepted side
+lives in the inventory ledger, and `stock.reverse` locks the stock LOT — it never takes the
+PO-line lock. Locking only the PO line therefore admits: certification reads 100 accepted,
+a concurrent reversal commits the acceptance to 0, certification commits on the stale 100,
+and a bill becomes payable with no accepted material behind it. So certification acquires,
+in this stable order to stay deadlock-free:
+
+1. `lockProjectReadiness(projectId)`
+2. every contributing stock lot, ascending by id, through a new
+   `InventoryParticipant.lockAcceptedEvidence(tx, poLineId)`
+3. **EVERY PO line the bill touches — material and labour together — in ONE ascending id order,
+   taken BEFORE any per-line verification work** (`FOR UPDATE`). Not "the PO line" per bill line:
+   a multi-line bill visited in bill-line order lets certification A hold line X and wait for Y
+   while B holds Y and waits for X. One total order over the whole bill is the Phase-4 Task-3
+   guardrail (crew allocation locks `Worker` rows in stable ascending `workerId` order) applied
+   here; a per-line lock is that guardrail's missed site.
+4. for labour, the contributing measurements and their cited work outputs
+5. **for labour, the activity/root row each contributing measurement rests on**, through
+   `ActivityParticipant` in the same order `revertSignOff` takes it
+
+and re-reads every side inside that lock before deciding.
+
+Step 5 is not covered by step 4. A measurement can be old and entirely valid while the
+sign-off underneath it is withdrawn concurrently: certification starts from that measurement,
+a closing-inspection rejection reverts the activity to `in_progress` — and the commercial
+participant it asks sees no live certificate yet, so it correctly allows the revert — then
+certification commits, never having serialized on the status it depends on. The bill is payable
+for work whose sign-off no longer stands. §D takes this lock for MEASUREMENT; certification is
+the second site that reads the same status and needs the same lock. Both appear in §0b.
+
+**The converse direction needs a channel too.** Recomputing on bill-side transitions cannot
+see an inventory correction that lands AFTER certification: inventory does not depend on
+commercial, so `stock.reverse` commits freely and leaves a certified, payable bill whose
+`ACCEPTED(poLine)` is now zero. The reversal must therefore ask, in its own transaction,
+through a new `CommercialParticipant.assertAcceptanceReversible(tx, poLineId, acceptanceTxIds)`
+— the TARGET ROWS, not an aggregate quantity. Certification freezes which acceptance rows it
+consumed **AND HOW MUCH OF EACH** (a `CertifiedAcceptanceConsumption` set of
+`(rowId, consumedQty)`, append-only), and the participant refuses a reversal only to the extent
+it would take a row below its consumed quantity.
+
+**Row identity alone is too coarse, and the aggregate is too weak — the set needs both.** One
+acceptance row of 100 with an 80-unit bill certified against it: an aggregate check lets the
+evidence be swapped (see below), while row-identity-only refuses a legitimate reversal of the
+unused 20 even though `ACCEPTED` would stay at 80 and the certificate's 80 would be intact.
+`(rowId, consumedQty)` permits exactly the unconsumed remainder and no more. **The same rule
+applies on the measurement side** (§D): certification freezes the `Measurement` rows and
+quantities it consumed, a reducing correction that would take a consumed row below its consumed
+quantity is refused until the certificate is superseded, and the aggregate-only guard is not
+sufficient there either — measure 100 by actor A, certify, add a second 100 by actor B, then
+correct −100, and the fold still covers the bill while the certificate now rests on different
+rows by a different actor than the §E triple and the §I SoD rule ever evaluated.
+
+**A live UNCERTIFIED claim is protected too, by disputing rather than refusing.** Guarding only
+certificates leaves the pre-certification window open: 100 accepted, a submitted (or verified)
+100-unit bill, then `stock.reverse` before anyone certifies — no certificate exists, the guard
+allows it, and `BILLED_QTY = 100` stands live against `ACCEPTED = 0`, breaking bound 2 with no
+transition to notice. But REFUSING here would be wrong: no money has been promised, and a store
+user correcting a genuine mis-acceptance must not be blocked by a vendor's claim. So the
+participant, in the reversal's own transaction, RE-DERIVES `ACCEPTED(poLine)` with the reversal
+applied and then disputes AGAINST THE AGGREGATE FOLD, because bound 2 is a statement about
+`BILLED_QTY(poLine)` and no per-claim test can enforce it: accept 100, bill 60 and 40, reverse 20
+leaves `ACCEPTED = 80` with each claim individually ≤ 80 and the fold at 100 > 80. So while
+`BILLED_QTY(poLine)` exceeds the re-derived `ACCEPTED`, the participant moves live uncertified
+claims to `disputed` (with a `qty-over-accepted` exception, which §0 excludes from the live folds)
+in one DETERMINISTIC order — newest claim first, by `(submittedAt DESC, id DESC)` — and stops the
+moment the fold satisfies the bound. Newest-first because the earlier claim is the one the store
+user's acceptance actually covered; ordering by id alone would make the outcome depend on
+insertion accidents. It disputes no more than that: accept 100, bill 80, reverse 20 leaves the
+fold at 80 ≤ 80, so nothing is disputed and an honest vendor is not stalled by a correction that
+did not affect them. Bound 2 holds by construction either way, and every disputed vendor is told
+why. (If the uncertified claims cannot bring the fold down — the remainder is certified — the
+CERTIFIED refusal below is what applies, and it fires first.) Refuse when money is committed
+(a live certificate); dispute when only a claim is. An aggregate check would let the evidence be
+swapped after the fact: certify 100 against acceptance A recorded by store user X, accept
+another 100 by user Y, then reverse A — the aggregate is still 100 so the reversal passes, and
+the payable certificate now rests on different rows, by a different actor, than the §E triple
+and the §I SoD rule ever evaluated. Identity, not quantity —
+`inventory.workflowParticipants` gains `commercial`, a participant edge, cycle-exempt
+exactly as the media-delete and receipt-progress edges already are. The participant REFUSES
+a reversal that would drop `ACCEPTED` below the live certified quantity, naming the
+certificate; the operator path is to supersede that certificate first (and reverse the
+payment where money moved), then reverse the acceptance. This is the `assertMediaDisposable`
+precedent applied to money: evidence a payable fact rests on cannot be withdrawn while that
+fact stands.
+
+**The labour side needs the identical channel, for the identical reason.** A measurement cites
+an `ActivityWorkOutput` and rests on a closing sign-off, and ONE of those two can move after
+certification: `revertSignOff` can withdraw the sign-off when a closing inspection is rejected,
+leaving an append-only certificate payable against evidence that no longer stands. (The output
+cannot move — see below.) So `activities.workflowParticipants` gains
+`commercial` too, and **reverting a sign-off** asks
+`CommercialParticipant.assertWorkEvidenceRevisable(tx, activityId)`, which refuses while a live
+certificate rests on that sign-off and names the certificate. **Output supersession is NOT one of
+these paths**: `ActivityWorkOutput` is append-only in Phase 4 with no supersession transition
+(§0), so guarding one would require Phase 5 to add an out-of-scope Activities lifecycle purely so
+commercial could guard it. An earlier revision of this sentence listed it; the cited output is
+evidence that cannot be withdrawn, which needs no guard. The frozen consumption set covers
+sides. Fixing the material direction alone was the omission this finding names.
+
+**That order is not a free choice — it must match what inventory already does.** Every
+inventory write today runs `lockProjectReadiness → lockLot → applyReceiptProgress`, and
+`applyReceiptProgress` is what takes the PO line; `receipts.reject` and receipt reversals
+included. Locking the PO line first would invert that: certification holds the PO line and
+waits for a lot while a concurrent rejection holds that lot and waits for the PO line, and
+both hang. Commercial adopts the established order rather than asking four cleared modules
+to migrate to a new one. The barrier probe therefore covers rejection and receipt reversal,
+not only acceptance reversal.
+
+An exception does not auto-reject. It moves the bill to `disputed` and requires a
+responsible review with an attributable reason to proceed — spec §16, "Exceptions require
+responsible review."
+
 ### §F. Bill lifecycle and immutable versions
 
 **Carried forward VERBATIM from `claude/phase5-planning` @ `a4d469b` by the Task-4 PR, per this
@@ -700,6 +895,97 @@ correction or overstating the forecast.
 
 Bound 2 is the one that makes the phase worth building: it is structurally impossible to
 bill for material that never arrived or work never measured.
+
+### §H. Deductions — retention, advance recovery, variations
+
+- A deduction is a **ledger row against a certification**, never a column on it. Types:
+  `retention`, `advance-recovery`, `penalty`, `other`. Each carries an attributable actor, an
+  amount, and — for `other` and every penalty — a reason. Every one of the four is in the
+  `NET_PAYABLE` fold (§G bound 4).
+- **Amounts are strictly positive, at PostgreSQL and in the service; the row TYPE carries
+  direction.** Direction is already modelled — a withholding is a deduction row and a release
+  is its own append-only row — so a negative amount encodes the same thing twice and the two
+  encodings disagree. A `-10` retention makes `NET_PAYABLE = CERTIFIED − (−10)` raise a ₹100
+  certificate to ₹110: a deduction that PAYS OUT more, sealed append-only so the inflated
+  payable cannot be corrected in place. `CHECK (amount > 0)` on deduction and release rows
+  alike, with releases separately bounded by the unreleased balance of their own deduction (an
+  over-release is already refused). This is the sign-constraint row of §0b, at its third site.
+- **`NET_PAYABLE` has a floor of zero, and the guard is on the DEDUCTION, not on the approval.**
+  Positive rows and bound 4 together still admit a ₹150 penalty against a ₹100 certificate: every
+  row is positive, so the CHECKs pass; bound 4 only stops a later APPROVAL from exceeding
+  `NET_PAYABLE`, which a negative number satisfies trivially; and `NET_PAYABLE = −₹50` then flows
+  into the §F status derivation and the §J `certified-payable` bucket as negative payable money.
+  Phase 5 models deductions as WITHHOLDINGS against a payable — money not yet released — and not as
+  a vendor receivable or credit note, so there is nothing for a withholding beyond the certificate
+  to withhold FROM. Under the bill lock, then, a deduction insertion is REFUSED when cumulative
+  unreleased deductions would exceed the live certificate amount, naming the remaining withholdable
+  balance; recovering more than a certificate carries is a matter for the NEXT certificate, where
+  the money to withhold exists. Same shape as the `PAID` floor in §F: the refusal sits on the write
+  that would break the invariant, not on a downstream reader of it.
+- **A deduction insertion also RE-DERIVES the payment status, under the bill lock.** §F names
+  `deductions.release` and `payments.reverse` as the writers that re-derive, and the insertion moves
+  `NET_PAYABLE` just as surely: insert a ₹100 retention (or advance-recovery) against a ₹100
+  certified bill before any approval and `NET_PAYABLE = PAID = 0`, which the derivation table calls
+  `paid` — but an implementation following only the refusal rule above leaves the stored status at
+  `certified`, and no positive approval or payment row can ever advance it. §F's own words are "every
+  writer that can move ANY of the three folds"; the deduction insertion is one of them, and listing
+  it only under the release was the omission.
+- **A deduction cannot be appended after an approval has already consumed the net payable.**
+  Certify ₹100, approve ₹100, then append a ₹10 penalty and `NET_PAYABLE` drops to ₹90 while the
+  live approved total stays ₹100 — bound 4 broken AFTER the approval fact exists, and both rows
+  are append-only so neither walks back. Insertion therefore serializes on the bill and is
+  refused when `APPROVED(bill)` (§0) would exceed the resulting `NET_PAYABLE`; withholding
+  more than that requires superseding the certificate first, which is the §F rule in full —
+  approvals fall out with it and cash is reversed by its own row type. This is the same shape
+  as the §D measurement-correction floor and the §E
+  evidence-withdrawal rule — a reducing append is bounded by what downstream facts already
+  consume — and it is the fourth site of that rule, now listed in §0b.
+- **Deduction rows are append-only at PostgreSQL, exactly like certificates, approvals and
+  payments**, and they join §F's append-only list. They determine `NET_PAYABLE` directly, so
+  a row that could be updated or deleted is a withholding that never withheld anything: on a
+  ₹100 certification with a ₹10 retention, quietly dropping that row raises net payable to
+  ₹100 with no attributable release. A correction is a release row, never an edit.
+- **Every reason column carries the repository's non-blank discipline** — `btrim` over the
+  complete ASCII whitespace set (`E' \t\n\x0B\f\r'`), the rule Phase-4 Task 5 established
+  after `btrim` alone let whitespace through. Presence is not justification: a deduction of
+  type `other` with `reason = '   '`, or a whitespace bill rejection, would otherwise satisfy
+  every stated check and leave append-only evidence with no usable reason. This applies to
+  deduction reasons, rejection reasons, budget revision reasons, attribution reasons, override
+  reasons, **measurement-correction reasons (§D), certificate-supersession reasons (§F) and
+  payment-reversal reasons (§H)** alike — every reason column this phase introduces, not the
+  subset that existed when the row was first written. Three of those were added by later
+  revisions of this plan and were missing here, which is the §0b closure failure that row exists
+  to prevent: a `-50` measurement correction or a ₹50 reversal justified by `'\t'` would satisfy
+  every other stated check.
+- **A payment reversal is a row type on the same footing**, append-only, strictly positive,
+  attributable, reason-bearing, authored under `commercial.record-payment` — the same authority
+  that recorded the payment it reverses, because reversing cash is the same kind of act as
+  paying it. It subtracts inside `PAID(bill)` (§0), so no fold anywhere restates the netting.
+  **`PAID(bill)` has a floor of zero, and the refusal lives HERE, under the bill lock.** A
+  reversal may not exceed the cash actually paid: ₹100 paid then ₹150 reversed would leave
+  `PAID = −₹50`, and nothing else catches it — bound 5 (`PAID ≤ APPROVED`) is satisfied by a
+  negative number, the strictly-positive CHECK passes because the ROW is +₹150 with the type
+  carrying direction, and the status derivation has no negative case, so the §J forecast would
+  report negative paid cash. The rule is therefore a bound like §G's: under the bill lock,
+  `Σ payment − Σ payment-reversal` is re-derived and a reversal that would drive it below zero is
+  REFUSED, naming the reversible balance. Stating it only in probe 5ae would have made the probe
+  the specification — a test asserting a refusal no stated rule requires, which is exactly the
+  §0b failure of putting a rule at one site and not the site that needs it.
+- Retention release is its own append-only row with its own authority; the retained balance
+  is a FOLD over `retention` minus `retention-release`, with **no stored balance column** —
+  the Phase-3 §C rule that produced a correct stock model.
+- Advance recovery folds against an `advance` row created when the advance is PAID, and can
+  never recover more than was advanced (a bound, enforced like §G). **Because that fact is a
+  PAYMENT fact, the `advance-recovery` deduction type ships in Task 6 with payments, not in
+  Task 5 with the rest of the ledger** — the enum member and its fold arrive together with the
+  row they cap. Shipping the type early gives Task 5 two bad options: a ₹10 advance recovery
+  that cannot be represented because no paid-advance fact exists, or one represented with no cap
+  at all, which is a withholding against nothing. `retention`, `penalty` and `other` are
+  self-contained and ship in Task 5; §G bound 4 folds whichever types exist in the enum at that
+  point, so the "every declared enum member is in the fold" rule (§0b) holds at both stages
+  rather than being briefly false.
+- A variation is a PO amendment (procurement's existing machine), not a commercial fact.
+  Phase 5 reads the amended PO version; it does not invent a parallel variation document.
 
 ### §I. Authority, segregation of duties, approval limits
 

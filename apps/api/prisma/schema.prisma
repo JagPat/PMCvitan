@@ -44,6 +44,12 @@ enum InspectionResult {
 }
 
 model Project {
+  billCertificates                BillCertificate[]
+  certifiedAcceptanceConsumption  CertifiedAcceptanceConsumption[]
+  certifiedMeasurementConsumption CertifiedMeasurementConsumption[]
+  billDeductions                  BillDeduction[]
+  deductionReleases               DeductionRelease[]
+  sodExceptions                   SodException[]
   id           String   @id
   name         String
   short        String
@@ -837,6 +843,11 @@ model DrawingAck {
 // dev auth (the "Viewing as" persona switch) is separate and gated by
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
+  billCertificatesCertified BillCertificate[]  @relation("billCertificatesCertified")
+  billDeductionsRecorded    BillDeduction[]    @relation("billDeductionsRecorded")
+  deductionReleasesReleased DeductionRelease[] @relation("deductionReleasesReleased")
+  sodExceptionsActor        SodException[]     @relation("sodExceptionsActor")
+  sodExceptionsApprover     SodException[]     @relation("sodExceptionsApprover")
   id                String    @id @default(cuid())
   project           Project   @relation(fields: [projectId], references: [id])
   projectId         String
@@ -3182,7 +3193,8 @@ model VendorBill {
   /// §C rule ii — every fact records the command that produced it
   sourceCommandId String
 
-  versions VendorBillVersion[]
+  versions     VendorBillVersion[]
+  certificates BillCertificate[]
 
   @@unique([projectId, id])
   /// the FK target proving a VERSION belongs to a bill of this vendor, and a LINE in turn
@@ -3238,6 +3250,9 @@ model VendorBillVersion {
   @@unique([projectId, billId, version]) // versions are monotonic and never reused
   /// the FK target sealing every LINE to its version's own bill and vendor
   @@unique([projectId, id, billId, vendorIdPin])
+  /// Phase 5 Task 5 — the narrower candidate key a `BillCertificate` names, proving the version it
+  /// certified belongs to the bill it names (a certificate has no business restating the vendor).
+  @@unique([projectId, id, billId])
   @@index([projectId, billId])
   // The partial unique — exactly one CURRENT version per bill — lives in the migration:
   //   (projectId, billId) WHERE "supersededAt" IS NULL
@@ -3300,4 +3315,189 @@ model VendorBillLine {
   @@index([projectId, labourPoLineId])
   // The XOR CHECK, the type↔reference correspondence, the sign CHECKs, the labour tax/freight
   // pin and the derived-amount CHECK all live in the migration.
+}
+
+/// Phase 5 Task 5 (§E/§F) — the CERTIFICATE: the act that turns a verified claim into money
+/// anyone may approve. It is a FACT, not a status: append-only, attributable, and superseded by a
+/// new certificate rather than edited (§F — "past certification the correction path is a
+/// superseding certificate").
+///
+/// `certifiedAmount` is FROZEN. §G bound 3 caps it at `BILLED_AMOUNT(bill)`, and bound 4 caps the
+/// approvals that hang off it at `NET_PAYABLE` = this amount less unreleased deductions.
+model BillCertificate {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  bill   VendorBill @relation(fields: [projectId, billId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  billId String
+  /// the claim version this certificate was computed against. A later amendment supersedes the
+  /// version, and §0's LIVE rule then drops it from every billed fold — so a certificate that did
+  /// not name its version could outlive the claim it certified.
+  versionId String
+
+  /// FROZEN money (§A `Decimal(18,2)`, half-up, never float64)
+  certifiedAmount Decimal @db.Decimal(18, 2)
+
+  /// the ONE permitted transition: a superseding certificate retains this one verbatim as history.
+  /// §G bounds 3–5 read the LIVE certificate only — summing a superseded one reads a corrected
+  /// ₹100 certification as ₹200.
+  supersededAt     DateTime?
+  supersededById   String?
+  supersedeReason  String?
+  /// the certificate that replaced this one — the lineage a reviewer follows
+  supersededByCertificateId String?
+
+  certifiedAt   DateTime @default(now())
+  certifiedBy   User     @relation("billCertificatesCertified", fields: [certifiedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  certifiedById String
+
+  /// §C rule ii — every fact records the command that produced it
+  sourceCommandId String
+
+  acceptanceConsumption CertifiedAcceptanceConsumption[]
+  measurementConsumption CertifiedMeasurementConsumption[]
+  deductions            BillDeduction[]
+  sodExceptions         SodException[]
+
+  @@unique([projectId, id])
+  /// the FK target proving a consumption row, a deduction and an SoD exception belong to a
+  /// certificate OF THIS BILL
+  @@unique([projectId, id, billId])
+  @@index([projectId, billId])
+  // The one-LIVE-certificate-per-bill partial unique and the append-only trigger live in the
+  // migration (Prisma cannot express a partial unique).
+}
+
+/// §E — WHICH acceptance rows this certificate consumed AND HOW MUCH OF EACH.
+///
+/// Row identity alone is too coarse and the aggregate is too weak: one 100-unit acceptance with an
+/// 80-unit certificate needs `(rowId, consumedQty)` so the unused 20 stays reversible while the
+/// consumed 80 does not. Append-only — the evidence a payable fact rests on cannot be restated.
+model CertifiedAcceptanceConsumption {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  certificate   BillCertificate @relation(fields: [projectId, certificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  certificateId String
+
+  /// the `acceptance` StockTransaction row this certificate drew on
+  stockTransactionId String
+  consumedQty        Decimal @db.Decimal(18, 6)
+
+  @@unique([projectId, id])
+  /// one consumption row per (certificate, acceptance row) — a second would double-count
+  @@unique([projectId, certificateId, stockTransactionId])
+  @@index([projectId, stockTransactionId])
+}
+
+/// §E/§D — the LABOUR twin: which `Measurement` rows this certificate consumed, and how much of
+/// each. Same rule, both sides (§0b).
+model CertifiedMeasurementConsumption {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  certificate   BillCertificate @relation(fields: [projectId, certificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  certificateId String
+
+  measurementId String
+  consumedQty   Decimal @db.Decimal(18, 6)
+
+  @@unique([projectId, id])
+  @@unique([projectId, certificateId, measurementId])
+  @@index([projectId, measurementId])
+}
+
+/// §H — a DEDUCTION is a ledger row AGAINST a certificate, never a column on it.
+///
+/// `advance-recovery` is deliberately absent: it folds against a paid-advance fact that does not
+/// exist until Task 6, and shipping the enum member early would give a withholding with no cap.
+/// §G bound 4 folds whichever types the enum declares, so "every declared member is in the fold"
+/// holds at both stages rather than being briefly false.
+model BillDeduction {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  certificate   BillCertificate @relation(fields: [projectId, certificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  certificateId String
+  billId        String
+
+  /// `retention` | `penalty` | `other` (CHECK in the migration). The TYPE carries direction, so
+  /// the amount is STRICTLY POSITIVE: a `-10` retention would raise a ₹100 certificate to ₹110.
+  type   String
+  amount Decimal @db.Decimal(18, 2)
+  /// required for `other` and for every `penalty` (CHECK), non-blank over the complete ASCII
+  /// whitespace set — presence is not justification
+  reason String?
+
+  recordedAt   DateTime @default(now())
+  recordedBy   User     @relation("billDeductionsRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById String
+
+  sourceCommandId String
+
+  releases DeductionRelease[]
+
+  @@unique([projectId, id])
+  @@index([projectId, certificateId])
+}
+
+/// §H — a RELEASE is its own append-only row with its own authority (`commercial.release`):
+/// releasing withheld money is not the same act as withholding it. The retained balance is a FOLD
+/// over `retention` minus its releases — there is NO stored balance column (the Phase-3 §C rule).
+model DeductionRelease {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  deduction   BillDeduction @relation(fields: [projectId, deductionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  deductionId String
+
+  amount Decimal @db.Decimal(18, 2)
+  reason String
+
+  releasedAt   DateTime @default(now())
+  releasedBy   User     @relation("deductionReleasesReleased", fields: [releasedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  releasedById String
+
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@index([projectId, deductionId])
+}
+
+/// §I — the attributable record that makes an otherwise-forbidden act valid.
+///
+/// It IS the authority, so it carries the trusted-evidence seals: append-only at PG, every column
+/// immutable after write, a non-blank reason, written in the SAME transaction as the override it
+/// authorizes, and bound BY COMPOSITE FK to the exact fact it authorizes — an exception is
+/// authority for ONE certificate, never a standing waiver a later override can point at.
+model SodException {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  /// the certificate this exception authorizes. Task 6 adds the approval-side rule and its own
+  /// nullable reference; a row names exactly one fact (CHECK).
+  certificate   BillCertificate? @relation(fields: [projectId, certificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  certificateId String?
+
+  /// which rule was overridden, e.g. `measurer-may-not-certify`
+  rule String
+  /// the actor the rule would have refused
+  actor   User   @relation("sodExceptionsActor", fields: [actorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  actorId String
+  /// the STRONGER authority that authorized it (org admin)
+  approver   User   @relation("sodExceptionsApprover", fields: [approverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approverId String
+  reason     String
+
+  recordedAt      DateTime @default(now())
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@index([projectId, certificateId])
 }

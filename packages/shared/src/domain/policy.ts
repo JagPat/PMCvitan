@@ -109,6 +109,16 @@ export const ROLE_POLICY = {
   // site-adjacent evidence, so it is the same engineer-and-above surface as measurement — the
   // authority that MATTERS is `commercial.verify` below and, from Task 5, certification.
   'commercial.bill': ['pmc', 'engineer'],
+  // Phase 5 Task 5 (§I) — CERTIFICATION turns a verified claim into money someone may approve, so
+  // it is pmc authority and it is deliberately separate from `commercial.verify`: §I's SoD rule
+  // binds the CERTIFIER, and a permission shared with verification would make "the actor who
+  // verified may not certify" unstateable.
+  'commercial.certify': ['pmc'],
+  // §I names these two explicitly, and separately from each other: recording a withholding and
+  // RELEASING one are different acts. Sharing either with `commercial.certify` would let a
+  // certifier move withheld money under an authority the plan never granted for it.
+  'commercial.deduct': ['pmc'],
+  'commercial.release': ['pmc'],
   // §I — opening the §E three-way check on a claim. Task 4 ships only the transition INTO
   // verification (`submitted → under-verification`); the VERDICT and everything it authorises
   // land in Task 5 with the evidence that makes them safe.

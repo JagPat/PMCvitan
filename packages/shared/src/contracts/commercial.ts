@@ -45,6 +45,15 @@ export const COMMERCIAL_COMMANDS = [
   'commercial.bill.beginVerification',
   'commercial.bill.amend',
   'commercial.bill.reject',
+  // Phase 5 Task 5 (§E/§F/§H) — the §E verdict makes `verified` safe, a certificate makes
+  // `certified` safe, and the deduction pair are their own attributable acts (§I). `verify` is a
+  // COMMAND rather than a read because the verdict has a consequence: a matched claim moves to
+  // `verified`, an exception moves it to `disputed` with the exception naming itself.
+  'commercial.bill.verify',
+  'commercial.bill.certify',
+  'commercial.certificate.supersede',
+  'commercial.deduction.record',
+  'commercial.deduction.release',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -59,6 +68,10 @@ export const COMMERCIAL_QUERIES = [
   // Phase 5 Task 4 — the vendor claims of a project, and ONE claim with its version history.
   'commercial.bills',
   'commercial.bill',
+  // Phase 5 Task 5 — the §E triple as a READ, so a reviewer can see the verdict without moving
+  // the claim, and the certificate register with its deductions and net payable.
+  'commercial.verification',
+  'commercial.certificate',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -329,4 +342,83 @@ export interface BillableLineDto {
   billed: string;
   /** `min(ordered, evidence) − billed`, floored at zero: what a further claim may still cover */
   billable: string;
+}
+
+
+/**
+ * Phase 5 Task 5 (§E) — the exception kinds a three-way verification can return. Each names its
+ * own defect: a name with no check behind it is a label, and §E is explicit that `duplicate-claim`
+ * in particular needed an identity before it meant anything (the frozen vendor document reference
+ * Task 4 shipped).
+ */
+export const VERIFICATION_EXCEPTION_KINDS = [
+  'qty-over-ordered',
+  'qty-over-accepted',
+  'rate-mismatch',
+  'tax-mismatch',
+  'freight-mismatch',
+  'duplicate-claim',
+] as const;
+export type VerificationExceptionKind = (typeof VERIFICATION_EXCEPTION_KINDS)[number];
+
+/** §E — the triple for ONE claim line, derived and never stored. */
+export interface VerificationLineDto {
+  billLineId: string;
+  kind: 'material' | 'labour';
+  poLineId: string;
+  /** ORDERED — frozen quantity and money from the PO-line snapshot */
+  orderedQty: string;
+  orderedRate: string;
+  orderedTax: string;
+  orderedFreight: string;
+  /** ACCEPTED (material) or MEASURED (labour), the §0 set by name */
+  evidenceQty: string;
+  /** BILLED — this line, plus the rest of the live fold on the same PO line */
+  billedQty: string;
+  billedAmount: string;
+  /** the pro-rata cap: frozen tax/freight scaled by `min(BILLED_QTY, qty) / qty` (§E) */
+  taxCap: string;
+  freightCap: string;
+  exceptions: VerificationExceptionKind[];
+}
+
+/** §E — `matched` or the exceptions that stopped it. Derived at every transition that depends on it. */
+export interface VerificationDto {
+  billId: string;
+  versionId: string;
+  verdict: 'matched' | 'exception';
+  lines: VerificationLineDto[];
+  /** every exception across every line, deduplicated — what the dispute reason is built from */
+  exceptions: VerificationExceptionKind[];
+}
+
+/** §H — one withholding against a certificate, with its releases folded. */
+export interface DeductionDto {
+  id: string;
+  type: 'retention' | 'penalty' | 'other';
+  amount: string;
+  reason: string | null;
+  /** Σ releases against this row — the retained balance is a FOLD, never a stored column */
+  released: string;
+  /** `amount − released` */
+  unreleased: string;
+  recordedAt: string;
+  recordedById: string;
+}
+
+/** §E/§G — the certificate and the money that hangs off it. */
+export interface CertificateDto {
+  id: string;
+  billId: string;
+  versionId: string;
+  certifiedAmount: string;
+  /** §G bound 4 — `CERTIFIED − unreleased deductions`, the ceiling any approval is measured against */
+  netPayable: string;
+  deductions: DeductionDto[];
+  certifiedAt: string;
+  certifiedById: string;
+  supersededAt: string | null;
+  supersedeReason: string | null;
+  /** §I — the attributable override, when one was needed to certify at all */
+  sodException: { rule: string; actorId: string; approverId: string; reason: string } | null;
 }
