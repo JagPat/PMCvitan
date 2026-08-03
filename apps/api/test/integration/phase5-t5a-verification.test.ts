@@ -724,4 +724,88 @@ describe('Phase 5 Task 5A — §E three-way verification (live PG)', () => {
     expect((await verification.verify(projectId, { billId: unchanged.id }, pmc(projectId))).exceptions)
       .toContain('duplicate-claim');
   });
+
+  // ── Codex round-3 findings, reproduce-first ───────────────────────────────────────────────────
+
+  /**
+   * R3-F1 — the READ was the THIRD member of "places that report a verdict", and took the same
+   * refold-after-dispute failure the verify and replay paths were already fixed for. A claim
+   * disputed for over-claiming tax is, by §0's LIVE rule, out of the billed folds — so recomputing
+   * reads its own tax as ₹0 against a ₹0 cap and answers `matched`, contradicting both the status
+   * and the stored verdict.
+   */
+  it('R3-F1 (§E): the verification READ reports the recorded verdict, not a refold without the claim', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1', taxAmount: '1800' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const over = await claim(projectId, line.vendorId, line.poLineId, '50', { number: 'R3-F1', tax: '1800' });
+    await bills.beginVerification(projectId, { billId: over.id }, pmc(projectId));
+    const verdict = await verification.verify(projectId, { billId: over.id }, pmc(projectId));
+    expect(verdict.exceptions).toContain('tax-mismatch');
+    expect(await statusOf(projectId, over.id)).toBe('disputed');
+
+    // the read must agree with the status and the record, not with a fold the claim just left
+    const read = await verification.readVerification(projectId, over.id, pmc(projectId));
+    expect(read.verdict).toBe('exception');
+    expect(read.exceptions).toContain('tax-mismatch');
+  });
+
+  /**
+   * R3-F2 — the trigger checked that SOME matched verdict existed, which a maintenance path could
+   * satisfy by inserting one: fake the verdict, flip the status, and the §E check the arrow exists
+   * to enforce is bypassed in two statements. The seal is PROVENANCE — the row must have been
+   * produced by `commercial.bill.verify` — rather than a re-derivation of §E in a second language.
+   */
+  it('R3-F2 (§E): a hand-inserted verdict cannot license `verified`', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bad = await claim(projectId, line.vendorId, line.poLineId, '100', { rate: '2', number: 'R3-F2' });
+    await bills.beginVerification(projectId, { billId: bad.id }, pmc(projectId));
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({
+      where: { projectId, billId: bad.id, supersededAt: null },
+    });
+    // a command that is REAL but is not the verify command
+    const other = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId } });
+
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillVerification" ("id","projectId","billId","versionId","verdict","verifiedById","sourceCommandId")
+       VALUES ('r3f2-forged',$1,$2,$3,'matched',$4,$5)`,
+      projectId, bad.id, version.id, f.memberUser.id, other.id,
+    );
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "status"='verified', "statusChangedAt"=now() WHERE "id"=$1`, bad.id,
+    )).rejects.toThrow(/produced by `commercial.bill.verify`/u);
+    expect(await statusOf(projectId, bad.id)).toBe('under-verification');
+  });
+
+  /**
+   * R3-F3 — comparing lines individually let a duplicate hide behind nothing more than a different
+   * partitioning: `INV-A` split 60 + 40 and `INV-B` as a single 100 have no exact per-line twin, so
+   * the same 100 units verified twice under two document numbers.
+   */
+  it('R3-F3 (§E): a duplicate cannot hide behind a different line partitioning', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '200', baseRate: '1' });
+    await acceptOnLine(projectId, line, '200', '200');
+
+    // INV-A: 100 units, split across two lines
+    const split = await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: 'R3-F3-A', documentDate: '2026-08-20',
+      lines: [
+        { poLineId: line.poLineId, quantity: '60', rate: '1' },
+        { poLineId: line.poLineId, quantity: '40', rate: '1' },
+      ],
+    }, pmc(projectId));
+    await bills.submit(projectId, { billId: split.id }, pmc(projectId));
+    await bills.beginVerification(projectId, { billId: split.id }, pmc(projectId));
+    expect((await verification.verify(projectId, { billId: split.id }, pmc(projectId))).verdict).toBe('matched');
+
+    // INV-B: the SAME 100 units as one line — no per-line twin, identical aggregate
+    const whole = await claim(projectId, line.vendorId, line.poLineId, '100', { number: 'R3-F3-B' });
+    await bills.beginVerification(projectId, { billId: whole.id }, pmc(projectId));
+    const verdict = await verification.verify(projectId, { billId: whole.id }, pmc(projectId));
+    expect(verdict.exceptions).toContain('duplicate-claim');
+    expect(await statusOf(projectId, whole.id)).toBe('disputed');
+  });
 });

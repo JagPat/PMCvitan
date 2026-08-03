@@ -1,6 +1,6 @@
 # PR #276 — architectural convergence audit (Phase 5 Task 5A)
 
-Two finding-bearing heads, eight Codex findings, and three CI failures that were the same defect
+Three finding-bearing heads, eleven Codex findings, and three CI failures that were the same defect
 class arriving through a different door. Per `CLAUDE.md`, this stops being another isolated patch:
 it names the ROOT they share and leaves a mechanical closure behind.
 
@@ -8,13 +8,14 @@ it names the ROOT they share and leaves a mechanical closure behind.
 |---|---|---|
 | `76eda23` | 5 | 2×P1, 3×P2 |
 | `26af605` | 3 | 1×P1, 2×P2 — two of them the round-1 fixes, one level short |
+| `d4d9773` | 3 | 1×P1, 2×P2 — one of them root A a THIRD time on the same set |
 
 Plus, on the way: `upgrade-proof` and the `api` suite failed on `bd351e9`, and `api-e2e` failed on
 `3e2e8d4`. Neither was a flake. Both belong in this audit because they are the same root.
 
 ---
 
-## The eleven
+## The fourteen
 
 | # | Head | Sev | What was wrong | The SET it belonged to |
 |---|---|---|---|---|
@@ -29,13 +30,27 @@ Plus, on the way: `upgrade-proof` and the `api` suite failed on `bd351e9`, and `
 | CI-a | `bd351e9` | — | The §F arrow was opened in the trigger and left asserted-closed in the upgrade proof and Task 4's probe | places asserting an arrow's state |
 | CI-b | `bd351e9` | — | A new model reached CI with no declared owner | registries a model joins |
 | CI-c | `3e2e8d4` | — | A new table with an FK into the reset set was missing from six TRUNCATE lists | tables closed under inbound FKs |
+| 9 | `d4d9773` | P1 | The trigger trusted ANY `matched` row — a maintenance path could insert one and flip the status | — (see root D) |
+| 10 | `d4d9773` | P2 | The verification READ refolded without the claim it was reporting on | places that report a verdict |
+| 11 | `d4d9773` | P2 | The duplicate scan compared LINES, so re-partitioning 60+40 vs 100 hid a twin | the unit a claim is compared in |
 
 ---
 
-## Root A — the member, not the set (nine of the eleven)
+## Root A — the member, not the set (eleven of the fourteen)
 
-Every one of findings 1, 2, 3, 4, 6, 8 and all three CI failures is the same sentence: **I changed a
-member and not the set it belongs to.** Nine instances, eight distinct sets, one increment.
+Every one of findings 1, 2, 3, 4, 6, 8, 10, 11 and all three CI failures is the same sentence: **I
+changed a member and not the set it belongs to.** ELEVEN instances, ten distinct sets, one increment.
+
+Finding 10 is the sharpest, because it is the same set THREE TIMES. "Places that report a verdict"
+has three members — the verify transition, the idempotency replay, and the read endpoint. Round 1
+fixed the first, round 2 fixed the second, round 3 found the third. Each round I fixed the member the
+finding named and left its siblings, in a set with only three members, having already written this
+rule down twice.
+
+Finding 11 is the same shape in a different dimension: the duplicate comparison was fixed twice — for
+rejected predecessors (round 1) and for tax/freight components (round 2) — while the UNIT of
+comparison stayed wrong. A claim is compared per line, so re-partitioning 60 + 40 against 100 hides a
+twin. Two corrections to a predicate whose granularity was the actual defect.
 
 The uncomfortable part is that this repository had already named it. The PR #274 audit closed with:
 
@@ -103,6 +118,26 @@ The general form, and the reason this is a root rather than a bug: any command w
 JUDGEMENT rather than a mutation must persist the judgement and replay it by command identity.
 Tasks 5B and 6 both have one — certification and payment approval — and each has the same trap.
 
+## Root D — presence is not provenance (finding 9)
+
+The trigger required a `matched` verdict to exist and did not ask where it came from, so a
+maintenance path could insert one and flip the status in two statements — bypassing the §E check the
+arrow exists to enforce.
+
+The tempting fix is to re-derive the rate, tax, freight and duplicate checks inside the trigger. That
+would be wrong for the reason §0 states plainly: restating a rule at a second site is the drift that
+produces findings, because the two copies disagree the first time either changes. §E in PL/pgSQL
+would be a second implementation of the verdict, in a language with none of the §0 set definitions.
+
+So the seal is PROVENANCE — the verdict row must have been produced by `commercial.bill.verify`,
+which is the four-FK shape Task 2 established for proving a PO line's terms came from the approved
+comparison. Forging one now means forging a command-ledger entry, which carries its own seals.
+
+Worth recording because it cost a cycle: the first version of this seal also required the source
+command to be `succeeded`, which is UNSATISFIABLE — the trigger fires DURING the verify command,
+while its own ledger row is still in flight, so it refused every honest verification. A seal that
+can only ever refuse is not a seal, and the probe battery caught it immediately.
+
 ## Root C — a packet that contradicts the diff (finding 6)
 
 Finding 6 is small as a defect and large as a signal. The PR body carried the `justified-large` marker
@@ -137,7 +172,7 @@ It would also have deleted rows nobody declared and hidden every future instance
 
 | Gate | Result |
 |---|---|
-| Focused probe suite `phase5-t5a-verification.test.ts` | **18/18** — 8 of them the round-1 and round-2 findings, each RED before its fix |
+| Focused probe suite `phase5-t5a-verification.test.ts` | **21/21** — 11 of them the round-1..3 findings, each RED before its fix |
 | `pnpm check` | EXIT 0 — web 543/543, API 722/722 |
 | Full integration suite, pristine migrated DB | **77 files / 813 tests**, confirmed independently by CI |
 | `upgrade-proof.sh` | PASSED — the verified arrow refused without a verdict and accepted with one, the verdict unrewritable, a self-contradicting verdict rejected, `certified` and beyond still closed |

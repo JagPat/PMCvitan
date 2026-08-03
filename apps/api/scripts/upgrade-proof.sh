@@ -1773,7 +1773,13 @@ $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='under-verification', 
 # over the CURRENT claim version, so the bare status update is refused first.
 assert_rejects "commercial T5A §E: marking a claim VERIFIED with no §E verdict recorded (a status is not a verdict)" \
   "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
-$PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-V1','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UP45-CMD')" 2>/dev/null
+# A verdict is only a verdict if `commercial.bill.verify` produced it, so the fixture needs a command
+# of that type — `UP45-CMD` is a `test.up45` row, and the provenance seal correctly refuses it.
+$PSQL >/dev/null -c "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5A-CMD','project','org-legacy','p1','USER-1','commercial.bill.verify','upt5a-verify','x','succeeded')" 2>/dev/null
+$PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-VX','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UP45-CMD')" 2>/dev/null
+assert_rejects "commercial T5A §E: a verdict whose source command is NOT commercial.bill.verify cannot license VERIFIED (provenance, not mere presence)" \
+  "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
+$PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-V1','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UPT5A-CMD')" 2>/dev/null
 assert_rejects "commercial T5A §E: EDITING a recorded verdict (a rewritable verdict is no verdict)" \
   "UPDATE \"BillVerification\" SET \"verdict\"='exception' WHERE \"id\"='UPT5A-V1'"
 assert_rejects "commercial T5A §E: a MATCHED verdict carrying exceptions (a verdict that says both is not a verdict)" \

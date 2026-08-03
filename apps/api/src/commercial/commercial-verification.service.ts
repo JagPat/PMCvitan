@@ -21,6 +21,23 @@ import type { VendorBillStepInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
 
+/**
+ * The totals ONE claim states against ONE purchase-order line. §E's duplicate rule compares claims
+ * in this unit rather than line by line: what a vendor claims against an order is the total they
+ * claim, and how many lines they split it across is presentation (Codex round-3).
+ */
+function totalsFor(
+  lines: readonly LineTriple[], kind: 'material' | 'labour', poLineId: string,
+): { quantity: Prisma.Decimal; amount: Prisma.Decimal; tax: Prisma.Decimal; freight: Prisma.Decimal } {
+  const mine = lines.filter((l) => l.kind === kind && l.poLineId === poLineId);
+  return {
+    quantity: mine.reduce((a, l) => a.add(l.claimedQty), new Prisma.Decimal(0)),
+    amount: mine.reduce((a, l) => a.add(l.claimedAmount), new Prisma.Decimal(0)),
+    tax: mine.reduce((a, l) => a.add(l.claimedTax), new Prisma.Decimal(0)),
+    freight: mine.reduce((a, l) => a.add(l.claimedFreight), new Prisma.Decimal(0)),
+  };
+}
+
 /** One claim line resolved against its ordered snapshot — the row §E's triple is computed over. */
 type LineTriple = {
   billLineId: string;
@@ -30,6 +47,7 @@ type LineTriple = {
   claimedRate: Prisma.Decimal;
   claimedTax: Prisma.Decimal;
   claimedFreight: Prisma.Decimal;
+  claimedAmount: Prisma.Decimal;
 };
 
 /**
@@ -98,6 +116,7 @@ export class CommercialVerificationService {
         claimedRate: l.rate,
         claimedTax: l.taxAmount,
         claimedFreight: l.freightAmount,
+        claimedAmount: l.amount,
       })),
     };
   }
@@ -190,46 +209,41 @@ export class CommercialVerificationService {
       if (claimed.freight.greaterThan(freightCap)) exceptions.push('freight-mismatch');
 
       // §E — the SERVICE-side half of `duplicate-claim`: the cases the live-document index cannot
-      // see. §E names TWO of them, and the first head implemented only one.
+      // see. §E names two of them — the same units under DIFFERENT vendor document numbers, and a
+      // resubmission after REJECTION that is genuinely the same claim rather than a correction.
       //
-      //  (a) the same units claimed twice under DIFFERENT vendor document numbers, which the index
-      //      permits and the accepted-quantity bound only catches once the second claim exceeds
-      //      what actually arrived; and
-      //  (b) **a resubmission after REJECTION that is genuinely the same claim rather than a
-      //      correction** (Codex round-1 F4). A rejected bill is out of the live-document index,
-      //      out of every live billed fold, and — as first written — out of this scan too, so a
-      //      vendor could bypass a rejection by replaying the identical quantity and rate instead
-      //      of correcting it, and the replay would verify as `matched`.
+      // Codex round-3 — the comparison is per (BILL, PO LINE) AGGREGATE, not per line. Comparing
+      // lines individually let a duplicate hide behind nothing more than a different partitioning:
+      // with 200 accepted, `INV-A` split as 60 + 40 and `INV-B` as a single 100 keeps the aggregate
+      // inside the evidence, and no per-line predicate ever finds an exact twin — so the same 100
+      // units verify twice under two document numbers. What a vendor claims against an order is the
+      // TOTAL they claim, and the line breakdown is presentation.
       //
-      // So the scan spans REJECTED predecessors as well as live ones. `disputed` and `resolved` are
-      // deliberately still excluded: a dispute is the system asking for a correction, and the
-      // corrected claim SHOULD look different — flagging its predecessor as a duplicate of it would
-      // punish the vendor for doing exactly what the dispute asked.
-      const twin = await tx.vendorBillLine.count({
-        where: {
-          projectId,
-          ...(l.kind === 'material' ? { poLineId: l.poLineId } : { labourPoLineId: l.poLineId }),
-          // Codex round-2 — the comparison spans EVERY money component of the claim line, not just
-          // quantity and rate. Round 1 compared the two and called it a duplicate, which made a
-          // corrected resubmission indistinguishable from an unchanged one: reject a 50-unit claim
-          // at rate 1 carrying ₹1,800 tax, and the vendor's corrected ₹900-tax claim — the exact
-          // fix the rejection asked for — was disputed as `duplicate-claim` and could never be
-          // filed. A duplicate is an UNCHANGED replay; anything the vendor actually changed is a
-          // correction, and this predicate has to be able to tell them apart.
-          quantity: l.claimedQty,
-          rate: l.claimedRate,
-          taxAmount: l.claimedTax,
-          freightAmount: l.claimedFreight,
-          id: { not: l.billLineId },
-          version: {
-            is: {
-              supersededAt: null,
-              billId: { not: billId },
-              bill: { is: { vendorId, status: { notIn: ['draft', 'disputed', 'resolved'] } } },
-            },
-          },
-        },
-      });
+      // `disputed` and `resolved` stay excluded: a dispute ASKS for a correction, and the corrected
+      // claim should look different — flagging its predecessor as its twin would punish the vendor
+      // for doing exactly what the dispute asked.
+      const mine = totalsFor(lines, l.kind, l.poLineId);
+      const others = await tx.$queryRaw<Array<{ billId: string }>>`
+        SELECT v."billId"                      AS "billId",
+               SUM(bl."quantity")              AS "quantity",
+               SUM(bl."amount")                AS "amount",
+               SUM(bl."taxAmount")             AS "taxAmount",
+               SUM(bl."freightAmount")         AS "freightAmount"
+          FROM "VendorBillLine" bl
+          JOIN "VendorBillVersion" v ON v."projectId" = bl."projectId" AND v."id" = bl."versionId"
+          JOIN "VendorBill"        b ON b."projectId" = v."projectId" AND b."id" = v."billId"
+         WHERE bl."projectId" = ${projectId}
+           AND ${l.kind === 'material' ? Prisma.sql`bl."poLineId" = ${l.poLineId}` : Prisma.sql`bl."labourPoLineId" = ${l.poLineId}`}
+           AND v."supersededAt" IS NULL
+           AND v."billId" <> ${billId}
+           AND b."vendorId" = ${vendorId}
+           AND b."status" NOT IN ('draft', 'disputed', 'resolved')
+         GROUP BY v."billId"
+        HAVING SUM(bl."quantity") = ${mine.quantity}
+           AND SUM(bl."amount") = ${mine.amount}
+           AND SUM(bl."taxAmount") = ${mine.tax}
+           AND SUM(bl."freightAmount") = ${mine.freight}`;
+      const twin = others.length;
       if (twin > 0) exceptions.push('duplicate-claim');
 
       out.push({
@@ -358,12 +372,42 @@ export class CommercialVerificationService {
 
   // ── reads ────────────────────────────────────────────────────────────────────────────────────
 
+  /**
+   * The §E triple for a claim — a PREVIEW before a verdict exists, and the RECORDED verdict after.
+   *
+   * Codex round-3 — this is the third member of the set "places that report a verdict", and it took
+   * the same refold-after-dispute failure the verify and replay paths were already fixed for. A
+   * 50-unit claim disputed for claiming the full ₹1,800 tax is, by §0's LIVE rule, no longer in the
+   * billed folds — so recomputing reads its own tax as ₹0 against a ₹0 cap and answers `matched`,
+   * contradicting both the status and the stored verdict.
+   *
+   * A recomputation is only meaningful while the claim is IN the fold it is measured against. Once
+   * a verdict exists for the current version it is the answer, because it is what was actually
+   * decided; the preview is for the window before one does.
+   */
   async readVerification(projectId: string, billId: string, user: AuthUser): Promise<VerificationDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
     return this.prisma.$transaction(async (tx) => {
       const bill = await tx.vendorBill.findFirst({ where: { projectId, id: billId }, select: { vendorId: true } });
       if (!bill) throw new NotFoundException('Vendor bill not found in this project');
+      const version = await tx.vendorBillVersion.findFirst({
+        where: { projectId, billId, supersededAt: null }, select: { id: true },
+      });
+      if (version) {
+        const recorded = await tx.billVerification.findFirst({
+          where: { projectId, billId, versionId: version.id },
+          orderBy: [{ verifiedAt: 'desc' }, { id: 'desc' }],
+        });
+        if (recorded) {
+          return {
+            billId, versionId: recorded.versionId,
+            verdict: recorded.verdict as VerificationDto['verdict'],
+            lines: [],
+            exceptions: recorded.exceptions as VerificationExceptionKind[],
+          };
+        }
+      }
       return this.computeTriple(tx, projectId, billId, bill.vendorId);
     });
   }

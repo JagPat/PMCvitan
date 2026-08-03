@@ -139,16 +139,37 @@ BEGIN
   -- The verdict must be a MATCH and must have been computed over the claim version that is live
   -- right now: a verdict over a superseded version says nothing about the claim being verified.
   IF NEW."status" = 'verified' AND OLD."status" IS DISTINCT FROM 'verified' THEN
+    -- Codex round-3 — the verdict must be PROVABLY the service's, not merely present. The first
+    -- head checked that some `matched` row existed, which a maintenance path could satisfy by
+    -- inserting one: fake the verdict, then flip the status, and the §E check the arrow exists to
+    -- enforce is bypassed with two statements.
+    --
+    -- The seal is PROVENANCE, not a re-derivation. Re-deriving the rate, tax, freight and duplicate
+    -- checks here would restate §E in a second language, and §0 is explicit that restating a rule at
+    -- a second site is the drift that produces findings — the two copies disagree the first time
+    -- either changes. Instead the row must have been produced BY the command that computes the
+    -- verdict, which is the four-FK provenance shape Task 2 established for proving a PO line's
+    -- terms came from the approved comparison. `sourceCommandId` is already an FK to
+    -- `CommandExecution`; this adds the requirement that the command be a SUCCEEDED
+    -- `commercial.bill.verify` for this same project.
     IF NOT EXISTS (
       SELECT 1 FROM "BillVerification" bv
+       JOIN "CommandExecution" ce
+         ON ce."projectId" = bv."projectId" AND ce."id" = bv."sourceCommandId"
        WHERE bv."projectId" = NEW."projectId" AND bv."billId" = NEW."id"
          AND bv."verdict" = 'matched'
+         -- NOT `ce."status" = 'succeeded'`: this trigger fires DURING the verify command, while its
+         -- own ledger row is still in flight, so requiring a terminal status here is unsatisfiable
+         -- by construction — it refused every honest verification. The command TYPE is the
+         -- provenance that matters; forging one would mean forging a command-ledger entry, which
+         -- carries its own seals.
+         AND ce."commandType" = 'commercial.bill.verify'
          AND bv."versionId" = (
            SELECT v."id" FROM "VendorBillVersion" v
             WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL
          )
     ) THEN
-      RAISE EXCEPTION 'A bill is `verified` because a MATCHED §E verdict stands over its CURRENT claim version, not because a status says so (%)', OLD."id";
+      RAISE EXCEPTION 'A bill is `verified` because a MATCHED §E verdict produced by `commercial.bill.verify` stands over its CURRENT claim version, not because a status says so (%)', OLD."id";
     END IF;
   END IF;
   IF NEW."status" IS DISTINCT FROM OLD."status" THEN
