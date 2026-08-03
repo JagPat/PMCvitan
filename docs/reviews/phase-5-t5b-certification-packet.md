@@ -62,16 +62,24 @@ absent field forces the caller to wait for the ledger that makes it true.
 | 22 | A certificate by an evidence RECORDER carries an attributable `SodException` | …the same function — §I asked of the frozen set, at the database | R2-F2 |
 | 23 | Frozen `consumedQty` never exceeds the evidence that exists | `phase5_t5_consumption_evidence_check`, both arms | R2-F3 |
 | 24 | A live certificate names the bill's LIVE claim version | `phase5_t5_certificate_complete_check` | R2-F4 |
+| 25 | Certification cannot deadlock against a concurrent measurement CORRECTION either | the labour half of the evidence lock, below | R3-F1 (RED = PG `40P01`) |
+| 26 | An SoD exception overrides the rule it NAMES, granted by an approver with standing | `phase5_t5_certificate_complete_check`, mirroring the orgs standing predicate in SQL | R3-F2/F3 |
+| 27 | The frozen set is CLOSED — a certificate rests on EXACTLY what it claimed | the completeness check is an equality, re-run on every consumption insert | R3-F4 |
+| 28 | Withdrawing evidence re-checks every live freeze on that row | `StockTransaction`/`Measurement` fire the same quantity predicate | R3-F5 |
+| 29 | The author of a POSITIVE correction is an evidence actor for §I | `assertSegregation` folds corrections addressed to the frozen rows | R3-F6 |
 
 ## §E's lock order, implemented literally
 
 1. `lockProjectReadiness(projectId)`
-2. every contributing stock LOT, ascending by id — `InventoryParticipant.lockAcceptedEvidence`
+2. ALL the contributing EVIDENCE, before the bill:
+   - every contributing stock LOT, ascending by id — `InventoryParticipant.lockAcceptedEvidence`
+   - the contributing measurements — `CommercialMeasurementQuery.lockMeasurementsFor`
+   - the ACTIVITY each measurement rests on — `ActivityParticipant.measurableTarget`
 3. the BILL, and every side re-read under it
 4. EVERY PO line the bill touches, material and labour together, in ONE ascending
    order taken BEFORE any per-line work — inside `computeTriple`
-5. the contributing measurements — `CommercialMeasurementQuery.lockMeasurementsFor`
-6. the ACTIVITY each measurement rests on — `ActivityParticipant.measurableTarget`
+5. the DRAWS — which acceptance and measurement rows this certificate consumes, decided
+   over rows step 2 already holds
 
 Step 2 before steps 3–4 is not a free choice. Every inventory write already runs
 `lockProjectReadiness → lockLot → applyReceiptProgress`, and `applyReceiptProgress`
@@ -86,9 +94,17 @@ that is right for every other commercial write — but `stock.reverse` locks the
 and then disputes the bill through `CommercialParticipant`, so a bill-first
 certifier deadlocks against it exactly: certification holds bill B waiting for lot
 L while the reversal holds L waiting to dispute B. The price of moving the bill down
-is that the lot set is chosen from an UNLOCKED read, so the claim is re-derived once
-the bill is held and a divergence is a 409 rather than a late lock — locking late is
-how the deadlock returns.
+is that the evidence set is chosen from an UNLOCKED read, so the claim is re-derived
+once the bill is held and a divergence is a 409 rather than a late lock — locking late
+is how the deadlock returns.
+
+**Round 3 found the same defect on the LABOUR side**, because round 1's fix moved the
+material lots and left the measurements where they were: the measurement-correction path
+locks the activity, inserts the correction (an FK row lock on the original `Measurement`)
+and then disputes the bill, so a bill-first certifier deadlocks against it exactly as it
+did against `stock.reverse`. The rule is now stated over EVIDENCE rather than over lots,
+which is why step 2 above is one step covering both families rather than two steps at
+different altitudes.
 
 Step 5 is not covered by step 4, and the reason is in §E: a measurement can be old
 and entirely valid while the sign-off underneath it is withdrawn concurrently.
